@@ -1,0 +1,37 @@
+# ===== 虚拟环境 =====
+.venv/
+venv/
+
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+*.pyc
+
+# ===== 构建产物（PyInstaller）=====
+build/
+dist/
+dist2/
+.pyinstaller_cache/
+
+# ===== 旧版本备份（已被 Git 取代）=====
+副本/
+
+# ===== 运行时用户数据 =====
+config/
+error_log.txt
+debug.log
+*.log
+
+# ===== 存档 / 录像 / 分析产物（用户数据）=====
+save/
+视频/
+
+# ===== 求解器表 / 训练模型（可由脚本重新生成）=====
+solver/data/
+solver/ml/models/
+
+# ===== 用户宏数据 =====
+macro/*.json
+
+# ===== 独立项目：加密工具（与本游戏无关，如需入库请 git add -f encrypt）=====
+encrypt/

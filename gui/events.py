@@ -1,0 +1,1826 @@
+# -*- coding: utf-8 -*-
+"""
+事件处理 Mixin
+
+处理用户输入事件（鼠标、键盘）和终端命令队列。
+"""
+
+import pygame
+import queue
+import traceback
+from gui.text_input import TextInput
+
+
+class EventsMixin:
+    """事件处理相关方法"""
+    
+    def handle_events(self):
+        """处理用户输入事件"""
+        for event in pygame.event.get():
+            try:
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    continue
+                
+                elif event.type == pygame.VIDEORESIZE:
+                    new_width = max(event.w, self.min_width)
+                    new_height = max(event.h, self.min_height)
+                    self.screen_width = new_width
+                    self.screen_height = new_height
+                    self.screen = pygame.display.set_mode(
+                        (self.screen_width, self.screen_height),
+                        pygame.RESIZABLE
+                    )
+                    continue
+                
+                # 文件对话框事件（最高优先级）
+                if self.file_dialog.active:
+                    self.file_dialog.handle_event(event)
+                    continue
+
+                # 宏命名对话框事件
+                if getattr(self, 'show_macro_name_dialog', False):
+                    if self.handle_macro_name_dialog_events(event):
+                        continue
+
+                # 宏基准选择模式（录制基准或执行基准）
+                if getattr(self, 'macro_selecting_base', False) or \
+                   (getattr(self, 'macro_recording', False) and getattr(self, 'macro_record_base_point', None) is None):
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        if self.handle_macro_base_selection_click(*event.pos):
+                            continue
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        # ESC 取消宏操作
+                        self.macro_recording = False
+                        self.macro_recording_steps = []
+                        self.macro_record_base_point = None
+                        self.macro_executing = False
+                        self.macro_selecting_base = False
+                        self.macro_exec_ops = []
+                        self.macro_notify_persistent = False
+                        continue
+                    continue  # 拦截所有其他事件
+
+                # 宏管理对话框
+                if getattr(self, 'show_macro_manager_dialog', False):
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self.show_macro_manager_dialog = False
+                        continue
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        if self._handle_macro_manager_click(*event.pos):
+                            continue
+                    continue
+                
+                # 自定义对话框事件
+                if self.show_custom_dialog:
+                    self.handle_custom_dialog_events(event)
+                    continue
+                
+                # 帮助对话框
+                if self.show_help:
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        # 检查滚动条拖动
+                        sb_rect = getattr(self, 'help_scrollbar_rect', None)
+                        sb_knob = getattr(self, 'help_scrollbar_knob_rect', None)
+                        if sb_rect and sb_knob and sb_knob.collidepoint(event.pos):
+                            self.help_scrollbar_dragging = True
+                            self.help_scrollbar_drag_start_y = event.pos[1] - sb_knob.top
+                        elif sb_rect and sb_rect.collidepoint(event.pos):
+                            # 点击滚动条空白区域：跳转到对应位置
+                            content_height = getattr(self, '_help_content_height', 1)
+                            total_content = getattr(self, '_help_total_height', 1)
+                            visible = content_height / total_content * content_height
+                            ratio = (event.pos[1] - sb_rect.top) / sb_rect.height
+                            max_scroll = max(0, total_content - content_height)
+                            self.help_scroll_offset = int(ratio * max_scroll)
+                        else:
+                            # 点击对话框外部关闭
+                            dialog_rect = getattr(self, 'help_dialog_rect', None)
+                            if dialog_rect and not dialog_rect.collidepoint(event.pos):
+                                self.show_help = False
+                            elif not dialog_rect:
+                                self.show_help = False
+                    elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                        self.help_scrollbar_dragging = False
+                    elif event.type == pygame.MOUSEMOTION:
+                        if getattr(self, 'help_scrollbar_dragging', False):
+                            sb_rect = getattr(self, 'help_scrollbar_rect', None)
+                            if sb_rect:
+                                content_height = getattr(self, '_help_content_height', 1)
+                                total_content = getattr(self, '_help_total_height', 1)
+                                drag_offset = getattr(self, 'help_scrollbar_drag_start_y', 0)
+                                rel_y = event.pos[1] - sb_rect.top - drag_offset
+                                ratio = max(0, min(1, rel_y / (sb_rect.height - 20)))
+                                max_scroll = max(0, total_content - content_height)
+                                self.help_scroll_offset = int(ratio * max_scroll)
+                    elif event.type == pygame.MOUSEWHEEL:
+                        # 滚轮滚动帮助内容
+                        self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) - event.y * 30
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_ESCAPE:
+                            self.show_help = False
+                        elif event.key == pygame.K_UP:
+                            self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) - 30
+                        elif event.key == pygame.K_DOWN:
+                            self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) + 30
+                        elif event.key == pygame.K_PAGEUP:
+                            self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) - 200
+                        elif event.key == pygame.K_PAGEDOWN:
+                            self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) + 200
+                    continue
+                
+                # 设置对话框事件
+                if self.show_settings_dialog:
+                    self._handle_settings_dialog_event(event)
+                    continue
+
+                # 虚拟键盘事件（浮动面板：拖动 + 按钮点击）
+                if self.handle_virtual_keyboard_event(event):
+                    continue
+
+                # 聚拢度指标面板事件（浮动面板：拖动 + 关闭）
+                if self.handle_metrics_panel_event(event):
+                    continue
+
+                # 成绩记录面板事件（浮动面板：拖动/关闭/删除/滚动）
+                if self.handle_records_panel_event(event):
+                    continue
+
+                # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解）
+                if self.animating and event.type == pygame.KEYDOWN:
+                    if not self._is_action_triggered(event, 'undo') and \
+                       not self._is_action_triggered(event, 'redo') and \
+                       not self._is_action_triggered(event, 'auto_solve'):
+                        continue
+
+                # 求解器运行期间阻止用户改動滑塊（只能停止求解）
+                if self._auto_solve_running:
+                    if event.type == pygame.KEYDOWN:
+                        if self._is_action_triggered(event, 'auto_solve'):
+                            self._start_auto_solve()
+                        continue
+                    elif event.type == pygame.MOUSEBUTTONDOWN:
+                        # 允许菜单栏、下拉菜单和右侧面板操作
+                        mx, my = event.pos
+                        # 检查是否在任何下拉菜单内
+                        in_dropdown = False
+                        if self.show_file_menu and hasattr(self, 'file_menu_rects'):
+                            for rect in self.file_menu_rects:
+                                if rect.collidepoint(mx, my):
+                                    in_dropdown = True
+                                    break
+                        if not in_dropdown and self.show_edit_menu and hasattr(self, 'edit_menu_rects'):
+                            for rect in self.edit_menu_rects:
+                                if rect.collidepoint(mx, my):
+                                    in_dropdown = True
+                                    break
+                        if not in_dropdown and self.show_puzzle_menu and hasattr(self, 'puzzle_menu_rects'):
+                            for rect in self.puzzle_menu_rects:
+                                if rect.collidepoint(mx, my):
+                                    in_dropdown = True
+                                    break
+                        if not in_dropdown and self.show_macro_menu and hasattr(self, 'macro_menu_rects'):
+                            for rect in self.macro_menu_rects:
+                                if rect.collidepoint(mx, my):
+                                    in_dropdown = True
+                                    break
+                        if not in_dropdown and self.show_settings_menu and hasattr(self, 'settings_menu_rects'):
+                            for rect in self.settings_menu_rects:
+                                if rect.collidepoint(mx, my):
+                                    in_dropdown = True
+                                    break
+                        # 如果不在菜单栏、下拉菜单或右侧面板，跳过事件
+                        if my >= self.menu_bar_height and mx < self.screen_width - self.right_panel_width and not in_dropdown:
+                            continue
+                
+                # 鼠标移动
+                if event.type == pygame.MOUSEMOTION:
+                    mx, my = event.pos
+                    
+                    # 菜单栏悬停
+                    self.menu_hovered = -1
+                    if my < self.menu_bar_height:
+                        for i, rect in enumerate(self.menu_item_rects):
+                            if rect.collidepoint(mx, my):
+                                self.menu_hovered = i
+                                break
+                    
+                    # 文件菜单悬停
+                    self.file_menu_hovered = -1
+                    if self.show_file_menu:
+                        for i, rect in enumerate(self.file_menu_rects):
+                            if rect.collidepoint(mx, my):
+                                self.file_menu_hovered = i
+                                break
+                    
+                    # 编辑菜单悬停
+                    self.edit_menu_hovered = -1
+                    if self.show_edit_menu:
+                        for i, rect in enumerate(self.edit_menu_rects):
+                            if rect.collidepoint(mx, my):
+                                if self.edit_menu_items[i] != '---':
+                                    self.edit_menu_hovered = i
+                                break
+                    
+                    # 谜题菜单悬停
+                    self.puzzle_menu_hovered = -1
+                    if self.show_puzzle_menu:
+                        for i, rect in enumerate(self.puzzle_menu_rects):
+                            if rect.collidepoint(mx, my):
+                                preset = self.puzzle_presets[i]
+                                if not (len(preset) == 1 and preset[0] == '---'):
+                                    self.puzzle_menu_hovered = i
+                                break
+                    
+                    # 宏定义菜单悬停
+                    self.macro_menu_hovered = -1
+                    if self.show_macro_menu:
+                        for i, rect in enumerate(self.macro_menu_rects):
+                            if rect.collidepoint(mx, my):
+                                self.macro_menu_hovered = i
+                                break
+
+                    # 设置菜单悬停
+                    self.settings_menu_hovered = -1
+                    if self.show_settings_menu:
+                        for i, rect in enumerate(self.settings_menu_rects):
+                            if rect.collidepoint(mx, my):
+                                self.settings_menu_hovered = i
+                                break
+
+                    # 滑动条拖拽
+                    if self.slider_dragging:
+                        self._update_slider_from_mouse(my)
+                    
+                    # 拖拽地图
+                    if self.is_dragging:
+                        dx = event.pos[0] - self.drag_start[0]
+                        dy = event.pos[1] - self.drag_start[1]
+                        self.camera_x = self.drag_offset[0] + dx
+                        self.camera_y = self.drag_offset[1] + dy
+                
+                # 鼠标点击
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    x, y = event.pos
+                    
+                    if event.button == 1:
+                        # 文件菜单项点击
+                        if self.show_file_menu:
+                            file_clicked = False
+                            for i, rect in enumerate(self.file_menu_rects):
+                                if rect.collidepoint(x, y):
+                                    if i == 0:
+                                        self.load_from_file()
+                                    elif i == 1:
+                                        self.save_to_file()
+                                    elif i == 2:
+                                        self.save_as()
+                                    file_clicked = True
+                                    break
+                            self.close_all_menus()
+                            if file_clicked:
+                                continue
+                        
+                        # 编辑菜单项点击
+                        if self.show_edit_menu:
+                            edit_clicked = False
+                            for i, rect in enumerate(self.edit_menu_rects):
+                                if rect.collidepoint(x, y):
+                                    if self.edit_menu_items[i] == '---':
+                                        continue
+                                    if i == 0:
+                                        self.undo()
+                                    elif i == 1:
+                                        self.redo()
+                                    elif i == 2:
+                                        self.shuffle_puzzle()
+                                    elif i == 3:
+                                        self.reset_puzzle()
+                                    elif i == 5:
+                                        self._start_auto_solve()
+                                    edit_clicked = True
+                                    break
+                            self.close_all_menus()
+                            if edit_clicked:
+                                continue
+                        
+                        # 谜题菜单项点击
+                        if self.show_puzzle_menu:
+                            puzzle_clicked = False
+                            for i, rect in enumerate(self.puzzle_menu_rects):
+                                if rect.collidepoint(x, y):
+                                    preset = self.puzzle_presets[i]
+                                    if len(preset) == 1 and preset[0] == '自定义...':
+                                        self.show_custom_dialog = True
+                                        self.custom_fields = {
+                                            'm': str(self.current_m),
+                                            'n': str(self.current_n),
+                                            'step': str(self.current_step)
+                                        }
+                                        self.custom_active_field = 'm'
+                                        self.custom_error = ''
+                                        puzzle_clicked = True
+                                    elif len(preset) == 1 and preset[0] == '__mode__':
+                                        # 计时/练习模式切换
+                                        self.toggle_game_mode()
+                                        puzzle_clicked = True
+                                    elif len(preset) == 4:
+                                        _, pm, pn, ps = preset
+                                        self.new_puzzle(pm, pn, ps)
+                                        puzzle_clicked = True
+                                    break
+                            self.close_all_menus()
+                            if puzzle_clicked:
+                                continue
+
+                        # 宏定义菜单项点击
+                        if self.show_macro_menu:
+                            macro_clicked = False
+                            for i, rect in enumerate(self.macro_menu_rects):
+                                if rect.collidepoint(x, y):
+                                    macro_clicked = True
+                                    self._handle_macro_menu_click(i)
+                                    break
+                            self.close_all_menus()
+                            if macro_clicked:
+                                continue
+
+                        # 设置菜单项点击：快捷键设置 / 动画速度
+                        if self.show_settings_menu:
+                            settings_clicked = False
+                            for i, rect in enumerate(self.settings_menu_rects):
+                                if rect.collidepoint(x, y):
+                                    settings_clicked = True
+                                    self.close_all_menus()
+                                    self.show_settings_dialog = True
+                                    self.settings_active_tab = 'keybindings' if i == 0 else 'animation'
+                                    self.settings_editing_action = None
+                                    self._settings_scroll = 0
+                                    self._settings_backup_keybindings = dict(self.keybindings)
+                                    break
+                            self.close_all_menus()
+                            if settings_clicked:
+                                continue
+
+                        # 菜单栏点击
+                        if y < self.menu_bar_height:
+                            for i, rect in enumerate(self.menu_item_rects):
+                                if rect.collidepoint(x, y):
+                                    if self.menu_items[i] == '帮助':
+                                        self.close_all_menus()
+                                        self.show_help = True
+                                        self.help_scroll_offset = 0
+                                    elif self.menu_items[i] == '文件':
+                                        self.show_edit_menu = False
+                                        self.show_puzzle_menu = False
+                                        self.show_settings_menu = False
+                                        self.show_macro_menu = False
+                                        self.show_file_menu = not self.show_file_menu
+                                    elif self.menu_items[i] == '编辑':
+                                        self.show_file_menu = False
+                                        self.show_puzzle_menu = False
+                                        self.show_settings_menu = False
+                                        self.show_macro_menu = False
+                                        self.show_edit_menu = not self.show_edit_menu
+                                    elif self.menu_items[i] == '谜题':
+                                        self.show_file_menu = False
+                                        self.show_edit_menu = False
+                                        self.show_settings_menu = False
+                                        self.show_macro_menu = False
+                                        self.show_puzzle_menu = not self.show_puzzle_menu
+                                    elif self.menu_items[i] == '宏定义':
+                                        self.show_file_menu = False
+                                        self.show_edit_menu = False
+                                        self.show_puzzle_menu = False
+                                        self.show_settings_menu = False
+                                        self.show_macro_menu = not self.show_macro_menu
+                                    elif self.menu_items[i] == '设置':
+                                        self.show_file_menu = False
+                                        self.show_edit_menu = False
+                                        self.show_puzzle_menu = False
+                                        self.show_macro_menu = False
+                                        self.show_settings_menu = not self.show_settings_menu
+                                    else:
+                                        self.close_all_menus()
+                                    break
+                            continue
+                        else:
+                            self.close_all_menus()
+                        
+                        # 右侧面板点击
+                        if x >= self.screen_width - self.right_panel_width:
+                            if self.anim_toggle_rect and self.anim_toggle_rect.collidepoint(x, y):
+                                self.animation_enabled = not self.animation_enabled
+                                if not self.animation_enabled and self.animating:
+                                    self.commit_animation()
+                                status = '开' if self.animation_enabled else '关'
+                                self.macro_notify_msg = f"动画：{status}"
+                                self.macro_notify_timer = 90
+                            elif self.slider_rect and self.slider_rect.collidepoint(x, y):
+                                self.slider_dragging = True
+                                self._update_slider_from_mouse(y)
+                            continue
+                        
+                        # 状态栏区域
+                        if y > self.screen_height - self.status_bar_height:
+                            continue
+                        
+                        # 游戏区域点击
+                        gap = self.get_gap_at_pos(x, y)
+                        block = self.get_block_at_pos(x, y)
+                        
+                        if gap is not None:
+                            if self.selected_gap == gap:
+                                self.selected_gap = None
+                            else:
+                                self.selected_gap = gap
+                                for b in self.game.blocks:
+                                    b.be_opted = False
+                                self.selected_block = None
+                                # 操作提示：选中缝隙
+                                gap_type, line = gap
+                                type_str = '纵向' if gap_type == 'v' else '横向'
+                                self.macro_notify_msg = f"选中{type_str}缝隙" if gap_type == 'v' else f"选中{type_str}缝隙"
+                                self.macro_notify_timer = 120
+                        elif block is not None and self.selected_gap is not None:
+                            direction, line = self.selected_gap
+                            self.game.opt(direction, line, block)
+                            self.selected_block = block
+                            # 操作提示：选中滑块组
+                            n_blocks = len([b for b in self.game.blocks if b.be_opted])
+                            self.macro_notify_msg = f"选中滑块组 共{n_blocks}个"
+                            self.macro_notify_timer = 120
+                        elif self.is_blank_area(x, y):
+                            # 调试面板打开时，点击洞选中（标记学习）
+                            if getattr(self, 'show_metrics_panel', False):
+                                hole = self.get_hole_at_pos(x, y)
+                                if hole is not None:
+                                    if (self.selected_hole is not None and
+                                            set(hole['cells']) == set(self.selected_hole.get('cells', []))):
+                                        # 再点一次已选中的洞 = 取消选中
+                                        self.selected_hole = None
+                                        self.macro_notify_msg = "已取消选中洞"
+                                    else:
+                                        self.selected_hole = hole
+                                        self.macro_notify_msg = f"选中洞：{hole['type']} {hole['size']}（{len(hole['cells'])}格）"
+                                    self.macro_notify_timer = 120
+                                    continue
+                            self.is_dragging = True
+                            self.drag_start = (x, y)
+                            self.drag_offset = (self.camera_x, self.camera_y)
+                    
+                    elif event.button == 3:
+                        # 右键取消选中
+                        self.selected_gap = None
+                        self.selected_block = None
+                        for b in self.game.blocks:
+                            b.be_opted = False
+                        self.macro_notify_msg = "已取消选中"
+                        self.macro_notify_timer = 90
+                
+                # 鼠标释放
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    if event.button == 1:
+                        self.is_dragging = False
+                        self.slider_dragging = False
+                
+                # 鼠标滚轮
+                elif event.type == pygame.MOUSEWHEEL:
+                    if pygame.key.get_mods() & pygame.KMOD_CTRL:
+                        zoom_factor = 1.1 if event.y > 0 else 0.9
+                        new_zoom = self.zoom * zoom_factor
+                        new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
+                        
+                        mouse_x, mouse_y = pygame.mouse.get_pos()
+                        # 记录缩放前鼠标指向的世界坐标
+                        world_x = (mouse_x - self.camera_x) / self.zoom
+                        world_y = (mouse_y - self.camera_y) / self.zoom
+
+                        self.zoom = new_zoom
+
+                        # 反推新 camera，使同一世界点仍位于鼠标下方（以鼠标为中心缩放）
+                        self.camera_x = mouse_x - world_x * self.zoom
+                        self.camera_y = mouse_y - world_y * self.zoom
+                
+                # 键盘事件
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_SPACE:
+                        # 空格作为计时器开始/DNF 键
+                        self._timer_on_space()
+                        continue
+                    if event.key == pygame.K_RETURN and getattr(self, 'show_metrics_panel', False):
+                        self._record_hole_selection()
+                    elif self._is_action_triggered(event, 'save'):
+                        self.save_to_file()
+                    
+                    elif self._is_action_triggered(event, 'load'):
+                        self.load_from_file()
+                    
+                    elif self._is_action_triggered(event, 'undo'):
+                        self.undo()
+                        self.undo_held = True
+                        self.undo_first = True
+                        self.undo_timer = pygame.time.get_ticks()
+                    
+                    elif self._is_action_triggered(event, 'redo'):
+                        self.redo()
+                        self.redo_held = True
+                        self.redo_first = True
+                        self.redo_timer = pygame.time.get_ticks()
+                    
+                    elif self._is_action_triggered(event, 'shuffle'):
+                        self.shuffle_puzzle()
+                    
+                    elif self._is_action_triggered(event, 'reset'):
+                        self.reset_puzzle()
+                    
+                    elif self._is_action_triggered(event, 'auto_solve'):
+                        self._start_auto_solve()
+                    
+                    elif self._is_action_triggered(event, 'macro_record'):
+                        if self.macro_recording:
+                            self._stop_macro_recording()
+                        else:
+                            self._start_macro_recording()
+                    
+                    elif self._is_action_triggered(event, 'virtual_keyboard'):
+                        self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
+                        status = '开' if self.show_virtual_keyboard else '关'
+                        self.macro_notify_msg = f"虚拟键盘：{status}"
+                        self.macro_notify_timer = 90
+                    
+                    elif self._is_action_triggered(event, 'metrics_panel'):
+                        self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                        status = '开' if self.show_metrics_panel else '关'
+                        self.macro_notify_msg = f"调试面板：{status}"
+                        self.macro_notify_timer = 90
+                    
+                    elif self._is_action_triggered(event, 'records_panel'):
+                        self.show_records_panel = not getattr(self, 'show_records_panel', False)
+                        self.rp_confirm_delete_id = None
+                        status = '开' if self.show_records_panel else '关'
+                        self.macro_notify_msg = f"成绩面板：{status}"
+                        self.macro_notify_timer = 90
+                    
+                    else:
+                        # 方向键移动（需要匹配配置且无修饰键冲突）
+                        move_actions = {
+                            'move_up': 'w', 'move_down': 's',
+                            'move_left': 'a', 'move_right': 'd'
+                        }
+                        moved = False
+                        for action_name, direction in move_actions.items():
+                            if self._is_action_triggered(event, action_name):
+                                if self.selected_gap and self.selected_block:
+                                    gap_type, line = self.selected_gap
+                                    can_move = False
+                                    if gap_type == 'v' and direction in ('w', 's'):
+                                        can_move = True
+                                    elif gap_type == 'h' and direction in ('a', 'd'):
+                                        can_move = True
+                                    if can_move:
+                                        self.move_selected_blocks(direction)
+                                moved = True
+                                break
+                
+                # 键盘释放
+                elif event.type == pygame.KEYUP:
+                    if event.key == pygame.K_z:
+                        self.undo_held = False
+                        self.undo_first = False
+                    elif event.key == pygame.K_x:
+                        self.redo_held = False
+                        self.redo_first = False
+                    elif event.key in (pygame.K_LCTRL, pygame.K_RCTRL):
+                        self.undo_held = False
+                        self.undo_first = False
+                        self.redo_held = False
+                        self.redo_first = False
+                        
+            except Exception:
+                # 事件处理异常属非致命：仅输出到控制台（带完整堆栈），不中断游戏
+                traceback.print_exc()
+                print("Event error (non-fatal)")
+    
+    def _cmd_reply(self, resp_q, ok, message, data=None):
+        """统一回复：有 resp_q 则通过队列回复（HTTP），否则打印到终端"""
+        if resp_q:
+            result = {"ok": ok, "message": message}
+            if data:
+                result.update(data)
+            resp_q.put(result)
+        else:
+            prefix = "[OK]" if ok else "[ERR]"
+            print(f"{prefix} {message}")
+
+    def _get_game_status(self):
+        """获取游戏状态字典（用于 HTTP JSON 响应）"""
+        self.game.update_matrix()
+        return {
+            "puzzle": f"{self.current_step}~{self.current_m}*{self.current_n}",
+            "step_count": self.step_count,
+            "solved": self.is_solved(),
+            "matrix": self.game.matrix,
+            "selected_gap": list(self.selected_gap) if self.selected_gap else None,
+            "selected_block": self.selected_block.location if self.selected_block else None,
+            "animating": self.animating,
+        }
+
+    def process_commands(self):
+        """处理命令队列中的终端/HTTP指令"""
+        if self.cmd_queue is None:
+            return
+        
+        while not self.cmd_queue.empty():
+            try:
+                item = self.cmd_queue.get_nowait()
+            except queue.Empty:
+                break
+            
+            # 支持两种格式：纯字符串（终端）或 (cmd, resp_q) 元组（HTTP）
+            resp_q = None
+            if isinstance(item, tuple):
+                cmd, resp_q = item
+            else:
+                cmd = item
+            
+            parts = cmd.split()
+            if not parts:
+                continue
+            
+            action = parts[0].lower()
+            
+            try:
+                if action == 'shuffle':
+                    self.shuffle_puzzle()
+                    self._cmd_reply(resp_q, True, "已打乱")
+                
+                elif action == 'reset':
+                    self.reset_puzzle()
+                    self._cmd_reply(resp_q, True, f"已重置为 {self.current_step}~{self.current_m}*{self.current_n}")
+                
+                elif action == 'move':
+                    if len(parts) < 2:
+                        self._cmd_reply(resp_q, False, "用法: move w/s/a/d")
+                        continue
+                    direction = parts[1].lower()
+                    if direction not in ('w', 's', 'a', 'd'):
+                        self._cmd_reply(resp_q, False, "方向必须是 w/s/a/d")
+                        continue
+                    if self.selected_gap and self.selected_block:
+                        gap_type, line = self.selected_gap
+                        can_move = False
+                        if gap_type == 'v' and direction in ('w', 's'):
+                            can_move = True
+                        elif gap_type == 'h' and direction in ('a', 'd'):
+                            can_move = True
+                        if can_move:
+                            moved = self.move_selected_blocks(direction)
+                            if moved:
+                                self._cmd_reply(resp_q, True, f"已移动 {direction}")
+                            else:
+                                self._cmd_reply(resp_q, False, "移动未生效（计时模式就绪态禁止滑动或移动不合法）")
+                        else:
+                            self._cmd_reply(resp_q, False, f"当前缝隙不允许 {direction} 方向移动")
+                    else:
+                        self._cmd_reply(resp_q, False, "未选中缝隙和滑块")
+                
+                elif action == 'new':
+                    if len(parts) < 4:
+                        self._cmd_reply(resp_q, False, "用法: new m n step")
+                        continue
+                    try:
+                        nm = int(parts[1])
+                        nn = int(parts[2])
+                        ns = int(parts[3])
+                    except ValueError:
+                        self._cmd_reply(resp_q, False, "参数必须是整数")
+                        continue
+                    if self.new_puzzle(nm, nn, ns):
+                        self._cmd_reply(resp_q, True, f"新谜题 {ns}~{nm}*{nn}")
+                    else:
+                        self._cmd_reply(resp_q, False, f"等级必须小于 max({nm}, {nn})")
+                
+                elif action == 'export':
+                    self.export_map()
+                
+                elif action == 'import':
+                    self.import_map()
+                
+                elif action == 'select_gap':
+                    if len(parts) < 3:
+                        self._cmd_reply(resp_q, False, "用法: select_gap h/v line")
+                        continue
+                    gap_type = parts[1].lower()
+                    if gap_type not in ('h', 'v'):
+                        self._cmd_reply(resp_q, False, "类型必须是 h 或 v")
+                        continue
+                    try:
+                        line = int(parts[2])
+                    except ValueError:
+                        self._cmd_reply(resp_q, False, "line 必须是整数")
+                        continue
+                    if gap_type == 'h' and not self.game.is_valid_h_line(line):
+                        self._cmd_reply(resp_q, False, f"横向分割线 {line} 不合法")
+                        continue
+                    if gap_type == 'v' and not self.game.is_valid_v_line(line):
+                        self._cmd_reply(resp_q, False, f"纵向分割线 {line} 不合法")
+                        continue
+                    self.selected_gap = (gap_type, line)
+                    for b in self.game.blocks:
+                        b.be_opted = False
+                    self.selected_block = None
+                    self._cmd_reply(resp_q, True, f"已选中缝隙: {gap_type} {line}")
+                
+                elif action == 'select_block':
+                    if len(parts) < 3:
+                        self._cmd_reply(resp_q, False, "用法: select_block row col")
+                        continue
+                    try:
+                        row = int(parts[1])
+                        col = int(parts[2])
+                    except ValueError:
+                        self._cmd_reply(resp_q, False, "row/col 必须是整数")
+                        continue
+                    block = None
+                    for b in self.game.blocks:
+                        if b.location == [row, col]:
+                            block = b
+                            break
+                    if block is None:
+                        self._cmd_reply(resp_q, False, f"位置 ({row}, {col}) 没有滑块")
+                        continue
+                    if self.selected_gap is None:
+                        self._cmd_reply(resp_q, False, "请先用 select_gap 选中缝隙")
+                        continue
+                    direction, line = self.selected_gap
+                    self.game.opt(direction, line, block)
+                    self.selected_block = block
+                    selected_count = sum(1 for b in self.game.blocks if b.be_opted)
+                    self._cmd_reply(resp_q, True, f"已选中滑块 ({row},{col}), 选中区域: {selected_count} 个")
+                
+                elif action == 'deselect':
+                    self.selected_gap = None
+                    self.selected_block = None
+                    for b in self.game.blocks:
+                        b.be_opted = False
+                    self._cmd_reply(resp_q, True, "已取消选中")
+                
+                elif action == 'status':
+                    status = self._get_game_status()
+                    if resp_q:
+                        resp_q.put(status)
+                    else:
+                        print(f"=== 状态 ===")
+                        print(f"谜题: {status['puzzle']}")
+                        print(f"步数: {status['step_count']}")
+                        print(f"复原: {'是' if status['solved'] else '否'}")
+                        print(f"矩阵:")
+                        for row in status['matrix']:
+                            print(' '.join(str(v) for v in row))
+                        print(f"==========")
+                
+                elif action == 'undo':
+                    self.undo()
+                    self._cmd_reply(resp_q, True, "已撤销")
+
+                elif action == 'redo':
+                    self.redo()
+                    self._cmd_reply(resp_q, True, "已重做")
+
+                elif action == 'map':
+                    map_str = self.game.export_map()
+                    if resp_q:
+                        resp_q.put({"ok": True, "map": map_str})
+                    else:
+                        print(map_str)
+
+                elif action == 'quit':
+                    self.running = False
+                    self._cmd_reply(resp_q, True, "退出游戏")
+
+                # ========== 自动求解命令 ==========
+                elif action == 'solve':
+                    self._start_auto_solve()
+                    self._cmd_reply(resp_q, True, "已启动自动求解")
+
+                elif action == 'solve_status':
+                    if self._auto_solve_running:
+                        status = "running"
+                    elif self._auto_solve_result is not None:
+                        if self._auto_solve_result is False:
+                            status = "failed (无解)"
+                        else:
+                            status = f"solved ({len(self._auto_solve_result)}步)"
+                    else:
+                        status = "idle"
+                    self._cmd_reply(resp_q, True, status)
+
+                # ========== 计时器命令 ==========
+                elif action == 'timer_start':
+                    if self.timer_state == 'ready':
+                        self._timer_start()
+                        self._cmd_reply(resp_q, True, "计时已开始")
+                    elif self.timer_state == 'running':
+                        self._cmd_reply(resp_q, False, "已在计时中")
+                    else:
+                        self._cmd_reply(resp_q, False, "当前无法开始计时（请先打乱）")
+
+                elif action == 'timer_stop':
+                    if self.timer_state == 'running':
+                        self._timer_finish(dnf=True)
+                        self._cmd_reply(resp_q, True, "已停止（DNF）")
+                    else:
+                        self._cmd_reply(resp_q, False, "当前未在计时")
+
+                elif action == 'timer_status':
+                    self._cmd_reply(resp_q, True, self.timer_state, {
+                        'state': self.timer_state,
+                        'elapsed_ms': int(self.timer_elapsed * 1000),
+                    })
+
+                elif action == 'records':
+                    key = f"{self.current_step}~{self.current_m}*{self.current_n}"
+                    st = self.records.stats(key)
+                    self._cmd_reply(resp_q, True, f"共 {st['count']} 条", {
+                        'puzzle': key,
+                        'count': st['count'],
+                        'best_ms': st['best'],
+                        'worst_ms': st['worst'],
+                        'dnf_count': st['dnf_count'],
+                        'ao5_ms': st['ao5'],
+                        'ao12_ms': st['ao12'],
+                    })
+
+                # ========== 宏命令 ==========
+                elif action == 'macro_list':
+                    names = self.macro_manager.list_names()
+                    macros_info = []
+                    for name in names:
+                        m = self.macro_manager.get_macro(name)
+                        if m:
+                            macros_info.append({
+                                'name': m.name,
+                                'description': m.description,
+                                'steps': m.step_count,
+                                'recorded_step': m.recorded_step,
+                                'base_point': m.base_point
+                            })
+                    if resp_q:
+                        resp_q.put({"ok": True, "macros": macros_info})
+                    else:
+                        if macros_info:
+                            for info in macros_info:
+                                print(f"  {info['name']} ({info['steps']}步, step={info['recorded_step']})")
+                        else:
+                            print("  (无已保存的宏)")
+
+                elif action == 'macro_record_start':
+                    if self.macro_recording:
+                        self._cmd_reply(resp_q, False, "已经在录制中")
+                    elif self.macro_executing:
+                        self._cmd_reply(resp_q, False, "正在执行宏，无法录制")
+                    else:
+                        self._start_macro_recording()
+                        self._cmd_reply(resp_q, True, "已开始录制，请选择基准方块 (macro_set_base row col)")
+
+                elif action == 'macro_set_base':
+                    if len(parts) < 3:
+                        self._cmd_reply(resp_q, False, "用法: macro_set_base row col")
+                        continue
+                    try:
+                        br = int(parts[1])
+                        bc = int(parts[2])
+                    except ValueError:
+                        self._cmd_reply(resp_q, False, "row/col 必须是整数")
+                        continue
+                    if not getattr(self, 'macro_recording', False) and not getattr(self, 'macro_selecting_base', False):
+                        self._cmd_reply(resp_q, False, "当前不在录制/执行基准选择模式")
+                        continue
+                    # 检查基准位置是否有方块
+                    block = None
+                    for b in self.game.blocks:
+                        if b.location == [br, bc]:
+                            block = b
+                            break
+                    if block is None:
+                        self._cmd_reply(resp_q, False, f"位置 ({br}, {bc}) 没有滑块")
+                        continue
+                    if self.macro_selecting_base:
+                        # 执行模式：确认基准
+                        self._confirm_macro_execute(br, bc)
+                    else:
+                        # 录制模式：设置基准
+                        self.macro_record_base_point = [br, bc]
+                    self._cmd_reply(resp_q, True, f"基准坐标设为 ({br}, {bc})")
+
+                elif action == 'macro_record_stop':
+                    if not getattr(self, 'macro_recording', False):
+                        self._cmd_reply(resp_q, False, "当前未在录制")
+                    elif len(parts) < 2:
+                        self._cmd_reply(resp_q, False, "用法: macro_record_stop <名称>")
+                    else:
+                        name = ' '.join(parts[1:])
+                        if len(self.macro_recording_steps) == 0:
+                            self.macro_recording = False
+                            self.macro_recording_steps = []
+                            self.macro_record_base_point = None
+                            self._cmd_reply(resp_q, False, "录制了0步，已取消")
+                        else:
+                            self._save_macro_with_name(name)
+                            self._cmd_reply(resp_q, True, f"宏 '{name}' 已保存 ({len(self.macro_recording_steps)} 步)")
+
+                elif action == 'macro_execute':
+                    if len(parts) < 4:
+                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col>")
+                        continue
+                    try:
+                        base_row = int(parts[-2])
+                        base_col = int(parts[-1])
+                        name = ' '.join(parts[1:-2])
+                    except (ValueError, IndexError):
+                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col>")
+                        continue
+                    if self.macro_recording:
+                        self._cmd_reply(resp_q, False, "正在录制中，无法执行宏")
+                        continue
+                    if self.macro_executing:
+                        self._cmd_reply(resp_q, False, "正在执行其他宏")
+                        continue
+                    self._start_macro_execute(name)
+                    if self.macro_executing and self.macro_selecting_base:
+                        self._confirm_macro_execute(base_row, base_col)
+                        self._cmd_reply(resp_q, True, f"开始执行宏 '{name}'，基准 ({base_row}, {base_col})")
+                    else:
+                        self._cmd_reply(resp_q, False, self.macro_error_msg or f"无法执行宏 '{name}'")
+
+                elif action == 'macro_delete':
+                    if len(parts) < 2:
+                        self._cmd_reply(resp_q, False, "用法: macro_delete <名称>")
+                        continue
+                    name = ' '.join(parts[1:])
+                    if self.macro_manager.get_macro(name):
+                        self.macro_manager.delete_macro(name)
+                        self._cmd_reply(resp_q, True, f"宏 '{name}' 已删除")
+                    else:
+                        self._cmd_reply(resp_q, False, f"宏 '{name}' 不存在")
+
+                elif action == 'macro_rename':
+                    if len(parts) < 3:
+                        self._cmd_reply(resp_q, False, "用法: macro_rename <旧名称> <新名称>")
+                        continue
+                    # 找到最后一个空格作为分隔（新名称可能包含空格）
+                    cmd_body = ' '.join(parts[1:])
+                    idx = cmd_body.rfind(' ')
+                    if idx <= 0:
+                        self._cmd_reply(resp_q, False, "用法: macro_rename <旧名称> <新名称>")
+                        continue
+                    old_name = cmd_body[:idx].strip()
+                    new_name = cmd_body[idx+1:].strip()
+                    if not old_name or not new_name:
+                        self._cmd_reply(resp_q, False, "用法: macro_rename <旧名称> <新名称>")
+                        continue
+                    try:
+                        self.macro_manager.rename_macro(old_name, new_name)
+                        self._cmd_reply(resp_q, True, f"宏 '{old_name}' 已重命名为 '{new_name}'")
+                    except FileNotFoundError:
+                        self._cmd_reply(resp_q, False, f"宏 '{old_name}' 不存在")
+
+                else:
+                    self._cmd_reply(resp_q, False, f"未知指令: {action}")
+                    if not resp_q:
+                        print("可用指令: shuffle, reset, move, new, export, import, status, undo, redo, quit")
+                        print("宏指令: macro_list, macro_record_start, macro_set_base, macro_record_stop, macro_execute, macro_delete, macro_rename")
+            
+            except Exception as e:
+                self._cmd_reply(resp_q, False, f"执行 '{cmd}' 时出错: {e}")
+    
+    def _update_slider_from_mouse(self, mouse_y):
+        """根据鼠标Y坐标更新动画速度"""
+        if not self.slider_rect:
+            return
+        track_top = self.slider_rect.top
+        track_bottom = self.slider_rect.bottom
+        track_height = track_bottom - track_top
+        if track_height <= 0:
+            return
+        y = max(track_top, min(track_bottom, mouse_y))
+        normalized = (y - track_top) / track_height
+        new_duration = int(100 + normalized * 900)
+        if self.animating and self.animation_duration > 0:
+            elapsed = pygame.time.get_ticks() - self.anim_start_time
+            old_progress = elapsed / max(1, self.animation_duration)
+            self.anim_start_time = pygame.time.get_ticks() - int(old_progress * new_duration)
+        self.animation_duration = new_duration
+
+    def _update_settings_scrollbar(self, mx, my):
+        """根据鼠标位置更新设置对话框滚动条"""
+        sb = getattr(self, '_settings_scrollbar_rect', None)
+        if not sb or sb.height <= 0:
+            return
+        max_scroll = getattr(self, '_settings_max_scroll', 0)
+        if max_scroll <= 0:
+            return
+        ratio = (my - sb.y) / sb.height
+        self._settings_scroll = max(0, min(max_scroll, int(ratio * max_scroll)))
+
+    def _is_action_triggered(self, event, action_name):
+        """
+        检查事件是否匹配指定动作的快捷键配置。
+        使用 event.mod 检测修饰键状态（事件生成时的状态，更可靠）。
+
+        参数：
+            event: pygame KEYDOWN 事件
+            action_name: 快捷键动作名，如 'undo', 'save' 等
+        返回：
+            True 如果事件匹配该动作的快捷键
+        """
+        kb = self.keybindings.get(action_name)
+        if not kb:
+            return False
+
+        target_key = kb.get('key', '')
+        target_mods = kb.get('modifiers', [])
+
+        # 将配置中的 key 名映射到 pygame 常量
+        key_name_map = {
+            'space': pygame.K_SPACE, 'up': pygame.K_UP, 'down': pygame.K_DOWN,
+            'left': pygame.K_LEFT, 'right': pygame.K_RIGHT,
+            'return': pygame.K_RETURN, 'escape': pygame.K_ESCAPE,
+            'tab': pygame.K_TAB, 'backspace': pygame.K_BACKSPACE,
+            'delete': pygame.K_DELETE, 'home': pygame.K_HOME, 'end': pygame.K_END,
+            'pageup': pygame.K_PAGEUP, 'pagedown': pygame.K_PAGEDOWN,
+            'insert': pygame.K_INSERT,
+            'f1': pygame.K_F1, 'f2': pygame.K_F2, 'f3': pygame.K_F3, 'f4': pygame.K_F4,
+            'f5': pygame.K_F5, 'f6': pygame.K_F6, 'f7': pygame.K_F7, 'f8': pygame.K_F8,
+            'f9': pygame.K_F9, 'f10': pygame.K_F10, 'f11': pygame.K_F11, 'f12': pygame.K_F12,
+        }
+        if len(target_key) == 1:
+            expected_key = getattr(pygame, f'K_{target_key}', None)
+        else:
+            expected_key = key_name_map.get(target_key)
+
+        if expected_key is None or event.key != expected_key:
+            return False
+
+        # 检查修饰键：使用 event.mod（事件生成时的修饰键状态）
+        has_ctrl = bool(event.mod & pygame.KMOD_CTRL)
+        has_alt = bool(event.mod & pygame.KMOD_ALT)
+        has_shift = bool(event.mod & pygame.KMOD_SHIFT)
+
+        need_ctrl = 'ctrl' in target_mods
+        need_alt = 'alt' in target_mods
+        need_shift = 'shift' in target_mods
+
+        return (has_ctrl == need_ctrl) and (has_alt == need_alt) and (has_shift == need_shift)
+
+    def _handle_settings_dialog_event(self, event):
+        """处理设置对话框中的事件"""
+        # ESC 关闭对话框（取消）
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if self.settings_editing_action:
+                # 退出录制模式
+                self.settings_editing_action = None
+            else:
+                # 关闭对话框，恢复备份
+                self.keybindings = dict(self._settings_backup_keybindings)
+                self.show_settings_dialog = False
+            return
+
+        # 快捷键录制模式
+        if self.settings_editing_action and event.type == pygame.KEYDOWN:
+            # 忽略单独的修饰键按下
+            if event.key in (pygame.K_LCTRL, pygame.K_RCTRL,
+                             pygame.K_LALT, pygame.K_RALT,
+                             pygame.K_LSHIFT, pygame.K_RSHIFT):
+                return
+
+            # 解析 event.mod 获取实际按下的修饰键
+            modifiers = []
+            if event.mod & pygame.KMOD_CTRL:
+                modifiers.append('ctrl')
+            if event.mod & pygame.KMOD_ALT:
+                modifiers.append('alt')
+            if event.mod & pygame.KMOD_SHIFT:
+                modifiers.append('shift')
+
+            # 将 pygame 按键映射回配置 key 名
+            key_reverse_map = {
+                pygame.K_SPACE: 'space', pygame.K_UP: 'up', pygame.K_DOWN: 'down',
+                pygame.K_LEFT: 'left', pygame.K_RIGHT: 'right',
+                pygame.K_RETURN: 'return', pygame.K_ESCAPE: 'escape',
+                pygame.K_TAB: 'tab', pygame.K_BACKSPACE: 'backspace',
+                pygame.K_DELETE: 'delete', pygame.K_HOME: 'home', pygame.K_END: 'end',
+                pygame.K_PAGEUP: 'pageup', pygame.K_PAGEDOWN: 'pagedown',
+                pygame.K_INSERT: 'insert',
+                pygame.K_F1: 'f1', pygame.K_F2: 'f2', pygame.K_F3: 'f3', pygame.K_F4: 'f4',
+                pygame.K_F5: 'f5', pygame.K_F6: 'f6', pygame.K_F7: 'f7', pygame.K_F8: 'f8',
+                pygame.K_F9: 'f9', pygame.K_F10: 'f10', pygame.K_F11: 'f11', pygame.K_F12: 'f12',
+            }
+            if event.key in key_reverse_map:
+                key_name = key_reverse_map[event.key]
+            else:
+                key_name = chr(event.key).lower() if 0 <= event.key < 128 else None
+
+            if key_name:
+                self.keybindings[self.settings_editing_action] = {
+                    'key': key_name,
+                    'modifiers': modifiers
+                }
+            self.settings_editing_action = None
+            return
+
+        # 鼠标事件
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+
+            # Tab 切换
+            if hasattr(self, '_settings_tab_kb_rect') and self._settings_tab_kb_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'keybindings'
+                self.settings_editing_action = None
+                self._settings_scroll = 0
+                return
+            if hasattr(self, '_settings_tab_anim_rect') and self._settings_tab_anim_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'animation'
+                self.settings_editing_action = None
+                self._settings_scroll = 0
+                return
+            if hasattr(self, '_settings_tab_solver_rect') and self._settings_tab_solver_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'solver'
+                self.settings_editing_action = None
+                self._settings_scroll = 0
+                return
+
+            # 快捷键 Tab：点击按键区域进入录制模式
+            if self.settings_active_tab == 'keybindings' and hasattr(self, '_settings_key_rects'):
+                for action, rect in self._settings_key_rects.items():
+                    if rect.collidepoint(mx, my):
+                        self.settings_editing_action = action
+                        return
+                # 点击了其他区域，退出录制模式
+                self.settings_editing_action = None
+
+            # 动画 Tab：开关按钮
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_anim_toggle_rect'):
+                if self._settings_anim_toggle_rect.collidepoint(mx, my):
+                    self.animation_enabled = not self.animation_enabled
+                    if not self.animation_enabled and self.animating:
+                        self.commit_animation()
+                    return
+
+            # 动画 Tab：滑动条
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_slider_knob_rect'):
+                if self._settings_slider_knob_rect.collidepoint(mx, my) or \
+                   (hasattr(self, '_settings_slider_track_rect') and self._settings_slider_track_rect.collidepoint(mx, my)):
+                    self._settings_slider_dragging = True
+                    self._update_settings_slider(mx)
+                    return
+
+            # 滚动条拖拽开始
+            sb = getattr(self, '_settings_scrollbar_rect', None)
+            kn = getattr(self, '_settings_scrollbar_knob', None)
+            if sb and kn and kn.collidepoint(mx, my):
+                self._settings_scrollbar_dragging = True
+                self._settings_scrollbar_drag_start = (mx, my)
+                self._settings_scrollbar_drag_orig = self._settings_scroll
+                return
+            if sb and sb.collidepoint(mx, my):
+                # 点击滚动条轨道：跳到对应位置
+                self._settings_scrollbar_dragging = True
+                self._settings_scrollbar_drag_start = (mx, my)
+                self._settings_scrollbar_drag_orig = self._settings_scroll
+                # 立即更新
+                track = sb
+                if track.height > 0:
+                    ratio = (my - track.y) / track.height
+                    max_scroll = getattr(self, '_settings_max_scroll', 0)
+                    self._settings_scroll = max(0, min(max_scroll, int(ratio * max_scroll)))
+                return
+
+            # 求解器 Tab：点击算法选择
+            if self.settings_active_tab == 'solver' and hasattr(self, '_settings_solver_rects'):
+                for algo_key, rect in self._settings_solver_rects.items():
+                    if rect.collidepoint(mx, my):
+                        self.solver_algorithm = algo_key
+                        # 操作提示
+                        from solver import SOLVER_ALGORITHMS
+                        algo_name = SOLVER_ALGORITHMS.get(algo_key, ('求解器',))[0].strip()
+                        self.macro_notify_msg = f"求解算法：{algo_name}"
+                        self.macro_notify_timer = 120
+                        return
+
+            # 确定按钮
+            if hasattr(self, '_settings_ok_btn') and self._settings_ok_btn.collidepoint(mx, my):
+                self._apply_settings()
+                return
+
+            # 取消按钮
+            if hasattr(self, '_settings_cancel_btn') and self._settings_cancel_btn.collidepoint(mx, my):
+                self.keybindings = dict(self._settings_backup_keybindings)
+                self.show_settings_dialog = False
+                self.settings_editing_action = None
+                return
+
+            # 恢复默认按钮
+            if hasattr(self, '_settings_reset_btn') and self._settings_reset_btn.collidepoint(mx, my):
+                from gui.file_ops import DEFAULT_KEYBINDINGS
+                self.keybindings = dict(DEFAULT_KEYBINDINGS)
+                self.settings_editing_action = None
+                self._update_menu_shortcut_texts()
+                return
+
+        # 鼠标释放
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self._settings_slider_dragging = False
+            self._settings_scrollbar_dragging = False
+
+        # 鼠标拖动滑动条 / 滚动条
+        if event.type == pygame.MOUSEMOTION:
+            if getattr(self, '_settings_slider_dragging', False):
+                mx, my = event.pos
+                self._update_settings_slider(mx)
+            if getattr(self, '_settings_scrollbar_dragging', False):
+                mx, my = event.pos
+                self._update_settings_scrollbar(mx, my)
+
+        # 鼠标滚轮（设置对话框中）
+        if event.type == pygame.MOUSEWHEEL:
+            if hasattr(self, '_settings_scrollbar_rect') and self._settings_scrollbar_rect:
+                self._settings_scroll = max(0, min(
+                    getattr(self, '_settings_max_scroll', 0),
+                    self._settings_scroll - event.y * 28
+                ))
+
+    def _update_settings_slider(self, mx):
+        """根据鼠标X坐标更新设置对话框中的动画速度滑动条"""
+        if not hasattr(self, '_settings_slider_track_rect'):
+            return
+        track = self._settings_slider_track_rect
+        normalized = (mx - track.x) / track.width
+        normalized = max(0.0, min(1.0, normalized))
+        new_duration = int(100 + normalized * 900)
+        if self.animating and self.animation_duration > 0:
+            elapsed = pygame.time.get_ticks() - self.anim_start_time
+            old_progress = elapsed / max(1, self.animation_duration)
+            self.anim_start_time = pygame.time.get_ticks() - int(old_progress * new_duration)
+        self.animation_duration = new_duration
+
+    def _apply_settings(self):
+        """确定按钮：保存设置并关闭对话框"""
+        self.save_keybindings()
+        self._update_menu_shortcut_texts()
+        self.show_settings_dialog = False
+        self.settings_editing_action = None
+
+    # ==================== 宏功能 ====================
+
+    def _handle_macro_menu_click(self, index: int):
+        """
+        处理宏定义菜单项点击
+        
+        菜单项结构（由 renderer 动态生成）：
+          0: 管理宏...
+          1: 录制宏 / 停止录制（根据状态切换）
+          2: 逆序播放模式开关
+          3: 分隔线
+          4+: 已保存的宏名称
+        """
+        macro_names = self.macro_manager.list_names()
+        
+        if index == 0:
+            # 管理宏 — 打开管理对话框
+            self.show_macro_manager_dialog = True
+        elif index == 1:
+            # 录制 / 停止录制
+            if self.macro_recording:
+                self._stop_macro_recording()
+            else:
+                self._start_macro_recording()
+        elif index == 2:
+            # 切换逆序播放模式
+            self.macro_reverse_mode = not self.macro_reverse_mode
+            status = '开' if self.macro_reverse_mode else '关'
+            self.macro_notify_msg = f"逆序播放：{status}"
+            self.macro_notify_timer = 90
+        elif index >= 4:
+            # 点击了某个宏名称（按当前逆序模式播放）
+            macro_idx = index - 4
+            if 0 <= macro_idx < len(macro_names):
+                macro_name = macro_names[macro_idx]
+                self._start_macro_execute(macro_name, reverse=self.macro_reverse_mode)
+
+    def _start_macro_recording(self):
+        """开始录制宏 — 等待玩家选择基准方块"""
+        if self.macro_recording or self.macro_executing:
+            return
+        if self._timer_blocked():
+            self.macro_notify_msg = "计时中无法使用宏"
+            self.macro_notify_timer = 90
+            return
+        self.macro_recording = True
+        self.macro_recording_steps = []
+        self.macro_record_base_point = None
+        self.macro_notify_msg = "选中一个方块作为基准坐标"
+        self.macro_notify_timer = 180
+        self.macro_notify_persistent = True
+
+    def _stop_macro_recording(self):
+        """停止录制宏 — 弹出命名对话框"""
+        if not self.macro_recording:
+            return
+        self.macro_recording = False
+        if not self.macro_recording_steps:
+            self.macro_record_base_point = None
+            return
+        # 弹出宏命名对话框
+        self.show_macro_name_dialog = True
+        self.macro_name_text_input = TextInput(f'宏_{len(self.macro_manager.list_names()) + 1}')
+        self.macro_name_active = True
+
+    def _save_macro_with_name(self, name: str):
+        """用指定名称保存当前录制的宏"""
+        from macro.macro import Macro
+        if not name or not self.macro_recording_steps:
+            return
+        macro = Macro(
+            name=name,
+            recorded_step=self.current_step,
+            base_point=list(self.macro_record_base_point),
+            steps=self.macro_recording_steps,
+        )
+        self.macro_manager.save_macro(macro)
+        self.macro_recording_steps = []
+        self.macro_record_base_point = None
+
+    def _record_macro_step(self, gap_type: str, gap_line: int, side: str, direction: str):
+        """
+        在录制模式下记录一个操作步骤
+        
+        参数:
+            gap_type: 'h' 或 'v'
+            gap_line: 缝隙绝对行/列号
+            side: 选中缝隙哪一侧
+            direction: 滑动方向
+        """
+        from macro.macro import MacroStep
+        base_r, base_c = self.macro_record_base_point
+        if gap_type == 'h':
+            rel = gap_line - base_r
+        else:
+            rel = gap_line - base_c
+        step = MacroStep(
+            gap_type=gap_type,
+            gap_line_rel=rel,
+            side=side,
+            direction=direction,
+            step=self.current_step,
+        )
+        self.macro_recording_steps.append(step)
+
+    def _get_selected_side(self) -> str:
+        """
+        获取当前选中方块组相对于缝隙的方位
+        
+        返回: 'above'/'below' (h型缝隙) 或 'left'/'right' (v型缝隙)
+        """
+        if not self.selected_gap or not self.selected_block:
+            return ''
+        gap_type, gap_line = self.selected_gap
+        br, bc = self.selected_block.location
+        if gap_type == 'h':
+            return 'above' if br <= gap_line else 'below'
+        else:
+            return 'left' if bc <= gap_line else 'right'
+
+    def _start_macro_execute(self, macro_name: str, reverse: bool = False):
+        """开始执行宏 — 等待玩家选择基准方块"""
+        if self.macro_recording or self.macro_executing:
+            return
+        if self._timer_blocked():
+            self.macro_notify_msg = "计时中无法使用宏"
+            self.macro_notify_timer = 90
+            return
+        macro = self.macro_manager.get_macro(macro_name)
+        if macro is None:
+            return
+        # 检查步长兼容性
+        compatible, factor, reason = macro.check_step_compatibility(self.current_step)
+        if not compatible:
+            self.macro_error_msg = reason
+            self.macro_error_timer = 60 * 3
+            return
+        self.macro_executing = True
+        self.macro_selecting_base = True
+        self.macro_exec_factor = factor
+        self.macro_exec_name = macro_name
+        self.macro_exec_reverse = reverse
+        self.macro_exec_ops = []
+        self.macro_exec_index = 0
+        label = '（逆序）' if reverse else ''
+        self.macro_notify_msg = f"选中一个方块作为基准坐标{label}"
+        self.macro_notify_timer = 180
+        self.macro_notify_persistent = True
+
+    def _confirm_macro_execute(self, base_row: int, base_col: int):
+        """玩家选好基准后，开始逐步执行宏"""
+        from macro.macro import MacroManager
+        macro = self.macro_manager.get_macro(self.macro_exec_name)
+        if macro is None:
+            self.macro_executing = False
+            self.macro_selecting_base = False
+            self.macro_notify_persistent = False
+            return
+        # 将所有相对步骤转换为绝对操作队列
+        # 逆序播放：顺序反转 + 每步方向取反（同切割位置 + 同侧，操作级逆）
+        DIR_INVERSE = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
+        ops = []
+        steps = reversed(macro.steps) if self.macro_exec_reverse else macro.steps
+        for step in steps:
+            if self.macro_exec_reverse:
+                from macro.macro import MacroStep
+                step = MacroStep(
+                    step.gap_type, step.gap_line_rel, step.side,
+                    DIR_INVERSE[step.direction], step.step,
+                )
+            ops.extend(MacroManager.convert_to_absolute(
+                step, base_row, base_col, self.current_step, self.macro_exec_factor
+            ))
+        self.macro_exec_ops = ops
+        self.macro_exec_index = 0
+        self.macro_selecting_base = False
+        self.macro_notify_persistent = False
+        # 开始执行第一个操作
+        self._execute_next_macro_step()
+
+    def _execute_next_macro_step(self):
+        """执行宏队列中的下一个操作"""
+        # 聚拢播放：每步实时刷新当前聚拢度
+        if getattr(self, '_gather_info', None) is not None:
+            self._update_gather_notify()
+
+        if self.macro_exec_index >= len(self.macro_exec_ops):
+            if getattr(self, '_gather_info', None) is not None:
+                self._finish_gather()
+            else:
+                # 所有步骤执行完毕 — 显示成功通知
+                total_ops = len(self.macro_exec_ops)
+                macro_name = self.macro_exec_name
+                label = '逆序' if self.macro_exec_reverse else ''
+                self.macro_notify_msg = f'[{macro_name}] {label}执行成功：{total_ops}步'
+                self.macro_notify_timer = 180  # 3秒 (60fps)
+            # 所有步骤执行完毕
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            self.macro_exec_index = 0
+            return
+        
+        op = self.macro_exec_ops[self.macro_exec_index]
+        gap_type = op['gap_type']
+        gap_line = op['gap_line']
+        side = op['side']
+        direction = op['direction']
+        step = op['step']
+
+        # 检查缝隙有效性
+        if gap_type == 'h' and not self.game.is_valid_h_line(gap_line):
+            self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 横向缝隙 {gap_line} 无效'
+            self.macro_error_timer = 60 * 3
+            self._set_macro_interrupted_notify()
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            return
+        if gap_type == 'v' and not self.game.is_valid_v_line(gap_line):
+            self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 纵向缝隙 {gap_line} 无效'
+            self.macro_error_timer = 60 * 3
+            self._set_macro_interrupted_notify()
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            return
+
+        # 选中缝隙
+        self.selected_gap = (gap_type, gap_line)
+        for b in self.game.blocks:
+            b.be_opted = False
+        self.selected_block = None
+
+        # 找到缝隙对应侧的任意一个方块（若有 rep_cell 则精确指定）
+        if 'rep_cell' in op:
+            rr, cc = op['rep_cell']
+            target_block = self._find_block_by_cell(rr, cc)
+            if target_block is None:
+                target_block = self._find_block_on_side(gap_type, gap_line, side)
+        else:
+            target_block = self._find_block_on_side(gap_type, gap_line, side)
+        if target_block is None:
+            self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 缝隙 {gap_type}{gap_line} {side} 侧无方块'
+            self.macro_error_timer = 60 * 3
+            self._set_macro_interrupted_notify()
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            return
+
+        # opt() 选中方块组
+        self.game.opt(gap_type, gap_line, target_block)
+        self.selected_block = target_block
+
+        # 验证移动
+        final_positions = self.game.try_move(direction, step)
+        if not final_positions:
+            self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 方向 {direction} 不可移动'
+            self.macro_error_timer = 60 * 3
+            self._set_macro_interrupted_notify()
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            return
+
+        # 构建 move_info
+        selected = [b for b in self.game.blocks if b.be_opted]
+        move_info = {
+            'gap_type': gap_type,
+            'gap_line': gap_line,
+            'direction': direction,
+            'step': step,
+            'moved_positions': [list(b.location) for b in selected],
+        }
+        self._pending_move_info = move_info
+
+        # 播放动画或直接提交
+        if self.animation_enabled and self.animation_duration > 0:
+            self.start_animation(selected, final_positions)
+            # 动画结束由 commit_animation 中宏路径继续
+        else:
+            self.game.commit_move(final_positions)
+            self.step_count += 1
+            self.game_history.save_snapshot(self.game, move_info)
+            self._pending_move_info = None
+            self.macro_exec_index += 1
+            self._execute_next_macro_step()
+
+    def _update_gather_notify(self):
+        """聚拢播放中：实时刷新当前聚拢度到通知栏。"""
+        from solver.ml.gather_solver import gather_metrics
+        coords = frozenset((b.location[0], b.location[1]) for b in self.game.blocks)
+        met = gather_metrics(coords, self.game.m, self.game.n)
+        h, w = met['bbox']
+        idx = self.macro_exec_index
+        total = len(self.macro_exec_ops)
+        self.macro_notify_msg = (
+            f"聚拢 {idx}/{total} · 聚拢度 {met['score']*100:.1f}% · {h}×{w}"
+        )
+        self.macro_notify_timer = 180
+        self.macro_notify_persistent = True
+
+    def _finish_gather(self):
+        """聚拢播放结束：显示起点→终点摘要。"""
+        info = self._gather_info
+        s = info.get('start', {})
+        e = info.get('end', {})
+        total = len(self.macro_exec_ops)
+        if info.get('solved'):
+            self.macro_notify_msg = f"聚拢完成：已复原（{total}步）"
+        else:
+            self.macro_notify_msg = (
+                f"聚拢完成：聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}% · {total}步"
+            )
+        self.macro_notify_timer = 240
+        self.macro_notify_persistent = False
+        self._gather_info = None
+
+    def _set_macro_interrupted_notify(self):
+        """设置宏执行中断通知消息"""
+        total_ops = len(self.macro_exec_ops)
+        executed = self.macro_exec_index  # 已执行的步数（index 指向的是失败的那一步，之前的是已执行的）
+        macro_name = self.macro_exec_name
+        self.macro_notify_msg = f'[{macro_name}] 执行中断：{executed}/{total_ops}步'
+        self.macro_notify_timer = 180  # 3秒 (60fps)
+        self.macro_notify_persistent = False
+        self._gather_info = None  # 中断时清空聚拢状态，避免污染后续宏
+
+    def _find_block_on_side(self, gap_type: str, gap_line: int, side: str):
+        """
+        在缝隙的指定侧找到一个方块
+        
+        参数:
+            gap_type: 'h' 或 'v'
+            gap_line: 缝隙行/列号
+            side: 'above'/'below' (h) 或 'left'/'right' (v)
+        返回:
+            Block 对象或 None
+        """
+        for block in self.game.blocks:
+            r, c = block.location
+            if gap_type == 'h':
+                if side == 'above' and r <= gap_line:
+                    return block
+                if side == 'below' and r > gap_line:
+                    return block
+            else:
+                if side == 'left' and c <= gap_line:
+                    return block
+                if side == 'right' and c > gap_line:
+                    return block
+        return None
+
+    def _find_block_by_cell(self, row: int, col: int):
+        """根据精确坐标查找方块，供查表求解器指定代表方块。"""
+        for block in self.game.blocks:
+            if block.location[0] == row and block.location[1] == col:
+                return block
+        return None
+
+    def handle_macro_base_selection_click(self, x: int, y: int) -> bool:
+        """
+        处理宏基准选择时的点击事件
+        
+        返回: True 如果事件被处理
+        """
+        if self.macro_selecting_base:
+            cell = self.get_cell_at_pos(x, y)
+            if cell:
+                r, c = cell
+                self._confirm_macro_execute(r, c)
+            return True
+        if self.macro_recording and self.macro_record_base_point is None:
+            cell = self.get_cell_at_pos(x, y)
+            if cell:
+                r, c = cell
+                self.macro_record_base_point = [r, c]
+                # 清除基准选择提示
+                self.macro_notify_msg = f"基准坐标 ({r}, {c}) 已选定，开始录制"
+                self.macro_notify_timer = 120
+                self.macro_notify_persistent = False
+            return True
+        return False
+
+    def _handle_macro_manager_click(self, x: int, y: int) -> bool:
+        """
+        处理宏管理对话框内的点击事件
+        
+        返回: True 如果事件被处理
+        """
+        if not getattr(self, 'show_macro_manager_dialog', False):
+            return False
+        
+        # 检查是否点击了对话框外 — 关闭
+        dlg_rect = getattr(self, 'macro_manager_dialog_rect', None)
+        if dlg_rect and not dlg_rect.collidepoint(x, y):
+            self.show_macro_manager_dialog = False
+            return True
+        
+        # 检查关闭按钮
+        close_btn = getattr(self, '_macro_mgr_close_btn', None)
+        if close_btn and close_btn.collidepoint(x, y):
+            self.show_macro_manager_dialog = False
+            return True
+        
+        # 检查宏列表项的删除/重命名按钮
+        macro_names = self.macro_manager.list_names()
+        
+        # 检查滚动按钮
+        if hasattr(self, '_macro_mgr_scroll_up_rect') and self._macro_mgr_scroll_up_rect and self._macro_mgr_scroll_up_rect.collidepoint(x, y):
+            self._macro_mgr_scroll = max(0, getattr(self, '_macro_mgr_scroll', 0) - 1)
+            return True
+        if hasattr(self, '_macro_mgr_scroll_down_rect') and self._macro_mgr_scroll_down_rect and self._macro_mgr_scroll_down_rect.collidepoint(x, y):
+            max_scroll = max(0, len(macro_names) - getattr(self, '_macro_mgr_visible_count', 5))
+            self._macro_mgr_scroll = min(max_scroll, getattr(self, '_macro_mgr_scroll', 0) + 1)
+            return True
+        
+        # 检查每项的操作按钮
+        if hasattr(self, '_macro_mgr_item_rects'):
+            for item_data in self._macro_mgr_item_rects:
+                rect = item_data.get('row')
+                if rect and rect.collidepoint(x, y):
+                    idx = item_data.get('index', -1)
+                    if 0 <= idx < len(macro_names):
+                        # 检查是否点了重命名/删除/逆序按钮
+                        rename_rect = item_data.get('rename')
+                        delete_rect = item_data.get('delete')
+                        inverse_rect = item_data.get('inverse')
+                        if rename_rect and rename_rect.collidepoint(x, y):
+                            self._start_macro_rename(idx)
+                            return True
+                        elif delete_rect and delete_rect.collidepoint(x, y):
+                            self._delete_macro(idx)
+                            return True
+                        elif inverse_rect and inverse_rect.collidepoint(x, y):
+                            self.show_macro_manager_dialog = False
+                            self._start_macro_execute(macro_names[idx], reverse=True)
+                            return True
+                    break
+        
+        return True
+
+    def _start_macro_rename(self, index: int):
+        """开始重命名宏"""
+        macro_names = self.macro_manager.list_names()
+        if 0 <= index < len(macro_names):
+            self.macro_renaming_index = macro_names[index]
+            self.macro_name_text_input = TextInput(macro_names[index])
+            self.show_macro_name_dialog = True
+            self.macro_name_active = True
+
+    def _delete_macro(self, index: int):
+        """删除指定索引的宏"""
+        macro_names = self.macro_manager.list_names()
+        if 0 <= index < len(macro_names):
+            self.macro_manager.delete_macro(macro_names[index])
+
+    def handle_macro_name_dialog_events(self, event) -> bool:
+        """
+        处理宏命名对话框事件
+        
+        返回: True 如果事件被处理
+        """
+        if not getattr(self, 'show_macro_name_dialog', False):
+            return False
+        
+        # macro_renaming_index: None 表示新建模式，字符串表示重命名旧名称
+        rename_old_name = getattr(self, 'macro_renaming_index', None)
+        is_renaming = isinstance(rename_old_name, str) and rename_old_name
+        
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_RETURN:
+                # 确认命名
+                name = self.macro_name_text_input.text.strip()
+                if name:
+                    if is_renaming:
+                        # 重命名模式
+                        self.macro_manager.rename_macro(rename_old_name, name)
+                        self.macro_renaming_index = None
+                    else:
+                        # 新建模式
+                        self._save_macro_with_name(name)
+                self.show_macro_name_dialog = False
+                return True
+            elif event.key == pygame.K_ESCAPE:
+                # 取消
+                if not is_renaming:
+                    self.macro_recording_steps = []
+                    self.macro_record_base_point = None
+                self.macro_renaming_index = None
+                self.show_macro_name_dialog = False
+                return True
+            # 委托给 TextInput 处理其他按键（支持长按重复）
+            if self.macro_name_text_input.handle_event(event):
+                return True
+
+        elif event.type == pygame.KEYUP:
+            # 停止长按重复
+            if self.macro_name_text_input.handle_event(event):
+                return True
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            # 让 TextInput 停止拖拽选中
+            input_rect = getattr(self, '_macro_name_input_rect', None)
+            font = getattr(self, 'input_font', None)
+            if input_rect and font:
+                self.macro_name_text_input.handle_event(event, font, input_rect)
+
+        elif event.type == pygame.MOUSEMOTION:
+            # 拖拽选中
+            input_rect = getattr(self, '_macro_name_input_rect', None)
+            font = getattr(self, 'input_font', None)
+            if input_rect and font:
+                if self.macro_name_text_input.handle_event(event, font, input_rect):
+                    return True
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+            # 检查确定按钮
+            ok_btn = getattr(self, '_macro_name_ok_btn', None)
+            if ok_btn and ok_btn.collidepoint(mx, my):
+                name = self.macro_name_text_input.text.strip()
+                if name:
+                    if is_renaming:
+                        self.macro_manager.rename_macro(rename_old_name, name)
+                        self.macro_renaming_index = None
+                    else:
+                        self._save_macro_with_name(name)
+                self.show_macro_name_dialog = False
+                return True
+            # 检查取消按钮
+            cancel_btn = getattr(self, '_macro_name_cancel_btn', None)
+            if cancel_btn and cancel_btn.collidepoint(mx, my):
+                if not is_renaming:
+                    self.macro_recording_steps = []
+                    self.macro_record_base_point = None
+                self.macro_renaming_index = None
+                self.show_macro_name_dialog = False
+                return True
+            # 点击输入框区域则激活输入并定位光标（支持拖拽选中）
+            input_rect = getattr(self, '_macro_name_input_rect', None)
+            if input_rect and input_rect.collidepoint(mx, my):
+                self.macro_name_active = True
+                font = getattr(self, 'input_font', None)
+                if font and hasattr(self, 'macro_name_text_input'):
+                    self.macro_name_text_input.handle_event(event, font, input_rect)
+                return True
+            # 点击外部关闭对话框
+            if not is_renaming:
+                self.macro_recording_steps = []
+                self.macro_record_base_point = None
+            self.macro_renaming_index = None
+            self.show_macro_name_dialog = False
+            return True
+        
+        return False

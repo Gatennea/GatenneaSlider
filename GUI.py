@@ -1,0 +1,1312 @@
+# -*- coding: utf-8 -*-
+"""
+滑块游戏图形界面主类
+
+精简后保留核心属性初始化 + run() 主循环，
+其余功能通过 Mixin 继承：
+- RendererMixin: 渲染
+- DialogMixin: 对话框
+- AnimationMixin: 动画
+- FileOpsMixin: 文件操作
+- EventsMixin: 事件处理
+"""
+
+import pygame
+import sys
+import os
+import time
+import traceback
+import queue
+from datetime import datetime
+from game import SliderMatrix, Block
+from history import GameHistory
+from records import Records, format_time
+from gui.renderer import RendererMixin
+from gui.dialogs import DialogsMixin
+from gui.animation import AnimationMixin
+from gui.file_ops import FileOpsMixin
+from gui.events import EventsMixin
+from gui.virtual_keyboard import VirtualKeyboardMixin
+from gui.metrics_panel import MetricsPanelMixin
+from gui.records_panel import RecordsPanelMixin
+
+
+def _gui_log_error(msg: str):
+    """写入错误日志"""
+    try:
+        base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        log_path = os.path.join(base, 'error_log.txt')
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write('')
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f'[{timestamp}] {msg}\n')
+    except Exception:
+        import tempfile
+        try:
+            log_path = os.path.join(tempfile.gettempdir(), 'gatenneaslider_error_log.txt')
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(f'[{timestamp}] {msg}\n')
+        except Exception:
+            pass
+
+
+def _gui_safe_font(name, size, bold=False):
+    """安全加载字体：优先直接加载字体文件（绕过 pygame SysFont 注册表扫描的 bug）"""
+    #20260727发现因字体加载失败导致程序崩溃的bug，现已修复
+    # 已知的 Windows 中文字体文件路径映射
+    _font_files = {
+        'SimHei': 'C:/Windows/Fonts/simhei.ttf',
+        'Microsoft YaHei': 'C:/Windows/Fonts/msyh.ttc',
+        'SimSun': 'C:/Windows/Fonts/simsun.ttc',
+    }
+    # 优先尝试直接加载字体文件（不扫描注册表）
+    filepath = _font_files.get(name)
+    if filepath and os.path.exists(filepath):
+        try:
+            return pygame.font.Font(filepath, size)
+        except Exception:
+            pass
+    # 其次尝试 SysFont（可能触发 pygame 注册表扫描 bug）
+    try:
+        return pygame.font.SysFont(name, size, bold=bold)
+    except Exception:
+        _gui_log_error(f'字体加载失败: {name} {size}, 回退到默认字体')
+        return pygame.font.Font(None, size)
+
+
+def _gui_get_resource_path(relative_path):
+    """获取资源文件路径（兼容 PyInstaller 打包和开发模式）"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, relative_path)
+
+
+class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin):
+    """
+    滑块游戏图形界面类
+    """
+
+    def __init__(self, m: int = 6, n: int = 6, step: int = 1, cmd_queue: queue.Queue = None):
+        """
+        初始化游戏界面
+
+        参数：
+            m: 初始滑块行数，默认为6
+            n: 初始滑块列数，默认为6
+            step: 移动步数（等级），默认为1
+            cmd_queue: 命令队列（用于接收终端指令），默认为None
+        """
+        _gui_log_error(f'GUI初始化开始: m={m}, n={n}, step={step}')
+        try:
+            pygame.init()
+        except Exception as e:
+            _gui_log_error(f'pygame.init() 失败: {traceback.format_exc()}')
+            raise
+
+        # 界面尺寸配置
+        self.base_cell_size = 60
+        self.cell_size = self.base_cell_size
+        self.padding = 10
+        self.gap_width = 4
+        self.min_width = 800
+        self.min_height = 600
+
+        # 菜单栏和状态栏高度
+        self.menu_bar_height = 32
+        self.status_bar_height = 28
+
+        # 右侧面板宽度
+        self.right_panel_width = 44
+
+        # 窗口尺寸
+        self.screen_width = self.min_width
+        self.screen_height = self.min_height
+
+        # 创建可调整大小的窗口
+        self.screen = pygame.display.set_mode(
+            (self.screen_width, self.screen_height),
+            pygame.RESIZABLE
+        )
+        pygame.display.set_caption("貓九的滑块游戏")
+
+        # 设置窗口图标
+        try:
+            icon_path = _gui_get_resource_path('picture/cover.png')
+            icon_surface = pygame.image.load(icon_path)
+            pygame.display.set_icon(icon_surface)
+        except Exception:
+            pass  # 图标加载失败不影响运行
+
+        # 颜色配置
+        self.colors = {
+            'background': (30, 30, 30),
+            'block': (60, 150, 200),
+            'block_selected': (0, 200, 100),
+            'text': (255, 255, 255),
+            'border': (100, 100, 100),
+            'gap': (80, 80, 80),
+            'line': (255, 0, 0),
+            'grid': (40, 40, 40),
+            'menu_bg': (50, 50, 50),
+            'menu_hover': (70, 70, 70),
+            'menu_text': (220, 220, 220),
+            'menu_selected': (80, 130, 180),
+            'status_bg': (40, 40, 40),
+            'status_text': (200, 200, 200),
+            'dialog_bg': (45, 45, 48),
+            'dialog_border': (100, 100, 100),
+            'dialog_text': (230, 230, 230),
+            'dialog_title': (255, 255, 255),
+            'solved': (0, 200, 80),
+            'unsolved': (200, 160, 0),
+            'input_bg': (60, 60, 65),
+            'input_active': (80, 80, 120),
+            'input_text': (255, 255, 255),
+            'selection_bg': (50, 80, 160),
+            'button_bg': (70, 130, 180),
+            'button_hover': (90, 150, 200),
+            'separator': (80, 80, 80),
+        }
+
+        # 当前谜题参数
+        self.current_m = m
+        self.current_n = n
+        self.current_step = step
+
+        # 游戏逻辑对象
+        self.game = SliderMatrix(m, n)
+
+        # 步数计数
+        self.step_count = 0
+
+        # 选中状态
+        self.selected_gap = None
+        self.selected_block = None
+
+        # 字体设置
+        self.font = _gui_safe_font('SimHei', 24)
+        self.menu_font = _gui_safe_font('SimHei', 16)
+        self.status_font = _gui_safe_font('SimHei', 14)
+        self.dialog_font = _gui_safe_font('SimHei', 18)
+        self.dialog_title_font = _gui_safe_font('SimHei', 22, bold=True)
+        self.input_font = _gui_safe_font('SimHei', 20)
+
+        # 相机位置
+        self.camera_x = 0
+        self.camera_y = 0
+
+        # 拖拽状态
+        self.is_dragging = False
+        self.drag_start = (0, 0)
+        self.drag_offset = (0, 0)
+
+        # 缩放设置
+        self.zoom = 1.0
+        self.min_zoom = 0.1
+        self.max_zoom = 4.0
+
+        # 命令队列
+        self.cmd_queue = cmd_queue
+
+        # 游戏运行状态
+        self.running = True
+
+        # 菜单栏配置
+        self.menu_items = ['文件', '编辑', '谜题', '宏定义', '设置', '帮助']
+        self.menu_hovered = -1
+        self.menu_item_rects = []
+
+        # 帮助对话框状态
+        self.show_help = False
+        self.help_scroll_offset = 0
+
+        # 宏定义菜单状态
+        self.show_macro_menu = False
+        self.macro_menu_rects = []
+        self.macro_menu_hovered = -1
+
+        # 确定程序根目录（支持 PyInstaller onefile 模式）
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(sys.executable)
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # 宏管理器
+        from macro.macro import MacroManager
+        self.macro_manager = MacroManager(os.path.join(self.base_dir, 'macro'))
+
+        # 宏录制状态
+        self.macro_recording = False        # 是否正在录制宏
+        self.macro_recording_steps = []     # 录制中的步骤列表
+        self.macro_record_base_point = None # 录制时的基准坐标 [row, col]
+
+        # 宏执行状态
+        self.macro_executing = False        # 是否正在执行宏
+        self.macro_selecting_base = False   # 是否正在选择执行基准
+        self.macro_exec_ops = []            # 待执行的绝对操作队列
+        self.macro_exec_index = 0           # 当前执行到第几个操作
+        self.macro_exec_factor = 1          # 拆分因子
+        self.macro_exec_name = ''           # 正在执行的宏名称
+        self.macro_exec_reverse = False     # 是否逆序播放（方向取反 + 顺序逆序）
+        self.macro_reverse_mode = False     # 逆序播放模式开关（宏菜单切换，点击宏名时生效）
+        self.macro_error_msg = ''           # 宏错误提示信息
+        self.macro_error_timer = 0          # 错误提示显示计时器
+
+        # 宏执行结果通知（右下角提示）
+        self.macro_notify_msg = ''          # 通知文本
+        self.macro_notify_timer = 0         # 通知显示计时器（帧数，60fps）
+        self.macro_notify_persistent = False  # 是否持久显示（不走淡出）
+        self._gather_info = None            # 聚拢求解结果（用于播放时实时刷新）
+
+        # 宏管理对话框状态
+        self.show_macro_manager_dialog = False
+        self._macro_mgr_scroll = 0
+        self._macro_mgr_visible_count = 5
+        self._macro_mgr_scroll_up_rect = None
+        self._macro_mgr_scroll_down_rect = None
+        self._macro_mgr_item_rects = []
+        self.macro_manager_dialog_rect = None
+
+        # 宏命名/重命名对话框
+        self.show_macro_name_dialog = False
+        self.macro_name_input = ''
+        self.macro_name_active = False
+        self.macro_renaming_index = -1
+
+        # 配置文件路径（config 放在 exe 同目录，方便用户修改）
+        self.config_dir = os.path.join(self.base_dir, 'config')
+        self.config_path = os.path.join(self.config_dir, 'config.json')
+        self.temp_history_path = os.path.join(self.config_dir, 'temp_history.json')
+
+        # 保存目录（用于文件对话框初始目录）
+        self.save_dir = os.path.join(self.base_dir, 'save')
+
+        # 当前打开的文件路径（None 表示未保存过）
+        self.current_file_path = None
+
+        # 文件菜单状态
+        self.show_file_menu = False
+        self.file_menu_items = ['打开 Ctrl+O', '保存 Ctrl+S', '另存为...']
+        self.file_menu_rects = []
+        self.file_menu_hovered = -1
+
+        # 编辑菜单状态
+        self.show_edit_menu = False
+        self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S', '重置 Ctrl+R', '---', '自动求解 Ctrl+Alt+S']
+        self.edit_menu_rects = []
+        self.edit_menu_hovered = -1
+
+        # 谜题菜单状态
+        self.show_puzzle_menu = False
+        self.puzzle_menu_rects = []
+        self.puzzle_menu_hovered = -1
+        # 预设选项: (显示名, m, n, step) 或 ('---',) 分隔线 或 ('自定义...',) 自定义
+        self.puzzle_presets = [
+            ('2~4*4', 4, 4, 2),
+            ('2~5*5', 5, 5, 2),
+            ('2~6*6', 6, 6, 2),
+            ('2~7*7', 7, 7, 2),
+            ('2~8*8', 8, 8, 2),
+            ('2~9*9', 9, 9, 2),
+            ('2~10*10', 10, 10, 2),
+            ('---',),
+            ('3~6*6', 6, 6, 3),
+            ('3~7*7', 7, 7, 3),
+            ('3~8*8', 8, 8, 3),
+            ('3~9*9', 9, 9, 3),
+            ('3~10*10', 10, 10, 3),
+            ('---',),
+            ('自定义...',),
+            ('__mode__',),   # 计时/练习模式切换（特殊项，见 renderer/events 处理）
+        ]
+
+        # 自动求解状态
+        self._auto_solve_result = None     # None=空闲, list=解法, False=无解
+        self._auto_solve_done = False     # 求解线程是否已完成
+        self._auto_solve_running = False   # 是否正在后台求解
+        self._auto_solve_start_time = 0    # 求解开始时间戳
+        self._auto_solve_cancel = False    # 是否请求取消
+        self._auto_solve_progress = None   # 求解进度信息 dict
+        self.solver_algorithm = 'ida_star' # 求解算法选择: 'ida_star', 'fast', 'greedy'
+
+        # 自定义谜题对话框状态
+        self.show_custom_dialog = False
+        self.custom_fields = {'m': '6', 'n': '6', 'step': '1'}
+        self.custom_active_field = None  # 'm', 'n', 'step'
+        self.custom_error = ''
+
+        # 历史记录
+        self.game_history = GameHistory()
+
+        # 计时器与成绩记录
+        self.records = Records(os.path.join(self.config_dir, 'records.dat'))
+        self.timer_state = 'idle'   # idle/ready/running/dnf/stopped
+        self.timer_start = 0.0      # perf_counter 计时起点
+        self.timer_elapsed = 0.0    # 已用秒数（浮点）
+        self.timer_m = 0
+        self.timer_n = 0
+        self.timer_step = 0
+        self.timer_initial_matrix = ''
+        self.timer_puzzle_key = ''
+        self.game_mode = 'practice'  # 'timed' 计时模式 / 'practice' 练习模式（默认练习）
+        self._show_records_panel = False  # 成绩面板开关
+
+        # 动画状态
+        self.animating = False
+        self.anim_blocks = []
+        self.anim_start_pos = []
+        self.anim_end_pos = []
+        self.anim_progress = 0.0
+        self.anim_start_time = 0
+        self.animation_duration = 300  # 毫秒
+        self.animation_enabled = True
+
+        # 移动元数据（从 move_selected_blocks 传递到 commit_animation）
+        self._pending_move_info = None
+
+        # 撤销/重做动画状态
+        self._undo_redo_type = None  # 当前动画类型：'undo'/'redo'/None
+        self._animation_queue = []   # 待执行的撤销/重做队列，存储 'undo'/'redo'
+
+        # 动画统一偏移量（方案四：所有Block使用同一偏移量）
+        self._anim_dr = 0.0
+        self._anim_dc = 0.0
+
+        # 右侧面板控件
+        self.slider_dragging = False
+        self.slider_rect = None
+        self.slider_knob_rect = None
+        self.anim_toggle_rect = None
+
+        # 长按重复状态
+        self.undo_held = False
+        self.redo_held = False
+        self.undo_first = False
+        self.redo_first = False
+        self.key_repeat_delay = 400   # 首次重复延迟(毫秒)
+        self.key_repeat_interval = 80  # 后续重复间隔(毫秒)
+        self.undo_timer = 0
+        self.redo_timer = 0
+
+        # 文件对话框（pygame 自绘）
+        from gui.dialogs import PygameFileDialog
+        self.file_dialog = PygameFileDialog(self.screen, self.dialog_font, self.dialog_title_font, self.status_font, self.colors)
+        self._pending_save_as = False
+        self._pending_load = False
+
+        # 设置菜单状态
+        self.show_settings_menu = False
+        self.settings_menu_items = ['快捷键设置', '动画速度']
+        self.settings_menu_rects = []
+        self.settings_menu_hovered = -1
+
+        # 设置对话框状态
+        self.show_settings_dialog = False
+        self.settings_active_tab = 'keybindings'  # 'keybindings' or 'animation'
+        self.settings_editing_action = None  # 当前正在编辑快捷键的动作名
+        self.settings_editing_key = None  # 临时存储正在录制的按键
+        self._settings_slider_dragging = False
+        self._settings_backup_keybindings = {}
+        self._settings_ok_btn = None
+        self._settings_cancel_btn = None
+        self._settings_reset_btn = None
+        self._settings_key_rects = {}
+        self._settings_tab_kb_rect = None
+        self._settings_tab_anim_rect = None
+        self._settings_anim_toggle_rect = None
+        self._settings_slider_track_rect = None
+
+        # 快捷键配置（默认值）
+        self.keybindings = {
+            'undo': {'key': 'z', 'modifiers': ['ctrl']},
+            'redo': {'key': 'x', 'modifiers': ['ctrl']},
+            'shuffle': {'key': 's', 'modifiers': ['alt']},
+            'reset': {'key': 'r', 'modifiers': ['ctrl']},
+            'save': {'key': 's', 'modifiers': ['ctrl']},
+            'load': {'key': 'o', 'modifiers': ['ctrl']},
+            'move_up': {'key': 'w', 'modifiers': []},
+            'move_down': {'key': 's', 'modifiers': []},
+            'move_left': {'key': 'a', 'modifiers': []},
+            'move_right': {'key': 'd', 'modifiers': []},
+            'auto_solve': {'key': 's', 'modifiers': ['ctrl', 'alt']},
+            'macro_record': {'key': 'm', 'modifiers': ['ctrl']},
+            'virtual_keyboard': {'key': 'f1', 'modifiers': []},
+            'metrics_panel': {'key': 'f2', 'modifiers': []},
+            'records_panel': {'key': 'f3', 'modifiers': []},
+        }
+
+        # 快捷键动作显示名
+        self.keybinding_labels = {
+            'undo': '撤销',
+            'redo': '重做',
+            'shuffle': '打乱',
+            'reset': '重置',
+            'save': '保存',
+            'load': '打开',
+            'move_up': '上移',
+            'move_down': '下移',
+            'move_left': '左移',
+            'move_right': '右移',
+            'auto_solve': '自动求解',
+            'macro_record': '录制宏',
+            'virtual_keyboard': '虚拟键盘',
+            'metrics_panel': '调试面板',
+            'records_panel': '成绩面板',
+        }
+
+        # 快捷键动作分组（用于设置对话框显示）
+        self.keybinding_groups = [
+            ('文件操作', ['save', 'load']),
+            ('编辑操作', ['undo', 'redo', 'shuffle', 'reset']),
+            ('求解器', ['auto_solve']),
+            ('宏操作', ['macro_record']),
+            ('游戏操作', ['move_up', 'move_down', 'move_left', 'move_right', 'virtual_keyboard', 'metrics_panel', 'records_panel']),
+        ]
+
+        # 虚拟键盘状态
+        self._vk_init_state()
+
+        # 聚拢度指标面板状态
+        self._mp_init_state()
+
+        # 成绩记录面板状态
+        self._rp_init_state()
+
+        # 加载上次状态
+        self.load_last_state()
+
+    def new_puzzle(self, m: int, n: int, step: int = 1):
+        """
+        创建新谜题
+
+        参数：
+            m: 行数
+            n: 列数
+            step: 移动步数（等级）
+        """
+        # 验证等级约束：step < max(m, n)
+        if step >= max(m, n):
+            return False
+
+        # 计时进行中禁止切换谜题
+        if self.timer_state == 'running':
+            self.macro_notify_msg = "计时中无法切换谜题"
+            self.macro_notify_timer = 90
+            return False
+        self._timer_cancel()
+
+        self.current_m = m
+        self.current_n = n
+        self.current_step = step
+
+        # 创建新的游戏对象
+        self.game = SliderMatrix(m, n)
+
+        # 重置状态
+        self.zoom = 1.0
+        self.selected_gap = None
+        self.selected_block = None
+        self.step_count = 0
+
+        # 取消动画
+        self.animating = False
+        self.anim_blocks = []
+
+        # 重置历史记录
+        self.game_history.reset()
+        self.center_map()
+        self.game_history.save_snapshot(self.game)
+
+        self.macro_notify_msg = f"切换谜题：{m}×{n} 等级{step}"
+        self.macro_notify_timer = 120
+        return True
+
+    def is_solved(self) -> bool:
+        """判断当前是否为复原状态（比较0-1矩阵形状）"""
+        return self.game.is_solved()
+
+    def ensure_blocks_visible(self):
+        """确保所有滑块都在可视区域内，超出时自动调整相机"""
+        if not self.game.blocks:
+            return
+
+        scaled_cell = self.cell_size * self.zoom
+        scaled_gap = self.gap_width * self.zoom
+
+        # 可视区域（排除菜单栏、状态栏和右侧面板）
+        view_left = 0
+        view_right = self.screen_width - self.right_panel_width
+        view_top = self.menu_bar_height
+        view_bottom = self.screen_height - self.status_bar_height
+
+        # 留一些边距
+        margin = scaled_cell * 0.5
+
+        # 计算所有滑块的屏幕坐标范围
+        min_screen_x = float('inf')
+        max_screen_x = float('-inf')
+        min_screen_y = float('inf')
+        max_screen_y = float('-inf')
+
+        for block in self.game.blocks:
+            screen_x = block.location[1] * (scaled_cell + scaled_gap) + self.camera_x
+            screen_y = block.location[0] * (scaled_cell + scaled_gap) + self.camera_y
+
+            min_screen_x = min(min_screen_x, screen_x)
+            max_screen_x = max(max_screen_x, screen_x + scaled_cell)
+            min_screen_y = min(min_screen_y, screen_y)
+            max_screen_y = max(max_screen_y, screen_y + scaled_cell)
+
+        # 检查是否超出可视区域
+        need_adjust = False
+        dx, dy = 0, 0
+
+        if min_screen_x < view_left + margin:
+            dx = (view_left + margin) - min_screen_x
+            need_adjust = True
+        elif max_screen_x > view_right - margin:
+            dx = (view_right - margin) - max_screen_x
+            need_adjust = True
+
+        if min_screen_y < view_top + margin:
+            dy = (view_top + margin) - min_screen_y
+            need_adjust = True
+        elif max_screen_y > view_bottom - margin:
+            dy = (view_bottom - margin) - max_screen_y
+            need_adjust = True
+
+        if need_adjust:
+            self.camera_x += dx
+            self.camera_y += dy
+
+    def center_map(self):
+        """将地图居中显示在游戏区域中"""
+        bounds = self.game.get_boundaries()
+        min_row, max_row = bounds['min_row'], bounds['max_row']
+        min_col, max_col = bounds['min_col'], bounds['max_col']
+
+        scaled_cell = self.cell_size * self.zoom
+        scaled_gap = self.gap_width * self.zoom
+
+        map_width = (max_col - min_col + 1) * scaled_cell + (max_col - min_col) * scaled_gap
+        map_height = (max_row - min_row + 1) * scaled_cell + (max_row - min_row) * scaled_gap
+
+        map_center_x = min_col * (scaled_cell + scaled_gap) + map_width / 2
+        map_center_y = min_row * (scaled_cell + scaled_gap) + map_height / 2
+
+        game_center_y = self.menu_bar_height + (self.screen_height - self.menu_bar_height - self.status_bar_height) / 2
+
+        self.camera_x = (self.screen_width - self.right_panel_width) / 2 - map_center_x
+        self.camera_y = game_center_y - map_center_y
+
+    def _is_camera_valid(self) -> bool:
+        """检查当前 camera 位置是否能让滑塊在视口内可见"""
+        if not self.game.blocks:
+            return True
+        bounds = self.game.get_boundaries()
+        min_row, max_row = bounds['min_row'], bounds['max_row']
+        min_col, max_col = bounds['min_col'], bounds['max_col']
+        scaled_cell = self.cell_size * self.zoom
+        scaled_gap = self.gap_width * self.zoom
+
+        # 滑塊区域在屏幕上的范围
+        left   = min_col * (scaled_cell + scaled_gap) + self.camera_x
+        right  = max_col * (scaled_cell + scaled_gap) + scaled_cell + self.camera_x
+        top    = min_row * (scaled_cell + scaled_gap) + self.camera_y
+        bottom = max_row * (scaled_cell + scaled_gap) + scaled_cell + self.camera_y
+
+        # 视口范围
+        view_left   = 0
+        view_right  = self.screen_width - self.right_panel_width
+        view_top    = self.menu_bar_height
+        view_bottom = self.screen_height - self.status_bar_height
+
+        # 滑塊区域是否与视口有交集
+        return not (right < view_left or left > view_right or
+                    bottom < view_top or top > view_bottom)
+
+    def world_to_screen(self, world_x: float, world_y: float) -> tuple:
+        """世界坐标转换为屏幕坐标"""
+        return world_x * self.zoom + self.camera_x, world_y * self.zoom + self.camera_y
+
+    def screen_to_world(self, screen_x: float, screen_y: float) -> tuple:
+        """屏幕坐标转换为世界坐标"""
+        return (screen_x - self.camera_x) / self.zoom, (screen_y - self.camera_y) / self.zoom
+
+    def get_block_at_pos(self, screen_x: int, screen_y: int) -> Block:
+        """根据屏幕坐标获取滑块对象"""
+        try:
+            world_x, world_y = self.screen_to_world(screen_x, screen_y)
+
+            for block in self.game.blocks:
+                bx = block.location[1] * (self.cell_size + self.gap_width)
+                by = block.location[0] * (self.cell_size + self.gap_width)
+
+                rect = pygame.Rect(bx, by, self.cell_size, self.cell_size)
+                if rect.collidepoint(world_x, world_y):
+                    return block
+        except Exception as e:
+            print(f"get_block_at_pos error: {e}")
+
+        return None
+
+    def get_cell_at_pos(self, screen_x: int, screen_y: int):
+        """根据屏幕坐标获取对应的格子坐标 (row, col)，无论该格是否有滑块。
+
+        用于宏基准选择等场景，允许把「空位」也作为基准坐标。
+        点击落在格子之间的缝隙上时返回 None。
+        """
+        try:
+            world_x, world_y = self.screen_to_world(screen_x, screen_y)
+            cell = self.cell_size + self.gap_width
+            c = int(world_x // cell)
+            r = int(world_y // cell)
+            # 检查是否落在格子的 cell 部分（而非 gap）
+            if (world_x - c * cell) >= self.cell_size or (world_y - r * cell) >= self.cell_size:
+                return None
+            return r, c
+        except Exception as e:
+            print(f"get_cell_at_pos error: {e}")
+        return None
+
+    def get_gap_at_pos(self, screen_x: int, screen_y: int) -> tuple:
+        """根据屏幕坐标获取缝隙位置"""
+        try:
+            world_x, world_y = self.screen_to_world(screen_x, screen_y)
+
+            bounds = self.game.get_boundaries()
+            min_row, max_row = bounds['min_row'], bounds['max_row']
+            min_col, max_col = bounds['min_col'], bounds['max_col']
+
+            cell = self.cell_size
+            gap = self.gap_width
+
+            for i in range(min_row, max_row + 2):
+                gap_y = i * (cell + gap) - gap // 2
+                if abs(world_y - gap_y) < gap + 10:
+                    board_left = min_col * (cell + gap)
+                    board_right = (max_col + 1) * (cell + gap)
+                    if board_left - 50 < world_x < board_right + 50:
+                        line_index = i - 1
+                        if self.game.is_valid_h_line(line_index):
+                            return ('h', line_index)
+
+            for j in range(min_col, max_col + 2):
+                gap_x = j * (cell + gap) - gap // 2
+                if abs(world_x - gap_x) < gap + 10:
+                    board_top = min_row * (cell + gap)
+                    board_bottom = (max_row + 1) * (cell + gap)
+                    if board_top - 50 < world_y < board_bottom + 50:
+                        line_index = j - 1
+                        if self.game.is_valid_v_line(line_index):
+                            return ('v', line_index)
+        except Exception as e:
+            print(f"get_gap_at_pos error: {e}")
+
+        return None
+
+    def move_selected_blocks(self, direction: str):
+        """
+        移动所有选中的滑块，逐步验证（每次1格，共step次），
+        所有步骤都通过后才提交。支持动画。
+
+        参数：
+            direction: 移动方向 'w'上 's'下 'a'左 'd'右
+
+        返回：
+            bool - 是否真正执行了移动（被拦截/未选中/移动不合法均为 False）
+        """
+        # 计时模式：就绪态（已打乱未开始）禁止滑动，保证公平
+        if self.game_mode == 'timed' and self.timer_state == 'ready':
+            self.macro_notify_msg = "计时模式：按空格开始计时后才能滑动"
+            self.macro_notify_timer = 90
+            return False
+
+        selected = [b for b in self.game.blocks if b.be_opted]
+        if not selected:
+            return False
+
+        # 调用 game.py 的 try_move 进行纯逻辑验证
+        final_positions = self.game.try_move(direction, self.current_step)
+        if not final_positions:
+            return False
+
+        # 构建移动元数据
+        move_info = {
+            'gap_type': self.selected_gap[0] if self.selected_gap else None,
+            'gap_line': self.selected_gap[1] if self.selected_gap else None,
+            'direction': direction,
+            'step': self.current_step,
+            'moved_positions': [list(b.location) for b in selected],
+        }
+        self._pending_move_info = move_info
+
+        # 录制模式：记录这一步到宏
+        if self.macro_recording and self.macro_record_base_point is not None:
+            side = self._get_selected_side()
+            if self.selected_gap and side:
+                self._record_macro_step(
+                    self.selected_gap[0], self.selected_gap[1],
+                    side, direction
+                )
+
+        # 所有步骤都合法
+        if self.animation_enabled and self.animation_duration > 0:
+            self.start_animation(selected, final_positions)
+            dir_names = {'w': '上', 's': '下', 'a': '左', 'd': '右'}
+            dir_str = dir_names.get(direction, direction)
+            self.macro_notify_msg = f"向{dir_str}移动 {self.current_step}步"
+            self.macro_notify_timer = 120
+        else:
+            self.game.commit_move(final_positions)
+            self.step_count += 1
+            self.game_history.save_snapshot(self.game, move_info)
+            self._pending_move_info = None
+            self.ensure_blocks_visible()
+            # 操作提示，在撤销/重做时没有显示
+            dir_names = {'w': '上', 's': '下', 'a': '左', 'd': '右'}
+            dir_str = dir_names.get(direction, direction)
+            self.macro_notify_msg = f"向{dir_str}移动 {self.current_step}步"
+            self.macro_notify_timer = 120
+        return True
+
+    def undo(self):
+        """撤销操作（Ctrl+Z）"""
+        # 如果正在播放撤销/重做动画，入队等待
+        if self.animating and self._undo_redo_type is not None:
+            self._animation_queue.append('undo')
+            return
+
+        # 如果正在播放普通移动动画，取消后执行撤销
+        if self.animating:
+            self.cancel_animation()
+
+        # 获取当前快照的移动元数据
+        move_info = None
+        if self.game_history.can_undo():
+            move_info = self.game_history.history[self.game_history.history_index].get('move_info')
+
+        if self.animation_enabled and self.animation_duration > 0 and move_info:
+            # 有动画的撤销
+            if self._start_undo_redo_animation(move_info, is_undo=True):
+                self.selected_gap = None
+                self.selected_block = None
+                self.macro_notify_msg = "撤销"
+                self.macro_notify_timer = 15
+                return
+
+        # 无动画的撤销（直接执行）
+        success, _ = self.game_history.undo(self.game)
+        if success:
+            self.selected_gap = None
+            self.selected_block = None
+            self.step_count -= 1
+            self.ensure_blocks_visible()
+            self.macro_notify_msg = "撤销"
+            self.macro_notify_timer = 15
+
+    def redo(self):
+        """重做操作（Ctrl+X）"""
+        # 如果正在播放撤销/重做动画，入队等待
+        if self.animating and self._undo_redo_type is not None:
+            self._animation_queue.append('redo')
+            return
+
+        # 如果正在播放普通移动动画，取消后执行重做
+        if self.animating:
+            self.cancel_animation()
+
+        # 获取目标快照的移动元数据
+        move_info = None
+        if self.game_history.can_redo():
+            target_idx = self.game_history.history_index + 1
+            move_info = self.game_history.history[target_idx].get('move_info')
+
+        if self.animation_enabled and self.animation_duration > 0 and move_info:
+            # 有动画的重做
+            if self._start_undo_redo_animation(move_info, is_undo=False):
+                self.selected_gap = None
+                self.selected_block = None
+                self.macro_notify_msg = "重做"
+                self.macro_notify_timer = 15
+                return
+
+        # 无动画的重做（直接执行）
+        success, _ = self.game_history.redo(self.game)
+        if success:
+            self.selected_gap = None
+            self.selected_block = None
+            self.step_count += 1
+            self.ensure_blocks_visible()
+            self.macro_notify_msg = "重做"
+            self.macro_notify_timer = 15
+
+    def shuffle_puzzle(self):
+        """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
+        # 计时进行中禁止打乱
+        if self.timer_state == 'running':
+            self.macro_notify_msg = "计时中无法打乱"
+            self.macro_notify_timer = 90
+            return
+
+        # 取消当前动画
+        if self.animating:
+            self.cancel_animation()
+
+        attempts = self.current_m * self.current_n * 10  # 打乱次数
+
+        # 调用 game.py 的 shuffle 方法
+        self.game.shuffle(attempts, self.current_step)
+
+        # 清除选中状态
+        self.selected_gap = None
+        self.selected_block = None
+
+        # 步数归零，重置历史记录（以打乱态为第一条）
+        self.step_count = 0
+        self.game_history.reset()
+        self.game_history.save_snapshot(self.game)
+        self.ensure_blocks_visible()
+        if self.game_mode == 'timed':
+            self._timer_enter_ready()
+            self.macro_notify_msg = f"已打乱：{attempts}步（空格开始计时）"
+        else:
+            self._timer_cancel()
+            self.macro_notify_msg = f"已打乱：{attempts}步（练习模式）"
+        self.macro_notify_timer = 120
+
+    def reset_puzzle(self):
+        """重置谜题到初始状态"""
+        if self.timer_state == 'running':
+            self.macro_notify_msg = "计时中无法重置"
+            self.macro_notify_timer = 90
+            return
+        self._timer_cancel()
+        self.new_puzzle(self.current_m, self.current_n, self.current_step)
+
+    # ==================== 计时器 ====================
+
+    def _timer_enter_ready(self):
+        """打乱完成后进入就绪态，捕获初始矩阵"""
+        # 取消可能正在后台运行的求解器
+        if self._auto_solve_running:
+            self._auto_solve_cancel = True
+        self.timer_state = 'ready'
+        self.timer_elapsed = 0.0
+        self.timer_m = self.current_m
+        self.timer_n = self.current_n
+        self.timer_step = self.current_step
+        self.timer_puzzle_key = f"{self.current_step}~{self.current_m}*{self.current_n}"
+        self.timer_initial_matrix = self.game.export_map().replace('#', '1').replace('_', '0')
+
+    def _timer_cancel(self):
+        """取消当前计时会话（回到空闲态）"""
+        self.timer_state = 'idle'
+        self.timer_elapsed = 0.0
+
+    def toggle_game_mode(self):
+        """切换 计时模式 / 练习模式（谜题菜单入口）"""
+        if self.timer_state == 'running':
+            self.macro_notify_msg = "计时中无法切换模式"
+            self.macro_notify_timer = 90
+            return
+        if self.game_mode == 'timed':
+            self.game_mode = 'practice'
+            self._timer_cancel()
+            self.macro_notify_msg = "练习模式：可自由滑动，不计时"
+        else:
+            self.game_mode = 'timed'
+            self.macro_notify_msg = "计时模式：打乱后需按空格开始计时"
+        self.macro_notify_timer = 120
+
+    def _timer_start(self):
+        """开始计时"""
+        if self.timer_state != 'ready':
+            return
+        self.timer_state = 'running'
+        self.timer_start = time.perf_counter()
+        self.timer_elapsed = 0.0
+
+    def _timer_on_space(self):
+        """空格键：ready→开始，running→DNF（练习模式禁用计时）"""
+        if self.game_mode != 'timed':
+            return
+        if self.timer_state == 'ready':
+            self._timer_start()
+        elif self.timer_state == 'running':
+            self._timer_finish(dnf=True)
+
+    def _timer_check_solved(self):
+        """running 状态下检测是否复原，复原则停止计时"""
+        if self.timer_state != 'running':
+            return
+        if self.animating:
+            return
+        if self.is_solved():
+            self._timer_finish(dnf=False)
+
+    def _timer_finish(self, dnf: bool):
+        """结束计时并写成绩"""
+        elapsed_ms = (time.perf_counter() - self.timer_start) * 1000.0
+        self.timer_elapsed = elapsed_ms / 1000.0
+        self.records.add_record(
+            self.timer_puzzle_key,
+            self.timer_m, self.timer_n, self.timer_step,
+            self.timer_initial_matrix,
+            elapsed_ms,
+            self.step_count,
+            dnf,
+        )
+        self.timer_state = 'dnf' if dnf else 'stopped'
+
+        st = self.records.stats(self.timer_puzzle_key)
+
+        def _fmt(v):
+            if v is None:
+                return '-'
+            if v == 'DNF':
+                return 'DNF'
+            return format_time(v)
+
+        cur = format_time(elapsed_ms)
+        best = _fmt(st['best'])
+        ao5 = _fmt(st['ao5'])
+        if dnf:
+            self.macro_notify_msg = f"DNF（{cur}） | 最好 {best} | Ao5 {ao5}"
+        else:
+            self.macro_notify_msg = f"复原！{cur}（{self.step_count}步） | 最好 {best} | Ao5 {ao5}"
+        self.macro_notify_timer = 180
+
+    def _timer_blocked(self):
+        """计时 ready/running 期间，宏与求解器是否被禁止"""
+        return self.timer_state in ('ready', 'running')
+
+    def _timer_status_text(self):
+        """返回状态栏要显示的计时器文本（练习模式/计时模式始终显示当前状态）"""
+        if self.game_mode == 'practice':
+            return "练习模式"
+        prefix = "计时模式"
+        if self.timer_state == 'idle':
+            return f"{prefix}（待打乱）"
+        if self.timer_state == 'ready':
+            return f"{prefix}（就绪，空格开始）"
+        if self.timer_state == 'running':
+            return f"{prefix} {format_time(self.timer_elapsed * 1000)}"
+        if self.timer_state == 'stopped':
+            return f"{prefix} 成绩 {format_time(self.timer_elapsed * 1000)}"
+        if self.timer_state == 'dnf':
+            return f"{prefix} DNF"
+        return ""
+
+    def _start_auto_solve(self):
+        """启动/停止自动求解"""
+        import threading
+        import time
+        from copy import deepcopy
+
+        # 计时中禁止使用求解器
+        if self._timer_blocked():
+            self.macro_notify_msg = "计时中无法使用求解器"
+            self.macro_notify_timer = 90
+            return
+
+        # 如果正在求解，則取消
+        if self._auto_solve_running:
+            self._auto_solve_cancel = True
+            return
+
+        if self.macro_executing:
+            return
+
+        self._auto_solve_result = None
+        self._auto_solve_done = False
+        self._auto_solve_running = True
+        self._auto_solve_cancel = False
+        self._auto_solve_start_time = time.time()
+        self._auto_solve_progress = None
+
+        game_snapshot = deepcopy(self.game)
+        algorithm = self.solver_algorithm
+
+        def cancel_check():
+            return self._auto_solve_cancel
+
+        def progress_callback(info):
+            self._auto_solve_progress = info
+
+        def solve_thread():
+            try:
+                from solver import SOLVER_ALGORITHMS
+                alg_name, solver_func = SOLVER_ALGORITHMS.get(
+                    algorithm, SOLVER_ALGORITHMS['ida_star']
+                )
+                solution = solver_func(
+                    game_snapshot, step=self.current_step,
+                    cancel_check=cancel_check,
+                    progress_callback=progress_callback,
+                )
+                if self._auto_solve_cancel:
+                    self._auto_solve_result = False
+                else:
+                    self._auto_solve_result = solution
+            except Exception as e:
+                print(f"[自动求解] 出错: {e}")
+                self._auto_solve_result = False
+            finally:
+                self._auto_solve_running = False
+                self._auto_solve_done = True
+
+        threading.Thread(target=solve_thread, daemon=True).start()
+
+    def _check_auto_solve_result(self):
+        """检查后台求解结果，如有结果则启动宏执行"""
+        if not self._auto_solve_done:
+            return
+        if self.macro_executing or self.animating:
+            return
+
+        # 计时中丢弃求解结果（禁止求解器帮助）
+        if self._timer_blocked():
+            self._auto_solve_done = False
+            self._auto_solve_result = None
+            return
+
+        self._auto_solve_done = False
+        result = self._auto_solve_result
+        self._auto_solve_result = None
+
+        if result is None:
+            self.macro_notify_msg = "自动求解：未找到数据库"
+            self.macro_notify_timer = 180
+            return
+
+        if isinstance(result, dict) and result.get('type') == 'gather':
+            self._handle_gather_result(result)
+            return
+
+        if result is False:
+            self.macro_notify_msg = "自动求解：未找到解法"
+            self.macro_notify_timer = 180
+            return
+
+        if len(result) == 0:
+            self.macro_notify_msg = "自动求解：已是复原状态"
+            self.macro_notify_timer = 180
+            return
+
+        # 查表求解器返回 (actions, rep_cells) 元组，包含代表方块坐标
+        rep_cells = None
+        if isinstance(result, tuple):
+            actions, rep_cells = result
+        else:
+            actions = result
+
+        # 转换 solver Action → macro op
+        ops = []
+        for i, action in enumerate(actions):
+            gap_dir, gap_line, side, move_dir = action
+            op = {
+                'gap_type': gap_dir,
+                'gap_line': gap_line,
+                'side': side,
+                'direction': move_dir,
+                'step': self.current_step,
+            }
+            if rep_cells:
+                op['rep_cell'] = rep_cells[i]
+            ops.append(op)
+
+        # 通过宏执行管道播放解法（含动画）
+        self.macro_executing = True
+        self.macro_exec_name = "自动求解"
+        self.macro_exec_ops = ops
+        self.macro_exec_index = 0
+        self.macro_exec_factor = 1
+        self._execute_next_macro_step()
+
+    def _handle_gather_result(self, result):
+        """处理聚拢求解结果：播放动作，并实时显示聚拢度。"""
+        actions = result.get('actions', [])
+        rep_cells = result.get('rep_cells', [])
+        solved = result.get('solved', False)
+
+        if not actions:
+            if solved:
+                self.macro_notify_msg = "聚拢：已是复原状态"
+            else:
+                self.macro_notify_msg = "聚拢：无可移动动作"
+            self.macro_notify_timer = 180
+            return
+
+        ops = []
+        for i, action in enumerate(actions):
+            gap_dir, gap_line, side, move_dir = action
+            op = {
+                'gap_type': gap_dir,
+                'gap_line': gap_line,
+                'side': side,
+                'direction': move_dir,
+                'step': self.current_step,
+            }
+            if rep_cells and i < len(rep_cells):
+                op['rep_cell'] = rep_cells[i]
+            ops.append(op)
+
+        self._gather_info = {
+            'start': result.get('start', {}),
+            'end': result.get('end', {}),
+            'solved': solved,
+        }
+        self.macro_executing = True
+        self.macro_exec_name = "聚拢"
+        self.macro_exec_ops = ops
+        self.macro_exec_index = 0
+        self.macro_exec_factor = 1
+        self._execute_next_macro_step()
+
+    def close_all_menus(self):
+        """关闭所有下拉菜单"""
+        self.show_file_menu = False
+        self.show_edit_menu = False
+        self.show_puzzle_menu = False
+        self.show_settings_menu = False
+        self.show_macro_menu = False
+
+    def is_blank_area(self, screen_x: int, screen_y: int) -> bool:
+        """判断指定位置是否为空白区域"""
+        return self.get_block_at_pos(screen_x, screen_y) is None and \
+               self.get_gap_at_pos(screen_x, screen_y) is None
+
+    def run(self):
+        """游戏主循环"""
+        clock = pygame.time.Clock()
+
+        while self.running:
+            try:
+                # 处理终端指令
+                self.process_commands()
+
+                # 更新动画
+                self.update_animation()
+
+                # 检查自动求解结果
+                self._check_auto_solve_result()
+
+                # 计时器：刷新实时用时 + 检测复原
+                if self.timer_state == 'running':
+                    self.timer_elapsed = time.perf_counter() - self.timer_start
+                self._timer_check_solved()
+
+                # 求解中显示计时和进度
+                if self._auto_solve_running:
+                    elapsed = time.time() - self._auto_solve_start_time
+                    progress = self._auto_solve_progress
+                    if progress:
+                        if progress.get('stage') == 'gather':
+                            score = progress.get('score', 0)
+                            best = progress.get('best_score', 0)
+                            self.macro_notify_msg = f"聚拢中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%） | {elapsed:.1f}s"
+                        else:
+                            stage = progress.get('stage', '')
+                            bound = progress.get('bound', 0)
+                            nodes = progress.get('nodes', 0)
+                            path_preview = progress.get('path_preview', '')
+                            self.macro_notify_msg = f"[{stage}] 深度{bound} 节点{nodes} {path_preview} | {elapsed:.1f}s"
+                    else:
+                        self.macro_notify_msg = f"求解中... {elapsed:.1f}s"
+                    self.macro_notify_timer = 180
+                    self.macro_notify_persistent = True  # 持续显示不走淡出
+                else:
+                    self.macro_notify_persistent = False
+
+                # 更新宏通知计时器（持玖模式不递减）
+                if self.macro_notify_timer > 0 and not self.macro_notify_persistent:
+                    self.macro_notify_timer -= 1
+
+                # 处理文件对话框结果
+                self.handle_file_dialog_result()
+
+                # 处理长按撤销/重做
+                now = pygame.time.get_ticks()
+                if self.undo_held and not self.undo_first:
+                    if now - self.undo_timer >= self.key_repeat_interval:
+                        self.undo()
+                        self.undo_timer = now
+                if self.redo_held and not self.redo_first:
+                    if now - self.redo_timer >= self.key_repeat_interval:
+                        self.redo()
+                        self.redo_timer = now
+                # 首次延迟后切换到重复模式
+                if self.undo_first and self.undo_held:
+                    if now - self.undo_timer >= self.key_repeat_delay:
+                        self.undo_first = False
+                        self.undo_timer = now
+                if self.redo_first and self.redo_held:
+                    if now - self.redo_timer >= self.key_repeat_delay:
+                        self.redo_first = False
+                        self.redo_timer = now
+
+                self.draw_board()
+                self.draw_right_panel()
+
+                # 动态更新编辑菜单的求解按钮文字
+                shortcut = self._format_menu_shortcut('auto_solve')
+                if self._auto_solve_running:
+                    self.edit_menu_items[-1] = f'停止求解 {shortcut}'
+                else:
+                    self.edit_menu_items[-1] = f'自动求解 {shortcut}'
+
+                self.draw_menu_bar()
+                self.draw_status_bar()
+
+                if self.show_help:
+                    self.draw_help_dialog()
+                if self.show_custom_dialog:
+                    self.draw_custom_puzzle_dialog()
+                if self.file_dialog.active:
+                    self.file_dialog.draw()
+                if self.show_settings_dialog:
+                    self.draw_settings_dialog()
+                if getattr(self, 'show_macro_manager_dialog', False):
+                    self.draw_macro_manager_dialog()
+                if getattr(self, 'show_macro_name_dialog', False):
+                    self.draw_macro_name_dialog()
+
+                # 虚拟键盘（浮动面板）
+                self.draw_virtual_keyboard()
+
+                # 聚拢度指标面板（浮动面板）
+                self.draw_metrics_panel()
+
+                # 成绩记录面板（浮动面板）
+                self.draw_records_panel()
+
+                # 宏执行结果通知（最顶层绘制）
+                self.draw_macro_notify()
+
+                self.handle_events()
+                pygame.display.flip()
+                dt_ms = clock.tick(60)
+
+                # 更新文本输入闪烁
+                if self.file_dialog.active:
+                    self.file_dialog.update(dt_ms)
+                if getattr(self, 'show_macro_name_dialog', False):
+                    macro_input = getattr(self, 'macro_name_text_input', None)
+                    if macro_input:
+                        macro_input.update(dt_ms)
+            except Exception as e:
+                _gui_log_error(f'主循环异常: {traceback.format_exc()}')
+                print(f"Run error: {e}")
+                self.running = False
+
+        # 退出前保存配置与成绩（成绩内存中维护，此时统一落盘）
+        self.records.save()
+        self.save_config()
+        pygame.quit()
+        sys.exit()
