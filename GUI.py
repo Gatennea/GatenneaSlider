@@ -14,6 +14,7 @@
 import pygame
 import sys
 import os
+import json
 import time
 import traceback
 import queue
@@ -113,19 +114,37 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.cell_size = self.base_cell_size
         self.padding = 10
         self.gap_width = 4
-        self.min_width = 800
-        self.min_height = 600
+        self.min_width = 1000
+        self.min_height = 618
 
         # 菜单栏和状态栏高度
         self.menu_bar_height = 32
         self.status_bar_height = 28
 
-        # 右侧面板宽度
-        self.right_panel_width = 44
+        # 右侧面板宽度（速度滑条 + 5 个快捷开关）
+        self.right_panel_width = 132
 
         # 窗口尺寸
         self.screen_width = self.min_width
         self.screen_height = self.min_height
+
+        # 从 config.json 恢复上次窗口大小/位置（必须在 set_mode 之前生效）
+        try:
+            _cfg_base = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+                         else os.path.dirname(os.path.abspath(__file__)))
+            _cfg_path = os.path.join(_cfg_base, 'config', 'config.json')
+            if os.path.exists(_cfg_path):
+                with open(_cfg_path, 'r', encoding='utf-8') as f:
+                    _cfg = json.load(f)
+                _ws = _cfg.get('window_size')
+                if isinstance(_ws, list) and len(_ws) == 2:
+                    self.screen_width = max(self.min_width, int(_ws[0]))
+                    self.screen_height = max(self.min_height, int(_ws[1]))
+                _wp = _cfg.get('window_pos')
+                if isinstance(_wp, list) and len(_wp) == 2:
+                    os.environ['SDL_VIDEO_WINDOW_POS'] = f'{int(_wp[0])},{int(_wp[1])}'
+        except Exception:
+            pass
 
         # 创建可调整大小的窗口
         self.screen = pygame.display.set_mode(
@@ -334,6 +353,35 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._auto_solve_progress = None   # 求解进度信息 dict
         self.solver_algorithm = 'ida_star' # 求解算法选择: 'ida_star', 'fast', 'greedy'
 
+        # 聚拢求解器参数（GUI 设置对话框可调，保存到 config.json）
+        self.gather_params = {
+            'max_steps': 500,            # 最大步数上限
+            'patience': 150,             # 连续无改进停机步数
+            'max_wait_time': 20,         # 求解时间上限（秒），0=不限时
+            'target_gather_score': 1.0,  # 目标聚拢度，达到即停（1.0=完全还原）
+            'aggressiveness': 0.2,       # 激进程度：允许聚拢度临时下降的幅度
+        }
+        # 各参数启用标志：False = 该参数不设限（传 None 给求解器）
+        self.gather_enabled = {k: True for k in self.gather_params}
+        # 聚拢参数输入框手动编辑状态
+        self.settings_editing_value = None   # 正在编辑的参数 key
+        self.settings_edit_buffer = ''       # 输入缓冲区
+        # 智能聚拢（梯度）逐阶段状态：None = 非梯度模式
+        self._gradient_state = None
+        # 分组着色器：按 (位置 mod step) 给滑块分组涂色，帮助人工还原
+        self.coloring_enabled = False
+        # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
+        self.chain_hint_enabled = False
+        self.hover_cell = None
+        # 参数规格（GUI 步进器用）：key -> (显示名, 默认值, 最小值, 最大值, 步长, 说明)
+        self._gather_param_specs = [
+            ('max_steps',           ('最大步数',     500,  100,   5000, 100,  '聚拢求解的步数上限，越大越可能深入但越慢')),
+            ('patience',            ('停滞容忍步数', 150,  10,    1000, 10,   '连续多少步聚拢度无改进就停止，越大越能跳出短暂卡顿')),
+            ('max_wait_time',       ('最大等待秒数', 20,   0,     120,  5,    '求解时间上限（秒），0 表示不限时')),
+            ('target_gather_score', ('目标聚拢度',   1.0,  0.5,   1.0,  0.05, '聚拢度达到该值即停止，1.0 表示完全还原')),
+            ('aggressiveness',      ('激进程度',     0.2,  0.0,   0.5,  0.05, '允许选择比最佳候选低多少的聚拢度，越大越敢于探索、越可能偏离')),
+        ]
+
         # 自定义谜题对话框状态
         self.show_custom_dialog = False
         self.custom_fields = {'m': '6', 'n': '6', 'step': '1'}
@@ -354,7 +402,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.timer_initial_matrix = ''
         self.timer_puzzle_key = ''
         self.game_mode = 'practice'  # 'timed' 计时模式 / 'practice' 练习模式（默认练习）
-        self._show_records_panel = False  # 成绩面板开关
 
         # 动画状态
         self.animating = False
@@ -363,6 +410,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.anim_end_pos = []
         self.anim_progress = 0.0
         self.anim_start_time = 0
+        # 动画速度范围（毫秒/步）：越小越快
+        self.SPEED_MIN_MS = 50
+        self.SPEED_MAX_MS = 1000
         self.animation_duration = 300  # 毫秒
         self.animation_enabled = True
 
@@ -381,7 +431,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.slider_dragging = False
         self.slider_rect = None
         self.slider_knob_rect = None
-        self.anim_toggle_rect = None
+        self.zoom_slider_dragging = False
+        self.zoom_slider_rect = None
+        self.zoom_knob_rect = None
 
         # 长按重复状态
         self.undo_held = False
@@ -983,14 +1035,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.macro_notify_timer = 180
 
     def _timer_blocked(self):
-        """计时 ready/running 期间，宏与求解器是否被禁止"""
-        return self.timer_state in ('ready', 'running')
+        """竞速模式下宏与求解器一律禁止（练习模式不禁）"""
+        return self.game_mode == 'timed'
 
     def _timer_status_text(self):
         """返回状态栏要显示的计时器文本（练习模式/计时模式始终显示当前状态）"""
         if self.game_mode == 'practice':
             return "练习模式"
-        prefix = "计时模式"
+        prefix = "竞速模式"
         if self.timer_state == 'idle':
             return f"{prefix}（待打乱）"
         if self.timer_state == 'ready':
@@ -1020,7 +1072,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._auto_solve_cancel = True
             return
 
+        # 梯度播放中：再次点击 = 停止（终止后续阶段）
         if self.macro_executing:
+            if getattr(self, '_gradient_state', None) is not None:
+                self._gradient_state = None
+                self.macro_notify_msg = "智能聚拢已停止"
+                self.macro_notify_timer = 90
             return
 
         self._auto_solve_result = None
@@ -1032,6 +1089,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         game_snapshot = deepcopy(self.game)
         algorithm = self.solver_algorithm
+
+        # 梯度聚拢：初始化阶段状态（先验参数自动决定，逐阶段播放）
+        # 续阶段时保留已有 stage_idx，仅首次生成 base_params
+        if algorithm == 'gather_gradient':
+            from solver.ml.gather_solver import predict_params
+            st = getattr(self, '_gradient_state', None)
+            if st is None:
+                st = {'stage_idx': 0, 'max_stages': 4, 'base_params': None}
+            if not st.get('base_params'):
+                st['base_params'] = predict_params(game_snapshot, self.current_step)
+            st.setdefault('max_stages', 4)
+            self._gradient_state = st
 
         def cancel_check():
             return self._auto_solve_cancel
@@ -1045,11 +1114,37 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 alg_name, solver_func = SOLVER_ALGORITHMS.get(
                     algorithm, SOLVER_ALGORITHMS['ida_star']
                 )
-                solution = solver_func(
-                    game_snapshot, step=self.current_step,
-                    cancel_check=cancel_check,
-                    progress_callback=progress_callback,
-                )
+                kwargs = {}
+                if algorithm == 'gather':
+                    # 禁用的参数传 None（不设限）
+                    for k, v in self.gather_params.items():
+                        kwargs[k] = v if self.gather_enabled.get(k, True) else None
+                if algorithm == 'gather_gradient':
+                    # 只跑当前阶段，播放该阶段动画后再续下一阶段
+                    from solver.ml.gather_solver import gather_solve, stage_params
+                    st = getattr(self, '_gradient_state', None)
+                    if st is None:
+                        solution = False
+                    else:
+                        p = stage_params(st['base_params'], st['stage_idx'])
+                        progress_callback({'stage': 'gradient_stage',
+                                           'idx': st['stage_idx'] + 1,
+                                           'total': st['max_stages']})
+                        solution = gather_solve(
+                            game_snapshot, step=self.current_step,
+                            cancel_check=cancel_check,
+                            progress_callback=progress_callback, **p)
+                        if isinstance(solution, dict):
+                            solution = dict(solution)
+                            solution['gradient_stage'] = st['stage_idx'] + 1
+                            solution['gradient_total'] = st['max_stages']
+                else:
+                    solution = solver_func(
+                        game_snapshot, step=self.current_step,
+                        cancel_check=cancel_check,
+                        progress_callback=progress_callback,
+                        **kwargs,
+                    )
                 if self._auto_solve_cancel:
                     self._auto_solve_result = False
                 else:
@@ -1081,15 +1176,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._auto_solve_result = None
 
         if result is None:
+            self._gradient_state = None
             self.macro_notify_msg = "自动求解：未找到数据库"
             self.macro_notify_timer = 180
             return
 
-        if isinstance(result, dict) and result.get('type') == 'gather':
+        if isinstance(result, dict) and result.get('type') in ('gather', 'gather_gradient'):
             self._handle_gather_result(result)
             return
 
         if result is False:
+            self._gradient_state = None
             self.macro_notify_msg = "自动求解：未找到解法"
             self.macro_notify_timer = 180
             return
@@ -1134,14 +1231,58 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         actions = result.get('actions', [])
         rep_cells = result.get('rep_cells', [])
         solved = result.get('solved', False)
+        reason = result.get('reason', '')
+
+        # 停机原因播报
+        reason_text = {
+            'solved': '已还原',
+            'target': '达到目标聚拢度',
+            'no_improve': '停滞无改进',
+            'max_steps': '步数上限耗尽',
+            'timeout': '达到时间上限',
+            'cancelled': '已取消',
+            'stuck': '无新状态可探索',
+            'no_candidates': '无可移动动作',
+            'invalid_action': '动作无效',
+            'stages_exhausted': '阶段耗尽',
+        }.get(reason, reason or '完成')
 
         if not actions:
+            self._gradient_state = None  # 无可播放动作 = 梯度流程到此为止
             if solved:
                 self.macro_notify_msg = "聚拢：已是复原状态"
             else:
-                self.macro_notify_msg = "聚拢：无可移动动作"
+                self.macro_notify_msg = f"聚拢：无可移动动作（{reason_text}）"
             self.macro_notify_timer = 180
             return
+
+        s, e = result.get('start', {}), result.get('end', {})
+        sh, sw = s.get('bbox', (0, 0))
+        eh, ew = e.get('bbox', (0, 0))
+        gstage = result.get('gradient_stage')
+        if gstage:
+            gtotal = result.get('gradient_total', 4)
+            self.macro_notify_msg = (
+                f"智能聚拢 第{gstage}/{gtotal}阶段完成（{reason_text}）· {len(actions)}步 · "
+                f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
+            )
+        else:
+            stages_info = ''
+            if result.get('stages'):
+                parts = []
+                for st in result['stages']:
+                    rname = {
+                        'solved': '完成', 'no_improve': '停滞', 'stuck': '绕圈',
+                        'max_steps': '步满', 'timeout': '超时',
+                    }.get(st.get('reason', ''), st.get('reason', ''))
+                    parts.append(f"{st.get('stage')}:{st.get('steps')}步({rname})")
+                stages_info = ' · 阶段[' + '|'.join(parts) + ']'
+            self.macro_notify_msg = (
+                f"聚拢完成（{reason_text}）· 共{len(actions)}步 · "
+                f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}% "
+                f"· 边界盒 {sh}×{sw}→{eh}×{ew}{stages_info}"
+            )
+        self.macro_notify_timer = 240
 
         ops = []
         for i, action in enumerate(actions):
@@ -1161,6 +1302,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'start': result.get('start', {}),
             'end': result.get('end', {}),
             'solved': solved,
+            'reason': reason,
         }
         self.macro_executing = True
         self.macro_exec_name = "聚拢"
@@ -1207,10 +1349,23 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     elapsed = time.time() - self._auto_solve_start_time
                     progress = self._auto_solve_progress
                     if progress:
-                        if progress.get('stage') == 'gather':
+                        if progress.get('stage') == 'gradient_stage':
+                            idx = progress.get('idx', 1)
+                            total = progress.get('total', 4)
+                            self.macro_notify_msg = f"智能聚拢 第{idx}/{total}阶段（放宽参数再聚拢）..."
+                        elif progress.get('stage') == 'gather':
                             score = progress.get('score', 0)
                             best = progress.get('best_score', 0)
-                            self.macro_notify_msg = f"聚拢中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%） | {elapsed:.1f}s"
+                            bbox = progress.get('bbox', None)
+                            fill = progress.get('fill_rate', 0)
+                            if bbox:
+                                bh, bw = bbox
+                                self.macro_notify_msg = (
+                                    f"聚拢中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%）"
+                                    f"边界盒 {bh}×{bw} 填充 {fill*100:.0f}% | {elapsed:.1f}s"
+                                )
+                            else:
+                                self.macro_notify_msg = f"聚拢中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%） | {elapsed:.1f}s"
                         else:
                             stage = progress.get('stage', '')
                             bound = progress.get('bound', 0)
@@ -1264,6 +1419,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.draw_menu_bar()
                 self.draw_status_bar()
 
+                # 浮动面板（先画，被模态对话框遮住）
+                self.draw_virtual_keyboard()
+                self.draw_metrics_panel()
+                self.draw_records_panel()
+
+                # 模态对话框（后画，最上层）
                 if self.show_help:
                     self.draw_help_dialog()
                 if self.show_custom_dialog:
@@ -1277,14 +1438,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 if getattr(self, 'show_macro_name_dialog', False):
                     self.draw_macro_name_dialog()
 
-                # 虚拟键盘（浮动面板）
+                '''# 虚拟键盘（浮动面板）
                 self.draw_virtual_keyboard()
 
                 # 聚拢度指标面板（浮动面板）
                 self.draw_metrics_panel()
 
                 # 成绩记录面板（浮动面板）
-                self.draw_records_panel()
+                self.draw_records_panel()'''
 
                 # 宏执行结果通知（最顶层绘制）
                 self.draw_macro_notify()

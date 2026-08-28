@@ -196,7 +196,22 @@ class EventsMixin:
                 # 鼠标移动
                 if event.type == pygame.MOUSEMOTION:
                     mx, my = event.pos
-                    
+
+                    # 棋盘悬停格（连锁提示用；含空格，越界置空）
+                    self.hover_cell = None
+                    if getattr(self, 'chain_hint_enabled', False):
+                        try:
+                            # 注意：shuffle 后棋盘坐标可为负，用 bounds 判定而非 0 起索引
+                            b = self.game.get_boundaries()
+                            c = self.get_cell_at_pos(mx, my)
+                            if c is not None and (
+                                b['min_row'] - 1 <= c[0] <= b['max_row'] + 1 and
+                                b['min_col'] - 1 <= c[1] <= b['max_col'] + 1
+                            ):
+                                self.hover_cell = c
+                        except Exception:
+                            self.hover_cell = None
+
                     # 菜单栏悬停
                     self.menu_hovered = -1
                     if my < self.menu_bar_height:
@@ -248,8 +263,10 @@ class EventsMixin:
                                 self.settings_menu_hovered = i
                                 break
 
-                    # 滑动条拖拽
-                    if self.slider_dragging:
+                    # 滑动条拖拽（缩放/速度）
+                    if getattr(self, 'zoom_slider_dragging', False):
+                        self._update_zoom_slider_from_mouse(my)
+                    elif self.slider_dragging:
                         self._update_slider_from_mouse(my)
                     
                     # 拖拽地图
@@ -345,23 +362,6 @@ class EventsMixin:
                             if macro_clicked:
                                 continue
 
-                        # 设置菜单项点击：快捷键设置 / 动画速度
-                        if self.show_settings_menu:
-                            settings_clicked = False
-                            for i, rect in enumerate(self.settings_menu_rects):
-                                if rect.collidepoint(x, y):
-                                    settings_clicked = True
-                                    self.close_all_menus()
-                                    self.show_settings_dialog = True
-                                    self.settings_active_tab = 'keybindings' if i == 0 else 'animation'
-                                    self.settings_editing_action = None
-                                    self._settings_scroll = 0
-                                    self._settings_backup_keybindings = dict(self.keybindings)
-                                    break
-                            self.close_all_menus()
-                            if settings_clicked:
-                                continue
-
                         # 菜单栏点击
                         if y < self.menu_bar_height:
                             for i, rect in enumerate(self.menu_item_rects):
@@ -395,11 +395,14 @@ class EventsMixin:
                                         self.show_settings_menu = False
                                         self.show_macro_menu = not self.show_macro_menu
                                     elif self.menu_items[i] == '设置':
-                                        self.show_file_menu = False
-                                        self.show_edit_menu = False
-                                        self.show_puzzle_menu = False
-                                        self.show_macro_menu = False
-                                        self.show_settings_menu = not self.show_settings_menu
+                                        self.close_all_menus()
+                                        self.show_settings_dialog = True
+                                        self.settings_active_tab = 'keybindings'
+                                        self.settings_editing_action = None
+                                        self._settings_scroll = 0
+                                        self._settings_backup_keybindings = dict(self.keybindings)
+                                        self._settings_backup_gather = dict(self.gather_params)
+                                        self._settings_backup_gather_enabled = dict(self.gather_enabled)
                                     else:
                                         self.close_all_menus()
                                     break
@@ -407,15 +410,19 @@ class EventsMixin:
                         else:
                             self.close_all_menus()
                         
-                        # 右侧面板点击
+                        # 右侧面板点击：5 个快捷开关 / 缩放滑条 / 速度滑条
                         if x >= self.screen_width - self.right_panel_width:
-                            if self.anim_toggle_rect and self.anim_toggle_rect.collidepoint(x, y):
-                                self.animation_enabled = not self.animation_enabled
-                                if not self.animation_enabled and self.animating:
-                                    self.commit_animation()
-                                status = '开' if self.animation_enabled else '关'
-                                self.macro_notify_msg = f"动画：{status}"
-                                self.macro_notify_timer = 90
+                            switches = getattr(self, 'right_panel_switch_rects', {})
+                            sw_clicked = None
+                            for skey, srect in switches.items():
+                                if srect.collidepoint(x, y):
+                                    sw_clicked = skey
+                                    break
+                            if sw_clicked:
+                                self._handle_right_panel_switch(sw_clicked)
+                            elif getattr(self, 'zoom_slider_rect', None) and self.zoom_slider_rect.collidepoint(x, y):
+                                self.zoom_slider_dragging = True
+                                self._update_zoom_slider_from_mouse(y)
                             elif self.slider_rect and self.slider_rect.collidepoint(x, y):
                                 self.slider_dragging = True
                                 self._update_slider_from_mouse(y)
@@ -483,6 +490,7 @@ class EventsMixin:
                     if event.button == 1:
                         self.is_dragging = False
                         self.slider_dragging = False
+                        self.zoom_slider_dragging = False
                 
                 # 鼠标滚轮
                 elif event.type == pygame.MOUSEWHEEL:
@@ -1006,12 +1014,28 @@ class EventsMixin:
             return
         y = max(track_top, min(track_bottom, mouse_y))
         normalized = (y - track_top) / track_height
-        new_duration = int(100 + normalized * 900)
+        new_duration = int(self.SPEED_MIN_MS + normalized * (self.SPEED_MAX_MS - self.SPEED_MIN_MS))
         if self.animating and self.animation_duration > 0:
             elapsed = pygame.time.get_ticks() - self.anim_start_time
             old_progress = elapsed / max(1, self.animation_duration)
             self.anim_start_time = pygame.time.get_ticks() - int(old_progress * new_duration)
         self.animation_duration = new_duration
+
+    def _update_zoom_slider_from_mouse(self, mouse_y):
+        """根据鼠标Y坐标更新缩放（以窗口中心为锚点）"""
+        zr = getattr(self, 'zoom_slider_rect', None)
+        if not zr or zr.height <= 0:
+            return
+        y = max(zr.top, min(zr.bottom, mouse_y))
+        normalized = (y - zr.top) / zr.height
+        new_zoom = self.min_zoom + normalized * (self.max_zoom - self.min_zoom)
+        cx = self.screen_width // 2
+        cy = self.menu_bar_height + (self.screen_height - self.menu_bar_height - self.status_bar_height) // 2
+        wx = (cx - self.camera_x) / self.zoom
+        wy = (cy - self.camera_y) / self.zoom
+        self.zoom = new_zoom
+        self.camera_x = cx - wx * self.zoom
+        self.camera_y = cy - wy * self.zoom
 
     def _update_settings_scrollbar(self, mx, my):
         """根据鼠标位置更新设置对话框滚动条"""
@@ -1076,6 +1100,27 @@ class EventsMixin:
 
     def _handle_settings_dialog_event(self, event):
         """处理设置对话框中的事件"""
+        # 聚拢参数值手动输入：只处理键盘输入（鼠标事件放行，由下方逻辑处理）
+        if self.settings_active_tab == 'gather' and getattr(self, 'settings_editing_value', None):
+            if event.type == pygame.KEYDOWN:
+                key = self.settings_editing_value
+                if event.key == pygame.K_RETURN:
+                    self._commit_gather_value(key)
+                elif event.key == pygame.K_ESCAPE:
+                    self.settings_editing_value = None
+                elif event.key == pygame.K_BACKSPACE:
+                    self.settings_edit_buffer = self.settings_edit_buffer[:-1]
+                elif event.key == pygame.K_PERIOD:
+                    if '.' not in self.settings_edit_buffer and len(self.settings_edit_buffer) < 12:
+                        self.settings_edit_buffer += '.'
+                elif event.key == pygame.K_MINUS:
+                    if '-' not in self.settings_edit_buffer and len(self.settings_edit_buffer) < 12:
+                        self.settings_edit_buffer += '-'
+                elif pygame.K_0 <= event.key <= pygame.K_9:
+                    if len(self.settings_edit_buffer) < 12:
+                        self.settings_edit_buffer += chr(event.key)
+                return
+
         # ESC 关闭对话框（取消）
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             if self.settings_editing_action:
@@ -1084,6 +1129,9 @@ class EventsMixin:
             else:
                 # 关闭对话框，恢复备份
                 self.keybindings = dict(self._settings_backup_keybindings)
+                self.gather_params = dict(getattr(self, '_settings_backup_gather', self.gather_params))
+                self.gather_enabled = dict(getattr(self, '_settings_backup_gather_enabled', self.gather_enabled))
+                self.settings_editing_value = None
                 self.show_settings_dialog = False
             return
 
@@ -1134,20 +1182,37 @@ class EventsMixin:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
 
+            # 聚拢参数编辑中：点击当前输入框之外 → 先提交（避免卡在编辑状态）
+            if getattr(self, 'settings_editing_value', None):
+                ekey = self.settings_editing_value
+                erects = getattr(self, '_settings_gather_rects', {}).get(ekey)
+                ebox = erects.get('box') if isinstance(erects, dict) else None
+                if ebox is None or not ebox.collidepoint(mx, my):
+                    self._commit_gather_value(ekey)
+
             # Tab 切换
             if hasattr(self, '_settings_tab_kb_rect') and self._settings_tab_kb_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'keybindings'
                 self.settings_editing_action = None
+                self.settings_editing_value = None
                 self._settings_scroll = 0
                 return
             if hasattr(self, '_settings_tab_anim_rect') and self._settings_tab_anim_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'animation'
                 self.settings_editing_action = None
+                self.settings_editing_value = None
                 self._settings_scroll = 0
                 return
             if hasattr(self, '_settings_tab_solver_rect') and self._settings_tab_solver_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'solver'
                 self.settings_editing_action = None
+                self.settings_editing_value = None
+                self._settings_scroll = 0
+                return
+            if hasattr(self, '_settings_tab_gather_rect') and self._settings_tab_gather_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'gather'
+                self.settings_editing_action = None
+                self.settings_editing_value = None
                 self._settings_scroll = 0
                 return
 
@@ -1166,6 +1231,24 @@ class EventsMixin:
                     self.animation_enabled = not self.animation_enabled
                     if not self.animation_enabled and self.animating:
                         self.commit_animation()
+                    return
+
+            # 动画 Tab：分组着色器开关
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_coloring_toggle_rect'):
+                if self._settings_coloring_toggle_rect.collidepoint(mx, my):
+                    self.coloring_enabled = not self.coloring_enabled
+                    status = '开' if self.coloring_enabled else '关'
+                    self.macro_notify_msg = f"分组着色：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 动画 Tab：悬停连锁提示开关
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_chain_toggle_rect'):
+                if self._settings_chain_toggle_rect.collidepoint(mx, my):
+                    self.chain_hint_enabled = not self.chain_hint_enabled
+                    status = '开' if self.chain_hint_enabled else '关'
+                    self.macro_notify_msg = f"悬停连锁提示：{status}"
+                    self.macro_notify_timer = 90
                     return
 
             # 动画 Tab：滑动条
@@ -1209,6 +1292,59 @@ class EventsMixin:
                         self.macro_notify_timer = 120
                         return
 
+            # 聚拢参数 Tab：开关 / 输入框 / -/+ 按钮
+            if self.settings_active_tab == 'gather' and hasattr(self, '_settings_gather_rects'):
+                for key, rects in self._settings_gather_rects.items():
+                    if not isinstance(rects, dict):
+                        continue  # 容错：跳过结构异常的旧 rect 数据
+                    spec = None
+                    for k, s in self._gather_param_specs:
+                        if k == key:
+                            spec = s
+                            break
+                    if not spec:
+                        continue
+                    _label, _vdef, vmin, vmax, vstep, _desc = spec
+                    enabled = self.gather_enabled.get(key, True)
+                    # 启用/禁用开关
+                    tgl = rects.get('toggle')
+                    if tgl is not None and tgl.collidepoint(mx, my):
+                        new_state = not enabled
+                        self.gather_enabled[key] = new_state
+                        self.settings_editing_value = None
+                        self.macro_notify_msg = f"{_label}：{'已启用' if new_state else '已禁用（不设限）'}"
+                        self.macro_notify_timer = 90
+                        return
+                    # 输入框：进入手动编辑
+                    box = rects.get('box')
+                    if box is not None and box.collidepoint(mx, my):
+                        val = self.gather_params.get(key, vmin)
+                        if key in ('max_steps', 'patience'):
+                            buf = str(int(val))
+                        else:
+                            buf = f"{val:g}"
+                        self.settings_editing_value = key
+                        self.settings_edit_buffer = buf
+                        return
+                    if not enabled:
+                        continue  # 禁用时 −/+ 不可用
+                    dec = rects.get('dec')
+                    if dec is not None and dec.collidepoint(mx, my):
+                        val = self.gather_params.get(key, vmin)
+                        new_val = max(vmin, round(val - vstep, 6))
+                        self.gather_params[key] = new_val
+                        self.macro_notify_msg = f"参数已调整（未保存，点确定生效）"
+                        self.macro_notify_timer = 90
+                        return
+                    inc = rects.get('inc')
+                    if inc is not None and inc.collidepoint(mx, my):
+                        val = self.gather_params.get(key, vmin)
+                        new_val = min(vmax, round(val + vstep, 6))
+                        self.gather_params[key] = new_val
+                        self.macro_notify_msg = f"参数已调整（未保存，点确定生效）"
+                        self.macro_notify_timer = 90
+                        return
+
             # 确定按钮
             if hasattr(self, '_settings_ok_btn') and self._settings_ok_btn.collidepoint(mx, my):
                 self._apply_settings()
@@ -1217,6 +1353,9 @@ class EventsMixin:
             # 取消按钮
             if hasattr(self, '_settings_cancel_btn') and self._settings_cancel_btn.collidepoint(mx, my):
                 self.keybindings = dict(self._settings_backup_keybindings)
+                self.gather_params = dict(getattr(self, '_settings_backup_gather', self.gather_params))
+                self.gather_enabled = dict(getattr(self, '_settings_backup_gather_enabled', self.gather_enabled))
+                self.settings_editing_value = None
                 self.show_settings_dialog = False
                 self.settings_editing_action = None
                 return
@@ -1226,7 +1365,15 @@ class EventsMixin:
                 from gui.file_ops import DEFAULT_KEYBINDINGS
                 self.keybindings = dict(DEFAULT_KEYBINDINGS)
                 self.settings_editing_action = None
+                self.settings_editing_value = None
                 self._update_menu_shortcut_texts()
+                # 恢复聚拢参数默认值
+                if hasattr(self, '_gather_param_specs'):
+                    for k, (_label, vdef, _vmin, _vmax, _vstep, _desc) in self._gather_param_specs:
+                        self.gather_params[k] = vdef
+                        self.gather_enabled[k] = True
+                    self.macro_notify_msg = "已恢复默认参数"
+                    self.macro_notify_timer = 90
                 return
 
         # 鼠标释放
@@ -1271,6 +1418,59 @@ class EventsMixin:
         self._update_menu_shortcut_texts()
         self.show_settings_dialog = False
         self.settings_editing_action = None
+        self.settings_editing_value = None
+
+    def _commit_gather_value(self, key):
+        """提交聚拢参数输入框的手动输入值（Enter）"""
+        spec = None
+        for k, s in self._gather_param_specs:
+            if k == key:
+                spec = s
+                break
+        if not spec:
+            self.settings_editing_value = None
+            return
+        _label, _vdef, vmin, vmax, _vstep, _desc = spec
+        try:
+            val = float(self.settings_edit_buffer.strip())
+        except ValueError:
+            self.settings_editing_value = None
+            self.macro_notify_msg = "输入无效，已保留原值"
+            self.macro_notify_timer = 90
+            return
+        if key in ('max_steps', 'patience'):
+            val = int(val)
+            vmin, vmax = int(vmin), int(vmax)
+        val = max(vmin, min(vmax, val))
+        self.gather_params[key] = round(val, 6)
+        self.settings_editing_value = None
+        self.macro_notify_msg = "参数已调整（未保存，点确定生效）"
+        self.macro_notify_timer = 90
+
+    def _handle_right_panel_switch(self, key: str):
+        """处理右侧面板快捷开关点击（动画/着色/连锁/模式/逆序）"""
+        if key == 'animation_enabled':
+            self.animation_enabled = not self.animation_enabled
+            if not self.animation_enabled and self.animating:
+                self.commit_animation()
+            status = '开' if self.animation_enabled else '关'
+            self.macro_notify_msg = f"动画：{status}"
+        elif key == 'coloring_enabled':
+            self.coloring_enabled = not self.coloring_enabled
+            status = '开' if self.coloring_enabled else '关'
+            self.macro_notify_msg = f"分组着色：{status}"
+        elif key == 'chain_hint_enabled':
+            self.chain_hint_enabled = not self.chain_hint_enabled
+            status = '开' if self.chain_hint_enabled else '关'
+            self.macro_notify_msg = f"悬停连锁提示：{status}"
+        elif key == 'game_mode':
+            self.toggle_game_mode()
+            return  # toggle_game_mode 已设置提示
+        elif key == 'macro_reverse_mode':
+            self.macro_reverse_mode = not self.macro_reverse_mode
+            status = '开' if self.macro_reverse_mode else '关'
+            self.macro_notify_msg = f"逆序播放宏指令：{status}"
+        self.macro_notify_timer = 90
 
     # ==================== 宏功能 ====================
 
@@ -1453,108 +1653,113 @@ class EventsMixin:
         self._execute_next_macro_step()
 
     def _execute_next_macro_step(self):
-        """执行宏队列中的下一个操作"""
-        # 聚拢播放：每步实时刷新当前聚拢度
-        if getattr(self, '_gather_info', None) is not None:
-            self._update_gather_notify()
-
-        if self.macro_exec_index >= len(self.macro_exec_ops):
+        """执行宏队列中的下一个操作（无动画时用循环迭代，避免长解法递归爆栈）"""
+        while True:
+            # 聚拢播放：每步实时刷新当前聚拢度
             if getattr(self, '_gather_info', None) is not None:
-                self._finish_gather()
+                self._update_gather_notify()
+
+            if self.macro_exec_index >= len(self.macro_exec_ops):
+                if getattr(self, '_gather_info', None) is not None:
+                    self._finish_gather()
+                else:
+                    # 所有步骤执行完毕 — 显示成功通知
+                    total_ops = len(self.macro_exec_ops)
+                    macro_name = self.macro_exec_name
+                    label = '逆序' if self.macro_exec_reverse else ''
+                    self.macro_notify_msg = f'[{macro_name}] {label}执行成功：{total_ops}步'
+                    self.macro_notify_timer = 180  # 3秒 (60fps)
+                # 所有步骤执行完毕
+                self.macro_executing = False
+                self.macro_exec_ops = []
+                self.macro_exec_index = 0
+                # 梯度聚拢：本阶段播放完毕，未还原则自动进入下一阶段
+                gs = getattr(self, '_gradient_state', None)
+                if gs is not None and gs.get('stage_idx', 0) + 1 < gs.get('max_stages', 4):
+                    gs['stage_idx'] += 1
+                    self._start_auto_solve()
+                return
+
+            op = self.macro_exec_ops[self.macro_exec_index]
+            gap_type = op['gap_type']
+            gap_line = op['gap_line']
+            side = op['side']
+            direction = op['direction']
+            step = op['step']
+
+            # 检查缝隙有效性
+            if gap_type == 'h' and not self.game.is_valid_h_line(gap_line):
+                self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 横向缝隙 {gap_line} 无效'
+                self.macro_error_timer = 60 * 3
+                self._set_macro_interrupted_notify()
+                self.macro_executing = False
+                self.macro_exec_ops = []
+                return
+            if gap_type == 'v' and not self.game.is_valid_v_line(gap_line):
+                self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 纵向缝隙 {gap_line} 无效'
+                self.macro_error_timer = 60 * 3
+                self._set_macro_interrupted_notify()
+                self.macro_executing = False
+                self.macro_exec_ops = []
+                return
+
+            # 选中缝隙
+            self.selected_gap = (gap_type, gap_line)
+            for b in self.game.blocks:
+                b.be_opted = False
+            self.selected_block = None
+
+            # 找到缝隙对应侧的任意一个方块（若有 rep_cell 则精确指定）
+            if 'rep_cell' in op:
+                rr, cc = op['rep_cell']
+                target_block = self._find_block_by_cell(rr, cc)
+                if target_block is None:
+                    target_block = self._find_block_on_side(gap_type, gap_line, side)
             else:
-                # 所有步骤执行完毕 — 显示成功通知
-                total_ops = len(self.macro_exec_ops)
-                macro_name = self.macro_exec_name
-                label = '逆序' if self.macro_exec_reverse else ''
-                self.macro_notify_msg = f'[{macro_name}] {label}执行成功：{total_ops}步'
-                self.macro_notify_timer = 180  # 3秒 (60fps)
-            # 所有步骤执行完毕
-            self.macro_executing = False
-            self.macro_exec_ops = []
-            self.macro_exec_index = 0
-            return
-        
-        op = self.macro_exec_ops[self.macro_exec_index]
-        gap_type = op['gap_type']
-        gap_line = op['gap_line']
-        side = op['side']
-        direction = op['direction']
-        step = op['step']
-
-        # 检查缝隙有效性
-        if gap_type == 'h' and not self.game.is_valid_h_line(gap_line):
-            self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 横向缝隙 {gap_line} 无效'
-            self.macro_error_timer = 60 * 3
-            self._set_macro_interrupted_notify()
-            self.macro_executing = False
-            self.macro_exec_ops = []
-            return
-        if gap_type == 'v' and not self.game.is_valid_v_line(gap_line):
-            self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 纵向缝隙 {gap_line} 无效'
-            self.macro_error_timer = 60 * 3
-            self._set_macro_interrupted_notify()
-            self.macro_executing = False
-            self.macro_exec_ops = []
-            return
-
-        # 选中缝隙
-        self.selected_gap = (gap_type, gap_line)
-        for b in self.game.blocks:
-            b.be_opted = False
-        self.selected_block = None
-
-        # 找到缝隙对应侧的任意一个方块（若有 rep_cell 则精确指定）
-        if 'rep_cell' in op:
-            rr, cc = op['rep_cell']
-            target_block = self._find_block_by_cell(rr, cc)
-            if target_block is None:
                 target_block = self._find_block_on_side(gap_type, gap_line, side)
-        else:
-            target_block = self._find_block_on_side(gap_type, gap_line, side)
-        if target_block is None:
-            self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 缝隙 {gap_type}{gap_line} {side} 侧无方块'
-            self.macro_error_timer = 60 * 3
-            self._set_macro_interrupted_notify()
-            self.macro_executing = False
-            self.macro_exec_ops = []
-            return
+            if target_block is None:
+                self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 缝隙 {gap_type}{gap_line} {side} 侧无方块'
+                self.macro_error_timer = 60 * 3
+                self._set_macro_interrupted_notify()
+                self.macro_executing = False
+                self.macro_exec_ops = []
+                return
 
-        # opt() 选中方块组
-        self.game.opt(gap_type, gap_line, target_block)
-        self.selected_block = target_block
+            # opt() 选中方块组
+            self.game.opt(gap_type, gap_line, target_block)
+            self.selected_block = target_block
 
-        # 验证移动
-        final_positions = self.game.try_move(direction, step)
-        if not final_positions:
-            self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 方向 {direction} 不可移动'
-            self.macro_error_timer = 60 * 3
-            self._set_macro_interrupted_notify()
-            self.macro_executing = False
-            self.macro_exec_ops = []
-            return
+            # 验证移动
+            final_positions = self.game.try_move(direction, step)
+            if not final_positions:
+                self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 方向 {direction} 不可移动'
+                self.macro_error_timer = 60 * 3
+                self._set_macro_interrupted_notify()
+                self.macro_executing = False
+                self.macro_exec_ops = []
+                return
 
-        # 构建 move_info
-        selected = [b for b in self.game.blocks if b.be_opted]
-        move_info = {
-            'gap_type': gap_type,
-            'gap_line': gap_line,
-            'direction': direction,
-            'step': step,
-            'moved_positions': [list(b.location) for b in selected],
-        }
-        self._pending_move_info = move_info
+            # 构建 move_info
+            selected = [b for b in self.game.blocks if b.be_opted]
+            move_info = {
+                'gap_type': gap_type,
+                'gap_line': gap_line,
+                'direction': direction,
+                'step': step,
+                'moved_positions': [list(b.location) for b in selected],
+            }
+            self._pending_move_info = move_info
 
-        # 播放动画或直接提交
-        if self.animation_enabled and self.animation_duration > 0:
-            self.start_animation(selected, final_positions)
-            # 动画结束由 commit_animation 中宏路径继续
-        else:
+            # 播放动画或直接提交（无动画时循环执行后续步骤）
+            if self.animation_enabled and self.animation_duration > 0:
+                self.start_animation(selected, final_positions)
+                return  # 动画结束由 commit_animation 中宏路径继续
+
             self.game.commit_move(final_positions)
             self.step_count += 1
             self.game_history.save_snapshot(self.game, move_info)
             self._pending_move_info = None
             self.macro_exec_index += 1
-            self._execute_next_macro_step()
 
     def _update_gather_notify(self):
         """聚拢播放中：实时刷新当前聚拢度到通知栏。"""
@@ -1571,16 +1776,51 @@ class EventsMixin:
         self.macro_notify_persistent = True
 
     def _finish_gather(self):
-        """聚拢播放结束：显示起点→终点摘要。"""
+        """聚拢播放结束：显示起点→终点摘要与停机原因。"""
         info = self._gather_info
         s = info.get('start', {})
         e = info.get('end', {})
         total = len(self.macro_exec_ops)
-        if info.get('solved'):
+        reason = info.get('reason', '')
+        reason_text = {
+            'solved': '已还原',
+            'target': '达到目标聚拢度',
+            'no_improve': '停滞无改进',
+            'max_steps': '步数上限耗尽',
+            'timeout': '达到时间上限',
+            'cancelled': '已取消',
+            'stuck': '无新状态可探索',
+            'no_candidates': '无可移动动作',
+            'invalid_action': '动作无效',
+            'stages_exhausted': '阶段耗尽',
+        }.get(reason, reason or '完成')
+        sh, sw = s.get('bbox', (0, 0))
+        eh, ew = e.get('bbox', (0, 0))
+        gs = getattr(self, '_gradient_state', None)
+        if gs is not None:
+            # 梯度聚拢：逐阶段播报；续阶段由宏完成分支负责
+            cur = gs.get('stage_idx', 0) + 1
+            if info.get('solved'):
+                self.macro_notify_msg = f"智能聚拢：已复原！共{total}步"
+                self._gradient_state = None
+            elif cur >= gs.get('max_stages', 4):
+                self.macro_notify_msg = (
+                    f"智能聚拢：{gs.get('max_stages', 4)}阶段未复原 · "
+                    f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
+                )
+                self._gradient_state = None
+            else:
+                self.macro_notify_msg = (
+                    f"智能聚拢 第{cur}/{gs.get('max_stages', 4)}阶段完成（{reason_text}）· "
+                    f"{total}步 · 聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
+                )
+        elif info.get('solved'):
             self.macro_notify_msg = f"聚拢完成：已复原（{total}步）"
         else:
             self.macro_notify_msg = (
-                f"聚拢完成：聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}% · {total}步"
+                f"聚拢完成（{reason_text}）· {total}步 · "
+                f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}% "
+                f"· 边界盒 {sh}×{sw}→{eh}×{ew}"
             )
         self.macro_notify_timer = 240
         self.macro_notify_persistent = False
@@ -1595,6 +1835,7 @@ class EventsMixin:
         self.macro_notify_timer = 180  # 3秒 (60fps)
         self.macro_notify_persistent = False
         self._gather_info = None  # 中断时清空聚拢状态，避免污染后续宏
+        self._gradient_state = None  # 中断时终止梯度聚拢后续阶段
 
     def _find_block_on_side(self, gap_type: str, gap_line: int, side: str):
         """

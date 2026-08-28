@@ -71,11 +71,14 @@ from http_server import start_http_server
 def stdin_reader(cmd_queue: queue.Queue):
     """后台线程：从 stdin 读取指令并放入队列"""
     try:
+        # PyInstaller --windowed 无控制台打包时 sys.stdin 为 None
+        if sys.stdin is None:
+            return
         for line in sys.stdin:
             line = line.strip()
             if line:
                 cmd_queue.put(line)
-    except (EOFError, OSError):
+    except (EOFError, OSError, TypeError):
         pass
 
 

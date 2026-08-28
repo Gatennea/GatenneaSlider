@@ -143,6 +143,7 @@ class Records:
             'dnf_count': len(times) - len(valid),
             'ao5': self._avg_of(times, 5),
             'ao12': self._avg_of(times, 12),
+            'mean': sum(valid) / len(valid) if valid else None,
         }
 
     @staticmethod

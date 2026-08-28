@@ -33,5 +33,8 @@ solver/ml/models/
 # ===== 用户宏数据 =====
 macro/*.json
 
+# ===== 测试临时输出（测试脚本生成的存档等）=====
+測試/_tmp_save/
+
 # ===== 独立项目：加密工具（与本游戏无关，如需入库请 git add -f encrypt）=====
 encrypt/

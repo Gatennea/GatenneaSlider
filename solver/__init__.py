@@ -60,6 +60,7 @@ from solver.ml.emd_solver import emd_greedy_solve
 from solver.ml.strategy_solver import strategy_solve
 from solver.ml.distance_solver import distance_solve
 from solver.ml.gather_solver import gather_solve
+from solver.ml.gather_solver import gradient_gather
 
 SOLVER_ALGORITHMS = {
     'ida_star': ('  IDA*求解', solve),
@@ -71,6 +72,7 @@ SOLVER_ALGORITHMS = {
     #'strategy': ('  策略求解', strategy_solve),
     #'distance': ('  距离求解', distance_solve),
     'gather': ('  聚拢', gather_solve),
+    'gather_gradient': ('  智能聚拢', gradient_gather),
 }
 
 __all__ = ['solve', 'solve_fast', 'solve_greedy', 'SOLVER_ALGORITHMS',

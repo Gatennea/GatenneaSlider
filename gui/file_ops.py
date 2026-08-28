@@ -12,6 +12,7 @@
 
 import json
 import os
+import pygame
 from game import SliderMatrix, Block
 
 
@@ -123,6 +124,31 @@ class FileOpsMixin:
             'camera_x': self.camera_x,
             'camera_y': self.camera_y,
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
+            'coloring_enabled': getattr(self, 'coloring_enabled', False),
+            'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
+            'gather_params': getattr(self, 'gather_params', {}),
+            'gather_enabled': getattr(self, 'gather_enabled', {}),
+        }
+
+        # 窗口大小 / 屏幕位置 / 面板状态（下次启动恢复）
+        config['window_size'] = [self.screen_width, self.screen_height]
+        try:
+            config['window_pos'] = list(pygame.display.get_window_position())
+        except Exception:
+            config['window_pos'] = None
+        config['panels'] = {
+            'records': {
+                'visible': getattr(self, 'show_records_panel', False),
+                'pos': list(getattr(self, 'rp_pos', [10, self.menu_bar_height + 10])),
+            },
+            'virtual_keyboard': {
+                'visible': getattr(self, 'show_virtual_keyboard', False),
+                'pos': list(getattr(self, 'vk_pos', [0, 0])),
+            },
+            'metrics': {
+                'visible': getattr(self, 'show_metrics_panel', False),
+                'pos': list(getattr(self, 'mp_pos', [10, self.menu_bar_height + 10])),
+            },
         }
         try:
             with open(self.config_path, 'w', encoding='utf-8') as f:
@@ -240,6 +266,28 @@ class FileOpsMixin:
                 if 'zoom' in config:
                     self.zoom = config['zoom']
 
+                # 恢复浮动面板状态（位置 / 开关）
+                panels = config.get('panels', {})
+                if isinstance(panels, dict):
+                    _rp = panels.get('records', {})
+                    if isinstance(_rp, dict):
+                        if 'visible' in _rp:
+                            self.show_records_panel = bool(_rp['visible'])
+                        if isinstance(_rp.get('pos'), list) and len(_rp['pos']) == 2:
+                            self.rp_pos = [int(_rp['pos'][0]), int(_rp['pos'][1])]
+                    _vk = panels.get('virtual_keyboard', {})
+                    if isinstance(_vk, dict):
+                        if 'visible' in _vk:
+                            self.show_virtual_keyboard = bool(_vk['visible'])
+                        if isinstance(_vk.get('pos'), list) and len(_vk['pos']) == 2:
+                            self.vk_pos = [int(_vk['pos'][0]), int(_vk['pos'][1])]
+                    _mp = panels.get('metrics', {})
+                    if isinstance(_mp, dict):
+                        if 'visible' in _mp:
+                            self.show_metrics_panel = bool(_mp['visible'])
+                        if isinstance(_mp.get('pos'), list) and len(_mp['pos']) == 2:
+                            self.mp_pos = [int(_mp['pos'][0]), int(_mp['pos'][1])]
+
                 last_path = config.get('last_file_path')
 
                 if last_path and os.path.exists(last_path):
@@ -261,6 +309,24 @@ class FileOpsMixin:
                     # 恢复求解算法选择
                     if 'solver_algorithm' in config:
                         self.solver_algorithm = config['solver_algorithm']
+                    # 着色器开关
+                    if 'coloring_enabled' in config:
+                        self.coloring_enabled = bool(config['coloring_enabled'])
+                    # 悬停连锁提示开关
+                    if 'chain_hint_enabled' in config:
+                        self.chain_hint_enabled = bool(config['chain_hint_enabled'])
+                    # 恢复聚拢参数（缺失的键用默认值）
+                    if 'gather_params' in config and isinstance(config['gather_params'], dict):
+                        defaults = getattr(self, 'gather_params', {})
+                        defaults.update({k: v for k, v in config['gather_params'].items()
+                                         if k in defaults})
+                        self.gather_params = defaults
+                    # 恢复聚拢参数启用标志
+                    if 'gather_enabled' in config and isinstance(config['gather_enabled'], dict):
+                        de = getattr(self, 'gather_enabled', {})
+                        de.update({k: bool(v) for k, v in config['gather_enabled'].items()
+                                   if k in de})
+                        self.gather_enabled = de
                     # temp_history_path 是自动保存，不算用户手动打开的文件
                     self.current_file_path = None
                     print(f"已从文件恢复: {last_path}")
@@ -339,14 +405,20 @@ class FileOpsMixin:
         else:
             self.save_as()
 
+    def _default_save_name(self) -> str:
+        """自动命名：step-m-n-日期时间.json（24小时制），如 2-6-6-20230827-112821.json"""
+        from datetime import datetime
+        ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+        return f"{self.current_step}-{self.current_m}-{self.current_n}-{ts}.json"
+
     def save_as(self):
-        """另存为：弹出 pygame 文件对话框"""
+        """另存为：弹出 pygame 文件对话框（默认名自动生成）"""
         self.file_dialog.show(
             mode='save',
             title='另存为',
             initial_dir=self.save_dir,
             extensions=['json'],
-            initial_file='save.json'
+            initial_file=self._default_save_name()
         )
         self._pending_save_as = True
 
@@ -366,6 +438,11 @@ class FileOpsMixin:
 
     def load_from_file(self):
         """从文件打开：弹出 pygame 文件对话框"""
+        # 竞速模式全程禁止打开存档（否则可加载已复原存档直接判胜）
+        if self._timer_blocked():
+            self.macro_notify_msg = "竞速模式中无法打开存档"
+            self.macro_notify_timer = 90
+            return
         self.file_dialog.show(
             mode='open',
             title='打开',
@@ -388,7 +465,11 @@ class FileOpsMixin:
                     self._do_load_from_path(self.file_dialog.result)
 
     def _do_load_from_path(self, path: str):
-        """从指定路径加载游戏"""
+        """从指定路径加载游戏（竞速模式下拒绝，防加载已复原存档判胜）"""
+        if self._timer_blocked():
+            self.macro_notify_msg = "竞速模式中无法打开存档"
+            self.macro_notify_timer = 90
+            return
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 save_data = json.load(f)

@@ -100,7 +100,7 @@ class SliderMatrix:
         matrix_bounds: dict - 矩阵对应的边界范围
     """
     
-    __slots__ = ('m', 'n', 'blocks', 'blocks_template', 'matrix', 'matrix_bounds')
+    __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds')
     
     def __init__(self, m: int = 6, n: int = 6):
         """
@@ -118,9 +118,6 @@ class SliderMatrix:
         for i in range(m):
             for j in range(n):
                 self.blocks.append(Block([i, j]))
-        
-        # 保存初始0-1矩阵作为模板（用于判断是否复原）
-        self.blocks_template = [[1] * n for _ in range(m)]
         
         # 初始化矩阵相关属性
         self.matrix = None

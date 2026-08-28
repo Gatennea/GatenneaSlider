@@ -208,7 +208,7 @@ class AnimationMixin:
             return
         y = max(track_top, min(track_bottom, mouse_y))
         normalized = (y - track_top) / track_height
-        new_duration = int(100 + normalized * 900)
+        new_duration = int(self.SPEED_MIN_MS + normalized * (self.SPEED_MAX_MS - self.SPEED_MIN_MS))
         if self.animating and self.animation_duration > 0:
             elapsed = pygame.time.get_ticks() - self.anim_start_time
             old_progress = elapsed / max(1, self.animation_duration)

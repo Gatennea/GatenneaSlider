@@ -113,6 +113,9 @@ class RendererMixin:
                 sr, sc = self.anim_start_pos[i]
                 anim_map[id(block)] = (sr + dr, sc + dc)
 
+        # 悬停连锁提示：预计算高亮格集合（含空格），块循环中直接提亮原色
+        hint_cells, hint_hover = self._chain_hint_cells()
+
         # 绘制所有滑块
         for block in self.game.blocks:
             if id(block) in anim_map:
@@ -131,14 +134,40 @@ class RendererMixin:
             if screen_y < -scaled_cell or screen_y > self.screen_height + scaled_cell:
                 continue
 
+            # 分组着色：只在滑块边界描边，中心保持原画风（淡蓝/选中淡绿）
             if block.be_opted:
-                color = self.colors['block_selected']
+                fill = self.colors['block_selected']
             else:
-                color = self.colors['block']
+                fill = self.colors['block']
+            # 连锁提示：同组格直接提亮原色（像原图层变亮，而非叠图层）
+            if hint_cells is not None:
+                bl = tuple(block.location)
+                if bl in hint_cells:
+                    amt = 0.55 if bl == hint_hover else 0.35
+                    fill = self._lighten(fill, amt)
 
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
-            pygame.draw.rect(self.screen, color, rect, border_radius=int(5 * self.zoom))
-            pygame.draw.rect(self.screen, self.colors['border'], rect, max(1, int(2 * self.zoom)), border_radius=int(5 * self.zoom))
+            pygame.draw.rect(self.screen, fill, rect, border_radius=int(5 * self.zoom))
+            if getattr(self, 'coloring_enabled', False) and self.current_step > 1:
+                # 分组色描边（更宽，凸显分组信息）
+                border_color = self._group_color(block.location[0], block.location[1])
+                border_w = max(2, int(7 * self.zoom)) #暫定7,不要改
+            else:
+                border_color = self.colors['border']
+                border_w = max(1, int(2 * self.zoom))
+            pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=int(5 * self.zoom))
+
+        # 连锁提示：高亮的空格（无滑块）同样提亮
+        if hint_cells is not None:
+            occupied = {tuple(b.location) for b in self.game.blocks}
+            step_px = scaled_cell + scaled_gap
+            for (r, c) in sorted(hint_cells - occupied):
+                bx = board_x + c * step_px + self.camera_x
+                by = board_y + r * step_px + self.camera_y
+                amt = 0.55 if (r, c) == hint_hover else 0.35
+                pygame.draw.rect(self.screen, self._lighten(self.colors['background'], amt),
+                                 (bx, by, scaled_cell, scaled_cell),
+                                 border_radius=int(5 * self.zoom))
 
         # 宏基准位置标记（固定坐标，无论该格有无滑块）
         base = getattr(self, 'macro_record_base_point', None)
@@ -192,8 +221,6 @@ class RendererMixin:
             self.draw_puzzle_menu()
         if self.show_macro_menu:
             self.draw_macro_menu()
-        if self.show_settings_menu:
-            self.draw_settings_menu()
 
     def draw_file_menu(self):
         """绘制文件下拉菜单"""
@@ -293,14 +320,14 @@ class RendererMixin:
                 _, pm, pn, ps = preset
                 if pm == self.current_m and pn == self.current_n and ps == self.current_step:
                     is_current = True
-                name = preset[0]
-            elif len(preset) == 1 and preset[0] == '__mode__':
-                # 计时/练习模式切换项：显示当前模式并打勾
-                is_current = True
-                name = "计时模式" if self.game_mode == 'timed' else "练习模式"
-            else:
-                name = preset[0]
 
+            name = preset[0]
+            # 特殊项：计时/练习模式切换（显示中文而非 __mode__）
+            if len(preset) == 1 and preset[0] == '__mode__':
+                if getattr(self, 'game_mode', 'timed') == 'timed':
+                    name = '切换为练习模式'
+                else:
+                    name = '切换为竞速模式'
             color = self.colors['menu_selected'] if is_current else self.colors['menu_text']
             text_surface = self.menu_font.render(name, True, color)
             text_rect = text_surface.get_rect()
@@ -330,7 +357,7 @@ class RendererMixin:
         items.append('管理宏...')
         shortcut = self._format_menu_shortcut('macro_record')
         items.append(f'停止录制 {shortcut}' if self.macro_recording else f'录制宏 {shortcut}')
-        items.append('逆序播放：开' if self.macro_reverse_mode else '逆序播放：关')
+        items.append(f'逆序播放：{"开" if self.macro_reverse_mode else "关"}')
         items.append('---')  # 分隔线
         for name in macro_names:
             items.append(name)
@@ -361,8 +388,6 @@ class RendererMixin:
             # 录制中时"停止录制"显示为红色
             if item == '停止录制':
                 color = (255, 100, 100)
-            elif item == '逆序播放：开':
-                color = (255, 200, 50)  # 开启时黄色高亮
             elif item == '(无已保存的宏)':
                 color = (130, 130, 130)
             else:
@@ -398,22 +423,15 @@ class RendererMixin:
         step_x = 10 + status_surface.get_width() + 30
         self.screen.blit(step_surface, (step_x, text_y))
 
-        # 左侧：计时器 / 模式（始终显示，颜色随模式与状态变化）
+        # 左侧：模式 / 计时状态（步数右边）
         timer_text = self._timer_status_text()
-        if timer_text:
-            if self.timer_state == 'running':
-                timer_color = (255, 200, 90)
-            elif self.timer_state == 'stopped':
-                timer_color = self.colors['solved']
-            elif self.timer_state == 'dnf':
-                timer_color = (255, 90, 90)
-            elif self.game_mode == 'practice':
-                timer_color = (150, 150, 160)
-            else:
-                timer_color = (170, 200, 255)
-            timer_surface = self.status_font.render(timer_text, True, timer_color)
-            timer_x = step_x + step_surface.get_width() + 30
-            self.screen.blit(timer_surface, (timer_x, text_y))
+        if self.game_mode == 'timed' and self.timer_state == 'running':
+            timer_color = (255, 200, 80)  # 竞速计时中：醒目黄色
+        else:
+            timer_color = self.colors['status_text']
+        timer_surface = self.status_font.render(timer_text, True, timer_color)
+        timer_x = step_x + step_surface.get_width() + 30
+        self.screen.blit(timer_surface, (timer_x, text_y))
 
         # 中间：当前谜题信息
         puzzle_text = f"谜题：{self.current_step}~{self.current_m}*{self.current_n}"
@@ -532,10 +550,21 @@ class RendererMixin:
         tab_solver_text_rect = tab_solver_text.get_rect(center=tab_solver_rect.center)
         self.screen.blit(tab_solver_text, tab_solver_text_rect)
 
+        # 聚拢参数 Tab
+        tab_gather_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 3, tab_y, tab_width, tab_height)
+        if self.settings_active_tab == 'gather':
+            pygame.draw.rect(self.screen, self.colors['button_bg'], tab_gather_rect, border_radius=4)
+        else:
+            pygame.draw.rect(self.screen, self.colors['input_bg'], tab_gather_rect, border_radius=4)
+        tab_gather_text = self.status_font.render("聚拢参数", True, self.colors['input_text'])
+        tab_gather_text_rect = tab_gather_text.get_rect(center=tab_gather_rect.center)
+        self.screen.blit(tab_gather_text, tab_gather_text_rect)
+
         # 存储 tab rect 用于点击检测
         self._settings_tab_kb_rect = tab_kb_rect
         self._settings_tab_anim_rect = tab_anim_rect
         self._settings_tab_solver_rect = tab_solver_rect
+        self._settings_tab_gather_rect = tab_gather_rect
 
         # 内容区域
         content_y = tab_y + tab_height + 10
@@ -557,8 +586,10 @@ class RendererMixin:
                 self._draw_settings_keybindings(dialog_x, content_y - scroll, dialog_width - 30, total_content_height if max_scroll > 0 else content_height)
             elif self.settings_active_tab == 'animation':
                 self._draw_settings_animation(dialog_x, content_y, dialog_width - 30, content_height)
+            elif self.settings_active_tab == 'gather':
+                self._draw_settings_gather(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             else:
-                self._draw_settings_solver(dialog_x, content_y, dialog_width - 30, content_height)
+                self._draw_settings_solver(dialog_x, content_y - scroll, dialog_width - 30, content_height)
         finally:
             self.screen.set_clip(None)
 
@@ -645,6 +676,68 @@ class RendererMixin:
         hint_text = self.status_font.render("点击按键区域后按任意键修改快捷键", True, (150, 150, 150))
         self.screen.blit(hint_text, (x + 10, y + height - 20))
 
+    def _group_color(self, r: int, c: int):
+        """分组着色（描边色）：颜色由 (r mod step, c mod step) 唯一决定。
+
+        移动 step 格时该二元组不变（模 step 不变量），所以同一滑块的颜色
+        恒为初始颜色——不需要记录任何轨迹。
+
+        配色：
+        - 组数 ≤ 16：色相均匀分色（k×360/N），相邻组最小色差 = 360/N；
+        - 组数 > 16：黄金比例色相法（hue = frac(k×0.61803)），大量颜色时分布更均匀。
+        S/V 取马卡龙色系（柔和鲜亮），适合描边小面积着色（区分度优先）。
+        """
+        step = self.current_step
+        k = (r % step) * step + (c % step)
+        n = step * step
+        if n <= 16:
+            hue = k * 360.0 / n
+        else:
+            hue = (k * 0.618033988749895 % 1.0) * 360.0
+        col = pygame.Color(0, 0, 0)
+        col.hsva = (hue, 75, 92, 100)
+        return col
+
+    def _lighten(self, color: tuple, amount: float) -> tuple:
+        """颜色向白色提亮 amount（0~1）。
+
+        用于连锁提示：直接改变格子原色（像原图层变亮），而非叠加半透明图层。
+        """
+        return tuple(int(ch + (255 - ch) * amount) for ch in color[:3])
+
+    def _chain_hint_cells(self):
+        """悬停连锁提示的高亮格集合（含空格）。
+
+        返回 (cells, hover_cell)；未开启/无悬停/无效时返回 (None, None)。
+        注意：shuffle 后棋盘坐标可为负，用棋盘实际边界判定。
+        """
+        if not getattr(self, 'chain_hint_enabled', False):
+            return None, None
+        cell = getattr(self, 'hover_cell', None)
+        if not cell:
+            return None, None
+        step = self.current_step
+        if step <= 1:
+            return None, None
+        hr, hc = cell
+        bounds = self.game.get_boundaries()
+        if not (
+            bounds['min_row'] - 1 <= hr <= bounds['max_row'] + 1 and
+            bounds['min_col'] - 1 <= hc <= bounds['max_col'] + 1
+        ):
+            return None, None
+        blocks = self.game.blocks
+        if not blocks:
+            return None, None
+        rs = [b.location[0] for b in blocks]
+        cs = [b.location[1] for b in blocks]
+        r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
+        cells = {
+            (r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)
+            if r % step == hr % step and c % step == hc % step
+        }
+        return cells, (hr, hc)
+
     def _draw_settings_animation(self, x, y, width, height):
         """绘制动画速度设置内容"""
         # 动画开关
@@ -704,6 +797,116 @@ class RendererMixin:
         self.screen.blit(min_label, (track_x, track_y + 20))
         self.screen.blit(max_label, (track_x + track_width - min_label.get_width(), track_y + 20))
 
+        # 分组着色器开关
+        col_y = speed_y + 55
+        col_label = self.dialog_font.render("分组着色：", True, self.colors['dialog_text'])
+        self.screen.blit(col_label, (x + 15, col_y))
+        self._settings_coloring_toggle_rect = pygame.Rect(x + 180, col_y, 60, 28)
+        if getattr(self, 'coloring_enabled', False):
+            cbg, ctxt, ctext_color = self.colors['button_bg'], "ON", (255, 255, 255)
+        else:
+            cbg, ctxt, ctext_color = self.colors['input_bg'], "OFF", (150, 150, 150)
+        pygame.draw.rect(self.screen, cbg, self._settings_coloring_toggle_rect, border_radius=4)
+        ctext_surface = self.status_font.render(ctxt, True, ctext_color)
+        self.screen.blit(ctext_surface, ctext_surface.get_rect(center=self._settings_coloring_toggle_rect.center))
+        col_hint = self.status_font.render(
+            "按 (位置 mod 步长) 给滑块描边分组着色，同组颜色恒不变，帮助还原", True, (150, 150, 150))
+        self.screen.blit(col_hint, (x + 15, col_y + 34))
+
+        # 悬停连锁提示开关（独立于着色器）
+        ch_y = col_y + 72
+        ch_label = self.dialog_font.render("悬停连锁提示：", True, self.colors['dialog_text'])
+        self.screen.blit(ch_label, (x + 15, ch_y))
+        self._settings_chain_toggle_rect = pygame.Rect(x + 180, ch_y, 60, 28)
+        if getattr(self, 'chain_hint_enabled', False):
+            cbg, ctxt, ctext_color = self.colors['button_bg'], "ON", (255, 255, 255)
+        else:
+            cbg, ctxt, ctext_color = self.colors['input_bg'], "OFF", (150, 150, 150)
+        pygame.draw.rect(self.screen, cbg, self._settings_chain_toggle_rect, border_radius=4)
+        ctext_surface = self.status_font.render(ctxt, True, ctext_color)
+        self.screen.blit(ctext_surface, ctext_surface.get_rect(center=self._settings_chain_toggle_rect.center))
+        ch_hint = self.status_font.render(
+            "悬停滑块时，边界盒内同组位置（含空格）提亮提示，帮助找缺口", True, (150, 150, 150))
+        self.screen.blit(ch_hint, (x + 15, ch_y + 34))
+
+    def _draw_settings_gather(self, x, y, width, height):
+        """绘制聚拢参数设置内容（与谜题-自定义一致的输入框样式）"""
+        # 顶部警告：不了解参数含义请勿调整
+        warn = self.status_font.render("※ 参数含义若不理解请勿调整，以免求解效果变差", True, (220, 200, 80))
+        self.screen.blit(warn, (x + 15, y + 8))
+        row_y = y + 32
+        self._settings_gather_rects = {}
+        editing = getattr(self, 'settings_editing_value', None)
+        specs = getattr(self, '_gather_param_specs', [])
+        for key, (_label, vdef, vmin, vmax, vstep, desc) in specs:
+            enabled = getattr(self, 'gather_enabled', {}).get(key, True)
+            # 启用/禁用开关
+            toggle = pygame.Rect(x + 15, row_y, 58, 26)
+            if enabled:
+                cbg, ctxt, ctext_color = self.colors['button_bg'], "启用", (255, 255, 255)
+            else:
+                cbg, ctxt, ctext_color = self.colors['input_bg'], "禁用", (150, 150, 150)
+            pygame.draw.rect(self.screen, cbg, toggle, border_radius=4)
+            t = self.status_font.render(ctxt, True, ctext_color)
+            self.screen.blit(t, t.get_rect(center=toggle.center))
+            # −/+ 按钮（禁用时灰化）
+            dec = pygame.Rect(x + 80, row_y, 28, 26)
+            inc = pygame.Rect(x + 196, row_y, 28, 26)
+            btn_color = self.colors['input_bg'] if enabled else (55, 55, 55)
+            pygame.draw.rect(self.screen, btn_color, dec, border_radius=4)
+            pygame.draw.rect(self.screen, btn_color, inc, border_radius=4)
+            txt_color = (255, 255, 255) if enabled else (90, 90, 90)
+            d = self.status_font.render("−", True, txt_color)
+            p = self.status_font.render("+", True, txt_color)
+            self.screen.blit(d, d.get_rect(center=dec.center))
+            self.screen.blit(p, p.get_rect(center=inc.center))
+            # 值输入框（谜题-自定义样式）：可点击进入键盘编辑
+            box = pygame.Rect(x + 112, row_y, 80, 26)
+            is_editing = editing == key
+            bg_color = self.colors.get('input_active', (70, 110, 160)) if is_editing else self.colors['input_bg']
+            pygame.draw.rect(self.screen, bg_color, box, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], box, 1, border_radius=4)
+            if is_editing:
+                text = getattr(self, 'settings_edit_buffer', '')
+            else:
+                val = self.gather_params.get(key, vdef)
+                text = self._fmt_gather_value(key, val)
+            vcol = (255, 255, 255) if enabled else (120, 120, 120)
+            vs = self.input_font.render(text, True, vcol)
+            self.screen.blit(vs, (box.x + 6, box.centery - vs.get_height() // 2))
+            if is_editing:
+                # 光标
+                cw = vs.get_width()
+                pygame.draw.line(self.screen, (255, 255, 255),
+                                 (box.x + 6 + cw + 2, box.y + 4),
+                                 (box.x + 6 + cw + 2, box.bottom - 4), 1)
+            # 名称 + 说明（说明截断防重叠）
+            name = self.dialog_font.render(_label, True, self.colors['dialog_text'])
+            self.screen.blit(name, (x + 234, row_y))
+            desc_surf = self.status_font.render(desc, True, (150, 150, 150))
+            max_w = width - 234
+            if desc_surf.get_width() > max_w:
+                clip_r = pygame.Rect(x + 234, row_y + 18, max_w, 16)
+                self.screen.set_clip(clip_r)
+                self.screen.blit(desc_surf, (x + 234, row_y + 18))
+                self.screen.set_clip(None)
+            else:
+                self.screen.blit(desc_surf, (x + 234, row_y + 18))
+            self._settings_gather_rects[key] = {'toggle': toggle, 'box': box, 'dec': dec, 'inc': inc,
+                                                'enabled': enabled, 'vmin': vmin, 'vmax': vmax,
+                                                'vstep': vstep, 'vdef': vdef}
+            row_y += 52
+
+    def _fmt_gather_value(self, key: str, val) -> str:
+        """聚拢参数值显示：整数原样、时长加 's'、浮点保留两位"""
+        if val is None:
+            return '不限'
+        if key == 'max_wait_time':
+            return f"{val:.0f}s"
+        if isinstance(val, float):
+            return f"{val:.2f}"
+        return str(int(val))
+
     def _draw_settings_solver(self, x, y, width, height):
         """绘制求解器算法选择内容"""
         from solver import SOLVER_ALGORITHMS
@@ -743,8 +946,17 @@ class RendererMixin:
 
             row_y += row_height
 
-        # 说明文字（自动换行）
-        desc_y = y + height - 60
+        # 说明文字（紧跟选项之下，自动换行，不遮挡选项）
+        desc = self._solver_description(self.solver_algorithm)
+        desc_y = row_y + 12
+        max_w = width - 20
+        wrapped = self._wrap_text(desc, self.status_font, max_w)
+        for i, line in enumerate(wrapped):
+            line_surf = self.status_font.render(line, True, (160, 160, 160))
+            self.screen.blit(line_surf, (x + 15, desc_y + i * 18))
+
+    def _solver_description(self, algo_key: str) -> str:
+        """当前求解算法的说明文字"""
         descriptions = {
             'ida_star': '使用 IDA* 迭代加深搜索，尽量找到最少步数解。速度非常慢。',
             'fast': 'IDA* 优化模式：加大搜索步进，放宽节点/时间限制，优先聚拢，速度中等。不能保证求解成功。',
@@ -754,14 +966,10 @@ class RendererMixin:
             #'emd': 'EMD求解：用 EMD 距离贪心搜索，速度快但不保证成功。',
             #'strategy': '策略求解：EMD 贪心 + 循环检测 + 随机扰动，成功率高于纯 EMD。',
             #'distance': '距离求解：用神经网络预测剩余步数做贪心搜索，需先用 solver.ml.train_distance 训练模型。',
-            'gather': '聚拢：提升聚拢度（缩小边界盒、降低EMD），不保证还原，实时显示进展。',
+            'gather': '聚拢：提升聚拢度，不保证还原，实时显示进展。',
+            'gather_gradient': '智能聚拢：参数自动决定，分阶段放宽参数多轮聚拢，每阶段播放动画后再续。理论上比上一个更高效。',
         }
-        desc = descriptions.get(self.solver_algorithm, '')
-        max_w = width - 20
-        wrapped = self._wrap_text(desc, self.status_font, max_w)
-        for i, line in enumerate(wrapped):
-            line_surf = self.status_font.render(line, True, (160, 160, 160))
-            self.screen.blit(line_surf, (x + 15, desc_y + i * 18))
+        return descriptions.get(algo_key, '')
 
     def _calc_settings_content_height(self, visible_height: int) -> int:
         """计算设置内容的总高度（当前tab）"""
@@ -775,9 +983,18 @@ class RendererMixin:
                 total += 5  # group spacing
             return total + 25  # extra for hint text
         elif self.settings_active_tab == 'animation':
-            return 200  # fixed small content
+            return 250  # 动画开关 + 时长滑动条 + 着色器 + 连锁提示
+        elif self.settings_active_tab == 'gather':
+            return 12 + 26 + len(self._gather_param_specs) * 52 + 10
         else:
-            return 250  # solver tab
+            # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
+            from solver import SOLVER_ALGORITHMS
+            title_h = 20 + 36 + 10
+            options_h = len(SOLVER_ALGORITHMS) * 36
+            desc = self._solver_description(getattr(self, 'solver_algorithm', 'ida_star'))
+            desc_w = 500 - 30 - 20  # 内容宽 470 再减边距
+            desc_h = len(self._wrap_text(desc, self.status_font, desc_w)) * 18 + 12
+            return title_h + options_h + desc_h
 
     def _draw_settings_scrollbar(self, x, y, height, scroll, max_scroll):
         """绘制设置对话框滚动条"""
@@ -950,22 +1167,6 @@ class RendererMixin:
             rename_text = self.status_font.render("R", True, (255, 255, 255))
             self.screen.blit(rename_text, rename_text.get_rect(center=rename_btn_rect.center))
 
-            # 逆序播放按钮
-            inv_btn_x = rename_btn_x - btn_size - 4
-            inv_btn_rect = pygame.Rect(inv_btn_x, item_rect.centery - btn_size // 2, btn_size, btn_size)
-            inv_color = self.colors['button_hover'] if inv_btn_rect.collidepoint(mouse_pos) else self.colors['button_bg']
-            pygame.draw.rect(self.screen, inv_color, inv_btn_rect, border_radius=4)
-            inv_text = self.status_font.render("逆", True, (255, 255, 255))
-            self.screen.blit(inv_text, inv_text.get_rect(center=inv_btn_rect.center))
-
-            # 逆序按钮悬浮提示
-            if inv_btn_rect.collidepoint(mouse_pos):
-                tooltip_surface = self.status_font.render("Reverse逆序播放", True, (255, 255, 255))
-                tooltip_rect = tooltip_surface.get_rect()
-                tooltip_rect.bottomleft = (inv_btn_rect.right + 5, inv_btn_rect.centery)
-                pygame.draw.rect(self.screen, (50, 50, 50), tooltip_rect.inflate(8, 4), border_radius=4)
-                self.screen.blit(tooltip_surface, tooltip_rect.move(4, 2))
-
             # 删除按钮悬浮提示
             if del_btn_rect.collidepoint(mouse_pos):
                 tooltip_surface = self.status_font.render("Delete删除宏", True, (255, 255, 255))
@@ -987,7 +1188,6 @@ class RendererMixin:
                 'row': item_rect,
                 'rename': rename_btn_rect,
                 'delete': del_btn_rect,
-                'inverse': inv_btn_rect,
                 'index': self._macro_mgr_scroll + i,
             })
 
@@ -1142,53 +1342,82 @@ class RendererMixin:
         self.screen.blit(text_surf_alpha, (box_x + pad_x, box_y + pad_y))
 
     def draw_right_panel(self):
-        """绘制右侧动画控制面板"""
+        """绘制右侧面板：垂直速度滑条 + 5 个快捷开关（动画/着色/连锁/模式/逆序）"""
         panel_x = self.screen_width - self.right_panel_width
         panel_rect = pygame.Rect(panel_x, 0, self.right_panel_width, self.screen_height)
         pygame.draw.rect(self.screen, self.colors['menu_bg'], panel_rect)
         pygame.draw.line(self.screen, self.colors['border'],
                         (panel_x, 0), (panel_x, self.screen_height))
 
-        track_x = panel_x + self.right_panel_width // 2
-        speed_text = self.status_font.render("速度", True, self.colors['status_text'])
-        text_rect = speed_text.get_rect(center=(track_x, self.menu_bar_height + 15))
-        self.screen.blit(speed_text, text_rect)
+        # ---- 底部：5 个快捷开关（垂直排列）----
+        sw_h = 24
+        sw_gap = 4
+        sw_count = 5
+        switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
+        switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
+        sw_x = panel_x + 6
+        sw_w = self.right_panel_width - 12
+        sw_top = switch_area_top
 
+        self.right_panel_switch_rects = {}
+
+        def _sw_btn(key, label, getter):
+            nonlocal sw_top
+            rect = pygame.Rect(sw_x, sw_top, sw_w, sw_h)
+            if key == 'game_mode':
+                timed = getattr(self, 'game_mode', 'timed') == 'timed'
+                on = timed
+                text = '模式:竞速' if timed else '模式:练习'
+            else:
+                on = bool(getter())
+                text = f'{label}:{"开" if on else "关"}'
+            bg = self.colors['button_bg'] if on else self.colors['input_bg']
+            color = (255, 255, 255) if on else (150, 150, 150)
+            pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+            ts = self.status_font.render(text, True, color)
+            self.screen.blit(ts, ts.get_rect(center=rect.center))
+            self.right_panel_switch_rects[key] = rect
+            sw_top += sw_h + sw_gap
+
+        _sw_btn('animation_enabled', '动画', lambda: self.animation_enabled)
+        _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
+        _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
+        _sw_btn('game_mode', '模式', lambda: None)
+        _sw_btn('macro_reverse_mode', '逆序宏', lambda: self.macro_reverse_mode)
+
+        # ---- 上方：垂直滑条（左=缩放，右=速度）----
         track_top = self.menu_bar_height + 35
-        track_bottom = self.screen_height - self.status_bar_height - 55
+        track_bottom = switch_area_top - 10
         track_height = track_bottom - track_top
 
+        speed_x = panel_x + self.right_panel_width - 18   # 右列轨道
+        zoom_x = panel_x + 18                            # 左列轨道
+
+        speed_label = self.status_font.render("速度", True, self.colors['status_text'])
+        zoom_label = self.status_font.render("缩放", True, self.colors['status_text'])
+        self.screen.blit(speed_label, speed_label.get_rect(center=(speed_x, self.menu_bar_height + 15)))
+        self.screen.blit(zoom_label, zoom_label.get_rect(center=(zoom_x, self.menu_bar_height + 15)))
+
         if track_height > 0:
+            half = self.right_panel_width // 2
+            # 左半：缩放滑条
             pygame.draw.line(self.screen, self.colors['border'],
-                            (track_x, track_top), (track_x, track_bottom), 2)
+                            (zoom_x, track_top), (zoom_x, track_bottom), 2)
+            norm_z = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+            norm_z = max(0.0, min(1.0, norm_z))
+            knob_y = int(track_top + norm_z * track_height)
+            self.zoom_slider_rect = pygame.Rect(panel_x + 4, track_top, half - 8, track_height)
+            knob_color = self.colors['button_hover'] if getattr(self, 'zoom_slider_dragging', False) else self.colors['button_bg']
+            self.zoom_knob_rect = pygame.Rect(zoom_x - 10, knob_y - 6, 20, 12)
+            pygame.draw.rect(self.screen, knob_color, self.zoom_knob_rect, border_radius=4)
 
-            normalized = (self.animation_duration - 100) / 900.0
-            normalized = max(0.0, min(1.0, normalized))
-            knob_y = int(track_top + normalized * track_height)
-            self.slider_rect = pygame.Rect(panel_x + 2, track_top, self.right_panel_width - 4, track_height)
-
+            # 右半：速度滑条
+            pygame.draw.line(self.screen, self.colors['border'],
+                            (speed_x, track_top), (speed_x, track_bottom), 2)
+            norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
+            norm_v = max(0.0, min(1.0, norm_v))
+            knob_y = int(track_top + norm_v * track_height)
+            self.slider_rect = pygame.Rect(panel_x + half, track_top, half - 4, track_height)
             knob_color = self.colors['button_hover'] if self.slider_dragging else self.colors['button_bg']
-            self.slider_knob_rect = pygame.Rect(track_x - 10, knob_y - 6, 20, 12)
+            self.slider_knob_rect = pygame.Rect(speed_x - 10, knob_y - 6, 20, 12)
             pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
-
-        btn_y = self.screen_height - self.status_bar_height - 42
-        btn_w = 32
-        btn_h = 24
-        self.anim_toggle_rect = pygame.Rect(
-            panel_x + (self.right_panel_width - btn_w) // 2,
-            btn_y, btn_w, btn_h
-        )
-
-        if self.animation_enabled:
-            btn_color = self.colors['button_bg']
-            btn_text = "ON"
-            text_color = (255, 255, 255)
-        else:
-            btn_color = self.colors['input_bg']
-            btn_text = "OFF"
-            text_color = (150, 150, 150)
-
-        pygame.draw.rect(self.screen, btn_color, self.anim_toggle_rect, border_radius=4)
-        text_surface = self.status_font.render(btn_text, True, text_color)
-        text_rect = text_surface.get_rect(center=self.anim_toggle_rect.center)
-        self.screen.blit(text_surface, text_rect)
