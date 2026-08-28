@@ -36,5 +36,11 @@ macro/*.json
 # ===== 测试临时输出（测试脚本生成的存档等）=====
 測試/_tmp_save/
 
+# ===== IDE 配置与私人参考文档（不入库）=====
+.clinerules/
+.trae/
+.vscode/
+参考/
+
 # ===== 独立项目：加密工具（与本游戏无关，如需入库请 git add -f encrypt）=====
 encrypt/
