@@ -92,6 +92,15 @@ def gather_score(coords, m, n):
     return max_overlap(coords, m, n) / total if total else 0.0
 
 
+def _overlap_at(coords, m, n, R, C):
+    """统计 (R,C) 开始的 m×n 窗口内的方块数。"""
+    cnt = 0
+    for r, c in coords:
+        if R <= r < R + m and C <= c < C + n:
+            cnt += 1
+    return cnt
+
+
 def gather_metrics(coords, m, n):
     """计算当前坐标集合的「聚拢度」指标。"""
     if not coords:

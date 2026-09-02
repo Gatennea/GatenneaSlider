@@ -47,6 +47,8 @@ class RendererMixin:
 
         board_x = 0
         board_y = 0
+        self._board_x = board_x
+        self._board_y = board_y
 
         scaled_cell = self.cell_size * self.zoom
         scaled_gap = self.gap_width * self.zoom
@@ -180,7 +182,8 @@ class RendererMixin:
 
         # 调试面板打开时，在棋盘上画出洞的位置和目标窗口预告框
         if getattr(self, 'show_metrics_panel', False):
-            self._draw_debug_holes()
+            tc_rc = getattr(self, '_target_rc', None)
+            self._draw_debug_holes(tc_rc)
             self._draw_target_window()
 
     def draw_menu_bar(self):

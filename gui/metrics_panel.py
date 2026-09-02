@@ -69,13 +69,14 @@ class MetricsPanelMixin:
         coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
         return gather_metrics(coords, game.m, game.n)
 
-    def _draw_debug_holes(self):
+    def _draw_debug_holes(self, target_rc=None):
         """调试面板打开时，在棋盘上高亮画出洞和凸起的位置。
 
-        图形约定：
-            孔洞（被包围） = 圆圈
-            缺口（连通外缘）= 三角形
-            凸起（矩形外） = 菱形
+        图形约定（根据是否在目标窗口内）：
+            框内孔洞（被包围） = 圆圈
+            框内缺口（连通外缘）= 三角形
+            框外凸起（矩形外） = 菱形
+            框外孔洞/缺口  = 同样画，不隐藏
         颜色约定：
             大 = 红色，小 = 蓝色
         """
@@ -94,6 +95,14 @@ class MetricsPanelMixin:
         radius = max(3, int(scaled_cell * 0.35))
         line_w = max(2, int(2 * self.zoom))
 
+        # 目标窗口边界（网格坐标），用于判断标记在内还是在外
+        tr, tc = target_rc if target_rc else (None, None)
+
+        def _in_target(r, c):
+            if tr is None:
+                return True
+            return tr <= r < tr + game.m and tc <= c < tc + game.n
+
         for h in holes:
             is_selected = (self.selected_hole is not None and
                            set(h['cells']) == set(self.selected_hole.get('cells', [])))
@@ -101,6 +110,7 @@ class MetricsPanelMixin:
             for r, c in h['cells']:
                 cx = c * step + self.camera_x + half
                 cy = r * step + self.camera_y + half
+                inside = _in_target(r, c)
                 if h['type'] == 'hole':
                     pygame.draw.circle(self.screen, color, (int(cx), int(cy)), radius, line_w)
                 else:  # gap → 三角形
@@ -111,61 +121,82 @@ class MetricsPanelMixin:
                     ]
                     pygame.draw.polygon(self.screen, color, pts, line_w)
                 if is_selected:
-                    # 选中洞：白色实心圆点标记
                     pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)),
                                        max(2, radius // 2), 0)
 
-        # 凸起：黄色菱形
+        # 凸起：框外画菱形，框内也画菱形（但用目标绿色突出）
         for r, c in protrusions:
             cx = c * step + self.camera_x + half
             cy = r * step + self.camera_y + half
             d = radius
             pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
-            pygame.draw.polygon(self.screen, (255, 210, 60), pts, line_w)
+            color = (80, 220, 100) if _in_target(r, c) else (255, 210, 60)
+            pygame.draw.polygon(self.screen, color, pts, line_w)
 
     def _draw_target_window(self):
         """调试面板打开时，在棋盘上绘制目标窗口预告框。
 
-        当 step > 1 且存在唯一 mod 约束（detect_target_corner 返回确定偏移）时，
-        在棋盘上用半透明绿色矩形框出目标窗口位置，框的左上角满足
-        (R % step, C % step) == target_corner。
+        算法：
+        - 若 step ≤ 1 或 detect_target_corner 返回 None（无 mod 约束）：
+          直接枚举所有合法 (R,C) 位置，找 gather_metrics score 最高的一个。
+        - 若有 mod 约束 (r0,c0)：只枚举满足 R%step==r0、C%step==c0 的位置，
+          同样找最高聚拢度的那个。
+        - 同时检查 (m,n) 和 (n,m) 两个朝向，取 score 更高者。
+        - 将结果写入 self._target_rc，供 _draw_debug_holes 使用。
         """
-        from solver.ml.gather_solver import detect_target_corner, _game_coords
+        from solver.ml.gather_solver import (
+            detect_target_corner, _game_coords, _overlap_at,
+        )
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
             return
         step = getattr(self, 'current_step', 1)
-        target_corner = detect_target_corner(_game_coords(game), game.m, game.n, step)
-        if target_corner is None:
-            return
-
-        r0, c0 = target_corner
+        coords = _game_coords(game)
         m, n = game.m, game.n
-        total = m * n
+
+        # 1. 确定 mod 约束
+        target_corner = detect_target_corner(coords, m, n, step)
+        r0 = target_corner[0] if target_corner else None
+        c0 = target_corner[1] if target_corner else None
+
+        # 2. 确定搜索范围
         rs = [b.location[0] for b in game.blocks]
         cs = [b.location[1] for b in game.blocks]
-        cur_r, cur_c = (max(rs) + min(rs)) // 2, (max(cs) + min(cs)) // 2
+        min_r, max_r = min(rs), max(rs)
+        min_c, max_c = min(cs), max(cs)
 
-        # 找最近的合法 (R, C)，使 R%step==r0, C%step==c0
-        R = ((cur_r - r0) // step) * step + r0
-        C = ((cur_c - c0) // step) * step + c0
+        # 3. 枚舉兩個朝向，找最高 score
+        best_score, best_R, best_C, best_h, best_w = -1, min_r, min_c, m, n
+        for rh, cw in ((m, n), (n, m)):
+            for R in range(min_r - rh + 1, max_r + 1):
+                for C in range(min_c - cw + 1, max_c + 1):
+                    if r0 is not None and (R % step) != r0:
+                        continue
+                    if c0 is not None and (C % step) != c0:
+                        continue
+                    ov = _overlap_at(coords, rh, cw, R, C)
+                    score = ov / (rh * cw) if rh * cw else 0
+                    if score > best_score:
+                        best_score = score
+                        best_R, best_C = R, C
+                        best_h, best_w = rh, cw
 
+        self._target_rc = (best_R, best_C)
+
+        # 4. 繪製目標窗口矩形
+        board_x = getattr(self, '_board_x', 0)
+        board_y = getattr(self, '_board_y', 0)
         scaled_cell = self.cell_size * self.zoom
         scaled_gap = self.gap_width * self.zoom
         cell_step = scaled_cell + scaled_gap
-        board_x = getattr(self, '_board_x', 0)
-        board_y = getattr(self, '_board_y', 0)
+        x = board_x + best_C * cell_step + self.camera_x
+        y = board_y + best_R * cell_step + self.camera_y
+        w = best_w * scaled_cell + (best_w - 1) * scaled_gap
+        h = best_h * scaled_cell + (best_h - 1) * scaled_gap
 
-        x = board_x + C * cell_step + self.camera_x
-        y = board_y + R * cell_step + self.camera_y
-        w = n * scaled_cell + (n - 1) * scaled_gap
-        h = m * scaled_cell + (m - 1) * scaled_gap
-
-        # 半透明填充
         overlay = pygame.Surface((w, h), pygame.SRCALPHA)
         overlay.fill((80, 220, 100, 50))
         self.screen.blit(overlay, (int(x), int(y)))
-        # 亮绿色边框
         pygame.draw.rect(self.screen, (80, 220, 100),
                          (int(x), int(y), int(w), int(h)),
                          max(2, int(2 * self.zoom)))
