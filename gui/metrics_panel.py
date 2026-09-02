@@ -36,8 +36,8 @@ class MetricsPanelMixin:
         self.selected_hole = None  # 标记学习：当前选中的洞
 
     def _mp_panel_size(self):
-        """计算面板宽高（4 行指标）。"""
-        height = (self._MP_TITLE_H + self._MP_PAD * 2 + self._MP_ROW_H * 4)
+        """计算面板宽高（6 行指标）。"""
+        height = (self._MP_TITLE_H + self._MP_PAD * 2 + self._MP_ROW_H * 6)
         return self._MP_WIDTH, height
 
     def _mp_build_layout(self):
@@ -69,163 +69,130 @@ class MetricsPanelMixin:
         coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
         return gather_metrics(coords, game.m, game.n)
 
-    def _draw_debug_holes(self, tr=None, tc=None, th=None, tw=None):
-        """调试面板打开时，在棋盘上高亮画出洞和凸起的位置。
+    # ------------------------------------------------------------------
+    # 目標窗口（調試基準）——洞/缺口/凸起與畫出的目標框共用同一窗口
+    # ------------------------------------------------------------------
+    def _compute_target_region(self):
+        """mod-aware 計算「聚攏度最高」的目標窗口。
 
-        图形约定以目标窗口为基准：
-            框内孔洞 = 圆圈
-            框内缺口 = 三角形
-            框外所有标记（含孔洞、缺口、凸起）= 菱形
-        颜色约定：
-            大 = 红色，小 = 蓝色
-            框内凸起 = 绿色，框外所有菱形 = 黄色
-        tr/tc/th/tw：目标窗口左上角网格坐标与行列数，None 表示不判断内外。
+        先以着色不變量 detect_target_corner 預判約束維度，再在整個
+        邊界盒內枚舉 m×n / n×m 窗口，取覆蓋方塊數（= 聚攏度）最高者。
+        返回 (r0, c0, (rh, cw)) 或 None。
         """
-        from solver.ml.hole_detector import detect_holes
-        game = getattr(self, 'game', None)
-        if game is None or not getattr(game, 'blocks', None):
-            return
-        coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
-        step_len = getattr(self, 'current_step', 1)
-        holes, protrusions, _ = detect_holes(coords, game.m, game.n, step_len)
-
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
-        step = scaled_cell + scaled_gap
-        half = scaled_cell / 2
-        radius = max(3, int(scaled_cell * 0.35))
-        line_w = max(2, int(2 * self.zoom))
-
-        in_target = (tr is not None and th is not None and tw is not None)
-
-        def _in_target(r, c):
-            if not in_target:
-                return False
-            return tr <= r < tr + th and tc <= c < tc + tw
-
-        # 收集所有需要标记的格子及其类型
-        all_marks = []  # list of (r, c, hole_type, size, is_selected)
-        selected_cells = set()
-        for h in holes:
-            is_selected = (self.selected_hole is not None and
-                           set(h['cells']) == set(self.selected_hole.get('cells', [])))
-            color = (255, 80, 80) if h['size'] == 'large' else (80, 160, 255)
-            for r, c in h['cells']:
-                all_marks.append((r, c, h['type'], h['size'], is_selected))
-                if is_selected:
-                    selected_cells.add((r, c))
-        # 凸起：用 'protrusion' 类型
-        for r, c in protrusions:
-            color = (255, 210, 60)  # 黄色，统一
-            all_marks.append((r, c, 'protrusion', 'small', False))
-
-        for r, c, htype, size, is_selected in all_marks:
-            cx = c * step + self.camera_x + half
-            cy = r * step + self.camera_y + half
-            inside = _in_target(r, c)
-
-            # 颜色
-            if htype == 'protrusion':
-                color = (80, 220, 100) if inside else (255, 210, 60)
-            else:
-                color = (255, 80, 80) if size == 'large' else (80, 160, 255)
-
-            # 形状：框外一律菱形，框内按类型画圆/三角
-            if not inside:
-                # 框外：全部菱形
-                d = radius
-                pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
-                pygame.draw.polygon(self.screen, color, pts, line_w)
-            elif htype == 'hole':
-                pygame.draw.circle(self.screen, color, (int(cx), int(cy)), radius, line_w)
-            elif htype == 'gap':
-                pts = [
-                    (cx, cy - radius),
-                    (cx - radius, cy + radius),
-                    (cx + radius, cy + radius),
-                ]
-                pygame.draw.polygon(self.screen, color, pts, line_w)
-
-            # 选中：白色实心圆点
-            if is_selected:
-                pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)),
-                                   max(2, radius // 2), 0)
-
-    def _draw_target_window(self):
-        """调试面板打开时，在棋盘上绘制目标窗口预告框（无填充，仅边框）。
-
-        算法：
-        - 若 step ≤ 1 或 detect_target_corner 返回 None（无 mod 约束）：
-          直接枚举所有合法 (R,C) 位置，找 overlap/area 最高的一个。
-        - 若有 mod 约束 (r0,c0)：只枚举满足 R%step==r0、C%step==c0 的位置，
-          同样找最高聚拢度的那个。
-        - 同时检查 (m,n) 和 (n,m) 两个朝向，取 score 更高者。
-        - 返回 (R, C, h, w) 供调用方传给 _draw_debug_holes。
-        """
-        from solver.ml.gather_solver import (
-            detect_target_corner, _game_coords, _overlap_at,
-        )
+        from solver.ml.gather_solver import find_best_window, _game_coords
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
             return None
         step = getattr(self, 'current_step', 1)
         coords = _game_coords(game)
-        m, n = game.m, game.n
+        r0, c0, (rh, cw), _ = find_best_window(coords, game.m, game.n, step)
+        self._target_region = (r0, c0, (rh, cw))
+        return self._target_region
 
-        # 1. 确定 mod 约束
-        target_corner = detect_target_corner(coords, m, n, step)
-        r0 = target_corner[0] if target_corner else None
-        c0 = target_corner[1] if target_corner else None
+    def _draw_debug_holes(self):
+        """以目標窗口為基準繪製調試標記（與綠色目標框同一窗口）。
 
-        # 2. 确定搜索范围
-        rs = [b.location[0] for b in game.blocks]
-        cs = [b.location[1] for b in game.blocks]
-        min_r, max_r = min(rs), max(rs)
-        min_c, max_c = min(cs), max(cs)
+        標記規則：
+            目標窗口內、被方塊包圍的空格（孔洞）  = 圓圈
+            目標窗口內、連通窗口邊緣的空格（缺口）= 三角形
+            目標窗口外的方塊（凸起）              = 斜方形（菱形）
+        顏色：大孔洞/缺口 = 紅色，小 = 藍色；凸起 = 黃色。
+        """
+        from solver.ml.hole_detector import detect_holes
+        game = getattr(self, 'game', None)
+        if game is None or not getattr(game, 'blocks', None):
+            return
+        region = getattr(self, '_target_region', None)
+        if region is None:
+            region = self._compute_target_region()
+        if region is None:
+            return
 
-        # 3. 枚舉兩個朝向，找最高 score
-        best_score, best_R, best_C, best_h, best_w = -1, min_r, min_c, m, n
-        for rh, cw in ((m, n), (n, m)):
-            for R in range(min_r - rh + 1, max_r + 1):
-                for C in range(min_c - cw + 1, max_c + 1):
-                    if r0 is not None and (R % step) != r0:
-                        continue
-                    if c0 is not None and (C % step) != c0:
-                        continue
-                    ov = _overlap_at(coords, rh, cw, R, C)
-                    score = ov / (rh * cw) if rh * cw else 0
-                    if score > best_score:
-                        best_score = score
-                        best_R, best_C = R, C
-                        best_h, best_w = rh, cw
+        coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
+        step_len = getattr(self, 'current_step', 1)
+        holes, protrusions, _ = detect_holes(coords, game.m, game.n, step_len,
+                                             region=region)
 
-        # 4. 繪製目標窗口矩形（无填充，仅绿色边框）
+        scaled_cell = self.cell_size * self.zoom
+        scaled_gap = self.gap_width * self.zoom
+        cell_step = scaled_cell + scaled_gap
+        half = scaled_cell / 2
+        radius = max(3, int(scaled_cell * 0.35))
+        line_w = max(2, int(2 * self.zoom))
+
+        def _cell_center(r, c):
+            return (c * cell_step + self.camera_x + half,
+                    r * cell_step + self.camera_y + half)
+
+        # 目標窗口內的空位：孔洞→圓圈、缺口→三角形
+        for h in holes:
+            is_selected = (self.selected_hole is not None and
+                           set(h['cells']) == set(self.selected_hole.get('cells', [])))
+            color = (255, 80, 80) if h['size'] == 'large' else (80, 160, 255)
+            for r, c in h['cells']:
+                cx, cy = _cell_center(r, c)
+                if h['type'] == 'hole':
+                    pygame.draw.circle(self.screen, color, (int(cx), int(cy)),
+                                       radius, line_w)
+                else:  # gap → 三角形
+                    pts = [(cx, cy - radius),
+                           (cx - radius, cy + radius),
+                           (cx + radius, cy + radius)]
+                    pygame.draw.polygon(self.screen, color, pts, line_w)
+                if is_selected:
+                    pygame.draw.circle(self.screen, (255, 255, 255),
+                                       (int(cx), int(cy)),
+                                       max(2, radius // 2), 0)
+
+        # 目標窗口外的方塊（凸起）→ 斜方形
+        for r, c in protrusions:
+            cx, cy = _cell_center(r, c)
+            d = radius
+            pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
+            pygame.draw.polygon(self.screen, (255, 210, 60), pts, line_w)
+
+    def _draw_target_window(self):
+        """繪製目標窗口預告框（無填充、綠色邊框）。
+
+        窗口位置由 _compute_target_region 計算（mod 約束 + 聚攏度最高），
+        與 _draw_debug_holes 共用同一 region，保證標記系統與畫框一致。
+        """
+        region = self._compute_target_region()
+        if region is None:
+            return None
+        r0, c0, (rh, cw) = region
+
         board_x = getattr(self, '_board_x', 0)
         board_y = getattr(self, '_board_y', 0)
         scaled_cell = self.cell_size * self.zoom
         scaled_gap = self.gap_width * self.zoom
         cell_step = scaled_cell + scaled_gap
-        x = board_x + best_C * cell_step + self.camera_x
-        y = board_y + best_R * cell_step + self.camera_y
-        w = best_w * scaled_cell + (best_w - 1) * scaled_gap
-        h = best_h * scaled_cell + (best_h - 1) * scaled_gap
+        x = board_x + c0 * cell_step + self.camera_x
+        y = board_y + r0 * cell_step + self.camera_y
+        w = cw * scaled_cell + (cw - 1) * scaled_gap
+        h = rh * scaled_cell + (rh - 1) * scaled_gap
         pygame.draw.rect(self.screen, (80, 220, 100),
                          (int(x), int(y), int(w), int(h)),
                          max(2, int(2 * self.zoom)))
-
-        # 5. 写回 self 供状态检查使用
-        self._target_rc = (best_R, best_C)
-        return (best_R, best_C, best_h, best_w)
+        return region
 
     def get_hole_at_pos(self, screen_x, screen_y):
-        """返回屏幕坐标处的洞（若点击在洞格子上），否则 None。"""
+        """返回屏幕坐标处的洞（若点击在洞格子上），否则 None。
+
+        與調試面板使用同一個目標窗口，確保可點的洞 = 畫出的標記。
+        """
         from solver.ml.hole_detector import detect_holes
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
             return None
+        region = getattr(self, '_target_region', None)
+        if region is None:
+            region = self._compute_target_region()
+        if region is None:
+            return None
         coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
         step_len = getattr(self, 'current_step', 1)
-        holes, _, _ = detect_holes(coords, game.m, game.n, step_len)
+        holes, _, _ = detect_holes(coords, game.m, game.n, step_len, region=region)
 
         world_x, world_y = self.screen_to_world(screen_x, screen_y)
         cell = self.cell_size + self.gap_width
@@ -251,7 +218,13 @@ class MetricsPanelMixin:
             return
 
         coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
-        holes, protrusions, region = detect_holes(coords, game.m, game.n, self.current_step)
+        region = getattr(self, '_target_region', None)
+        if region is None:
+            region = self._compute_target_region()
+        if region is None:
+            return
+        holes, protrusions, region = detect_holes(coords, game.m, game.n,
+                                                  self.current_step, region=region)
 
         selected_index = -1
         for i, h in enumerate(holes):
@@ -319,18 +292,22 @@ class MetricsPanelMixin:
         close_surface = self.status_font.render("×", True, (255, 255, 255))
         self.screen.blit(close_surface, close_surface.get_rect(center=self.mp_close_rect.center))
 
-        # 指标行
+        # 指标行（目标框行顯示與畫框同一窗口的實際位置）
         from solver.ml.gather_solver import detect_target_corner, _game_coords
         game = self.game
-        tc = detect_target_corner(_game_coords(game), game.m, game.n,
-                                  getattr(self, 'current_step', 1))
+        step = getattr(self, 'current_step', 1)
+        tc = detect_target_corner(_game_coords(game), game.m, game.n, step)
+        region = getattr(self, '_target_region', None)
+        if region is None:
+            region = self._compute_target_region()
         rows = [
             ("聚拢度", f"{met['score'] * 100:.1f}%"),
             ("重叠", f"{met['overlap']}/{game.m * game.n}"),
             ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
             ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-            ("目标角点", f"({tc[0]},{tc[1]}) mod {getattr(self, 'current_step', 1)}" if tc else "—"),
-            ("mod 状态", "有约束" if tc else ("无约束" if getattr(self, 'current_step', 1) > 1 else "step=1")),
+            ("目标框", f"({region[0]},{region[1]}) {region[2][0]}×{region[2][1]}"
+             if region else "—"),
+            ("mod 状态", "有约束" if tc else ("无约束" if step > 1 else "step=1")),
         ]
         row_y = y + self._MP_TITLE_H + self._MP_PAD
         for label, value in rows:

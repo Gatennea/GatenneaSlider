@@ -180,14 +180,11 @@ class RendererMixin:
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
             pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=int(5 * self.zoom))
 
-        # 调试面板打开时，在棋盘上画出洞的位置和目标窗口预告框
+        # 调试面板打开时：先画目标窗口框（并把同一 region 存到 self），
+        # 再以该 region 为基准画洞/缺口/凸起标记，两者严格一致。
         if getattr(self, 'show_metrics_panel', False):
-            # 先计算目标框，同步拿到 (R,C,h,w) 传给洞标记
-            trc = self._draw_target_window()
-            if trc:
-                self._draw_debug_holes(trc[0], trc[1], trc[2], trc[3])
-            else:
-                self._draw_debug_holes()
+            self._draw_target_window()
+            self._draw_debug_holes()
 
     def draw_menu_bar(self):
         """绘制顶部菜单栏"""

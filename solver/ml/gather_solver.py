@@ -93,12 +93,50 @@ def gather_score(coords, m, n):
 
 
 def _overlap_at(coords, m, n, R, C):
-    """统计 (R,C) 开始的 m×n 窗口内的方块数。"""
+    """統計 (R,C) 開始的 m×n 窗口內的方塊數。"""
     cnt = 0
     for r, c in coords:
         if R <= r < R + m and C <= c < C + n:
             cnt += 1
     return cnt
+
+
+def find_best_window(coords, m, n, step):
+    """找出「聚攏度最高」的目標窗口（mod-aware）。
+
+    在整個邊界盒範圍內枚舉所有 m×n 與 n×m 窗口，只保留與着色
+    不變量相符的偏移（detect_target_corner 的約束維度），選覆蓋
+    方塊數（= 聚攏度）最高的窗口。返回 (r0, c0, (rh, cw), overlap)：
+        r0, c0   : 窗口左上角實際座標
+        (rh, cw) : 窗口朝向（(m,n) 或 (n,m)）
+        overlap  : 窗口內方塊數
+    """
+    if not coords:
+        return 0, 0, (m, n), 0
+    rs = [r for r, _ in coords]
+    cs = [c for _, c in coords]
+    min_r, max_r = min(rs), max(rs)
+    min_c, max_c = min(cs), max(cs)
+
+    # mod 約束：只約束「不被整除」的那一維
+    tc = detect_target_corner(coords, m, n, step)
+    r_mod = tc[0] if (tc is not None and m % step != 0) else None
+    c_mod = tc[1] if (tc is not None and n % step != 0) else None
+
+    best = (min_r, min_c, (m, n), 0)
+    for rh, cw in ((m, n), (n, m)):
+        for r0 in range(min_r - rh + 1, max_r + 1):
+            if r_mod is not None and r0 % step != r_mod:
+                continue
+            for c0 in range(min_c - cw + 1, max_c + 1):
+                if c_mod is not None and c0 % step != c_mod:
+                    continue
+                cnt = _overlap_at(coords, rh, cw, r0, c0)
+                if cnt > best[3]:
+                    best = (r0, c0, (rh, cw), cnt)
+                    if cnt == m * n:
+                        return best
+    return best
 
 
 def gather_metrics(coords, m, n):

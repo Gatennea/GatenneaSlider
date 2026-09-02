@@ -64,13 +64,16 @@ def find_target_region(coords, m, n):
 # ---------------------------------------------------------------------------
 # 洞检测
 # ---------------------------------------------------------------------------
-def detect_holes(coords, m, n, step):
+def detect_holes(coords, m, n, step, region=None):
     """检测目标矩形内的洞 + 凸起。
 
     参数：
         coords : 方块坐标集合（frozenset/set）
         m, n   : 目标尺寸
         step   : 移动步长（用于判定洞的大小）
+        region : 固定目标窗口 (r0, c0, (rh, cw))；None = 由 find_target_region
+                 自动寻找（不含 mod 约束）。GUI 传 region 可让洞/凸起的
+                 语义与「画出的目标框」完全一致。
 
     返回 (holes, protrusions, region)：
         holes        : 洞列表，每个为 {cells, type, bbox, size}
@@ -78,7 +81,10 @@ def detect_holes(coords, m, n, step):
         region       : (r0, c0, (rh, cw)) 目标区域
     """
     total = m * n
-    r0, c0, (rh, cw), _ = find_target_region(coords, m, n)
+    if region is not None:
+        r0, c0, (rh, cw) = region
+    else:
+        r0, c0, (rh, cw), _ = find_target_region(coords, m, n)
 
     # 目标矩形网格：1=有方块，0=空
     grid = [[0] * cw for _ in range(rh)]
