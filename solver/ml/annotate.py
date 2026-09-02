@@ -64,8 +64,6 @@ def _compute_one(args):
     args: (hash, distance_val)
     返回: (hash, dist_to_bottleneck) 或 (None, error_msg)
     """
-    global _GLOBAL_DIST, _GLOBAL_BOTTLENECKS, _GLOBAL_DIST_TO_BOTTLENECK
-    global _GLOBAL_STEP, _GLOBAL_TOTAL
     h, dist_val = args
 
     try:
@@ -226,7 +224,6 @@ def annotate(m=4, n=4, step=2, threshold=None):
     bottleneck_states = [s for s in states if s.get('is_bottleneck')]
     bn_dist_dist = Counter(s.get('dist_to_bottleneck', -1) for s in states)
     bn_by_bfs_dist = Counter(s['distance'] for s in bottleneck_states)
-    bn_by_dist_to_bn = Counter(s.get('dist_to_bottleneck', -1) for s in bottleneck_states)
 
     bn_stats = {
         'meta': {'m': m, 'n': n, 'step': step, 'threshold': threshold},

@@ -89,7 +89,6 @@ class EventsMixin:
                             # 点击滚动条空白区域：跳转到对应位置
                             content_height = getattr(self, '_help_content_height', 1)
                             total_content = getattr(self, '_help_total_height', 1)
-                            visible = content_height / total_content * content_height
                             ratio = (event.pos[1] - sb_rect.top) / sb_rect.height
                             max_scroll = max(0, total_content - content_height)
                             self.help_scroll_offset = int(ratio * max_scroll)
@@ -576,7 +575,6 @@ class EventsMixin:
                             'move_up': 'w', 'move_down': 's',
                             'move_left': 'a', 'move_right': 'd'
                         }
-                        moved = False
                         for action_name, direction in move_actions.items():
                             if self._is_action_triggered(event, action_name):
                                 if self.selected_gap and self.selected_block:
@@ -588,7 +586,6 @@ class EventsMixin:
                                         can_move = True
                                     if can_move:
                                         self.move_selected_blocks(direction)
-                                moved = True
                                 break
                 
                 # 键盘释放

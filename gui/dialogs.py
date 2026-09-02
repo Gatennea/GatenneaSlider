@@ -377,7 +377,6 @@ class PygameFileDialog:
         self.screen.blit(overlay, (0, 0))
         
         dx, dy = self.dialog_rect.x, self.dialog_rect.y
-        dw, dh = self.dialog_rect.width, self.dialog_rect.height
         
         # 对话框背景
         pygame.draw.rect(self.screen, self.colors['dialog_bg'], self.dialog_rect, border_radius=8)

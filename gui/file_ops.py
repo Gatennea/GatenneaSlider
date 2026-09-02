@@ -13,7 +13,7 @@
 import json
 import os
 import pygame
-from game import SliderMatrix, Block
+from game import SliderMatrix
 
 
 def _compact_json_dumps(data, indent=2, max_line_width=200):

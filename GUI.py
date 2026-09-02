@@ -105,7 +105,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         _gui_log_error(f'GUI初始化开始: m={m}, n={n}, step={step}')
         try:
             pygame.init()
-        except Exception as e:
+        except Exception:
             _gui_log_error(f'pygame.init() 失败: {traceback.format_exc()}')
             raise
 

@@ -12,8 +12,6 @@
 - 从复原状态打乱后还原
 """
 
-from copy import deepcopy
-
 
 class Block:
     """

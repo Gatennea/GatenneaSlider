@@ -10,7 +10,7 @@ import sys, time, random
 from game import SliderMatrix
 from solver.actions import enumerate_valid_actions, apply_action
 from solver.state import snapshot, restore
-from solver.table_core import canonicalize, _side_components
+from solver.table_core import canonicalize
 from solver.ml.emd_solver import emd_distance
 
 

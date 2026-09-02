@@ -21,7 +21,6 @@ import json
 import time
 import random
 import numpy as np
-from collections import Counter
 
 # 强制实时输出
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
@@ -92,7 +91,6 @@ def _build_state_features(s, m, n):
 
 
 def train_ranker(m=4, n=4, step=2, sample_frac=1.0):
-    total_cells = m * n
     training_dir = os.path.join(TRAINING_DIR, f'{m}_{n}_{step}')
     data_path = os.path.join(training_dir, 'states_annotated.pkl')
 

@@ -55,7 +55,6 @@ def _process_one_task(args):
     args: (hash, distance_val)
     返回: (entry, in_degree_delta) 或 (None, error_msg)
     """
-    global _GLOBAL_DIST, _GLOBAL_STEP, _GLOBAL_TOTAL
     h, dist_val = args
     try:
         coords = tc.int_to_coords(h, _GLOBAL_TOTAL)

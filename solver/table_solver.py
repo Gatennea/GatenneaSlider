@@ -12,7 +12,6 @@ import os
 import sys
 import pickle
 from solver import table_core as tc
-from solver.actions import apply_action
 
 
 # ---------------------------------------------------------------------------

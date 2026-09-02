@@ -66,10 +66,6 @@ def greedy_hill_climbing_solve(game: SliderMatrix, step: int,
     best_score = compute_score(game_copy)
     start_time = time.time()
 
-    # 记录到最佳状态的路径
-    best_path = []
-    best_path_score = best_score
-
     for iteration in range(max_steps):
         # 取消检查
         if cancel_check and cancel_check():
@@ -169,10 +165,6 @@ def greedy_hill_climbing_solve(game: SliderMatrix, step: int,
         if selected_score > best_score + 0.0001:
             best_score = selected_score
             no_improve_count = 0
-            # 记录最佳路径
-            if selected_score > best_path_score:
-                best_path_score = selected_score
-                best_path = path[:]
         else:
             no_improve_count += 1
 

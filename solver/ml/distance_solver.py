@@ -25,8 +25,6 @@ import time
 import pickle
 import random
 
-import numpy as np
-
 from game import SliderMatrix
 from solver.actions import enumerate_valid_actions, apply_action
 from solver.state import snapshot, restore

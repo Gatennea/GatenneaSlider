@@ -24,8 +24,6 @@ r"""
 
 import sys
 
-from game import SliderMatrix
-
 
 # ---------------------------------------------------------------------------
 # 目标区域
@@ -80,7 +78,6 @@ def detect_holes(coords, m, n, step, region=None):
         protrusions  : 凸起坐标列表（目标矩形外的方块）
         region       : (r0, c0, (rh, cw)) 目标区域
     """
-    total = m * n
     if region is not None:
         r0, c0, (rh, cw) = region
     else:
@@ -161,8 +158,6 @@ def main():
     if len(sys.argv) > 3:
         m, n, step = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
 
-    # 构造一个聚拢后有洞的状态：4x4 还原后，把最下一行右移 2 格
-    g = SliderMatrix(m, n)
     # 直接手工构造：行0,1,2 正常，行3 右移2
     coords = {(r, c) for r in range(m - 1) for c in range(n)} | \
              {(m - 1, c) for c in range(step, step + n)}

@@ -931,7 +931,6 @@ class RendererMixin:
             radio_size = 12
             radio_x = x + 25
             radio_y = row_y + row_height // 2 - radio_size
-            radio_rect = pygame.Rect(radio_x, radio_y, radio_size * 2, radio_size * 2)
             self._settings_solver_rects[algo_key] = pygame.Rect(
                 radio_x, row_y, width - 40, row_height
             )

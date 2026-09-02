@@ -6,7 +6,6 @@
 每条记录保存滑块布局的 0-1 矩阵和边界信息。
 """
 
-from copy import deepcopy
 from game import Block
 
 

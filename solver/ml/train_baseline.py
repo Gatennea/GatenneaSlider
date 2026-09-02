@@ -24,15 +24,14 @@ import sys
 import pickle
 import json
 import time
-import random
 import numpy as np
 from collections import Counter
 
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier, MLPRegressor
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
-    accuracy_score, classification_report, mean_absolute_error, r2_score,
+    accuracy_score, mean_absolute_error, r2_score,
 )
 
 # ---------------------------------------------------------------------------

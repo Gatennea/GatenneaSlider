@@ -20,7 +20,6 @@ import sys
 import pickle
 import random
 import tkinter as tk
-from tkinter import ttk
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 

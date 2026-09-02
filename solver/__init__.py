@@ -55,10 +55,6 @@ def solve_greedy(game, step: int, max_steps: int = 500,
 
 # 算法名稱和對應函數的對照表
 from solver.table_solver import table_solve
-from solver.ml.ai_solver import ai_solve
-from solver.ml.emd_solver import emd_greedy_solve
-from solver.ml.strategy_solver import strategy_solve
-from solver.ml.distance_solver import distance_solve
 from solver.ml.gather_solver import gather_solve
 from solver.ml.gather_solver import gradient_gather
 
