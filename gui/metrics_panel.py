@@ -123,6 +123,53 @@ class MetricsPanelMixin:
             pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
             pygame.draw.polygon(self.screen, (255, 210, 60), pts, line_w)
 
+    def _draw_target_window(self):
+        """调试面板打开时，在棋盘上绘制目标窗口预告框。
+
+        当 step > 1 且存在唯一 mod 约束（detect_target_corner 返回确定偏移）时，
+        在棋盘上用半透明绿色矩形框出目标窗口位置，框的左上角满足
+        (R % step, C % step) == target_corner。
+        """
+        from solver.ml.gather_solver import detect_target_corner, _game_coords
+        game = getattr(self, 'game', None)
+        if game is None or not getattr(game, 'blocks', None):
+            return
+        step = getattr(self, 'current_step', 1)
+        target_corner = detect_target_corner(_game_coords(game), game.m, game.n, step)
+        if target_corner is None:
+            return
+
+        r0, c0 = target_corner
+        m, n = game.m, game.n
+        total = m * n
+        rs = [b.location[0] for b in game.blocks]
+        cs = [b.location[1] for b in game.blocks]
+        cur_r, cur_c = (max(rs) + min(rs)) // 2, (max(cs) + min(cs)) // 2
+
+        # 找最近的合法 (R, C)，使 R%step==r0, C%step==c0
+        R = ((cur_r - r0) // step) * step + r0
+        C = ((cur_c - c0) // step) * step + c0
+
+        scaled_cell = self.cell_size * self.zoom
+        scaled_gap = self.gap_width * self.zoom
+        cell_step = scaled_cell + scaled_gap
+        board_x = getattr(self, '_board_x', 0)
+        board_y = getattr(self, '_board_y', 0)
+
+        x = board_x + C * cell_step + self.camera_x
+        y = board_y + R * cell_step + self.camera_y
+        w = n * scaled_cell + (n - 1) * scaled_gap
+        h = m * scaled_cell + (m - 1) * scaled_gap
+
+        # 半透明填充
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        overlay.fill((80, 220, 100, 50))
+        self.screen.blit(overlay, (int(x), int(y)))
+        # 亮绿色边框
+        pygame.draw.rect(self.screen, (80, 220, 100),
+                         (int(x), int(y), int(w), int(h)),
+                         max(2, int(2 * self.zoom)))
+
     def get_hole_at_pos(self, screen_x, screen_y):
         """返回屏幕坐标处的洞（若点击在洞格子上），否则 None。"""
         from solver.ml.hole_detector import detect_holes
@@ -226,11 +273,17 @@ class MetricsPanelMixin:
         self.screen.blit(close_surface, close_surface.get_rect(center=self.mp_close_rect.center))
 
         # 指标行
+        from solver.ml.gather_solver import detect_target_corner, _game_coords
+        game = self.game
+        tc = detect_target_corner(_game_coords(game), game.m, game.n,
+                                  getattr(self, 'current_step', 1))
         rows = [
             ("聚拢度", f"{met['score'] * 100:.1f}%"),
-            ("重叠", f"{met['overlap']}/{self.game.m * self.game.n}"),
+            ("重叠", f"{met['overlap']}/{game.m * game.n}"),
             ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
             ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
+            ("目标角点", f"({tc[0]},{tc[1]}) mod {getattr(self, 'current_step', 1)}" if tc else "—"),
+            ("mod 状态", "有约束" if tc else ("无约束" if getattr(self, 'current_step', 1) > 1 else "step=1")),
         ]
         row_y = y + self._MP_TITLE_H + self._MP_PAD
         for label, value in rows:

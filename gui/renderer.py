@@ -178,9 +178,10 @@ class RendererMixin:
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
             pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=int(5 * self.zoom))
 
-        # 调试面板打开时，在棋盘上画出洞的位置
+        # 调试面板打开时，在棋盘上画出洞的位置和目标窗口预告框
         if getattr(self, 'show_metrics_panel', False):
             self._draw_debug_holes()
+            self._draw_target_window()
 
     def draw_menu_bar(self):
         """绘制顶部菜单栏"""
