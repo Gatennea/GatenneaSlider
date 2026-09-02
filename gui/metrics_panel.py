@@ -69,16 +69,17 @@ class MetricsPanelMixin:
         coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
         return gather_metrics(coords, game.m, game.n)
 
-    def _draw_debug_holes(self, target_rc=None):
+    def _draw_debug_holes(self, tr=None, tc=None, th=None, tw=None):
         """调试面板打开时，在棋盘上高亮画出洞和凸起的位置。
 
         图形约定（根据是否在目标窗口内）：
             框内孔洞（被包围） = 圆圈
             框内缺口（连通外缘）= 三角形
             框外凸起（矩形外） = 菱形
-            框外孔洞/缺口  = 同样画，不隐藏
         颜色约定：
             大 = 红色，小 = 蓝色
+            框内凸起 = 绿色，框外凸起 = 黄色
+        tr/tc/th/tw：目标窗口左上角网格坐标与行列数，None 表示不判断内外。
         """
         from solver.ml.hole_detector import detect_holes
         game = getattr(self, 'game', None)
@@ -96,12 +97,12 @@ class MetricsPanelMixin:
         line_w = max(2, int(2 * self.zoom))
 
         # 目标窗口边界（网格坐标），用于判断标记在内还是在外
-        tr, tc = target_rc if target_rc else (None, None)
+        in_target = (tr is not None and th is not None and tw is not None)
 
         def _in_target(r, c):
-            if tr is None:
-                return True
-            return tr <= r < tr + game.m and tc <= c < tc + game.n
+            if not in_target:
+                return False
+            return tr <= r < tr + th and tc <= c < tc + tw
 
         for h in holes:
             is_selected = (self.selected_hole is not None and
@@ -110,7 +111,6 @@ class MetricsPanelMixin:
             for r, c in h['cells']:
                 cx = c * step + self.camera_x + half
                 cy = r * step + self.camera_y + half
-                inside = _in_target(r, c)
                 if h['type'] == 'hole':
                     pygame.draw.circle(self.screen, color, (int(cx), int(cy)), radius, line_w)
                 else:  # gap → 三角形
@@ -121,10 +121,11 @@ class MetricsPanelMixin:
                     ]
                     pygame.draw.polygon(self.screen, color, pts, line_w)
                 if is_selected:
+                    # 选中洞：白色实心圆点标记
                     pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)),
                                        max(2, radius // 2), 0)
 
-        # 凸起：框外画菱形，框内也画菱形（但用目标绿色突出）
+        # 凸起：框外画菱形（黄色），框内也画菱形但用绿色
         for r, c in protrusions:
             cx = c * step + self.camera_x + half
             cy = r * step + self.camera_y + half
@@ -134,22 +135,22 @@ class MetricsPanelMixin:
             pygame.draw.polygon(self.screen, color, pts, line_w)
 
     def _draw_target_window(self):
-        """调试面板打开时，在棋盘上绘制目标窗口预告框。
+        """调试面板打开时，在棋盘上绘制目标窗口预告框（无填充，仅边框）。
 
         算法：
         - 若 step ≤ 1 或 detect_target_corner 返回 None（无 mod 约束）：
-          直接枚举所有合法 (R,C) 位置，找 gather_metrics score 最高的一个。
+          直接枚举所有合法 (R,C) 位置，找 overlap/area 最高的一个。
         - 若有 mod 约束 (r0,c0)：只枚举满足 R%step==r0、C%step==c0 的位置，
           同样找最高聚拢度的那个。
         - 同时检查 (m,n) 和 (n,m) 两个朝向，取 score 更高者。
-        - 将结果写入 self._target_rc，供 _draw_debug_holes 使用。
+        - 返回 (R, C, h, w) 供调用方传给 _draw_debug_holes。
         """
         from solver.ml.gather_solver import (
             detect_target_corner, _game_coords, _overlap_at,
         )
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
-            return
+            return None
         step = getattr(self, 'current_step', 1)
         coords = _game_coords(game)
         m, n = game.m, game.n
@@ -181,9 +182,7 @@ class MetricsPanelMixin:
                         best_R, best_C = R, C
                         best_h, best_w = rh, cw
 
-        self._target_rc = (best_R, best_C)
-
-        # 4. 繪製目標窗口矩形
+        # 4. 繪製目標窗口矩形（无填充，仅绿色边框）
         board_x = getattr(self, '_board_x', 0)
         board_y = getattr(self, '_board_y', 0)
         scaled_cell = self.cell_size * self.zoom
@@ -193,13 +192,13 @@ class MetricsPanelMixin:
         y = board_y + best_R * cell_step + self.camera_y
         w = best_w * scaled_cell + (best_w - 1) * scaled_gap
         h = best_h * scaled_cell + (best_h - 1) * scaled_gap
-
-        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
-        overlay.fill((80, 220, 100, 50))
-        self.screen.blit(overlay, (int(x), int(y)))
         pygame.draw.rect(self.screen, (80, 220, 100),
                          (int(x), int(y), int(w), int(h)),
                          max(2, int(2 * self.zoom)))
+
+        # 5. 写回 self 供状态检查使用
+        self._target_rc = (best_R, best_C)
+        return (best_R, best_C, best_h, best_w)
 
     def get_hole_at_pos(self, screen_x, screen_y):
         """返回屏幕坐标处的洞（若点击在洞格子上），否则 None。"""

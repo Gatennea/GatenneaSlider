@@ -182,9 +182,12 @@ class RendererMixin:
 
         # 调试面板打开时，在棋盘上画出洞的位置和目标窗口预告框
         if getattr(self, 'show_metrics_panel', False):
-            tc_rc = getattr(self, '_target_rc', None)
-            self._draw_debug_holes(tc_rc)
-            self._draw_target_window()
+            # 先计算目标框，同步拿到 (R,C,h,w) 传给洞标记
+            trc = self._draw_target_window()
+            if trc:
+                self._draw_debug_holes(trc[0], trc[1], trc[2], trc[3])
+            else:
+                self._draw_debug_holes()
 
     def draw_menu_bar(self):
         """绘制顶部菜单栏"""
