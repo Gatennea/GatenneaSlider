@@ -72,13 +72,13 @@ class MetricsPanelMixin:
     def _draw_debug_holes(self, tr=None, tc=None, th=None, tw=None):
         """调试面板打开时，在棋盘上高亮画出洞和凸起的位置。
 
-        图形约定（根据是否在目标窗口内）：
-            框内孔洞（被包围） = 圆圈
-            框内缺口（连通外缘）= 三角形
-            框外凸起（矩形外） = 菱形
+        图形约定以目标窗口为基准：
+            框内孔洞 = 圆圈
+            框内缺口 = 三角形
+            框外所有标记（含孔洞、缺口、凸起）= 菱形
         颜色约定：
             大 = 红色，小 = 蓝色
-            框内凸起 = 绿色，框外凸起 = 黄色
+            框内凸起 = 绿色，框外所有菱形 = 黄色
         tr/tc/th/tw：目标窗口左上角网格坐标与行列数，None 表示不判断内外。
         """
         from solver.ml.hole_detector import detect_holes
@@ -96,7 +96,6 @@ class MetricsPanelMixin:
         radius = max(3, int(scaled_cell * 0.35))
         line_w = max(2, int(2 * self.zoom))
 
-        # 目标窗口边界（网格坐标），用于判断标记在内还是在外
         in_target = (tr is not None and th is not None and tw is not None)
 
         def _in_target(r, c):
@@ -104,35 +103,53 @@ class MetricsPanelMixin:
                 return False
             return tr <= r < tr + th and tc <= c < tc + tw
 
+        # 收集所有需要标记的格子及其类型
+        all_marks = []  # list of (r, c, hole_type, size, is_selected)
+        selected_cells = set()
         for h in holes:
             is_selected = (self.selected_hole is not None and
                            set(h['cells']) == set(self.selected_hole.get('cells', [])))
             color = (255, 80, 80) if h['size'] == 'large' else (80, 160, 255)
             for r, c in h['cells']:
-                cx = c * step + self.camera_x + half
-                cy = r * step + self.camera_y + half
-                if h['type'] == 'hole':
-                    pygame.draw.circle(self.screen, color, (int(cx), int(cy)), radius, line_w)
-                else:  # gap → 三角形
-                    pts = [
-                        (cx, cy - radius),
-                        (cx - radius, cy + radius),
-                        (cx + radius, cy + radius),
-                    ]
-                    pygame.draw.polygon(self.screen, color, pts, line_w)
+                all_marks.append((r, c, h['type'], h['size'], is_selected))
                 if is_selected:
-                    # 选中洞：白色实心圆点标记
-                    pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)),
-                                       max(2, radius // 2), 0)
-
-        # 凸起：框外画菱形（黄色），框内也画菱形但用绿色
+                    selected_cells.add((r, c))
+        # 凸起：用 'protrusion' 类型
         for r, c in protrusions:
+            color = (255, 210, 60)  # 黄色，统一
+            all_marks.append((r, c, 'protrusion', 'small', False))
+
+        for r, c, htype, size, is_selected in all_marks:
             cx = c * step + self.camera_x + half
             cy = r * step + self.camera_y + half
-            d = radius
-            pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
-            color = (80, 220, 100) if _in_target(r, c) else (255, 210, 60)
-            pygame.draw.polygon(self.screen, color, pts, line_w)
+            inside = _in_target(r, c)
+
+            # 颜色
+            if htype == 'protrusion':
+                color = (80, 220, 100) if inside else (255, 210, 60)
+            else:
+                color = (255, 80, 80) if size == 'large' else (80, 160, 255)
+
+            # 形状：框外一律菱形，框内按类型画圆/三角
+            if not inside:
+                # 框外：全部菱形
+                d = radius
+                pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
+                pygame.draw.polygon(self.screen, color, pts, line_w)
+            elif htype == 'hole':
+                pygame.draw.circle(self.screen, color, (int(cx), int(cy)), radius, line_w)
+            elif htype == 'gap':
+                pts = [
+                    (cx, cy - radius),
+                    (cx - radius, cy + radius),
+                    (cx + radius, cy + radius),
+                ]
+                pygame.draw.polygon(self.screen, color, pts, line_w)
+
+            # 选中：白色实心圆点
+            if is_selected:
+                pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)),
+                                   max(2, radius // 2), 0)
 
     def _draw_target_window(self):
         """调试面板打开时，在棋盘上绘制目标窗口预告框（无填充，仅边框）。
