@@ -115,6 +115,77 @@ def _game_coords(game):
 
 
 # ---------------------------------------------------------------------------
+# Mod 不變量（着色器規律）
+# ---------------------------------------------------------------------------
+def _count_by_mod(coords, step):
+    """統計每種 (r%step, c%step) 類別的方塊數量。"""
+    counts = {}
+    for r, c in coords:
+        key = (r % step, c % step)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def detect_target_corner(coords, m, n, step):
+    """根據着色不變量預判目標窗口的左上角模偏移 (r0, c0)。
+
+    返回 (r0, c0) 或 None：
+      - step 整除 m 且整除 n：所有 (r0,c0) 均可，無法約束 → 回傳 None
+      - 否則：枚舉 step×step 種可能偏移，選出「與當前方塊計數完全吻合」的那一種；
+        若有零或多個吻合，回傳_None（表示偏移不明確，不強加約束）。
+
+    當 m 不被 step 整除而 n 被整除時，r0 唯一但 c0 任意（所有 c0 等價），
+    此時固定選 (r0, 0)。
+    """
+    if step <= 1:
+        return None
+    if m % step == 0 and n % step == 0:
+        return None
+
+    block_counts = _count_by_mod(coords, step)
+
+    def count_window(mw, nw, R, C):
+        """mw×nw 窗口從 (R,C) 開始的 mod 類別分佈。"""
+        cnts = {}
+        for r in range(R, R + mw):
+            for c in range(C, C + nw):
+                cat = (r % step, c % step)
+                cnts[cat] = cnts.get(cat, 0) + 1
+        return cnts
+
+    # 枚舉所有 (R, C)，記錄同時吻合 (m,n) 和 (n,m) 朝向的解
+    # 優先選 r0（當 m 不整除 step 時有約束），c0 取第一匹配
+    matches = [
+        (R, C) for R in range(step) for C in range(step)
+        if count_window(m, n, R, C) == block_counts
+    ]
+    if not matches:
+        return None
+    # 若 m 不整除 step，r0 是唯一約束；用第一個 r0 對應的最小 C
+    if m % step != 0:
+        best_r0 = matches[0][0]
+        c_candidates = [C for R, C in matches if R == best_r0]
+        return (best_r0, min(c_candidates))
+    # 否則返回第一匹配（r0 任意，c0 唯一或有約束）
+    return matches[0]
+
+
+def _is_mod_compliant(coords, step, r0, c0):
+    """計算當前狀態相對目標窗口 (r0,c0) 的「mod 一致性分」。
+
+    每個方塊的 mod 類別 ((r-r0)%step, (c-c0)%step) 落在 block_counts 中時得分 +1；
+    得分越高代表狀態越貼近目標窗口（而非某個錯誤的偏移）。
+    用於排序時優先選擇 mod 更接近目標的候選。
+    """
+    bc = _count_by_mod(coords, step)
+    score = 0
+    for r, c in coords:
+        cat = ((r - r0) % step, (c - c0) % step)
+        score += bc.get(cat, 0)
+    return score
+
+
+# ---------------------------------------------------------------------------
 # 路径优化：去环 + 徘徊压缩
 # ---------------------------------------------------------------------------
 _DIR_INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
@@ -204,7 +275,8 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
 # ---------------------------------------------------------------------------
 def gather_solve(game, step: int, max_steps=500, patience=150,
                  max_wait_time=20, target_gather_score=1.0, aggressiveness=0.2,
-                 cancel_check=None, progress_callback=None):
+                 cancel_check=None, progress_callback=None,
+                 target_corner=None):
     """贪心聚拢：每步选聚拢度（重叠率）最高的动作，连续 patience 步无改进则停机。
 
     参数（传 None 表示「不设限」）：
@@ -214,18 +286,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         target_gather_score : 聚拢度达到该值即提前停机（None = 不设目标；1.0 = 完全还原）
         aggressiveness    : 激进程度 = 允许每步选择的聚拢度比「当前最佳候选」
                             低多少（None = 不设限，任意候选都允许）
-
-    返回 dict：
-        type    : 'gather'
-        actions : Action 列表（已做路径优化：去环 + 徘徊压缩）
-        rep_cells : 每步代表方格坐标
-        solved  : 是否恰好还原
-        reason  : 停机原因（solved/target/no_improve/max_steps/timeout/
-                  cancelled/stuck/no_candidates/invalid_action）
-        start   : 起点指标
-        end     : 终点指标
-        best    : 历史最优指标
-        trace   : 每步指标（执行后）
+        target_corner     : (r0, c0) 预先判定的目标窗口左上角模偏移；None = 自动探测
     """
     m, n = game.m, game.n
     total = m * n
@@ -237,6 +298,15 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
     moved_groups = []  # 每步移动的方块组
     visited = set()
     stuck = 0
+
+    # 检测目标角点（着色不变量约束）
+    if target_corner is None:
+        start_coords = _game_coords(game)
+        target_corner = detect_target_corner(start_coords, m, n, step)
+    # target_corner 为 None 表示「无 mod 约束」（step 整除 m 且整除 n）
+    _mod_compliant = (_is_mod_compliant
+                      if target_corner is not None else None)
+    _mod_r0, _mod_c0 = target_corner if target_corner else (0, 0)
 
     start_time = time.time()
     start_hash = canonicalize(_game_coords(game))
@@ -305,7 +375,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
             break
 
         snap = snapshot(game)
-        scored = []  # (score, bbox_area, action, result_hash)
+        scored = []  # (score, bbox_area, action, result_hash, mod_compliant)
         for act in candidates:
             if not apply_action(game, act, step):
                 restore(game, snap)
@@ -316,7 +386,8 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
                 continue
             met = gather_metrics(new_coords, m, n)
             nh = canonicalize(new_coords)
-            scored.append((met['score'], met['bbox_area'], act, nh))
+            mod_ok = _mod_compliant is None or _mod_compliant(new_coords, step, _mod_r0, _mod_c0)
+            scored.append((met['score'], met['bbox_area'], act, nh, mod_ok))
             restore(game, snap)
 
         if not scored:
@@ -345,9 +416,9 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         else:
             pool = scored
 
-        # 优先未访问，再聚拢度最高，再边界盒面积最小（凸起更近）
-        pool.sort(key=lambda x: (x[3] in visited, -x[0], x[1]))
-        _, _, best_action, _ = pool[0]
+        # 优先未访问，再聚拢度最高，再 mod 分高，再边界盒面积最小
+        pool.sort(key=lambda x: (x[3] in visited, -x[0], -x[4], x[1]))
+        _, _, best_action, _, _ = pool[0]
 
         restore(game, snap)
         rep = _find_rep_cell(game, best_action)

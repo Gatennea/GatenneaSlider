@@ -368,6 +368,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.settings_edit_buffer = ''       # 输入缓冲区
         # 智能聚拢（梯度）逐阶段状态：None = 非梯度模式
         self._gradient_state = None
+        # 梯度流水线（阶段计算与动画并行）：
+        self._gradient_queue = queue.Queue()  # (gen, result|None) 项；result=None=管线结束哨兵
+        self._gradient_gen = 0                # 管线代数：取消/重开时自增，用于丢弃过期结果
+        self._gradient_busy = False           # 后台流水线线程是否存活
         # 分组着色器：按 (位置 mod step) 给滑块分组涂色，帮助人工还原
         self.coloring_enabled = False
         # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
@@ -541,6 +545,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             n: 列数
             step: 移动步数（等级）
         """
+        # 切换谜题会重置棋盘 → 终止梯度流水线
+        self._stop_gradient_pipeline()
         # 验证等级约束：step < max(m, n)
         if step >= max(m, n):
             return False
@@ -773,6 +779,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         返回：
             bool - 是否真正执行了移动（被拦截/未选中/移动不合法均为 False）
         """
+        # 手动移动会使已排队的梯度阶段失效 → 终止流水线
+        self._stop_gradient_pipeline()
         # 计时模式：就绪态（已打乱未开始）禁止滑动，保证公平
         if self.game_mode == 'timed' and self.timer_state == 'ready':
             self.macro_notify_msg = "计时模式：按空格开始计时后才能滑动"
@@ -829,6 +837,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def undo(self):
         """撤销操作（Ctrl+Z）"""
+        # 手动撤销会使已排队的梯度阶段失效 → 终止流水线
+        self._stop_gradient_pipeline()
         # 如果正在播放撤销/重做动画，入队等待
         if self.animating and self._undo_redo_type is not None:
             self._animation_queue.append('undo')
@@ -864,6 +874,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def redo(self):
         """重做操作（Ctrl+X）"""
+        # 手动重做会使已排队的梯度阶段失效 → 终止流水线
+        self._stop_gradient_pipeline()
         # 如果正在播放撤销/重做动画，入队等待
         if self.animating and self._undo_redo_type is not None:
             self._animation_queue.append('redo')
@@ -900,6 +912,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def shuffle_puzzle(self):
         """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
+        # 打乱会改变棋盘 → 终止梯度流水线
+        self._stop_gradient_pipeline()
         # 计时进行中禁止打乱
         if self.timer_state == 'running':
             self.macro_notify_msg = "计时中无法打乱"
@@ -1070,12 +1084,20 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 如果正在求解，則取消
         if self._auto_solve_running:
             self._auto_solve_cancel = True
+            if getattr(self, '_gradient_state', None) is not None:
+                # 梯度流水线：取消后台计算，丢弃已排队的结果
+                self._gradient_state = None
+                self._gradient_gen += 1
+                self.macro_notify_msg = "智能聚拢已停止"
+                self.macro_notify_timer = 90
             return
 
-        # 梯度播放中：再次点击 = 停止（终止后续阶段）
+        # 梯度播放中：再次点击 = 停止（终止后续阶段与后台计算）
         if self.macro_executing:
             if getattr(self, '_gradient_state', None) is not None:
                 self._gradient_state = None
+                self._auto_solve_cancel = True
+                self._gradient_gen += 1
                 self.macro_notify_msg = "智能聚拢已停止"
                 self.macro_notify_timer = 90
             return
@@ -1090,17 +1112,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         game_snapshot = deepcopy(self.game)
         algorithm = self.solver_algorithm
 
-        # 梯度聚拢：初始化阶段状态（先验参数自动决定，逐阶段播放）
-        # 续阶段时保留已有 stage_idx，仅首次生成 base_params
+        # 梯度聚拢：启动后台流水线（各阶段连续计算，主线程并行播放动画）
         if algorithm == 'gather_gradient':
             from solver.ml.gather_solver import predict_params
-            st = getattr(self, '_gradient_state', None)
-            if st is None:
-                st = {'stage_idx': 0, 'max_stages': 4, 'base_params': None}
-            if not st.get('base_params'):
-                st['base_params'] = predict_params(game_snapshot, self.current_step)
-            st.setdefault('max_stages', 4)
-            self._gradient_state = st
+            self._gradient_state = {'max_stages': 4}
+            self._gradient_gen += 1
+            gen = self._gradient_gen
+            self._gradient_busy = True
+            base_params = predict_params(game_snapshot, self.current_step)
+            self._drain_gradient_queue()
+            threading.Thread(target=self._gradient_worker,
+                             args=(gen, game_snapshot, base_params, 4),
+                             daemon=True).start()
+            return
 
         def cancel_check():
             return self._auto_solve_cancel
@@ -1119,32 +1143,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     # 禁用的参数传 None（不设限）
                     for k, v in self.gather_params.items():
                         kwargs[k] = v if self.gather_enabled.get(k, True) else None
-                if algorithm == 'gather_gradient':
-                    # 只跑当前阶段，播放该阶段动画后再续下一阶段
-                    from solver.ml.gather_solver import gather_solve, stage_params
-                    st = getattr(self, '_gradient_state', None)
-                    if st is None:
-                        solution = False
-                    else:
-                        p = stage_params(st['base_params'], st['stage_idx'])
-                        progress_callback({'stage': 'gradient_stage',
-                                           'idx': st['stage_idx'] + 1,
-                                           'total': st['max_stages']})
-                        solution = gather_solve(
-                            game_snapshot, step=self.current_step,
-                            cancel_check=cancel_check,
-                            progress_callback=progress_callback, **p)
-                        if isinstance(solution, dict):
-                            solution = dict(solution)
-                            solution['gradient_stage'] = st['stage_idx'] + 1
-                            solution['gradient_total'] = st['max_stages']
-                else:
-                    solution = solver_func(
-                        game_snapshot, step=self.current_step,
-                        cancel_check=cancel_check,
-                        progress_callback=progress_callback,
-                        **kwargs,
-                    )
+                solution = solver_func(
+                    game_snapshot, step=self.current_step,
+                    cancel_check=cancel_check,
+                    progress_callback=progress_callback,
+                    **kwargs,
+                )
                 if self._auto_solve_cancel:
                     self._auto_solve_result = False
                 else:
@@ -1158,8 +1162,92 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         threading.Thread(target=solve_thread, daemon=True).start()
 
+    def _drain_gradient_queue(self):
+        """清空梯度流水线队列（丢弃过期结果）"""
+        try:
+            while True:
+                self._gradient_queue.get_nowait()
+        except Exception:
+            pass
+
+    def _gradient_worker(self, gen, snap, base_params, max_stages):
+        """梯度流水线后台线程：阶段 k+1 的计算与阶段 k 的动画并行。
+
+        sim 是求解私有的棋盘副本，从「上一阶段解完的构型」继续算下一阶段，
+        不等待动画——动画只发生在主线程的真实棋盘上，二者互不冲突。
+        """
+        try:
+            from solver.ml.gather_solver import gather_solve, stage_params
+
+            def cancel_check():
+                return self._auto_solve_cancel or gen != self._gradient_gen
+
+            def progress_callback(info):
+                self._auto_solve_progress = info
+
+            for idx in range(max_stages):
+                if cancel_check():
+                    break
+                p = stage_params(base_params, idx)
+                r = gather_solve(snap, step=self.current_step,
+                                 cancel_check=cancel_check,
+                                 progress_callback=progress_callback, **p)
+                if cancel_check():
+                    break
+                r = dict(r)
+                r['gradient_stage'] = idx + 1
+                r['gradient_total'] = max_stages
+                self._gradient_queue.put((gen, r))
+                # 该阶段无任何动作可播（且未复原）：与旧逻辑一致，整条流程到此为止
+                if not r.get('actions') and not r.get('solved'):
+                    break
+                # 已复原或真正无法继续：不再安排后续阶段
+                if r.get('solved') or r.get('reason') in (
+                        'timeout', 'cancelled', 'no_candidates', 'invalid_action'):
+                    break
+        except Exception as e:
+            print(f"[梯度流水线] 出错: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._gradient_queue.put((gen, None))  # 结束哨兵
+            self._gradient_busy = False
+            self._auto_solve_running = False
+
+    def _pump_gradient_results(self):
+        """把后台已算好的阶段结果，按序交给动画管道逐阶段播放。"""
+        gen = self._gradient_gen
+        while True:
+            try:
+                item_gen, item = self._gradient_queue.get_nowait()
+            except Exception:
+                return  # 队列暂时为空：后台仍在计算，继续等待
+            if item_gen != gen:
+                continue  # 过期项（取消/重开）：丢弃
+            if item is None:
+                # 后台全部算完且没有更多阶段：收尾
+                self._gradient_state = None
+                self.macro_notify_persistent = False
+                return
+            self._handle_gather_result(item)
+            return
+
+    def _stop_gradient_pipeline(self):
+        """终止梯度流水线：手动改动棋盘会使已排队阶段失效，必须停止。"""
+        if getattr(self, '_gradient_state', None) is None and not self._gradient_busy:
+            return
+        self._gradient_state = None
+        self._auto_solve_cancel = True
+        self._gradient_gen += 1
+        self._drain_gradient_queue()
+
     def _check_auto_solve_result(self):
         """检查后台求解结果，如有结果则启动宏执行"""
+        # 梯度流水线：后台连续计算，这里按序播放已就绪的阶段动画
+        if (getattr(self, '_gradient_state', None) is not None
+                and not self.macro_executing and not self.animating):
+            self._pump_gradient_results()
+            return
         if not self._auto_solve_done:
             return
         if self.macro_executing or self.animating:
@@ -1248,7 +1336,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         }.get(reason, reason or '完成')
 
         if not actions:
-            self._gradient_state = None  # 无可播放动作 = 梯度流程到此为止
+            # 无可播放动作 = 梯度流程到此为止（同时停掉后台流水线）
+            if getattr(self, '_gradient_state', None) is not None:
+                self._gradient_state = None
+                self._auto_solve_cancel = True
+                self._gradient_gen += 1
             if solved:
                 self.macro_notify_msg = "聚拢：已是复原状态"
             else:
@@ -1303,6 +1395,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'end': result.get('end', {}),
             'solved': solved,
             'reason': reason,
+            'gradient_stage': gstage,
+            'gradient_total': result.get('gradient_total'),
         }
         self.macro_executing = True
         self.macro_exec_name = "聚拢"
@@ -1344,8 +1438,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     self.timer_elapsed = time.perf_counter() - self.timer_start
                 self._timer_check_solved()
 
-                # 求解中显示计时和进度
-                if self._auto_solve_running:
+                # 求解中显示计时和进度（宏动画播放阶段保留逐步行进提示）
+                if self._auto_solve_running and not self.macro_executing:
                     elapsed = time.time() - self._auto_solve_start_time
                     progress = self._auto_solve_progress
                     if progress:

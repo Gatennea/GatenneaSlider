@@ -1670,14 +1670,10 @@ class EventsMixin:
                     self.macro_notify_msg = f'[{macro_name}] {label}执行成功：{total_ops}步'
                     self.macro_notify_timer = 180  # 3秒 (60fps)
                 # 所有步骤执行完毕
+                # 梯度聚拢：后续阶段由后台流水线推送，无需在此启动
                 self.macro_executing = False
                 self.macro_exec_ops = []
                 self.macro_exec_index = 0
-                # 梯度聚拢：本阶段播放完毕，未还原则自动进入下一阶段
-                gs = getattr(self, '_gradient_state', None)
-                if gs is not None and gs.get('stage_idx', 0) + 1 < gs.get('max_stages', 4):
-                    gs['stage_idx'] += 1
-                    self._start_auto_solve()
                 return
 
             op = self.macro_exec_ops[self.macro_exec_index]
@@ -1798,20 +1794,22 @@ class EventsMixin:
         eh, ew = e.get('bbox', (0, 0))
         gs = getattr(self, '_gradient_state', None)
         if gs is not None:
-            # 梯度聚拢：逐阶段播报；续阶段由宏完成分支负责
-            cur = gs.get('stage_idx', 0) + 1
+            # 梯度聚拢：逐阶段播报；后续阶段由后台流水线自动推送
+            gstage = info.get('gradient_stage')
+            gtotal = info.get('gradient_total') or gs.get('max_stages', 4)
+            cur = gstage if gstage else (gs.get('stage_idx', 0) + 1)
             if info.get('solved'):
                 self.macro_notify_msg = f"智能聚拢：已复原！共{total}步"
                 self._gradient_state = None
-            elif cur >= gs.get('max_stages', 4):
+            elif gstage is not None and gstage >= gtotal:
                 self.macro_notify_msg = (
-                    f"智能聚拢：{gs.get('max_stages', 4)}阶段未复原 · "
+                    f"智能聚拢：{gtotal}阶段未复原 · "
                     f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
                 )
                 self._gradient_state = None
             else:
                 self.macro_notify_msg = (
-                    f"智能聚拢 第{cur}/{gs.get('max_stages', 4)}阶段完成（{reason_text}）· "
+                    f"智能聚拢 第{cur}/{gtotal}阶段完成（{reason_text}）· "
                     f"{total}步 · 聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
                 )
         elif info.get('solved'):
@@ -1836,6 +1834,10 @@ class EventsMixin:
         self.macro_notify_persistent = False
         self._gather_info = None  # 中断时清空聚拢状态，避免污染后续宏
         self._gradient_state = None  # 中断时终止梯度聚拢后续阶段
+        # 停掉后台梯度流水线，丢弃已排队阶段
+        self._auto_solve_cancel = True
+        self._gradient_gen += 1
+        self._drain_gradient_queue()
 
     def _find_block_on_side(self, gap_type: str, gap_line: int, side: str):
         """
