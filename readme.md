@@ -174,7 +174,7 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 - **聚攏度** `score = 最佳重疊塊數 / m*n`（`max_overlap`/`gather_score`），取 `m×n`、`n×m` 兩朝向的最大重疊，平移不變。
 - **目標窗口**就是分數所對應的矩形，由 `find_best_window()`（mod-aware 枚舉）唯一決定；**洞/凸起的語義必須與它一致**：
   - `solver/ml/hole_detector.py::detect_holes(coords, m, n, step, region=None)` 接受外部傳入 `region=(r0,c0,(rh,cw))`；`region=None` 時退回無 mod 約束的 `find_target_region`（僅離線/測試用）。
-  - 框內空格：被包圍→`hole`（圓圈）；連到框緣→`gap`/缺口（三角形）。框外方塊 = `protrusion`（菱形）。
+  - 框內空格：被包圍→`hole`（圓圈）；連到框緣→`dent`/缺口（三角形）。框外方塊 = `protrusion`（菱形）。
 - `_game_coords(game)`：把 `game.blocks` 轉成 `frozenset[(r,c)]`。
 
 ### 5.3 建表（`table` 算法前提）

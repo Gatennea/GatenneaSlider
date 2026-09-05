@@ -443,17 +443,17 @@ def _main():
         ok = replay_ok = 0
         t = time.time()
         fails = {}
-        out_dir = os.path.join(_ROOT, 'save', '單孔洞失敗_%s'
-                               % time.strftime('%Y%m%d-%H%M%S'))
+        out_dir = os.path.join(_ROOT, 'save')   # Ctrl+O 直接可见
+        stamp = time.strftime('%Y%m%d-%H%M%S')
         saved = 0
         for i in range(N):
             coords, _holes = generate_random_void(m, n, step, 1, rng=rng)
             acts, stats = solve_single_void(coords, m, n, step)
+            name = f'{step}-{m}-{n}-{stamp}-{i:03d}.json'
             if acts is None:
                 r = stats.get('reason', '?')
                 fails[r] = fails.get(r, 0) + 1
-                save_case_json(out_dir, f'{step}-{m}-{n}-{i:03d}.json',
-                               coords, m, n, step,
+                save_case_json(out_dir, name, coords, m, n, step,
                                extra={'result': 'no_solution',
                                       'reason': r, 'stats': stats})
                 saved += 1
@@ -464,8 +464,7 @@ def _main():
             else:
                 fails['逆映射/回放未还原'] = \
                     fails.get('逆映射/回放未还原', 0) + 1
-                save_case_json(out_dir, f'{step}-{m}-{n}-{i:03d}.json',
-                               coords, m, n, step,
+                save_case_json(out_dir, name, coords, m, n, step,
                                extra={'result': 'replay_fail',
                                       'stats': stats,
                                       'steps': len(acts)})

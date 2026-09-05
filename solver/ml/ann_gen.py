@@ -135,6 +135,42 @@ def generate_random_void(m, n, step, void_number, rng=None, max_attempts=600):
 
 
 # ---------------------------------------------------------------------------
+# 按「孔洞 / 缺口」计数生成
+# ---------------------------------------------------------------------------
+def generate_classified(m, n, step, n_hole, n_dent, rng=None, max_trials=400):
+    """生成「恰好 n_hole 个孔洞 + n_dent 个缺口」的打乱状态。
+
+    拔块（generate_random_void）本身不区分洞的种类；这里用 reject-sampling：
+    每次生成 n_hole+n_dent 个空位后用 hole_detector 统计 孔洞(hole)/缺口(dent)
+    的数量，命中目标才返回（孔洞/缺口按检测器的「连通簇」计数）。
+
+    返回 (coords, holes)，holes 为被挖掉的核心格；
+    max_trials 内未命中 → 抛 ValueError。
+    """
+    step = max(1, int(step))
+    rng = rng or random.Random()
+    if n_hole < 0 or n_dent < 0 or n_hole + n_dent < 1:
+        raise ValueError('孔洞/缺口数不能为负，且至少一个 ≥ 1')
+    if n_hole + n_dent > (m * n) // 4:
+        raise ValueError(f'空位总数需 ≤ {(m * n) // 4}')
+
+    from solver.ml.hole_detector import detect_holes
+    last = None
+    for _ in range(max_trials):
+        coords, holes = generate_random_void(m, n, step, n_hole + n_dent,
+                                             rng=rng)
+        hlist, _proto, _reg = detect_holes(coords, m, n, step)
+        hc = sum(1 for h in hlist if h['type'] == 'hole')
+        dc = sum(1 for h in hlist if h['type'] == 'dent')
+        if hc == n_hole and dc == n_dent:
+            return coords, holes
+        last = (hc, dc)
+    raise ValueError(
+        f'生成失败：{max_trials} 次内未命中 孔洞{n_hole}/缺口{n_dent}'
+        f'（末次孔洞{last[0]}/缺口{last[1]}）')
+
+
+# ---------------------------------------------------------------------------
 # 自測
 # ---------------------------------------------------------------------------
 def _self_test(m, n, step, void_number, seed=20260904):

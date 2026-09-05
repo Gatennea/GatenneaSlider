@@ -78,16 +78,16 @@ def compute_defects(flat_grid, rows, cols, m, n):
                     visited[nr][nc] = True
                     stack.append((nr, nc))
 
-    gaps = 0
+    dents = 0
     holes = 0
     for r in range(m):
         for c in range(n):
             if region[r][c] == 0:
                 if visited[r][c]:
-                    gaps += 1
+                    dents += 1
                 else:
                     holes += 1
-    return holes, gaps, protrusions
+    return holes, dents, protrusions
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ def build_features(flat_grid, rows, cols, m, n):
     emd = emd_distance(frozenset(coords), m, n) if coords else float('inf')
 
     # 3. 缺陷
-    holes, gaps, protr = compute_defects(flat_grid, rows, cols, m, n)
+    holes, dents, protr = compute_defects(flat_grid, rows, cols, m, n)
 
     # 4. 標量特徵
     total = m * n
@@ -126,7 +126,7 @@ def build_features(flat_grid, rows, cols, m, n):
     scalar = np.array([
         emd / 100.0,          # 歸一化 EMD
         holes / 10.0,         # 歸一化孔洞
-        gaps / 10.0,          # 歸一化缺口
+        dents / 10.0,          # 歸一化缺口
         protr / 10.0,         # 歸一化凸起
         fill_rate,
         aspect_error,

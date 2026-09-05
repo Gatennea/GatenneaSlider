@@ -7,8 +7,8 @@ r"""
     2. detect_holes        ：在目标区域内用洪水填充找出所有连通空格（洞），
                              并分类「缺口 / 孔洞」、判定「大 / 小」。
 
-洞的类型：
-    gap  ：连通到目标矩形外缘的空格（缺口/凹陷）
+洞的类型（type 字段恒为 'hole' / 'dent'）：
+    dent ：连通到目标矩形外缘的空格（缺口/凹陷）
     hole ：被方块完全包围的空格（孔洞）
 
 洞的大小（相对移动步长 step）：
@@ -114,7 +114,7 @@ def detect_holes(coords, m, n, step, region=None):
                         else:
                             touches_edge = True  # 越界 = 连通外缘
 
-                hole_type = 'gap' if touches_edge else 'hole'
+                hole_type = 'dent' if touches_edge else 'hole'
                 rs = [x for x, _ in cells]
                 cs = [y for _, y in cells]
                 h = max(rs) - min(rs) + 1
@@ -145,7 +145,7 @@ def summarize(game, step):
         'region': region,
         'large_count': sum(1 for h in holes if h['size'] == 'large'),
         'small_count': sum(1 for h in holes if h['size'] == 'small'),
-        'gap_count': sum(1 for h in holes if h['type'] == 'gap'),
+        'dent_count': sum(1 for h in holes if h['type'] == 'dent'),
         'hole_count': sum(1 for h in holes if h['type'] == 'hole'),
     }
 

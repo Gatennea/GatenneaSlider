@@ -242,7 +242,8 @@ class AnnotationMixin:
         self._ann_msg_timer = 0
         # 子对话框
         self._ann_sub_dialog = None         # None / 'gen' / 'preview' / 'build'
-        self._ann_gen_fields = {'m': '', 'n': '', 'step': '', 'void': '1'}
+        self._ann_gen_fields = {'m': '', 'n': '', 'step': '',
+                                'hole': '1', 'dent': '0'}
         self._ann_gen_active = 'm'
         self._ann_gen_error = ''
         # 手动构造对话框状态
@@ -446,7 +447,7 @@ class AnnotationMixin:
             self._ann_saved_inputs = self._ann_load_inputs() or {}
         d = (self._ann_saved_inputs.get(section)
              if isinstance(self._ann_saved_inputs.get(section), dict) else {})
-        keys = ['m', 'n', 'step', 'void', 'pad']
+        keys = ['m', 'n', 'step', 'hole', 'dent', 'pad']
         out = {}
         for k in keys:
             v = str(d.get(k, '')) if k in d else ''
@@ -478,7 +479,7 @@ class AnnotationMixin:
         """② 随机生成起点：打开参数对话框（输入框沿用上次内容）。"""
         saved = self._ann_saved('gen')
         fall = {'m': self.current_m, 'n': self.current_n,
-                'step': self.current_step, 'void': 1}
+                'step': self.current_step, 'hole': 1, 'dent': 0}
         self._ann_gen_fields = {
             k: (saved.get(k) if k in saved else str(fall[k]))
             for k in fall
@@ -1008,7 +1009,7 @@ class AnnotationMixin:
             self._ann_gen_confirm()
             return True
         if event.key == pygame.K_TAB:
-            keys = ['m', 'n', 'step', 'void']
+            keys = ['m', 'n', 'step', 'hole', 'dent']
             if self._ann_gen_active in keys:
                 idx = keys.index(self._ann_gen_active)
                 self._ann_gen_active = keys[(idx + 1) % len(keys)]
@@ -1033,7 +1034,8 @@ class AnnotationMixin:
             m = int(self._ann_gen_fields['m'])
             n = int(self._ann_gen_fields['n'])
             step = int(self._ann_gen_fields['step'])
-            v = int(self._ann_gen_fields['void'])
+            hole = int(self._ann_gen_fields.get('hole', '1'))
+            dent = int(self._ann_gen_fields.get('dent', '0'))
         except ValueError:
             self._ann_gen_error = '请输入有效的整数'
             return
@@ -1046,13 +1048,19 @@ class AnnotationMixin:
         if step >= max(m, n):
             self._ann_gen_error = f'等级必须 < {max(m, n)}'
             return
-        if v < 1 or v > (m * n) // 4:
-            self._ann_gen_error = f'空位数需在 1 ~ {max(1, (m * n) // 4)}'
+        if hole < 0 or dent < 0:
+            self._ann_gen_error = '孔洞/缺口数不能为负'
+            return
+        if hole + dent < 1:
+            self._ann_gen_error = '孔洞与缺口至少有一个 ≥ 1'
+            return
+        if hole + dent > (m * n) // 4:
+            self._ann_gen_error = f'空位总数需在 1 ~ {max(1, (m * n) // 4)}'
             return
         try:
             from solver.ml import ann_gen
-            coords, _holes = ann_gen.generate_random_void(
-                m, n, step, v, rng=random.Random())
+            coords, _holes = ann_gen.generate_classified(
+                m, n, step, hole, dent, rng=random.Random())
         except ValueError as e:
             self._ann_gen_error = str(e)
             return
@@ -1065,8 +1073,10 @@ class AnnotationMixin:
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
         self.center_map()
-        self._ann_start_target('gen', f'随机生成 {m}×{n} 空位{v}')
-        self._ann_notify(f'已生成：{m}×{n} step{step} 空位 {v} 个，请选目标')
+        self._ann_start_target(
+            'gen', f'随机生成 {m}×{n} 孔洞{hole} 缺口{dent}')
+        self._ann_notify(f'已生成：{m}×{n} step{step} '
+                         f'孔洞 {hole} 个 / 缺口 {dent} 个，请选目标')
 
     def _ann_close_sub_dialog(self):
         # 关闭时把输入框内容留档，保证下次打开和上次一致
@@ -1612,7 +1622,7 @@ class AnnotationMixin:
     # 随机生成参数对话框
     # ==================================================================
     def _ann_draw_gen_dialog(self):
-        w, h = 340, 320
+        w, h = 360, 400
         dx = (self.screen_width - w) // 2
         dy = (self.screen_height - h) // 2
         overlay = pygame.Surface((self.screen_width, self.screen_height),
@@ -1633,14 +1643,15 @@ class AnnotationMixin:
             ('m', '行数:', self._ann_gen_fields['m']),
             ('n', '列数:', self._ann_gen_fields['n']),
             ('step', '等级:', self._ann_gen_fields['step']),
-            ('void', '空位格数:', self._ann_gen_fields['void']),
+            ('hole', '孔洞数:', self._ann_gen_fields['hole']),
+            ('dent', '缺口数:', self._ann_gen_fields['dent']),
         ]
         self._ann_gen_field_rects = {}
         y = dy + 55
         for key, label, value in fields:
             ls = self.input_font.render(label, True, self.colors['dialog_text'])
             self.screen.blit(ls, (dx + 25, y + 4))
-            frect = pygame.Rect(dx + 175, y, 110, 30)
+            frect = pygame.Rect(dx + 165, y, 120, 30)
             self._ann_gen_field_rects[key] = frect
             fbg = self.colors['input_active'] if self._ann_gen_active == key \
                 else self.colors['input_bg']
@@ -1659,7 +1670,7 @@ class AnnotationMixin:
                                          (255, 120, 120))
             self.screen.blit(es, (dx + 25, y + 4))
             y += 24
-        hint = self.status_font.render('生成后从还原态挖空位并贴同余外圈凸起',
+        hint = self.status_font.render('孔洞=窗内被围空位；缺口=触窗缘空位（总空位=两者之和）',
                                        True, (150, 150, 160))
         self.screen.blit(hint, (dx + 25, y + 4))
         y += 28
