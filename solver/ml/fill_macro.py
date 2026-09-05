@@ -164,9 +164,14 @@ class _Runner:
         return [('h', r, 'above', want), ('h', r - 1, 'below', want)]
 
     def _v_cands(self, want):
-        """B/setup 候选：竖直推动凸起。"""
-        r, c = self.p
-        return [('v', c, 'left', want), ('v', c - 1, 'right', want)]
+        """B/setup 候选：竖直推动凸起。
+
+        顺序即优先级：先选「凸起与窗口主体之间的缝、凸起所在侧」——该侧
+        通常只含凸起本身（或它那一窄列），保证 B 只推动凸起、不连带把 A 的
+        带拖走；两候选都动不了才轮到跨整带。
+        """
+        _r, c = self.p
+        return [('v', c - 1, 'right', want), ('v', c, 'left', want)]
 
     def _h_cands(self, want):
         r, c = self.p
@@ -386,6 +391,33 @@ def sample_states():
     return states
 
 
+def save_case_json(folder, name, coords, m, n, step, extra=None):
+    """把一局（状态+附加信息）存成 hole.json 同款 schema。"""
+    os.makedirs(folder, exist_ok=True)
+    rs = [r for r, _c in coords]
+    cs = [c for _r, c in coords]
+    mnr, mxr, mnc, mxc = min(rs), max(rs), min(cs), max(cs)
+    matrix = [[1 if (r, c) in coords else 0
+               for c in range(mnc, mxc + 1)]
+              for r in range(mnr, mxr + 1)]
+    doc = {
+        'version': 1,
+        'puzzle': {'m': m, 'n': n, 'step': step},
+        'step_count': 0,
+        'history': {'history_index': 0, 'snapshots': [{
+            'matrix': matrix,
+            'bounds': {'min_row': mnr, 'max_row': mxr,
+                       'min_col': mnc, 'max_col': mxc},
+        }]},
+    }
+    if extra:
+        doc['_fill'] = extra
+    path = os.path.join(folder, name)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(doc, f, ensure_ascii=False)
+    return path
+
+
 def _main():
     args = sys.argv[1:]
     if args and args[0] == '--sample':
@@ -411,20 +443,39 @@ def _main():
         ok = replay_ok = 0
         t = time.time()
         fails = {}
-        for _ in range(N):
+        out_dir = os.path.join(_ROOT, 'save', '單孔洞失敗_%s'
+                               % time.strftime('%Y%m%d-%H%M%S'))
+        saved = 0
+        for i in range(N):
             coords, _holes = generate_random_void(m, n, step, 1, rng=rng)
             acts, stats = solve_single_void(coords, m, n, step)
             if acts is None:
                 r = stats.get('reason', '?')
                 fails[r] = fails.get(r, 0) + 1
+                save_case_json(out_dir, f'{step}-{m}-{n}-{i:03d}.json',
+                               coords, m, n, step,
+                               extra={'result': 'no_solution',
+                                      'reason': r, 'stats': stats})
+                saved += 1
                 continue
             ok += 1
             if replay_and_verify(coords, m, n, step, acts):
                 replay_ok += 1
+            else:
+                fails['逆映射/回放未还原'] = \
+                    fails.get('逆映射/回放未还原', 0) + 1
+                save_case_json(out_dir, f'{step}-{m}-{n}-{i:03d}.json',
+                               coords, m, n, step,
+                               extra={'result': 'replay_fail',
+                                      'stats': stats,
+                                      'steps': len(acts)})
+                saved += 1
         print('\n单洞量产 %d 局：宏生成 %d，回放还原 %d（%.1f%%）  %.0fs'
               % (N, ok, replay_ok, 100.0 * replay_ok / N, time.time() - t))
         for r, cnt in sorted(fails.items(), key=lambda x: -x[1])[:8]:
             print('  FAIL原因 %s × %d' % (r, cnt))
+        if saved:
+            print('  已存失败档案 %d 个 → %s' % (saved, out_dir))
         return
     print(__doc__)
 
