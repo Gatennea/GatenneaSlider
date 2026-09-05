@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from solver.ml.gather_solver import find_best_window  # noqa: E402
+from solver.ml import view_rotate  # noqa: E402
 
 _DIRS = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
 _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
@@ -243,12 +244,16 @@ class _Runner:
 
 
 def solve_single_void(coords, m, n, step, hole=None, anchor=None,
-                      verbose=False, max_moves=200, keep_partial=False):
-    """确定性单洞填洞宏。
+                      verbose=False, max_moves=200, keep_partial=False,
+                      force_rot=None):
+    """确定性单洞填洞宏（视图旋转归一化版）。
 
-    返回 (actions, stats)；actions=None 表示失败（keep_partial=False）。
-    keep_partial=True：规则中断但已执行合法动作时返回 (部分actions, stats)，
-    stats['partial']=True、stats['reason'] 为中断原因，供观察断点。
+    · 找洞/凸起：本函数只负责「旋转到凸起在右侧 → 解 → 逆旋输出」。若
+      hole/anchor 未给出，则用 window_of 自检单洞单凸；给出则以调用方为准
+      （多洞/多凸时由调用方逐对喂入，本函数不再负责挑选）。
+    · 返回 (actions, stats)；actions=None 表示失败（keep_partial=False）。
+      keep_partial=True：规则中断但已执行合法动作时返回 (部分actions, stats)，
+      stats['partial']=True、stats['reason'] 为中断原因，供观察断点。
     """
     coords = frozenset(coords)
     if len(coords) != m * n:
@@ -257,8 +262,53 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
     if g.is_solved():
         return [], {'steps': 0, 'secs': 0.0}
     try:
-        return _Runner(g, m, n, step, verbose,
-                       keep_partial=keep_partial).run()
+        # 定位窗口与洞/凸起（世界坐标）
+        (r0, c0, _wh), _ov, holes, outside = window_of(coords, m, n, step)
+        if hole is None or anchor is None:
+            assert len(holes) == 1 and len(outside) == 1, '非单洞单凸起'
+            h_w = tuple(next(iter(holes)))
+            p_w = tuple(next(iter(outside)))
+        else:
+            h_w, p_w = tuple(hole), tuple(anchor)
+        if ((h_w[0] - p_w[0]) % step or (h_w[1] - p_w[1]) % step):
+            raise ValueError('洞凸不同mod')
+
+        name = force_rot or view_rotate.choose_rot(
+            p_w[0] - r0, p_w[1] - c0, m, n)
+        if name == 'id':
+            return _Runner(g, m, n, step, verbose,
+                           keep_partial=keep_partial).run()
+
+        # 旋转到「凸起在右侧」再求解
+        vc = frozenset(view_rotate.rotate_xy(name, r - r0, c - c0, m, n)
+                       for r, c in coords)
+        mv, nv = view_rotate.view_dims(name, m, n)
+        vg = build_game(vc, mv, nv)
+        acts, stats = _Runner(vg, mv, nv, step, verbose,
+                              keep_partial=keep_partial).run()
+        if acts is None:
+            stats = dict(stats, rot=name)
+            return None, stats
+
+        # 逆旋转：view 动作 → origin 空间 → 平移回世界绝对坐标
+        wacts = []
+        for gap, line, side, d, rep in acts:
+            gap2, line2, side2, d2 = view_rotate.act_to_world(
+                name, gap, line, side, d, m, n)
+            if gap2 == 'h':
+                line2 = line2 + r0
+            else:
+                line2 = line2 + c0
+            rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
+            wacts.append((gap2, line2, side2, d2, (rr + r0, cc + c0)))
+
+        if stats.get('partial'):
+            return wacts, dict(stats, rot=name)
+        # 非 partial：必须能在世界棋盘整局回放还原
+        if not replay_and_verify(coords, m, n, step, wacts):
+            return None, {'reason': f'逆映射回放未还原(rot={name})',
+                          'rot': name}
+        return wacts, dict(stats, rot=name)
     except ValueError as e:
         return None, {'reason': str(e)}
 
