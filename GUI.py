@@ -30,6 +30,7 @@ from gui.events import EventsMixin
 from gui.virtual_keyboard import VirtualKeyboardMixin
 from gui.metrics_panel import MetricsPanelMixin
 from gui.records_panel import RecordsPanelMixin
+from gui.annotation import AnnotationMixin
 
 
 def _gui_log_error(msg: str):
@@ -87,7 +88,7 @@ def _gui_get_resource_path(relative_path):
     return os.path.join(base, relative_path)
 
 
-class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin):
+class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin):
     """
     滑块游戏图形界面类
     """
@@ -366,7 +367,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 聚拢参数输入框手动编辑状态
         self.settings_editing_value = None   # 正在编辑的参数 key
         self.settings_edit_buffer = ''       # 输入缓冲区
-        # 智能聚拢（梯度）逐阶段状态：None = 非梯度模式
+        # 梯度聚拢（梯度）逐阶段状态：None = 非梯度模式
         self._gradient_state = None
         # 梯度流水线（阶段计算与动画并行）：
         self._gradient_queue = queue.Queue()  # (gen, result|None) 项；result=None=管线结束哨兵
@@ -533,6 +534,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 成绩记录面板状态
         self._rp_init_state()
 
+        # 标注模式状态
+        self._ann_init_state()
+
         # 加载上次状态
         self.load_last_state()
 
@@ -547,6 +551,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """
         # 切换谜题会重置棋盘 → 终止梯度流水线
         self._stop_gradient_pipeline()
+        # 标注会话随棋盘重置而结束
+        self._ann_cancel_session('切换谜题')
         # 验证等级约束：step < max(m, n)
         if step >= max(m, n):
             return False
@@ -810,9 +816,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self.macro_recording and self.macro_record_base_point is not None:
             side = self._get_selected_side()
             if self.selected_gap and side:
+                rep_cell = list(selected[0].location) if selected else None
                 self._record_macro_step(
                     self.selected_gap[0], self.selected_gap[1],
-                    side, direction
+                    side, direction, rep_cell
                 )
 
         # 所有步骤都合法
@@ -839,6 +846,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """撤销操作（Ctrl+Z）"""
         # 手动撤销会使已排队的梯度阶段失效 → 终止流水线
         self._stop_gradient_pipeline()
+        # 标注录制中：不允许撤到起点之前（起点前的历史不属于本次示范）
+        if self._ann_undo_blocked():
+            return
         # 如果正在播放撤销/重做动画，入队等待
         if self.animating and self._undo_redo_type is not None:
             self._animation_queue.append('undo')
@@ -914,6 +924,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
         # 打乱会改变棋盘 → 终止梯度流水线
         self._stop_gradient_pipeline()
+        # 标注会话随棋盘重置而结束
+        self._ann_cancel_session('打乱')
         # 计时进行中禁止打乱
         if self.timer_state == 'running':
             self.macro_notify_msg = "计时中无法打乱"
@@ -1081,6 +1093,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 90
             return
 
+        # 标注录制中：自动回放不是人类示范，禁用
+        if getattr(self, '_ann_recording', False):
+            self.macro_notify_msg = "标注录制中无法使用自动求解"
+            self.macro_notify_timer = 90
+            return
+
         # 如果正在求解，則取消
         if self._auto_solve_running:
             self._auto_solve_cancel = True
@@ -1088,7 +1106,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 梯度流水线：取消后台计算，丢弃已排队的结果
                 self._gradient_state = None
                 self._gradient_gen += 1
-                self.macro_notify_msg = "智能聚拢已停止"
+                self.macro_notify_msg = "梯度聚拢已停止"
                 self.macro_notify_timer = 90
             return
 
@@ -1098,7 +1116,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self._gradient_state = None
                 self._auto_solve_cancel = True
                 self._gradient_gen += 1
-                self.macro_notify_msg = "智能聚拢已停止"
+                self.macro_notify_msg = "梯度聚拢已停止"
                 self.macro_notify_timer = 90
             return
 
@@ -1273,6 +1291,41 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._handle_gather_result(result)
             return
 
+        if isinstance(result, dict) and result.get('type') == 'fill_fail':
+            self.macro_notify_msg = '填洞宏：' + str(result.get('reason', '失败'))
+            self.macro_notify_timer = 220
+            return
+
+        if isinstance(result, dict) and result.get('type') == 'fill_partial':
+            # 规则中断：播放已成功的部分动作，停在断点供用户观察
+            reason = str(result.get('reason', '中断'))
+            actions = result.get('actions', [])
+            reps = result.get('rep_cells', [])
+            ops = []
+            for i, action in enumerate(actions):
+                gap_dir, gap_line, side, move_dir = action
+                op = {
+                    'gap_type': gap_dir,
+                    'gap_line': gap_line,
+                    'side': side,
+                    'direction': move_dir,
+                    'step': self.current_step,
+                }
+                if i < len(reps) and reps[i]:
+                    op['rep_cell'] = reps[i]
+                ops.append(op)
+            if not ops:
+                self.macro_notify_msg = '填洞宏（断）：' + reason
+                self.macro_notify_timer = 220
+                return
+            self.macro_executing = True
+            self.macro_exec_name = '填洞宏（断：%s）' % reason
+            self.macro_exec_ops = ops
+            self.macro_exec_index = 0
+            self.macro_exec_factor = 1
+            self._execute_next_macro_step()
+            return
+
         if result is False:
             self._gradient_state = None
             self.macro_notify_msg = "自动求解：未找到解法"
@@ -1355,7 +1408,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if gstage:
             gtotal = result.get('gradient_total', 4)
             self.macro_notify_msg = (
-                f"智能聚拢 第{gstage}/{gtotal}阶段完成（{reason_text}）· {len(actions)}步 · "
+                f"梯度聚拢 第{gstage}/{gtotal}阶段完成（{reason_text}）· {len(actions)}步 · "
                 f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
             )
         else:
@@ -1446,7 +1499,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                         if progress.get('stage') == 'gradient_stage':
                             idx = progress.get('idx', 1)
                             total = progress.get('total', 4)
-                            self.macro_notify_msg = f"智能聚拢 第{idx}/{total}阶段（放宽参数再聚拢）..."
+                            self.macro_notify_msg = f"梯度聚拢 第{idx}/{total}阶段（放宽参数再聚拢）..."
                         elif progress.get('stage') == 'gather':
                             score = progress.get('score', 0)
                             best = progress.get('best_score', 0)
@@ -1517,6 +1570,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.draw_virtual_keyboard()
                 self.draw_metrics_panel()
                 self.draw_records_panel()
+                # 标注模式（工具栏 + 跟踪标记 + 子对话框）
+                self.draw_annotation_mode()
 
                 # 模态对话框（后画，最上层）
                 if self.show_help:
@@ -1545,6 +1600,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.draw_macro_notify()
 
                 self.handle_events()
+                # 标注模式：捕捉录制提交 / 处理存档打开结果
+                self._ann_poll()
                 pygame.display.flip()
                 dt_ms = clock.tick(60)
 

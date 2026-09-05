@@ -80,11 +80,22 @@ def build_state_features(hash_or_state, m, n, dist_to_bn=0, in_degree=0):
     return np.concatenate([grid_feat, extra])
 
 
-def encode_action(action):
-    """将动作字典编码为固定 11 维向量。"""
+def encode_action(action, origin=None):
+    """将动作字典编码为固定 11 维向量。
+
+    参数：
+        action : dict — 必须含 gap_type/gap_line/side/move_dir
+        origin : (min_row, min_col) — 可选。给定后 gap_line 编码为「相对状态
+                 边界的缝隙位置」（平移不变）；None 时保持绝对坐标 /10（旧约定）。
+                 人类模仿管线两端（训练/推理）必须传同一 origin 语义。
+    """
     gap_h = 1.0 if action['gap_type'] == 'h' else 0.0
     gap_v = 1.0 if action['gap_type'] == 'v' else 0.0
-    gap_line = action['gap_line'] / 10.0
+    gap_line = action['gap_line']
+    if origin is not None:
+        # h 缝隙是行之间的缝 → 用行原点；v 缝隙 → 用列原点
+        gap_line -= origin[0] if action['gap_type'] == 'h' else origin[1]
+    gap_line = gap_line / 10.0
     side_above = 1.0 if action['side'] == 'above' else 0.0
     side_below = 1.0 if action['side'] == 'below' else 0.0
     side_left = 1.0 if action['side'] == 'left' else 0.0
@@ -96,3 +107,34 @@ def encode_action(action):
     return np.array([gap_h, gap_v, gap_line,
                      side_above, side_below, side_left, side_right,
                      d_w, d_s, d_a, d_d], dtype=np.float32)
+
+
+def build_human_state_features(matrix, m, n):
+    """人类模仿管线的状态编码唯一入口：归一化矩阵 → 状态特征。
+
+    在 build_state_features 基础上追加聚拢度维度（gather_score = overlap/(m*n)），
+    让模型直接看到「还差几个块归位」——这是 void_block_count 权重分段的依据。
+
+    参数：
+        matrix : list[list[int]] — 以边界为原点的归一化 0/1 网格（存档 matrix）
+        m, n   : 目标尺寸
+
+    返回：np.ndarray（dim = build_state_features + 1）
+    """
+    from solver.ml.gather_solver import max_overlap  # 延迟导入避免循环依赖
+
+    flat = [1 if v else 0 for row in matrix for v in row]
+    pseudo = {
+        'flat_grid': flat,
+        'grid_rows': len(matrix),
+        'grid_cols': len(matrix[0]) if matrix else 0,
+        'distance': 0,
+        'dist_to_bottleneck': 0,
+        'in_degree': 0,
+    }
+    sf = build_state_features(pseudo, m, n)
+    # 矩阵已是归一化网格 → 直接数 overlap（平移不变量）
+    coords = frozenset((r, c) for r, row in enumerate(matrix)
+                       for c, v in enumerate(row) if v)
+    overlap = max_overlap(coords, m, n)
+    return np.concatenate([sf, np.array([overlap / float(m * n)], dtype=np.float32)])

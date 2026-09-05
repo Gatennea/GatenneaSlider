@@ -24,15 +24,20 @@ class MacroStep:
     side: str             # 选中缝隙哪一侧: 'above'/'below' (h) 或 'left'/'right' (v)
     direction: str        # 滑动方向: 'w'/'a'/'s'/'d'
     step: int             # 录制时的步长
+    rep_cell_rel: Optional[list] = None  # 该步移动分量的代表格相对基准 [dr, dc]
+                                         # （缝侧含多分量时用于精确定位；None=侧首块）
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             'gap_type': self.gap_type,
             'gap_line_rel': self.gap_line_rel,
             'side': self.side,
             'direction': self.direction,
             'step': self.step,
         }
+        if self.rep_cell_rel is not None:
+            d['rep_cell_rel'] = self.rep_cell_rel
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> 'MacroStep':
@@ -42,6 +47,7 @@ class MacroStep:
             side=d['side'],
             direction=d['direction'],
             step=d['step'],
+            rep_cell_rel=d.get('rep_cell_rel'),
         )
 
 
@@ -234,13 +240,21 @@ class MacroManager:
         else:
             abs_gap_line = base_col + step.gap_line_rel
 
+        rep_cell = None
+        if step.rep_cell_rel is not None:
+            rep_cell = [base_row + step.rep_cell_rel[0],
+                        base_col + step.rep_cell_rel[1]]
+
         ops = []
         for _ in range(factor):
-            ops.append({
+            op = {
                 'gap_type': step.gap_type,
                 'gap_line': abs_gap_line,
                 'side': step.side,
                 'direction': step.direction,
                 'step': current_step,
-            })
+            }
+            if rep_cell is not None:
+                op['rep_cell'] = rep_cell
+            ops.append(op)
         return ops

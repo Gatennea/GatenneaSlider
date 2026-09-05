@@ -366,6 +366,8 @@ class FileOpsMixin:
 
     def _load_save_data(self, save_data: dict):
         """从保存数据恢复游戏状态"""
+        # 载入会整体替换棋盘 → 结束进行中的标注会话
+        self._ann_cancel_session('载入存档')
         puzzle = save_data.get('puzzle', {})
         m = puzzle.get('m', 4)
         n = puzzle.get('n', 4)

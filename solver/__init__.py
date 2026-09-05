@@ -57,6 +57,8 @@ def solve_greedy(game, step: int, max_steps: int = 500,
 from solver.table_solver import table_solve
 from solver.ml.gather_solver import gather_solve
 from solver.ml.gather_solver import gradient_gather
+from solver.ml.human_solver import ai_human_solve
+from solver.ml.fill_macro import solve_fill_macro
 
 SOLVER_ALGORITHMS = {
     'ida_star': ('  IDA*求解', solve),
@@ -68,7 +70,9 @@ SOLVER_ALGORITHMS = {
     #'strategy': ('  策略求解', strategy_solve),
     #'distance': ('  距离求解', distance_solve),
     'gather': ('  聚拢', gather_solve),
-    'gather_gradient': ('  智能聚拢', gradient_gather),
+    'gather_gradient': ('  梯度聚拢', gradient_gather),
+    'human_ai': ('  人类模仿', ai_human_solve),
+    'fill_macro': ('  填洞宏', solve_fill_macro),
 }
 
 __all__ = ['solve', 'solve_fast', 'solve_greedy', 'SOLVER_ALGORITHMS',

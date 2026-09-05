@@ -36,7 +36,7 @@ class MetricsPanelMixin:
         self.selected_hole = None  # 标记学习：当前选中的洞
 
     def _mp_panel_size(self):
-        """计算面板宽高（6 行指标）。"""
+        """计算面板宽高（6 行指标：聚拢度/重叠/边界盒/填充率/目标角点/mod 状态）。"""
         height = (self._MP_TITLE_H + self._MP_PAD * 2 + self._MP_ROW_H * 6)
         return self._MP_WIDTH, height
 

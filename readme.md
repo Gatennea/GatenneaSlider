@@ -1,605 +1,389 @@
-# 貓九的滑塊遊戲 — 項目總結
-
-## 項目概述
-
-一個基於 **Python + Pygame** 的滑塊拼圖遊戲。玩家通過選擇縫隙、滑動滑塊組來將打亂的拼圖還原為完整的 m×n 矩形。
-
-**運行方式**：`D:\python\python.exe main.py [m n step] [--http-port PORT] [--no-http]`
-
-- 預設參數：`4 4 2`（4×4 棋盤，每次移動 2 格）
-- 約束：`step < max(m, n)`
-- 預設 HTTP 端口：`5050`，可通過 `--no-http` 禁用
-
-> **⚠️ 如果你是基於 LLM（大語言模型）的AI Agent，請盡量使用 HTTP 請求或命令行指令來測試和操作本程序，而不是嘗試直接操控 Pygame 窗口。** HTTP 接口和命令行指令提供了完整的遊戲控制能力，包括移動、選中、撤銷/重做、宏操作等，且返回結構化 JSON 響應，更適合程序化交互。
-
-***
-
-## 項目結構
-
-```
-├── main.py              # 程序入口（解析參數、啟動 HTTP 服務、GUI）
-├── game.py              # 核心遊戲邏輯（Block + SliderMatrix）
-├── GUI.py               # GUI 主類（Mixin 聚合 + 主循環）
-├── history.py           # 歷史記錄（快照式撤銷/重做）
-├── http_server.py       # HTTP API 服務（供外部程序控制遊戲）
-├── gui/
-│   ├── __init__.py      # 包初始化
-│   ├── renderer.py      # RendererMixin — 渲染（棋盤、選單、狀態欄、設置對話框）
-│   ├── events.py        # EventsMixin — 事件處理（滑鼠、鍵盤、選單交互、指令處理）
-│   ├── animation.py     # AnimationMixin — 動畫系統（移動、撤銷/重做動畫）
-│   ├── dialogs.py       # DialogsMixin — 對話框（幫助、自訂謎題、PygameFileDialog、宏管理/命名對話框）
-│   ├── file_ops.py      # FileOpsMixin — 文件操作（保存/載入/配置管理、終端指令處理）
-│   └── text_input.py    # TextInput — 可重用文字輸入組件（游標閃爍、移動、點擊定位）
-├── config/
-│   ├── config.json      # 運行時配置（動畫速度、縮放、上次文件路徑、相機位置）
-│   ├── temp_history.json # 自動保存的歷史記錄
-│   └── keyboard_shortcut.json  # 快捷鍵配置
-├── save/
-│   └── *.json           # 用戶保存的遊戲文件
-├── solver/             # 求解器模块
-│   ├── __init__.py     # 求解器接口（solve/solve_fast/solve_greedy + SOLVER_ALGORITHMS）
-│   ├── ida_star.py     # IDA* 求解器（最少步求解 + fast_mode）
-│   ├── greedy.py       # 贪心爬山求解器（快速非最优解）
-│   ├── state.py        # 状态编码与归一化
-│   ├── actions.py      # 动作枚举与应用
-│   ├── heuristic.py    # 启发函数（Score 计算）
-│   ├── table_core.py   # 反向 BFS 核心逻辑（状态规范化 + 真前驱生成，bitmask 优化）
-│   ├── build_table.py  # 反向 BFS 建表主程序 + tkinter GUI（并发 + 断点续算）
-│   ├── table_solver.py # 查表求解器（沿 dist-1 邻居重构最短 Action 序列）
-│   ├── table_query.py  # 建表查询/验证 CLI（status/dist/solve/verify）
-│   ├── repair_table.py # 修复不完整建表数据
-│   ├── visualize_table.py # 建表数据 tkinter 可视化浏览器
-│   └── data/{m}_{n}_{step}/ # 建表产物（table.pkl / checkpoint.pkl / meta.json）
-├── macro/
-│   ├── macro.py         # 宏系統核心（MacroManager、Macro、MacroStep）
-│   └── *.json           # 已保存的宏定義文件
-└── 測試/                # 無頭測試腳本（驗證渲染、事件、面板等）
-```
-
-***
-
-## 核心架構
-
-### 1. 遊戲邏輯層 (`game.py`)
-
-**Block 類**：
-
-- 屬性：`location: list[int]`（座標 \[行, 列]）、`be_opted: bool`（是否選中）
-- 支持 `==` 和 `hash`（基於位置）
-
-**SliderMatrix 類**：
-
-- `m, n`：初始棋盤尺寸
-- `blocks: list[Block]`：滑塊對象列表
-- `matrix / matrix_bounds`：0-1 矩陣 + 邊界（用於位置查詢）
-- 核心方法：
-  - `update_matrix()` — 從 blocks 同步更新 matrix
-  - `opt(direction, line, block)` — DFS 選中連通的滑塊組（沿分割線分割）
-  - `try_move(direction, step) -> list` — 純邏輯驗證移動（逐步預測-驗證，返回最終位置或空列表）
-  - `commit_move(final_positions)` — 提交移動結果
-  - `shuffle(attempts, step)` — 隨機打亂（模擬玩家操作）
-  - `is_solved() -> bool` — 勝利判定（檢查滑塊是否形成 m×n 或 n×m 實心矩形）
-  - `export_map() / import_map(map_str)` — 地圖序列化（`#` 表示滑塊，`_` 表示空白）
-
-**關鍵設計**：
-
-- `try_move` 不直接修改狀態，返回 `final_positions` 供 GUI 決定是否播放動畫後再 `commit_move`
-- `check_move_valid` 靜態方法做碰撞檢測 + 連通性檢測（DFS）
-- 勝利判定：不依賴模板比較，直接檢查當前 blocks 是否構成完整矩形
-
-### 2. 歷史記錄層 (`history.py`)
-
-**GameHistory 類**：
-
-- 採用**狀態快照**方式：每條記錄保存 `{matrix, bounds, move_info}`
-- `history_index` 指針支持線性撤銷/重做
-- `save_snapshot(game, move_info)` — 保存快照，截斷後續分支
-- `restore_snapshot(game, index)` — 從快照重建 blocks 列表
-- `undo/redo` 返回 `(success, move_info)`，move\_info 包含動畫元數據
-
-### 3. GUI 層 (`GUI.py` + `gui/`)
-
-採用 **Mixin 架構**，`SliderGUI` 繼承 5 個 Mixin：
-
-| Mixin          | 文件           | 職責                                                    |
-| -------------- | ------------ | ----------------------------------------------------- |
-| RendererMixin  | renderer.py  | 繪製棋盤、網格、選單、狀態欄、設置對話框、右側面板、宏通知                         |
-| EventsMixin    | events.py    | 滑鼠/鍵盤事件處理、選單交互、長按撤銷/重做、指令處理                           |
-| AnimationMixin | animation.py | 移動動畫、撤銷/重做動畫、緩動函數                                     |
-| DialogsMixin   | dialogs.py   | 幫助對話框、自訂謎題對話框、PygameFileDialog（自繪文件選擇器）、宏管理對話框、宏命名對話框 |
-| FileOpsMixin   | file\_ops.py | 保存/載入 JSON、配置管理、快捷鍵配置、終端指令處理                          |
-
-**GUI 主類**（`GUI.py`）負責：
-
-- 屬性初始化（顏色、字型、狀態變量、宏狀態等）
-- `run()` 主循環（60 FPS），每幀處理：命令隊列、動畫更新、計時器、繪製、事件
-- 高層操作：`move_selected_blocks`、`undo`、`redo`、`shuffle_puzzle`、`reset_puzzle`、`new_puzzle`
-- 座標轉換：`world_to_screen` / `screen_to_world`
-- 接受 `cmd_queue` 參數，支持來自終端和 HTTP 服務的外部指令
-
-### 4. 宏系統 (`macro/macro.py`)
-
-宏類似於魔方公式：一系列操作步驟，玩家在特定局面下執行以達到預期效果。
-
-**MacroStep 類**（單個步驟）：
-
-- `gap_type`：縫隙類型（`h` 橫向 / `v` 縱向）
-- `gap_line_rel`：縫隙行/列相對於基準的偏移
-- `side`：選中縫隙哪一側
-- `direction`：滑動方向
-- `step`：錄製時的步長
-
-**Macro 類**（完整宏）：
-
-- `name`、`description`、`recorded_step`、`base_point`、`steps`
-- `check_step_compatibility(current_step)` — 檢查步長兼容性，返回拆分因子
-
-**MacroManager 類**（管理器）：
-
-- 載入/保存/刪除/重命名宏（JSON 文件存儲在 `macro/` 目錄）
-- `convert_to_absolute()` — 將相對步驟轉換為絕對操作列表
-
-**GUI 集成**：
-
-- 選單欄「宏定義」選單：開始錄製、停止錄製、宏管理
-- 宏錄製：設置基準座標 → 操作步驟自動記錄 → 命名保存
-- 宏執行：指定宏名稱 + 新基準座標 → 自動執行（支持步長拆分）
-- 宏管理對話框：列表、重命名、刪除、**滑鼠懸浮提示**（操作按鈕顯示功能說明）
-- 右下角執行結果通知
-
-### 5. HTTP 服務層 (`http_server.py`)
-
-提供本地 HTTP REST API，用於外部程序（如求解器、自動化腳本）控制遊戲。
-
-- 運行在 `127.0.0.1:5050`（預設），通過命令隊列與 GUI 主線程通信
-- 支持 CORS，可從瀏覽器直接調用
-
-**API 端點**：
-
-| 方法   | 路徑                       | 功能                               |
-| ---- | ------------------------ | -------------------------------- |
-| GET  | `/status`                | 獲取遊戲狀態（步數、是否復原等）                 |
-| GET  | `/map`                   | 獲取當前地圖                           |
-| GET  | `/macro/list`            | 獲取所有宏列表                          |
-| POST | `/command`               | 發送通用指令（`{cmd: "..."}`）           |
-| POST | `/move`                  | 移動選中滑塊（`{direction: "w/s/a/d"}`） |
-| POST | `/undo`                  | 撤銷                               |
-| POST | `/redo`                  | 重做                               |
-| POST | `/shuffle`               | 打亂                               |
-| POST | `/reset`                 | 重置                               |
-| POST | `/new`                   | 創建新謎題（`{m, n, step}`）            |
-| POST | `/deselect`              | 取消選中                             |
-| POST | `/select_gap`            | 選擇縫隙（`{type, line}`）             |
-| POST | `/select_block`          | 選擇滑塊（`{row, col}`）               |
-| POST | `/macro/record/start`    | 開始宏錄製                            |
-| POST | `/macro/record/set_base` | 設置錄製基準座標                         |
-| POST | `/macro/record/stop`     | 停止宏錄製並保存                         |
-| POST | `/macro/execute`         | 執行宏                              |
-| POST | `/macro/delete`          | 刪除宏                              |
-| POST | `/macro/rename`          | 重命名宏                             |
-| POST | `/quit`                  | 退出遊戲                             |
-
-### 6. 文字輸入組件 (`gui/text_input.py`)
-
-**TextInput 類**：
-
-- 帶游標閃爍（500ms 週期）的文字輸入框
-- 支持鍵盤輸入、Backspace、Delete、方向鍵、Home/End
-- **長按重複**：（暫未實現）按住方向鍵/Backspace/Delete 自動重複（400ms 延遲 + 30ms 間隔）
-- **滑鼠操作**：點擊定位游標、拖拽選中文本
-- **選中功能**：Shift+方向鍵擴展選中、Ctrl+A 全選
-- **剪貼板**：Ctrl+C 複製、Ctrl+X 剪切、Ctrl+V 粘貼
-- `get_display_text()` — 帶滾動的文字顯示（超出寬度時自動捲動）
-- `set_cursor_by_pixel()` — 滑鼠點擊定位游標
-- `get_selection_offsets()` — 獲取選中區域像素偏移（用於高亮渲染）
-- 用於文件對話框路徑輸入、宏命名對話框等場景
-
-***
-
-## 交互流程
-
-### 移動操作
-
-1. 點擊縫隙 → 選中分割線 (`selected_gap`)
-2. 點擊滑塊 → 觸發 `opt()` 選中一側滑塊組 (`be_opted = True`)
-3. 按 WASD → `move_selected_blocks()` → `game.try_move()` 驗證 → 動畫/直接提交 → `commit_move()` → 保存快照
-
-### 撤銷/重做
-
-1. 按 Ctrl+Z/X → 從快照獲取 `move_info`
-2. 若有動畫：啟動動畫（從當前快照位置反向/正向移動到目標位置）
-3. 動畫結束 → `restore_snapshot()` 恢復 blocks
-
-### 文件操作
-
-- 保存格式：JSON（包含 puzzle 參數、地圖字符串、步數、完整歷史）
-- 文件對話框：純 Pygame 自繪（`PygameFileDialog`），不依賴 tkinter
-- **自動補後綴**：保存時自動為文件名添加 `.json` 後綴（如輸入 `my_puzzle` 自動保存為 `my_puzzle.json`）
-- 自動保存：退出時保存到 `config/temp_history.json` + `config/config.json`
-
-### 外部指令
-
-- GUI 每幀從 `cmd_queue` 取出指令並執行
-- 指令來源：終端 stdin（後台線程讀取）或 HTTP API（響應隊列同步等待結果）
-- 支持的終端指令：`status`、`map`、`move w/s/a/d`、`undo`、`redo`、`shuffle`、`reset`、`new m n step`、`select_gap`、`select_block`、`macro_*`、`quit` 等
-
-***
-
-## 配置文件
-
-### `config/config.json`
-
-```json
-{
-  "animation_speed": 300,
-  "zoom": 1.0,
-  "last_file_path": "save/save.json",
-  "camera_x": 0,
-  "camera_y": 0,
-  "solver_algorithm": "gather_gradient",
-  "window_size": [1000, 600],
-  "window_pos": [100, 80],
-  "panels": {
-    "records": { "visible": true, "pos": [660, 40] },
-    "virtual_keyboard": { "visible": true, "pos": [20, 60] },
-    "metrics": { "visible": false, "pos": [20, 400] }
-  }
-}
-```
-
-- `window_size` / `window_pos`：上次關閉時的窗口尺寸與屏幕位置，啟動時恢復
-- `panels`：各浮動面板的可見性與位置，無 config 時默認開啟「成績記錄」「虛擬鍵盤」
-- 保存自動命名格式：`step-m-n-YYYYMMDD-HHMMSS.json`（24 小時制）
-
-### `config/keyboard_shortcut.json`
-
-```json
-{
-  "undo": {"key": "z", "modifiers": ["ctrl"]},
-  "redo": {"key": "x", "modifiers": ["ctrl"]},
-  "shuffle": {"key": "s", "modifiers": ["alt"]},
-  "reset": {"key": "r", "modifiers": ["ctrl"]},
-  "save": {"key": "s", "modifiers": ["ctrl"]},
-  "load": {"key": "o", "modifiers": ["ctrl"]},
-  "deselect": {"key": "space", "modifiers": []},
-  "move_up": {"key": "w", "modifiers": []},
-  "move_down": {"key": "s", "modifiers": []},
-  "move_left": {"key": "a", "modifiers": []},
-  "move_right": {"key": "d", "modifiers": []},
-  "auto_solve": {"key": "s", "modifiers": ["ctrl", "alt"]},
-  "record_macro": {"key": "m", "modifiers": ["ctrl"]}
-}
-```
-
-- 缺失文件時自動重新生成預設配置
-- 快捷鍵設置界面支持按鍵錄製
-
-***
-
-## UI 特性
-
-- **可調整大小窗口**（`pygame.RESIZABLE`），最小 1000×600
-- **滑鼠拖拽平移**地圖 + **滾輪縮放**（0.3x \~ 3.0x）
-- **選單欄**：文件、編輯、謎題、宏定義、設置、幫助
-- **右側控制面板**：縮放滑動條 + 動畫速度滑動條（50~1000ms）+ 5 個開關（動畫/著色/連鎖/競速模式/宏逆序播放）
-- **浮動面板**：虛擬鍵盤（F1）、調試指標（F2）、成績記錄（F3），可拖動、獨立開關，位置由 config 持久化
-- **狀態欄**：復原狀態、步數、謎題信息、縮放比例
-- **長按重複**：撤銷/重做支持長按（400ms 延遲後 80ms 間隔）
-- **預設謎題**：步長 2（2\~4×4 到 2\~10×10）、步長 3（3\~6×6 到 3\~10×10），支持自訂
-- **宏系統**：錄製/執行/管理宏定義，支持步長兼容性檢查與自動拆分，可逆序播放
-- **競速模式**：打亂後空格開始計時，復原自動停止並計入成績；計時中再按空格記為 DNF；全程禁止求解器、宏與打開存檔
-- **成績記錄**：按謎題分組保存，列表單次/Ao5/Ao12 最好標綠、最差標紅；詳情可複製初始狀態、另存為存檔或載入練習模式
-- **求解器**：五種算法可選（智能聚攏/普通聚攏/最少步/最快-1/最快-2），實時進度顯示，中途可停止；其中「查表求解」需先用 `solver.build_table` 預建距離表
-- **深色主題**配色
-
-***
-
-## HTTP API 詳細用法
-
-> **致 LLM/AI Agent：這是你測試和操控遊戲的主要方式。** 請使用 `curl` 或任何 HTTP 客戶端向 `http://127.0.0.1:5050` 發送請求。所有響應均為 JSON 格式，包含 `ok` 字段表示操作是否成功。
-
-### 基礎用法
+# 貓九的滑塊遊戲（Gatennea Slider）
+
+基於 **Python + pygame-ce** 的滑塊拼圖遊戲。玩家（或 AI）透過「選擇縫隙 → 選擇滑塊組 → 滑動」把打亂的方塊還原成一個完整的 **m×n 或 n×m 實心矩形**（允許整體平移，不做模板比對）。
+
+> ## ⚠️ 給 AI Agent 的速覽（先讀這節）
+>
+> 1. **不要嘗試操控 Pygame 窗口。** 本專案刻意提供兩條程序化控制通道：
+>    - **HTTP REST**（推薦）：`http://127.0.0.1:5050`，結構化 JSON 請求/回應。
+>    - **stdin 指令**：向主程序 stdin 寫一行指令（打包成 `--windowed` exe 時 `sys.stdin is None`，該通道自動停用）。
+> 2. 一次完整移動 = 三個指令依序執行：`select_gap` → `select_block` → `move`，缺一不可。
+> 3. 每次「動作型」指令後建議再 `GET /status` 確認結果；所有回應都有 `ok: true/false`。
+> 4. `solved` 不代表「回到最初版面」，而是「方塊在任意位置構成實心矩形」。
+> 5. 若要改求解器/調試面板：務必先讀 §2「核心不變量」與 §5「求解器子系統」，避免破壞平移不變量假設。
+>
+> **建議閱讀順序**（由底層到外層）：
+> `game.py` → `solver/actions.py`、`solver/state.py` → `GUI.py` → `gui/events.py`（`process_commands`）→ `http_server.py` → `solver/__init__.py`、`solver/ml/gather_solver.py`。
+
+---
+
+## 1. 啟動與驗證
+
+Python 3.12，路徑 `D:\python\python.exe`（打包後亦可直接跑 exe）。
 
 ```bash
-# 獲取遊戲狀態（返回步數、是否復原、矩陣、選中狀態等）
+# 預設 4×4、step=2，並開啟 HTTP(5050)；同時開 Pygame 窗口
+D:\python\python.exe main.py
+
+# 指定棋盤/等級；也可只給端口
+D:\python\python.exe main.py 6 6 2          # 6×6、step=2
+D:\python\python.exe main.py 4 4 2 8080     # 指定 HTTP 端口 8080
+D:\python\python.exe main.py 4 4 2 --http-port 8080
+D:\python\python.exe main.py --no-http      # 停用 HTTP，僅 stdin/GUI
+
+# 無頭驗證（不開窗口）
+D:\python\python.exe -m solver.ml.hole_detector
+D:\python\python.exe 測試\_test_mod_constraint.py
+```
+
+- 參數規則：`m n step`（`step < max(m, n)`）；純數字單參數 = HTTP 端口。
+- 啟動即連開：stdin 讀取執行緒、HTTP daemon 執行緒、`SliderGUI` 主迴圈（60 FPS）。
+- 啟動/異常寫入 `error_log.txt`（與 exe 同目錄；無權限時退回系統 temp），全部異常（含子執行緒）都會記錄。
+
+快速健康檢查：
+
+```bash
 curl http://127.0.0.1:5050/status
-
-# 獲取當前地圖（返回 # 和 _ 組成的文本地圖）
-curl http://127.0.0.1:5050/map
-
-# 獲取所有已保存的宏列表
-curl http://127.0.0.1:5050/macro/list
+# => {"puzzle":"2~4*4","step_count":0,"solved":true,"matrix":[[...]],"selected_gap":null,...}
 ```
 
-### 通用指令接口
+---
 
-通過 `/command` 可以發送任意終端指令（見下方命令行指令章節）：
+## 2. 詞彙與核心不變量
 
-```bash
-# 發送通用指令
-curl -X POST http://127.0.0.1:5050/command -H "Content-Type: application/json" -d "{\"cmd\": \"status\"}"
-curl -X POST http://127.0.0.1:5050/command -H "Content-Type: application/json" -d "{\"cmd\": \"shuffle\"}"
-curl -X POST http://127.0.0.1:5050/command -H "Content-Type: application/json" -d "{\"cmd\": \"move w\"}"
+| 詞彙 | 定義 |
+| --- | --- |
+| 滑塊 Block | 正方形單元，`location=[r, c]`（0-based，row 向下為正） |
+| 棋盤 SliderMatrix | `m×n` 起始版面；實際方塊可在任意位置活動 |
+| 縫隙 gap | 兩區塊之間的**分割線**。`h`=橫向縫隙（row 之間），`v`=縱向縫隙（col 之間）；以 `line` 標號。`select_gap {type,line}` 選它 |
+| 滑塊組 | `select_block {row,col}` 選中縫隙一側**連通**的整組方塊（DFS，`opt()`） |
+| 移動 move | `w/s/a/d`（上/下/左/右）。**限制：`v` 縫隙只能 `w/s`；`h` 縫隙只能 `a/d`**（見 `gui/events.py` 移動分支） |
+| step | 等級/基本步距；每次移動方塊組整體平移 step 的整數倍 |
+| solved | 所有方塊構成**任意位置**的 `m×n` 或 `n×m` 實心矩形（含轉置，不含形狀模板） |
+| puzzle 標籤 | 字串 `"{step}~{m}*{n}"`，例 `2~4*4`。成績/宏/建表皆以它分組 |
+| map 文本 | `#`=方塊、`_`=空白 的棋盤框文本；`export_map()/import_map()` 序列化格式 |
+
+### 2.1 Mod 著色不變量（求解器核心，勿違反）
+
+對 `step > 1`，每次合法移動中，每個方塊的 `(r % step, c % step)` **永遠不變**（同側整組平移 step 的整數倍）。推論：
+
+- 最終目標矩形左上角 `(r0, c0)` 只能落在特定 mod 網格上：
+  - 若 `m % step != 0` → `r0 % step` 被唯一固定；
+  - 若 `n % step != 0` → `c0 % step` 被唯一固定；
+  - 兩者都被 step 整除的維度無約束。
+- 相關函數（全部在 `solver/ml/gather_solver.py`）：
+  - `detect_target_corner(coords, m, n, step)`：用 mod 類別計數預測 `(r0, c0)` 偏移（只對有約束的維度有效）。
+  - `find_best_window(coords, m, n, step)`：**全鏈唯一窗口基準**。在邊界盒內枚舉所有 `m×n` 與 `n×m` 窗口，只保留符合 mod 約束的左上角，選重疊方塊數最高者。回傳 `(r0, c0, (rh, cw), overlap)`。
+  - `is_mod_compliant(coords, step, r0, c0)`：校驗視窗是否與不變量相容。
+- 調試面板「目標框/標記」與求解器必須共用同一 `find_best_window` 結果，否則洞/凸起語義會錯位（參 §5.2）。
+
+### 2.2 移動流程（內部）
+
+`try_move` 只做「純邏輯預測」不修改狀態 → GUI 決定播放動畫後 → `commit_move` → `save_snapshot`。`undo/redo` 走快照（`{matrix, bounds, move_info}`）。
+
+---
+
+## 3. 目錄地圖（檔案 → 職責）
+
+```
+main.py                # 入口：解析 CLI → 開 stdin 執行緒 + HTTP → SliderGUI().run()
+game.py                # 純遊戲邏輯（無 pygame 依賴）：Block、SliderMatrix、is_solved
+GUI.py                 # SliderGUI 主類（8 個 Mixin 聚合）+ 主迴圈/高層操作/資源路徑
+history.py             # GameHistory 快照式撤銷/重做
+records.py             # Records 成績管理器（pickle+XOR 混淆存 config/records.dat）
+http_server.py         # GameHTTPHandler：HTTP REST → 指令佇列（見 §6）
+
+gui/                   # 全是 Mixin，被 SliderGUI 繼承
+  renderer.py          #   RendererMixin        繪製棋盤/選單/面板/求解器選單/目標框與標記
+  events.py            #   EventsMixin          滑鼠/鍵盤/快捷鍵/長按/面板互動/指令佇列處理
+  animation.py         #   AnimationMixin       移動與 undo/redo 動畫、緩動
+  dialogs.py           #   DialogsMixin         幫助/自訂謎題/PygameFileDialog/宏管理與命名框
+  file_ops.py          #   FileOpsMixin         存檔/載入/組態管理（JSON）
+  virtual_keyboard.py  #   VirtualKeyboardMixin 虛擬鍵盤浮動面板（F1 開關）
+  metrics_panel.py     #   MetricsPanelMixin    調試指標面板（F2）＋目標框/洞標記選取
+  records_panel.py     #   RecordsPanelMixin    成績記錄浮動面板（F3）
+  text_input.py        #   TextInput            自繪文字輸入框（游標/選取/剪貼簿）
+
+solver/                # 求解器（詳見 §5）
+  __init__.py          #   SOLVER_ALGORITHMS 註冊表；solve/solve_fast/solve_greedy 入口
+  actions.py           #   enumerate_valid_actions / apply_action（動作語義）
+  state.py             #   snapshot/restore、狀態正規化
+  greedy.py            #   貪心爬山（最快-2）
+  ida_star.py          #   IDA*（最少步 / fast_mode）
+  heuristic.py         #   啟發函數 Score
+  table_core.py        #   反向 BFS 核心：canonicalize、_side_components、真前驅（bitmask）
+  build_table.py       #   建表主程式（多進程 + 斷點續算，GUI/CLI）
+  table_solver.py      #   查表求解：沿 dist-1 鄰居重構最短路徑
+  table_query.py       #   建表查詢/驗證 CLI（status/dist/solve/verify）
+  repair_table.py      #   修復不完整建表
+  visualize_table.py   #   tkinter 瀏覽表內狀態
+  ml/                  #   ML 子系統（訓練資料管線，見 §5.4）
+  data/{m}_{n}_{step}/ #   建表產物 table.pkl/checkpoint.pkl/meta.json（不入庫，需自行建表）
+
+macro/
+  macro.py             #   宏系統：MacroManager / Macro / MacroStep（JSON 存 macro/*.json）
+  test_macro_http.py   #   用 HTTP API 驅動宏錄製/執行的範例腳本
+
+config/                # 執行期組態（§8）
+save/                  # 使用者存檔 *.json
+picture/               # cover.ico / cover.png（圖示）
+測試/                  # 無頭測試腳本（§9），命名 _test_*.py 或 test/
+build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 ```
 
-### 操作流程（重要！）
+---
 
-遊戲的操作順序是：**選縫隙 → 選滑塊 → 移動**。以下是一個完整的操作範例：
+## 4. 架構與資料流
+
+```
+ stdin 執行緒 ─┐                        ┌─→ print / 直接回應
+ HTTP 執行緒 ──┴─→ cmd_queue ─→ SliderGUI.process_commands()（gui/events.py）
+                 （元素：str 或 (cmd, resp_q) 元組）
+```
+
+- **單一指令佇列**：HTTP 每請求包成 `(cmd, resp_q)` 並阻塞等待（逾時 10s）；stdin 放入純字串；GUI 每幀取出執行。
+- **SliderGUI** 繼承 8 個 Mixin（`RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin`），Mixin 只提供方法，狀態集中在主類。
+- 高層操作（`move_selected_blocks/undo/redo/shuffle_puzzle/reset_puzzle/new_puzzle/_start_auto_solve`）在 `GUI.py` 或 `gui/events.py` 定義。
+- 三大可拖動浮動面板：虛擬鍵盤（F1）、調試面板（F2，預設關閉）、成績面板（F3）；位置/可見性寫入 `config/config.json` 的 `panels`。
+- 調試面板（`metrics_panel`）額外支援：**框內空格 = 圓圈(孔洞)/三角(缺口)、框外滑塊 = 菱形(凸起)**，點擊可選中標記用於觀察；畫框與標記共用 `find_best_window` 產出的 `region`。
+
+---
+
+## 5. 求解器子系統
+
+### 5.1 演算法註冊表
+
+`solver/__init__.py` 的 `SOLVER_ALGORITHMS: dict[key, (顯示名, callable)]` 是 GUI「自動求解」唯一來源：
+
+| key | 顯示名 | 函數 | 特性 |
+| --- | --- | --- | --- |
+| `gather_gradient` | 智能聚攏 | `gather_solver.gradient_gather` | 參數預測 + 多階段 + 路徑優化 |
+| `human_ai` | 人類模仿 | `human_solver.ai_human_solve` | 人類還原記錄訓練的評分模型（§5.4） |
+| `gather` | 普通聚攏 | `gather_solver.gather_solve` | 貪心聚攏 + patience 停機 |
+| `ida_star` | 最少步 | `solver.solve` | 保證最優，較慢 |
+| `fast` | 最快-1 | `solve_fast` | IDA* 放寬 |
+| `greedy` | 最快-2 | `solve_greedy` | 貪心爬山 + 擾動 |
+| `table` | 查表求解 | `table_solver.table_solve` | 需先 `solver.data` 建表 |
+
+通用函式庫契約：`f(game, step, max_steps, cancel_check=None, progress_callback=None) → list[action] | None`（`gather` 系回報 `progress_callback` 聚攏指標，即使未還原也回傳動作序列）。新增演算法 = 在 `solver/ml/` 新增模組 + 註冊進 `SOLVER_ALGORITHMS` + 加入設定介面的預設清單。
+
+指令 `solve`（HTTP `POST /solve`）以目前 `config.json: solver_algorithm` 啟動非同步求解，用 `POST /solve/status` 輪詢（回 `running / solved(N步) / failed (无解) / idle`）。求解完成後 GUI 把解轉成宏執行。
+
+### 5.2 聚攏族與「目標窗口」語義（改求解器前必讀）
+
+- **聚攏度** `score = 最佳重疊塊數 / m*n`（`max_overlap`/`gather_score`），取 `m×n`、`n×m` 兩朝向的最大重疊，平移不變。
+- **目標窗口**就是分數所對應的矩形，由 `find_best_window()`（mod-aware 枚舉）唯一決定；**洞/凸起的語義必須與它一致**：
+  - `solver/ml/hole_detector.py::detect_holes(coords, m, n, step, region=None)` 接受外部傳入 `region=(r0,c0,(rh,cw))`；`region=None` 時退回無 mod 約束的 `find_target_region`（僅離線/測試用）。
+  - 框內空格：被包圍→`hole`（圓圈）；連到框緣→`gap`/缺口（三角形）。框外方塊 = `protrusion`（菱形）。
+- `_game_coords(game)`：把 `game.blocks` 轉成 `frozenset[(r,c)]`。
+
+### 5.3 建表（`table` 算法前提）
+
+距離表以「等級」為單位，一次建好後該等級任意狀態 < 1s 求最短解；表資料放 `solver/data/{m}_{n}_{step}/`，**不進 git**（`.gitignore`），拿到新環境需自己重建：
 
 ```bash
-# 步驟 1: 查看當前狀態，了解棋盤布局
+D:\python\python.exe -m solver.build_table 4 4 2            # GUI 建表
+D:\python\python.exe -m solver.build_table 4 4 2 --no-gui   # 純 CLI
+D:\python\python.exe -m solver.table_query status 4 4 2
+D:\python\python.exe -m solver.table_query dist "##.|##.|.##" 4 4 2
+D:\python\python.exe -m solver.table_query solve "##.|##.|.##" 4 4 2
+D:\python\python.exe -m solver.repair_table 4 4 2
+D:\python\python.exe -m solver.visualize_table 4 4 2
+```
+
+支援多程序（≤16）、checkpoint 斷點續算、定時自動存檔。
+
+### 5.4 `solver/ml`（資料管線）
+
+依賴 numpy + scikit-learn。目前有兩條獨立管線：
+
+**A. 查表導出管線（離線，未接入求解菜單）**
+`features`（特徵/動作編碼）→ `export_data`（從 BFS 表導出）→ `annotate` → `train_baseline` / `train_ranker` / `train_distance` → `ai_solver` / `distance_solver` 推理。
+
+**B. 人類模仿管線（已註冊為 `human_ai`，見 §5.1）**
+```bash
+# 1. 從 save/*.json（人類還原記錄）導出正/負樣本，JSONL 可檢視
+D:\python\python.exe -m solver.ml.export_human_data
+# 2. 訓練評分模型：score(狀態, 動作)，輸出 data/human/model_ranker.pkl
+D:\python\python.exe -m solver.ml.train_human_ranker
+# 3. 無頭驗證（真實人類開局 → 原生 API 逐步執行）
+D:\python\python.exe -m solver.ml.human_solver
+```
+`human_solver.ai_human_solve` 逐步對「當前狀態枚舉的全部合法動作」打分、取最高並用遊戲原生 API 執行——輸出永遠合法可執行。關鍵設計：
+- 動作編碼含完整 `gap_type/gap_line/side/move_dir`（非單純方向），gap_line 相對狀態邊界（平移不變）
+- 狀態特徵含聚攏度維度（`void_block_count` 的分段權重作為樣本權重）
+- 最終目標：「梯度聚攏粗調 + AI 收尾」；當前模型僅作交互驗證用。
+
+---
+
+## 6. 控制介面一：HTTP REST（AI 主要通道）
+
+伺服器綁定 `127.0.0.1:5050`；`GameHTTPHandler` 把每個請求轉成指令，同步等待 GUI 執行完後回 JSON。GET/POST 皆有 `/timer/status`、`/records`；`OPTIONS` 已開 CORS。
+
+| Method | Path | Body / 說明 |
+| --- | --- | --- |
+| GET | `/status` | 完整狀態（§下方 schema） |
+| GET | `/map` | `{"ok":true,"map":"##__\n##__..."}` |
+| GET | `/macro/list` | `{"ok":true,"macros":[{name,description,steps,recorded_step,base_point}]}` |
+| GET | `/records` | 目前謎題成績摘要（與 POST 同） |
+| GET | `/timer/status` | `{"ok":true,...}` + `state`/`elapsed_ms` |
+| POST | `/command` | `{"cmd":"<任意 CLI 指令>"}`（§7 全集） |
+| POST | `/move` | `{"direction":"w|s|a|d"}`（需先選好 gap+block） |
+| POST | `/undo` `/redo` `/shuffle` `/reset` `/deselect` `/quit` | — |
+| POST | `/new` | `{"m","n","step"}` |
+| POST | `/select_gap` | `{"type":"h|v","line":N}` |
+| POST | `/select_block` | `{"row","col"}` |
+| POST | `/solve` | 以目前算法開始非同步求解 |
+| POST | `/solve/status` | 輪詢求解狀態（同 CLI `solve_status`） |
+| POST | `/timer/start` | 競速開始（需先打亂處於 ready）；`/timer/stop` = DNF |
+| POST | `/macro/record/start` `/macro/record/set_base` `{row,col}` `/macro/record/stop` `{name}` | 錄製 |
+| POST | `/macro/execute` `{name,base_row,base_col}` `/macro/delete` `{name}` `/macro/rename` `{old_name,new_name}` | 管理 |
+
+**標準操作序列**（AI 每步移動的固定寫法）：
+
+```bash
 curl http://127.0.0.1:5050/status
-
-# 步驟 2: 選擇縫隙（type: h=橫向縫隙, v=縱向縫隙; line: 縫隙所在的行列號）
-# 例如選擇縱向縫隙（垂直分割線），位於第 1 列右側
-curl -X POST http://127.0.0.1:5050/select_gap -H "Content-Type: application/json" -d "{\"type\": \"v\", \"line\": 1}"
-
-# 步驟 3: 選擇滑塊（點擊縫隙某一側的一個滑塊，DFS 會自動選中該側所有連通的滑塊）
-curl -X POST http://127.0.0.1:5050/select_block -H "Content-Type: application/json" -d "{\"row\": 0, \"col\": 0}"
-
-# 步驟 4: 移動選中的滑塊（direction: w=上, s=下, a=左, d=右）
-# 注意：縱向縫隙只能上下移動（w/s），橫向縫隙只能左右移動（a/d）
-curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d "{\"direction\": \"s\"}"
-
-# 步驟 5: 確認移動結果
-curl http://127.0.0.1:5050/status
-```
-
-### 移動操作
-
-```bash
-# 移動已選中的滑塊（必須先 select_gap + select_block）
-curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d "{\"direction\": \"w\"}"   # 上移
-curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d "{\"direction\": \"s\"}"   # 下移
-curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d "{\"direction\": \"a\"}"   # 左移
-curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d "{\"direction\": \"d\"}"   # 右移
-```
-
-### 撤銷/重做
-
-```bash
-curl -X POST http://127.0.0.1:5050/undo
-curl -X POST http://127.0.0.1:5050/redo
-```
-
-### 謎題管理
-
-```bash
-# 打亂當前謎題
 curl -X POST http://127.0.0.1:5050/shuffle
-
-# 重置謎題（回到打亂前的狀態）
-curl -X POST http://127.0.0.1:5050/reset
-
-# 創建新謎題（m×n 棋盤，步長為 step）
-curl -X POST http://127.0.0.1:5050/new -H "Content-Type: application/json" -d "{\"m\": 4, \"n\": 4, \"step\": 2}"
-curl -X POST http://127.0.0.1:5050/new -H "Content-Type: application/json" -d "{\"m\": 5, \"n\": 6, \"step\": 3}"
+curl -X POST http://127.0.0.1:5050/select_gap -H "Content-Type: application/json" -d '{"type":"h","line":2}'
+curl -X POST http://127.0.0.1:5050/select_block -H "Content-Type: application/json" -d '{"row":2,"col":0}'
+curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d '{"direction":"d"}'
+curl http://127.0.0.1:5050/status
 ```
 
-### 選中操作
-
-```bash
-# 選擇縫隙（h=橫向, v=縱向; line=行/列號）
-curl -X POST http://127.0.0.1:5050/select_gap -H "Content-Type: application/json" -d "{\"type\": \"h\", \"line\": 2}"
-
-# 選擇滑塊（需要先選縫隙，會自動 DFS 選中同側連通滑塊）
-curl -X POST http://127.0.0.1:5050/select_block -H "Content-Type: application/json" -d "{\"row\": 1, \"col\": 2}"
-
-# 取消所有選中
-curl -X POST http://127.0.0.1:5050/deselect
-```
-
-### 宏操作
-
-```bash
-# 查看所有宏
-curl -X POST http://127.0.0.1:5050/macro/list
-
-# 開始錄製宏
-curl -X POST http://127.0.0.1:5050/macro/record/start
-
-# 設置錄製基準座標（在錄製開始後，進行實際操作前設置）
-curl -X POST http://127.0.0.1:5050/macro/record/set_base -H "Content-Type: application/json" -d "{\"row\": 0, \"col\": 0}"
-
-# （在此期間進行 select_gap → select_move → move 等操作，步驟會自動記錄）
-
-# 停止錄製並保存（需指定宏名稱）
-curl -X POST http://127.0.0.1:5050/macro/record/stop -H "Content-Type: application/json" -d "{\"name\": \"my_macro\"}"
-
-# 執行宏（指定名稱和新的基準座標）
-curl -X POST http://127.0.0.1:5050/macro/execute -H "Content-Type: application/json" -d "{\"name\": \"my_macro\", \"base_row\": 2, \"base_col\": 3}"
-
-# 重命名宏
-curl -X POST http://127.0.0.1:5050/macro/rename -H "Content-Type: application/json" -d "{\"old_name\": \"my_macro\", \"new_name\": \"better_name\"}"
-
-# 刪除宏
-curl -X POST http://127.0.0.1:5050/macro/delete -H "Content-Type: application/json" -d "{\"name\": \"better_name\"}"
-```
-
-### 其他
-
-```bash
-# 退出遊戲
-curl -X POST http://127.0.0.1:5050/quit
-```
-
-### 響應格式
-
-所有接口返回 JSON，基本格式：
-
-```json
-{"ok": true, "message": "操作描述"}
-```
-
-`/status` 返回的完整數據：
+`/status` schema（`gui/events.py::_get_game_status`）：
 
 ```json
 {
   "puzzle": "2~4*4",
   "step_count": 15,
   "solved": false,
-  "matrix": [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 1, 1], [0, 0, 1, 1]],
+  "matrix": [[1,1,0,0],[1,1,0,0],[0,0,1,1],[0,0,1,1]],
   "selected_gap": ["v", 1],
   "selected_block": [0, 0],
   "animating": false
 }
 ```
 
-`/map` 返回：
+---
+
+## 7. 控制介面二：stdin CLI
+
+GUI 每幀執行 `process_commands()`（`gui/events.py`），支援純字串（stdin）或 `(cmd, resp_q)`（HTTP）。指令以空白分隔，第一個 token 為動作。
+
+**完整動作清單**（= `http_server.py` 對映來源，兩介面 1:1）：
+
+| 動作 | 參數 | 說明 |
+| --- | --- | --- |
+| `status` | — | 狀態（含 matrix） |
+| `map` | — | `#`/`_` 文本地圖 |
+| `move` | `w|s|a|d` | 移動（需先選縫隙+滑塊；`v`→w/s，`h`→a/d） |
+| `undo` / `redo` | — | 快照式撤銷/重做 |
+| `shuffle` | — | 打亂 |
+| `reset` | — | 回到打亂前 |
+| `new` | `m n step` | 換謎題 |
+| `select_gap` | `h\|v line` | 例 `select_gap v 1` |
+| `select_block` | `row col` | 例 `select_block 0 0` |
+| `deselect` | — | 清選中 |
+| `export` / `import` | （沿用舊終端介面） | 地圖字串進出 |
+| `solve` | — | 以目前算法自動求解 |
+| `solve_status` | — | `idle/running/solved(N步)/failed (无解)` |
+| `timer_start` / `timer_stop` / `timer_status` | — | 競速計時 |
+| `records` | — | 目前謎題成績摘要（count/best/worst/ao5/ao12/dnf） |
+| `macro_list` | — | 列出宏 |
+| `macro_record_start` | — | 開始錄製 |
+| `macro_set_base` | `row col` | 設定錄製基準 |
+| `macro_record_stop` | `name` | 停止並命名保存 |
+| `macro_execute` | `name base_row base_col` | 在新基準執行宏（會做 step 相容拆分） |
+| `macro_delete` | `name` | 刪除 |
+| `macro_rename` | `old new` | 改名 |
+| `quit` | — | 結束遊戲（`running=False`） |
+
+**操作示範**：
+
+```
+> status          # 查看狀態（stdin 無 resp_q，故直接 print 人類版）
+> shuffle
+> select_gap v 1
+> select_block 0 0
+> move s
+> status
+```
+
+宏錄製期間，`select_gap→select_block→move` 的操作會被自動記錄成相對步驟。
+
+---
+
+## 8. 組態與資料檔案
+
+| 路徑 | 用途 | 備註 |
+| --- | --- | --- |
+| `config/config.json` | 視窗/動畫/縮放/相機/上次檔案/`solver_algorithm`/`panels` 位置 | 缺檔自動重生 |
+| `config/keyboard_shortcut.json` | 快捷鍵（動作→key+modifiers），如 undo=`ctrl+z`、panels=`f1/f2/f3` | 設定介面可錄製 |
+| `config/records.dat` | 成績記錄（pickle 以固定 XOR `0x5A` 混淆檔頭，非加密） | 關閉遊戲時統一寫入 |
+| `config/temp_history.json` | 退出時自動快照，下次啟動還原進度 | |
+| `save/*.json` | 使用者存檔（含 puzzle 參數、map、步數、歷史） | 自動補 `.json` 後綴 |
+| `macro/*.json` | 宏定義 | |
+| `error_log.txt` | 執行期錯誤（含子執行緒） | 位置＝exe/腳本目錄 |
+
+`config.json` 關鍵範例（`solver_algorithm` 決定 `POST /solve` 用哪個算法）：
 
 ```json
-{"ok": true, "map": "##__\n##__\n__##\n__##"}
+{
+  "animation_speed": 300,
+  "zoom": 1.0,
+  "solver_algorithm": "gather_gradient",
+  "window_size": [1000, 600],
+  "panels": {
+    "records":      { "visible": true,  "pos": [660, 40] },
+    "virtual_keyboard": { "visible": true, "pos": [20, 60] },
+    "metrics":      { "visible": false, "pos": [20, 400] }
+  }
+}
 ```
 
-***
+---
 
-## 命令行指令詳細用法
+## 9. 測試與驗證
 
-> **致 LLM：你也可以通過 stdin 向遊戲進程發送指令。** 遊戲運行時會在後台線程監聽 stdin 輸入。指令格式與 HTTP `/command` 接口一致。
-
-### 基本指令
-
-| 指令         | 說明            | 範例         |
-| ---------- | ------------- | ---------- |
-| `status`   | 獲取遊戲狀態（打印到終端） | `status`   |
-| `map`      | 獲取當前地圖文本      | `map`      |
-| `shuffle`  | 隨機打亂謎題        | `shuffle`  |
-| `reset`    | 重置謎題          | `reset`    |
-| `undo`     | 撤銷上一步操作       | `undo`     |
-| `redo`     | 重做已撤銷的操作      | `redo`     |
-| `deselect` | 取消所有選中        | `deselect` |
-| `quit`     | 退出遊戲          | `quit`     |
-
-### 移動指令
+`測試/` 內全部是無頭腳本（不開窗口，需 pygame 可於背景模式建立 surface），直接執行，通過會印 `ALL PASS`：
 
 ```bash
-# 創建新謎題：new m n step
-new 4 4 2        # 4×4 棋盤，步長 2
-new 5 6 3        # 5×6 棋盤，步長 3
-
-# 選擇縫隙：select_gap <h|v> <line>
-select_gap v 1   # 選擇縱向縫隙，第 1 列
-select_gap h 2   # 選擇橫向縫隙，第 2 行
-
-# 選擇滑塊：select_block <row> <col>
-select_block 0 0 # 選擇座標 (0,0) 的滑塊（DFS 自動選中連通組）
-
-# 移動：move <w|s|a|d>
-move s            # 向下移動
-move d            # 向右移動
+D:\python\python.exe 測試\_test_mod_constraint.py     # mod 約束/detect_target_corner
+D:\python\python.exe 測試\_test_gradient_pipeline.py  # 智能聚攏並行管線收尾
+D:\python\python.exe 測試\_test_full.py               # 綜合
+D:\python\python.exe 測試\_test_rp_menu.py / _test_rp_colors.py   # 成績面板
+D:\python\python.exe 測試\_test_block_load.py / _test_textinput.py
 ```
 
-### 宏指令
+另有 `測試/test/`（pytest 風格：`test_solver/test_table_core/test_bfs_explore/test_profile`）與開發用探針 `_debug_cursor.py`、`_test_mouse_cursor.py` 等。改動求解器核心後，至少重跑 `_test_mod_constraint` 與 `_test_gradient_pipeline`。
+
+若環境有 pyflakes，可用它抓未使用 import/變數（注意殘留的「f-string 無佔位符」與 `emd_solver.py` 的 `candidates` 前向引用屬已知保留項，非錯誤）：
 
 ```bash
-macro_list                          # 列出所有宏
-macro_record_start                  # 開始錄製
-macro_set_base 0 0                  # 設置錄製基準座標
-# ... 執行操作（select_gap, select_block, move）...
-macro_record_stop my_macro          # 停止錄製並命名
-macro_execute my_macro 2 3          # 在 (2,3) 為基準執行宏
-macro_delete my_macro               # 刪除宏
-macro_rename old_name new_name      # 重命名宏
+python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 ```
 
-### 操作範例（命令行）
+---
 
-```
-> status
-=== 狀態 ===
-謎題: 2~4*4
-步數: 0
-復原: 是
-矩陣:
-1 1 0 0
-1 1 0 0
-0 0 1 1
-0 0 1 1
+## 10. 打包
 
-> shuffle
-[OK] 已打乱
+- `Gatenneaslider.spec`：PyInstaller 規格；`build_exe.bat` 一鍵打包（`--windowed`）。
+- **`--windowed` 無控制台時 `sys.stdin is None`**，`main.py::stdin_reader` 會檢查並跳過 stdin 監聽；HTTP 通道不受影響。
+- `package_zip.bat` / `package_zip.ps1`：把 exe + 必要資源壓成發布 zip。
+- 圖示：`picture/cover.ico`；運行期資源路徑統一走 `GUI.py::_gui_get_resource_path`（相容 frozen）。
 
-> select_gap v 1
-[OK] 已選中縫隙: v 1
+---
 
-> select_block 0 0
-[OK] 已選中滑塊 (0,0), 選中區域: 2 個
+## 11. 開發約定與注意事項
 
-> move s
-[OK] 已移動 s
+- Python 一律用 `D:\python\python.exe`。
+- `game.py` 不得引入 pygame（保持純邏輯，可被求解器/solver.ml 直接 import）。
+- 修改求解器/調試面板不得破壞 §2.1 mod 不變量；目標框與洞/凸起標記必須共用 `find_best_window`。
+- 不大改 `solver/data/` 產物與 `.gitignore` 列出的個人檔（`.clinerules/`、`.trae/`、`.vscode/`、`参考/` 不入庫）。
+- 快取/執行期生成物（`__pycache__`、`config/records.dat`、`macro/*.json` 視情況）不要誤入 git。
+- 除錯優先無頭測試；只有在需要視覺驗證（目標框/標記位置）時才跑 GUI。
 
-> status
-=== 狀態 ===
-謎題: 2~4*4
-步數: 1
-復原: 否
-矩陣:
-0 0 0 0
-1 1 0 0
-1 1 1 1
-0 0 1 1
-```
+## 12. 已知限制 / 長期目標
 
-***
-
-## 已知限制 / 待完成功能
-
-- 未來可能加入除了正方形以外的其他形狀滑塊（如三角形）、三維滑塊、獨立編號滑塊
-- 求解器長期目標：用神經網絡/強化學習訓練專用 AI，或找到人類可理解的通用解法
-
-***
-
-## 求解器
-
-遊戲內置五種求解算法，可通過「編輯 → 自動求解」或快捷鍵 `Ctrl+Alt+S` 啟動：
-
-| 算法               | 說明                                  | 特點            |
-| ---------------- | ----------------------------------- | ------------- |
-| 智能聚攏（gradient）  | 先驗參數預測 + 多階段放寬參數 + 路徑優化（去環 + 徘徊壓縮）  | 聚攏系增強版，適配性強   |
-| 普通聚攏（gather）    | 貪心聚攏 + 連續無改進停機                      | 快速，不保證復原      |
-| 最少步求解 (IDA\*)    | IDA\* + 轉置表 + 動作排序 + 分階段搜索          | 保證最優解，但速度較慢   |
-| 最快求解-1 (IDA\*快速) | 調整 bound 增量、節點限制、動作排序採樣             | 犧牲最優性換取速度     |
-| 最快求解-2 (貪心爬山)    | 貪心爬山 + 隨機擾動 + 轉置表                   | 速度最快，不保證最優解   |
-
-五種算法均通過 `solver.SOLVER_ALGORITHMS` 對照表註冊，可在「設置」對話框中選擇默認算法（保存到 `config/config.json` 的 `solver_algorithm` 字段，當前默認值為 `gather_gradient`）。
-
-求解過程中：
-
-- 實時顯示階段、深度、節點數、耗時
-- 支持中途停止（點擊「停止求解」或再次按 `Ctrl+Alt+S`）
-- 求解成功後自動生成宏指令並執行
-
-### 反向 BFS 建表
-
-「查表求解」依賴預建的距離表，需為每個等級（`m n step`）單獨建表一次。建表完成後，該等級的任意打亂狀態可在 < 1 秒內求出最短解。已建表等級存放在 `solver/data/{m}_{n}_{step}/`，目前完成的有 `1~2*3`、`1~3*3`、`2~4*4`（559,504 個狀態、最大距離 17、表文件 18.7MB）。
-
-```bash
-# 建表（帶 tkinter GUI，實時進度 + 距離分布 + 暫停/續算）
-D:\python\python.exe -m solver.build_table 4 4 2
-
-# 無 GUI 純 CLI 模式
-D:\python\python.exe -m solver.build_table 4 4 2 --no-gui
-
-# 查詢表統計 / 給定地圖的求解距離 / 最短解法 / 距離一致性驗證
-D:\python\python.exe -m solver.table_query status 4 4 2
-D:\python\python.exe -m solver.table_query dist "##.|##.|.##" 4 4 2
-D:\python\python.exe -m solver.table_query solve "##.|##.|.##" 4 4 2
-D:\python\python.exe -m solver.table_query verify 50 4 4 2
-
-# 修復不完整表 / 可視化瀏覽表中狀態
-D:\python\python.exe -m solver.repair_table 4 4 2
-D:\python\python.exe -m solver.visualize_table 4 4 2
-```
-
-建表支持**斷點續算**（崩潰/暫停後可從 `checkpoint.pkl` 繼續）、**定時自動保存**（每 60 秒或每 5 萬新狀態）、**多進程並發**（最多 16 進程）。
-
-***
-
-## 開發約定
-
-- Python 路徑：`D:\python\python.exe`
-- 修改應盡量只改少量代碼，避免影響已有功能
-- 不改動數據集 `solver/data` 內容
-- 模塊邊界清晰：game.py 純邏輯無 pygame 依賴，GUI 層通過 Mixin 拆分職責
-- 個人參考文檔與 IDE 配置（`.clinerules/`、`.trae/`、`.vscode/`、`参考/`）不入庫，見 `.gitignore`
-
+- 目前滑塊皆為同尺寸正方形；暫不支援三角形/編號方塊等變體。
+- 求解長期目標：以「梯度聚攏粗調 + AI 收尾」完成高階謎題。人類模仿（`human_ai`）已接入 `SOLVER_ALGORITHMS`（§5.4 管線 B）；AI 收尾模型仍在提升中。

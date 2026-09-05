@@ -33,6 +33,10 @@ class EventsMixin:
                     )
                     continue
                 
+                # 标注模式事件（含四键隐藏入口；其余事件快速放行）
+                if self.handle_annotation_event(event):
+                    continue
+
                 # 文件对话框事件（最高优先级）
                 if self.file_dialog.active:
                     self.file_dialog.handle_event(event)
@@ -1549,7 +1553,8 @@ class EventsMixin:
         self.macro_recording_steps = []
         self.macro_record_base_point = None
 
-    def _record_macro_step(self, gap_type: str, gap_line: int, side: str, direction: str):
+    def _record_macro_step(self, gap_type: str, gap_line: int, side: str,
+                           direction: str, rep_cell: list = None):
         """
         在录制模式下记录一个操作步骤
         
@@ -1558,6 +1563,7 @@ class EventsMixin:
             gap_line: 缝隙绝对行/列号
             side: 选中缝隙哪一侧
             direction: 滑动方向
+            rep_cell: 该步移动分量的代表格绝对坐标 [row, col]（可为 None）
         """
         from macro.macro import MacroStep
         base_r, base_c = self.macro_record_base_point
@@ -1565,12 +1571,16 @@ class EventsMixin:
             rel = gap_line - base_r
         else:
             rel = gap_line - base_c
+        rep_rel = None
+        if rep_cell is not None:
+            rep_rel = [rep_cell[0] - base_r, rep_cell[1] - base_c]
         step = MacroStep(
             gap_type=gap_type,
             gap_line_rel=rel,
             side=side,
             direction=direction,
             step=self.current_step,
+            rep_cell_rel=rep_rel,
         )
         self.macro_recording_steps.append(step)
 
@@ -1638,6 +1648,7 @@ class EventsMixin:
                 step = MacroStep(
                     step.gap_type, step.gap_line_rel, step.side,
                     DIR_INVERSE[step.direction], step.step,
+                    rep_cell_rel=step.rep_cell_rel,
                 )
             ops.extend(MacroManager.convert_to_absolute(
                 step, base_row, base_col, self.current_step, self.macro_exec_factor
@@ -1796,17 +1807,17 @@ class EventsMixin:
             gtotal = info.get('gradient_total') or gs.get('max_stages', 4)
             cur = gstage if gstage else (gs.get('stage_idx', 0) + 1)
             if info.get('solved'):
-                self.macro_notify_msg = f"智能聚拢：已复原！共{total}步"
+                self.macro_notify_msg = f"梯度聚拢：已复原！共{total}步"
                 self._gradient_state = None
             elif gstage is not None and gstage >= gtotal:
                 self.macro_notify_msg = (
-                    f"智能聚拢：{gtotal}阶段未复原 · "
+                    f"梯度聚拢：{gtotal}阶段未复原 · "
                     f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
                 )
                 self._gradient_state = None
             else:
                 self.macro_notify_msg = (
-                    f"智能聚拢 第{cur}/{gtotal}阶段完成（{reason_text}）· "
+                    f"梯度聚拢 第{cur}/{gtotal}阶段完成（{reason_text}）· "
                     f"{total}步 · 聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
                 )
         elif info.get('solved'):
