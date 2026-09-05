@@ -971,7 +971,7 @@ class RendererMixin:
             #'distance': '距离求解：用神经网络预测剩余步数做贪心搜索，需先用 solver.ml.train_distance 训练模型。',
             'gather': '聚拢：提升聚拢度，不保证还原，实时显示进展。',
             'gather_gradient': '梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢，每阶段播放动画后再续。理论上比上一个更高效。',
-            'fill_macro': '填洞宏：死代码规则（无搜索），只处理单洞+单凸起局面；对填 1 格洞的机制验证。',
+            'fill_macro': '填洞宏：死代码规则（无搜索）。单洞单凸整盘还原；多洞无缺口时逐 couple 填洞（成功一次重扫，全败停机）。',
         }
         return descriptions.get(algo_key, '')
 
