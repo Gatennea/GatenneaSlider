@@ -26,9 +26,10 @@ debug.log
 save/
 视频/
 
-# ===== 求解器表 / 训练模型（可由脚本重新生成）=====
+# ===== 求解器表 / 训练模型 / 标注数据导出（可由脚本重新生成）=====
 solver/data/
 solver/ml/models/
+solver/ml/data/
 
 # ===== 用户宏数据 =====
 macro/*.json

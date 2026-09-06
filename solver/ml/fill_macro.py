@@ -365,24 +365,100 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
         return None, {'reason': str(e)}
 
 
-def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
-                     max_attempts=400, rng=None):
-    """多洞无缺口贪心驱动（确定性死代码，无搜索）。
+def _couple_scan_state(coords, m, n, step, rng):
+    """当前状态遍历全部 couple，返回首个能提升聚拢度的动作片段（含 partial 有成果）。"""
+    _reg, _ov, holes, outside = window_of(coords, m, n, step)
+    h_list = list(holes)
+    rng.shuffle(h_list)
+    for h in h_list:
+        cands = [p for p in outside
+                 if (p[0] - h[0]) % step == 0 and (p[1] - h[1]) % step == 0]
+        rng.shuffle(cands)
+        for p in cands:
+            acts, _s = solve_single_void(coords, m, n, step, hole=h,
+                                         anchor=p, keep_partial=True)
+            if acts is not None:
+                return acts
+    return None
 
-    流程（用户规定 + 有成果失败的收容）：
+
+def _nondrop_moves(coords, m, n, step, ov0):
+    """所有「最佳窗口方块数不下降」的单步动作 → [(action, 新局面)]。
+
+    0 增益（=ov0）留给下一步整形；提升（>ov0）的是可直接收下的成果。
+    """
+    from solver.actions import enumerate_valid_actions, apply_action
+    g = build_game(coords, m, n)
+    out = []
+    for act in enumerate_valid_actions(g, step):
+        g2 = build_game(coords, m, n)
+        if not apply_action(g2, act, step):
+            continue
+        s2 = frozenset(gcoords(g2))
+        if window_of(s2, m, n, step)[1] >= ov0:
+            out.append((act, s2))
+    return out
+
+
+def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
+                      max_nodes=150):
+    """有限中性整形预演：≤max_shaping 步「不降聚拢度」动作后收成果。
+
+    couple 宏的最小原子是「一次完整 A-B-A′」；有些卡点要先花 0 增益的整带
+    步（揉形）把洞/凸起摆到可直接填的几何，宏才肯动。这里在 couple 全败时
+    提供 ≤k 步不降聚拢度的整形路径：路径终点只要 ① 聚拢度提升，或
+    ② 整形后的新状态有 couple 能填 → 就回传完整动作序列。
+
+    返回动作列表或 None（确定性、有节点上限，不是求解搜索）。
+    """
+    from collections import deque
+    root = frozenset(coords)
+    frontier = deque([(root, [])])
+    seen = {root}
+    nodes = 0
+    for _depth in range(max_shaping):
+        nxt = deque()
+        while frontier:
+            s, prefix = frontier.popleft()
+            if window_of(s, m, n, step)[1] > ov0:
+                return prefix            # 纯整形已提升（窗口重定位）
+            cacts = _couple_scan_state(s, m, n, step, rng)
+            if cacts is not None:
+                return prefix + cacts    # 整形后解锁 couple
+            for act, s2 in _nondrop_moves(s, m, n, step, ov0):
+                if window_of(s2, m, n, step)[1] > ov0:
+                    return prefix + [act]   # 单步已提升
+                if s2 in seen:
+                    continue
+                seen.add(s2)
+                nodes += 1
+                if nodes > max_nodes:
+                    return None
+                nxt.append((s2, prefix + [act]))
+        frontier = nxt
+    return None
+
+
+def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
+                     max_attempts=400, max_shaping=2, max_nodes=150,
+                     rng=None):
+    """多洞无缺口贪心驱动（确定性死代码，无求解搜索）。
+
+    流程：
         1. 取当前窗口内一个洞 h，随机找同 mod 的窗外凸起 p → 一个 couple；
         2. 调 solve_single_void(couple, keep_partial=True) 尝试：
-           · 完全失败（回放后聚拢度没提升，含一步没动）→ 无副作用换组；
-           · 有成果的失败（能提升聚拢度但未整盘还原，partial 也算）→ 接受，
-             实打实推进后重新遍历全部 couple；
-        3. 某轮所有 couple 都完全失败 → 停机（算法固有缺陷）。
+           · 完全失败 → 无副作用换组；
+           · 有成果（提升聚拢度但未必还原，partial 也算）→ 接受、推进；
+        3. 一轮 couple 全败时，做有限中性整形预演（≤max_shaping 步不降
+           聚拢度的整带动作后再试 couple / 直接提升）——覆盖「需先揉形再填」
+           的卡点（例如 2-7-7-test 残局）；
+        4. 整形也全败 → 停机（算法固有缺陷）。
 
-    每步接受的片段都经 _overlap_raised 保证窗内方块数单调提升，故轮数有上界。
+    每步接受都保证窗内方块数单调提升，故轮数有上界。
 
     返回 (actions, stats)：
     · 还原成功 → actions 全量；
-    · 有成果的失败（已提升过聚拢度但无法继续/未还原）→ actions=已提升的
-      片段，stats['partial']=True（不丢弃成果）；
+    · 有成果的失败 → actions=已提升片段，stats['partial']=True；
     · 完全失败（全程零提升）→ actions=None，stats['reason'] 说明。
     """
     coords = frozenset(coords)
@@ -397,6 +473,7 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
     rounds = 0
     attempts = 0
     partial_accepted = 0
+    shaping_used = 0
 
     def _stop(extra):
         """停机出口：有成果(total 非空) → 回传 partial；完全失败 → None。"""
@@ -452,9 +529,25 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                 break
             if progressed:
                 break
+        if not progressed and max_shaping:
+            # couple 全败 → 有限中性整形预演：≤max_shaping 步不降聚拢度的
+            # 整带动作后直接提升 / 解锁 couple（覆盖「需先揉形再填」卡点）
+            plan = _shaping_progress(cur, m, n, step, rng, _ov,
+                                     max_shaping, max_nodes)
+            if plan is not None:
+                if not _replay_apply(g, plan, m, n, step):
+                    return _stop({'reason': '多洞停机：整形预演推进活盘失败',
+                                  'rounds': rounds,
+                                  'steps': len(total)})
+                total.extend(plan)
+                shaping_used += 1
+                progressed = True
+                if verbose:
+                    print('   round%d 中性整形预演(%d步) → 收下'
+                          % (rounds, len(plan)))
         if not progressed:
-            return _stop({'reason': '多洞停机：所有couple已无成果'
-                                    '(无法继续提升聚拢度, 固有缺陷)',
+            return _stop({'reason': '多洞停机：所有couple与≤%d步整形预演均无成果'
+                                    '(算法固有缺陷)' % max_shaping,
                           'rounds': rounds, 'attempts': attempts,
                           'holes_left': len(holes),
                           'outside_left': len(outside),
@@ -464,6 +557,7 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                       'rounds': rounds, 'steps': len(total)})
     return (total, {'steps': len(total), 'rounds': rounds,
                     'partial_accepted': partial_accepted,
+                    'shaping_used': shaping_used,
                     'secs': round(time.time() - t0, 3), 'multi': True})
 
 
