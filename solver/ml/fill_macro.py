@@ -279,8 +279,9 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
     两种调用语义：
     · 不带 hole/anchor（单洞局面）：整盘求解，成功 = 全盘还原。
     · 带 hole/anchor（couple 模式，供多洞无缺口驱动层逐对喂入）：本函数
-      只把「该凸起填进该洞」的动作旋出，成功 = 目标洞格被填且窗内空位减少
-      （不一定整盘还原）；失败不产生任何副作用。
+      把「该凸起填进该洞」的动作旋出；产物原样交还（可能整段成功、也可能
+      keep_partial 的部分推进），是否「有成果」由调用方按回放后聚拢度验收。
+      失败不产生任何副作用。
 
     返回 (actions, stats)；actions=None 表示失败。
     keep_partial=True：规则中断但已执行合法动作时返回 (部分actions, stats)，
@@ -317,8 +318,6 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
                                   require_solved=not couple).run()
             if acts is None:
                 return None, stats
-            if couple and not _overlap_raised(coords, m, n, step, acts):
-                return None, {'reason': 'couple未提升聚拢度(rot=id)'}
             return acts, stats
 
         # 旋转到「凸起在右侧」再求解；洞/凸起同样旋入 view 坐标喂给 runner
@@ -349,10 +348,8 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
             wacts.append((gap2, line2, side2, d2, (rr + r0, cc + c0)))
 
         if couple:
-            # 有成果(完整填洞或部分推进都算)：回放后聚拢度提升才接受
-            if not _overlap_raised(coords, m, n, step, wacts):
-                return None, {'reason': f'couple未提升聚拢度(rot={name})',
-                              'rot': name}
+            # 是否「有成果」由调用方（多洞驱动 / 整形扫描）按聚拢度验收；
+            # 这里原样交还 macro 产物（含 keep_partial 的部分推进与停点 reason）。
             return wacts, dict(stats, rot=name)
         # 单洞（非 couple）
         if stats.get('partial'):
@@ -377,7 +374,8 @@ def _couple_scan_state(coords, m, n, step, rng):
         for p in cands:
             acts, _s = solve_single_void(coords, m, n, step, hole=h,
                                          anchor=p, keep_partial=True)
-            if acts is not None:
+            # 此处替 solve_single_void 把关聚拢度：只认「回放后窗口方块数提升」
+            if acts is not None and _overlap_raised(coords, m, n, step, acts):
                 return acts
     return None
 
@@ -509,7 +507,11 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                                                 hole=h, anchor=p,
                                                 keep_partial=True)
                 if acts is None:
-                    continue   # 该 couple 完全失败：一步都没提升聚拢度
+                    continue   # 该 couple 完全失败（macro 一步未动）
+                # 聚拢度闸门：只接受「回放后最佳窗口方块数提升」的产物
+                # （含 partial 有成果）；未提升视为无成果失败，无副作用换组
+                if not _overlap_raised(cur, m, n, step, acts):
+                    continue
                 # 有成果（完整填洞或 partial 提升都算）：推进到活盘
                 if not _replay_apply(g, acts, m, n, step):
                     return _stop({'reason': '多洞停机：推进活盘失败',
