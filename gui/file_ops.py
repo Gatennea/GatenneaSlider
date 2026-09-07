@@ -334,6 +334,7 @@ class FileOpsMixin:
                     # temp_history_path 是自动保存，不算用户手动打开的文件
                     self.current_file_path = None
                     print(f"已从文件恢复: {last_path}")
+                    self._reset_file_dirty()
                     return
             except Exception as e:
                 print(f"加载上次状态失败: {e}")
@@ -341,6 +342,7 @@ class FileOpsMixin:
         # 都没有，使用默认初始化
         self.center_map()
         self.game_history.save_snapshot(self.game)
+        self._reset_file_dirty()
 
     def _build_save_data(self) -> dict:
         """构建当前游戏状态的保存数据"""
@@ -441,6 +443,8 @@ class FileOpsMixin:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(_compact_json_dumps(save_data))
             self.current_file_path = path
+            self._saved_board_version = self._board_version
+            self._update_window_title()
             self.macro_notify_msg = f"已保存：{os.path.basename(path)}"
             self.macro_notify_timer = 120
             print(f"游戏已保存到 {path}")
@@ -494,6 +498,7 @@ class FileOpsMixin:
             self.macro_notify_msg = f"已打开：{os.path.basename(path)}"
             self.macro_notify_timer = 120
             print(f"游戏已从 {path} 加载")
+            self._reset_file_dirty()
         except FileNotFoundError:
             print("未找到文件")
         except (json.JSONDecodeError, KeyError, ValueError) as e:

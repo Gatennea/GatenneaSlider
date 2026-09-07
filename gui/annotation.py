@@ -1084,6 +1084,7 @@ class AnnotationMixin:
         self.game.update_matrix()
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
         self.center_map()
         self._ann_start_target(
             'gen', f'随机生成 {m}×{n} 孔洞{hole} 缺口{dent}')
@@ -1600,6 +1601,7 @@ class AnnotationMixin:
         self._ann_rebuild_game_from_coords()
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
         self.center_map()
         self._ann_build_backup = None
         self._ann_start_target('build', f'手动构造 {m}×{n} step{step} '

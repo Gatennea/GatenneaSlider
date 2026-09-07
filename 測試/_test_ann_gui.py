@@ -69,6 +69,8 @@ def main():
     from GUI import SliderGUI
     gui = SliderGUI(m=5, n=5, step=2)
     gui.animation_enabled = False
+    gui._readonly = False          # 屏蔽工作区 temp_history 残留的只读标记
+    gui.save_readonly_flag = False
     ok_all = True
 
     # ---- 1. 生成起点状态（5×5 step2, 2 空位, 固定种子）----

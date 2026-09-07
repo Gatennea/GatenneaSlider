@@ -308,6 +308,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 当前打开的文件路径（None 表示未保存过）
         self.current_file_path = None
+        # 棋盘修改版号：任何改变滑块组状态的操作 +1；保存/载入时记录基准
+        self._board_version = 0
+        self._saved_board_version = 0
+        self._window_title = ''
 
         # 文件菜单状态
         self.show_file_menu = False
@@ -601,6 +605,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.game_history.reset()
         self.center_map()
         self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
 
         self.macro_notify_msg = f"切换谜题：{m}×{n} 等级{step}"
         self.macro_notify_timer = 120
@@ -801,6 +806,29 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.macro_notify_timer = 90
         return True
 
+    def _update_window_title(self):
+        """按存档路径/已修改/未存档 刷新窗口标题（只有标题变化时才调用 set_caption）"""
+        if self.current_file_path:
+            dirty = self._board_version != self._saved_board_version
+            marker = ' *' if dirty else ''
+            new_title = f'貓九的滑块游戏 — {self.current_file_path}{marker}'
+        else:
+            new_title = '貓九的滑块游戏 — 未存檔'
+        if new_title != self._window_title:
+            self._window_title = new_title
+            pygame.display.set_caption(new_title)
+
+    def _mark_file_dirty(self):
+        """棋盘状态变更：提升修改版号并刷新窗口标题（星号）"""
+        self._board_version += 1
+        self._update_window_title()
+
+    def _reset_file_dirty(self):
+        """载入/新建基准：视为未修改，刷新窗口标题"""
+        self._board_version = 0
+        self._saved_board_version = 0
+        self._update_window_title()
+
     def _maybe_show_solved_popup(self, via_redo: bool = False):
         """状态提交后调用：刚达成复原（未复原→复原）且非重做触发时，弹出复原成功悬浮窗。
 
@@ -879,6 +907,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._pending_move_info = None
             self.ensure_blocks_visible()
             self._maybe_show_solved_popup()
+            self._mark_file_dirty()
             # 操作提示，在撤销/重做时没有显示
             dir_names = {'w': '上', 's': '下', 'a': '左', 'd': '右'}
             dir_str = dir_names.get(direction, direction)
@@ -928,6 +957,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_msg = "撤销"
             self.macro_notify_timer = 15
             self._maybe_show_solved_popup()
+            self._mark_file_dirty()
 
     def redo(self):
         """重做操作（Ctrl+X）"""
@@ -969,6 +999,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_msg = "重做"
             self.macro_notify_timer = 15
             self._maybe_show_solved_popup(via_redo=True)
+            self._mark_file_dirty()
 
     def shuffle_puzzle(self):
         """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
@@ -1002,6 +1033,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.step_count = 0
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
         self.ensure_blocks_visible()
         if self.game_mode == 'timed':
             self._timer_enter_ready()

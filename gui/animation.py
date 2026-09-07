@@ -82,6 +82,8 @@ class AnimationMixin:
             self.ensure_blocks_visible()
             self._maybe_show_solved_popup()
 
+        self._mark_file_dirty()
+
         # 清除动画状态
         self.animating = False
         self._undo_redo_type = None
