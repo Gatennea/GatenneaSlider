@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "puzzle": {"m": 3, "n": 3, "step": 1},
+  "step_count": 0,
+  "history": {
+    "history_index": 0,
+    "snapshots": [
+      {
+        "matrix": [
+          [0, 0, 1, 1, 0],
+          [1, 1, 1, 1, 0],
+          [0, 0, 1, 1, 1]
+        ],
+        "bounds": {"min_row": -6, "max_row": -4, "min_col": -4, "max_col": 0}
+      }
+    ]
+  }
+}

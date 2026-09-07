@@ -381,20 +381,22 @@ def _couple_scan_state(coords, m, n, step, rng):
 
 
 def _nondrop_moves(coords, m, n, step, ov0):
-    """所有「最佳窗口方块数不下降」的单步动作 → [(action, 新局面)]。
+    """所有「最佳窗口方块数不下降」的单步动作 → [(action5, 新局面)]。
 
     0 增益（=ov0）留给下一步整形；提升（>ov0）的是可直接收下的成果。
+    每步都经 _capture_apply 生成，动作带代表格（5 元组），保证与回放同语义。
     """
-    from solver.actions import enumerate_valid_actions, apply_action
+    from solver.actions import enumerate_valid_actions
     g = build_game(coords, m, n)
     out = []
     for act in enumerate_valid_actions(g, step):
         g2 = build_game(coords, m, n)
-        if not apply_action(g2, act, step):
+        ok, act5 = _capture_apply(g2, act, step)
+        if not ok:
             continue
         s2 = frozenset(gcoords(g2))
         if window_of(s2, m, n, step)[1] >= ov0:
-            out.append((act, s2))
+            out.append((act5, s2))
     return out
 
 
@@ -566,6 +568,16 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
 # ---------------------------------------------------------------------------
 # GUI 求解器入口（与 SOLVER_ALGORITHMS 统一签名）
 # ---------------------------------------------------------------------------
+def _split_actions(actions):
+    """动作列表 → (四元组列表, 代表格列表)。
+
+    兼容两种动作：5 元组 (gap,line,side,dir,rep) 带代表格；
+    4 元组（整形/找洞等无代表格步骤）记 None，回放时退回「该侧首块」语义。
+    """
+    return ([a[:4] for a in actions],
+            [a[4] if len(a) == 5 else None for a in actions])
+
+
 def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
                      **kwargs):
     """填洞宏求解（GUI 入口）。
@@ -589,9 +601,10 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
             reason = stats.get('reason', '中断')
             print('[填洞宏] 单洞部分(断在：%s)，已播放 %d 步供观察'
                   % (reason, len(acts)))
-            return {'type': 'fill_partial', 'actions': [a[:4] for a in acts],
-                    'rep_cells': [a[4] for a in acts], 'reason': reason}
-        return ([a[:4] for a in acts], [a[4] for a in acts])
+            acts4, reps = _split_actions(acts)
+            return {'type': 'fill_partial', 'actions': acts4,
+                    'rep_cells': reps, 'reason': reason}
+        return _split_actions(acts)
     if not holes:
         return [], []   # 已还原
     acts, stats = solve_multi_void(coords, m, n, step)
@@ -604,39 +617,56 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
         reason = stats.get('reason', '中断')
         print('[填洞宏] 多洞有成果停机(断在：%s)，已播放 %d 步（保留提升）'
               % (reason, len(acts)))
-        return {'type': 'fill_partial', 'actions': [a[:4] for a in acts],
-                'rep_cells': [a[4] for a in acts], 'reason': reason,
+        acts4, reps = _split_actions(acts)
+        return {'type': 'fill_partial', 'actions': acts4,
+                'rep_cells': reps, 'reason': reason,
                 'stats': {k: v for k, v in stats.items()
                           if k not in ('reason', 'partial')}}
     print('[填洞宏] 多洞还原：%d 步 / %d 轮' % (len(acts),
                                              stats.get('rounds', '?')))
-    return ([a[:4] for a in acts], [a[4] for a in acts])
+    return _split_actions(acts)
 
 
 # ---------------------------------------------------------------------------
 # 数据源 / CLI
 # ---------------------------------------------------------------------------
+def _capture_apply(g, a, step):
+    """单步执行并返回 (ok, action5)。
+
+    action5 = (gap, line, side, d, rep_pre)，rep_pre 为目标块移动前的位置，
+    供精确回放（commit 后 location 已变）。目标选择：优先 a[4] 代表格；
+    没有则取该侧首块（= 宏回放语义）。
+    """
+    gap, line, side, d = a[:4]
+    rep = a[4] if len(a) == 5 else None
+    r = _Runner.__new__(_Runner)
+    r.g, r.m, r.n, r.step = g, g.m, g.n, step
+    r.p = None
+    tgt = r._block_at(rep) if rep is not None else None
+    if tgt is None:
+        tgt = r._side_first_block(gap, line, side)
+    if tgt is None:
+        return False, None
+    g.opt(gap, line, tgt)
+    final = g.try_move(d, step)
+    if not final:
+        for b in g.blocks:
+            b.be_opted = False
+        return False, None
+    rep_pre = tuple(tgt.location)   # 移动前位置
+    g.commit_move(final)
+    return True, (gap, line, side, d, rep_pre)
+
+
 def _replay_apply(g, actions, m, n, step):
     """把动作列表逐条执行到 g 上（原地修改），任一步非法返回 False。
 
-    每步优先按 rep_cell 精确定位分量，找不到时退回「该侧首块」。
+    全部动作都会附带代表格（5 元组）；回放时按代表格精确定位分量。
     """
-    r = _Runner.__new__(_Runner)
-    r.g, r.m, r.n, r.step = g, m, n, step
-    r.p = None
     for a in actions:
-        gap, line, side, d = a[:4]
-        rep = a[4] if len(a) == 5 else None
-        tgt = r._block_at(rep) if rep is not None else None
-        if tgt is None:
-            tgt = r._side_first_block(gap, line, side)
-        if tgt is None:
+        ok, _ = _capture_apply(g, a, step)
+        if not ok:
             return False
-        g.opt(gap, line, tgt)
-        final = g.try_move(d, step)
-        if not final:
-            return False
-        g.commit_move(final)
     return True
 
 
