@@ -42,6 +42,22 @@ class EventsMixin:
                     self.file_dialog.handle_event(event)
                     continue
 
+                # 复原成功悬浮窗：Esc 关闭 / Enter 保存 / 点击关闭（其余事件放行）
+                if getattr(self, '_solved_popup_active', False):
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_ESCAPE:
+                            self._solved_popup_active = False
+                            continue
+                        if event.key == pygame.K_RETURN:
+                            self._solved_popup_active = False
+                            self.save_to_file()
+                            continue
+                    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        rect = getattr(self, '_solved_popup_rect', None)
+                        if rect and rect.collidepoint(event.pos):
+                            self._solved_popup_active = False
+                            continue
+
                 # 宏命名对话框事件
                 if getattr(self, 'show_macro_name_dialog', False):
                     if self.handle_macro_name_dialog_events(event):
@@ -1823,6 +1839,7 @@ class EventsMixin:
             self.game_history.save_snapshot(self.game, move_info)
             self._pending_move_info = None
             self.macro_exec_index += 1
+            self._maybe_show_solved_popup()
 
     def _update_gather_notify(self):
         """聚拢播放中：实时刷新当前聚拢度到通知栏。"""

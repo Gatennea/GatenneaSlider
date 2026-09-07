@@ -383,6 +383,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # save_readonly_flag 是设置开关：打开后所有保存的存档都带 readonly 标记
         self._readonly = False
         self.save_readonly_flag = False
+        # 复原成功悬浮窗：
+        #  _solved_popup_active：当前是否显示；_solved_popup_t：弹入动画计时
+        #  _prev_solved：上一次状态提交后的复原状况（用于判定“刚达成复原”，避免重复弹窗）
+        self._solved_popup_active = False
+        self._solved_popup_t = 0
+        self._prev_solved = False
         # 参数规格（GUI 步进器用）：key -> (显示名, 默认值, 最小值, 最大值, 步长, 说明)
         self._gather_param_specs = [
             ('max_steps',           ('最大步数',     500,  100,   5000, 100,  '聚拢求解的步数上限，越大越可能深入但越慢')),
@@ -795,6 +801,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.macro_notify_timer = 90
         return True
 
+    def _maybe_show_solved_popup(self, via_redo: bool = False):
+        """状态提交后调用：刚达成复原（未复原→复原）且非重做触发时，弹出复原成功悬浮窗。
+
+        via_redo=True 表示最后一步由 Ctrl+X 重做实现（需求：此时不提示）。
+        每次调用都会同步 _prev_solved，保证「复原→离开→再复原」可再次弹出，且不会重复弹。
+        """
+        solved = self.is_solved()
+        became_solved = solved and not getattr(self, '_prev_solved', False)
+        self._prev_solved = solved
+        if became_solved and not via_redo:
+            self._solved_popup_active = True
+            self._solved_popup_t = 0
+
     def move_selected_blocks(self, direction: str):
         """
         移动所有选中的滑块，逐步验证（每次1格，共step次），
@@ -859,6 +878,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.game_history.save_snapshot(self.game, move_info)
             self._pending_move_info = None
             self.ensure_blocks_visible()
+            self._maybe_show_solved_popup()
             # 操作提示，在撤销/重做时没有显示
             dir_names = {'w': '上', 's': '下', 'a': '左', 'd': '右'}
             dir_str = dir_names.get(direction, direction)
@@ -907,6 +927,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._flash_move_selection(move_info, True, after_commit=True)
             self.macro_notify_msg = "撤销"
             self.macro_notify_timer = 15
+            self._maybe_show_solved_popup()
 
     def redo(self):
         """重做操作（Ctrl+X）"""
@@ -947,6 +968,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._flash_move_selection(move_info, False, after_commit=True)
             self.macro_notify_msg = "重做"
             self.macro_notify_timer = 15
+            self._maybe_show_solved_popup(via_redo=True)
 
     def shuffle_puzzle(self):
         """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
@@ -1633,6 +1655,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 宏执行结果通知（最顶层绘制）
                 self.draw_macro_notify()
+                # 复原成功悬浮窗（最顶层）
+                self.draw_solved_popup()
 
                 self.handle_events()
                 # 标注模式：捕捉录制提交 / 处理存档打开结果

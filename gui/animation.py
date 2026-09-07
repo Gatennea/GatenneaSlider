@@ -65,12 +65,14 @@ class AnimationMixin:
             self.ensure_blocks_visible()
             self._flash_move_selection(
                 getattr(self, '_sel_anim_move_info', None), True, after_commit=True)
+            self._maybe_show_solved_popup()
         elif undo_redo_type == 'redo':
             self.game_history.redo(self.game)
             self.step_count += 1
             self.ensure_blocks_visible()
             self._flash_move_selection(
                 getattr(self, '_sel_anim_move_info', None), False, after_commit=True)
+            self._maybe_show_solved_popup(via_redo=True)
         else:
             # 普通移动动画
             self.step_count += 1
@@ -78,6 +80,7 @@ class AnimationMixin:
             self.game_history.save_snapshot(self.game, move_info)
             self._pending_move_info = None
             self.ensure_blocks_visible()
+            self._maybe_show_solved_popup()
 
         # 清除动画状态
         self.animating = False
@@ -240,6 +243,7 @@ class AnimationMixin:
                 self.step_count -= 1
                 self.ensure_blocks_visible()
                 self._flash_move_selection(move_info, True, after_commit=True)
+                self._maybe_show_solved_popup()
         elif next_type == 'redo':
             move_info = None
             if self.game_history.can_redo():
@@ -255,6 +259,7 @@ class AnimationMixin:
                 self.step_count += 1
                 self.ensure_blocks_visible()
                 self._flash_move_selection(move_info, False, after_commit=True)
+                self._maybe_show_solved_popup(via_redo=True)
         
         # 如果直接执行了（无动画），继续处理队列
         if not self.animating and self._animation_queue:

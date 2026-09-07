@@ -11,6 +11,8 @@
 - 各下拉菜单绘制方法
 """
 
+import math
+
 import pygame
 
 
@@ -1417,6 +1419,76 @@ class RendererMixin:
             color = (255, 160, 80, text_alpha)
         text_surf_alpha.blit(self.status_font.render(msg, True, color), (0, 0))
         self.screen.blit(text_surf_alpha, (box_x + pad_x, box_y + pad_y))
+
+    def draw_solved_popup(self):
+        """绘制复原成功悬浮窗（居中 + 弹入动画 + 呼吸光晕 + 自动消失）"""
+        if not getattr(self, '_solved_popup_active', False):
+            return
+        t = getattr(self, '_solved_popup_t', 0)
+        popup_w, popup_h = 400, 180
+        cx = (self.screen_width - self.right_panel_width) // 2
+        cy = self.screen_height // 2
+
+        # 弹入动画：前 12 帧缩放回弹，随后轻微呼吸
+        p = min(1.0, t / 12.0)
+        ease = 1 - (1 - p) ** 3
+        if p < 1:
+            scale = 0.7 + 0.3 * ease
+        else:
+            scale = 1.0 + 0.012 * math.sin(t / 9.0)
+        alpha = int(240 * min(1.0, t / 6.0))
+
+        # 超过 360 帧（约 6 秒）自动淡出关闭
+        fade = 1.0
+        if t > 360:
+            fade = max(0.0, (15 - (t - 360)) / 15.0)
+            if fade <= 0:
+                self._solved_popup_active = False
+                return
+            alpha = int(alpha * fade)
+
+        w = int(popup_w * scale)
+        h = int(popup_h * scale)
+        x = cx - w // 2
+        y = cy - h // 2
+
+        # 背景面板
+        bg = pygame.Surface((w, h), pygame.SRCALPHA)
+        bg.fill((16, 26, 18, int(alpha * 0.96)))
+        pygame.draw.rect(bg, (110, 225, 110, alpha), bg.get_rect(), 2, border_radius=14)
+        self.screen.blit(bg, (x, y))
+
+        # 顶部高光条
+        accent = pygame.Surface((w - 8, 4), pygame.SRCALPHA)
+        accent.fill((150, 255, 140, int(alpha * 0.9)))
+        self.screen.blit(accent, (x + 4, y + 4))
+
+        # 外圈呼吸光晕
+        ring = pygame.Surface((w + 14, h + 14), pygame.SRCALPHA)
+        glow_alpha = int(alpha * (0.40 + 0.15 * math.sin(t / 7.0)))
+        pygame.draw.rect(ring, (90, 210, 90, max(0, glow_alpha)), ring.get_rect(), 2, border_radius=19)
+        self.screen.blit(ring, (x - 7, y - 7))
+
+        # 标题（带阴影）
+        title_text = '復原成功！'
+        shadow = self.dialog_title_font.render(title_text, True, (20, 60, 30))
+        title_surf = self.dialog_title_font.render(title_text, True, (155, 248, 130))
+        title_rect = title_surf.get_rect(center=(cx, y + int(h * 0.32)))
+        self.screen.blit(shadow, title_rect.move(2, 2))
+        self.screen.blit(title_surf, title_rect)
+
+        # 正文
+        body_surf = self.dialog_font.render('所有滑块已归位', True, (225, 228, 220))
+        body_rect = body_surf.get_rect(center=(cx, y + int(h * 0.56)))
+        self.screen.blit(body_surf, body_rect)
+
+        # 操作提示
+        hint_surf = self.status_font.render('按 Enter 保存 ｜ 按 Esc 关闭', True, (170, 200, 170))
+        hint_rect = hint_surf.get_rect(center=(cx, y + int(h * 0.80)))
+        self.screen.blit(hint_surf, hint_rect)
+
+        # 供事件层判定点击区域
+        self._solved_popup_rect = pygame.Rect(x, y, w, h)
 
     def draw_right_panel(self):
         """绘制右侧面板：垂直速度滑条 + 6 个快捷开关（滑动动画/选中动画/着色/连锁/模式/逆序）"""
