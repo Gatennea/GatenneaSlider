@@ -1032,8 +1032,24 @@ class RendererMixin:
             True, (150, 150, 150))
         self.screen.blit(hint2, (x + 15, toggle_y + 54))
 
+        # 防止覆盖开关（prevent_overwrite_flag：Ctrl+S 一律进入另存为）
+        po_y = toggle_y + 90
+        label2 = self.dialog_font.render("防止覆盖：", True, self.colors['dialog_text'])
+        self.screen.blit(label2, (x + 15, po_y))
+        self._settings_prevent_overwrite_rect = pygame.Rect(toggle_x, po_y, btn_w, btn_h)
+        flag2 = getattr(self, 'prevent_overwrite_flag', False)
+        btn_color = self.colors['button_bg'] if flag2 else self.colors['input_bg']
+        btn_text = "ON" if flag2 else "OFF"
+        text_color = (255, 255, 255) if flag2 else (150, 150, 150)
+        pygame.draw.rect(self.screen, btn_color, self._settings_prevent_overwrite_rect, border_radius=4)
+        ts = self.status_font.render(btn_text, True, text_color)
+        self.screen.blit(ts, ts.get_rect(center=self._settings_prevent_overwrite_rect.center))
+        hint = self.status_font.render(
+            "打开后，Ctrl+S 一律进入“另存为”，避免误覆盖旧存档", True, (150, 150, 150))
+        self.screen.blit(hint, (x + 15, po_y + 34))
+
         # 当前存档路径
-        path_y = toggle_y + 90
+        path_y = po_y + 60
         plabel = self.dialog_font.render("当前存档：", True, self.colors['dialog_text'])
         self.screen.blit(plabel, (x + 15, path_y))
         path = getattr(self, 'current_file_path', None) or '(未保存/自动暂存)'
@@ -1064,7 +1080,7 @@ class RendererMixin:
         elif self.settings_active_tab == 'gather':
             return 12 + 26 + len(self._gather_param_specs) * 52 + 10
         elif self.settings_active_tab == 'file':
-            return 170  # 存档只读开关 + 当前存档路径说明
+            return 240  # 存档只读开关 + 防止覆盖开关 + 当前存档路径说明
         else:
             # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
             from solver import SOLVER_ALGORITHMS

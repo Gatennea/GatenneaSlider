@@ -127,6 +127,7 @@ class FileOpsMixin:
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
+            'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
         }
@@ -319,6 +320,9 @@ class FileOpsMixin:
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])
+                    # 防止覆盖开关（Ctrl+S 一律进入另存为）
+                    if 'prevent_overwrite_flag' in config:
+                        self.prevent_overwrite_flag = bool(config['prevent_overwrite_flag'])
                     # 恢复聚拢参数（缺失的键用默认值）
                     if 'gather_params' in config and isinstance(config['gather_params'], dict):
                         defaults = getattr(self, 'gather_params', {})
@@ -413,7 +417,10 @@ class FileOpsMixin:
 
     def save_to_file(self):
         """保存到当前文件（Ctrl+S）"""
-        if self.current_file_path:
+        # 防止覆盖开关：打开后即使已有存档路径，Ctrl+S 也一律进入另存为
+        if getattr(self, 'prevent_overwrite_flag', False) and self.current_file_path:
+            self.save_as()
+        elif self.current_file_path:
             self._save_to_path(self.current_file_path)
         else:
             self.save_as()

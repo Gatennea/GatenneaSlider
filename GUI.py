@@ -387,6 +387,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # save_readonly_flag 是设置开关：打开后所有保存的存档都带 readonly 标记
         self._readonly = False
         self.save_readonly_flag = False
+        # 防止覆盖开关：打开后按 Ctrl+S 一律进入另存为，避免误覆盖旧存档
+        self.prevent_overwrite_flag = False
         # 复原成功悬浮窗：
         #  _solved_popup_active：当前是否显示；_solved_popup_t：弹入动画计时
         #  _prev_solved：上一次状态提交后的复原状况（用于判定“刚达成复原”，避免重复弹窗）

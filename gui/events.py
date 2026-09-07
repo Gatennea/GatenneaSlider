@@ -1267,6 +1267,15 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 文件 Tab：防止覆盖开关
+            if self.settings_active_tab == 'file' and hasattr(self, '_settings_prevent_overwrite_rect'):
+                if self._settings_prevent_overwrite_rect.collidepoint(mx, my):
+                    self.prevent_overwrite_flag = not self.prevent_overwrite_flag
+                    status = '开' if self.prevent_overwrite_flag else '关'
+                    self.macro_notify_msg = f"防止覆盖：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 快捷键 Tab：点击按键区域进入录制模式
             if self.settings_active_tab == 'keybindings' and hasattr(self, '_settings_key_rects'):
                 for action, rect in self._settings_key_rects.items():
