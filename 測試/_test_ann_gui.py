@@ -223,7 +223,7 @@ def main():
         cur = {tuple(b.location) for b in gui.game.blocks}
         assert gui._ann_build_coords == cur, \
             '进入构造应以当前棋盘状态为基础'
-        gui._ann_draw_build_dialog()          # 渲染冒烟（不抛异常即可）
+        gui._ann_draw_bar()                  # 渲染冒烟（工具条内嵌参数输入，不抛异常即可）
 
         # 非法棋形（颗数不符）→ 拒绝应用
         gui._ann_build_coords = set(gui._ann_solved_coords(4, 4))

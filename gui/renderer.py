@@ -564,11 +564,22 @@ class RendererMixin:
         tab_gather_text_rect = tab_gather_text.get_rect(center=tab_gather_rect.center)
         self.screen.blit(tab_gather_text, tab_gather_text_rect)
 
+        # 文件/存档 Tab
+        tab_file_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 4, tab_y, tab_width, tab_height)
+        if self.settings_active_tab == 'file':
+            pygame.draw.rect(self.screen, self.colors['button_bg'], tab_file_rect, border_radius=4)
+        else:
+            pygame.draw.rect(self.screen, self.colors['input_bg'], tab_file_rect, border_radius=4)
+        tab_file_text = self.status_font.render("文件", True, self.colors['input_text'])
+        tab_file_text_rect = tab_file_text.get_rect(center=tab_file_rect.center)
+        self.screen.blit(tab_file_text, tab_file_text_rect)
+
         # 存储 tab rect 用于点击检测
         self._settings_tab_kb_rect = tab_kb_rect
         self._settings_tab_anim_rect = tab_anim_rect
         self._settings_tab_solver_rect = tab_solver_rect
         self._settings_tab_gather_rect = tab_gather_rect
+        self._settings_tab_file_rect = tab_file_rect
 
         # 内容区域
         content_y = tab_y + tab_height + 10
@@ -592,6 +603,8 @@ class RendererMixin:
                 self._draw_settings_animation(dialog_x, content_y, dialog_width - 30, content_height)
             elif self.settings_active_tab == 'gather':
                 self._draw_settings_gather(dialog_x, content_y - scroll, dialog_width - 30, content_height)
+            elif self.settings_active_tab == 'file':
+                self._draw_settings_file(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             else:
                 self._draw_settings_solver(dialog_x, content_y - scroll, dialog_width - 30, content_height)
         finally:
@@ -991,6 +1004,48 @@ class RendererMixin:
         }
         return descriptions.get(algo_key, '')
 
+    def _draw_settings_file(self, x, y, width, height):
+        """绘制“文件/存档”设置内容"""
+        btn_w = 60
+        btn_h = 28
+        toggle_x = x + 180
+
+        # 存档只读开关（save_readonly_flag：保存时给存档打只读标记）
+        toggle_y = y + 20
+        label = self.dialog_font.render("存档只读：", True, self.colors['dialog_text'])
+        self.screen.blit(label, (x + 15, toggle_y))
+        self._settings_readonly_toggle_rect = pygame.Rect(toggle_x, toggle_y, btn_w, btn_h)
+        flag = getattr(self, 'save_readonly_flag', False)
+        btn_color = self.colors['button_bg'] if flag else self.colors['input_bg']
+        btn_text = "ON" if flag else "OFF"
+        text_color = (255, 255, 255) if flag else (150, 150, 150)
+        pygame.draw.rect(self.screen, btn_color, self._settings_readonly_toggle_rect, border_radius=4)
+        ts = self.status_font.render(btn_text, True, text_color)
+        self.screen.blit(ts, ts.get_rect(center=self._settings_readonly_toggle_rect.center))
+        hint = self.status_font.render(
+            "打开后，保存的存档都会带只读标记", True, (150, 150, 150))
+        self.screen.blit(hint, (x + 15, toggle_y + 34))
+        hint2 = self.status_font.render(
+            "只读存档仅能撤销/重做，禁止滑动、求解等改变滑块状态的操作",
+            True, (150, 150, 150))
+        self.screen.blit(hint2, (x + 15, toggle_y + 54))
+
+        # 当前存档路径
+        path_y = toggle_y + 90
+        plabel = self.dialog_font.render("当前存档：", True, self.colors['dialog_text'])
+        self.screen.blit(plabel, (x + 15, path_y))
+        path = getattr(self, 'current_file_path', None) or '(未保存/自动暂存)'
+        ptext = self.input_font.render(path, True, self.colors['input_text'])
+        self.screen.blit(ptext, (x + 130, path_y + 4))
+
+        # 当前只读状态
+        ro_y = path_y + 40
+        ro = getattr(self, '_readonly', False)
+        ro_text = "当前存档：只读（仅可撤销/重做）" if ro else "当前存档：可编辑"
+        ro_color = (255, 160, 140) if ro else (150, 230, 160)
+        rts = self.status_font.render(ro_text, True, ro_color)
+        self.screen.blit(rts, (x + 15, ro_y))
+
     def _calc_settings_content_height(self, visible_height: int) -> int:
         """计算设置内容的总高度（当前tab）"""
         if self.settings_active_tab == 'keybindings':
@@ -1006,6 +1061,8 @@ class RendererMixin:
             return 340  # 滑动动画 + 选中动画 + 时长滑动条 + 着色器 + 连锁提示
         elif self.settings_active_tab == 'gather':
             return 12 + 26 + len(self._gather_param_specs) * 52 + 10
+        elif self.settings_active_tab == 'file':
+            return 170  # 存档只读开关 + 当前存档路径说明
         else:
             # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
             from solver import SOLVER_ALGORITHMS

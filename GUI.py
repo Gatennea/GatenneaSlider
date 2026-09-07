@@ -378,6 +378,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
         self.chain_hint_enabled = False
         self.hover_cell = None
+        # 存档只读：
+        #  _readonly=True 时禁用改变滑块组状态的功能（滑动/求解/打乱/宏等），仅允许撤销重做
+        # save_readonly_flag 是设置开关：打开后所有保存的存档都带 readonly 标记
+        self._readonly = False
+        self.save_readonly_flag = False
         # 参数规格（GUI 步进器用）：key -> (显示名, 默认值, 最小值, 最大值, 步长, 说明)
         self._gather_param_specs = [
             ('max_steps',           ('最大步数',     500,  100,   5000, 100,  '聚拢求解的步数上限，越大越可能深入但越慢')),
@@ -556,6 +561,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._ann_cancel_session('切换谜题')
         # 验证等级约束：step < max(m, n)
         if step >= max(m, n):
+            return False
+
+        # 只读存档：禁止新建谜题
+        if self._readonly_blocked():
             return False
 
         # 计时进行中禁止切换谜题
@@ -775,6 +784,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         return None
 
+    def _readonly_blocked(self) -> bool:
+        """只读存档检查：返回 True 表示当前存档只读，禁止改变滑块组状态。
+
+        只读时仅允许撤销/重做（其入口不调用本检查）。被拦时右下角提示。
+        """
+        if not getattr(self, '_readonly', False):
+            return False
+        self.macro_notify_msg = "当前存档为只读"
+        self.macro_notify_timer = 90
+        return True
+
     def move_selected_blocks(self, direction: str):
         """
         移动所有选中的滑块，逐步验证（每次1格，共step次），
@@ -788,6 +808,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """
         # 手动移动会使已排队的梯度阶段失效 → 终止流水线
         self._stop_gradient_pipeline()
+        # 只读存档：禁止滑动（撤销重做除外）
+        if self._readonly_blocked():
+            return False
         # 计时模式：就绪态（已打乱未开始）禁止滑动，保证公平
         if self.game_mode == 'timed' and self.timer_state == 'ready':
             self.macro_notify_msg = "计时模式：按空格开始计时后才能滑动"
@@ -929,6 +952,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
         # 打乱会改变棋盘 → 终止梯度流水线
         self._stop_gradient_pipeline()
+        # 只读存档：禁止打乱
+        if self._readonly_blocked():
+            return
         # 标注会话随棋盘重置而结束
         self._ann_cancel_session('打乱')
         # 计时进行中禁止打乱
@@ -1096,6 +1122,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self._timer_blocked():
             self.macro_notify_msg = "计时中无法使用求解器"
             self.macro_notify_timer = 90
+            return
+
+        # 只读存档：禁止自动求解
+        if self._readonly_blocked():
             return
 
         # 标注录制中：自动回放不是人类示范，禁用

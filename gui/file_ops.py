@@ -126,6 +126,7 @@ class FileOpsMixin:
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
+            'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
         }
@@ -315,6 +316,9 @@ class FileOpsMixin:
                     # 悬停连锁提示开关
                     if 'chain_hint_enabled' in config:
                         self.chain_hint_enabled = bool(config['chain_hint_enabled'])
+                    # 存档只读开关（保存时给存档打只读标记）
+                    if 'save_readonly_flag' in config:
+                        self.save_readonly_flag = bool(config['save_readonly_flag'])
                     # 恢复聚拢参数（缺失的键用默认值）
                     if 'gather_params' in config and isinstance(config['gather_params'], dict):
                         defaults = getattr(self, 'gather_params', {})
@@ -353,7 +357,7 @@ class FileOpsMixin:
             if snap.get('move_info'):
                 snap_data['move_info'] = snap['move_info']
             history_data['snapshots'].append(snap_data)
-        return {
+        data = {
             'version': 1,
             'puzzle': {
                 'm': self.current_m,
@@ -363,11 +367,16 @@ class FileOpsMixin:
             'step_count': self.step_count,
             'history': history_data
         }
+        if getattr(self, 'save_readonly_flag', False):
+            data['readonly'] = True
+        return data
 
     def _load_save_data(self, save_data: dict):
         """从保存数据恢复游戏状态"""
         # 载入会整体替换棋盘 → 结束进行中的标注会话
         self._ann_cancel_session('载入存档')
+        # 载入只读标志：带 readonly:true 的存档载入后为只读
+        self._readonly = bool(save_data.get('readonly', False))
         puzzle = save_data.get('puzzle', {})
         m = puzzle.get('m', 4)
         n = puzzle.get('n', 4)

@@ -1235,6 +1235,21 @@ class EventsMixin:
                 self.settings_editing_value = None
                 self._settings_scroll = 0
                 return
+            if hasattr(self, '_settings_tab_file_rect') and self._settings_tab_file_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'file'
+                self.settings_editing_action = None
+                self.settings_editing_value = None
+                self._settings_scroll = 0
+                return
+
+            # 文件 Tab：存档只读开关
+            if self.settings_active_tab == 'file' and hasattr(self, '_settings_readonly_toggle_rect'):
+                if self._settings_readonly_toggle_rect.collidepoint(mx, my):
+                    self.save_readonly_flag = not self.save_readonly_flag
+                    status = '开' if self.save_readonly_flag else '关'
+                    self.macro_notify_msg = f"存档只读：{status}"
+                    self.macro_notify_timer = 90
+                    return
 
             # 快捷键 Tab：点击按键区域进入录制模式
             if self.settings_active_tab == 'keybindings' and hasattr(self, '_settings_key_rects'):
@@ -1641,6 +1656,9 @@ class EventsMixin:
     def _start_macro_execute(self, macro_name: str, reverse: bool = False):
         """开始执行宏 — 等待玩家选择基准方块"""
         if self.macro_recording or self.macro_executing:
+            return
+        # 只读存档：禁止宏执行（会改变滑块组状态）
+        if getattr(self, '_readonly_blocked', lambda: False)():
             return
         if self._timer_blocked():
             self.macro_notify_msg = "计时中无法使用宏"
