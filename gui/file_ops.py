@@ -476,6 +476,10 @@ class FileOpsMixin:
             with open(path, 'r', encoding='utf-8') as f:
                 save_data = json.load(f)
             self._load_save_data(save_data)
+            # 打开的是另一张图，当前 camera 可能是针对上一张图的 →
+            # 若滑块组已不在视口内则重新居中，避免打开后看不见滑块组
+            if not self._is_camera_valid():
+                self.center_map()
             self.current_file_path = path
             self.save_dir = os.path.dirname(path)
             self.macro_notify_msg = f"已打开：{os.path.basename(path)}"

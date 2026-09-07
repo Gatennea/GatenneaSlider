@@ -744,9 +744,9 @@ class RendererMixin:
 
     def _draw_settings_animation(self, x, y, width, height):
         """绘制动画速度设置内容"""
-        # 动画开关
+        # 滑动动画开关
         toggle_y = y + 20
-        toggle_label = self.dialog_font.render("启用动画：", True, self.colors['dialog_text'])
+        toggle_label = self.dialog_font.render("滑动动画：", True, self.colors['dialog_text'])
         self.screen.blit(toggle_label, (x + 15, toggle_y))
 
         # 开关按钮
@@ -769,8 +769,24 @@ class RendererMixin:
         text_rect = text_surface.get_rect(center=self._settings_anim_toggle_rect.center)
         self.screen.blit(text_surface, text_rect)
 
+        # 选中动画开关（撤销/重做时高亮该步缝隙与滑块组）
+        sel_toggle_y = toggle_y + 50
+        sel_label = self.dialog_font.render("选中动画：", True, self.colors['dialog_text'])
+        self.screen.blit(sel_label, (x + 15, sel_toggle_y))
+        self._settings_sel_anim_toggle_rect = pygame.Rect(btn_x, sel_toggle_y, btn_w, btn_h)
+        if getattr(self, 'selection_animation_enabled', True):
+            sel_bg, sel_txt, sel_text_color = self.colors['button_bg'], "ON", (255, 255, 255)
+        else:
+            sel_bg, sel_txt, sel_text_color = self.colors['input_bg'], "OFF", (150, 150, 150)
+        pygame.draw.rect(self.screen, sel_bg, self._settings_sel_anim_toggle_rect, border_radius=4)
+        sel_surface = self.status_font.render(sel_txt, True, sel_text_color)
+        self.screen.blit(sel_surface, sel_surface.get_rect(center=self._settings_sel_anim_toggle_rect.center))
+        sel_hint = self.status_font.render(
+            "撤销/重做时短暂高亮该步选中的缝隙与滑块组", True, (150, 150, 150))
+        self.screen.blit(sel_hint, (x + 15, sel_toggle_y + 34))
+
         # 动画速度滑动条
-        speed_y = y + 70
+        speed_y = sel_toggle_y + 50
         speed_label = self.dialog_font.render("动画时长：", True, self.colors['dialog_text'])
         self.screen.blit(speed_label, (x + 15, speed_y))
 
@@ -987,7 +1003,7 @@ class RendererMixin:
                 total += 5  # group spacing
             return total + 25  # extra for hint text
         elif self.settings_active_tab == 'animation':
-            return 250  # 动画开关 + 时长滑动条 + 着色器 + 连锁提示
+            return 340  # 滑动动画 + 选中动画 + 时长滑动条 + 着色器 + 连锁提示
         elif self.settings_active_tab == 'gather':
             return 12 + 26 + len(self._gather_param_specs) * 52 + 10
         else:
@@ -1346,17 +1362,17 @@ class RendererMixin:
         self.screen.blit(text_surf_alpha, (box_x + pad_x, box_y + pad_y))
 
     def draw_right_panel(self):
-        """绘制右侧面板：垂直速度滑条 + 5 个快捷开关（动画/着色/连锁/模式/逆序）"""
+        """绘制右侧面板：垂直速度滑条 + 6 个快捷开关（滑动动画/选中动画/着色/连锁/模式/逆序）"""
         panel_x = self.screen_width - self.right_panel_width
         panel_rect = pygame.Rect(panel_x, 0, self.right_panel_width, self.screen_height)
         pygame.draw.rect(self.screen, self.colors['menu_bg'], panel_rect)
         pygame.draw.line(self.screen, self.colors['border'],
                         (panel_x, 0), (panel_x, self.screen_height))
 
-        # ---- 底部：5 个快捷开关（垂直排列）----
+        # ---- 底部：6 个快捷开关（垂直排列）----
         sw_h = 24
         sw_gap = 4
-        sw_count = 5
+        sw_count = 6
         switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
         switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
         sw_x = panel_x + 6
@@ -1383,7 +1399,8 @@ class RendererMixin:
             self.right_panel_switch_rects[key] = rect
             sw_top += sw_h + sw_gap
 
-        _sw_btn('animation_enabled', '动画', lambda: self.animation_enabled)
+        _sw_btn('animation_enabled', '滑动动画', lambda: self.animation_enabled)
+        _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
         _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
         _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
         _sw_btn('game_mode', '模式', lambda: None)
@@ -1409,7 +1426,8 @@ class RendererMixin:
                             (zoom_x, track_top), (zoom_x, track_bottom), 2)
             norm_z = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
             norm_z = max(0.0, min(1.0, norm_z))
-            knob_y = int(track_top + norm_z * track_height)
+            # 倒置：滑条顶部=放大(max_zoom)，底部=缩小(min_zoom)
+            knob_y = int(track_top + (1.0 - norm_z) * track_height)
             self.zoom_slider_rect = pygame.Rect(panel_x + 4, track_top, half - 8, track_height)
             knob_color = self.colors['button_hover'] if getattr(self, 'zoom_slider_dragging', False) else self.colors['button_bg']
             self.zoom_knob_rect = pygame.Rect(zoom_x - 10, knob_y - 6, 20, 12)

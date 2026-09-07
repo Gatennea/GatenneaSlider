@@ -159,8 +159,26 @@ class EventsMixin:
                 # 求解器运行期间阻止用户改動滑塊（只能停止求解）
                 if self._auto_solve_running:
                     if event.type == pygame.KEYDOWN:
+                        # 允许停止求解
                         if self._is_action_triggered(event, 'auto_solve'):
                             self._start_auto_solve()
+                        # 允许开关悬浮面板（只读，不修改滑块）
+                        elif self._is_action_triggered(event, 'virtual_keyboard'):
+                            self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
+                            status = '开' if self.show_virtual_keyboard else '关'
+                            self.macro_notify_msg = f"虚拟键盘：{status}"
+                            self.macro_notify_timer = 90
+                        elif self._is_action_triggered(event, 'metrics_panel'):
+                            self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                            status = '开' if self.show_metrics_panel else '关'
+                            self.macro_notify_msg = f"调试面板：{status}"
+                            self.macro_notify_timer = 90
+                        elif self._is_action_triggered(event, 'records_panel'):
+                            self.show_records_panel = not getattr(self, 'show_records_panel', False)
+                            self.rp_confirm_delete_id = None
+                            status = '开' if self.show_records_panel else '关'
+                            self.macro_notify_msg = f"成绩面板：{status}"
+                            self.macro_notify_timer = 90
                         continue
                     elif event.type == pygame.MOUSEBUTTONDOWN:
                         # 允许菜单栏、下拉菜单和右侧面板操作
@@ -1029,7 +1047,8 @@ class EventsMixin:
             return
         y = max(zr.top, min(zr.bottom, mouse_y))
         normalized = (y - zr.top) / zr.height
-        new_zoom = self.min_zoom + normalized * (self.max_zoom - self.min_zoom)
+        # 倒置：越靠上(滑条顶部)=放大；越靠下=缩小
+        new_zoom = self.min_zoom + (1.0 - normalized) * (self.max_zoom - self.min_zoom)
         cx = self.screen_width // 2
         cy = self.menu_bar_height + (self.screen_height - self.menu_bar_height - self.status_bar_height) // 2
         wx = (cx - self.camera_x) / self.zoom
@@ -1232,6 +1251,20 @@ class EventsMixin:
                     self.animation_enabled = not self.animation_enabled
                     if not self.animation_enabled and self.animating:
                         self.commit_animation()
+                    status = '开' if self.animation_enabled else '关'
+                    self.macro_notify_msg = f"滑动动画：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 动画 Tab：选中动画开关
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_sel_anim_toggle_rect'):
+                if self._settings_sel_anim_toggle_rect.collidepoint(mx, my):
+                    self.selection_animation_enabled = not self.selection_animation_enabled
+                    if not self.selection_animation_enabled:
+                        self._clear_sel_anim()
+                    status = '开' if self.selection_animation_enabled else '关'
+                    self.macro_notify_msg = f"选中动画：{status}"
+                    self.macro_notify_timer = 90
                     return
 
             # 动画 Tab：分组着色器开关
@@ -1449,13 +1482,19 @@ class EventsMixin:
         self.macro_notify_timer = 90
 
     def _handle_right_panel_switch(self, key: str):
-        """处理右侧面板快捷开关点击（动画/着色/连锁/模式/逆序）"""
+        """处理右侧面板快捷开关点击（滑动动画/选中动画/着色/连锁/模式/逆序）"""
         if key == 'animation_enabled':
             self.animation_enabled = not self.animation_enabled
             if not self.animation_enabled and self.animating:
                 self.commit_animation()
             status = '开' if self.animation_enabled else '关'
-            self.macro_notify_msg = f"动画：{status}"
+            self.macro_notify_msg = f"滑动动画：{status}"
+        elif key == 'selection_animation_enabled':
+            self.selection_animation_enabled = not self.selection_animation_enabled
+            if not self.selection_animation_enabled:
+                self._clear_sel_anim()
+            status = '开' if self.selection_animation_enabled else '关'
+            self.macro_notify_msg = f"选中动画：{status}"
         elif key == 'coloring_enabled':
             self.coloring_enabled = not self.coloring_enabled
             status = '开' if self.coloring_enabled else '关'
@@ -1682,6 +1721,8 @@ class EventsMixin:
                 self.macro_executing = False
                 self.macro_exec_ops = []
                 self.macro_exec_index = 0
+                # 宏执行（尤其关闭动画时）可能把滑块带出视野：执行完居中一次
+                self.center_map()
                 return
 
             op = self.macro_exec_ops[self.macro_exec_index]

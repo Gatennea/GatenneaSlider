@@ -215,11 +215,14 @@ def main():
     try:
         gui.config_dir = tmpc
         gui._ann_saved_inputs = None          # 强制按新目录重读
-        # 打开手动构造（默认 5×5 step2，pad=2，画布=还原态 25 颗）
+        # 打开手动构造（默认参数=当前 5×5 step2，pad=2，
+        # 画布初始=当前棋盘状态而非还原态）
         gui._ann_btn_manual_build()
         assert gui._ann_sub_dialog == 'build'
         assert gui._ann_build_fields['m'] == '5'
-        assert len(gui._ann_build_coords) == 25
+        cur = {tuple(b.location) for b in gui.game.blocks}
+        assert gui._ann_build_coords == cur, \
+            '进入构造应以当前棋盘状态为基础'
         gui._ann_draw_build_dialog()          # 渲染冒烟（不抛异常即可）
 
         # 非法棋形（颗数不符）→ 拒绝应用
@@ -251,13 +254,13 @@ def main():
         assert gui._ann_build_fields['pad'] == '3', 'build pad 未持久化'
         gui._ann_close_sub_dialog()
 
-        # gen 输入框持久化：void 改成 3 → 关闭 → 重开仍为 3
+        # gen 输入框持久化：hole 改成 3 → 关闭 → 重开仍为 3
         gui._ann_btn_random_gen()
-        gui._ann_gen_fields['void'] = '3'
+        gui._ann_gen_fields['hole'] = '3'
         gui._ann_close_sub_dialog()
         gui._ann_saved_inputs = None
         gui._ann_btn_random_gen()
-        assert gui._ann_gen_fields['void'] == '3', 'gen void 未持久化'
+        assert gui._ann_gen_fields['hole'] == '3', 'gen hole 未持久化'
         gui._ann_close_sub_dialog()
         print('  手动构造应用 + 输入框持久化: OK')
     finally:

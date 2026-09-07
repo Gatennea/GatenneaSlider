@@ -375,6 +375,17 @@ class AnnotationMixin:
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             x, y = event.pos
+            # 顶栏菜单区（含已展开的下拉菜单）不属于棋盘拾取范围：
+            # 这些点击应放行给常规菜单栏处理，而不是被当成「标空位/凸起」
+            if y < self.menu_bar_height:
+                return False
+            if (getattr(self, 'show_file_menu', False) or
+                    getattr(self, 'show_edit_menu', False) or
+                    getattr(self, 'show_puzzle_menu', False) or
+                    getattr(self, 'show_macro_menu', False) or
+                    getattr(self, 'show_settings_menu', False)):
+                # 有菜单展开时，点击交给常规下拉菜单处理，避免抢事件
+                return False
             if self._ann_sub_dialog == 'gen':
                 return self._ann_gen_dialog_click(x, y)
             if self._ann_sub_dialog == 'build':
@@ -512,15 +523,16 @@ class AnnotationMixin:
         }
         self._ann_build_active = 'm'
         self._ann_build_error = ''
-        # 默认给还原态：可直接点空格挖洞、点窗外空格补凸起
-        coords = set(self._ann_solved_coords(m, n))
+        # 以「当前棋盘状态」为基础进入构造，而不是还原态：
+        # 画布初始就是当前所有滑块，可直接点格增删、点窗外格补凸起
+        coords = {tuple(b.location) for b in self.game.blocks}
         self._ann_build_coords = coords
         self.current_m, self.current_n, self.current_step = m, n, step
         self._ann_rebuild_game_from_coords()
         self._ann_sub_dialog = 'build'
         self._ann_view = 'build'
         self.center_map()
-        self._ann_notify('构造模式：点格放/取滑块，改好参数后按[应用并开始]')
+        self._ann_notify('构造模式：初始为当前状态，点格放/取滑块，改好参数后按[应用并开始]')
 
     def _ann_rebuild_game_from_coords(self):
         """把构造集实时落到主棋盘（不写历史，不打断旧历史）。"""
@@ -1251,7 +1263,7 @@ class AnnotationMixin:
         if not getattr(self, 'annotation_mode', False):
             return
         if self._ann_view == 'build':
-            self._ann_draw_build_dialog()
+            self._ann_draw_build_canvas()
         elif self._ann_view in ('target', 'recording'):
             self._ann_draw_track_markers()
         self._ann_draw_bar()
@@ -1298,8 +1310,11 @@ class AnnotationMixin:
         """底部标注工具栏（随视图变化）。"""
         w = min(820, self.screen_width - self.right_panel_width - 24)
         x = self.screen_width - self.right_panel_width - w - 10
+        # 手动构造视图：工具条加高，内嵌 m/n/step/pad 参数输入 + 操作按钮，
+        # 这样主棋盘完全留给点格增删滑块（不再用居中弹窗遮挡棋盘）。
+        bar_h = 82 if self._ann_view == 'build' else self._ANN_BAR_H
         y, h = self.screen_height - self.status_bar_height - \
-            self._ANN_BAR_H - 8, self._ANN_BAR_H
+            bar_h - 8, bar_h
         self._ann_bar_rect = pygame.Rect(x, y, w, h)
         self._ann_btn_rects = {}
 
@@ -1338,51 +1353,8 @@ class AnnotationMixin:
             self.screen.blit(title, (self._ann_bar_rect.x + 6,
                                      self._ann_bar_rect.y - 18))
         elif self._ann_view == 'build':
-            # 参数输入（m / n / step / pad）
-            self._ann_build_field_rects = {}
-            fx = x + 10
-            for key, lab in (('m', '行'), ('n', '列'),
-                             ('step', '级'), ('pad', '外扩')):
-                ls = self.status_font.render(lab, True, (210, 210, 225))
-                self.screen.blit(ls, (fx, y + (h - ls.get_height()) // 2 + 3))
-                frect = pygame.Rect(fx + ls.get_width() + 6, y + 13, 44, h - 26)
-                self._ann_build_field_rects[key] = frect
-                fbg = (self.colors['input_active']
-                       if self._ann_build_active == key
-                       else self.colors['input_bg'])
-                pygame.draw.rect(self.screen, fbg, frect, border_radius=4)
-                pygame.draw.rect(self.screen, (120, 120, 140), frect, 1,
-                                 border_radius=4)
-                txt = self.input_font.render(
-                    self._ann_build_fields.get(key, ''),
-                    True, self.colors['input_text'])
-                self.screen.blit(txt, (frect.x + 5, frect.y + 2))
-                if self._ann_build_active == key:
-                    cx = frect.x + 5 + txt.get_width() + 2
-                    pygame.draw.line(self.screen, self.colors['input_text'],
-                                     (cx, frect.y + 2), (cx, frect.bottom - 2), 1)
-                x = frect.right + 12
-            add('build_ok', '应用并开始', (60, 150, 90))
-            add('build_reset', '还原m×n')
-            add('build_clear', '清空')
-            add('build_cancel', '退出', (150, 90, 90))
-            # 实时校验状态
-            try:
-                mm, nn, ss, pp = self._ann_build_param()
-                msg, is_ok = self._ann_build_status(mm, nn, ss)
-                oob = self._ann_build_oob(mm, nn, pp)
-                if oob:
-                    msg = f'{len(oob)} 格越出可构造范围，调大外扩或移除'
-                    is_ok = False
-            except ValueError as e:
-                msg, is_ok = str(e), False
-            if self._ann_build_error:
-                msg, is_ok = self._ann_build_error, False
-            color = (150, 230, 160) if is_ok else (255, 150, 140)
-            title = self.status_font.render('手动构造  ' + msg,
-                                            True, color)
-            self.screen.blit(title, (self._ann_bar_rect.x + 6,
-                                     self._ann_bar_rect.y - 18))
+            # 参数输入直接内嵌在底部工具条，主棋盘用于点格增删滑块
+            self._ann_draw_build_toolbar(x, y, w, h)
         elif self._ann_view in ('target', 'recording'):
             if self._ann_view == 'target':
                 add('abort', '放弃', (150, 90, 90))
@@ -1417,6 +1389,83 @@ class AnnotationMixin:
                                             (200, 200, 210))
             self.screen.blit(title, (self._ann_bar_rect.x + 6,
                                      self._ann_bar_rect.y - 18))
+
+    def _ann_draw_build_toolbar(self, x, y, w, h):
+        """手动构造工具条：内嵌 m/n/step/pad 参数输入 + 操作按钮 + 校验状态。
+
+        主棋盘完全留给点格增删滑块，因此这里不用居中弹窗。
+        点击/键盘事件由 _ann_build_dialog_click / _ann_build_dialog_event 处理，
+        它们根据 _ann_build_field_rects 与各按钮矩形判定命中。
+        """
+        row1 = y + 10
+        row2 = y + 46
+        fh = 26
+        self._ann_build_field_rects = {}
+        bx = x + 10
+        for key, label in (('m', '行'), ('n', '列'), ('step', '等级'), ('pad', '外扩')):
+            ls = self.status_font.render(label, True, (200, 200, 210))
+            self.screen.blit(ls, (bx, row1 + 5))
+            lbl_w = ls.get_width() + 4
+            frect = pygame.Rect(bx + lbl_w, row1, 52, fh)
+            self._ann_build_field_rects[key] = frect
+            fbg = self.colors['input_active'] if self._ann_build_active == key \
+                else self.colors['input_bg']
+            pygame.draw.rect(self.screen, fbg, frect, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], frect, 1,
+                             border_radius=4)
+            vs = self.status_font.render(
+                self._ann_build_fields.get(key, ''), True,
+                self.colors['input_text'])
+            self.screen.blit(vs, (frect.x + 5, frect.y + 4))
+            if self._ann_build_active == key:
+                cx = frect.x + 5 + vs.get_width() + 2
+                pygame.draw.line(self.screen, self.colors['input_text'],
+                                 (cx, frect.y + 4), (cx, frect.bottom - 4), 1)
+            bx = frect.right + 16
+
+        # 按钮行（右上对齐，状态文字留左侧空间）
+        def toolbar_btn(rect, text, color=None):
+            c = color or self.colors['button_bg']
+            if rect.collidepoint(pygame.mouse.get_pos()):
+                c = (min(255, c[0] + 25), min(255, c[1] + 25),
+                     min(255, c[2] + 25))
+            pygame.draw.rect(self.screen, c, rect, border_radius=6)
+            s = self.status_font.render(text, True, (255, 255, 255))
+            self.screen.blit(s, s.get_rect(center=rect.center))
+
+        bx = x + w - 10
+        bh = 26
+        # 从右向左放置按钮：退出 / 清空 / 还原m×n / 应用并开始
+        def place_right(text, color=None):
+            nonlocal bx
+            tw = self.status_font.size(text)[0] + 18
+            rect = pygame.Rect(bx - tw, row2, tw, bh)
+            toolbar_btn(rect, text, color)
+            bx = rect.left - 8
+            return rect
+
+        self._ann_build_cancel_btn = place_right('退出', (120, 90, 90))
+        self._ann_build_clear_btn = place_right('清空')
+        self._ann_build_reset_btn = place_right('还原m×n')
+        self._ann_build_ok_btn = place_right('应用并开始', (60, 150, 90))
+        # 这个工具条就是本次构造的「对话框矩形」：命中其内输入/按钮即处理
+        self._ann_build_dialog_rect = self._ann_bar_rect
+
+        # 即时效验状态（按钮行左侧）
+        try:
+            mm, nn, ss, pp = self._ann_build_param()
+            msg, is_ok = self._ann_build_status(mm, nn, ss)
+            oob = self._ann_build_oob(mm, nn, pp)
+            if oob:
+                msg = f'{len(oob)} 格越出可构造范围，调大外扩或移除'
+                is_ok = False
+        except ValueError as e:
+            msg, is_ok = str(e), False
+        if self._ann_build_error:
+            msg, is_ok = self._ann_build_error, False
+        color = (150, 230, 160) if is_ok else (255, 150, 140)
+        st = self.status_font.render('手动构造  ' + msg, True, color)
+        self.screen.blit(st, (x + 10, row2 + 3))
 
     # ---- 状态提示（工具条右下方小字） ----
     def _ann_draw_msg(self):
@@ -1473,14 +1522,22 @@ class AnnotationMixin:
 
     # ---- 主棋盘直接构造：点击 / 键盘 / 应用 ----
     def _ann_build_dialog_click(self, x, y):
-        """构造视图：点底部工具条（输入框/按钮）或直接点棋盘增删滑块。"""
-        if self._ann_bar_rect and self._ann_bar_rect.collidepoint(x, y):
+        """构造弹窗：点输入框聚焦 / 点按钮操作 / 点窗外交互棋盘增删滑块。"""
+        dlg = self._ann_build_dialog_rect
+        if dlg is not None and dlg.collidepoint(x, y):
             for key, rect in self._ann_build_field_rects.items():
                 if rect.collidepoint(x, y):
                     self._ann_build_active = key
                     return True
-            self._ann_click_button(x, y)
+            for suffix, rect in (('ok', self._ann_build_ok_btn),
+                                 ('reset', self._ann_build_reset_btn),
+                                 ('clear', self._ann_build_clear_btn),
+                                 ('cancel', self._ann_build_cancel_btn)):
+                if rect and rect.collidepoint(x, y):
+                    getattr(self, '_ann_btn_build_' + suffix)()
+                    return True
             return True
+        # 弹窗外：直接在主棋盘点选增删滑块
         cell = self.get_cell_at_pos(x, y)
         if cell is None:
             return True
@@ -1578,13 +1635,12 @@ class AnnotationMixin:
     def _ann_btn_build_cancel(self):
         self._ann_build_cancel()
 
-    def _ann_draw_build_dialog(self):
+    def _ann_draw_build_canvas(self):
         """主棋盘构造叠加层：可构造范围网格 + 目标窗口高亮。
 
         棋盘上的滑块由主渲染器绘制；这里补画空格轮廓与目标窗口框，
         让用户直接在主窗口点选增删滑块。
         """
-        self._ann_build_field_rects = {}
         try:
             m, n, _step, pad = self._ann_build_param()
         except ValueError:
@@ -1608,6 +1664,11 @@ class AnnotationMixin:
                          pygame.Rect(int(x0), int(y0),
                                      max(1, int(x1 - x0)),
                                      max(1, int(y1 - y0))), 2)
+        # 顶部操作提示（不遮棋盘中部）
+        hint = self.status_font.render(
+            '点棋盘格放/取滑块，点窗外格补凸起；改下方参数后 Enter 应用',
+            True, (150, 220, 255))
+        self.screen.blit(hint, (self.menu_bar_height + 8, self.menu_bar_height + 6))
 
     def _btn_row4(self, r1, t1, r2, t2, r3, t3, r4, t4):
         mouse = pygame.mouse.get_pos()

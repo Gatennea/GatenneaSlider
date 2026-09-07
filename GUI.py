@@ -419,7 +419,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.SPEED_MIN_MS = 50
         self.SPEED_MAX_MS = 1000
         self.animation_duration = 300  # 毫秒
-        self.animation_enabled = True
+        self.animation_enabled = True          # 滑动动画（滑块移动/撤销重做滑动）
+        self.selection_animation_enabled = True  # 选中动画（撤销/重做时高亮该步缝隙与滑块组）
 
         # 移动元数据（从 move_selected_blocks 传递到 commit_animation）
         self._pending_move_info = None
@@ -868,6 +869,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             if self._start_undo_redo_animation(move_info, is_undo=True):
                 self.selected_gap = None
                 self.selected_block = None
+                self._flash_move_selection(move_info, True)
                 self.macro_notify_msg = "撤销"
                 self.macro_notify_timer = 15
                 return
@@ -879,6 +881,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.selected_block = None
             self.step_count -= 1
             self.ensure_blocks_visible()
+            self._flash_move_selection(move_info, True, after_commit=True)
             self.macro_notify_msg = "撤销"
             self.macro_notify_timer = 15
 
@@ -906,6 +909,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             if self._start_undo_redo_animation(move_info, is_undo=False):
                 self.selected_gap = None
                 self.selected_block = None
+                self._flash_move_selection(move_info, False)
                 self.macro_notify_msg = "重做"
                 self.macro_notify_timer = 15
                 return
@@ -917,6 +921,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.selected_block = None
             self.step_count += 1
             self.ensure_blocks_visible()
+            self._flash_move_selection(move_info, False, after_commit=True)
             self.macro_notify_msg = "重做"
             self.macro_notify_timer = 15
 

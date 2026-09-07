@@ -36,6 +36,11 @@ class AnimationMixin:
 
     def update_animation(self):
         """更新动画进度，完成时提交"""
+        # 选中动画计时：撤销/重做高亮到期后清除
+        if getattr(self, '_sel_anim_timer', 0) > 0:
+            self._sel_anim_timer -= 1
+            if self._sel_anim_timer == 0:
+                self._clear_sel_anim()
         if not self.animating:
             return
         elapsed = pygame.time.get_ticks() - self.anim_start_time
@@ -58,10 +63,14 @@ class AnimationMixin:
             self.game_history.undo(self.game)
             self.step_count -= 1
             self.ensure_blocks_visible()
+            self._flash_move_selection(
+                getattr(self, '_sel_anim_move_info', None), True, after_commit=True)
         elif undo_redo_type == 'redo':
             self.game_history.redo(self.game)
             self.step_count += 1
             self.ensure_blocks_visible()
+            self._flash_move_selection(
+                getattr(self, '_sel_anim_move_info', None), False, after_commit=True)
         else:
             # 普通移动动画
             self.step_count += 1
@@ -119,6 +128,56 @@ class AnimationMixin:
                 result.append(block)
         return result
 
+    def _flash_move_selection(self, move_info, is_undo, after_commit=False):
+        """选中动画：撤销/重做每一步，短暂高亮该步选中的缝隙与滑块组。
+
+        after_commit=True 表示移动已提交（滑塊已停在终点），反之表示动画播放前。
+        高亮目标位置对照表：
+            已提交(after_commit=True)：undo → moved；redo → moved+delta*step
+            未提交(after_commit=False)：undo → moved+delta*step；redo → moved
+        """
+        if not getattr(self, 'selection_animation_enabled', False):
+            return
+        if not move_info:
+            return
+        self._clear_sel_anim()
+        direction = move_info.get('direction', '')
+        moved = move_info.get('moved_positions') or []
+        gap_type = move_info.get('gap_type')
+        gap_line = move_info.get('gap_line')
+        step = move_info.get('step', self.current_step)
+        delta = {'w': (-1, 0), 's': (1, 0),
+                 'a': (0, -1), 'd': (0, 1)}.get(direction, (0, 0))
+        if is_undo == after_commit:
+            # 已提交的撤销 / 未提交的重做：滑块在「移动前」位置
+            targets = [list(p) for p in moved]
+        else:
+            # 未提交的撤销 / 已提交的重做：滑块在「移动后」位置
+            targets = [(r + delta[0] * step, c + delta[1] * step)
+                       for r, c in moved]
+        blocks = self._find_blocks_at_positions(targets)
+        for b in blocks:
+            b.be_opted = True
+        self._sel_anim_blocks = list(blocks)
+        self._sel_anim_gap = (gap_type, gap_line) if gap_type is not None else None
+        self.selected_gap = self._sel_anim_gap
+        # 保存元数据，供动画提交（commit_animation）后刷新高亮位置
+        self._sel_anim_move_info = move_info
+        self._sel_anim_is_undo = is_undo
+        # 至少 0.75s；若正在滑动则盖过滑动时长，让高亮贯穿该步全程
+        dur = max(45, (self.animation_duration + 300) // 17)
+        self._sel_anim_timer = dur
+
+    def _clear_sel_anim(self):
+        """清除选中动画高亮（只清除自己标记过的缝隙与滑块，不打扰用户选择）。"""
+        if getattr(self, '_sel_anim_gap', None) is not None \
+                and self.selected_gap == self._sel_anim_gap:
+            self.selected_gap = None
+        for b in getattr(self, '_sel_anim_blocks', []):
+            b.be_opted = False
+        self._sel_anim_blocks = []
+        self._sel_anim_gap = None
+
     def _start_undo_redo_animation(self, move_info, is_undo):
         """
         启动撤销/重做动画
@@ -173,12 +232,14 @@ class AnimationMixin:
                 move_info = self.game_history.history[self.game_history.history_index].get('move_info')
             if self.animation_enabled and self.animation_duration > 0 and move_info:
                 if self._start_undo_redo_animation(move_info, is_undo=True):
+                    self._flash_move_selection(move_info, True)
                     return
             # 无动画或找不到滑块，直接执行
             success, _ = self.game_history.undo(self.game)
             if success:
                 self.step_count -= 1
                 self.ensure_blocks_visible()
+                self._flash_move_selection(move_info, True, after_commit=True)
         elif next_type == 'redo':
             move_info = None
             if self.game_history.can_redo():
@@ -186,12 +247,14 @@ class AnimationMixin:
                 move_info = self.game_history.history[target_idx].get('move_info')
             if self.animation_enabled and self.animation_duration > 0 and move_info:
                 if self._start_undo_redo_animation(move_info, is_undo=False):
+                    self._flash_move_selection(move_info, False)
                     return
             # 无动画或找不到滑块，直接执行
             success, _ = self.game_history.redo(self.game)
             if success:
                 self.step_count += 1
                 self.ensure_blocks_visible()
+                self._flash_move_selection(move_info, False, after_commit=True)
         
         # 如果直接执行了（无动画），继续处理队列
         if not self.animating and self._animation_queue:
