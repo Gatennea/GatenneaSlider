@@ -22,6 +22,9 @@ class VirtualKeyboardMixin:
     _VK_BTN_GAP = 6           # 按钮间距
     _VK_ACTION_BTN_W = 62     # 撤销/重做按钮宽度
     _VK_ACTION_BTN_H = 32     # 撤销/重做按钮高度
+    _VK_JUMP_H = 30           # “跳到某步”行高
+    _VK_JUMP_INPUT_W = 84     # 步数输入框宽度
+    _VK_JUMP_BTN_W = 48       # “跳到”按钮宽度
 
     def _vk_init_state(self):
         """初始化虚拟键盘状态（在 GUI.__init__ 中调用）"""
@@ -33,6 +36,10 @@ class VirtualKeyboardMixin:
         self.vk_title_rect = None
         self.vk_close_rect = None
         self.vk_panel_rect = None
+        self.vk_jump_buffer = ''      # “跳到某步”输入缓冲
+        self.vk_jump_focus = False    # 输入框是否聚焦
+        self.vk_jump_input_rect = None
+        self.vk_jump_btn_rect = None
 
     def _vk_panel_size(self):
         """计算面板宽高"""
@@ -40,7 +47,8 @@ class VirtualKeyboardMixin:
         height = (self._VK_TITLE_H + self._VK_PAD
                   + self._VK_BTN + self._VK_BTN_GAP
                   + self._VK_BTN + self._VK_BTN_GAP
-                  + self._VK_ACTION_BTN_H + self._VK_PAD)
+                  + self._VK_ACTION_BTN_H + self._VK_BTN_GAP
+                  + self._VK_JUMP_H + self._VK_PAD)
         return width, height
 
     def _vk_build_layout(self):
@@ -97,6 +105,19 @@ class VirtualKeyboardMixin:
         rects['redo'] = pygame.Rect(
             action_start_x + self._VK_ACTION_BTN_W + self._VK_BTN_GAP, action_row_y,
             self._VK_ACTION_BTN_W, self._VK_ACTION_BTN_H
+        )
+
+        # 跳到某步（第4行）：步数输入框 + “跳到”按钮
+        jump_row_y = action_row_y + self._VK_ACTION_BTN_H + self._VK_BTN_GAP
+        jump_total_w = self._VK_JUMP_INPUT_W + self._VK_BTN_GAP + self._VK_JUMP_BTN_W
+        jump_start_x = center_x - jump_total_w // 2
+        self.vk_jump_input_rect = pygame.Rect(
+            jump_start_x, jump_row_y,
+            self._VK_JUMP_INPUT_W, self._VK_JUMP_H
+        )
+        self.vk_jump_btn_rect = pygame.Rect(
+            jump_start_x + self._VK_JUMP_INPUT_W + self._VK_BTN_GAP, jump_row_y,
+            self._VK_JUMP_BTN_W, self._VK_JUMP_H
         )
 
         self.vk_rects = rects
@@ -156,6 +177,26 @@ class VirtualKeyboardMixin:
             text_surface = self.dialog_font.render(labels[action], True, (255, 255, 255))
             self.screen.blit(text_surface, text_surface.get_rect(center=rect.center))
 
+        # 跳到某步：步数输入框 + “跳到”按钮
+        input_rect = self.vk_jump_input_rect
+        if input_rect:
+            draw_text = self.vk_jump_buffer or '步数'
+            pygame.draw.rect(self.screen, self.colors['input_bg'], input_rect, border_radius=4)
+            border_color = (self.colors['button_hover']
+                            if self.vk_jump_focus else self.colors['dialog_border'])
+            pygame.draw.rect(self.screen, border_color, input_rect, 1, border_radius=4)
+            tcolor = self.colors['input_text'] if self.vk_jump_buffer else (150, 150, 150)
+            txt = self.status_font.render(draw_text, True, tcolor)
+            self.screen.blit(txt, txt.get_rect(center=input_rect.center))
+
+        btn_rect = self.vk_jump_btn_rect
+        if btn_rect:
+            hovered = btn_rect.collidepoint(mouse_pos)
+            color = self.colors['button_hover'] if hovered else self.colors['button_bg']
+            pygame.draw.rect(self.screen, color, btn_rect, border_radius=4)
+            btxt = self.dialog_font.render("跳到", True, (255, 255, 255))
+            self.screen.blit(btxt, btxt.get_rect(center=btn_rect.center))
+
     def handle_virtual_keyboard_event(self, event):
         """处理虚拟键盘事件，返回 True 表示事件已消费"""
         if not getattr(self, 'show_virtual_keyboard', False):
@@ -177,13 +218,46 @@ class VirtualKeyboardMixin:
                     self.vk_dragging = True
                     self.vk_drag_offset = (mx - self.vk_pos[0], my - self.vk_pos[1])
                     return True
+                # 跳到某步：输入框（获得焦点） / “跳到”按钮
+                if self.vk_jump_input_rect and self.vk_jump_input_rect.collidepoint(mx, my):
+                    self.vk_jump_focus = True
+                    return True
+                if self.vk_jump_btn_rect and self.vk_jump_btn_rect.collidepoint(mx, my):
+                    self.vk_jump_focus = False
+                    self._vk_do_jump()
+                    return True
                 # 功能按钮
                 for action, rect in self.vk_rects.items():
                     if rect.collidepoint(mx, my):
                         self._vk_trigger_action(action)
                         return True
                 # 面板空白处：消费事件，避免穿透到地图
+                self.vk_jump_focus = False
                 return True
+            # 点击面板外：输入框失焦（事件仍放行给下方游戏）
+            self.vk_jump_focus = False
+
+        elif event.type == pygame.KEYDOWN:
+            if not getattr(self, 'vk_jump_focus', False):
+                return False
+            k = event.key
+            if pygame.K_0 <= k <= pygame.K_9:
+                if len(self.vk_jump_buffer) < 4:
+                    self.vk_jump_buffer += chr(k)
+                return True
+            if k in (pygame.K_BACKSPACE, pygame.K_DELETE):
+                self.vk_jump_buffer = self.vk_jump_buffer[:-1]
+                return True
+            if k in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._vk_do_jump()
+                return True
+            if k == pygame.K_ESCAPE:
+                self.vk_jump_focus = False
+                self.vk_jump_buffer = ''
+                return True
+            # 其他按键：失焦，放行给游戏
+            self.vk_jump_focus = False
+            return False
 
         elif event.type == pygame.MOUSEMOTION:
             if self.vk_dragging:
@@ -233,3 +307,28 @@ class VirtualKeyboardMixin:
             else:
                 self.macro_notify_msg = "移动方向与缝隙方向不匹配"
                 self.macro_notify_timer = 90
+
+    def _vk_do_jump(self):
+        """虚拟键盘“跳到某步”：输入的数字对应历史记录第 N 步的状态"""
+        if not self.vk_jump_buffer:
+            self.vk_jump_focus = False
+            return
+        try:
+            target = int(self.vk_jump_buffer)
+        except ValueError:
+            self.vk_jump_buffer = ''
+            self.vk_jump_focus = False
+            return
+        self.vk_jump_buffer = ''
+        self.vk_jump_focus = False
+
+        n = len(self.game_history.history)
+        if n == 0 or target < 0:
+            return
+        if target >= n:
+            target = n - 1
+            self.macro_notify_msg = f"超出范围，已跳到第 {target} 步"
+        else:
+            self.macro_notify_msg = f"跳到第 {target} 步"
+        self.macro_notify_timer = 90
+        self.jump_to_history_index(target)

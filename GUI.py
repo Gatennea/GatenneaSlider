@@ -1003,6 +1003,29 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._maybe_show_solved_popup(via_redo=True)
             self._mark_file_dirty()
 
+    def jump_to_history_index(self, idx: int):
+        """直接跳到历史记录第 idx 步的状态（虚拟键盘“跳到某步”）"""
+        # 标注录制中跳转会破坏标注基准 → 阻止
+        if getattr(self, '_ann_recording', False):
+            self.macro_notify_msg = "标注录制中不可跳转步骤"
+            self.macro_notify_timer = 90
+            return
+        n = len(self.game_history.history)
+        if n == 0:
+            return
+        idx = max(0, min(idx, n - 1))
+        # 终止进行中的动画
+        if self.animating:
+            self.cancel_animation()
+        # 清空选择等临时状态
+        self.selected_gap = None
+        self.selected_block = None
+        self.game_history.history_index = idx
+        self.game_history.restore_snapshot(self.game, idx)
+        self.step_count = idx
+        self.ensure_blocks_visible()
+        self._mark_file_dirty()
+
     def shuffle_puzzle(self):
         """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
         # 打乱会改变棋盘 → 终止梯度流水线
