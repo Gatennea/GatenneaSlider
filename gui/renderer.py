@@ -15,6 +15,8 @@ import math
 
 import pygame
 
+from records import format_time
+
 
 class RendererMixin:
     """渲染相关方法 Mixin"""
