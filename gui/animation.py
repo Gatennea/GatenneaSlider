@@ -65,7 +65,7 @@ class AnimationMixin:
             self.ensure_blocks_visible()
             self._flash_move_selection(
                 getattr(self, '_sel_anim_move_info', None), True, after_commit=True)
-            self._maybe_show_solved_popup()
+            self._maybe_show_solved_popup(suppress=True)
         elif undo_redo_type == 'redo':
             self.game_history.redo(self.game)
             self.step_count += 1
@@ -102,6 +102,9 @@ class AnimationMixin:
 
         # 处理队列中的下一个撤销/重做
         self._process_next_in_queue()
+
+        # 连续撤销/重做：一步播完后自动推进下一轮（直到边界或被打断）
+        self._advance_continuous_undo_redo()
 
     def cancel_animation(self):
         """取消当前动画，恢复到动画前的位置，并清空队列"""
@@ -245,7 +248,7 @@ class AnimationMixin:
                 self.step_count -= 1
                 self.ensure_blocks_visible()
                 self._flash_move_selection(move_info, True, after_commit=True)
-                self._maybe_show_solved_popup()
+                self._maybe_show_solved_popup(suppress=True)
         elif next_type == 'redo':
             move_info = None
             if self.game_history.can_redo():
@@ -266,6 +269,9 @@ class AnimationMixin:
         # 如果直接执行了（无动画），继续处理队列
         if not self.animating and self._animation_queue:
             self._process_next_in_queue()
+            return
+        # 队列清空后：连续撤销/重做自动推进下一轮
+        self._advance_continuous_undo_redo()
 
     def _update_slider_from_mouse(self, mouse_y):
         """根据鼠标Y坐标更新动画速度"""

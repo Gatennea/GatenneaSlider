@@ -33,7 +33,7 @@ D:\python\python.exe main.py --no-http      # 停用 HTTP，僅 stdin/GUI
 
 # 無頭驗證（不開窗口）
 D:\python\python.exe -m solver.ml.hole_detector
-D:\python\python.exe 測試\_test_mod_constraint.py
+D:\python\python.exe test\_test_mod_constraint.py
 ```
 
 - 參數規則：`m n step`（`step < max(m, n)`）；純數字單參數 = HTTP 端口。
@@ -81,6 +81,9 @@ curl http://127.0.0.1:5050/status
 
 `try_move` 只做「純邏輯預測」不修改狀態 → GUI 決定播放動畫後 → `commit_move` → `save_snapshot`。`undo/redo` 走快照（`{matrix, bounds, move_info}`）。
 
+- `game.try_move_ex(direction, step) -> (positions, reason)`：同 `try_move` 但附失敗原因 `''`/`'no_selection'`/`'collision'`（重疊）/`'disconnected'`（斷開，移動後失去單一連通）；`try_move` 為其薄包裝。
+- GUI 層 `move_selected_blocks` 失敗時在右下角浮窗提示「滑動失敗：移動後滑塊會斷開/重疊」。
+
 ---
 
 ## 3. 目錄地圖（檔案 → 職責）
@@ -102,7 +105,9 @@ gui/                   # 全是 Mixin，被 SliderGUI 繼承
   virtual_keyboard.py  #   VirtualKeyboardMixin 虛擬鍵盤浮動面板（F1 開關）
   metrics_panel.py     #   MetricsPanelMixin    調試指標面板（F2）＋目標框/洞標記選取
   records_panel.py     #   RecordsPanelMixin    成績記錄浮動面板（F3）
+  tutorial.py          #   TutorialMixin        新手教程引導（首次啟動彈窗/步驟提示）
   text_input.py        #   TextInput            自繪文字輸入框（游標/選取/剪貼簿）
+  tutorial_texts.json  #   新手教程文案（可脫離代碼修改）
 
 solver/                # 求解器（詳見 §5）
   __init__.py          #   SOLVER_ALGORITHMS 註冊表；solve/solve_fast/solve_greedy 入口
@@ -127,7 +132,8 @@ macro/
 config/                # 執行期組態（§8）
 save/                  # 使用者存檔 *.json
 picture/               # cover.ico / cover.png（圖示）
-測試/                  # 無頭測試腳本（§9），命名 _test_*.py 或 test/
+test/                  # 無頭測試腳本（§9），命名 _test_*.py 或 test/
+web/                   # Web 版（TypeScript/靜態頁），**獨立 git 倉庫**，不隨本庫提交
 build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 ```
 
@@ -142,10 +148,24 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 ```
 
 - **單一指令佇列**：HTTP 每請求包成 `(cmd, resp_q)` 並阻塞等待（逾時 10s）；stdin 放入純字串；GUI 每幀取出執行。
-- **SliderGUI** 繼承 8 個 Mixin（`RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin`），Mixin 只提供方法，狀態集中在主類。
+- **SliderGUI** 繼承 10 個 Mixin（`RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, TutorialMixin`），Mixin 只提供方法，狀態集中在主類。
 - 高層操作（`move_selected_blocks/undo/redo/shuffle_puzzle/reset_puzzle/new_puzzle/_start_auto_solve`）在 `GUI.py` 或 `gui/events.py` 定義。
 - 三大可拖動浮動面板：虛擬鍵盤（F1）、調試面板（F2，預設關閉）、成績面板（F3）；位置/可見性寫入 `config/config.json` 的 `panels`。
 - 調試面板（`metrics_panel`）額外支援：**框內空格 = 圓圈(孔洞)/三角(缺口)、框外滑塊 = 菱形(凸起)**，點擊可選中標記用於觀察；畫框與標記共用 `find_best_window` 產出的 `region`。
+
+### 4.1 GUI 人工操作：三種控制模式（可任意組合）
+
+設置對話框「控制」頁有三個獨立開關（`config.json` 對應 `control_single_touch` / `control_two_touch` / `control_mouse_kb`，預設全開）：
+
+| 模式 | 操作方式 | 實作位置 |
+| --- | --- | --- |
+| 單次觸控 `control_single_touch` | 直接**按住滑塊拖拽**即滑動（8 區角度判定縫隙與方向，對齊 `web/docs/touch-gesture.md`）；滑動後（含失敗）清空臨時選中 | `GUI.py::_drag_slide` + `gui/events.py` 拖拽狀態機（`_mouse_drag_state`） |
+| 兩次觸控 `control_two_touch` | 原版三段式：點縫隙 → 點方塊 → 再拖拽/鍵盤；**關閉時入口門禁，點擊不寫入任何選中狀態** | `gui/events.py` MOUSEBUTTONDOWN |
+| 鼠標鍵盤 `control_mouse_kb` | 方向鍵 / W/A/S/D 移動；關閉只屏蔽移動鍵，Ctrl+Z/Y 等快捷鍵不受影響 | `gui/events.py` KEYDOWN |
+
+- 拖拽判定：按下累計位移超過 `drag_threshold`（預設 14px）才算拖拽，否則視為點擊。
+- 桌面版一次拖拽滑動 = `step` 格（網頁版為 1 格）。
+- 注意：三開關只影響**人工 GUI 操作**；HTTP/stdin 程式化通道（§6/§7）永遠可用。
 
 ---
 
@@ -345,17 +365,17 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援純字串（s
 
 ## 9. 測試與驗證
 
-`測試/` 內全部是無頭腳本（不開窗口，需 pygame 可於背景模式建立 surface），直接執行，通過會印 `ALL PASS`：
+`test/` 內全部是無頭腳本（不開窗口，需 pygame 可於背景模式建立 surface），直接執行，通過會印 `ALL PASS`：
 
 ```bash
-D:\python\python.exe 測試\_test_mod_constraint.py     # mod 約束/detect_target_corner
-D:\python\python.exe 測試\_test_gradient_pipeline.py  # 智能聚攏並行管線收尾
-D:\python\python.exe 測試\_test_full.py               # 綜合
-D:\python\python.exe 測試\_test_rp_menu.py / _test_rp_colors.py   # 成績面板
-D:\python\python.exe 測試\_test_block_load.py / _test_textinput.py
+D:\python\python.exe test\_test_mod_constraint.py     # mod 約束/detect_target_corner
+D:\python\python.exe test\_test_gradient_pipeline.py  # 智能聚攏並行管線收尾
+D:\python\python.exe test\_test_full.py               # 綜合
+D:\python\python.exe test\_test_rp_menu.py / _test_rp_colors.py   # 成績面板
+D:\python\python.exe test\_test_block_load.py / _test_textinput.py
 ```
 
-另有 `測試/test/`（pytest 風格：`test_solver/test_table_core/test_bfs_explore/test_profile`）與開發用探針 `_debug_cursor.py`、`_test_mouse_cursor.py` 等。改動求解器核心後，至少重跑 `_test_mod_constraint` 與 `_test_gradient_pipeline`。
+另有 `test/test/`（pytest 風格：`test_solver/test_table_core/test_bfs_explore/test_profile`）與開發用探針 `_debug_cursor.py`、`_test_mouse_cursor.py` 等。改動求解器核心後，至少重跑 `_test_mod_constraint` 與 `_test_gradient_pipeline`。
 
 若環境有 pyflakes，可用它抓未使用 import/變數（注意殘留的「f-string 無佔位符」與 `emd_solver.py` 的 `candidates` 前向引用屬已知保留項，非錯誤）：
 

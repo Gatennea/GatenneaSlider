@@ -3,6 +3,8 @@
 # 优化后的 PyInstaller 配置（体积 ~24MB，原始 ~70MB）
 
 from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_dynamic_libs
+import os
 
 # 只包含实际使用的 pygame 子模块（及其内部依赖）
 hiddenimports = [
@@ -108,6 +110,11 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# 排除 ucrtbase.dll：PyInstaller 會從開發環境（Anaconda/MinGW）誤打包此系統 DLL，
+# 導致目標機器載入時觸發 STATUS_INVALID_IMAGE_HASH (0xc0000020)。
+# 直接依賴 Windows System32 提供的版本即可。
+a.binaries = [b for b in a.binaries if not os.path.basename(b[0]).lower() == 'ucrtbase.dll']
 
 pyz = PYZ(a.pure)
 

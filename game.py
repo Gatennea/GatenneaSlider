@@ -432,45 +432,59 @@ class SliderMatrix:
     def try_move(self, direction: str, step: int) -> list:
         """
         尝试移动所有选中的滑块（纯逻辑，不含动画/步数/历史）
-        
+
         使用预测-验证-提交模式：逐步验证（每次1格，共step次），
         所有步骤都通过后才返回最终位置。
-        
+
         参数：
             direction: 移动方向 'w'上 's'下 'a'左 'd'右
             step: 移动步数
-        
+
         返回：
             list - 最终位置列表 [(row, col), ...]，如果任何一步不合法返回空列表
         """
+        positions, _reason = self.try_move_ex(direction, step)
+        return positions
+
+    def try_move_ex(self, direction: str, step: int) -> tuple:
+        """
+        同 try_move，但额外返回失败原因（供 GUI 提示）。
+
+        返回：
+            (positions, reason)
+            - positions: 最终位置列表 [(row, col), ...]；失败为空列表
+            - reason: '' 成功；'no_selection' 无选中滑块；
+                      'collision' 移动后与未选中滑块重叠；
+                      'disconnected' 移动后整体断开（失去单一连通）
+        """
         selected = [b for b in self.blocks if b.be_opted]
         non_selected = [b for b in self.blocks if not b.be_opted]
-        
+
         if not selected:
-            return []
-        
+            return [], 'no_selection'
+
         non_selected_positions = set(tuple(b.location) for b in non_selected)
         delta_map = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
         if direction not in delta_map:
-            return []
+            return [], 'no_selection'
         delta = delta_map[direction]
-        
+
         # 从当前位置开始，逐步预测
         current = [list(b.location) for b in selected]
-        
+
         for _ in range(step):
             # 预测下一步位置
             next_pos = [(current[i][0] + delta[0], current[i][1] + delta[1]) for i in range(len(selected))]
             next_set = set(tuple(p) for p in next_pos)
-            
+
             # 验证：碰撞和连通性
             is_valid, reason = SliderMatrix.check_move_valid(next_set, non_selected_positions)
             if not is_valid:
-                return []
-            
+                return [], reason
+
             current = next_pos
-        
-        return current
+
+        return current, ''
 
     def commit_move(self, final_positions: list):
         """

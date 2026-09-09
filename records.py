@@ -86,6 +86,7 @@ class Records:
             n = len(records)
             times = [None if r['dnf'] else r['time_ms'] for r in records]
             cache.append((record, self._avg_of(times[:n], 5), self._avg_of(times[:n], 12)))
+        self.save()  # 新增即落盘，避免异常/强杀丢成绩
         return record
 
     def get_records(self, puzzle_key):

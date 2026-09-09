@@ -130,6 +130,8 @@ class FileOpsMixin:
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
+            # 教程进度（闯关模式）
+            'tutorial': getattr(self, 'tut_progress', {}),
         }
 
         # 窗口大小 / 屏幕位置 / 面板状态（下次启动恢复）
@@ -292,6 +294,16 @@ class FileOpsMixin:
 
                 last_path = config.get('last_file_path')
 
+                # 恢复教程进度（闯关模式）——无论棋盘状态如何都需还原
+                tut = config.get('tutorial')
+                if isinstance(tut, dict) and hasattr(self, 'tut_progress'):
+                    self.tut_progress = {
+                        'started': bool(tut.get('started', False)),
+                        'skipped': bool(tut.get('skipped', False)),
+                        'completed': [int(x) for x in tut.get('completed', []) if isinstance(x, (int, float))],
+                        'current': tut.get('current'),
+                    }
+
                 if last_path and os.path.exists(last_path):
                     with open(last_path, 'r', encoding='utf-8') as f:
                         save_data = json.load(f)
@@ -337,6 +349,8 @@ class FileOpsMixin:
                         self.gather_enabled = de
                     # temp_history_path 是自动保存，不算用户手动打开的文件
                     self.current_file_path = None
+                    # 未存檔的自动恢复默认可写（不受 save_readonly_flag 限制）
+                    self._readonly = False
                     print(f"已从文件恢复: {last_path}")
                     self._reset_file_dirty()
                     return
@@ -488,6 +502,10 @@ class FileOpsMixin:
 
     def _do_load_from_path(self, path: str):
         """从指定路径加载游戏（竞速模式下拒绝，防加载已复原存档判胜）"""
+        # 载入会替换棋盘 → 打断连续撤销/重做
+        self._stop_continuous_undo_redo()
+        # 载入新棋盘 → 清掉上一次的计时成绩
+        self._last_timed_result = None
         if self._timer_blocked():
             self.macro_notify_msg = "竞速模式中无法打开存档"
             self.macro_notify_timer = 90

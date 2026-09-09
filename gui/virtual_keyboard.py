@@ -22,6 +22,7 @@ class VirtualKeyboardMixin:
     _VK_BTN_GAP = 6           # 按钮间距
     _VK_ACTION_BTN_W = 62     # 撤销/重做按钮宽度
     _VK_ACTION_BTN_H = 32     # 撤销/重做按钮高度
+    _VK_STICKY_W = 54         # 粘滞开关按钮宽度
     _VK_JUMP_H = 30           # “跳到某步”行高
     _VK_JUMP_INPUT_W = 84     # 步数输入框宽度
     _VK_JUMP_BTN_W = 48       # “跳到”按钮宽度
@@ -40,10 +41,11 @@ class VirtualKeyboardMixin:
         self.vk_jump_focus = False    # 输入框是否聚焦
         self.vk_jump_input_rect = None
         self.vk_jump_btn_rect = None
+        self.vk_sticky = True     # 粘滞开关：开=撤销/重做连续播放；关=撤销/重做单步
 
     def _vk_panel_size(self):
         """计算面板宽高"""
-        width = self._VK_PAD * 2 + self._VK_BTN * 3 + self._VK_BTN_GAP * 2
+        width = self._VK_PAD * 2 + self._VK_ACTION_BTN_W * 2 + self._VK_STICKY_W + self._VK_BTN_GAP * 2
         height = (self._VK_TITLE_H + self._VK_PAD
                   + self._VK_BTN + self._VK_BTN_GAP
                   + self._VK_BTN + self._VK_BTN_GAP
@@ -94,16 +96,20 @@ class VirtualKeyboardMixin:
             self._VK_BTN, self._VK_BTN
         )
 
-        # 撤销 / 重做（第3行）
+        # 粘滞开关 + 撤销 / 重做（第3行）
         action_row_y = mid_row_y + self._VK_BTN + self._VK_BTN_GAP
-        total_action_w = self._VK_ACTION_BTN_W * 2 + self._VK_BTN_GAP
+        total_action_w = self._VK_STICKY_W + self._VK_ACTION_BTN_W * 2 + self._VK_BTN_GAP * 2
         action_start_x = center_x - total_action_w // 2
-        rects['undo'] = pygame.Rect(
+        rects['sticky'] = pygame.Rect(
             action_start_x, action_row_y,
+            self._VK_STICKY_W, self._VK_ACTION_BTN_H
+        )
+        rects['undo'] = pygame.Rect(
+            action_start_x + self._VK_STICKY_W + self._VK_BTN_GAP, action_row_y,
             self._VK_ACTION_BTN_W, self._VK_ACTION_BTN_H
         )
         rects['redo'] = pygame.Rect(
-            action_start_x + self._VK_ACTION_BTN_W + self._VK_BTN_GAP, action_row_y,
+            action_start_x + self._VK_STICKY_W + self._VK_ACTION_BTN_W + self._VK_BTN_GAP * 2, action_row_y,
             self._VK_ACTION_BTN_W, self._VK_ACTION_BTN_H
         )
 
@@ -168,10 +174,20 @@ class VirtualKeyboardMixin:
         labels = {
             'move_up': '↑', 'move_down': '↓',
             'move_left': '←', 'move_right': '→',
-            'undo': '撤销', 'redo': '重做',
+            'sticky': '粘滞', 'undo': '撤销', 'redo': '重做',
         }
         for action, rect in rects.items():
             hovered = rect.collidepoint(mouse_pos)
+            if action == 'sticky':
+                # 粘滞开关：开启时高亮边框提示「连续」状态
+                color = self.colors['button_hover'] if (self.vk_sticky or hovered) else self.colors['button_bg']
+                pygame.draw.rect(self.screen, color, rect, border_radius=4)
+                if self.vk_sticky:
+                    pygame.draw.rect(self.screen, (255, 205, 60), rect, 2, border_radius=4)
+                text = '粘滞' + ('开' if self.vk_sticky else '关')
+                text_surface = self.dialog_font.render(text, True, (255, 255, 255))
+                self.screen.blit(text_surface, text_surface.get_rect(center=rect.center))
+                continue
             color = self.colors['button_hover'] if hovered else self.colors['button_bg']
             pygame.draw.rect(self.screen, color, rect, border_radius=4)
             text_surface = self.dialog_font.render(labels[action], True, (255, 255, 255))
@@ -275,10 +291,24 @@ class VirtualKeyboardMixin:
 
     def _vk_trigger_action(self, action):
         """触发虚拟键盘按钮对应的操作"""
-        if action == 'undo':
-            self.undo()
+        if action == 'sticky':
+            # 粘滞开关：切换撤销/重做 连续/单步
+            self.vk_sticky = not self.vk_sticky
+            if not self.vk_sticky:
+                # 关闭粘滞时若正在连续播放则停止，保证切换到单步后状态干净
+                self._stop_continuous_undo_redo()
+            self.macro_notify_msg = "粘滞：连续" if self.vk_sticky else "粘滞：单步"
+            self.macro_notify_timer = 90
+        elif action == 'undo':
+            if self.vk_sticky:
+                self._toggle_continuous('undo')
+            else:
+                self.undo()
         elif action == 'redo':
-            self.redo()
+            if self.vk_sticky:
+                self._toggle_continuous('redo')
+            else:
+                self.redo()
         elif action in ('move_up', 'move_down', 'move_left', 'move_right'):
             direction = {
                 'move_up': 'w', 'move_down': 's',

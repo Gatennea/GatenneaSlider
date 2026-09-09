@@ -35,7 +35,11 @@ solver/ml/data/
 macro/*.json
 
 # ===== 测试临时输出（测试脚本生成的存档等）=====
+test/_tmp_save/
 測試/_tmp_save/
+
+# ===== Web 版（独立仓库，自行版本管理，勿入库）=====
+web/
 
 # ===== IDE 配置与私人参考文档（不入库）=====
 .clinerules/

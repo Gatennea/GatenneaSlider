@@ -33,6 +33,19 @@ class EventsMixin:
                     )
                     continue
                 
+                # 新手教程：首次启动弹窗（模态，点击按钮消费事件）
+                if getattr(self, 'tut_show_prompt', False):
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        if self._tut_handle_prompt_click(*event.pos):
+                            continue
+                # 新手教程：教学引导面板（点中按钮消费事件；滚轮/滚动条滚动也消费）
+                if getattr(self, 'tutorial_active', False):
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        if self._tut_handle_panel_click(*event.pos):
+                            continue
+                    if self._tut_handle_panel_scroll(event):
+                        continue
+
                 # 标注模式事件（含四键隐藏入口；其余事件快速放行）
                 if self.handle_annotation_event(event):
                     continue
@@ -165,11 +178,13 @@ class EventsMixin:
                 if self.handle_records_panel_event(event):
                     continue
 
-                # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解）
+                # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解，及连续播放时的空格打断）
                 if self.animating and event.type == pygame.KEYDOWN:
                     if not self._is_action_triggered(event, 'undo') and \
                        not self._is_action_triggered(event, 'redo') and \
-                       not self._is_action_triggered(event, 'auto_solve'):
+                       not self._is_action_triggered(event, 'auto_solve') and \
+                       not (event.key == pygame.K_SPACE and
+                            (self._continuous_undo or self._continuous_redo)):
                         continue
 
                 # 求解器运行期间阻止用户改動滑塊（只能停止求解）
@@ -312,6 +327,15 @@ class EventsMixin:
                         dy = event.pos[1] - self.drag_start[1]
                         self.camera_x = self.drag_offset[0] + dx
                         self.camera_y = self.drag_offset[1] + dy
+
+                    # 拖拽滑动：累计位移（超过阈值才标记为拖拽，避免与点击冲突）
+                    if self._mouse_drag_state is not None and not self.is_dragging:
+                        st = self._mouse_drag_state
+                        st['dx'] = event.pos[0] - st['sx']
+                        st['dy'] = event.pos[1] - st['sy']
+                        th = getattr(self, 'drag_threshold', 14)
+                        if abs(st['dx']) >= th or abs(st['dy']) >= th:
+                            st['moved'] = True
                 
                 # 鼠标点击
                 elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -440,6 +464,10 @@ class EventsMixin:
                                         self._settings_backup_keybindings = dict(self.keybindings)
                                         self._settings_backup_gather = dict(self.gather_params)
                                         self._settings_backup_gather_enabled = dict(self.gather_enabled)
+                                    elif i == len(self.menu_items) - 1:
+                                        # 菜单栏最右（“帮助”右侧）：新手教程入口（开始/继续/回顾）
+                                        self.close_all_menus()
+                                        self._tut_start()
                                     else:
                                         self.close_all_menus()
                                     break
@@ -472,21 +500,37 @@ class EventsMixin:
                         # 游戏区域点击
                         gap = self.get_gap_at_pos(x, y)
                         block = self.get_block_at_pos(x, y)
-                        
+
+                        # 两次触控开关：关闭时「点缝隙→点方块」的选中流程整体禁用
+                        # （入口门禁：不写入任何选中状态，缝隙点击也不会落入空白平移）
+                        two_touch_on = getattr(self, 'control_two_touch', True)
+
+                        # 拖拽滑动：记录起点（按下滑块时记录；最终由 MOUSEBUTTONUP 判定点击/拖拽）
+                        # 单次/两次触控都关闭时拖拽无意义，不记录起点，避免残留中间态
+                        if block is not None and not self._readonly_blocked() and \
+                                (getattr(self, 'control_single_touch', True) or two_touch_on):
+                            self._mouse_drag_state = {
+                                'sx': x, 'sy': y, 'block': block, 'moved': False,
+                            }
+
                         if gap is not None:
-                            if self.selected_gap == gap:
-                                self.selected_gap = None
-                            else:
-                                self.selected_gap = gap
-                                for b in self.game.blocks:
-                                    b.be_opted = False
-                                self.selected_block = None
-                                # 操作提示：选中缝隙
-                                gap_type, line = gap
-                                type_str = '纵向' if gap_type == 'v' else '横向'
-                                self.macro_notify_msg = f"选中{type_str}缝隙" if gap_type == 'v' else f"选中{type_str}缝隙"
-                                self.macro_notify_timer = 120
-                        elif block is not None and self.selected_gap is not None:
+                            if two_touch_on:
+                                if self.selected_gap == gap:
+                                    self.selected_gap = None
+                                else:
+                                    self.selected_gap = gap
+                                    for b in self.game.blocks:
+                                        b.be_opted = False
+                                    self.selected_block = None
+                                    # 操作提示：选中缝隙
+                                    gap_type, line = gap
+                                    type_str = '纵向' if gap_type == 'v' else '横向'
+                                    self.macro_notify_msg = f"选中{type_str}缝隙" if gap_type == 'v' else f"选中{type_str}缝隙"
+                                    self.macro_notify_timer = 120
+                                    # 新手教程：步骤1 选中缝隙 → 步骤2
+                                    self._tut_on_gap_clicked()
+                            # 两次触控关闭：吞掉点击，不选中、不平移
+                        elif block is not None and self.selected_gap is not None and two_touch_on:
                             direction, line = self.selected_gap
                             self.game.opt(direction, line, block)
                             self.selected_block = block
@@ -494,6 +538,8 @@ class EventsMixin:
                             n_blocks = len([b for b in self.game.blocks if b.be_opted])
                             self.macro_notify_msg = f"选中滑块组 共{n_blocks}个"
                             self.macro_notify_timer = 120
+                            # 新手教程：步骤2 选中滑块组 → 步骤3
+                            self._tut_on_block_clicked()
                         elif self.is_blank_area(x, y):
                             # 调试面板打开时，点击洞选中（标记学习）
                             if getattr(self, 'show_metrics_panel', False):
@@ -525,6 +571,12 @@ class EventsMixin:
                 # 鼠标释放
                 elif event.type == pygame.MOUSEBUTTONUP:
                     if event.button == 1:
+                        # 拖拽滑动判定：按下过滑块且位移超过阈值 → 执行一次拖拽滑动
+                        if self._mouse_drag_state is not None:
+                            st = self._mouse_drag_state
+                            self._mouse_drag_state = None
+                            if st.get('moved') and st.get('block') is not None:
+                                self._drag_slide(st['block'], st.get('dx', 0), st.get('dy', 0))
                         self.is_dragging = False
                         self.slider_dragging = False
                         self.zoom_slider_dragging = False
@@ -550,6 +602,9 @@ class EventsMixin:
                 # 键盘事件
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
+                        # 连续撤销/重做播放中：空格 = 打断
+                        if self._space_interrupts_continuous():
+                            continue
                         # 空格作为计时器开始/DNF 键
                         self._timer_on_space()
                         continue
@@ -608,23 +663,24 @@ class EventsMixin:
                         self.macro_notify_timer = 90
                     
                     else:
-                        # 方向键移动（需要匹配配置且无修饰键冲突）
-                        move_actions = {
-                            'move_up': 'w', 'move_down': 's',
-                            'move_left': 'a', 'move_right': 'd'
-                        }
-                        for action_name, direction in move_actions.items():
-                            if self._is_action_triggered(event, action_name):
-                                if self.selected_gap and self.selected_block:
-                                    gap_type, line = self.selected_gap
-                                    can_move = False
-                                    if gap_type == 'v' and direction in ('w', 's'):
-                                        can_move = True
-                                    elif gap_type == 'h' and direction in ('a', 'd'):
-                                        can_move = True
-                                    if can_move:
-                                        self.move_selected_blocks(direction)
-                                break
+                        # 方向键移动（需要匹配配置且无修饰键冲突；由 control_mouse_kb 开关控制）
+                        if getattr(self, 'control_mouse_kb', True):
+                            move_actions = {
+                                'move_up': 'w', 'move_down': 's',
+                                'move_left': 'a', 'move_right': 'd'
+                            }
+                            for action_name, direction in move_actions.items():
+                                if self._is_action_triggered(event, action_name):
+                                    if self.selected_gap and self.selected_block:
+                                        gap_type, line = self.selected_gap
+                                        can_move = False
+                                        if gap_type == 'v' and direction in ('w', 's'):
+                                            can_move = True
+                                        elif gap_type == 'h' and direction in ('a', 'd'):
+                                            can_move = True
+                                        if can_move:
+                                            self.move_selected_blocks(direction)
+                                    break
                 
                 # 键盘释放
                 elif event.type == pygame.KEYUP:
@@ -1257,6 +1313,12 @@ class EventsMixin:
                 self.settings_editing_value = None
                 self._settings_scroll = 0
                 return
+            if hasattr(self, '_settings_tab_control_rect') and self._settings_tab_control_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'control'
+                self.settings_editing_action = None
+                self.settings_editing_value = None
+                self._settings_scroll = 0
+                return
 
             # 文件 Tab：存档只读开关
             if self.settings_active_tab == 'file' and hasattr(self, '_settings_readonly_toggle_rect'):
@@ -1322,6 +1384,27 @@ class EventsMixin:
                     self.chain_hint_enabled = not self.chain_hint_enabled
                     status = '开' if self.chain_hint_enabled else '关'
                     self.macro_notify_msg = f"悬停连锁提示：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 控制 Tab：三种模式开关（独立布尔，可任意组合）
+            if self.settings_active_tab == 'control':
+                if hasattr(self, '_settings_ctrl_single_rect') and self._settings_ctrl_single_rect.collidepoint(mx, my):
+                    self.control_single_touch = not self.control_single_touch
+                    status = '开' if self.control_single_touch else '关'
+                    self.macro_notify_msg = f"单次触控：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                if hasattr(self, '_settings_ctrl_two_rect') and self._settings_ctrl_two_rect.collidepoint(mx, my):
+                    self.control_two_touch = not self.control_two_touch
+                    status = '开' if self.control_two_touch else '关'
+                    self.macro_notify_msg = f"两次触控：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                if hasattr(self, '_settings_ctrl_kb_rect') and self._settings_ctrl_kb_rect.collidepoint(mx, my):
+                    self.control_mouse_kb = not self.control_mouse_kb
+                    status = '开' if self.control_mouse_kb else '关'
+                    self.macro_notify_msg = f"鼠标键盘：{status}"
                     self.macro_notify_timer = 90
                     return
 
@@ -1448,6 +1531,10 @@ class EventsMixin:
                         self.gather_enabled[k] = True
                     self.macro_notify_msg = "已恢复默认参数"
                     self.macro_notify_timer = 90
+                # 恢复控制模式默认值（三种模式全开）
+                self.control_single_touch = True
+                self.control_two_touch = True
+                self.control_mouse_kb = True
                 return
 
         # 鼠标释放

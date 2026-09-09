@@ -62,9 +62,10 @@ def main():
         gui._solved_popup_t = 0
         gui._prev_solved = False
 
-    # ---- 1. 撤销路径：非复原 → 撤销 → 复原 → 弹窗 ----
-    print('1 撤销达成复原→弹窗：')
+    # ---- 1. 撤销路径：非复原 → 撤销 → 复原 → 不弹（suppress 抑制） ----
+    print('1 撤销达成复原→不弹：')
     reset_popup()
+    gui._solved_popup_t = 77            # 残余计时：不应被撤销重置
     # 快照0=复原, 快照1=非复原, 索引=1
     _set_board(gui, solved)
     _place_blocks(gui, not_solved)
@@ -72,8 +73,8 @@ def main():
     assert gui.game_history.history_index == 1
     gui.undo()  # 回到复原
     assert gui.game.is_solved(), 'undo 后应为复原'
-    assert gui._solved_popup_active, 'undo 达成复原未弹窗'
-    assert gui._solved_popup_t == 0
+    assert not gui._solved_popup_active, 'undo 回到复原不应弹窗'
+    assert gui._solved_popup_t == 77, '撤销不应触碰悬浮窗计时'
     assert gui._prev_solved is True
     print('  OK')
 
