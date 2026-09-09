@@ -1,5 +1,9 @@
 # 貓九的滑塊遊戲（Gatennea Slider）
 
+這是給 AI Agent 的readme。
+
+---
+
 基於 **Python + pygame-ce** 的滑塊拼圖遊戲。玩家（或 AI）透過「選擇縫隙 → 選擇滑塊組 → 滑動」把打亂的方塊還原成一個完整的 **m×n 或 n×m 實心矩形**（允許整體平移，不做模板比對）。
 
 > ## ⚠️ 給 AI Agent 的速覽（先讀這節）
@@ -19,21 +23,21 @@
 
 ## 1. 啟動與驗證
 
-Python 3.12，路徑 `D:\python\python.exe`（打包後亦可直接跑 exe）。
+Python ≥ 3.10（需 pygame-ce、numpy、scikit-learn；打包後可直接跑 exe）。
 
 ```bash
 # 預設 4×4、step=2，並開啟 HTTP(5050)；同時開 Pygame 窗口
-D:\python\python.exe main.py
+python main.py
 
 # 指定棋盤/等級；也可只給端口
-D:\python\python.exe main.py 6 6 2          # 6×6、step=2
-D:\python\python.exe main.py 4 4 2 8080     # 指定 HTTP 端口 8080
-D:\python\python.exe main.py 4 4 2 --http-port 8080
-D:\python\python.exe main.py --no-http      # 停用 HTTP，僅 stdin/GUI
+python main.py 6 6 2          # 6×6、step=2
+python main.py 4 4 2 8080     # 指定 HTTP 端口 8080
+python main.py 4 4 2 --http-port 8080
+python main.py --no-http      # 停用 HTTP，僅 stdin/GUI
 
 # 無頭驗證（不開窗口）
-D:\python\python.exe -m solver.ml.hole_detector
-D:\python\python.exe test\_test_mod_constraint.py
+python -m solver.ml.hole_detector
+python test\_test_mod_constraint.py
 ```
 
 - 參數規則：`m n step`（`step < max(m, n)`）；純數字單參數 = HTTP 端口。
@@ -202,13 +206,13 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 距離表以「等級」為單位，一次建好後該等級任意狀態 < 1s 求最短解；表資料放 `solver/data/{m}_{n}_{step}/`，**不進 git**（`.gitignore`），拿到新環境需自己重建：
 
 ```bash
-D:\python\python.exe -m solver.build_table 4 4 2            # GUI 建表
-D:\python\python.exe -m solver.build_table 4 4 2 --no-gui   # 純 CLI
-D:\python\python.exe -m solver.table_query status 4 4 2
-D:\python\python.exe -m solver.table_query dist "##.|##.|.##" 4 4 2
-D:\python\python.exe -m solver.table_query solve "##.|##.|.##" 4 4 2
-D:\python\python.exe -m solver.repair_table 4 4 2
-D:\python\python.exe -m solver.visualize_table 4 4 2
+python -m solver.build_table 4 4 2            # GUI 建表
+python -m solver.build_table 4 4 2 --no-gui   # 純 CLI
+python -m solver.table_query status 4 4 2
+python -m solver.table_query dist "##.|##.|.##" 4 4 2
+python -m solver.table_query solve "##.|##.|.##" 4 4 2
+python -m solver.repair_table 4 4 2
+python -m solver.visualize_table 4 4 2
 ```
 
 支援多程序（≤16）、checkpoint 斷點續算、定時自動存檔。
@@ -223,11 +227,11 @@ D:\python\python.exe -m solver.visualize_table 4 4 2
 **B. 人類模仿管線（已註冊為 `human_ai`，見 §5.1）**
 ```bash
 # 1. 從 save/*.json（人類還原記錄）導出正/負樣本，JSONL 可檢視
-D:\python\python.exe -m solver.ml.export_human_data
+python -m solver.ml.export_human_data
 # 2. 訓練評分模型：score(狀態, 動作)，輸出 data/human/model_ranker.pkl
-D:\python\python.exe -m solver.ml.train_human_ranker
+python -m solver.ml.train_human_ranker
 # 3. 無頭驗證（真實人類開局 → 原生 API 逐步執行）
-D:\python\python.exe -m solver.ml.human_solver
+python -m solver.ml.human_solver
 ```
 `human_solver.ai_human_solve` 逐步對「當前狀態枚舉的全部合法動作」打分、取最高並用遊戲原生 API 執行——輸出永遠合法可執行。關鍵設計：
 - 動作編碼含完整 `gap_type/gap_line/side/move_dir`（非單純方向），gap_line 相對狀態邊界（平移不變）
@@ -368,11 +372,11 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援純字串（s
 `test/` 內全部是無頭腳本（不開窗口，需 pygame 可於背景模式建立 surface），直接執行，通過會印 `ALL PASS`：
 
 ```bash
-D:\python\python.exe test\_test_mod_constraint.py     # mod 約束/detect_target_corner
-D:\python\python.exe test\_test_gradient_pipeline.py  # 智能聚攏並行管線收尾
-D:\python\python.exe test\_test_full.py               # 綜合
-D:\python\python.exe test\_test_rp_menu.py / _test_rp_colors.py   # 成績面板
-D:\python\python.exe test\_test_block_load.py / _test_textinput.py
+python test\_test_mod_constraint.py     # mod 約束/detect_target_corner
+python test\_test_gradient_pipeline.py  # 智能聚攏並行管線收尾
+python test\_test_full.py               # 綜合
+python test\_test_rp_menu.py / _test_rp_colors.py   # 成績面板
+python test\_test_block_load.py / _test_textinput.py
 ```
 
 另有 `test/test/`（pytest 風格：`test_solver/test_table_core/test_bfs_explore/test_profile`）與開發用探針 `_debug_cursor.py`、`_test_mouse_cursor.py` 等。改動求解器核心後，至少重跑 `_test_mod_constraint` 與 `_test_gradient_pipeline`。
@@ -396,7 +400,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 ## 11. 開發約定與注意事項
 
-- Python 一律用 `D:\python\python.exe`。
+- Python 一律用 `python`（本機路徑見 `本機環境.md`）。
 - `game.py` 不得引入 pygame（保持純邏輯，可被求解器/solver.ml 直接 import）。
 - 修改求解器/調試面板不得破壞 §2.1 mod 不變量；目標框與洞/凸起標記必須共用 `find_best_window`。
 - 不大改 `solver/data/` 產物與 `.gitignore` 列出的個人檔（`.clinerules/`、`.trae/`、`.vscode/`、`参考/` 不入庫）。

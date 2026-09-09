@@ -46,6 +46,7 @@ web/
 .trae/
 .vscode/
 参考/
+本機環境.md
 
 # ===== 独立项目：加密工具（与本游戏无关，如需入库请 git add -f encrypt）=====
 encrypt/
