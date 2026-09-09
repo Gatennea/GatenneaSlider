@@ -501,9 +501,11 @@ class EventsMixin:
                         gap = self.get_gap_at_pos(x, y)
                         block = self.get_block_at_pos(x, y)
 
-                        # 两次触控开关：关闭时「点缝隙→点方块」的选中流程整体禁用
-                        # （入口门禁：不写入任何选中状态，缝隙点击也不会落入空白平移）
+                        # 控制模式开关（独立布尔，可任意组合）
                         two_touch_on = getattr(self, 'control_two_touch', True)
+                        mouse_kb_on = getattr(self, 'control_mouse_kb', True)
+                        # 可选中：鼠标键盘模式也需要通过点击选中缝隙/滑块组，否则方向键无物可移
+                        selectable = two_touch_on or mouse_kb_on
 
                         # 拖拽滑动：记录起点（按下滑块时记录；最终由 MOUSEBUTTONUP 判定点击/拖拽）
                         # 单次/两次触控都关闭时拖拽无意义，不记录起点，避免残留中间态
@@ -514,7 +516,7 @@ class EventsMixin:
                             }
 
                         if gap is not None:
-                            if two_touch_on:
+                            if selectable:
                                 if self.selected_gap == gap:
                                     self.selected_gap = None
                                 else:
@@ -529,8 +531,8 @@ class EventsMixin:
                                     self.macro_notify_timer = 120
                                     # 新手教程：步骤1 选中缝隙 → 步骤2
                                     self._tut_on_gap_clicked()
-                            # 两次触控关闭：吞掉点击，不选中、不平移
-                        elif block is not None and self.selected_gap is not None and two_touch_on:
+                            # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，不选中、不平移
+                        elif block is not None and self.selected_gap is not None and selectable:
                             direction, line = self.selected_gap
                             self.game.opt(direction, line, block)
                             self.selected_block = block
