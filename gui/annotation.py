@@ -535,7 +535,20 @@ class AnnotationMixin:
         self._ann_notify('构造模式：初始为当前状态，点格放/取滑块，改好参数后按[应用并开始]')
 
     def _ann_rebuild_game_from_coords(self):
-        """把构造集实时落到主棋盘（不写历史，不打断旧历史）。"""
+        """把构造集实时落到主棋盘（不写历史，不打断旧历史）。
+
+        注意：构造过程允许改 m/n/step，而调试面板/求解器/is_solved 都读
+        game.m/game.n 与 current_step，故这里必须同步——构造视图中以输入框
+        最新有效值为准（点选增删前已校验过参数），否则尺寸修改后仍按旧值计算。
+        """
+        if getattr(self, '_ann_view', None) == 'build':
+            try:
+                m, n, step, _pad = self._ann_build_param()
+                self.current_m, self.current_n, self.current_step = m, n, step
+            except ValueError:
+                pass  # 输入框暂不合法（如清空中）：沿用上一次有效尺寸
+        self.game.m = self.current_m
+        self.game.n = self.current_n
         self.game.blocks = [Block(list(c))
                             for c in sorted(self._ann_build_coords)]
         self.game.update_matrix()
@@ -565,6 +578,9 @@ class AnnotationMixin:
             self.current_m = bk['m']
             self.current_n = bk['n']
             self.current_step = bk['step']
+            # 同步 game.m/n（构造期间可能被改成新尺寸）
+            self.game.m = bk['m']
+            self.game.n = bk['n']
             self.game.blocks = [Block(list(c)) for c in bk['coords']]
             self.game.update_matrix()
             self.game_history = bk['history']
