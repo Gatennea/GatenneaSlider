@@ -5,6 +5,8 @@
 处理用户输入事件（鼠标、键盘）和终端命令队列。
 """
 
+import os
+import webbrowser
 import pygame
 import queue
 import traceback
@@ -464,10 +466,14 @@ class EventsMixin:
                                         self._settings_backup_keybindings = dict(self.keybindings)
                                         self._settings_backup_gather = dict(self.gather_params)
                                         self._settings_backup_gather_enabled = dict(self.gather_enabled)
-                                    elif i == len(self.menu_items) - 1:
-                                        # 菜单栏最右（“帮助”右侧）：新手教程入口（开始/继续/回顾）
+                                    elif self.menu_items[i] == '教程':
+                                        # “帮助”右侧：新手教程入口（开始/继续/回顾）
                                         self.close_all_menus()
                                         self._tut_start()
+                                    elif self.menu_items[i] == '官网':
+                                        # 用默认浏览器打开 Web 版主页
+                                        self.close_all_menus()
+                                        webbrowser.open('https://gatennea.github.io/GatenneaSliderWeb/')
                                     else:
                                         self.close_all_menus()
                                     break
@@ -715,17 +721,385 @@ class EventsMixin:
             print(f"{prefix} {message}")
 
     def _get_game_status(self):
-        """获取游戏状态字典（用于 HTTP JSON 响应）"""
+        """获取游戏状态字典（用于 HTTP JSON 响应）
+
+        旧字段（puzzle/step_count/solved/matrix/selected_gap/selected_block/
+        animating）保持原义不变；新增 m/n/step/game_mode/timer_state/readonly/
+        blocks（含 mod 分组）/macro/solver，供 AI 一次取齐决策信息。
+        """
         self.game.update_matrix()
+        step = self.current_step
+        blocks = [
+            {"row": b.location[0], "col": b.location[1],
+             "mod": [b.location[0] % step, b.location[1] % step]}
+            for b in self.game.blocks
+        ]
+        solver_state = self._get_solver_state()
         return {
-            "puzzle": f"{self.current_step}~{self.current_m}*{self.current_n}",
+            "puzzle": f"{step}~{self.current_m}*{self.current_n}",
             "step_count": self.step_count,
             "solved": self.is_solved(),
             "matrix": self.game.matrix,
             "selected_gap": list(self.selected_gap) if self.selected_gap else None,
             "selected_block": self.selected_block.location if self.selected_block else None,
             "animating": self.animating,
+            # —— 新增字段 ——
+            "m": self.current_m,
+            "n": self.current_n,
+            "step": step,
+            "game_mode": self.game_mode,
+            "timer_state": self.timer_state,
+            "readonly": bool(getattr(self, '_readonly', False)),
+            "blocks": blocks,
+            "macro": {
+                "recording": bool(getattr(self, 'macro_recording', False)),
+                "executing": bool(getattr(self, 'macro_executing', False)),
+            },
+            "solver": {
+                "state": solver_state["state"],
+                "algorithm": solver_state["algorithm"],
+            },
         }
+
+    # ------------------------------------------------------------------
+    # API 辅助：结构化求解状态 / 局面分析 / 设置与参数校验
+    # ------------------------------------------------------------------
+    def _get_solver_state(self):
+        """结构化求解器状态（HTTP /solver/status 与 /status 的 solver 字段共用）。
+
+        state: running（后台计算中或解法正在通过宏管道播放）/ solved / failed /
+               cancelled / idle。终态靠 _api_solve_latch（GUI.py 求解流程写入）
+               与 _auto_solve_cancel 标志判定。
+        """
+        import time
+        running = bool(getattr(self, '_auto_solve_running', False)
+                       or getattr(self, '_gradient_busy', False))
+        exec_name = getattr(self, 'macro_exec_name', '') or ''
+        playing = bool(getattr(self, 'macro_executing', False)
+                       and not getattr(self, 'macro_recording', False)
+                       and (exec_name in ('自动求解', '聚拢')
+                            or exec_name.startswith('填洞宏')))
+        latch = getattr(self, '_api_solve_latch', None)
+
+        if running or playing:
+            state = 'running'
+        elif getattr(self, '_auto_solve_cancel', False):
+            state = 'cancelled'
+        elif latch is None:
+            state = 'idle'
+        elif latch.get('ok'):
+            state = 'solved'
+        else:
+            state = 'failed'
+
+        progress = getattr(self, '_auto_solve_progress', None)
+        gradient = None
+        gs = getattr(self, '_gradient_state', None)
+        if isinstance(gs, dict) and gs.get('max_stages'):
+            gradient = {'stage': gs.get('stage'), 'total': gs.get('max_stages')}
+        if isinstance(progress, dict) and progress.get('stage') == 'gradient_stage':
+            gradient = {'stage': progress.get('idx'), 'total': progress.get('total')}
+
+        # elapsed：running 实时增长；终态（solved/failed/cancelled）用锁存值冻结
+        elapsed_ms = None
+        if state in ('solved', 'failed', 'cancelled') and latch \
+                and latch.get('elapsed_ms') is not None:
+            elapsed_ms = latch['elapsed_ms']
+        else:
+            start = getattr(self, '_auto_solve_start_time', 0)
+            if start:
+                elapsed_ms = int((time.time() - start) * 1000)
+
+        return {
+            'state': state,
+            'algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
+            'progress': progress,
+            'gradient': gradient,
+            'result_steps': latch.get('steps') if (latch and state == 'solved') else None,
+            'elapsed_ms': elapsed_ms,
+        }
+
+    def _analysis_coords(self):
+        """当前方块坐标集合（frozenset），先刷新矩阵。"""
+        self.game.update_matrix()
+        return frozenset((b.location[0], b.location[1]) for b in self.game.blocks)
+
+    def _analysis_window(self):
+        """目标窗口（与调试面板绿框同源 find_best_window）。"""
+        from solver.ml.gather_solver import find_best_window
+        coords = self._analysis_coords()
+        if not coords:
+            return None
+        r0, c0, (rh, cw), overlap = find_best_window(
+            coords, self.game.m, self.game.n, self.current_step)
+        return {'r0': r0, 'c0': c0, 'rh': rh, 'cw': cw, 'overlap': overlap}
+
+    def _analysis_holes(self):
+        """洞/缺口/凸起（与 metrics_panel._draw_debug_holes 同一次 detect_holes）。"""
+        from solver.ml.hole_detector import detect_holes
+        coords = self._analysis_coords()
+        if not coords:
+            return None, [], []
+        window = self._analysis_window()
+        region = (window['r0'], window['c0'], (window['rh'], window['cw']))
+        holes, protrusions, _ = detect_holes(
+            coords, self.game.m, self.game.n, self.current_step, region=region)
+        holes_out = [
+            {'type': h.get('type'), 'size': h.get('size'),
+             'cells': [[r, c] for r, c in h.get('cells', [])]}
+            for h in holes
+        ]
+        return window, holes_out, [[r, c] for r, c in protrusions]
+
+    def _analysis_actions(self):
+        """合法动作枚举（solver.actions.enumerate_valid_actions）。"""
+        from solver.actions import enumerate_valid_actions
+        acts = enumerate_valid_actions(self.game, self.current_step)
+        return [{'gap_type': a[0], 'gap_line': a[1], 'side': a[2], 'move_dir': a[3]}
+                for a in acts]
+
+    # settings 白名单：布尔键 + 动画速度（映射 self.animation_duration）
+    _SETTINGS_BOOL_KEYS = (
+        'coloring_enabled', 'chain_hint_enabled', 'show_metrics_panel',
+        'animation_enabled', 'selection_animation_enabled',
+        'control_single_touch', 'control_two_touch', 'control_mouse_kb',
+        'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
+    )
+    _SETTINGS_INT_KEYS = ('animation_duration_ms',)
+    _ANIM_DURATION_RANGE = (50, 1000)
+
+    def _settings_get(self):
+        """返回全部白名单设置键的当前值。"""
+        data = {k: bool(getattr(self, k, False)) for k in self._SETTINGS_BOOL_KEYS}
+        data['animation_duration_ms'] = int(getattr(self, 'animation_duration', 300))
+        return data
+
+    def _settings_apply(self, updates):
+        """校验并应用设置（整体校验：任一非法则不应用任何项）。
+
+        返回 (ok, message)。updates: dict。
+        """
+        if not isinstance(updates, dict) or not updates:
+            return False, "缺少设置项"
+        bool_keys = set(self._SETTINGS_BOOL_KEYS)
+        int_keys = set(self._SETTINGS_INT_KEYS)
+        pending = []
+        for key, val in updates.items():
+            if key in bool_keys:
+                if not isinstance(val, bool):
+                    return False, f"{key} 必须是 true/false"
+                pending.append((key, val))
+            elif key in int_keys:
+                if isinstance(val, bool) or not isinstance(val, int):
+                    return False, f"{key} 必须是整数"
+                lo, hi = self._ANIM_DURATION_RANGE
+                if not (lo <= val <= hi):
+                    return False, f"{key} 必须在 {lo}–{hi} 之间"
+                pending.append(('animation_duration', val))
+            else:
+                return False, f"未知设置键: {key}"
+        for attr, val in pending:
+            setattr(self, attr, val)
+        return True, f"已更新 {len(pending)} 项设置"
+
+    def _solver_params_get(self):
+        """返回 gather 参数值与启用标志。"""
+        out = {}
+        for k, v in self.gather_params.items():
+            out[k] = {'value': v, 'enabled': bool(self.gather_enabled.get(k, True))}
+        return out
+
+    def _solver_params_apply(self, updates):
+        """校验并应用 gather 参数（整体校验）。返回 (ok, message)。"""
+        if not isinstance(updates, dict) or not updates:
+            return False, "缺少参数项"
+        specs = {key: spec for key, spec in getattr(self, '_gather_param_specs', [])}
+        pending = []
+        for key, val in updates.items():
+            base = key[:-8] if key.endswith('_enabled') else key
+            if base not in self.gather_params:
+                return False, f"未知参数: {key}"
+            if key.endswith('_enabled'):
+                if not isinstance(val, bool):
+                    return False, f"{key} 必须是 true/false"
+                pending.append(('enabled', base, val))
+            else:
+                if isinstance(val, bool) or not isinstance(val, (int, float)):
+                    return False, f"{key} 必须是数值"
+                _name, _default, lo, hi, _step, _desc = specs[base]
+                if not (lo <= val <= hi):
+                    return False, f"{key} 必须在 {lo}–{hi} 之间"
+                pending.append(('value', base, val))
+        for kind, base, val in pending:
+            if kind == 'enabled':
+                self.gather_enabled[base] = val
+            else:
+                self.gather_params[base] = val
+        return True, f"已更新 {len(pending)} 项求解参数"
+
+    def _do_solve(self, algorithm=None):
+        """启动/取消求解。返回 (ok, message)。
+
+        注意：拒绝条件必须在调用 _start_auto_solve() 之前判定——极小局面上
+        求解线程可能在主线程「启动后回查标志」前就已完成并把
+        _auto_solve_running 置回 False（启动即完成的竞态）。
+        """
+        from solver import SOLVER_ALGORITHMS
+        if algorithm:
+            if algorithm not in SOLVER_ALGORITHMS:
+                return False, f"未知算法: {algorithm}（可选: {', '.join(SOLVER_ALGORITHMS)}）"
+            self.solver_algorithm = algorithm
+        active = self._get_solver_state()['state'] == 'running'
+        if not active:
+            # 与 _start_auto_solve 同一组启动前置条件
+            if self._timer_blocked():
+                return False, "计时模式中无法使用求解器"
+            if self._readonly_blocked():
+                return False, "只读存档无法使用求解器"
+            if getattr(self, '_ann_recording', False):
+                return False, "标注录制中无法使用求解器"
+        self._start_auto_solve()
+        if active:
+            return True, "已请求停止求解"
+        return True, f"已启动自动求解（算法: {self.solver_algorithm}）"
+
+    def _do_cancel_solve(self):
+        """显式请求取消求解。返回 (ok, message)。"""
+        if self._get_solver_state()['state'] != 'running':
+            return False, "当前未在求解"
+        self._start_auto_solve()  # 运行中调用 = 取消
+        return True, "已请求停止求解"
+
+    def _do_macro_execute(self, name, base_row, base_col, reverse=False):
+        """执行宏（可逆序）。返回 (ok, message)。"""
+        if not name:
+            return False, "需要宏名称"
+        if base_row is None or base_col is None:
+            return False, "需要 base_row 和 base_col"
+        if getattr(self, 'macro_recording', False):
+            return False, "正在录制中，无法执行宏"
+        if getattr(self, 'macro_executing', False):
+            return False, "正在执行其他宏"
+        self._start_macro_execute(name, reverse=bool(reverse))
+        if getattr(self, 'macro_executing', False) and getattr(self, 'macro_selecting_base', False):
+            self._confirm_macro_execute(base_row, base_col)
+            label = '（逆序）' if reverse else ''
+            return True, f"开始执行宏 '{name}'{label}，基准 ({base_row}, {base_col})"
+        return False, getattr(self, 'macro_error_msg', '') or f"无法执行宏 '{name}'"
+
+    def _do_save_file(self, path):
+        """保存到指定路径并核验落盘（_save_to_path 内部吞异常仅 print）。
+        返回 (ok, message)。"""
+        if not path:
+            return False, "需要 path"
+        try:
+            self._save_to_path(path)
+        except Exception as e:
+            return False, f"保存失败: {e}"
+        if os.path.isfile(path):
+            return True, f"已保存到 {path}"
+        return False, f"保存失败：无法写入 {path}（路径为目录或无权限）"
+
+    def _do_load_map(self, map_str, step=None):
+        """从地图字符串导入局面（无对话框）。返回 (ok, message)。"""
+        if not isinstance(map_str, str) or not map_str.strip():
+            return False, "地图字符串为空"
+        normalized = map_str.replace(';', '\n')
+        lines = [ln.strip() for ln in normalized.split('\n') if ln.strip()]
+        if not lines:
+            return False, "地图字符串为空"
+        width = len(lines[0])
+        if any(len(ln) != width for ln in lines):
+            return False, "地图各行长度不一致"
+        if '#' not in ''.join(lines):
+            return False, "地图中没有方块（#）"
+        if step is not None:
+            if not isinstance(step, int) or step < 1 or step >= max(len(lines), width):
+                return False, f"step 必须是 1–{max(len(lines), width) - 1} 的整数"
+        # 与切换谜题相同的收尾动作
+        self._stop_gradient_pipeline()
+        self._stop_continuous_undo_redo()
+        self._last_timed_result = None
+        if hasattr(self, '_ann_cancel_session'):
+            self._ann_cancel_session('导入地图')
+        if self.timer_state == 'running':
+            return False, "计时中无法导入地图"
+        if getattr(self, '_readonly', False):
+            return False, "只读存档无法导入地图"
+        if not self.game.import_map(normalized):
+            return False, "地图解析失败"
+        self.current_m = self.game.m
+        self.current_n = self.game.n
+        if step is not None:
+            self.current_step = step
+        self.selected_gap = None
+        self.selected_block = None
+        self.animating = False
+        self.anim_blocks = []
+        self.step_count = 0
+        self.game_history.reset()
+        self.center_map()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+        return True, f"已导入地图：{self.game.m}×{self.game.n}，{len(self.game.blocks)} 块"
+
+    def _do_set_mode(self, mode):
+        """切换练习/计时模式（幂等）。返回 (ok, message)。"""
+        if mode not in ('practice', 'timed'):
+            return False, "mode 必须是 practice 或 timed"
+        if self.timer_state == 'running':
+            return False, "计时中无法切换模式"
+        if self.game_mode == mode:
+            return True, f"已是{'计时' if mode == 'timed' else '练习'}模式"
+        self.toggle_game_mode()
+        # toggle_game_mode 内部在 running 时会拒绝；此处双检
+        if self.game_mode != mode:
+            return False, "模式切换失败"
+        return True, f"已切换为{'计时' if mode == 'timed' else '练习'}模式"
+
+    def _dispatch_payload_action(self, action, payload, resp_q):
+        """HTTP 富 JSON body 通道：动作名与 CLI 同名，参数从 dict 取。"""
+        try:
+            if action == 'load_map':
+                ok, msg = self._do_load_map(payload.get('map'), payload.get('step'))
+                self._cmd_reply(resp_q, ok, msg)
+            elif action == 'save_file':
+                ok, msg = self._do_save_file(payload.get('path', ''))
+                self._cmd_reply(resp_q, ok, msg)
+            elif action == 'load_file':
+                path = payload.get('path', '')
+                if not path:
+                    self._cmd_reply(resp_q, False, "需要 path")
+                    return
+                before = self.game.export_map()
+                self._do_load_from_path(path)
+                # _do_load_from_path 失败时仅 print；以局面是否变化/路径属性判定
+                if os.path.abspath(getattr(self, 'current_file_path', '') or '') == os.path.abspath(path) \
+                        or self.game.export_map() != before:
+                    self._cmd_reply(resp_q, True, f"已从 {path} 加载")
+                else:
+                    self._cmd_reply(resp_q, False, f"加载失败：{path}（文件不存在或格式错误，或计时中被拒绝）")
+            elif action == 'mode':
+                ok, msg = self._do_set_mode(payload.get('mode', ''))
+                self._cmd_reply(resp_q, ok, msg)
+            elif action == 'settings':
+                ok, msg = self._settings_apply(payload)
+                self._cmd_reply(resp_q, ok, msg)
+            elif action == 'solver_params':
+                ok, msg = self._solver_params_apply(payload)
+                self._cmd_reply(resp_q, ok, msg)
+            elif action == 'solve':
+                ok, msg = self._do_solve(payload.get('algorithm'))
+                self._cmd_reply(resp_q, ok, msg)
+            elif action == 'macro_execute':
+                ok, msg = self._do_macro_execute(
+                    payload.get('name', ''), payload.get('base_row'),
+                    payload.get('base_col'), bool(payload.get('reverse', False)))
+                self._cmd_reply(resp_q, ok, msg)
+            else:
+                self._cmd_reply(resp_q, False, f"不支持 JSON body 的指令: {action}")
+        except Exception as e:
+            self._cmd_reply(resp_q, False, f"执行 '{action}' 时出错: {e}")
 
     def process_commands(self):
         """处理命令队列中的终端/HTTP指令"""
@@ -738,18 +1112,30 @@ class EventsMixin:
             except queue.Empty:
                 break
             
-            # 支持两种格式：纯字符串（终端）或 (cmd, resp_q) 元组（HTTP）
+            # 支持三种格式：
+            #   纯字符串（终端 stdin）
+            #   (cmd, resp_q) 二元组（HTTP 传统指令）
+            #   (cmd, resp_q, payload) 三元组（HTTP 富 JSON body：多行地图/设置等）
             resp_q = None
+            payload = None
             if isinstance(item, tuple):
-                cmd, resp_q = item
+                if len(item) >= 3:
+                    cmd, resp_q, payload = item[0], item[1], item[2]
+                else:
+                    cmd, resp_q = item
             else:
                 cmd = item
-            
+
             parts = cmd.split()
             if not parts:
                 continue
-            
+
             action = parts[0].lower()
+
+            # 富 payload 通道：动作语义同名，但参数取自 JSON dict 而非空白分词
+            if payload is not None:
+                self._dispatch_payload_action(action, payload, resp_q)
+                continue
             
             try:
                 if action == 'shuffle':
@@ -768,23 +1154,46 @@ class EventsMixin:
                     if direction not in ('w', 's', 'a', 'd'):
                         self._cmd_reply(resp_q, False, "方向必须是 w/s/a/d")
                         continue
-                    if self.selected_gap and self.selected_block:
-                        gap_type, line = self.selected_gap
-                        can_move = False
-                        if gap_type == 'v' and direction in ('w', 's'):
-                            can_move = True
-                        elif gap_type == 'h' and direction in ('a', 'd'):
-                            can_move = True
-                        if can_move:
-                            moved = self.move_selected_blocks(direction)
-                            if moved:
-                                self._cmd_reply(resp_q, True, f"已移动 {direction}")
-                            else:
-                                self._cmd_reply(resp_q, False, "移动未生效（计时模式就绪态禁止滑动或移动不合法）")
-                        else:
-                            self._cmd_reply(resp_q, False, f"当前缝隙不允许 {direction} 方向移动")
+                    # 失败原因（reason）与 GUI 右下角提示同源：
+                    # not_selected / wrong_direction / timer_blocked /
+                    # disconnected（断开）/ collision（重叠）
+                    if not (self.selected_gap and self.selected_block):
+                        self._cmd_reply(resp_q, False, "未选中缝隙和滑块",
+                                        {'reason': 'not_selected'})
+                        continue
+                    gap_type, line = self.selected_gap
+                    can_move = ((gap_type == 'v' and direction in ('w', 's'))
+                                or (gap_type == 'h' and direction in ('a', 'd')))
+                    if not can_move:
+                        self._cmd_reply(resp_q, False,
+                                        f"当前缝隙不允许 {direction} 方向移动",
+                                        {'reason': 'wrong_direction'})
+                        continue
+                    # 只读存档 / 计时就绪态禁止滑动
+                    if self._readonly_blocked() or (
+                            self.game_mode == 'timed' and self.timer_state == 'ready'):
+                        self._cmd_reply(resp_q, False,
+                                        "当前状态禁止滑动（计时就绪态或只读存档）",
+                                        {'reason': 'timer_blocked'})
+                        continue
+                    # 纯逻辑预演（不提交）：取断开/重叠原因
+                    _positions, fail_reason = self.game.try_move_ex(direction, self.current_step)
+                    if not _positions:
+                        reason_map = {
+                            'disconnected': ('disconnected', "滑动失败：移动后滑块会断开"),
+                            'collision': ('collision', "滑动失败：移动后滑块会重叠"),
+                            'no_selection': ('not_selected', "未选中滑块组"),
+                        }
+                        r_code, r_msg = reason_map.get(
+                            fail_reason, ('disconnected', f"移动不合法（{fail_reason}）"))
+                        self._cmd_reply(resp_q, False, r_msg, {'reason': r_code})
+                        continue
+                    moved = self.move_selected_blocks(direction)
+                    if moved:
+                        self._cmd_reply(resp_q, True, f"已移动 {direction}")
                     else:
-                        self._cmd_reply(resp_q, False, "未选中缝隙和滑块")
+                        self._cmd_reply(resp_q, False, "移动未生效",
+                                        {'reason': 'timer_blocked'})
                 
                 elif action == 'new':
                     if len(parts) < 4:
@@ -902,10 +1311,77 @@ class EventsMixin:
 
                 # ========== 自动求解命令 ==========
                 elif action == 'solve':
-                    self._start_auto_solve()
-                    self._cmd_reply(resp_q, True, "已启动自动求解")
+                    # 用法: solve [algorithm]；运行中调用 = 取消
+                    algorithm = parts[1] if len(parts) >= 2 else None
+                    ok, msg = self._do_solve(algorithm)
+                    self._cmd_reply(resp_q, ok, msg)
+
+                elif action == 'solve_cancel':
+                    ok, msg = self._do_cancel_solve()
+                    self._cmd_reply(resp_q, ok, msg)
+
+                elif action == 'solver_algorithms':
+                    from solver import SOLVER_ALGORITHMS
+                    algs = [{'key': k, 'name': v[0].strip()} for k, v in SOLVER_ALGORITHMS.items()]
+                    data = {'current': self.solver_algorithm, 'algorithms': algs}
+                    if resp_q:
+                        resp_q.put({'ok': True, **data})
+                    else:
+                        print(f"当前算法: {self.solver_algorithm}")
+                        for a in algs:
+                            mark = '*' if a['key'] == self.solver_algorithm else ' '
+                            print(f"  {mark} {a['key']:16s} {a['name']}")
+
+                elif action == 'solver_status':
+                    st = self._get_solver_state()
+                    if resp_q:
+                        resp_q.put({'ok': True, **st})
+                    else:
+                        print(f"求解状态: {st['state']}（算法 {st['algorithm']}）")
+                        if st['result_steps'] is not None:
+                            print(f"  解法步数: {st['result_steps']}")
+                        if st['gradient']:
+                            print(f"  梯度阶段: {st['gradient']['stage']}/{st['gradient']['total']}")
+
+                elif action == 'solver_params':
+                    if len(parts) < 2:
+                        params = self._solver_params_get()
+                        if resp_q:
+                            resp_q.put({'ok': True, 'params': params})
+                        else:
+                            for k, info in params.items():
+                                flag = '启用' if info['enabled'] else '不限'
+                                print(f"  {k:20s} = {info['value']}  ({flag})")
+                    else:
+                        updates = {}
+                        bad = False
+                        for token in parts[1:]:
+                            if '=' not in token:
+                                self._cmd_reply(resp_q, False, f"参数格式错误: {token}（应为 key=value）")
+                                bad = True
+                                break
+                            key, raw_val = token.split('=', 1)
+                            key = key.strip()
+                            raw_val = raw_val.strip()
+                            if key.endswith('_enabled'):
+                                if raw_val not in ('0', '1', 'true', 'false', 'True', 'False'):
+                                    self._cmd_reply(resp_q, False, f"{key} 必须是 0/1/true/false")
+                                    bad = True
+                                    break
+                                updates[key] = raw_val in ('1', 'true', 'True')
+                            else:
+                                try:
+                                    updates[key] = float(raw_val) if '.' in raw_val else int(raw_val)
+                                except ValueError:
+                                    self._cmd_reply(resp_q, False, f"{key} 值必须是数值: {raw_val}")
+                                    bad = True
+                                    break
+                        if not bad:
+                            ok, msg = self._solver_params_apply(updates)
+                            self._cmd_reply(resp_q, ok, msg)
 
                 elif action == 'solve_status':
+                    # 旧文本指令（保留兼容）
                     if self._auto_solve_running:
                         status = "running"
                     elif self._auto_solve_result is not None:
@@ -1032,28 +1508,41 @@ class EventsMixin:
                             self._cmd_reply(resp_q, True, f"宏 '{name}' 已保存 ({len(self.macro_recording_steps)} 步)")
 
                 elif action == 'macro_execute':
+                    # 用法: macro_execute <名称> <base_row> <base_col> [reverse]
                     if len(parts) < 4:
-                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col>")
+                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col> [reverse]")
                         continue
+                    reverse = (parts[-1].lower() == 'reverse')
+                    coord_tokens = parts[-3:-1] if reverse else parts[-2:]
+                    name_tokens = parts[1:-3] if reverse else parts[1:-2]
                     try:
-                        base_row = int(parts[-2])
-                        base_col = int(parts[-1])
-                        name = ' '.join(parts[1:-2])
+                        base_row = int(coord_tokens[0])
+                        base_col = int(coord_tokens[1])
+                        name = ' '.join(name_tokens)
                     except (ValueError, IndexError):
-                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col>")
+                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col> [reverse]")
                         continue
-                    if self.macro_recording:
-                        self._cmd_reply(resp_q, False, "正在录制中，无法执行宏")
-                        continue
-                    if self.macro_executing:
-                        self._cmd_reply(resp_q, False, "正在执行其他宏")
-                        continue
-                    self._start_macro_execute(name)
-                    if self.macro_executing and self.macro_selecting_base:
-                        self._confirm_macro_execute(base_row, base_col)
-                        self._cmd_reply(resp_q, True, f"开始执行宏 '{name}'，基准 ({base_row}, {base_col})")
+                    ok, msg = self._do_macro_execute(name, base_row, base_col, reverse)
+                    self._cmd_reply(resp_q, ok, msg)
+
+                elif action == 'macro_status':
+                    data = {
+                        'recording': bool(getattr(self, 'macro_recording', False)),
+                        'executing': bool(getattr(self, 'macro_executing', False)),
+                        'selecting_base': bool(getattr(self, 'macro_selecting_base', False)),
+                        'reverse_mode': bool(getattr(self, 'macro_reverse_mode', False)),
+                        'recording_steps': len(getattr(self, 'macro_recording_steps', []) or []),
+                        'current_macro': getattr(self, 'macro_exec_name', '') or None
+                        if getattr(self, 'macro_executing', False) else None,
+                    }
+                    if resp_q:
+                        resp_q.put({'ok': True, **data})
                     else:
-                        self._cmd_reply(resp_q, False, self.macro_error_msg or f"无法执行宏 '{name}'")
+                        print(f"录制中: {'是' if data['recording'] else '否'}"
+                              f"（已录 {data['recording_steps']} 步）")
+                        print(f"执行中: {'是' if data['executing'] else '否'}"
+                              f"（{data['current_macro'] or '-'}）")
+                        print(f"逆序播放模式: {'开' if data['reverse_mode'] else '关'}")
 
                 elif action == 'macro_delete':
                     if len(parts) < 2:
@@ -1087,11 +1576,115 @@ class EventsMixin:
                     except FileNotFoundError:
                         self._cmd_reply(resp_q, False, f"宏 '{old_name}' 不存在")
 
+                # ========== 局面分析指令 ==========
+                elif action == 'window':
+                    win = self._analysis_window()
+                    if resp_q:
+                        resp_q.put({'ok': True, 'window': win,
+                                    'm': self.game.m, 'n': self.game.n,
+                                    'step': self.current_step})
+                    else:
+                        if win:
+                            print(f"目标窗口: 左上({win['r0']},{win['c0']}) "
+                                  f"尺寸{win['rh']}×{win['cw']} 覆盖{win['overlap']}块")
+                        else:
+                            print("（无方块，无目标窗口）")
+
+                elif action == 'holes':
+                    win, holes, protrusions = self._analysis_holes()
+                    if resp_q:
+                        resp_q.put({'ok': True, 'window': win, 'holes': holes,
+                                    'protrusions': protrusions})
+                    else:
+                        hn = sum(1 for h in holes if h['type'] == 'hole')
+                        dn = sum(1 for h in holes if h['type'] == 'dent')
+                        print(f"洞 {hn} 个 / 缺口 {dn} 个 / 凸起 {len(protrusions)} 个")
+                        for h in holes:
+                            kind = '孔洞' if h['type'] == 'hole' else '缺口'
+                            print(f"  {kind}({h['size']}): {h['cells']}")
+
+                elif action == 'actions':
+                    acts = self._analysis_actions()
+                    if resp_q:
+                        resp_q.put({'ok': True, 'actions': acts})
+                    else:
+                        print(f"合法动作 {len(acts)} 个:")
+                        for a in acts:
+                            print(f"  缝{a['gap_type']}{a['gap_line']} {a['side']:6s} → {a['move_dir']}")
+
+                # ========== 局面存取指令 ==========
+                elif action == 'load_map':
+                    # CLI: load_map <地图串>（行分隔可用 ; 代替换行）
+                    map_str = ' '.join(parts[1:]).replace(';', '\n')
+                    ok, msg = self._do_load_map(map_str)
+                    self._cmd_reply(resp_q, ok, msg)
+
+                elif action == 'save_file':
+                    if len(parts) < 2:
+                        self._cmd_reply(resp_q, False, "用法: save_file <路径>")
+                        continue
+                    path = ' '.join(parts[1:])
+                    ok, msg = self._do_save_file(path)
+                    self._cmd_reply(resp_q, ok, msg)
+
+                elif action == 'load_file':
+                    if len(parts) < 2:
+                        self._cmd_reply(resp_q, False, "用法: load_file <路径>")
+                        continue
+                    path = ' '.join(parts[1:])
+                    before = self.game.export_map()
+                    self._do_load_from_path(path)
+                    if os.path.abspath(getattr(self, 'current_file_path', '') or '') == os.path.abspath(path) \
+                            or self.game.export_map() != before:
+                        self._cmd_reply(resp_q, True, f"已从 {path} 加载")
+                    else:
+                        self._cmd_reply(resp_q, False, f"加载失败：{path}")
+
+                # ========== 模式切换指令 ==========
+                elif action == 'mode':
+                    if len(parts) < 2:
+                        if resp_q:
+                            resp_q.put({'ok': True, 'mode': self.game_mode})
+                        else:
+                            print(f"当前模式: {'计时' if self.game_mode == 'timed' else '练习'}")
+                    else:
+                        ok, msg = self._do_set_mode(parts[1].lower())
+                        self._cmd_reply(resp_q, ok, msg)
+
+                # ========== GUI 逻辑开关指令 ==========
+                elif action == 'settings':
+                    if len(parts) < 2:
+                        data = self._settings_get()
+                        if resp_q:
+                            resp_q.put({'ok': True, 'settings': data})
+                        else:
+                            for k, v in data.items():
+                                print(f"  {k:28s} = {v}")
+                    elif len(parts) == 3:
+                        key, raw_val = parts[1], parts[2].lower()
+                        if raw_val in ('1', 'true', 'yes', 'on'):
+                            val = True
+                        elif raw_val in ('0', 'false', 'no', 'off'):
+                            val = False
+                        else:
+                            try:
+                                val = int(raw_val)
+                            except ValueError:
+                                self._cmd_reply(resp_q, False, f"值无法解析: {raw_val}")
+                                continue
+                        ok, msg = self._settings_apply({key: val})
+                        self._cmd_reply(resp_q, ok, msg)
+                    else:
+                        self._cmd_reply(resp_q, False, "用法: settings [key value]")
+
                 else:
                     self._cmd_reply(resp_q, False, f"未知指令: {action}")
                     if not resp_q:
                         print("可用指令: shuffle, reset, move, new, export, import, status, undo, redo, quit")
-                        print("宏指令: macro_list, macro_record_start, macro_set_base, macro_record_stop, macro_execute, macro_delete, macro_rename")
+                        print("宏指令: macro_list, macro_record_start, macro_set_base, macro_record_stop, macro_execute, macro_delete, macro_rename, macro_status")
+                        print("求解指令: solve [算法], solve_cancel, solver_algorithms, solver_status, solver_params [k=v ...]")
+                        print("分析指令: window, holes, actions")
+                        print("存取/模式/设置: load_map, save_file, load_file, mode [practice|timed], settings [key value]")
             
             except Exception as e:
                 self._cmd_reply(resp_q, False, f"执行 '{cmd}' 时出错: {e}")

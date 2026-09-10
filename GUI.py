@@ -238,9 +238,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.running = True
 
         # 菜单栏配置
-        # 注意：最后一项永远是「教程」入口（位于“帮助”右侧），
-        # 点击开始/继续/回顾新手教程；显示名随进度动态更新（见 run() 主循环）
-        self.menu_items = ['文件', '编辑', '谜题', '宏定义', '设置', '帮助', '教程']
+        # 注意：「教程」入口位于“帮助”右侧，点击开始/继续/回顾新手教程；
+        # 最后一项「官网」点击用默认浏览器打开 Web 版主页。
+        self.menu_items = ['文件', '编辑', '谜题', '宏定义', '设置', '帮助', '教程', '官网']
         self.menu_hovered = -1
         self.menu_item_rects = []
 
@@ -372,6 +372,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         }
         # 各参数启用标志：False = 该参数不设限（传 None 给求解器）
         self.gather_enabled = {k: True for k in self.gather_params}
+        # 打乱质量参数（控制 shuffle 的偏置强度和最低难度门槛）
+        # bias：Metropolis 接受偏差，越大越偏向更散状态（0=纯随机）
+        # min_score：打完后的聚拢度阈值，超过则重洗（None=不检查）
+        self.shuffle_bias = 0.3
+        self.shuffle_min_score = 0.75
         # 聚拢参数输入框手动编辑状态
         self.settings_editing_value = None   # 正在编辑的参数 key
         self.settings_edit_buffer = ''       # 输入缓冲区
@@ -1244,8 +1249,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         attempts = self.current_m * self.current_n * 10  # 打乱次数
 
-        # 调用 game.py 的 shuffle 方法
-        self.game.shuffle(attempts, self.current_step)
+        # 调用 game.py 的 shuffle 方法，传入偏置强度和难度门槛
+        self.game.shuffle(
+            attempts, self.current_step,
+            bias=self.shuffle_bias,
+            min_score=self.shuffle_min_score
+        )
 
         # 清除选中状态
         self.selected_gap = None
@@ -1456,6 +1465,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 如果正在求解，則取消
         if self._auto_solve_running:
             self._auto_solve_cancel = True
+            # API 状态锁存：记录取消时刻（/solver/status 判定 cancelled，elapsed 冻结）
+            self._api_solve_latch = {
+                'ok': False, 'steps': 0, 'reason': 'cancelled',
+                'elapsed_ms': int((time.time() - self._auto_solve_start_time) * 1000)
+                if getattr(self, '_auto_solve_start_time', 0) else None,
+            }
             if getattr(self, '_gradient_state', None) is not None:
                 # 梯度流水线：取消后台计算，丢弃已排队的结果
                 self._gradient_state = None
@@ -1470,6 +1485,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self._gradient_state = None
                 self._auto_solve_cancel = True
                 self._gradient_gen += 1
+                self._api_solve_latch = {
+                    'ok': False, 'steps': 0, 'reason': 'cancelled',
+                    'elapsed_ms': int((time.time() - self._auto_solve_start_time) * 1000)
+                    if getattr(self, '_auto_solve_start_time', 0) else None,
+                }
                 self.macro_notify_msg = "梯度聚拢已停止"
                 self.macro_notify_timer = 90
             return
@@ -1480,6 +1500,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._auto_solve_cancel = False
         self._auto_solve_start_time = time.time()
         self._auto_solve_progress = None
+        # API 状态锁存：新一次求解开始时清空（供 HTTP /solver/status 结构化查询）
+        self._api_solve_latch = None
 
         game_snapshot = deepcopy(self.game)
         algorithm = self.solver_algorithm
@@ -1635,6 +1657,32 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         result = self._auto_solve_result
         self._auto_solve_result = None
 
+        # API 状态锁存：记录本次求解产物（供 HTTP /solver/status；梯度各阶段由
+        # _handle_gather_result 覆盖更新，取消时无产物，状态判定由 cancel 标志负责）
+        import time as _time
+        _latch_elapsed = int((_time.time() - self._auto_solve_start_time) * 1000) \
+            if getattr(self, '_auto_solve_start_time', 0) else None
+        if isinstance(result, dict):
+            self._api_solve_latch = {
+                'ok': bool(result.get('solved', False)),
+                'steps': len(result.get('actions', []) or []),
+                'reason': result.get('reason', ''),
+                'elapsed_ms': _latch_elapsed,
+            }
+        elif result is False:
+            self._api_solve_latch = {'ok': False, 'steps': 0,
+                                     'reason': 'no_solution', 'elapsed_ms': _latch_elapsed}
+        elif result is None:
+            self._api_solve_latch = {'ok': False, 'steps': 0,
+                                     'reason': 'no_database', 'elapsed_ms': _latch_elapsed}
+        else:
+            acts = result[0] if isinstance(result, tuple) else result
+            self._api_solve_latch = {
+                'ok': True, 'steps': len(acts),
+                'reason': 'already_solved' if len(acts) == 0 else 'solved',
+                'elapsed_ms': _latch_elapsed,
+            }
+
         if result is None:
             self._gradient_state = None
             self.macro_notify_msg = "自动求解：未找到数据库"
@@ -1727,6 +1775,21 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         rep_cells = result.get('rep_cells', [])
         solved = result.get('solved', False)
         reason = result.get('reason', '')
+        # API 状态锁存（梯度逐阶段覆盖，终态以最后阶段为准）
+        import time as _time
+        _elapsed = int((_time.time() - self._auto_solve_start_time) * 1000) \
+            if getattr(self, '_auto_solve_start_time', 0) else None
+        self._api_solve_latch = {
+            'ok': bool(solved), 'steps': len(actions), 'reason': reason or 'gather',
+            'elapsed_ms': _elapsed,
+        }
+        # 记录梯度当前阶段（供 /solver/status 的 gradient.stage/total）
+        gs = getattr(self, '_gradient_state', None)
+        if isinstance(gs, dict):
+            if result.get('gradient_stage') is not None:
+                gs['stage'] = result['gradient_stage']
+            if result.get('gradient_total'):
+                gs['max_stages'] = result['gradient_total']
 
         # 停机原因播报
         reason_text = {

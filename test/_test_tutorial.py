@@ -77,8 +77,10 @@ def main():
     # ---- 1. 首次启动弹窗 ----
     _check('谜题菜单不再含教程入口', ('__tutorial__',) not in gui.puzzle_presets,
            str(gui.puzzle_presets[:2]))
-    _check('教程入口移到菜单栏最右(帮助右侧)', gui.menu_items[-1] == '教程'
-           and gui.menu_items[-2] == '帮助', str(gui.menu_items))
+    _check('教程入口位于帮助右侧、官网为最右项',
+           gui.menu_items[-1] == '官网'
+           and gui.menu_items[-2] == '教程'
+           and gui.menu_items[-3] == '帮助', str(gui.menu_items))
     gui.tut_progress = {'started': False, 'skipped': False, 'completed': [], 'current': None}
     gui.tut_show_prompt = False
     gui._tut_check_first_launch()
@@ -86,11 +88,12 @@ def main():
 
     # ---- 2. 教程入口：点击菜单栏“教程”（帮助右侧）→ 关卡选择列表 ----
     gui.draw_menu_bar()
+    tut_idx = gui.menu_items.index('教程')
     _check('教程菜单位于帮助右侧', len(gui.menu_item_rects) == len(gui.menu_items)
-           and gui.menu_item_rects[-1].x > gui.menu_item_rects[-2].x, '')
+           and gui.menu_item_rects[tut_idx].x > gui.menu_item_rects[tut_idx - 1].x, '')
     gui.tut_show_prompt = False   # 关闭首次弹窗，模拟玩家手动进入
     pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                                         {'button': 1, 'pos': gui.menu_item_rects[-1].center}))
+                                         {'button': 1, 'pos': gui.menu_item_rects[tut_idx].center}))
     gui.handle_events()
     _check('菜单栏点击进入教程', gui.tutorial_active is True, '')
     _check('进入关卡选择列表', gui.tut_selecting_levels is True,
