@@ -96,6 +96,17 @@ class EventsMixin:
                         continue
                     continue  # 拦截所有其他事件
 
+                # 宏执行中（已选好基准，正在逐步播放）：ESC 中止
+                if getattr(self, 'macro_executing', False):
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        self.macro_executing = False
+                        self.macro_exec_ops = []
+                        self.macro_exec_index = 0
+                        self.macro_notify_msg = f'[{self.macro_exec_name}] 已取消'
+                        self.macro_notify_timer = 120
+                        self.macro_notify_persistent = False
+                        continue
+
                 # 宏管理对话框
                 if getattr(self, 'show_macro_manager_dialog', False):
                     if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -2427,6 +2438,12 @@ class EventsMixin:
     def _execute_next_macro_step(self):
         """执行宏队列中的下一个操作（无动画时用循环迭代，避免长解法递归爆栈）"""
         while True:
+            # 用户取消检测：宏执行中途可按 ESC 中断
+            if not self.macro_executing:
+                self.macro_exec_ops = []
+                self.macro_exec_index = 0
+                return
+
             # 聚拢播放：每步实时刷新当前聚拢度
             if getattr(self, '_gather_info', None) is not None:
                 self._update_gather_notify()
