@@ -1556,15 +1556,23 @@ class RendererMixin:
         def _sw_btn(key, label, getter):
             nonlocal sw_top
             rect = pygame.Rect(sw_x, sw_top, sw_w, sw_h)
+            bg, color = self.colors['input_bg'], (150, 150, 150)
             if key == 'game_mode':
-                timed = getattr(self, 'game_mode', 'timed') == 'timed'
-                on = timed
-                text = '模式:竞速' if timed else '模式:练习'
+                mode = getattr(self, 'game_mode', 'practice')
+                if mode == 'create':
+                    # 创造模式用「选中滑块」的绿色
+                    bg, color = self.colors['block_selected'], (255, 255, 255)
+                    text = '模式:创造'
+                elif mode == 'timed':
+                    bg, color = self.colors['button_bg'], (255, 255, 255)
+                    text = '模式:竞速'
+                else:
+                    text = '模式:练习'
             else:
                 on = bool(getter())
                 text = f'{label}:{"开" if on else "关"}'
-            bg = self.colors['button_bg'] if on else self.colors['input_bg']
-            color = (255, 255, 255) if on else (150, 150, 150)
+                if on:
+                    bg, color = self.colors['button_bg'], (255, 255, 255)
             pygame.draw.rect(self.screen, bg, rect, border_radius=4)
             ts = self.status_font.render(text, True, color)
             self.screen.blit(ts, ts.get_rect(center=rect.center))

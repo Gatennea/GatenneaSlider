@@ -48,7 +48,7 @@ class EventsMixin:
                     if self._tut_handle_panel_scroll(event):
                         continue
 
-                # 标注模式事件（含四键隐藏入口；其余事件快速放行）
+                # 标注/创造模式事件（标注模式含 B/Z/M/S 隐藏入口；其余事件快速放行）
                 if self.handle_annotation_event(event):
                     continue
 
@@ -515,8 +515,12 @@ class EventsMixin:
                             continue
                         
                         # 游戏区域点击
-                        gap = self.get_gap_at_pos(x, y)
-                        block = self.get_block_at_pos(x, y)
+                        # 教程解法播放中：锁定棋盘操作（点选缝隙/滑块、拖拽滑动）
+                        if self._tut_board_locked():
+                            gap = block = None
+                        else:
+                            gap = self.get_gap_at_pos(x, y)
+                            block = self.get_block_at_pos(x, y)
 
                         # 控制模式开关（独立布尔，可任意组合）
                         two_touch_on = getattr(self, 'control_two_touch', True)
@@ -534,6 +538,8 @@ class EventsMixin:
 
                         if gap is not None:
                             if selectable:
+                                # 选中变化 → 结束上一次选中会话（后续移动另起快照）
+                                self._bump_move_session()
                                 if self.selected_gap == gap:
                                     self.selected_gap = None
                                 else:
@@ -550,6 +556,8 @@ class EventsMixin:
                                     self._tut_on_gap_clicked()
                             # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，不选中、不平移
                         elif block is not None and self.selected_gap is not None and selectable:
+                            # 重新选中滑块组 → 结束上一次选中会话（后续移动另起快照）
+                            self._bump_move_session()
                             direction, line = self.selected_gap
                             self.game.opt(direction, line, block)
                             self.selected_block = block
@@ -580,6 +588,7 @@ class EventsMixin:
                     
                     elif event.button == 3:
                         # 右键取消选中
+                        self._bump_move_session()
                         self.selected_gap = None
                         self.selected_block = None
                         for b in self.game.blocks:
@@ -635,25 +644,25 @@ class EventsMixin:
                     elif self._is_action_triggered(event, 'load'):
                         self.load_from_file()
                     
-                    elif self._is_action_triggered(event, 'undo'):
+                    elif self._is_action_triggered(event, 'undo') and not self._tut_board_locked():
                         self.undo()
                         self.undo_held = True
                         self.undo_first = True
                         self.undo_timer = pygame.time.get_ticks()
                     
-                    elif self._is_action_triggered(event, 'redo'):
+                    elif self._is_action_triggered(event, 'redo') and not self._tut_board_locked():
                         self.redo()
                         self.redo_held = True
                         self.redo_first = True
                         self.redo_timer = pygame.time.get_ticks()
                     
-                    elif self._is_action_triggered(event, 'shuffle'):
+                    elif self._is_action_triggered(event, 'shuffle') and not self._tut_board_locked():
                         self.shuffle_puzzle()
                     
-                    elif self._is_action_triggered(event, 'reset'):
+                    elif self._is_action_triggered(event, 'reset') and not self._tut_board_locked():
                         self.reset_puzzle()
                     
-                    elif self._is_action_triggered(event, 'auto_solve'):
+                    elif self._is_action_triggered(event, 'auto_solve') and not self._tut_board_locked():
                         self._start_auto_solve()
                     
                     elif self._is_action_triggered(event, 'macro_record'):
@@ -682,6 +691,9 @@ class EventsMixin:
                         self.macro_notify_timer = 90
                     
                     else:
+                        # 教程解法播放中：锁定棋盘操作（方向键移动）
+                        if self._tut_board_locked():
+                            continue
                         # 方向键移动（需要匹配配置且无修饰键冲突；由 control_mouse_kb 开关控制）
                         if getattr(self, 'control_mouse_kb', True):
                             move_actions = {
@@ -1055,18 +1067,15 @@ class EventsMixin:
         return True, f"已导入地图：{self.game.m}×{self.game.n}，{len(self.game.blocks)} 块"
 
     def _do_set_mode(self, mode):
-        """切换练习/计时模式（幂等）。返回 (ok, message)。"""
-        if mode not in ('practice', 'timed'):
-            return False, "mode 必须是 practice 或 timed"
+        """切换练习/竞速/创造模式（幂等）。返回 (ok, message)。"""
+        names = {'practice': '练习', 'timed': '竞速', 'create': '创造'}
+        if mode not in names:
+            return False, "mode 必须是 practice / timed / create"
         if self.timer_state == 'running':
             return False, "计时中无法切换模式"
-        if self.game_mode == mode:
-            return True, f"已是{'计时' if mode == 'timed' else '练习'}模式"
-        self.toggle_game_mode()
-        # toggle_game_mode 内部在 running 时会拒绝；此处双检
-        if self.game_mode != mode:
+        if not self.set_game_mode(mode):
             return False, "模式切换失败"
-        return True, f"已切换为{'计时' if mode == 'timed' else '练习'}模式"
+        return True, f"已切换为{names[mode]}模式"
 
     def _dispatch_payload_action(self, action, payload, resp_q):
         """HTTP 富 JSON body 通道：动作名与 CLI 同名，参数从 dict 取。"""
@@ -1657,7 +1666,7 @@ class EventsMixin:
                         if resp_q:
                             resp_q.put({'ok': True, 'mode': self.game_mode})
                         else:
-                            print(f"当前模式: {'计时' if self.game_mode == 'timed' else '练习'}")
+                            print(f"当前模式: {self._mode_name()}")
                     else:
                         ok, msg = self._do_set_mode(parts[1].lower())
                         self._cmd_reply(resp_q, ok, msg)
@@ -2544,7 +2553,9 @@ class EventsMixin:
 
             self.game.commit_move(final_positions)
             self.step_count += 1
-            self.game_history.save_snapshot(self.game, move_info)
+            # 宏播放逐步留档（macro_executing=True → 不合并，保持每步可撤销）
+            self.game_history.save_snapshot(self.game, move_info,
+                                            self._move_merge_key())
             self._pending_move_info = None
             self.macro_exec_index += 1
             self._maybe_show_solved_popup()

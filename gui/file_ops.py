@@ -376,6 +376,13 @@ class FileOpsMixin:
             }
             if snap.get('move_info'):
                 snap_data['move_info'] = snap['move_info']
+            # 合并快照：逐步动作日志与步数（会话标识不入盘，载入后不承接旧会话）
+            if snap.get('moves'):
+                snap_data['moves'] = snap['moves']
+            if snap.get('steps'):
+                snap_data['steps'] = snap['steps']
+            if snap.get('step_total'):
+                snap_data['step_total'] = snap['step_total']
             history_data['snapshots'].append(snap_data)
         data = {
             'version': 1,
@@ -406,19 +413,30 @@ class FileOpsMixin:
         self.current_n = n
         self.current_step = step
 
-        self.step_count = save_data.get('step_count', 0)
-
         self.game_history.reset()
         history_data = save_data.get('history', {})
         snapshots = history_data.get('snapshots', [])
-        for snap in snapshots:
+        for i, snap in enumerate(snapshots):
+            move_info = snap.get('move_info')
+            moves = snap.get('moves')
+            if moves is None:
+                # 旧存档：每快照一步
+                moves = [move_info] if move_info else []
             entry = {
                 'matrix': snap['matrix'],
                 'bounds': snap['bounds'],
-                'move_info': snap.get('move_info')
+                'move_info': move_info,
+                'moves': moves,
+                'steps': snap.get('steps', 1 if move_info else 0),
+                # 旧存档无该字段：参考态在第 0 条，第 i 条即 i 步
+                'step_total': snap.get('step_total', i),
+                # 载入后不承接旧选中会话，避免与后续移动误合并
+                'session_key': None,
             }
             self.game_history.history.append(entry)
         self.game_history.history_index = history_data.get('history_index', 0)
+        # 步数以历史累计值为准（合并快照一条覆盖多步，不能再按索引算）
+        self.step_count = self.game_history.current_step_total()
 
         # 从快照重建游戏状态
         self.game = SliderMatrix(m, n)

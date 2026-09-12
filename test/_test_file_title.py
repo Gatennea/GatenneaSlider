@@ -40,8 +40,13 @@ def _check(name, cond, detail=''):
 
 
 def _setup_moveable(gui):
-    """5×5 去掉第 0 行 → 顶部整条缝（h-gap line 0），可上移。"""
-    coords = {(r, c) for r in range(1, 5) for c in range(5)}
+    """5×5 版面铺满第 0~3 行（4 行 × 5 列）。
+
+    存在有效横缝 line 1（0 <= 1 < 3），可把上半（第 0~1 行）沿缝隙向右平移
+    step 格且保持单连通——这是真正改变局面的移动。
+    （不能用「整片棋形一起平移」那种无效移动：形状不变，已被 GUI 禁止。）
+    """
+    coords = {(r, c) for r in range(4) for c in range(5)}
     gui.game.blocks = [Block(list(p)) for p in sorted(coords)]
     gui.game.update_matrix()
     gui.game_history.reset()
@@ -51,13 +56,14 @@ def _setup_moveable(gui):
     gui.selected_block = None
 
 
-def _move_up(gui):
-    gui.selected_gap = ('h', 0)
-    block = next((b for b in gui.game.blocks if b.location == [1, 0]), None)
+def _do_move(gui):
+    """选横缝 line 1 的上半（第 0~1 行）向右滑动 step 格。"""
+    gui.selected_gap = ('h', 1)
+    block = next((b for b in gui.game.blocks if b.location == [0, 0]), None)
     if block is None:
         return False
-    gui.game.opt('h', 0, block)
-    return bool(gui.move_selected_blocks('w'))
+    gui.game.opt('h', 1, block)
+    return bool(gui.move_selected_blocks('d'))
 
 
 def main():
@@ -66,6 +72,7 @@ def main():
     gui.animation_enabled = False
     gui._readonly = False          # 屏蔽 temp_history 可能残留的只读标记
     gui.save_readonly_flag = False
+    gui.prevent_overwrite_flag = False   # 屏蔽 config 残留的「防止覆盖」开关
     pygame.display.set_caption('')  # 清空，确保下面从空标题开始
     gui._window_title = ''
     gui.new_puzzle(5, 5, 2)
@@ -76,7 +83,7 @@ def main():
     _check('初始标题含"未存檔"', '未存檔' in gui._window_title, gui._window_title)
 
     # ---- 2. 移动后（无路径）仍显示未存檔 ----
-    assert _move_up(gui)
+    assert _do_move(gui)
     _check('无路径移动后仍"未存檔"', '未存檔' in gui._window_title and '*' not in gui._window_title,
            gui._window_title)
 
@@ -89,7 +96,7 @@ def main():
 
     # ---- 4. 再移动（重建可动板面） → 星号 ----
     _setup_moveable(gui)
-    assert _move_up(gui)
+    assert _do_move(gui)
     _check('移动后星号出现', '*' in gui._window_title, gui._window_title)
 
     # ---- 5. 保存 → 星号消失 ----

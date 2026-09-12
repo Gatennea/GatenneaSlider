@@ -33,6 +33,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from history import expand_snapshot_moves  # noqa: E402
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
 SAVE_DIR = os.path.join(ROOT, 'save')
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
@@ -178,34 +180,40 @@ def load_human_data():
             continue
         m, n = data['puzzle']['m'], data['puzzle']['n']
         step_count = data['step_count']
-        snapshots = data['history']['snapshots'][1:]  # 跳過參考狀態
+        snaps = data['history']['snapshots']
+        # 合併快照（同一次選中連續移動）只存末態矩陣：逐步展開還原中間態，
+        # 標籤用該快照的累計步數（step_total）回推，兼容舊存檔（無此欄位）。
+        for i in range(1, len(snaps)):
+            expanded = expand_snapshot_moves(snaps[i - 1], snaps[i])
+            total = snaps[i].get('step_total', i)
+            n_exp = len(expanded)
+            for j, (_pre, post, _mv) in enumerate(expanded):
+                bounds = post['bounds']
+                min_r, min_c = bounds['min_row'], bounds['min_col']
+                mat = post['matrix']
+                coords = []
+                for r_i, row in enumerate(mat):
+                    for c_j, val in enumerate(row):
+                        if val == 1:
+                            coords.append((min_r + r_i, min_c + c_j))
+                # 歸一化
+                if not coords:
+                    continue
+                rs = [r for r, _ in coords]
+                cs = [c for _, c in coords]
+                mr, mc = min(rs), min(cs)
+                norm = [(r - mr, c - mc) for r, c in coords]
+                rows = max(r for r, _ in norm) + 1
+                cols = max(c for _, c in norm) + 1
+                flat = [0] * (rows * cols)
+                for r, c in norm:
+                    flat[r * cols + c] = 1
 
-        for i, snap in enumerate(snapshots):
-            bounds = snap['bounds']
-            min_r, min_c = bounds['min_row'], bounds['min_col']
-            mat = snap['matrix']
-            coords = []
-            for r_i, row in enumerate(mat):
-                for c_j, val in enumerate(row):
-                    if val == 1:
-                        coords.append((min_r + r_i, min_c + c_j))
-            # 歸一化
-            if not coords:
-                continue
-            rs = [r for r, _ in coords]
-            cs = [c for _, c in coords]
-            mr, mc = min(rs), min(cs)
-            norm = [(r - mr, c - mc) for r, c in coords]
-            rows = max(r for r, _ in norm) + 1
-            cols = max(c for _, c in norm) + 1
-            flat = [0] * (rows * cols)
-            for r, c in norm:
-                flat[r * cols + c] = 1
-
-            feat = build_features(flat, rows, cols, m, n)
-            X.append(feat)
-            # 剩餘步數 = 總步數 - 當前索引
-            y.append(step_count - i)
+                feat = build_features(flat, rows, cols, m, n)
+                X.append(feat)
+                # 剩餘步數 = 總步數 - 該步完成後的累計步數（合併快照內逐步回推）
+                done = total - (n_exp - 1 - j)
+                y.append(step_count - done)
 
     print(f"人類記錄: {len(X):,} 狀態")
     return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)

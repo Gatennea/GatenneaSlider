@@ -291,6 +291,9 @@ class VirtualKeyboardMixin:
 
     def _vk_trigger_action(self, action):
         """触发虚拟键盘按钮对应的操作"""
+        # 教程解法播放中：锁定棋盘操作（撤销/重做/移动/粘滞）
+        if self._tut_board_locked():
+            return
         if action == 'sticky':
             # 粘滞开关：切换撤销/重做 连续/单步
             self.vk_sticky = not self.vk_sticky
@@ -340,6 +343,8 @@ class VirtualKeyboardMixin:
 
     def _vk_do_jump(self):
         """虚拟键盘“跳到某步”：输入的数字对应历史记录第 N 步的状态"""
+        if self._tut_board_locked():
+            return  # 教程解法播放中：锁定棋盘操作
         if not self.vk_jump_buffer:
             self.vk_jump_focus = False
             return

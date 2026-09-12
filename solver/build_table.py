@@ -84,8 +84,9 @@ AUTOSAVE_INTERVAL = 60.0       # 秒：定时保存间隔
 AUTOSAVE_STATES = 50000        # 每处理多少新状态触发一次保存
 GUI_REFRESH_MS = 500           # GUI 刷新间隔（毫秒）
 PAUSE_CHECK_EVERY = 200        # 每处理多少个 frontier 状态检查一次暂停
-PARALLEL_BATCH = 500           # 并行处理时每批状态数（批间可暂停/停止）
+PARALLEL_BATCH = 2000           # 并行处理时每批状态数（批间可暂停/停止）
 PARALLEL_WORKERS = min(16, multiprocessing.cpu_count())  # 并行进程数
+MAX_TASKS_PER_CHILD = 10000     # 子进程处理多少任务后重启（过高浪费内存，过低导致频繁重启）
 
 
 def _worker_preds(args):
@@ -308,7 +309,7 @@ class BuildWorker(threading.Thread):
         # 并行进程池（全程复用，maxtasksperchild 定期回收子进程释放缓存）
         pool = multiprocessing.Pool(
             processes=PARALLEL_WORKERS,
-            maxtasksperchild=200,  # 每 200 个任务重启子进程，清除 lru_cache 堆积
+            maxtasksperchild=MAX_TASKS_PER_CHILD,
         )
         try:
             while self.frontier and not self.stop_flag:

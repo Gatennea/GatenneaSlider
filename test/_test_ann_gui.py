@@ -52,11 +52,16 @@ def _find_block(gui, rc):
 
 
 def _apply_gui_action(gui, action, rep):
-    """用 GUI 原生路径执行一步（opt 选中 + 方向移动，关动画即即时提交）。"""
+    """用 GUI 原生路径执行一步（opt 选中 + 方向移动，关动画即即时提交）。
+
+    每次调用都模拟「重新点缝隙 + 点方块」的选中变化（结束上一个选中会话），
+    与真实点击一致：否则同缝隙的连续移动会被合并成一个快照。
+    """
     gap_type, line, _side, move_dir = action
     block = _find_block(gui, rep)
     if block is None:
         return False
+    gui._bump_move_session()
     gui.selected_gap = (gap_type, line)
     gui.game.opt(gap_type, line, block)
     if not [b for b in gui.game.blocks if b.be_opted]:
@@ -72,6 +77,21 @@ def main():
     gui._readonly = False          # 屏蔽工作区 temp_history 残留的只读标记
     gui.save_readonly_flag = False
     ok_all = True
+
+    # ---- 0. 隐藏入口四键判定（同时按住 B / Z / M / S）----
+    import pygame
+
+    def _kd(k):
+        return pygame.event.Event(pygame.KEYDOWN, key=k, mod=0)
+
+    for k in (pygame.K_b, pygame.K_z, pygame.K_m):
+        assert not gui.handle_annotation_event(_kd(k))
+    assert not gui.annotation_mode, '只按三个键不应开启标注模式'
+    assert gui.handle_annotation_event(_kd(pygame.K_s))
+    assert gui.annotation_mode, 'B/Z/M/S 隐藏入口未开启标注模式'
+    gui._ann_toggle_mode()          # 关掉，后续走正常流程
+    assert not gui.annotation_mode
+    print('隐藏入口 B/Z/M/S: OK')
 
     # ---- 1. 生成起点状态（5×5 step2, 2 空位, 固定种子）----
     seed = 3
@@ -247,15 +267,6 @@ def main():
         # 默认可立即开始（进入 target，可直接标注）
         gui._ann_abort('done')
 
-        # build 输入框持久化：pad 改成 3 → 关闭 → 重开仍为 3
-        gui._ann_btn_manual_build()
-        gui._ann_build_fields['pad'] = '3'
-        gui._ann_close_sub_dialog()
-        gui._ann_saved_inputs = None
-        gui._ann_btn_manual_build()
-        assert gui._ann_build_fields['pad'] == '3', 'build pad 未持久化'
-        gui._ann_close_sub_dialog()
-
         # gen 输入框持久化：hole 改成 3 → 关闭 → 重开仍为 3
         gui._ann_btn_random_gen()
         gui._ann_gen_fields['hole'] = '3'
@@ -268,6 +279,75 @@ def main():
     finally:
         gui.config_dir = old_cfg
         shutil.rmtree(tmpc, ignore_errors=True)
+
+    # ---- 7. 创造模式：模式开关三态 + 造题即当前谜题 ----
+    print('创造模式：')
+    gui._ann_abort('清理')
+    gui.annotation_mode = False
+    gui.set_game_mode('practice')
+    seq = []
+    for _ in range(3):
+        gui.toggle_game_mode()
+        seq.append(gui.game_mode)
+    assert seq == ['timed', 'create', 'practice'], f'模式循环异常：{seq}'
+    gui.set_game_mode('create')
+    assert gui.create_mode and gui._ann_view == 'home', '进入创造模式应停在创造首页'
+    # 创造模式全程禁止滑动（与练习模式功能解耦）
+    gui.move_selected_blocks('a')
+    assert '创造模式' in gui.macro_notify_msg, '创造模式应禁止滑动并给出提示'
+
+    # 随机生成 → 直接成为当前谜题（留在创造首页）
+    gui._ann_btn_random_gen()
+    assert gui._ann_sub_dialog == 'gen'
+    gui._ann_gen_fields = {'m': '4', 'n': '4', 'step': '2',
+                           'hole': '1', 'dent': '1'}
+    gui._ann_gen_confirm()
+    assert gui._ann_view == 'home', '创造模式生成后应留在创造首页'
+    assert gui.create_mode and (gui.current_m, gui.current_n) == (4, 4)
+    assert len(gui.game_history.history) == 1, '新谜题历史应为 1 条'
+    assert not gui.game.is_solved(), '生成的谜题不应是还原态'
+
+    # 手动构造 → 初始参数跟随当前谜题（刚生成的 4×4 step2）
+    gui._ann_btn_manual_build()
+    assert gui._ann_view == 'build'
+    assert (gui._ann_build_fields['m'], gui._ann_build_fields['n'],
+            gui._ann_build_fields['step']) == ('4', '4', '2'), \
+        '构造初始参数应跟随当前谜题'
+    coords = set(gui._ann_solved_coords(5, 5))
+    coords.discard((1, 1))
+    coords.add((-1, 1))
+    gui._ann_build_fields.update({'m': '5', 'n': '5', 'step': '2'})
+    gui._ann_build_coords = coords
+    gui._ann_build_apply()
+    assert gui._ann_view == 'home', '创造模式构造后应留在创造首页'
+    bs = gui._game_coords()
+    assert (1, 1) not in bs and (-1, 1) in bs, '构造结果未落到棋盘'
+
+    # 可构造范围 = 棋形边界盒各扩一圈（不再并上 m×n 区域，避免撑成大片无关矩形）
+    gui._ann_build_coords = {(0, 0)}
+    assert gui._ann_build_grid(5, 5) == (-1, 1, -1, 1), \
+        f'边界盒外扩异常：{gui._ann_build_grid(5, 5)}'
+    gui._ann_build_coords = {(0, 0), (7, 8)}
+    assert gui._ann_build_grid(5, 5) == (-1, 8, -1, 9), \
+        f'边界盒外扩异常：{gui._ann_build_grid(5, 5)}'
+    # 离原点较远时不应被 m×n 区域撑大
+    gui._ann_build_coords = {(6, 6), (7, 7)}
+    assert gui._ann_build_grid(5, 5) == (5, 8, 5, 8), \
+        f'远离原点时外扩异常：{gui._ann_build_grid(5, 5)}'
+    # 空画布回退到 m×n 各扩一圈
+    gui._ann_build_coords = set()
+    assert gui._ann_build_grid(5, 5) == (-1, 5, -1, 5), \
+        f'空画布外扩异常：{gui._ann_build_grid(5, 5)}'
+
+    # 构造视图禁止滑动
+    gui._ann_btn_manual_build()
+    assert gui.move_selected_blocks('a') is False, '构造视图不应允许滑动'
+    gui._ann_build_cancel()
+
+    # 退出创造 → 练习模式
+    gui._ann_exit_create()
+    assert gui.game_mode == 'practice' and not gui.create_mode
+    print('  三态循环 / 生成 / 构造 / 退出: OK')
 
     print('\n全部通过' if ok_all else '\n存在失败')
     return 0 if ok_all else 1

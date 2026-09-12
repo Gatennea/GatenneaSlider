@@ -4,32 +4,47 @@
 
 实现闯关模式与新手教程：
 - 教程进度持久化（config.json 的 tutorial 键）
-- 关卡数据驱动元数据（TUTORIAL_LEVELS，含子题 sublevels / 待补充 pending）
-- 文案抽离：正文集中存于 gui/tutorial_texts.json（本模块加载，代码内不写正文）
-- 关卡列表选择：进入教程先显示可玩/锁定的关卡列表
-- 第 1 关：交互操作教学状态机（点缝隙→点滑块→移动→撤销→重做→复原演示→规则讲解+过关）
-- 第 2/3/4 关：每关含多个子题（填洞/多洞分组/缺口），每子题「少量引导+还原过关」，
-  按子题序号依次通过；第 5/6 关维持“待补充”锁定
+- 关卡完全数据驱动：扫描 beginner_archive/*.json 自动识别关卡与小关，
+  标题/正文取自 gui/tutorial_texts.json（代码内不写正文，缺失时回退“（待補充）”）。
+  新增关卡只需放入存檔 + 补文案，本文件无需改动。
+- 关卡列表选择：进入教程先显示小关列表（每个关卡一行标题，其下逐个小关一行）；
+  无存檔的关卡不显示。
+- 第 1 关（子题 id '1'）：交互操作教学状态机
+  （点缝隙→点滑块→移动→撤销→重做→复原演示→规则讲解+过关）
+- 其余关：每个小关「少量引导 + 还原过关」，按小关序号依次通过
 - 解法查看：
-  - 第 1 关 1.json 无 move_info → 回退既有自动求解器
-  - 第 2/3/4 关存档含完整 move_info 链 → 直接回放（更稳定快速）
-  - 查看解法时临时调慢动画速度，解法结束后（宏播放结束）自动还原
+  - 第 1 关（1~3*3 状态少）：直接用 IDA* 求解器
+  - 其余关：撤回初始状态，播放存檔的历史重做动画（不调用求解器）
+  - 查看解法时临时调慢动画速度，解法结束后自动还原
 - 过关判定与解锁（复用 is_solved / _maybe_show_solved_popup 管道）
 """
 
 import os
+import sys
 import json
 
 import pygame
 
-# 项目根目录（beginner_archive 所在处 = GUI.py 所在目录的上一级）
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def _tut_bundle_base():
+    """教程资源根目录：打包后为 sys._MEIPASS，开发时为项目根目录。
+
+    打包后 tutorial_texts.json 位于 <base>/gui/、关卡存档位于 <base>/beginner_archive/
+    （见 Gatenneaslider.spec 的 datas）。
+    """
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# 项目根目录（beginner_archive 所在处）
+_PROJECT_ROOT = _tut_bundle_base()
 
 # 查看解法时的动画速度（毫秒/步，越小越快；默认 300 → 临时调慢到此值）
 SOLUTION_ANIM_MS = 600
 
 # ---------------- 文案（从 JSON 加载，代码内不写正文） ----------------
-_TEXT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tutorial_texts.json')
+_TEXT_FILE = os.path.join(_tut_bundle_base(), 'gui', 'tutorial_texts.json')
 try:
     with open(_TEXT_FILE, 'r', encoding='utf-8') as _f:
         _TUT_TEXTS = json.load(_f)
@@ -43,59 +58,74 @@ def _text_level(level_id):
     return _TUT_TEXTS.get('levels', {}).get(str(level_id), {})
 
 
-# ---------------- 关卡元数据（数据驱动层） ----------------
-# 后续新增关卡只需在此追加条目（含子题与“困难任务”扩展位），无需改教程代码。
-TUTORIAL_LEVELS = [
-    {
-        'id': 1,
-        'title': '第 1 关·基本操作',
-        'sublevels': ['1'],
-        'pending': False,
-    },
-    {
-        'id': 2, 'title': '第 2 关·填洞',
-        'sublevels': ['2.1', '2.2', '2.3'],
-        'pending': False,
-    },
-    {
-        'id': 3, 'title': '第 3 关·多洞与分组',
-        'sublevels': ['3.1', '3.2'],
-        'pending': False,
-    },
-    {
-        'id': 4, 'title': '第 4 关·缺口',
-        'sublevels': ['4.1', '4.2', '4.3'],
-        'pending': False,
-    },
-    # ---- 后续关卡扩展位（存稿/元数据未齐备，教程中显示“待补充”） ----
-    {'id': 5, 'title': '第 5 关·刚体凸起', 'sublevels': [], 'pending': True},
-    {'id': 6, 'title': '第 6 关·综合',     'sublevels': [], 'pending': True},
-]
+# ---------------- 关卡元数据（数据驱动：自动识别存檔 + 文案） ----------------
+# 关卡集合 = beginner_archive/ 下所有 <子题id>.json 的整数前缀（'2.1' → 第 2 关）；
+# 标题/正文取自 gui/tutorial_texts.json 的 levels.<关卡id>。
+# 新增关卡只需放入存檔 + 在文案里补条目，本文件无需改动。
+# 唯一例外：第 1 关（子题 id '1'）是交互式操作教学，走专门的状态机。
+_PLACEHOLDER = '（待補充）'
+_ARCHIVE_DIR = os.path.join(_PROJECT_ROOT, 'beginner_archive')
+
+
+def _sublevel_sort_key(sublevel_id):
+    """子题 id → 排序键 (关卡号, 子题号)；非法返回 None。'1'→(1,0)，'2.1'→(2,1)"""
+    parts = str(sublevel_id).split('.')
+    if len(parts) > 2:
+        return None
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) == 2 else 0
+    except ValueError:
+        return None
+    return (major, minor)
+
+
+def _discover_sublevels():
+    """扫描 beginner_archive/*.json，返回按 (关卡号, 子题号) 升序排列的子题 id 列表。"""
+    try:
+        names = os.listdir(_ARCHIVE_DIR)
+    except OSError:
+        return []
+    ids = [n[:-5] for n in names
+           if n.lower().endswith('.json') and _sublevel_sort_key(n[:-5])]
+    ids.sort(key=_sublevel_sort_key)
+    return ids
+
+
+def _build_tutorial_levels():
+    """由存檔目录 + 文案自动构建关卡元数据（无存檔的关卡不出现）。"""
+    by_level = {}
+    for sid in _discover_sublevels():
+        by_level.setdefault(_sublevel_sort_key(sid)[0], []).append(sid)
+    return [
+        {
+            'id': major,
+            'title': _text_level(major).get('title') or f'第 {major} 关',
+            'sublevels': subs,
+            'pending': False,
+        }
+        for major, subs in sorted(by_level.items())
+    ]
+
+
+TUTORIAL_LEVELS = _build_tutorial_levels()
 TUTORIAL_LEVELS_BY_ID = {lv['id']: lv for lv in TUTORIAL_LEVELS}
 
-# 子题 id -> 存档路径
-SUBLEVEL_ARCHIVE = {
-    '1': 'beginner_archive/1.json',
-    '2.1': 'beginner_archive/2.1.json',
-    '2.2': 'beginner_archive/2.2.json',
-    '2.3': 'beginner_archive/2.3.json',
-    '3.1': 'beginner_archive/3.1.json',
-    '3.2': 'beginner_archive/3.2.json',
-    '4.1': 'beginner_archive/4.1.json',
-    '4.2': 'beginner_archive/4.2.json',
-    '4.3': 'beginner_archive/4.3.json',
-}
+
+def _sublevel_archive_path(sublevel_id):
+    """子题存档路径（存檔缺失时仍返回预期路径，由调用方判断存在性）"""
+    return os.path.join(_ARCHIVE_DIR, f'{sublevel_id}.json')
 
 
 def _sublevel_title(sublevel_id):
-    """取子题显示标题（如 2.1 单洞填補）"""
-    if sublevel_id == '1':
-        return _text_level(1).get('title', '第 1 关')
-    for lv in TUTORIAL_LEVELS:
-        t = _text_level(lv['id']).get('sublevel_titles', {}).get(sublevel_id)
-        if t:
-            return t
-    return sublevel_id
+    """取子题显示标题（如 2.1 单洞填补）；文案缺失时回退占位符。"""
+    key = _sublevel_sort_key(sublevel_id)
+    if key is None:
+        return sublevel_id
+    if sublevel_id == '1':        # 第 1 关整关即一个小关，用关卡标题
+        return _text_level(1).get('title') or _PLACEHOLDER
+    return (_text_level(key[0]).get('sublevel_titles', {}).get(sublevel_id)
+            or _PLACEHOLDER)
 
 
 # 面板 UI 配色
@@ -107,8 +137,6 @@ _TUT_BTN_HOVER = (82, 88, 108)
 _TUT_BTN_TXT = (235, 238, 245)
 _TUT_BTN_MAIN_BG = (92, 76, 40)
 _TUT_BTN_MAIN_HOVER = (120, 100, 52)
-_TUT_LOCKED_BG = (48, 48, 55)
-_TUT_LOCKED_TXT = (150, 150, 155)
 
 
 class TutorialMixin:
@@ -119,12 +147,12 @@ class TutorialMixin:
     def _tut_init_state(self):
         """初始化教程状态（在 __init__ 尾部、load_last_state() 之前调用）"""
         self.tutorial_active = False      # 是否处于教程模式
-        self.tut_level = 1                # 当前教程关卡 id
+        self.tut_level = 1                # 当前教程关卡 id（0=关卡列表视图）
         self.tut_sublevel = None          # 当前子题 id（如 '2.1'；关卡1为 None）
-        self.tut_step = 0                 # 步骤：关卡1=状态机(1-7)；2/3/4 关 1=子题还原 7=已过关
+        self.tut_step = 0                 # 步骤：关卡1=状态机(1-7)；其余关 1=子题还原 7=已过关
         self.tut_selecting_levels = False # 是否显示关卡选择列表
-        self.tut_solution_ops = []        # 当前子题的解法回放 ops（关卡1为 [] 走自动求解器）
         self.tut_anim_slowed = False      # 查看解法是否已临时调慢动画
+        self.tut_solution_replaying = False  # 解法播放中：抑制过关判定 + 锁定棋盘操作
         self.tut_solution_playing = False # 解法是否正在播放（用于结束时还原动画速度）
         self._tut_saved_anim_duration = 300
         self.tut_progress = {
@@ -187,7 +215,7 @@ class TutorialMixin:
 
     def _tut_show_level_select(self):
         """显示关卡选择列表（教学面板切换为关卡列表视图）"""
-        self._tut_restore_anim_speed()
+        self._tut_stop_solution_replay()   # 中断可能正在进行的解法回放并解锁棋盘
         self.tutorial_active = True
         self.tut_selecting_levels = True
         self.tut_level = 0          # 关卡列表视图用『0』表示（标题显示“选择关卡”）
@@ -205,6 +233,7 @@ class TutorialMixin:
 
     def _tut_skip(self):
         """跳过教程：回到普通练习模式，已完成进度保留"""
+        self._tut_stop_solution_replay()
         self.tutorial_active = False
         self.tut_selecting_levels = False
         self.tut_show_prompt = False
@@ -216,9 +245,9 @@ class TutorialMixin:
 
     def _tut_exit(self):
         """主动退出教程：回到普通练习模式"""
+        self._tut_stop_solution_replay()
         self.tutorial_active = False
         self.tut_selecting_levels = False
-        self._tut_restore_anim_speed()
         if not self.tut_progress.get('started'):
             self.tut_progress['started'] = True
         self._tut_save_progress()
@@ -231,8 +260,8 @@ class TutorialMixin:
     def _tut_load_level(self, level_id: int) -> bool:
         """载入指定关卡：
         - 第 1 关：进入操作教学（完整 4×4 演示盘，步骤 1）
-        - 第 2/3/4 关：进入该关第一个未完成的子题（均已完成则从第一个重玩）
-        - 待补充关返回 False
+        - 其余关：进入该关第一个未完成的子题（均已完成则从第一个重玩）
+        - 无存檔的关卡返回 False
         """
         level = TUTORIAL_LEVELS_BY_ID.get(level_id)
         if level is None or level.get('pending'):
@@ -240,13 +269,8 @@ class TutorialMixin:
             self.macro_notify_timer = 180
             return False
 
-        self._stop_continuous_undo_redo()
+        self._tut_stop_solution_replay()
         self.game_mode = 'practice'
-        if getattr(self, 'macro_executing', False):
-            self.macro_executing = False
-        if getattr(self, '_auto_solve_running', False):
-            self._auto_solve_cancel = True
-        self._tut_restore_anim_speed()
         self.tut_selecting_levels = False
         self.tutorial_active = True
         self.tut_level = level_id
@@ -261,13 +285,12 @@ class TutorialMixin:
             self.center_map()
             self.tut_sublevel = None
             self.tut_step = 1
-            self.tut_solution_ops = []
             self._tut_save_progress()
             self.macro_notify_msg = level['title']
             self.macro_notify_timer = 180
             return True
 
-        # 第 2/3/4 关：选第一个未完成子题
+        # 其余关：选第一个未完成子题
         subs = level['sublevels']
         done = self.tut_progress.setdefault('subcompleted', {}).setdefault(level_id, [])
         start = next((s for s in subs if s not in done), subs[0])
@@ -277,19 +300,14 @@ class TutorialMixin:
     def _tut_load_sublevel(self, sublevel_id: str) -> bool:
         """载入某子题的打乱题并进入“还原过关”步骤（tut_step=1）。
 
-        从存档 rebuild history 后跳回 index 0（打乱态）供玩家还原，
-        并预计算该子题的解法回放 ops（存档含完整 move_info 链）。
+        从存档 rebuild history 后跳回 index 0（打乱态）供玩家还原；
+        查看解法时再由存档的历史重做动画回放（见 _tut_replay_solution）。
         """
-        archive = SUBLEVEL_ARCHIVE.get(sublevel_id)
         level_id = self._tut_level_of_sublevel(sublevel_id)
-        if not archive:
+        path = _sublevel_archive_path(sublevel_id)
+        if not os.path.exists(path):
             self.macro_notify_msg = "此关卡待补充"
             self.macro_notify_timer = 180
-            return False
-        path = os.path.join(_PROJECT_ROOT, archive)
-        if not os.path.exists(path):
-            self.macro_notify_msg = f"关卡存档缺失：{archive}"
-            self.macro_notify_timer = 240
             return False
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -300,13 +318,9 @@ class TutorialMixin:
             print(f"[教程] 读取存档失败: {e}")
             return False
 
-        # 停掉可能正在进行的计时/求解/动画
+        # 停掉可能正在进行的求解/动画/解法回放
         self.game_mode = 'practice'
-        if getattr(self, 'macro_executing', False):
-            self.macro_executing = False
-        if getattr(self, '_auto_solve_running', False):
-            self._auto_solve_cancel = True
-        self._tut_restore_anim_speed()
+        self._tut_stop_solution_replay()
         self.tut_selecting_levels = False
         self.tutorial_active = True
         self.tut_level = level_id
@@ -314,8 +328,10 @@ class TutorialMixin:
         self.tut_step = 1
         self.tut_panel_scroll = 0
 
-        self._stop_continuous_undo_redo()
         self._load_save_data(save_data)
+        # 教程关卡始终可操作：忽略存档里的 readonly 标记
+        # （教程要求玩家手动还原；该标记可能只是保存时「只读保存」开关留下的）
+        self._readonly = False
         self.current_file_path = None
         self._reset_file_dirty()
         # 跳到打乱态（index 0）：history_index 可能停在还原态，必须回到起点供玩家还原
@@ -323,64 +339,20 @@ class TutorialMixin:
             self.jump_to_history_index(0)
         self.center_map()
 
-        # 预计算解法回放 ops（存档含完整 move_info 链）
-        self.tut_solution_ops = self._tut_compute_solution_ops(save_data)
-
         self.macro_notify_msg = f"第 {level_id} 关 · {_sublevel_title(sublevel_id)}"
         self.macro_notify_timer = 180
         return True
 
     def _tut_level_of_sublevel(self, sublevel_id: str) -> int:
-        for lv in TUTORIAL_LEVELS:
-            if sublevel_id in lv['sublevels']:
-                return lv['id']
-        return 0
-
-    @staticmethod
-    def _tut_compute_solution_ops(save_data) -> list:
-        """把存档的 move_info 链转为宏执行 op 列表。
-
-        存档 snapshots[i].move_info 描述从状态 i-1 到 i 的移动，
-        moved_positions 是「移动前」的位置集合（事件写入时在 commit_move 之前
-        取 b.location；annotation.move_group_geometry 亦按此约定）。
-        因此 rep_cell 直接用 moved_positions[0]（移动前坐标，宏执行时该格必存在），
-        side 依该格相对缝隙线的位置推断（同 infer_side 约定）。
-        """
-        ops = []
-        snapshots = save_data.get('history', {}).get('snapshots', [])
-        for snap in snapshots:
-            mi = snap.get('move_info')
-            if not mi:
-                continue
-            gap_type = mi.get('gap_type')
-            gap_line = mi.get('gap_line')
-            direction = mi.get('direction')
-            step = mi.get('step', 1)
-            moved = mi.get('moved_positions') or []
-            if not moved or not gap_type or not direction:
-                continue
-            rr, cc = moved[0]
-            # side（缝隙哪一侧，宏执行 rep_cell 未命中时的 fallback）：
-            # h 缝隙：above=r<=gap_line / below=r>gap_line；v 缝隙：left=c<=gap_line / right=c>gap_line
-            if gap_type == 'h':
-                side = 'below' if rr > gap_line else 'above'
-            else:
-                side = 'right' if cc > gap_line else 'left'
-            ops.append({
-                'gap_type': gap_type,
-                'gap_line': gap_line,
-                'side': side,
-                'direction': direction,
-                'step': step,
-                'rep_cell': [rr, cc],
-            })
-        return ops
+        """子题 id → 所属关卡号（'2.1' → 2）"""
+        key = _sublevel_sort_key(sublevel_id)
+        return key[0] if key else 0
 
     # ---------------- 教学状态机 ----------------
 
     def _tut_reload_challenge(self):
         """（第 1 关）切回 3×3 打乱挑战盘（讲解步长/尺寸时底部标题显示 1~3*3）。"""
-        path = os.path.join(_PROJECT_ROOT, 'beginner_archive/1.json')
+        path = _sublevel_archive_path('1')
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 save_data = json.load(f)
@@ -391,6 +363,7 @@ class TutorialMixin:
             return
         self._stop_continuous_undo_redo()
         self._load_save_data(save_data)
+        self._readonly = False   # 教程关卡始终可操作（忽略存档 readonly 标记）
         self.current_file_path = None
         self._reset_file_dirty()
         self.center_map()
@@ -434,19 +407,21 @@ class TutorialMixin:
         提交来源：
         - 移动：via_redo=False, suppress=False
         - 撤销：suppress=True
-        - 重做：via_redo=True
-        - 解法播放/宏执行：步骤 3/4/5 一律忽略（不推进教程、不误过关）；
-          步骤 6（关卡1）或子题还原（2/3/4 关）允许（查看解法自动还原后应算过关）
+        - 重做/查看解法回放：via_redo=True
+        - 第 1 关的操作教学步骤 3/4/5：宏执行/解法播放期间一律忽略（不误推进）
+        - 查看解法播放期间：一律忽略（播完撤回初始态，由玩家手动还原才算过关）
         """
         if not self.tutorial_active:
             return
         if self.tut_selecting_levels:
             return
+        if getattr(self, 'tut_solution_replaying', False):
+            return  # 解法播放中：不判定过关（播完会撤回初始态，强制玩家手动还原）
         mac = getattr(self, 'macro_executing', False)
 
-        # 第 2/3/4 关：子题还原过关
-        if self.tut_level in (2, 3, 4):
-            if self.tut_step == 1 and not via_redo and not suppress and self.is_solved():
+        # 非第 1 关：子题还原过关
+        if self.tut_level != 1:
+            if self.tut_step == 1 and not suppress and self.is_solved():
                 self._tut_advance_sublevel()
             return
 
@@ -461,7 +436,7 @@ class TutorialMixin:
             self._tut_complete()
 
     def _tut_advance_sublevel(self):
-        """（第 2/3/4 关）子题解决：记录已完成并推进到下一子题；最后一个子题则过关"""
+        """（非第 1 关）子题解决：记录已完成并推进到下一子题；最后一个子题则过关"""
         level_id = self.tut_level
         level = TUTORIAL_LEVELS_BY_ID.get(level_id, {})
         subs = level.get('sublevels', [])
@@ -483,7 +458,7 @@ class TutorialMixin:
             self._tut_complete()
 
     def _tut_complete(self):
-        """过关：记录完成、解锁下一关（第 5/6 关本期显示“待补充”锁定）"""
+        """过关：记录完成并解锁下一关（下一关是否存在由存檔自动决定）"""
         self.tut_step = 7
         self._tut_restore_anim_speed()
         completed = self.tut_progress.setdefault('completed', [])
@@ -498,13 +473,17 @@ class TutorialMixin:
     # ---------------- 解法查看 / 动画速度 ----------------
 
     def _tut_show_solution(self):
-        """查看解法：
-        - 第 1 关：回退自动求解器
-        - 第 2/3/4 关：回放存档 move_info 链
-        同时临时调慢动画速度，解法结束后由 draw_tutorial_panel 还原。
+        """查看解法（临时调慢动画速度，解法结束后由 draw_tutorial_panel 还原）：
+        - 第 1 关：1~3*3 状态少，直接用 IDA* 求解器
+        - 其余关：撤回初始状态，播放存档的历史重做动画（不调用求解器）
+
+        播放期间锁定棋盘操作、不判定过关；播完自动撤回初始态并清掉解法历史，
+        强制玩家手动还原才算过关（见 _tut_finish_solution_replay）。
         """
         if not self.tutorial_active or self.tut_selecting_levels:
             return
+        if getattr(self, 'tut_solution_replaying', False):
+            return  # 已在播放中
         if getattr(self, '_readonly_blocked', lambda: False)():
             return
         if self.timer_state == 'running':
@@ -519,22 +498,112 @@ class TutorialMixin:
             self.animation_duration = max(self.animation_duration, SOLUTION_ANIM_MS)
 
         if self.tut_level == 1:
-            self._start_auto_solve()  # 求解/回放/中途打断均由既有管道处理
+            self.tut_solution_replaying = True
+            self.solver_algorithm = 'ida_star'
+            self._start_auto_solve()  # 求解/播放/中止均由既有管道处理
+            if not getattr(self, '_auto_solve_running', False):
+                self._tut_stop_solution_replay()  # 求解未能启动：解锁，避免棋盘卡死
             return
 
-        # 2/3/4 关：直接回放存档解法 ops
-        if not self.tut_solution_ops:
-            self.macro_notify_msg = "此关暂无可回放的解法"
-            self.macro_notify_timer = 180
-            return
+        self._tut_replay_solution()
+
+    def _tut_replay_solution(self):
+        """（非第 1 关）撤回初始状态并连续重做，播放存档解法动画。
+
+        重新载入存档以丢弃玩家中途的走法，保证回放的是存檔记录的原解法。
+        """
         if getattr(self, 'macro_executing', False) or getattr(self, 'animating', False):
             return
-        self.macro_executing = True
-        self.macro_exec_name = "查看解法"
-        self.macro_exec_ops = list(self.tut_solution_ops)
-        self.macro_exec_index = 0
-        self.macro_exec_factor = 1
-        self._execute_next_macro_step()
+        if getattr(self, '_continuous_undo', False) or getattr(self, '_continuous_redo', False):
+            return
+        path = _sublevel_archive_path(self.tut_sublevel)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                save_data = json.load(f)
+        except Exception as e:
+            self.macro_notify_msg = "此关暂无可回放的解法"
+            self.macro_notify_timer = 180
+            print(f"[教程] 回放读取存档失败: {e}")
+            return
+
+        self._stop_continuous_undo_redo()
+        self._load_save_data(save_data)
+        self._readonly = False   # 教程关卡始终可操作（忽略存档 readonly 标记）
+        self.current_file_path = None
+        self._reset_file_dirty()
+        # 撤回初始状态（index 0）
+        if len(self.game_history.history) > 0:
+            self.jump_to_history_index(0)
+        self.center_map()
+        # 开始播放：锁定棋盘操作、抑制过关判定
+        self.tut_solution_replaying = True
+        # 连续重做：每步动画提交后自动推进，直至还原
+        self._toggle_continuous('redo')
+        self._tut_maybe_finish_replay()
+
+    def _tut_board_locked(self) -> bool:
+        """解法播放期间锁定棋盘操作（点选/移动/撤销/重做/重置/打乱等）"""
+        return bool(getattr(self, 'tut_solution_replaying', False))
+
+    def _tut_solution_busy(self) -> bool:
+        """解法播放是否仍在进行：求解/宏/动画/连续重做。
+
+        含 _auto_solve_done：求解线程收尾与主循环消费结果之间有一帧级空隙
+        （线程先置 running=False、后置 done=True），纳入它可避免误判播放结束。
+        """
+        return bool(getattr(self, 'macro_executing', False)
+                    or getattr(self, '_auto_solve_running', False)
+                    or getattr(self, '_auto_solve_done', False)
+                    or getattr(self, 'animating', False)
+                    or getattr(self, '_continuous_undo', False)
+                    or getattr(self, '_continuous_redo', False))
+
+    def _tut_maybe_finish_replay(self):
+        """播放结束（成功或失败）后收尾：撤回初始态、清掉解法历史、解锁操作。
+
+        主循环中 _check_auto_solve_result 先于绘制执行，故“求解完成→宏开播”
+        的过渡帧不会误判为播放结束（此处仅在绘制/回放收尾时调用）。
+        """
+        if not getattr(self, 'tut_solution_replaying', False):
+            return
+        if self._tut_solution_busy():
+            return
+        self._tut_finish_solution_replay()
+
+    def _tut_stop_solution_replay(self):
+        """停止解法播放并解除棋盘锁定（不改变棋盘状态）。"""
+        self.tut_solution_replaying = False
+        self._stop_continuous_undo_redo()
+        if getattr(self, 'macro_executing', False):
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            self.macro_exec_index = 0
+        if getattr(self, '_auto_solve_running', False):
+            self._auto_solve_cancel = True
+        # 丢弃尚未被主循环消费的求解结果，避免停止后仍开播宏
+        self._auto_solve_done = False
+        self._auto_solve_result = None
+        self._tut_restore_anim_speed()
+
+    def _tut_finish_solution_replay(self):
+        """解法播放完毕：撤回第 0 步并只保留初始快照（无法靠撤销/重做过关）。"""
+        reached = self.is_solved()   # 回放是否走到还原态（失败/中断时为 False）
+        self._tut_stop_solution_replay()
+        # 只保留初始快照 → Ctrl+Z/Ctrl+X 失效，强制玩家手动还原
+        if len(self.game_history.history) > 1:
+            self.game_history.history = self.game_history.history[:1]
+        if len(self.game_history.history) > 0:
+            self.game_history.history_index = 0
+            self.game_history.restore_snapshot(self.game, 0)
+        self.step_count = 0
+        self.selected_gap = None
+        self.selected_block = None
+        self.ensure_blocks_visible()
+        self.center_map()
+        self._reset_file_dirty()
+        self.macro_notify_msg = ("解法已播放完毕，请自行还原过关" if reached
+                                 else "解法播放中断，请自行尝试还原")
+        self.macro_notify_timer = 240
 
     def _tut_restore_anim_speed(self):
         """还原被“查看解法”临时调慢的动画速度（幂等）"""
@@ -546,14 +615,12 @@ class TutorialMixin:
     def _tut_tick_restore_anim_speed(self):
         """绘制/主循环钩子：解法播放结束后自动还原动画速度。
 
-        开始时（macro/_auto_solve 在跑）标记 playing；结束后（都不在跑）还原。
+        播放中（求解/宏/动画/连续重做）标记 playing；结束后还原。
         _start_auto_solve 同步置 _auto_solve_running=True，故无需处理“请求后首帧”竞态。
         """
         if not self.tut_anim_slowed:
             return
-        playing = (getattr(self, 'macro_executing', False)
-                   or getattr(self, '_auto_solve_running', False))
-        if playing:
+        if self._tut_solution_busy():
             self.tut_solution_playing = True
         else:
             self._tut_restore_anim_speed()
@@ -562,6 +629,8 @@ class TutorialMixin:
         """重置本关/本子题：跳回打乱态"""
         if not self.tutorial_active or self.tut_selecting_levels:
             return
+        if self._tut_board_locked():
+            return  # 解法播放中：锁定棋盘操作
         if len(self.game_history.history) > 0:
             self.jump_to_history_index(0)
             self.selected_gap = None
@@ -577,7 +646,14 @@ class TutorialMixin:
             for btn in self.tut_level_btn_rects:
                 if btn['rect'].collidepoint(x, y):
                     if btn['action'] == 'load':
-                        self._tut_load_level(btn['level'])
+                        sid = btn.get('sublevel')
+                        # 第 1 关（子题 '1'）是交互操作教学，走专门入口
+                        if sid == '1':
+                            self._tut_load_level(1)
+                        elif sid:
+                            self._tut_load_sublevel(sid)
+                        else:
+                            self._tut_load_level(btn['level'])
                     elif btn['action'] == 'exit':
                         self._tut_exit()
                     return True
@@ -683,15 +759,15 @@ class TutorialMixin:
         return out
 
     def _tut_current_step_text(self) -> str:
-        """当前应显示的正文（按 关卡/步骤/子题 选择）"""
+        """当前应显示的正文（按 关卡/步骤/子题 选择）；文案缺失时回退占位符。"""
         if self.tut_level == 1:
-            return _text_level(1).get('steps', {}).get(str(self.tut_step), '')
+            return _text_level(1).get('steps', {}).get(str(self.tut_step), '') or _PLACEHOLDER
         if self.tut_step == 7:
-            return _text_level(self.tut_level).get(
-                'complete_notify', f"✓ 过关！第 {self.tut_level} 关完成")
-        # 2/3/4 关：子题引导 + 还原目标
+            return (_text_level(self.tut_level).get('complete_notify')
+                    or f"✓ 过关！第 {self.tut_level} 关完成")
+        # 非第 1 关：子题引导（文案缺失时占位，由使用者补写）
         return (_text_level(self.tut_level).get('sublevels', {}).get(self.tut_sublevel, '')
-                or '请把这块拼图还原成完整矩形，即可过关！')
+                or _PLACEHOLDER)
 
     def draw_tutorial_prompt(self):
         """首次启动引导弹窗（居中模态）"""
@@ -740,37 +816,49 @@ class TutorialMixin:
         self.tut_prompt_btn_rects = rects
 
     def _draw_level_select_panel(self):
-        """绘制关卡选择列表面板（tut_selecting_levels=True 时）"""
+        """绘制关卡选择列表面板（tut_selecting_levels=True 时）。
+
+        以「每个小关」为选择单位：每个关卡先出一行标题，其下逐个列出该关的小关。
+        关卡/小关集合由存檔自动识别（见 _build_tutorial_levels），无存檔的关卡不显示。
+        """
         ls = _TUT_TEXTS.get('level_select', {})
         title_txt = ls.get('title', '选择关卡')
         exit_label = ls.get('exit_btn', '回到练习模式')
-        locked_label = ls.get('locked', '待补充')
         mark = ls.get('completed_mark', '✓')
 
         # 面板布局
-        line_h = 22
         pad = 12
         title_h = 28
         gap = 8
         w = 310
-        row_h = 34
-        n_levels = len(TUTORIAL_LEVELS)
-        list_h = n_levels * row_h + (n_levels - 1) * 6
+        header_h = 20
+        row_h = 28
+        row_gap = 4
+        level_gap = 8
         btn_row_h = 34
-        h = title_h + pad + list_h + gap + btn_row_h + pad
+
+        # 行布局：关卡标题行 + 该关每个小关一行
+        rows = []
+        for i, lv in enumerate(TUTORIAL_LEVELS):
+            rows.append({'kind': 'header', 'level': lv['id'],
+                         'h': (level_gap if i else 0) + header_h})
+            for sid in lv['sublevels']:
+                rows.append({'kind': 'row', 'level': lv['id'], 'sublevel': sid,
+                             'h': row_h + row_gap})
+        orig_list_h = sum(r['h'] for r in rows)
 
         x = self.screen_width - self.right_panel_width - w - 10
-        y = self.screen_height - self.status_bar_height - h - 10
+        y = self.screen_height - self.status_bar_height - (
+            title_h + pad + orig_list_h + gap + btn_row_h + pad) - 10
         if x < 10:
             x = 10
         if y < 10:
             y = 10
 
-        # 可滚动视区（关卡多时超出封顶高度）
-        max_h = 320
+        # 可滚动视区（小关多时超出封顶高度）
+        max_h = 340
         content_top = y + title_h + pad
-        orig_list_h = list_h
-        list_h = min(list_h, max_h - title_h - pad - gap - btn_row_h - pad)
+        list_h = min(orig_list_h, max_h - title_h - pad - gap - btn_row_h - pad)
         h = title_h + pad + list_h + gap + btn_row_h + pad
         content_h = list_h
         max_scroll = max(0, orig_list_h - content_h)
@@ -787,37 +875,38 @@ class TutorialMixin:
         ts = self.dialog_title_font.render(title_txt, True, _TUT_TITLE_CLR)
         self.screen.blit(ts, ts.get_rect(topleft=(x + pad + 4, y + 6)))
 
-        # 关卡行（裁剪 + 滚动）
+        # 行绘制（裁剪 + 滚动）
         clip_rect = pygame.Rect(x + 4, content_top, w - 14, content_h)
         self.screen.set_clip(clip_rect)
         row_rects = []
         mouse_pos = pygame.mouse.get_pos()
-        rowh_used = row_h + 6
         ry = content_top - self.tut_panel_scroll
-        for lv in TUTORIAL_LEVELS:
-            if ry > content_top + content_h + 10 or ry + row_h < content_top - 10:
-                ry += rowh_used
+        for row in rows:
+            row_top = ry
+            ry += row['h']
+            if row_top > content_top + content_h or ry < content_top:
                 continue
-            pending = lv.get('pending')
-            completed = self._tut_is_completed(lv['id'])
-            r = pygame.Rect(x + pad, ry, w - pad * 2, row_h)
-            if not pending:
-                hover = r.collidepoint(mouse_pos)
-                bg = _TUT_BTN_MAIN_BG if hover else _TUT_BTN_BG
-                pygame.draw.rect(self.screen, bg, r, border_radius=6)
-                row_rects.append({'rect': r, 'action': 'load', 'level': lv['id']})
-                label = f"{mark} " + lv['title'] if completed else lv['title']
-                txt_clr = _TUT_BTN_TXT
-            else:
-                bg = _TUT_LOCKED_BG
-                pygame.draw.rect(self.screen, bg, r, border_radius=6)
-                label = lv['title'] + f"（{locked_label}）"
-                txt_clr = _TUT_LOCKED_TXT
-            st = self.dialog_font.render(label, True, txt_clr)
+            lv = TUTORIAL_LEVELS_BY_ID.get(row['level'], {})
+            if row['kind'] == 'header':
+                label = lv.get('title', '')
+                if self._tut_is_completed(row['level']):
+                    label = f"{mark} {label}"
+                st = self.dialog_font.render(label, True, _TUT_TITLE_CLR)
+                self.screen.blit(st, st.get_rect(bottomleft=(x + pad + 2, row_top + row['h'] - 4)))
+                continue
+            sid = row['sublevel']
+            r = pygame.Rect(x + pad, row_top, w - pad * 2, row_h)
+            hover = r.collidepoint(mouse_pos)
+            pygame.draw.rect(self.screen, _TUT_BTN_MAIN_BG if hover else _TUT_BTN_BG,
+                             r, border_radius=6)
+            row_rects.append({'rect': r, 'action': 'load',
+                              'level': row['level'], 'sublevel': sid})
+            label = _sublevel_title(sid)
+            if sid in self._tut_completed_sublevels(row['level']):
+                label = f"{mark} {label}"
+            st = self.dialog_font.render(label, True, _TUT_BTN_TXT)
             self.screen.blit(st, st.get_rect(midleft=(r.left + 10, r.centery)))
-            ry += rowh_used
         self.screen.set_clip(None)
-        self.tut_level_btn_rects = row_rects
 
         # 滚动条
         sb_w = 8
@@ -837,8 +926,7 @@ class TutorialMixin:
 
         # 底部：回到练习模式
         by = y + h - btn_row_h - pad + 2
-        total_w = w - pad * 2
-        bw = total_w
+        bw = w - pad * 2
         r = pygame.Rect(x + pad, by, bw, btn_row_h - 4)
         hover = r.collidepoint(pygame.mouse.get_pos())
         pygame.draw.rect(self.screen, _TUT_BTN_MAIN_HOVER if hover else _TUT_BTN_BG, r, border_radius=6)
@@ -849,7 +937,8 @@ class TutorialMixin:
 
     def draw_tutorial_panel(self):
         """教学引导面板（右下角浮动，最顶层绘制）"""
-        # 解法播放结束后自动还原动画速度
+        # 解法播放结束后：撤回初始态、清掉解法历史、解锁棋盘并还原动画速度
+        self._tut_maybe_finish_replay()
         self._tut_tick_restore_anim_speed()
 
         if not getattr(self, 'tutorial_active', False):
@@ -871,7 +960,7 @@ class TutorialMixin:
             buttons = [('重置本关', 'reset', _TUT_BTN_BG),
                        ('查看解法', 'solution', _TUT_BTN_BG),
                        ('跳过教程', 'skip', _TUT_BTN_BG)]
-        elif self.tut_level in (2, 3, 4):
+        elif self.tut_level != 1:
             buttons = [('查看解法', 'solution', _TUT_BTN_BG),
                        ('重置本关', 'reset', _TUT_BTN_BG),
                        ('选择关卡', 'level_select', _TUT_BTN_BG),

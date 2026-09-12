@@ -19,6 +19,20 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
     # 由 start_http_server 设置
     cmd_queue = None
 
+    # settings 白名单（须与 gui/events.py EventsMixin._SETTINGS_* 保持一致）
+    _SETTINGS_BOOL_KEYS = (
+        'coloring_enabled', 'chain_hint_enabled', 'show_metrics_panel',
+        'animation_enabled', 'selection_animation_enabled',
+        'control_single_touch', 'control_two_touch', 'control_mouse_kb',
+        'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
+    )
+    _SETTINGS_INT_RANGES = {'animation_duration_ms': (50, 1000)}
+    # gather 参数白名单（须与 GUI.py gather_params 键一致）
+    _SOLVER_PARAM_KEYS = (
+        'max_steps', 'patience', 'max_wait_time',
+        'target_gather_score', 'aggressiveness',
+    )
+
     def log_message(self, format, *args):
         """禁止 HTTP 日志刷屏"""
         pass
@@ -41,12 +55,19 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
-    def _post_command(self, cmd_str):
-        """将命令放入队列并等待结果"""
+    def _post_command(self, cmd_str, payload=None):
+        """将命令放入队列并等待结果
+
+        payload 为 None 时放二元组 (cmd, resp_q)；为 dict 时放三元组
+        (cmd, resp_q, payload)，供富 JSON body（多行地图/设置等）通道使用。
+        """
         resp_q = queue.Queue()
-        self.cmd_queue.put((cmd_str, resp_q))
+        if payload is None:
+            self.cmd_queue.put((cmd_str, resp_q))
+        else:
+            self.cmd_queue.put((cmd_str, resp_q, payload))
         try:
-            result = resp_q.get(timeout=10)
+            result = resp_q.get(timeout=30)
             return result
         except queue.Empty:
             return {"ok": False, "message": "命令处理超时"}
@@ -79,7 +100,29 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
                 pass
 
     def _dispatch_get(self, path):
-        if path == '/status':
+        # —— 局面分析 ——
+        if path == '/analysis/window':
+            self._send_json(self._post_command('window'))
+        elif path == '/analysis/holes':
+            self._send_json(self._post_command('holes'))
+        elif path == '/analysis/actions':
+            self._send_json(self._post_command('actions'))
+        # —— 求解器 ——
+        elif path == '/solver/algorithms':
+            self._send_json(self._post_command('solver_algorithms'))
+        elif path == '/solver/status':
+            self._send_json(self._post_command('solver_status'))
+        elif path == '/solver/params':
+            self._send_json(self._post_command('solver_params'))
+        # —— 宏 / 模式 / 设置 ——
+        elif path == '/macro/status':
+            self._send_json(self._post_command('macro_status'))
+        elif path == '/mode':
+            self._send_json(self._post_command('mode'))
+        elif path == '/settings':
+            self._send_json(self._post_command('settings'))
+        # —— 既有端点（保留） ——
+        elif path == '/status':
             result = self._post_command('status')
             self._send_json(result)
         elif path == '/map':
@@ -192,7 +235,8 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             if not name or base_row is None or base_col is None:
                 self._send_json({"ok": False, "message": "需要 name, base_row, base_col"}, 400)
                 return
-            result = self._post_command(f'macro_execute {name} {base_row} {base_col}')
+            # reverse 可选（默认 false）；经富 payload 通道传递
+            result = self._post_command('macro_execute', body)
             self._send_json(result)
 
         elif path == '/macro/delete':
@@ -234,14 +278,92 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             result = self._post_command('quit')
             self._send_json(result)
 
-        elif path == '/solve':
-            result = self._post_command('solve')
+        elif path == '/solve' or path == '/solver/solve':
+            # 可选 {"algorithm": "<key>"}；运行中调用 = 取消
+            algorithm = body.get('algorithm')
+            if algorithm is not None:
+                from solver import SOLVER_ALGORITHMS
+                if algorithm not in SOLVER_ALGORITHMS:
+                    self._send_json(
+                        {"ok": False,
+                         "message": f"未知算法: {algorithm}（可选: {', '.join(SOLVER_ALGORITHMS)}）"},
+                        400)
+                    return
+            result = self._post_command('solve', body if isinstance(body, dict) else {})
+            self._send_json(result)
+
+        elif path == '/solver/cancel':
+            result = self._post_command('solve_cancel')
             self._send_json(result)
 
         elif path == '/solve/status':
             result = self._post_command('solve_status')
             if result is None:
                 result = {"ok": False, "message": "未响应"}
+            self._send_json(result)
+
+        elif path == '/solver/params':
+            if not isinstance(body, dict) or not body:
+                self._send_json({"ok": False, "message": "需要参数键值对"}, 400)
+                return
+            allowed = set(self._SOLVER_PARAM_KEYS) | {f'{k}_enabled' for k in self._SOLVER_PARAM_KEYS}
+            bad = [k for k in body if k not in allowed]
+            if bad:
+                self._send_json({"ok": False, "message": f"未知参数: {', '.join(bad)}"}, 400)
+                return
+            result = self._post_command('solver_params', body)
+            self._send_json(result)
+
+        elif path == '/map/load':
+            map_str = body.get('map')
+            if not isinstance(map_str, str) or not map_str.strip():
+                self._send_json({"ok": False, "message": "需要 map 字段（#/_ 地图字符串）"}, 400)
+                return
+            result = self._post_command('load_map', body)
+            self._send_json(result)
+
+        elif path == '/file/save':
+            if not body.get('path'):
+                self._send_json({"ok": False, "message": "需要 path 字段"}, 400)
+                return
+            result = self._post_command('save_file', body)
+            self._send_json(result)
+
+        elif path == '/file/load':
+            if not body.get('path'):
+                self._send_json({"ok": False, "message": "需要 path 字段"}, 400)
+                return
+            result = self._post_command('load_file', body)
+            self._send_json(result)
+
+        elif path == '/mode':
+            mode = body.get('mode', '')
+            if mode not in ('practice', 'timed'):
+                self._send_json({"ok": False, "message": "mode 必须是 practice 或 timed"}, 400)
+                return
+            result = self._post_command('mode', body)
+            self._send_json(result)
+
+        elif path == '/settings':
+            if not isinstance(body, dict) or not body:
+                self._send_json({"ok": False, "message": "需要设置键值对"}, 400)
+                return
+            allowed = set(self._SETTINGS_BOOL_KEYS) | set(self._SETTINGS_INT_RANGES)
+            bad = [k for k in body if k not in allowed]
+            if bad:
+                self._send_json({"ok": False, "message": f"未知设置键: {', '.join(bad)}"}, 400)
+                return
+            for k in self._SETTINGS_BOOL_KEYS:
+                if k in body and not isinstance(body[k], bool):
+                    self._send_json({"ok": False, "message": f"{k} 必须是 true/false"}, 400)
+                    return
+            for k, (lo, hi) in self._SETTINGS_INT_RANGES.items():
+                if k in body:
+                    v = body[k]
+                    if isinstance(v, bool) or not isinstance(v, int) or not (lo <= v <= hi):
+                        self._send_json({"ok": False, "message": f"{k} 必须是 {lo}–{hi} 的整数"}, 400)
+                        return
+            result = self._post_command('settings', body)
             self._send_json(result)
 
         elif path == '/timer/start':

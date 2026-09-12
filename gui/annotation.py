@@ -2,13 +2,14 @@
 """
 标注模式 Mixin — 人工录制「填洞 / 收敛空位」示范步骤数据集
 
-独立于练习/竞速的全新模式，隐藏入口：同时按住 左Ctrl+右Ctrl+左Shift+右Shift。
+独立于练习/竞速/创造的全新模式，隐藏入口：同时按住 B / Z / M / S 四个键。
 
-学习起点四种来源：
+学习起点来源：
     ① 存档中段（打开任意 save/*.json → 快照步进器选一个状态）
-    ② 随机生成（generate_random_void：从还原态拔块，贴同余外圈凸起）
-    ③ 手动构造（弹窗小画布逐格点选增删滑块，即时校验合法棋形）
     ④ 当前棋盘状态
+
+（原「② 随机生成 / ③ 手动构造」已独立为「创造模式」——模式开关第三态，
+  见 create_mode：造好的棋形直接成为当前谜题，不再进标注流程。）
 
 录制流程：
     1. 逐格标「目标空位」（点窗口内的空格，可多格，增删自由）→ 程序跟踪它
@@ -35,12 +36,15 @@ import random
 import pygame
 
 from game import Block
-from history import GameHistory  # noqa: F401  （语义参照，不直接实例化）
+from history import GameHistory, expand_snapshot_moves  # noqa: F401  （语义参照，不直接实例化）
 
 # ---------------------------------------------------------------------------
 # 纯函数工具（独立于 GUI，可 headless 测试）
 # ---------------------------------------------------------------------------
 _DIR_DELTA = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
+
+# 标注模式隐藏入口：同时按住 B / Z / M / S 四个字母键（「标注模式」拼音首字母）
+_ANN_ENTRY_KEYS = frozenset({pygame.K_b, pygame.K_z, pygame.K_m, pygame.K_s})
 
 
 def dir_delta(direction, step):
@@ -234,9 +238,15 @@ class AnnotationMixin:
     _ANN_PAD = 10
     _ANN_BAR_H = 46
 
+    @property
+    def create_mode(self):
+        """创造模式（「模式」开关第三态）：由 game_mode 派生，避免两处状态不一致。"""
+        return getattr(self, 'game_mode', '') == 'create'
+
     def _ann_init_state(self):
         """初始化标注模式状态（GUI.__init__ 中调用）。"""
         self.annotation_mode = False        # 模式总开关
+        self._ann_entry_keys = set()        # 已按下的隐藏入口键（B/Z/M/S 判定）
         self._ann_view = 'home'             # home/target/recording
         self._ann_msg = ''
         self._ann_msg_timer = 0
@@ -247,7 +257,7 @@ class AnnotationMixin:
         self._ann_gen_active = 'm'
         self._ann_gen_error = ''
         # 手动构造对话框状态
-        self._ann_build_fields = {'m': '', 'n': '', 'step': '', 'pad': ''}
+        self._ann_build_fields = {'m': '', 'n': '', 'step': ''}
         self._ann_build_active = 'm'
         self._ann_build_error = ''
         self._ann_build_coords = set()      # 画布上点出的滑块坐标（全局坐标）
@@ -291,25 +301,36 @@ class AnnotationMixin:
         self._ann_bar_rect = None
 
     # ------------------------------------------------------------------
-    # 隐藏入口：同时按住 左/右 Ctrl + 左/右 Shift
+    # 隐藏入口：同时按住 B / Z / M / S
     # ------------------------------------------------------------------
     def _ann_track_toggle_keys(self, event):
-        if event.type == pygame.KEYDOWN:
-            mods = pygame.key.get_mods()
-            both_ctrl = (mods & pygame.KMOD_LCTRL) and (mods & pygame.KMOD_RCTRL)
-            both_shift = (mods & pygame.KMOD_LSHIFT) and (mods & pygame.KMOD_RSHIFT)
-            if event.key in (pygame.K_LCTRL, pygame.K_RCTRL,
-                             pygame.K_LSHIFT, pygame.K_RSHIFT) and both_ctrl and both_shift:
-                self._ann_toggle_mode()
-                return True
+        """隐藏入口：同时按住 B / Z / M / S 四个字母键。
+
+        自行累计按下的键（不依赖修饰键状态，避免左右修饰位在某些平台/驱动上
+        不可靠）；四键齐全时触发并消费该次按键，因此最后按下的键（可能是 s）
+        不会漏到普通快捷键去（否则会误触发向下滑动）。
+        """
+        if event.type == pygame.KEYUP:
+            self._ann_entry_keys.discard(event.key)
+            return False
+        if event.type != pygame.KEYDOWN or event.key not in _ANN_ENTRY_KEYS:
+            return False
+        self._ann_entry_keys.add(event.key)
+        if _ANN_ENTRY_KEYS <= self._ann_entry_keys:
+            self._ann_entry_keys.clear()
+            self._ann_toggle_mode()
+            return True
         return False
 
     def _ann_toggle_mode(self):
-        """模式总开关（四键触发）。"""
+        """模式总开关（隐藏入口 B/Z/M/S 触发）。"""
         if self.timer_state == 'running':
             self._ann_notify('计时进行中无法进入标注模式')
             return
         if not self.annotation_mode:
+            # 与创造模式互斥：进标注模式即退出创造
+            if self.create_mode:
+                self.game_mode = 'practice'
             self.annotation_mode = True
             self._ann_view = 'home'
             self._ann_pending_open = False
@@ -347,18 +368,19 @@ class AnnotationMixin:
                 or getattr(self, 'macro_selecting_base', False))
 
     def handle_annotation_event(self, event):
-        """标注模式事件处理（GUI.handle_events 最先询问），返回 True=已消费。
+        """标注/创造模式事件处理（GUI.handle_events 最先询问），返回 True=已消费。
 
-        关闭状态也需返回 False 并放行普通事件，只在检测到四键入口时消费。
+        两种模式都关闭时只检测标注模式的隐藏入口（B/Z/M/S），其余事件放行。
         """
-        if not getattr(self, 'annotation_mode', False):
+        active = getattr(self, 'annotation_mode', False) or self.create_mode
+        if not active:
             return self._ann_track_toggle_keys(event)
 
-        # 模式开着：四键仍可再触发（关闭等）
-        if self._ann_track_toggle_keys(event):
+        # 标注模式下：隐藏入口仍可再触发（开启/关闭）
+        if getattr(self, 'annotation_mode', False) and self._ann_track_toggle_keys(event):
             return True
 
-        # 其他模态对话框打开时：不抢事件（四键已在上方处理）
+        # 其他模态对话框打开时：不抢事件（隐藏入口已在上方处理）
         if self._ann_modal_conflict():
             return False
 
@@ -415,6 +437,8 @@ class AnnotationMixin:
             self._ann_abort('已放弃本次标注（ESC）')
         elif self._ann_view == 'target':
             self._ann_abort('已取消本次标注（ESC）')
+        elif self.create_mode:
+            self._ann_exit_create()
         else:
             self.annotation_mode = False
             self._ann_notify('标注模式已关闭')
@@ -434,6 +458,12 @@ class AnnotationMixin:
     def _ann_btn_exit_mode(self):
         self.annotation_mode = False
         self._ann_notify('标注模式已关闭')
+
+    def _ann_exit_create(self):
+        """退出创造模式（模式开关回到练习模式）；入口只有 ESC 与切模式。"""
+        self._ann_leave_to_home()
+        self.game_mode = 'practice'
+        self._ann_notify('已退出创造模式（练习模式）')
 
     # ------------------------------------------------------------------
     # 输入框本地记忆（config/annotation_inputs.json）
@@ -458,7 +488,7 @@ class AnnotationMixin:
             self._ann_saved_inputs = self._ann_load_inputs() or {}
         d = (self._ann_saved_inputs.get(section)
              if isinstance(self._ann_saved_inputs.get(section), dict) else {})
-        keys = ['m', 'n', 'step', 'hole', 'dent', 'pad']
+        keys = ['m', 'n', 'step', 'hole', 'dent']
         out = {}
         for k in keys:
             v = str(d.get(k, '')) if k in d else ''
@@ -487,7 +517,10 @@ class AnnotationMixin:
         self._ann_pending_open = True
 
     def _ann_btn_random_gen(self):
-        """② 随机生成起点：打开参数对话框（输入框沿用上次内容）。"""
+        """随机生成：打开参数对话框（输入框沿用上次内容）。
+
+        创造模式下生成完直接成为当前谜题；标注模式下则进入选目标。
+        """
         saved = self._ann_saved('gen')
         fall = {'m': self.current_m, 'n': self.current_n,
                 'step': self.current_step, 'hole': 1, 'dent': 0}
@@ -500,17 +533,17 @@ class AnnotationMixin:
         self._ann_sub_dialog = 'gen'
 
     def _ann_btn_manual_build(self):
-        """③ 手动构造起点：直接在主棋盘上自由点选。
+        """手动构造：直接在主棋盘上自由点选。
 
         进入构造视图后，主棋盘即变成可编辑画布：点空白格放置滑块、
-        点已有滑块移除它；改 m/n/step/pad 后按 Enter 重排画布范围。
-        底部工具条实时校验并给出「应用并开始 / 还原 m×n / 清空 / 取消」。
+        点已有滑块移除它；改 m/n/step 后按 Enter 重排画布范围。
+        底部工具条实时校验并给出「应用（并开始）/ 还原 m×n / 清空 / 退出」。
+        创造模式下应用完直接成为当前谜题；标注模式下则进入选目标。
         """
-        saved = self._ann_saved('build')
-        m = int(saved['m']) if 'm' in saved else self.current_m
-        n = int(saved['n']) if 'n' in saved else self.current_n
-        step = int(saved['step']) if 'step' in saved else self.current_step
-        pad = int(saved['pad']) if 'pad' in saved else max(1, step)
+        # 初始 m/n/step 一律取当前谜题，避免沿用上次构造的旧尺寸
+        m = self.current_m
+        n = self.current_n
+        step = self.current_step
         # 备份当前局面：取消构造时可原样恢复（含历史栈）
         self._ann_build_backup = {
             'coords': [list(b.location) for b in self.game.blocks],
@@ -519,7 +552,7 @@ class AnnotationMixin:
             'history': self.game_history,
         }
         self._ann_build_fields = {
-            'm': str(m), 'n': str(n), 'step': str(step), 'pad': str(pad),
+            'm': str(m), 'n': str(n), 'step': str(step),
         }
         self._ann_build_active = 'm'
         self._ann_build_error = ''
@@ -532,7 +565,8 @@ class AnnotationMixin:
         self._ann_sub_dialog = 'build'
         self._ann_view = 'build'
         self.center_map()
-        self._ann_notify('构造模式：初始为当前状态，点格放/取滑块，改好参数后按[应用并开始]')
+        self._ann_notify('构造模式：初始为当前状态，点格放/取滑块，改好参数后按'
+                         + ('[应用]' if self.create_mode else '[应用并开始]'))
 
     def _ann_rebuild_game_from_coords(self):
         """把构造集实时落到主棋盘（不写历史，不打断旧历史）。
@@ -543,7 +577,7 @@ class AnnotationMixin:
         """
         if getattr(self, '_ann_view', None) == 'build':
             try:
-                m, n, step, _pad = self._ann_build_param()
+                m, n, step = self._ann_build_param()
                 self.current_m, self.current_n, self.current_step = m, n, step
             except ValueError:
                 pass  # 输入框暂不合法（如清空中）：沿用上一次有效尺寸
@@ -556,11 +590,11 @@ class AnnotationMixin:
     def _ann_build_toggle(self, r, c):
         """主棋盘点选：增/删一个滑块并即时刷新状态。"""
         try:
-            m, n, step, _pad = self._ann_build_param()
+            m, n, step = self._ann_build_param()
         except ValueError as e:
             self._ann_build_error = str(e)
             return
-        lo_r, hi_r, lo_c, hi_c = self._ann_build_grid(m, n, _pad)
+        lo_r, hi_r, lo_c, hi_c = self._ann_build_grid(m, n)
         if not (lo_r <= r <= hi_r and lo_c <= c <= hi_c):
             self._ann_build_error = '点选超出可构造范围'
             return
@@ -864,19 +898,40 @@ class AnnotationMixin:
         return snapshot_abs_coords(snap['matrix'], snap['bounds'])
 
     def _ann_build_step(self, idx):
-        """根据 history[idx] 的 move_info 推进跟踪并记录一步。
+        """根据 history[idx] 推进跟踪并记录一步。
 
-        若此前在该索引之后曾有旧分支的步骤，先清掉（新移动会截断覆盖）。
+        合并快照（同一次选中连续移动）含多步：按 moves 日志逐步推进跟踪，
+        末态记入 idx。若此前在该索引之后曾有旧分支的步骤，先清掉。
         """
         for k in [k for k in self._ann_steps if k >= idx]:
             del self._ann_steps[k]
         snap = self.game_history.history[idx]
-        move = snap.get('move_info')
-        if not move:
-            return
         prev = self.game_history.history[idx - 1]
-        prev_cells = self._snapshot_coords(prev)
-        cur_cells = self._snapshot_coords(snap)
+        n_moves = 0
+        step_recs = []
+        for pre_snap, post_snap, move in expand_snapshot_moves(prev, snap):
+            if not move:
+                continue
+            step_recs.append(self._ann_advance_track(pre_snap, post_snap, move))
+            n_moves += 1
+        if not n_moves:
+            return
+        self._ann_steps[idx] = {
+            'phase': self._ann_phase,
+            'void': (sorted(self._ann_track_void)
+                     if self._ann_track_void is not None else None),
+            'anchor': (sorted(self._ann_track_anchor)
+                       if self._ann_track_anchor is not None else None),
+            'status': self._ann_track_status,
+            'moves': n_moves,
+            # 合并快照内的逐步跟踪（写盘时按步取用，长度与 moves 一致）
+            'step_recs': step_recs,
+        }
+
+    def _ann_advance_track(self, pre_snap, post_snap, move):
+        """按单步动作推进凸起/空位跟踪（合并快照逐步调用）→ 该步跟踪记录。"""
+        prev_cells = self._snapshot_coords(pre_snap)
+        cur_cells = self._snapshot_coords(post_snap)
         direction = move.get('direction', '')
         step = move.get('step', self.current_step)
         moved = move.get('moved_positions', [])
@@ -908,9 +963,7 @@ class AnnotationMixin:
             self._ann_notify('跟踪空位已全部被填（空位数应已减少）')
         elif status == 'lost':
             self._ann_notify('跟踪出现矛盾，可用[重选空位]人工修正')
-
-        self._ann_steps[idx] = {
-            'phase': self._ann_phase,
+        return {
             'void': (sorted(self._ann_track_void)
                      if self._ann_track_void is not None else None),
             'anchor': (sorted(self._ann_track_anchor)
@@ -1102,10 +1155,16 @@ class AnnotationMixin:
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
         self.center_map()
-        self._ann_start_target(
-            'gen', f'随机生成 {m}×{n} 孔洞{hole} 缺口{dent}')
-        self._ann_notify(f'已生成：{m}×{n} step{step} '
-                         f'孔洞 {hole} 个 / 缺口 {dent} 个，请选目标')
+        if self.create_mode:
+            # 创造模式：造好即成为当前谜题，留在创造首页
+            self._ann_leave_to_home()
+            self._ann_notify(f'已生成谜题：{m}×{n} step{step} '
+                             f'孔洞 {hole} 个 / 缺口 {dent} 个')
+        else:
+            self._ann_start_target(
+                'gen', f'随机生成 {m}×{n} 孔洞{hole} 缺口{dent}')
+            self._ann_notify(f'已生成：{m}×{n} step{step} '
+                             f'孔洞 {hole} 个 / 缺口 {dent} 个，请选目标')
 
     def _ann_close_sub_dialog(self):
         # 关闭时把输入框内容留档，保证下次打开和上次一致
@@ -1168,36 +1227,42 @@ class AnnotationMixin:
         phase_cnt = {}
         for idx in range(base + 1, hi + 1):
             rec = self._ann_steps.get(idx)
-            snap = history[idx]
-            move = snap.get('move_info')
-            if rec is None or not move:
+            if rec is None:
                 continue
-            pre = history[idx - 1]
-            pre_cells = self._snapshot_coords(pre)
-            mets = window_void_metrics(pre_cells, self.current_m,
-                                       self.current_n, self.current_step)
-            moved = move.get('moved_positions', [])
-            side = infer_side(move.get('gap_type', ''),
-                              move.get('gap_line', 0), moved) if moved else None
-            ph = rec.get('phase', '')
-            phase_cnt[ph] = phase_cnt.get(ph, 0) + 1
-            steps.append({
-                'phase': ph,
-                'pre_matrix': pre['matrix'],
-                'pre_bounds': pre['bounds'],
-                'move_info': {
-                    'gap_type': move.get('gap_type'),
-                    'gap_line': move.get('gap_line'),
-                    'side': side,
-                    'direction': move.get('direction'),
-                    'step': move.get('step', self.current_step),
-                    'moved_positions': moved,
-                },
-                'void_block_count': mets['void_block_count'],
-                'gather_score': round(mets['score'], 6),
-                'track_void': rec.get('void'),
-                'track_anchor': rec.get('anchor'),
-            })
+            expanded = expand_snapshot_moves(history[idx - 1], history[idx])
+            if not expanded:
+                continue
+            step_recs = rec.get('step_recs')
+            if not step_recs or len(step_recs) != len(expanded):
+                step_recs = [rec] * len(expanded)
+            for (pre, _post, move), mrec in zip(expanded, step_recs):
+                if not move:
+                    continue
+                pre_cells = self._snapshot_coords(pre)
+                mets = window_void_metrics(pre_cells, self.current_m,
+                                           self.current_n, self.current_step)
+                moved = move.get('moved_positions', [])
+                side = infer_side(move.get('gap_type', ''),
+                                  move.get('gap_line', 0), moved) if moved else None
+                ph = rec.get('phase', '')
+                phase_cnt[ph] = phase_cnt.get(ph, 0) + 1
+                steps.append({
+                    'phase': ph,
+                    'pre_matrix': pre['matrix'],
+                    'pre_bounds': pre['bounds'],
+                    'move_info': {
+                        'gap_type': move.get('gap_type'),
+                        'gap_line': move.get('gap_line'),
+                        'side': side,
+                        'direction': move.get('direction'),
+                        'step': move.get('step', self.current_step),
+                        'moved_positions': moved,
+                    },
+                    'void_block_count': mets['void_block_count'],
+                    'gather_score': round(mets['score'], 6),
+                    'track_void': mrec.get('void'),
+                    'track_anchor': mrec.get('anchor'),
+                })
 
         start_coords = self._snapshot_coords(base_snap)
         end_coords = self._snapshot_coords(end_snap)
@@ -1276,8 +1341,8 @@ class AnnotationMixin:
     # 渲染
     # ==================================================================
     def draw_annotation_mode(self):
-        """标注模式渲染入口（run 循环里、浮动面板之后调用）。"""
-        if not getattr(self, 'annotation_mode', False):
+        """标注/创造模式渲染入口（run 循环里、浮动面板之后调用）。"""
+        if not (getattr(self, 'annotation_mode', False) or self.create_mode):
             return
         if self._ann_view == 'build':
             self._ann_draw_build_canvas()
@@ -1327,7 +1392,7 @@ class AnnotationMixin:
         """底部标注工具栏（随视图变化）。"""
         w = min(820, self.screen_width - self.right_panel_width - 24)
         x = self.screen_width - self.right_panel_width - w - 10
-        # 手动构造视图：工具条加高，内嵌 m/n/step/pad 参数输入 + 操作按钮，
+        # 手动构造视图：工具条加高，内嵌 m/n/step 参数输入 + 操作按钮，
         # 这样主棋盘完全留给点格增删滑块（不再用居中弹窗遮挡棋盘）。
         bar_h = 82 if self._ann_view == 'build' else self._ANN_BAR_H
         y, h = self.screen_height - self.status_bar_height - \
@@ -1359,14 +1424,18 @@ class AnnotationMixin:
             self._ann_btn_rects[name] = rect
 
         if self._ann_view == 'home':
-            add('exit_mode', '退出标注', (120, 90, 90))
-            add('from_current', '④ 当前状态', (70, 120, 180))
-            add('manual_build', '③ 手动构造起点', (70, 120, 180))
-            add('random_gen', '② 随机生成起点', (70, 120, 180))
-            add('from_save', '① 存档中段选起点', (70, 120, 180))
-            title = self.status_font.render(
-                '标注模式：录制「填洞/收敛空位」示范 · 隐藏入口=左右Ctrl+左右Shift',
-                True, (200, 200, 210))
+            if self.create_mode:
+                add('manual_build', '手动构造', (70, 120, 180))
+                add('random_gen', '随机生成', (70, 120, 180))
+                title_text = ('创造模式：随机挖洞/缺口 或 手动构造 · '
+                              '造好即成为当前谜题 · ESC 退出')
+            else:
+                add('exit_mode', '退出标注', (120, 90, 90))
+                add('from_current', '④ 当前状态', (70, 120, 180))
+                add('from_save', '① 存档中段选起点', (70, 120, 180))
+                title_text = ('标注模式：录制「填洞/收敛空位」示范 · '
+                              '隐藏入口=同时按住 B Z M S')
+            title = self.status_font.render(title_text, True, (200, 200, 210))
             self.screen.blit(title, (self._ann_bar_rect.x + 6,
                                      self._ann_bar_rect.y - 18))
         elif self._ann_view == 'build':
@@ -1393,7 +1462,9 @@ class AnnotationMixin:
                 # 状态文本
                 cur = self._ann_cur_metrics or self._ann_base_metrics or {}
                 st = self._ann_base_metrics or {}
-                n_steps = sum(1 for k in self._ann_steps
+                # 合并快照一条覆盖多步：按 moves 计步（无该字段则记 1 步）
+                n_steps = sum(rec.get('moves', 1)
+                              for k, rec in self._ann_steps.items()
                               if k > (self._ann_base_idx or -1)
                               and k <= self.game_history.history_index)
                 st_c = '●' if self._ann_track_void is not None else '○'
@@ -1408,7 +1479,7 @@ class AnnotationMixin:
                                      self._ann_bar_rect.y - 18))
 
     def _ann_draw_build_toolbar(self, x, y, w, h):
-        """手动构造工具条：内嵌 m/n/step/pad 参数输入 + 操作按钮 + 校验状态。
+        """手动构造工具条：内嵌 m/n/step 参数输入 + 操作按钮 + 校验状态。
 
         主棋盘完全留给点格增删滑块，因此这里不用居中弹窗。
         点击/键盘事件由 _ann_build_dialog_click / _ann_build_dialog_event 处理，
@@ -1419,7 +1490,7 @@ class AnnotationMixin:
         fh = 26
         self._ann_build_field_rects = {}
         bx = x + 10
-        for key, label in (('m', '行'), ('n', '列'), ('step', '等级'), ('pad', '外扩')):
+        for key, label in (('m', '行'), ('n', '列'), ('step', '等级')):
             ls = self.status_font.render(label, True, (200, 200, 210))
             self.screen.blit(ls, (bx, row1 + 5))
             lbl_w = ls.get_width() + 4
@@ -1464,18 +1535,16 @@ class AnnotationMixin:
         self._ann_build_cancel_btn = place_right('退出', (120, 90, 90))
         self._ann_build_clear_btn = place_right('清空')
         self._ann_build_reset_btn = place_right('还原m×n')
-        self._ann_build_ok_btn = place_right('应用并开始', (60, 150, 90))
+        # 创造模式：应用后直接成为当前谜题；标注模式：应用后进入选目标
+        self._ann_build_ok_btn = place_right(
+            '应用' if self.create_mode else '应用并开始', (60, 150, 90))
         # 这个工具条就是本次构造的「对话框矩形」：命中其内输入/按钮即处理
         self._ann_build_dialog_rect = self._ann_bar_rect
 
         # 即时效验状态（按钮行左侧）
         try:
-            mm, nn, ss, pp = self._ann_build_param()
+            mm, nn, ss = self._ann_build_param()
             msg, is_ok = self._ann_build_status(mm, nn, ss)
-            oob = self._ann_build_oob(mm, nn, pp)
-            if oob:
-                msg = f'{len(oob)} 格越出可构造范围，调大外扩或移除'
-                is_ok = False
         except ValueError as e:
             msg, is_ok = str(e), False
         if self._ann_build_error:
@@ -1493,30 +1562,31 @@ class AnnotationMixin:
     # 手动构造对话框（自由点选画布）
     # ==================================================================
     def _ann_build_param(self):
-        """解析构造参数 → (m,n,step,pad) 或抛 ValueError。"""
+        """解析构造参数 → (m,n,step) 或抛 ValueError。"""
         m = int(self._ann_build_fields.get('m') or 0)
         n = int(self._ann_build_fields.get('n') or 0)
         step = int(self._ann_build_fields.get('step') or 0)
-        pad = int(self._ann_build_fields.get('pad') or 0)
         if m < 2 or n < 2:
             raise ValueError('m、n 必须 >= 2')
         if step < 1:
             raise ValueError('等级必须 >= 1')
         if step >= max(m, n):
             raise ValueError(f'等级必须 < {max(m, n)}')
-        if pad < 1 or pad > 8:
-            raise ValueError('画布外扩 pad 需在 1 ~ 8')
-        return m, n, step, pad
+        return m, n, step
 
-    def _ann_build_grid(self, m, n, pad):
-        """画布网格边界（全局坐标）。"""
-        return (-pad, m - 1 + pad, -pad, n - 1 + pad)
+    def _ann_build_grid(self, m, n):
+        """可构造范围（全局坐标）：当前棋形边界盒各扩一圈。
 
-    def _ann_build_oob(self, m, n, pad):
-        """画布外扩 pad 之外是否有滑块。返回越界坐标列表。"""
-        lo_r, hi_r, lo_c, hi_c = self._ann_build_grid(m, n, pad)
-        return [c for c in self._ann_build_coords
-                if not (lo_r <= c[0] <= hi_r and lo_c <= c[1] <= hi_c)]
+        只跟随棋形本身，不再并上 m×n 区域——两者取并集的包围盒会把范围
+        撑成一大片无关矩形（棋形离原点远时尤其明显）。空画布无边界盒，
+        回退到 m×n 各扩一圈，保证有地方落第一颗。
+        """
+        coords = getattr(self, '_ann_build_coords', None) or set()
+        if not coords:
+            return -1, m, -1, n
+        rs = [r for r, _ in coords]
+        cs = [c for _, c in coords]
+        return min(rs) - 1, max(rs) + 1, min(cs) - 1, max(cs) + 1
 
     def _ann_build_status(self, m, n, step):
         """即时校验状态：返回 (text, is_ok)。"""
@@ -1571,7 +1641,7 @@ class AnnotationMixin:
             self._ann_build_apply()
             return True
         if event.key == pygame.K_TAB:
-            keys = ['m', 'n', 'step', 'pad']
+            keys = ['m', 'n', 'step']
             if self._ann_build_active in keys:
                 idx = keys.index(self._ann_build_active)
                 self._ann_build_active = keys[(idx + 1) % len(keys)]
@@ -1594,7 +1664,7 @@ class AnnotationMixin:
     def _ann_build_apply(self):
         """校验当前构造 → 写历史并进入选目标阶段。"""
         try:
-            m, n, step, _pad = self._ann_build_param()
+            m, n, step = self._ann_build_param()
         except ValueError as e:
             self._ann_build_error = str(e)
             return
@@ -1604,12 +1674,9 @@ class AnnotationMixin:
         if not ok:
             self._ann_build_error = f'非法棋形：{msg}'
             return
-        if self._ann_build_oob(m, n, _pad):
-            self._ann_build_error = '有滑块超出可构造范围，调大外扩或移除越界格'
-            return
         vm = window_void_metrics(coords, m, n, step)
         if vm['void_block_count'] < 1:
-            self._ann_build_error = '窗内没有空位，无法作为填洞示范起点'
+            self._ann_build_error = '窗内没有空位（等于还原态），请挖出至少一个空位'
             return
         self._ann_build_error = ''
         self._ann_store_inputs('build', self._ann_build_fields)
@@ -1620,14 +1687,19 @@ class AnnotationMixin:
         self._mark_file_dirty()
         self.center_map()
         self._ann_build_backup = None
-        self._ann_start_target('build', f'手动构造 {m}×{n} step{step} '
-                                        f'（{len(coords)} 颗）')
-        self._ann_notify('已应用手动构造，请点目标空位与凸起')
+        if self.create_mode:
+            # 创造模式：造好即成为当前谜题，留在创造首页
+            self._ann_leave_to_home()
+            self._ann_notify(f'已应用构造：{m}×{n} step{step}（{len(coords)} 颗）')
+        else:
+            self._ann_start_target('build', f'手动构造 {m}×{n} step{step} '
+                                            f'（{len(coords)} 颗）')
+            self._ann_notify('已应用手动构造，请点目标空位与凸起')
 
     def _ann_build_reset(self):
         """还原为完整 m×n（无洞无凸起），从点空格挖洞开始。"""
         try:
-            m, n, step, _pad = self._ann_build_param()
+            m, n, step = self._ann_build_param()
         except ValueError as e:
             self._ann_build_error = str(e)
             return
@@ -1660,14 +1732,15 @@ class AnnotationMixin:
         让用户直接在主窗口点选增删滑块。
         """
         try:
-            m, n, _step, pad = self._ann_build_param()
+            m, n, step = self._ann_build_param()
         except ValueError:
             return
         stepw = self.cell_size + self.gap_width
         cs = self.cell_size * self.zoom
+        lo_r, hi_r, lo_c, hi_c = self._ann_build_grid(m, n)
         # 空格轮廓（有滑块处主渲染器已画）
-        for r in range(-pad, m + pad):
-            for c in range(-pad, n + pad):
+        for r in range(lo_r, hi_r + 1):
+            for c in range(lo_c, hi_c + 1):
                 if (r, c) in self._ann_build_coords:
                     continue
                 x, y = self.world_to_screen(c * stepw, r * stepw)
@@ -1675,13 +1748,16 @@ class AnnotationMixin:
                                  pygame.Rect(int(x), int(y),
                                              max(1, int(cs)),
                                              max(1, int(cs))), 1)
-        # 目标窗口（0..m-1 × 0..n-1）高亮框
-        x0, y0 = self.world_to_screen(0, 0)
-        x1, y1 = self.world_to_screen(n * stepw, m * stepw)
-        pygame.draw.rect(self.screen, (120, 210, 255),
-                         pygame.Rect(int(x0), int(y0),
-                                     max(1, int(x1 - x0)),
-                                     max(1, int(y1 - y0))), 2)
+        # 目标窗口：与求解器/调试面板同源（find_best_window，mod-aware）
+        region = _target_region_of(self._ann_build_coords, m, n, step)
+        if region is not None:
+            r0, c0, (rh, cw) = region
+            x0, y0 = self.world_to_screen(c0 * stepw, r0 * stepw)
+            x1, y1 = self.world_to_screen((c0 + cw) * stepw, (r0 + rh) * stepw)
+            pygame.draw.rect(self.screen, (120, 210, 255),
+                             pygame.Rect(int(x0), int(y0),
+                                         max(1, int(x1 - x0)),
+                                         max(1, int(y1 - y0))), 2)
         # 顶部操作提示（不遮棋盘中部）
         hint = self.status_font.render(
             '点棋盘格放/取滑块，点窗外格补凸起；改下方参数后 Enter 应用',
@@ -1714,8 +1790,9 @@ class AnnotationMixin:
                          border_radius=8)
         pygame.draw.rect(self.screen, self.colors['dialog_border'], dlg, 2,
                          border_radius=8)
-        title = self.dialog_title_font.render("随机生成标注起点", True,
-                                              self.colors['dialog_title'])
+        title = self.dialog_title_font.render(
+            "随机生成谜题" if self.create_mode else "随机生成标注起点",
+            True, self.colors['dialog_title'])
         self.screen.blit(title, (dx + 20, dy + 15))
 
         fields = [
@@ -1808,13 +1885,18 @@ class AnnotationMixin:
         elif move:
             gap_type = '横向' if move.get('gap_type') == 'h' else '纵向'
             dname = {'w': '上', 's': '下', 'a': '左', 'd': '右'}.get(
-                move.get('direction', ''), move.get('direction', ''))
-            desc = f'到达本步的动作：{gap_type}缝隙 L{move.get("gap_line")} {dname}移 {len(move.get("moved_positions", []))}块'
+                move.get('direction', ''), move.get('direction') or '')
+            n_mv = move.get('merged') or 1
+            seg = f'（本段 {n_mv} 步）' if n_mv > 1 else ''
+            desc = (f'到达本段{seg}的动作：{gap_type}缝隙 '
+                    f'L{move.get("gap_line")} {dname}移 '
+                    f'{len(move.get("moved_positions", []))}块')
         else:
             desc = '（无动作信息）'
 
         line1 = self.input_font.render(
-            f'第 {idx} / {len(snaps) - 1} 步快照', True, (230, 230, 230))
+            f'第 {idx} / {len(snaps) - 1} 段快照'
+            f'（累计 {snap.get("step_total", idx)} 步）', True, (230, 230, 230))
         self.screen.blit(line1, (dx + 25, dy + 62))
         line2 = self.status_font.render(desc, True, (170, 210, 170))
         self.screen.blit(line2, (dx + 25, dy + 98))

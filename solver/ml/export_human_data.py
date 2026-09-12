@@ -36,10 +36,15 @@ import random
 from solver import table_core as tc
 from solver.ml.gather_solver import max_overlap
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from history import expand_snapshot_moves  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # 路径
 # ---------------------------------------------------------------------------
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _SAVE_DIR = os.path.join(_PROJECT_ROOT, 'save')
 _OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'human')
 _OUT_SAMPLES = os.path.join(_OUT_DIR, 'human_samples.jsonl')
@@ -196,94 +201,96 @@ def export(save_dir: str = None):
         size_counter[(m, n, step)] += 1
 
         # 每对相邻快照：snapshots[i-1] →(动作)→ snapshots[i]
+        # 合并快照（同一次选中连续移动）含多步：逐步展开，每步一个样本
+        seq = 0
         for i in range(1, len(snapshots)):
-            prev = snapshots[i - 1]
-            cur = snapshots[i]
-            move = cur.get('move_info')
-            if not move:
-                n_snap_skipped += 1
-                continue
+            for prev, cur, move in expand_snapshot_moves(snapshots[i - 1],
+                                                         snapshots[i]):
+                seq += 1
+                if not move:
+                    n_snap_skipped += 1
+                    continue
 
-            prev_matrix = prev.get('matrix', [])
-            if not prev_matrix:
-                n_snap_skipped += 1
-                continue
-            b = prev.get('bounds', {})
-            min_row = b.get('min_row', 0)
-            min_col = b.get('min_col', 0)
+                prev_matrix = prev.get('matrix', [])
+                if not prev_matrix:
+                    n_snap_skipped += 1
+                    continue
+                b = prev.get('bounds', {})
+                min_row = b.get('min_row', 0)
+                min_col = b.get('min_col', 0)
 
-            # 恢复动作
-            moved_positions = move.get('moved_positions', [])
-            if not moved_positions:
-                n_snap_skipped += 1
-                continue
-            side = _infer_side(move['gap_type'], move['gap_line'], moved_positions)
-            human_action = (move['gap_type'], move['gap_line'], side, move['direction'])
+                # 恢复动作
+                moved_positions = move.get('moved_positions', [])
+                if not moved_positions:
+                    n_snap_skipped += 1
+                    continue
+                side = _infer_side(move['gap_type'], move['gap_line'], moved_positions)
+                human_action = (move['gap_type'], move['gap_line'], side, move['direction'])
 
-            # 指标（动作前状态）
-            overlap_prev, score_prev = _snapshot_metrics(prev_matrix, min_row, min_col, m, n)
-            overlap_cur, _ = _snapshot_metrics(cur['matrix'], cur.get('bounds', {}).get('min_row', 0),
-                                               cur.get('bounds', {}).get('min_col', 0), m, n)
-            void = m * n - overlap_prev
-            if void <= 0:
-                # 动作前已还原 → 拆解步，不属于「还原学习」，跳过
-                n_snap_skipped += 1
-                continue
-            score_delta = (overlap_cur - overlap_prev) / float(m * n)
-            w = sample_weight(void, score_delta)
+                # 指标（动作前状态）
+                overlap_prev, score_prev = _snapshot_metrics(prev_matrix, min_row, min_col, m, n)
+                overlap_cur, _ = _snapshot_metrics(cur['matrix'], cur.get('bounds', {}).get('min_row', 0),
+                                                   cur.get('bounds', {}).get('min_col', 0), m, n)
+                void = m * n - overlap_prev
+                if void <= 0:
+                    # 动作前已还原 → 拆解步，不属于「还原学习」，跳过
+                    n_snap_skipped += 1
+                    continue
+                score_delta = (overlap_cur - overlap_prev) / float(m * n)
+                w = sample_weight(void, score_delta)
 
-            void_counter[void] = void_counter.get(void, 0) + 1
-            weight_sum += w
+                void_counter[void] = void_counter.get(void, 0) + 1
+                weight_sum += w
 
-            base = {
-                'kind': 'pos',
-                'source': _source_id(fp, save_dir),
-                'seq_idx': i,
-                'finished': rec_finished,
-                'm': m, 'n': n, 'step': step,
-                'min_row': min_row, 'min_col': min_col,
-                'matrix': prev_matrix,
-                'void_block_count': void,
-                'gather_score': round(score_prev, 6),
-                'score_delta': round(score_delta, 6),
-                'weight': round(w, 6),
-            }
+                base = {
+                    'kind': 'pos',
+                    'source': _source_id(fp, save_dir),
+                    'seq_idx': seq,
+                    'finished': rec_finished,
+                    'm': m, 'n': n, 'step': step,
+                    'min_row': min_row, 'min_col': min_col,
+                    'matrix': prev_matrix,
+                    'void_block_count': void,
+                    'gather_score': round(score_prev, 6),
+                    'score_delta': round(score_delta, 6),
+                    'weight': round(w, 6),
+                }
 
-            # 校验人类动作在候选集合中（side 推断正确性 / 数据一致性）
-            abs_coords = frozenset(_matrix_to_coords(prev_matrix, min_row, min_col))
-            candidates = tc.forward_neighbors_with_actions(abs_coords, step, m * n)
-            cand_set = set((a[0], a[1], a[2], a[3]) for _, a in candidates)
+                # 校验人类动作在候选集合中（side 推断正确性 / 数据一致性）
+                abs_coords = frozenset(_matrix_to_coords(prev_matrix, min_row, min_col))
+                candidates = tc.forward_neighbors_with_actions(abs_coords, step, m * n)
+                cand_set = set((a[0], a[1], a[2], a[3]) for _, a in candidates)
 
-            if human_action not in cand_set:
-                n_missing_in_candidates += 1
-                # 不产正样本（数据不可靠），但打印前 5 个便于排查
-                if n_missing_in_candidates <= 5:
-                    print(f"  警告: {os.path.basename(fp)} step{i} 人类动作 {human_action} "
-                          f"不在候选集合（共 {len(cand_set)} 候选）")
-                continue
+                if human_action not in cand_set:
+                    n_missing_in_candidates += 1
+                    # 不产正样本（数据不可靠），但打印前 5 个便于排查
+                    if n_missing_in_candidates <= 5:
+                        print(f"  警告: {os.path.basename(fp)} step{seq} 人类动作 {human_action} "
+                              f"不在候选集合（共 {len(cand_set)} 候选）")
+                    continue
 
-            # 正样本
-            pos = dict(base)
-            pos['action'] = {
-                'gap_type': human_action[0], 'gap_line': human_action[1],
-                'side': human_action[2], 'move_dir': human_action[3],
-            }
-            examples.append(pos)
-            n_pos += 1
+                # 正样本
+                pos = dict(base)
+                pos['action'] = {
+                    'gap_type': human_action[0], 'gap_line': human_action[1],
+                    'side': human_action[2], 'move_dir': human_action[3],
+                }
+                examples.append(pos)
+                n_pos += 1
 
-            # 负样本：随机抽 NEG_PER_POS 个其他合法候选
-            other_actions = [a for a in cand_set if a != human_action]
-            if other_actions:
-                random.shuffle(other_actions)
-                for cand in other_actions[:_NEG_PER_POS]:
-                    neg = dict(base)
-                    neg['kind'] = 'neg'
-                    neg['action'] = {
-                        'gap_type': cand[0], 'gap_line': cand[1],
-                        'side': cand[2], 'move_dir': cand[3],
-                    }
-                    examples.append(neg)
-                    n_neg += 1
+                # 负样本：随机抽 NEG_PER_POS 个其他合法候选
+                other_actions = [a for a in cand_set if a != human_action]
+                if other_actions:
+                    random.shuffle(other_actions)
+                    for cand in other_actions[:_NEG_PER_POS]:
+                        neg = dict(base)
+                        neg['kind'] = 'neg'
+                        neg['action'] = {
+                            'gap_type': cand[0], 'gap_line': cand[1],
+                            'side': cand[2], 'move_dir': cand[3],
+                        }
+                        examples.append(neg)
+                        n_neg += 1
 
     # ── 写出 JSONL ──
     with open(_OUT_SAMPLES, 'w', encoding='utf-8') as f:

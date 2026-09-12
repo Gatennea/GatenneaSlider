@@ -497,44 +497,75 @@ class SliderMatrix:
         for i, block in enumerate(selected):
             block.location = list(final_positions[i])
 
-    def shuffle(self, attempts: int, step: int):
+    def shuffle(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75):
         """
         随机打乱谜题（纯逻辑，不含动画/GUI状态重置）
-        
+
         模拟玩家随机滑动操作，直接更新滑块位置。
-        
+
         参数：
             attempts: 打乱尝试次数
             step: 每次移动的步数
+            bias: 偏置强度（0=纯随机，>0=偏向更散的状态）
+                  bias>0 时用 Metropolis 准则：向更紧凑的移动按概率拒绝，
+                  使打乱结果偏向深层状态（离复原更远）。
+            min_score: 洗牌完成后检验聚拢度阈值。
+                       若最终状态的 compute_score > min_score（太容易还原），
+                       则丢弃并重洗，直到满足条件或达到重试上限。
+                       设为 None 时不检验。
         """
         import random
-        
+
+        def _scatter(coords):
+            """散度 = 1 - compute_score（内联避免循环导入）。
+
+            0 = 复原态，越大越散。等价于 solver.heuristic.compute_score 的反值。
+            """
+            if not coords:
+                return 0.0
+            rs = [r for r, _ in coords]
+            cs = [c for _, c in coords]
+            H = max(rs) - min(rs) + 1
+            W = max(cs) - min(cs) + 1
+            K = self.m * self.n
+            fill_rate = K / (H * W) if H * W > 0 else 0.0
+            min_dim, max_dim = min(self.m, self.n), max(self.m, self.n)
+            target_ratio = max_dim / min_dim if min_dim > 0 else 1.0
+            min_hw, max_hw = min(H, W), max(H, W)
+            current_ratio = max_hw / min_hw if min_hw > 0 else 1.0
+            max_ratio = max(current_ratio, target_ratio)
+            aspect_error = abs(current_ratio - target_ratio) / max_ratio if max_ratio > 0 else 0.0
+            score = 0.5 * fill_rate + 0.5 * (1.0 - aspect_error)
+            return 1.0 - score
+
+        cur_scatter = _scatter({tuple(b.location) for b in self.blocks})
+
         for _ in range(attempts):
             bounds = self.get_boundaries()
             min_row, max_row = bounds['min_row'], bounds['max_row']
             min_col, max_col = bounds['min_col'], bounds['max_col']
-            
+
             # 收集所有有效缝隙
             h_lines = [i for i in range(min_row + 1, max_row) if self.is_valid_h_line(i)]
             v_lines = [j for j in range(min_col + 1, max_col) if self.is_valid_v_line(j)]
             all_gaps = [('h', line) for line in h_lines] + [('v', line) for line in v_lines]
-            
+
             if not all_gaps:
                 continue
-            
+
             # 随机选择一个缝隙
             gap_type, line = random.choice(all_gaps)
-            
+
             # 根据缝隙类型选择合法方向
             if gap_type == 'h':
                 direction = random.choice(['a', 'd'])
             else:
                 direction = random.choice(['w', 's'])
-            
+
             # 随机选择一个滑块来触发 opt
             block = random.choice(self.blocks)
             self.opt(gap_type, line, block)
-            
+
             # 使用 try_move 验证并获取最终位置
             final_positions = self.try_move(direction, step)
             if not final_positions:
@@ -542,17 +573,108 @@ class SliderMatrix:
                 for b in self.blocks:
                     b.be_opted = False
                 continue
-            
+
+            # bias 模式：Metropolis 接受准则
+            if bias > 0:
+                import math
+                # 从候选位置计算散度（不需要 commit，直接算）
+                non_sel = {tuple(b.location) for b in self.blocks if not b.be_opted}
+                cand_coords = non_sel | {tuple(p) for p in final_positions}
+                cand_scatter = _scatter(cand_coords)
+                # 候选更紧凑（散度下降）→ 按概率拒绝
+                if cand_scatter < cur_scatter:
+                    if random.random() >= math.exp(bias * (cand_scatter - cur_scatter)):
+                        # 拒绝：不提交，清除选中
+                        for b in self.blocks:
+                            b.be_opted = False
+                        continue
+                cur_scatter = cand_scatter  # 接受后更新
+
             # 提交移动
             self.commit_move(final_positions)
-            
+
             # 清除选中状态
             for b in self.blocks:
                 b.be_opted = False
-        
+
         # 确保最终清除所有选中状态
         for b in self.blocks:
             b.be_opted = False
+
+        # min_score 校验：聚拢度过高说明题目太简单，重洗直到满足要求
+        if min_score is not None:
+            import math as _math
+            max_retries = attempts * 3  # 最多重试 3 倍原次数
+            def _cur_score():
+                rs = [r for r, _ in coords]
+                cs = [c for _, c in coords]
+                H = max(rs) - min(rs) + 1
+                W = max(cs) - min(cs) + 1
+                K = self.m * self.n
+                fill_rate = K / (H * W) if H * W > 0 else 0.0
+                min_dim, max_dim = min(self.m, self.n), max(self.m, self.n)
+                target_ratio = max_dim / min_dim if min_dim > 0 else 1.0
+                min_hw, max_hw = min(H, W), max(H, W)
+                current_ratio = max_hw / min_hw if min_hw > 0 else 1.0
+                max_ratio = max(current_ratio, target_ratio)
+                aspect_error = abs(current_ratio - target_ratio) / max_ratio if max_ratio > 0 else 0.0
+                return 0.5 * fill_rate + 0.5 * (1.0 - aspect_error)
+            for _ in range(max_retries):
+                coords = {tuple(b.location) for b in self.blocks}
+                if _cur_score() <= min_score:
+                    break
+                # 不够散，重新打乱（带 bias 加速）
+                found_good = False
+                for _attempt in range(attempts):
+                    bounds = self.get_boundaries()
+                    min_row, max_row = bounds['min_row'], bounds['max_row']
+                    min_col, max_col = bounds['min_col'], bounds['max_col']
+                    h_lines = [i for i in range(min_row + 1, max_row) if self.is_valid_h_line(i)]
+                    v_lines = [j for j in range(min_col + 1, max_col) if self.is_valid_v_line(j)]
+                    all_gaps = [('h', line) for line in h_lines] + [('v', line) for line in v_lines]
+                    if not all_gaps:
+                        continue
+                    gap_type, line = random.choice(all_gaps)
+                    direction = random.choice(['a', 'd']) if gap_type == 'h' else random.choice(['w', 's'])
+                    block = random.choice(self.blocks)
+                    self.opt(gap_type, line, block)
+                    final_positions = self.try_move(direction, step)
+                    if not final_positions:
+                        for b in self.blocks:
+                            b.be_opted = False
+                        continue
+                    if bias > 0:
+                        non_sel = {tuple(b.location) for b in self.blocks if not b.be_opted}
+                        cand_coords = non_sel | {tuple(p) for p in final_positions}
+                        rs2 = [r for r, _ in cand_coords]
+                        cs2 = [c for _, c in cand_coords]
+                        H2 = max(rs2) - min(rs2) + 1
+                        W2 = max(cs2) - min(cs2) + 1
+                        K2 = self.m * self.n
+                        fr2 = K2 / (H2 * W2) if H2 * W2 > 0 else 0.0
+                        min_d2, max_d2 = min(self.m, self.n), max(self.m, self.n)
+                        tr2 = max_d2 / min_d2 if min_d2 > 0 else 1.0
+                        mh2, mx2 = min(H2, W2), max(H2, W2)
+                        cr2 = mx2 / mh2 if mh2 > 0 else 1.0
+                        mr2 = max(cr2, tr2)
+                        ae2 = abs(cr2 - tr2) / mr2 if mr2 > 0 else 0.0
+                        cand_score = 0.5 * fr2 + 0.5 * (1.0 - ae2)
+                        cur_s = _cur_score()
+                        if cand_score > cur_s or random.random() >= _math.exp(bias * (cand_score - cur_s)):
+                            pass
+                        else:
+                            for b in self.blocks:
+                                b.be_opted = False
+                            continue
+                    self.commit_move(final_positions)
+                    for b in self.blocks:
+                        b.be_opted = False
+                # 檢查這次重洗是否滿足條件
+                coords = {tuple(b.location) for b in self.blocks}
+                if _cur_score() <= min_score:
+                    found_good = True
+                    break
+                # 否則繼續下一次重試（不 break else 子句）
 
     def export_map(self) -> str:
         """

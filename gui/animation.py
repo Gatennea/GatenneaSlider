@@ -61,14 +61,15 @@ class AnimationMixin:
 
         if undo_redo_type == 'undo':
             self.game_history.undo(self.game)
-            self.step_count -= 1
+            # 合并快照可能覆盖多步：步数取目标快照的累计值
+            self.step_count = self.game_history.current_step_total()
             self.ensure_blocks_visible()
             self._flash_move_selection(
                 getattr(self, '_sel_anim_move_info', None), True, after_commit=True)
             self._maybe_show_solved_popup(suppress=True)
         elif undo_redo_type == 'redo':
             self.game_history.redo(self.game)
-            self.step_count += 1
+            self.step_count = self.game_history.current_step_total()
             self.ensure_blocks_visible()
             self._flash_move_selection(
                 getattr(self, '_sel_anim_move_info', None), False, after_commit=True)
@@ -77,7 +78,8 @@ class AnimationMixin:
             # 普通移动动画
             self.step_count += 1
             move_info = self._pending_move_info
-            self.game_history.save_snapshot(self.game, move_info)
+            self.game_history.save_snapshot(self.game, move_info,
+                                            self._move_merge_key())
             self._pending_move_info = None
             self.ensure_blocks_visible()
             self._maybe_show_solved_popup()
@@ -136,33 +138,43 @@ class AnimationMixin:
                 result.append(block)
         return result
 
+    def _move_delta(self, move_info):
+        """动作位移（格）→ (dr, dc)。
+
+        合并快照的合成动作直接给 'delta'（各步位移之和，方向可能不是单向）；
+        单步动作按 direction × step 换算。
+        """
+        delta = move_info.get('delta')
+        if delta is not None:
+            return delta[0], delta[1]
+        d = {'w': (-1, 0), 's': (1, 0),
+             'a': (0, -1), 'd': (0, 1)}.get(move_info.get('direction'), (0, 0))
+        step = move_info.get('step', self.current_step)
+        return d[0] * step, d[1] * step
+
     def _flash_move_selection(self, move_info, is_undo, after_commit=False):
         """选中动画：撤销/重做每一步，短暂高亮该步选中的缝隙与滑块组。
 
         after_commit=True 表示移动已提交（滑塊已停在终点），反之表示动画播放前。
         高亮目标位置对照表：
-            已提交(after_commit=True)：undo → moved；redo → moved+delta*step
-            未提交(after_commit=False)：undo → moved+delta*step；redo → moved
+            已提交(after_commit=True)：undo → moved；redo → moved+delta
+            未提交(after_commit=False)：undo → moved+delta；redo → moved
         """
         if not getattr(self, 'selection_animation_enabled', False):
             return
         if not move_info:
             return
         self._clear_sel_anim()
-        direction = move_info.get('direction', '')
         moved = move_info.get('moved_positions') or []
         gap_type = move_info.get('gap_type')
         gap_line = move_info.get('gap_line')
-        step = move_info.get('step', self.current_step)
-        delta = {'w': (-1, 0), 's': (1, 0),
-                 'a': (0, -1), 'd': (0, 1)}.get(direction, (0, 0))
+        delta = self._move_delta(move_info)
         if is_undo == after_commit:
             # 已提交的撤销 / 未提交的重做：滑块在「移动前」位置
             targets = [list(p) for p in moved]
         else:
             # 未提交的撤销 / 已提交的重做：滑块在「移动后」位置
-            targets = [(r + delta[0] * step, c + delta[1] * step)
-                       for r, c in moved]
+            targets = [(r + delta[0], c + delta[1]) for r, c in moved]
         blocks = self._find_blocks_at_positions(targets)
         for b in blocks:
             b.be_opted = True
@@ -191,17 +203,15 @@ class AnimationMixin:
         启动撤销/重做动画
 
         参数：
-            move_info: 移动元数据
+            move_info: 移动元数据（合并快照的合成动作含 'delta'）
             is_undo: True=撤销(反向), False=重做(正向)
         """
-        direction = move_info['direction']
         moved_positions = move_info['moved_positions']
-        step = move_info.get('step', self.current_step)
-        delta = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}[direction]
+        delta = self._move_delta(move_info)
 
         if is_undo:
-            post_positions = [(r + delta[0] * step, c + delta[1] * step)
-                             for r, c in moved_positions]
+            post_positions = [(r + delta[0], c + delta[1])
+                              for r, c in moved_positions]
             anim_blocks = self._find_blocks_at_positions(post_positions)
             if len(anim_blocks) != len(moved_positions):
                 return False
@@ -213,8 +223,8 @@ class AnimationMixin:
             anim_blocks = self._find_blocks_at_positions(moved_positions)
             if len(anim_blocks) != len(moved_positions):
                 return False
-            post_positions = [(r + delta[0] * step, c + delta[1] * step)
-                             for r, c in moved_positions]
+            post_positions = [(r + delta[0], c + delta[1])
+                              for r, c in moved_positions]
             self.anim_blocks = list(anim_blocks)
             self.anim_start_pos = [list(b.location) for b in anim_blocks]
             self.anim_end_pos = [list(p) for p in post_positions]
@@ -245,7 +255,7 @@ class AnimationMixin:
             # 无动画或找不到滑块，直接执行
             success, _ = self.game_history.undo(self.game)
             if success:
-                self.step_count -= 1
+                self.step_count = self.game_history.current_step_total()
                 self.ensure_blocks_visible()
                 self._flash_move_selection(move_info, True, after_commit=True)
                 self._maybe_show_solved_popup(suppress=True)
@@ -261,7 +271,7 @@ class AnimationMixin:
             # 无动画或找不到滑块，直接执行
             success, _ = self.game_history.redo(self.game)
             if success:
-                self.step_count += 1
+                self.step_count = self.game_history.current_step_total()
                 self.ensure_blocks_visible()
                 self._flash_move_selection(move_info, False, after_commit=True)
                 self._maybe_show_solved_popup(via_redo=True)

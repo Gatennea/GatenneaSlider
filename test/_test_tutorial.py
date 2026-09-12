@@ -5,7 +5,8 @@ r"""
 验证点：
     1. 首次启动弹窗：started/skipped 均未设置 → tut_show_prompt=True
     2. 教程入口：菜单栏“教程”→ 关卡选择列表（tut_selecting_levels、tut_level=0、
-       标题“选择关卡”；列表含可玩关卡 1-4 与回到练习模式）
+       标题“选择关卡”）；关卡/小关由 beginner_archive 自动识别（1-5，无存檔的 6 不出现），
+       列表以每个小关为一行
     3. 关卡列表点第 1 关 → 载入完整 4×4 演示盘（底部标题 2~4*4）、tut_step=1
     4. 教学状态机：点缝隙(1→2) → 点滑块(2→3) → 真实移动(3→4) → 撤销(4→5) → 重做(5→6 合并挑战盘 1~3*3)
     5. 合并步骤（步骤6）：切回 3×3 挑战盘 1~3*3，面板按钮为 重置/查看解法/跳过
@@ -13,8 +14,9 @@ r"""
     7. 进度持久化：save_config 写入 tutorial 键、load_last_state 还原；
        完成后首次启动不再弹窗
     8. 跳过教程：_tut_skip → tutorial_active=False、skipped=True
-    9. 第 2 关（多子题）：关卡列表进 2.1 打乱态、解法回放（动画临时调慢/结束还原）、
-       子题顺序推进 2.1→2.2→2.3→过关；待补充关卡 5/6 锁定
+    9. 第 2/3/4 关：关卡列表进 2.1 打乱态、查看解法＝撤回初始＋存檔连续重做回放
+       （动画临时调慢/结束还原）；回放中锁定棋盘操作，播完回到第 0 步并清空历史，
+       强制玩家手动还原才算过关（小关推进靠玩家手动还原）
    10. 面板/弹窗按钮生成（draw_tutorial_panel / draw_tutorial_prompt / 关卡列表）
 
 运行：
@@ -26,6 +28,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
@@ -59,6 +62,42 @@ def _find_valid_move(gui):
                 if gui.game.try_move(d, gui.current_step):
                     return gt, line, block, d
     return None
+
+
+def _manual_solve_current_sublevel(gui):
+    """按存檔动作序列，用普通移动（非解法回放）手动还原当前小关。
+
+    模拟玩家自己照解法动手：每步先选缝隙与目标块，再真实移动。
+    还原成功时 _maybe_show_solved_popup → _tut_on_state_commit 会推进教学进度
+    （换下一小关，或最后一小关时 tut_step=7）；推进即视为手动还原成功。
+
+    存檔快照可能是「合并快照」（一次选中连移多步只存末态），故用
+    expand_snapshot_moves 逐步展开，才能拿到每步动作前的块位置。
+    """
+    from history import expand_snapshot_moves
+    import gui.tutorial as tut_mod
+    start_sub = gui.tut_sublevel
+    path = tut_mod._sublevel_archive_path(start_sub)
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    snaps = data['history']['snapshots']
+    for i in range(1, len(snaps)):
+        for _pre, _post, mi in expand_snapshot_moves(snaps[i - 1], snaps[i]):
+            if not mi:
+                continue
+            gt, line = mi['gap_type'], mi['gap_line']
+            rr, cc = mi['moved_positions'][0]
+            blk = gui._find_block_by_cell(rr, cc)
+            if blk is None:
+                return False
+            gui.selected_gap = (gt, line)
+            gui.game.opt(gt, line, blk)
+            gui.selected_block = blk
+            if not gui.move_selected_blocks(mi['direction']):
+                return False
+            if gui.tut_sublevel != start_sub or gui.tut_step == 7:
+                return True   # 已还原并推进教学进度
+    return False
 
 
 def main():
@@ -103,10 +142,17 @@ def main():
     _check('未载入任何关卡', gui.current_file_path is None, str(gui.current_file_path))
     _check('标题为教程·选择关卡', '选择关卡' in gui._window_title, gui._window_title)
 
-    # 关卡选择列表：4 个可玩关 + 回到练习模式；5/6 关锁定
+    # 关卡选择列表：以「每个小关」为一行 + 回到练习模式
     gui.draw_tutorial_panel()
-    load_levels = [b.get('level') for b in gui.tut_level_btn_rects if b.get('action') == 'load']
-    _check('列表含可玩关卡 1-4', load_levels == [1, 2, 3, 4], str(load_levels))
+    import gui.tutorial as tut_mod
+    lv_ids = [lv['id'] for lv in tut_mod.TUTORIAL_LEVELS]
+    subs_of = {lv['id']: lv['sublevels'] for lv in tut_mod.TUTORIAL_LEVELS}
+    _check('自动识别关卡 1-5（无存檔的 6 不出现）', lv_ids == [1, 2, 3, 4, 5], str(lv_ids))
+    _check('第3关自动识别 3.1-3.4（3.5 无存檔被排除）',
+           subs_of[3] == ['3.1', '3.2', '3.3', '3.4'], str(subs_of[3]))
+    visible_subs = [b.get('sublevel') for b in gui.tut_level_btn_rects
+                    if b.get('action') == 'load']
+    _check('列表按小关分行', bool(visible_subs) and all(visible_subs), str(visible_subs))
     _check('列表含回到练习模式', any(b.get('action') == 'exit' for b in gui.tut_level_btn_rects), '')
 
     # 点第 1 关 → 载入完整 4×4 演示盘
@@ -229,13 +275,18 @@ def main():
     _check('关卡1记入完成', 1 in gui._tut_completed_levels(), str(gui._tut_completed_levels()))
     gui.is_solved = SliderGUI.is_solved  # 还原
 
-    # 查看解法（宏播放）还原后同样算过关
+    # 查看解法播放中：即便已还原也不判定过关、不弹复原窗
+    # （播完会撤回初始态，强制玩家手动还原才算过关）
     gui.tut_step = 6
+    gui.tut_solution_replaying = True
     gui.macro_executing = True
+    gui._solved_popup_active = False
     gui.is_solved = lambda: True
     gui._maybe_show_solved_popup()
-    _check('解法播放还原也过关', gui.tut_step == 7, f'step={gui.tut_step}')
+    _check('解法播放中不判过关', gui.tut_step == 6, f'step={gui.tut_step}')
+    _check('解法播放中不弹复原窗', gui._solved_popup_active is False, '')
     gui.macro_executing = False
+    gui.tut_solution_replaying = False
     del gui.is_solved  # 还原（删除实例遮蔽，回到类方法）
 
     # ---- 6. 进度持久化 ----
@@ -266,63 +317,75 @@ def main():
     gui.tut_progress['completed'] = [1]
     _check('菜单名=回顾教程', gui._tut_menu_name() == '回顾教程', gui._tut_menu_name())
 
-    # ---- 8. 第 2/3/4 关：关卡列表选择 + 子题顺序 + 解法回放 + 动画调慢 ----
+    # ---- 8. 第 2/3/4 关：关卡列表选择 + 小关顺序 + 存檔重做回放 + 动画调慢 ----
     def _click_level(level_id):
-        """从关卡列表点击指定关卡"""
+        """从关卡列表点击指定关卡（列表可滚动，必要时下滚查找）"""
         gui._tut_show_level_select()
-        gui.draw_tutorial_panel()
-        btn = next(b for b in gui.tut_level_btn_rects if b.get('level') == level_id)
-        return gui._tut_handle_panel_click(*btn['rect'].center)
+        for _ in range(40):
+            gui.draw_tutorial_panel()
+            btn = next((b for b in gui.tut_level_btn_rects
+                        if b.get('level') == level_id), None)
+            if btn:
+                return gui._tut_handle_panel_click(*btn['rect'].center)
+            gui.tut_panel_scroll += 40
+        return False
 
-    # 8.1 载入第 2 关：自动选第一个未完成子题 2.1
+    # 8.1 载入第 2 关：自动选第一个未完成小关 2.1
     gui.tut_progress['subcompleted'] = {}
     _check('点第2关被消费', _click_level(2) is True, '')
     _check('第2关可玩', gui.tutorial_active is True and gui.tut_level == 2,
            f'level={gui.tut_level}')
-    _check('载入 2.1 子题', gui.tut_sublevel == '2.1', str(gui.tut_sublevel))
-    _check('子题步骤=1(还原)', gui.tut_step == 1, f'step={gui.tut_step}')
-    _check('子题回到打乱态', gui.step_count == 0, f'step_count={gui.step_count}')
-    _check('子题预计算解法 ops', len(gui.tut_solution_ops) == 3,
-           f'ops={len(gui.tut_solution_ops)}')
+    _check('载入 2.1 小关', gui.tut_sublevel == '2.1', str(gui.tut_sublevel))
+    _check('小关步骤=1(还原)', gui.tut_step == 1, f'step={gui.tut_step}')
+    _check('小关回到打乱态', gui.step_count == 0, f'step_count={gui.step_count}')
+    _check('2.1 存檔含完整重做链', len(gui.game_history.history) == 4,
+           f'snapshots={len(gui.game_history.history)}')
     _check('标题为教程·第 2 关', '第 2 关' in gui._window_title, gui._window_title)
 
-    # 8.2 查看解法：临时调慢动画 + 回放存档链（动画关闭时同步完成）
+    # 8.2 查看解法：临时调慢动画 + 撤回初始 + 连续重做回放
+    #     播完 = 回到第 0 步 + 清掉解法历史 + 解锁，强制玩家手动还原（不推进小关）
     gui.animation_duration = 300
     gui.tut_anim_slowed = False
     saved_dur = gui.animation_duration
     gui._tut_show_solution()
-    _check('解法回放解决 2.1 并推进到 2.2', gui.tut_sublevel == '2.2',
-           str(gui.tut_sublevel))
+    _check('解法播完不推进小关', gui.tut_sublevel == '2.1', str(gui.tut_sublevel))
+    _check('解法播完回到第 0 步', gui.step_count == 0, f'step_count={gui.step_count}')
+    _check('解法历史被清空（只剩初始快照）', len(gui.game_history.history) == 1,
+           f'snapshots={len(gui.game_history.history)}')
+    _check('撤销/重做失效', gui.game_history.can_undo() is False
+           and gui.game_history.can_redo() is False, '')
+    _check('解法播完解锁棋盘', gui._tut_board_locked() is False, '')
     _check('解法结束动画速度还原', gui.tut_anim_slowed is False
            and gui.animation_duration == saved_dur, f'dur={gui.animation_duration}')
-    _check('宏执行已结束', gui.macro_executing is False,
-           f'macro={gui.macro_executing}')
+    _check('连续重做已结束', getattr(gui, '_continuous_redo', False) is False, '')
+    _check('提示玩家自行还原', '自行还原' in gui.macro_notify_msg, gui.macro_notify_msg)
 
     # 8.3 播放中保持调慢 / 结束后由 tick 钩子还原
     gui.tut_anim_slowed = True
     gui.animation_duration = 600
     gui._tut_saved_anim_duration = 300
-    gui.macro_executing = True
+    gui._continuous_redo = True
     gui._tut_tick_restore_anim_speed()
     _check('播放中保持调慢', gui.tut_anim_slowed is True
            and gui.animation_duration == 600 and gui.tut_solution_playing is True,
            f'dur={gui.animation_duration}')
-    gui.macro_executing = False
+    gui._continuous_redo = False
     gui._tut_tick_restore_anim_speed()
     _check('结束后还原速度', gui.tut_anim_slowed is False
            and gui.animation_duration == 300, f'dur={gui.animation_duration}')
 
-    # 8.4 子题顺序推进：2.2 → 2.3 → 第 2 关完成
-    _check('当前子题=2.2', gui.tut_sublevel == '2.2', str(gui.tut_sublevel))
-    gui._tut_show_solution()
-    _check('2.2 解决推进到 2.3', gui.tut_sublevel == '2.3', str(gui.tut_sublevel))
-    gui._tut_show_solution()
-    _check('2.3 解决 → 第2关完成', gui.tut_step == 7, f'step={gui.tut_step}')
+    # 8.4 小关顺序推进（须玩家手动还原）：2.1 → 2.2 → 2.3 → 第 2 关完成
+    _check('当前小关=2.1（解法未推进）', gui.tut_sublevel == '2.1', str(gui.tut_sublevel))
+    _check('手动还原 2.1', _manual_solve_current_sublevel(gui) is True, '')
+    _check('2.1 还原推进到 2.2', gui.tut_sublevel == '2.2', str(gui.tut_sublevel))
+    _check('手动还原 2.2', _manual_solve_current_sublevel(gui) is True, '')
+    _check('2.2 还原推进到 2.3', gui.tut_sublevel == '2.3', str(gui.tut_sublevel))
+    _check('手动还原 2.3', _manual_solve_current_sublevel(gui) is True, '')
+    _check('2.3 还原 → 第2关完成', gui.tut_step == 7, f'step={gui.tut_step}')
     _check('第2关记入完成', 2 in gui._tut_completed_levels(),
            str(gui._tut_completed_levels()))
-    _check('2.1-2.3 子题全部记录', gui._tut_completed_sublevels(2) == ['2.1', '2.2', '2.3'],
+    _check('2.1-2.3 小关全部记录', gui._tut_completed_sublevels(2) == ['2.1', '2.2', '2.3'],
            str(gui._tut_completed_sublevels(2)))
-    import gui.tutorial as tut_mod
     compl_note = tut_mod._text_level(2).get('complete_notify', '')
     _check('文案含过关通知', compl_note.startswith('过关！第 2 关（填洞）'), compl_note)
 
@@ -332,38 +395,117 @@ def main():
     _check('过关后可重进第 2 关', any(b.get('action') == 'load' and b.get('level') == 2
            for b in gui.tut_level_btn_rects), '')
 
-    # 8.6 待补充关卡 5/6 锁定不可玩
-    ok5 = gui._tut_load_level(5)
-    _check('待补充关卡不可玩', ok5 is False, f'ok={ok5}')
+    # 8.6 无存檔的关卡不可载入（自动识别后不出现）
+    ok6 = gui._tut_load_level(6)
+    _check('无存檔关卡不可玩', ok6 is False, f'ok={ok6}')
     _check('提示待补充', '待补充' in gui.macro_notify_msg, gui.macro_notify_msg)
 
-    # 8.7 第 3/4 关：解法回放需能完整还原每关全部子题（长 move_info 链）
-    def _solve_current_level_with_solutions():
-        """用解法回放打通当前关卡（直到 tut_step==7），返回回放调用次数"""
-        n = 0
-        while gui.tut_step != 7:
-            gui._tut_show_solution()
-            n += 1
-        return n
+    # 8.7 第 3/4 关：长 move_info 链的解法回放须能完整播完并回到第 0 步；
+    #     但小关推进只能靠玩家手动还原
+    def _replay_then_manual_solve():
+        """先播一次解法（验证长链回放 + 播完回第 0 步 + 解锁），再手动还原推进。
+
+        返回 (回放是否正常收尾, 手动还原是否成功)。
+        """
+        before = gui.tut_sublevel
+        gui._tut_show_solution()
+        replay_ok = (gui.tut_sublevel == before and gui.step_count == 0
+                     and len(gui.game_history.history) == 1
+                     and gui._tut_board_locked() is False)
+        return replay_ok, _manual_solve_current_sublevel(gui)
 
     _check('点第3关被消费', _click_level(3) is True, '')
     _check('第3关载入 3.1', gui.tut_sublevel == '3.1', str(gui.tut_sublevel))
     _check('第3关打乱态', gui.step_count == 0, f'step_count={gui.step_count}')
-    n3 = _solve_current_level_with_solutions()
-    _check('第3关解法完整回放至过关',
-           n3 == 2 and gui.tut_step == 7 and gui.tut_progress['completed'] == [1, 2, 3],
+    n3 = 0
+    while gui.tut_step != 7:
+        rep_ok, man_ok = _replay_then_manual_solve()
+        _check(f'第3关第{n3 + 1}个小关解法回放正常收尾', rep_ok, '')
+        _check(f'第3关第{n3 + 1}个小关手动还原成功', man_ok, '')
+        n3 += 1
+    _check('第3关 4 个小关全部走完至过关',
+           n3 == 4 and gui.tut_step == 7 and gui.tut_progress['completed'] == [1, 2, 3],
            f'n={n3} step={gui.tut_step} completed={gui.tut_progress["completed"]}')
-    _check('第3关子题全部记录', gui._tut_completed_sublevels(3) == ['3.1', '3.2'],
+    _check('第3关小关全部记录', gui._tut_completed_sublevels(3) == ['3.1', '3.2', '3.3', '3.4'],
            str(gui._tut_completed_sublevels(3)))
 
     _check('点第4关被消费', _click_level(4) is True, '')
     _check('第4关载入 4.1', gui.tut_sublevel == '4.1', str(gui.tut_sublevel))
-    n4 = _solve_current_level_with_solutions()
-    _check('第4关解法完整回放至过关',
-           n4 == 3 and gui.tut_step == 7 and gui.tut_progress['completed'] == [1, 2, 3, 4],
+    n4 = 0
+    while gui.tut_step != 7 and n4 < 10:   # 上限仅防死循环刷屏，正常 5 个小关
+        rep_ok, man_ok = _replay_then_manual_solve()
+        _check(f'第4关第{n4 + 1}个小关解法回放正常收尾', rep_ok, '')
+        _check(f'第4关第{n4 + 1}个小关手动还原成功', man_ok, '')
+        n4 += 1
+    _check('第4关 5 个小关全部走完至过关',
+           n4 == 5 and gui.tut_step == 7 and gui.tut_progress['completed'] == [1, 2, 3, 4],
            f'n={n4} step={gui.tut_step} completed={gui.tut_progress["completed"]}')
-    _check('第4关子题全部记录', gui._tut_completed_sublevels(4) == ['4.1', '4.2', '4.3'],
+    _check('第4关小关全部记录',
+           gui._tut_completed_sublevels(4) == ['4.1', '4.2', '4.3', '4.4', '4.5'],
            str(gui._tut_completed_sublevels(4)))
+
+    # 8.8 有动画时的真实回放路径：连续重做由动画提交逐帧推进；
+    #     播放中锁定棋盘操作，播完回第 0 步、清历史且不推进小关
+    gui.animation_enabled = True
+    gui._tut_load_sublevel('2.1')
+    _check('载入 2.1 时未锁定', gui._tut_board_locked() is False, '')
+    gui._tut_show_solution()
+    _check('动画回放已启动', gui.animating is True and gui._continuous_redo is True,
+           f'animating={gui.animating} redo={gui._continuous_redo}')
+    _check('回放中锁定棋盘', gui._tut_board_locked() is True, '')
+
+    def _board_sig():
+        return (gui.step_count, gui.current_m, gui.current_n,
+                [tuple(b.location) for b in gui.game.blocks])
+
+    sig0 = _board_sig()
+    _check('回放中移动被拦截', gui.move_selected_blocks('a') is False, '')
+    gui.undo()
+    gui.shuffle_puzzle()
+    gui.reset_puzzle()
+    _check('回放中撤销/打乱/重置被拦截', _board_sig() == sig0, '')
+    _check('回放中仍保持连续重做', gui._continuous_redo is True, '')
+
+    frames = 0
+    while gui.tut_solution_replaying and frames < 2000:
+        if gui.animating:   # 强制当前动画到点提交，驱动连续重做推进
+            gui.anim_start_time = pygame.time.get_ticks() - gui.animation_duration - 1
+        gui.update_animation()
+        gui.draw_tutorial_panel()   # 触发 _tut_maybe_finish_replay 收尾
+        frames += 1
+    _check('动画回放播完解锁', gui._tut_board_locked() is False, f'frames={frames}')
+    _check('动画回放播完回到第 0 步', gui.step_count == 0, f'step_count={gui.step_count}')
+    _check('动画回放播完历史只剩初始快照', len(gui.game_history.history) == 1,
+           f'snapshots={len(gui.game_history.history)}')
+    _check('动画回放播完不推进小关', gui.tut_sublevel == '2.1', str(gui.tut_sublevel))
+    _check('动画回放结束后已停连续重做', gui._continuous_redo is False, '')
+    gui.animation_enabled = False
+
+    # 8.9 第 1 关查看解法：走 IDA* 求解器（1~3*3 状态少），播完同样回第 0 步
+    gui._tut_load_level(1)
+    gui._tut_set_step(6)
+    _check('第1关挑战盘为 1~3*3',
+           (gui.current_m, gui.current_n, gui.current_step) == (3, 3, 1),
+           f'({gui.current_m},{gui.current_n},{gui.current_step})')
+    gui._tut_show_solution()
+    _check('第1关解法走 IDA* 并锁定棋盘',
+           gui.tut_solution_replaying is True and gui._auto_solve_running is True
+           and gui._tut_board_locked() is True, f'run={gui._auto_solve_running}')
+    frames = 0
+    while gui.tut_solution_replaying and frames < 6000:
+        gui._check_auto_solve_result()
+        if gui.animating:
+            gui.anim_start_time = pygame.time.get_ticks() - gui.animation_duration - 1
+        gui.update_animation()
+        gui.draw_tutorial_panel()
+        frames += 1
+        time.sleep(0.001)
+    _check('第1关解法播完解锁', gui._tut_board_locked() is False, f'frames={frames}')
+    _check('第1关解法播完回第 0 步', gui.step_count == 0, f'step_count={gui.step_count}')
+    _check('第1关解法播完历史只剩初始快照', len(gui.game_history.history) == 1,
+           f'snapshots={len(gui.game_history.history)}')
+    _check('第1关解法播完仍未过关（须手动还原）', gui.tut_step == 6,
+           f'step={gui.tut_step}')
 
     # ---- 9. 弹窗按钮生成（首次启动弹窗） ----
     gui.tut_show_prompt = True

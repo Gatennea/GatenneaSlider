@@ -453,7 +453,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.timer_step = 0
         self.timer_initial_matrix = ''
         self.timer_puzzle_key = ''
-        self.game_mode = 'practice'  # 'timed' 计时模式 / 'practice' 练习模式（默认练习）
+        # 'practice' 练习 / 'timed' 竞速（计时）/ 'create' 创造（造题）
+        self.game_mode = 'practice'
         # 最近一次计时完成结果（供复原成功悬浮窗显示成绩/TPS/最佳判定）
         self._last_timed_result = None
 
@@ -473,6 +474,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 移动元数据（从 move_selected_blocks 传递到 commit_animation）
         self._pending_move_info = None
+        # 选中会话标识：同一次选中下连续移动并入同一快照（见 history.save_snapshot）
+        self._move_session_id = 0
 
         # 撤销/重做动画状态
         self._undo_redo_type = None  # 当前动画类型：'undo'/'redo'/None
@@ -892,7 +895,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         solved = self.is_solved()
         became_solved = solved and not getattr(self, '_prev_solved', False)
         self._prev_solved = solved
-        if became_solved and not via_redo and not suppress:
+        # 教程解法播放中：不弹复原悬浮窗（播完会撤回初始态，强制玩家手动还原）
+        if became_solved and not via_redo and not suppress and not self._tut_board_locked():
             self._solved_popup_active = True
             self._solved_popup_t = 0
         # 新手教程：状态提交后推进教学进度（移动/撤销/重做/过关）
@@ -909,12 +913,25 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         返回：
             bool - 是否真正执行了移动（被拦截/未选中/移动不合法均为 False）
         """
+        # 教程解法播放中：锁定棋盘操作（不得打断回放）
+        if self._tut_board_locked():
+            return False
         # 手动移动会使已排队的梯度阶段失效 → 终止流水线
         self._stop_gradient_pipeline()
         # 手动滑动 = 打断连续撤销/重做
         self._stop_continuous_undo_redo()
         # 只读存档：禁止滑动（撤销重做除外）
         if self._readonly_blocked():
+            return False
+        # 创造模式：只造题不玩游戏（与练习模式功能解耦）
+        if self.create_mode:
+            self.macro_notify_msg = "创造模式：请用[随机生成]或[手动构造]造题"
+            self.macro_notify_timer = 90
+            return False
+        # 标注模式的手动构造视图：主棋盘是编辑画布，禁止滑动
+        if self.annotation_mode and self._ann_view == 'build':
+            self.macro_notify_msg = "构造中：点格增删滑块，按[应用并开始]完成"
+            self.macro_notify_timer = 90
             return False
         # 计时模式：就绪态（已打乱未开始）禁止滑动，保证公平
         if self.game_mode == 'timed' and self.timer_state == 'ready':
@@ -924,6 +941,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         selected = [b for b in self.game.blocks if b.be_opted]
         if not selected:
+            return False
+        # 选中了全部滑块 = 整体平移，形状不变，对还原毫无意义 → 禁止
+        # （缝隙落在棋形外沿时会走到这里，见 _drag_slide 的前置拦截）
+        if len(selected) == len(self.game.blocks):
+            self.macro_notify_msg = "不能整体移动所有滑块（形状不变，没有意义）"
+            self.macro_notify_timer = 120
             return False
 
         # 调用 game.py 的 try_move 进行纯逻辑验证（附带失败原因）
@@ -968,7 +991,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         else:
             self.game.commit_move(final_positions)
             self.step_count += 1
-            self.game_history.save_snapshot(self.game, move_info)
+            self.game_history.save_snapshot(self.game, move_info,
+                                            self._move_merge_key())
             self._pending_move_info = None
             self.ensure_blocks_visible()
             self._maybe_show_solved_popup()
@@ -979,6 +1003,25 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_msg = f"向{dir_str}移动 {self.current_step}步"
             self.macro_notify_timer = 120
         return True
+
+    def _bump_move_session(self):
+        """结束当前「选中会话」：之后的移动不再并入同一快照。
+
+        在选中变化（点缝隙/点方块/右键取消）与撤销/重做/跳步时调用。
+        """
+        self._move_session_id = getattr(self, '_move_session_id', 0) + 1
+
+    def _move_merge_key(self):
+        """当前移动所属「选中会话」标识；None = 不合并。
+
+        宏/求解器播放、标注录制都不合并：前者需要逐步留档，后者要求
+        history 与录制步一一对应（否则会把录制起点的快照就地改写）。
+        """
+        if getattr(self, 'macro_executing', False):
+            return None
+        if getattr(self, '_ann_recording', False):
+            return None
+        return getattr(self, '_move_session_id', 0)
 
     def _drag_slide(self, block, dx, dy):
         """拖拽滑动：根据拖拽位移，自动确定缝隙/方向并执行一次滑动。
@@ -1021,6 +1064,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             else:  # v
                 move_dir = 'd' if dy > 0 else 'u'
 
+        # 缝隙必须落在棋形内部（不在边界盒外沿）：外沿缝隙会让 opt() 把「同一侧」
+        # 判成覆盖全部滑块，选中后整体平移（形状不变）没有意义 → 拒绝本次滑动
+        gap_valid = (self.game.is_valid_h_line(line) if gap_type == 'h'
+                     else self.game.is_valid_v_line(line))
+        if not gap_valid:
+            self.selected_gap = None
+            self.selected_block = None
+            for b in self.game.blocks:
+                b.be_opted = False
+            self.macro_notify_msg = "缝隙在棋形外沿：整体移动所有滑块没有意义"
+            self.macro_notify_timer = 120
+            return False
+
         # 选中包含起点滑块的连通组
         self.game.opt(gap_type, line, block)
         self.selected_block = block
@@ -1035,12 +1091,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.selected_block = None
             for b in self.game.blocks:
                 b.be_opted = False
+            # 选中已清空 → 结束本次选中会话（下一次拖拽另起快照）
+            self._bump_move_session()
         return moved
 
     def undo(self):
         """撤销操作（Ctrl+Z）"""
+        # 教程解法播放中：锁定棋盘操作
+        if self._tut_board_locked():
+            return
         # 手动撤销会使已排队的梯度阶段失效 → 终止流水线
         self._stop_gradient_pipeline()
+        # 撤销会改变选中 → 结束当前选中会话（后续移动另起快照）
+        self._bump_move_session()
         # 标注录制中：不允许撤到起点之前（起点前的历史不属于本次示范）
         if self._ann_undo_blocked():
             return
@@ -1053,10 +1116,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self.animating:
             self.cancel_animation()
 
-        # 获取当前快照的移动元数据
-        move_info = None
-        if self.game_history.can_undo():
-            move_info = self.game_history.history[self.game_history.history_index].get('move_info')
+        # 获取将被撤销那一步的移动元数据（合并段会先惰性展开成单步）
+        move_info = self.game_history.peek_undo() if self.game_history.can_undo() else None
 
         if self.animation_enabled and self.animation_duration > 0 and move_info:
             # 有动画的撤销
@@ -1073,7 +1134,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if success:
             self.selected_gap = None
             self.selected_block = None
-            self.step_count -= 1
+            # 合并快照可能覆盖多步：步数直接取目标快照的累计值
+            self.step_count = self.game_history.current_step_total()
             self.ensure_blocks_visible()
             self._flash_move_selection(move_info, True, after_commit=True)
             self.macro_notify_msg = "撤销"
@@ -1085,8 +1147,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def redo(self):
         """重做操作（Ctrl+X）"""
+        # 教程解法播放中：锁定棋盘操作（回放自身的连续重做除外）
+        if self._tut_board_locked() and not self._continuous_redo:
+            return
         # 手动重做会使已排队的梯度阶段失效 → 终止流水线
         self._stop_gradient_pipeline()
+        # 重做会改变选中 → 结束当前选中会话（后续移动另起快照）
+        self._bump_move_session()
         # 如果正在播放撤销/重做动画，入队等待
         if self.animating and self._undo_redo_type is not None:
             self._animation_queue.append('redo')
@@ -1096,11 +1163,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self.animating:
             self.cancel_animation()
 
-        # 获取目标快照的移动元数据
-        move_info = None
-        if self.game_history.can_redo():
-            target_idx = self.game_history.history_index + 1
-            move_info = self.game_history.history[target_idx].get('move_info')
+        # 获取将被重做那一步的移动元数据（目标段会先惰性展开成单步）
+        move_info = self.game_history.peek_redo() if self.game_history.can_redo() else None
 
         if self.animation_enabled and self.animation_duration > 0 and move_info:
             # 有动画的重做
@@ -1117,7 +1181,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if success:
             self.selected_gap = None
             self.selected_block = None
-            self.step_count += 1
+            self.step_count = self.game_history.current_step_total()
             self.ensure_blocks_visible()
             self._flash_move_selection(move_info, False, after_commit=True)
             self.macro_notify_msg = "重做"
@@ -1129,8 +1193,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def jump_to_history_index(self, idx: int):
         """直接跳到历史记录第 idx 步的状态（虚拟键盘“跳到某步”）"""
+        # 教程解法播放中：锁定棋盘操作
+        if self._tut_board_locked():
+            return
         # 手动跳步 = 打断连续撤销/重做
         self._stop_continuous_undo_redo()
+        # 跳步会改变选中 → 结束当前选中会话（后续移动另起快照）
+        self._bump_move_session()
         # 标注录制中跳转会破坏标注基准 → 阻止
         if getattr(self, '_ann_recording', False):
             self.macro_notify_msg = "标注录制中不可跳转步骤"
@@ -1148,7 +1217,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.selected_block = None
         self.game_history.history_index = idx
         self.game_history.restore_snapshot(self.game, idx)
-        self.step_count = idx
+        # 合并快照可能覆盖多步：步数取该快照的累计值
+        self.step_count = self.game_history.step_total_at(idx)
         self.ensure_blocks_visible()
         self._mark_file_dirty()
 
@@ -1226,6 +1296,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def shuffle_puzzle(self):
         """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
+        # 教程解法播放中：锁定棋盘操作
+        if self._tut_board_locked():
+            return
         # 打乱会改变棋盘 → 终止梯度流水线
         self._stop_gradient_pipeline()
         # 打乱会改变棋盘 → 打断连续撤销/重做
@@ -1276,6 +1349,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def reset_puzzle(self):
         """重置谜题到初始状态"""
+        # 教程解法播放中：锁定棋盘操作
+        if self._tut_board_locked():
+            return
         if self.timer_state == 'running':
             self.macro_notify_msg = "计时中无法重置"
             self.macro_notify_timer = 90
@@ -1303,20 +1379,49 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.timer_state = 'idle'
         self.timer_elapsed = 0.0
 
-    def toggle_game_mode(self):
-        """切换 计时模式 / 练习模式（谜题菜单入口）"""
+    def _mode_name(self) -> str:
+        """当前模式的中文名（练习 / 竞速 / 创造）。"""
+        return {'timed': '竞速', 'create': '创造'}.get(self.game_mode, '练习')
+
+    def set_game_mode(self, mode: str) -> bool:
+        """设置模式：'practice' 练习 / 'timed' 竞速 / 'create' 创造（幂等）。
+
+        返回是否成功（计时进行中拒绝切换）。
+        """
+        if mode not in ('practice', 'timed', 'create'):
+            return False
         if self.timer_state == 'running':
             self.macro_notify_msg = "计时中无法切换模式"
             self.macro_notify_timer = 90
-            return
-        if self.game_mode == 'timed':
-            self.game_mode = 'practice'
-            self._timer_cancel()
-            self.macro_notify_msg = "练习模式：可自由滑动，不计时"
+            return False
+        if mode == self.game_mode:
+            return True
+        # 离开创造模式：收掉创造界面
+        if self.create_mode:
+            self._ann_leave_to_home()
+        if mode == 'create':
+            # 创造模式与标注模式/计时互斥
+            self.annotation_mode = False
+            self._ann_leave_to_home()
+        self._timer_cancel()
+        self.game_mode = mode
+        if mode == 'timed':
+            self.macro_notify_msg = "竞速模式：打乱后需按空格开始计时"
+        elif mode == 'create':
+            self.macro_notify_msg = "创造模式：随机挖洞/缺口 或 手动构造，造好即成为当前谜题"
         else:
-            self.game_mode = 'timed'
-            self.macro_notify_msg = "计时模式：打乱后需按空格开始计时"
+            self.macro_notify_msg = "练习模式：可自由滑动，不计时"
         self.macro_notify_timer = 120
+        return True
+
+    def toggle_game_mode(self):
+        """循环切换 练习 → 竞速 → 创造 → 练习（「模式」开关 / 谜题菜单入口）"""
+        order = ('practice', 'timed', 'create')
+        try:
+            idx = order.index(self.game_mode)
+        except ValueError:
+            idx = 0
+        self.set_game_mode(order[(idx + 1) % len(order)])
 
     def _timer_start(self):
         """开始计时"""
@@ -1424,9 +1529,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         return self.game_mode == 'timed'
 
     def _timer_status_text(self):
-        """返回状态栏要显示的计时器文本（练习模式/计时模式始终显示当前状态）"""
+        """返回状态栏要显示的计时器文本（练习/竞速/创造始终显示当前状态）"""
         if self.game_mode == 'practice':
             return "练习模式"
+        if self.game_mode == 'create':
+            return "创造模式"
         prefix = "竞速模式"
         if self.timer_state == 'idle':
             return f"{prefix}（待打乱）"

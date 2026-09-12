@@ -11,6 +11,7 @@ __pycache__/
 build/
 dist/
 dist2/
+dist3/
 .pyinstaller_cache/
 
 # ===== 旧版本备份（已被 Git 取代）=====
