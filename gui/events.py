@@ -20,6 +20,12 @@ class EventsMixin:
         """处理用户输入事件"""
         for event in pygame.event.get():
             try:
+                # 左键单击反馈：先于所有界面分支记录，保证棋盘/菜单/面板/对话框
+                # 任意位置的左键单击都有涟漪（不受各分支 continue 影响）
+                if (event.type == pygame.MOUSEBUTTONDOWN
+                        and getattr(event, 'button', None) == 1):
+                    self.spawn_click_feedback(getattr(event, 'pos', None))
+
                 if event.type == pygame.QUIT:
                     self.running = False
                     continue

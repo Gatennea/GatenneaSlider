@@ -415,6 +415,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._solved_popup_active = False
         self._solved_popup_t = 0
         self._prev_solved = False
+        # 左键单击反馈：活动涟漪列表，元素 {x, y, t0}（见 spawn/draw_click_feedback）
+        self._click_feedback = []
         # 参数规格（GUI 步进器用）：key -> (显示名, 默认值, 最小值, 最大值, 步长, 说明)
         self._gather_param_specs = [
             ('max_steps',           ('最大步数',     500,  100,   5000, 100,  '聚拢求解的步数上限，越大越可能深入但越慢')),
@@ -995,13 +997,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                                             self._move_merge_key())
             self._pending_move_info = None
             self.ensure_blocks_visible()
-            self._maybe_show_solved_popup()
-            self._mark_file_dirty()
-            # 操作提示，在撤销/重做时没有显示
+            # 操作提示先于过关判定：过关/教程播报优先级更高，不应被“向X移动”覆盖
             dir_names = {'w': '上', 's': '下', 'a': '左', 'd': '右'}
             dir_str = dir_names.get(direction, direction)
             self.macro_notify_msg = f"向{dir_str}移动 {self.current_step}步"
             self.macro_notify_timer = 120
+            self._maybe_show_solved_popup()
+            self._mark_file_dirty()
         return True
 
     def _bump_move_session(self):
@@ -2127,6 +2129,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 新手教程：引导面板 / 首次启动弹窗（最顶层）
                 self.draw_tutorial_prompt()
                 self.draw_tutorial_panel()
+
+                # 左键单击反馈（盖在所有界面之上，含模态对话框）
+                self.draw_click_feedback()
 
                 self.handle_events()
                 # 标注模式：捕捉录制提交 / 处理存档打开结果

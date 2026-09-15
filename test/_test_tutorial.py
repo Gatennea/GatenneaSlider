@@ -17,7 +17,14 @@ r"""
     9. 第 2/3/4 关：关卡列表进 2.1 打乱态、查看解法＝撤回初始＋存檔连续重做回放
        （动画临时调慢/结束还原）；回放中锁定棋盘操作，播完回到第 0 步并清空历史，
        强制玩家手动还原才算过关（小关推进靠玩家手动还原）
+    9b. 开局只导入存檔第一个状态：历史仅 1 个快照、Ctrl+X 重做无效（防直接过关）；
+        查看解法时才读入整份存檔播放
    10. 面板/弹窗按钮生成（draw_tutorial_panel / draw_tutorial_prompt / 关卡列表）
+   11. 闯关解锁：过一关才能进下一关（关卡内小关也需按序）；锁定行在列表标出且点击不载入
+   12. 详解面板显示当前小关标题；教程提示栏改挂到面板上方（不再被右下角面板遮住）
+   13. 过关评分（第 1 关除外，每个小关单独评分）：分数=该小关存檔步数/玩家步数*100
+       （封顶 100），过关即播报本次分数、只把更高分写入 config；
+       关卡列表里已过关的小关行显示该小关最高分
 
 运行：
     D:\python\python.exe 測試\_test_tutorial.py
@@ -273,6 +280,9 @@ def main():
     gui._maybe_show_solved_popup()
     _check('过关 → 完成 7', gui.tut_step == 7, f'step={gui.tut_step}')
     _check('关卡1记入完成', 1 in gui._tut_completed_levels(), str(gui._tut_completed_levels()))
+    _check('第1关不评分', gui.tut_last_score is None
+           and not gui.tut_progress.get('best_scores'),
+           f'score={gui.tut_last_score} best={gui.tut_progress.get("best_scores")}')
     gui.is_solved = SliderGUI.is_solved  # 还原
 
     # 查看解法播放中：即便已还原也不判定过关、不弹复原窗
@@ -289,16 +299,43 @@ def main():
     gui.tut_solution_replaying = False
     del gui.is_solved  # 还原（删除实例遮蔽，回到类方法）
 
-    # ---- 6. 进度持久化 ----
+    # ---- 6. 进度持久化（含闯关小关记录与最高分） ----
+    gui.tut_progress = {'started': True, 'skipped': False, 'completed': [1],
+                        'current': 1, 'subcompleted': {2: ['2.1']},
+                        'best_scores': {'2.1': 88}}
     gui._tut_save_progress()
     with open(gui.config_path, 'r', encoding='utf-8') as f:
         cfg = json.load(f)
     _check('save_config 写入 tutorial', cfg.get('tutorial', {}).get('completed') == [1],
            str(cfg.get('tutorial')))
+    _check('save_config 写入 subcompleted（闯关进度）',
+           cfg.get('tutorial', {}).get('subcompleted') == {'2': ['2.1']},
+           str(cfg.get('tutorial', {}).get('subcompleted')))
+    _check('save_config 写入 best_scores（小关最高分）',
+           cfg.get('tutorial', {}).get('best_scores') == {'2.1': 88},
+           str(cfg.get('tutorial', {}).get('best_scores')))
     gui.tut_progress = {'started': False, 'skipped': False, 'completed': [], 'current': None}
     gui.load_last_state()
     _check('load_last_state 还原进度', gui.tut_progress.get('completed') == [1],
            str(gui.tut_progress))
+    _check('load_last_state 还原 subcompleted（重启不丢闯关进度）',
+           gui.tut_progress.get('subcompleted') == {2: ['2.1']},
+           str(gui.tut_progress.get('subcompleted')))
+    _check('load_last_state 还原 best_scores（重启不丢最高分）',
+           gui._tut_best_score('2.1') == 88, str(gui.tut_progress.get('best_scores')))
+    _check('重启后小关解锁状态保持',
+           gui._tut_sublevel_unlocked('2.1') is True
+           and gui._tut_sublevel_unlocked('2.2') is True
+           and gui._tut_sublevel_unlocked('2.3') is False, '')
+
+    # 兼容旧 config：关卡打了✓ 但没有小关记录时，其小关一律视为完成（不显示上锁）
+    _old_prog = gui.tut_progress
+    gui.tut_progress = {'started': True, 'skipped': False, 'completed': [1, 2],
+                        'current': 2, 'subcompleted': {}}
+    _check('关卡记为完成则其小关视为完成',
+           gui._tut_completed_sublevels(2) == ['2.1', '2.2', '2.3']
+           and gui._tut_sublevel_unlocked('2.3') is True, '')
+    gui.tut_progress = _old_prog
     gui.tut_show_prompt = False
     gui._tut_check_first_launch()
     _check('已开始后不再弹窗', gui.tut_show_prompt is False,
@@ -318,17 +355,21 @@ def main():
     _check('菜单名=回顾教程', gui._tut_menu_name() == '回顾教程', gui._tut_menu_name())
 
     # ---- 8. 第 2/3/4 关：关卡列表选择 + 小关顺序 + 存檔重做回放 + 动画调慢 ----
-    def _click_level(level_id):
-        """从关卡列表点击指定关卡（列表可滚动，必要时下滚查找）"""
+    def _find_level_btn(pred):
+        """在关卡列表中滚动查找满足 pred 的按钮（超出可视区时下滚）"""
         gui._tut_show_level_select()
         for _ in range(40):
             gui.draw_tutorial_panel()
-            btn = next((b for b in gui.tut_level_btn_rects
-                        if b.get('level') == level_id), None)
+            btn = next((b for b in gui.tut_level_btn_rects if pred(b)), None)
             if btn:
-                return gui._tut_handle_panel_click(*btn['rect'].center)
+                return btn
             gui.tut_panel_scroll += 40
-        return False
+        return None
+
+    def _click_level(level_id):
+        """从关卡列表点击指定关卡（列表可滚动，必要时下滚查找）"""
+        btn = _find_level_btn(lambda b: b.get('level') == level_id)
+        return gui._tut_handle_panel_click(*btn['rect'].center) if btn else False
 
     # 8.1 载入第 2 关：自动选第一个未完成小关 2.1
     gui.tut_progress['subcompleted'] = {}
@@ -338,8 +379,16 @@ def main():
     _check('载入 2.1 小关', gui.tut_sublevel == '2.1', str(gui.tut_sublevel))
     _check('小关步骤=1(还原)', gui.tut_step == 1, f'step={gui.tut_step}')
     _check('小关回到打乱态', gui.step_count == 0, f'step_count={gui.step_count}')
-    _check('2.1 存檔含完整重做链', len(gui.game_history.history) == 4,
+    _check('2.1 开局只导入打乱态（仅 1 个快照）',
+           len(gui.game_history.history) == 1,
            f'snapshots={len(gui.game_history.history)}')
+    _check('2.1 开局无重做链（防按重做直接过关）',
+           gui.game_history.can_redo() is False and gui.game_history.can_undo() is False, '')
+    _sig0 = (gui.step_count, [tuple(b.location) for b in gui.game.blocks])
+    gui.redo()   # 玩家按 Ctrl+X 重做
+    _check('开局按重做无任何效果且仍未还原',
+           (gui.step_count, [tuple(b.location) for b in gui.game.blocks]) == _sig0
+           and gui.is_solved() is False, f'solved={gui.is_solved()}')
     _check('标题为教程·第 2 关', '第 2 关' in gui._window_title, gui._window_title)
 
     # 8.2 查看解法：临时调慢动画 + 撤回初始 + 连续重做回放
@@ -388,6 +437,61 @@ def main():
            str(gui._tut_completed_sublevels(2)))
     compl_note = tut_mod._text_level(2).get('complete_notify', '')
     _check('文案含过关通知', compl_note.startswith('过关！第 2 关（填洞）'), compl_note)
+    with open(gui.config_path, 'r', encoding='utf-8') as f:
+        _cfg = json.load(f)
+    _check('闯关进度已落盘（config.json 的 subcompleted）',
+           _cfg.get('tutorial', {}).get('subcompleted', {}).get('2')
+           == ['2.1', '2.2', '2.3'], str(_cfg.get('tutorial', {}).get('subcompleted')))
+
+    # 8.4a 小关评分：分数 = 该小关存檔步数 / 玩家步数 * 100（上限 100）
+    # 手动还原走的就是存檔步数，故两者相等 → 100 分
+    _check('本次过关分数 = 100（步数与存檔一致）', gui.tut_last_score == 100,
+           str(gui.tut_last_score))
+    _check('最高分按小关记录',
+           [gui._tut_best_score(s) for s in ('2.1', '2.2', '2.3')] == [100, 100, 100],
+           str(gui.tut_progress.get('best_scores')))
+    _check('最高分已落盘（config.json 的 best_scores）',
+           _cfg.get('tutorial', {}).get('best_scores', {}).get('2.3') == 100,
+           str(_cfg.get('tutorial', {}).get('best_scores')))
+    _check('过关正文含本次分数', '本次得分 100' in gui._tut_complete_text(),
+           gui._tut_complete_text())
+    _check('过关播报含本次分数', '本次得分 100' in gui.macro_notify_msg,
+           gui.macro_notify_msg)
+    _check('列表最高分文案', tut_mod._tut_best_text(100) == '最高 100',
+           tut_mod._tut_best_text(100))
+
+    # 分数封顶 100；只有更高分才覆盖该小关最高分
+    _step_backup = gui.step_count
+    _ideal = tut_mod._tut_archive_move_count('2.3')
+    gui.step_count = 1                       # ideal/1*100 → 远超 100
+    _check('分数封顶 100', gui._tut_finish_sublevel_score('2.3') == 100,
+           str(gui.tut_last_score))
+    gui.tut_progress['best_scores']['2.3'] = 40
+    gui.step_count = _ideal * 2              # 50 分 > 40 → 覆盖
+    _check('更高分覆盖最高分',
+           gui._tut_finish_sublevel_score('2.3') == 50
+           and gui._tut_best_score('2.3') == 50, str(gui.tut_progress['best_scores']))
+    gui.step_count = _ideal * 10             # 10 分 < 50 → 不覆盖
+    _check('更低分不覆盖最高分',
+           gui._tut_finish_sublevel_score('2.3') == 10
+           and gui._tut_best_score('2.3') == 50, str(gui.tut_progress['best_scores']))
+    gui.tut_progress['best_scores']['2.3'] = 100   # 还原为 8.4 的成绩
+    gui.step_count = _step_backup
+
+    # 8.4b 详解面板也显示当前小关标题（原来只在关卡列表可见）
+    gui.draw_tutorial_panel()
+    _check('详解面板显示小关标题',
+           gui.tut_panel_subtitle == tut_mod._sublevel_title('2.3'),
+           str(gui.tut_panel_subtitle))
+
+    # 8.4c 教程提示栏改挂到面板上方（不再被右下角面板遮住）
+    gui.macro_notify_msg = "测试提示"
+    gui.macro_notify_timer = 120
+    gui.draw_macro_notify()
+    _check('提示栏位于教程面板上方且右对齐',
+           gui._macro_notify_rect.bottom <= gui.tut_panel_rect.top
+           and gui._macro_notify_rect.right == gui.tut_panel_rect.right,
+           f'{gui._macro_notify_rect} vs {gui.tut_panel_rect}')
 
     # 8.5 关卡列表标记已完成；App 状态切换回列表面板正常
     gui._tut_show_level_select()
@@ -400,49 +504,82 @@ def main():
     _check('无存檔关卡不可玩', ok6 is False, f'ok={ok6}')
     _check('提示待补充', '待补充' in gui.macro_notify_msg, gui.macro_notify_msg)
 
+    # 8.6b 闯关解锁：过一关才能进下一关
+    _check('第2关完成后第3关解锁', gui._tut_level_unlocked(3) is True, '')
+    _check('第4关仍锁定（第3关未完成）', gui._tut_level_unlocked(4) is False, '')
+    _check('第3关内 3.1 解锁、3.2 锁定',
+           gui._tut_sublevel_unlocked('3.1') is True
+           and gui._tut_sublevel_unlocked('3.2') is False, '')
+    _check('锁定关卡不可载入', gui._tut_load_level(4) is False, '')
+    _check('提示第4关未解锁', '未解锁' in gui.macro_notify_msg, gui.macro_notify_msg)
+    _check('锁定小关不可载入', gui._tut_load_sublevel('4.1') is False, '')
+
+    btn41 = _find_level_btn(lambda b: b.get('sublevel') == '4.1')
+    _check('列表标出锁定行', btn41 is not None and btn41.get('locked') is True,
+           str(btn41 and btn41.get('locked')))
+    _check('已解锁行不标锁',
+           _find_level_btn(lambda b: b.get('sublevel') == '3.1').get('locked') is False, '')
+    eaten = gui._tut_handle_panel_click(*btn41['rect'].center)
+    _check('点击锁定行被消费且不载入',
+           eaten is True and gui.tut_selecting_levels is True and gui.tut_level != 4,
+           f'level={gui.tut_level}')
+
     # 8.7 第 3/4 关：长 move_info 链的解法回放须能完整播完并回到第 0 步；
     #     但小关推进只能靠玩家手动还原
     def _replay_then_manual_solve():
         """先播一次解法（验证长链回放 + 播完回第 0 步 + 解锁），再手动还原推进。
 
-        返回 (回放是否正常收尾, 手动还原是否成功)。
+        返回 (开局无重做链, 回放是否正常收尾, 手动还原是否成功)。
         """
         before = gui.tut_sublevel
+        chain_ok = (len(gui.game_history.history) == 1
+                    and gui.game_history.can_redo() is False)
         gui._tut_show_solution()
         replay_ok = (gui.tut_sublevel == before and gui.step_count == 0
                      and len(gui.game_history.history) == 1
                      and gui._tut_board_locked() is False)
-        return replay_ok, _manual_solve_current_sublevel(gui)
+        return chain_ok, replay_ok, _manual_solve_current_sublevel(gui)
 
     _check('点第3关被消费', _click_level(3) is True, '')
     _check('第3关载入 3.1', gui.tut_sublevel == '3.1', str(gui.tut_sublevel))
     _check('第3关打乱态', gui.step_count == 0, f'step_count={gui.step_count}')
+    subs3 = list(tut_mod.TUTORIAL_LEVELS_BY_ID[3]['sublevels'])
     n3 = 0
-    while gui.tut_step != 7:
-        rep_ok, man_ok = _replay_then_manual_solve()
+    while gui.tut_step != 7 and n3 < 20:   # 上限仅防死循环刷屏
+        chain_ok, rep_ok, man_ok = _replay_then_manual_solve()
+        _check(f'第3关第{n3 + 1}个小关开局无重做链（防直接过关）', chain_ok, '')
         _check(f'第3关第{n3 + 1}个小关解法回放正常收尾', rep_ok, '')
         _check(f'第3关第{n3 + 1}个小关手动还原成功', man_ok, '')
         n3 += 1
-    _check('第3关 4 个小关全部走完至过关',
-           n3 == 4 and gui.tut_step == 7 and gui.tut_progress['completed'] == [1, 2, 3],
-           f'n={n3} step={gui.tut_step} completed={gui.tut_progress["completed"]}')
-    _check('第3关小关全部记录', gui._tut_completed_sublevels(3) == ['3.1', '3.2', '3.3', '3.4'],
+    _check('第3关全部小关走完至过关',
+           n3 == len(subs3) and gui.tut_step == 7
+           and gui.tut_progress['completed'] == [1, 2, 3],
+           f'n={n3}/{len(subs3)} step={gui.tut_step} completed={gui.tut_progress["completed"]}')
+    _check('第3关小关全部记录', gui._tut_completed_sublevels(3) == subs3,
            str(gui._tut_completed_sublevels(3)))
 
     _check('点第4关被消费', _click_level(4) is True, '')
     _check('第4关载入 4.1', gui.tut_sublevel == '4.1', str(gui.tut_sublevel))
+    subs4 = list(tut_mod.TUTORIAL_LEVELS_BY_ID[4]['sublevels'])
     n4 = 0
-    while gui.tut_step != 7 and n4 < 10:   # 上限仅防死循环刷屏，正常 5 个小关
-        rep_ok, man_ok = _replay_then_manual_solve()
+    while gui.tut_step != 7 and n4 < 20:   # 上限仅防死循环刷屏
+        chain_ok, rep_ok, man_ok = _replay_then_manual_solve()
+        _check(f'第4关第{n4 + 1}个小关开局无重做链（防直接过关）', chain_ok, '')
         _check(f'第4关第{n4 + 1}个小关解法回放正常收尾', rep_ok, '')
         _check(f'第4关第{n4 + 1}个小关手动还原成功', man_ok, '')
         n4 += 1
-    _check('第4关 5 个小关全部走完至过关',
-           n4 == 5 and gui.tut_step == 7 and gui.tut_progress['completed'] == [1, 2, 3, 4],
-           f'n={n4} step={gui.tut_step} completed={gui.tut_progress["completed"]}')
-    _check('第4关小关全部记录',
-           gui._tut_completed_sublevels(4) == ['4.1', '4.2', '4.3', '4.4', '4.5'],
+    _check('第4关全部小关走完至过关',
+           n4 == len(subs4) and gui.tut_step == 7
+           and gui.tut_progress['completed'] == [1, 2, 3, 4],
+           f'n={n4}/{len(subs4)} step={gui.tut_step} completed={gui.tut_progress["completed"]}')
+    _check('第4关小关全部记录', gui._tut_completed_sublevels(4) == subs4,
            str(gui._tut_completed_sublevels(4)))
+    _check('第4关完成后第5关解锁',
+           gui._tut_level_unlocked(5) is True
+           and gui._tut_sublevel_unlocked('5.1') is True, '')
+    _check('第3/4关各小关最高分已记录（照解法步数还原 = 100）',
+           all(gui._tut_best_score(s) == 100 for s in subs3 + subs4),
+           str({s: gui._tut_best_score(s) for s in subs3 + subs4}))
 
     # 8.8 有动画时的真实回放路径：连续重做由动画提交逐帧推进；
     #     播放中锁定棋盘操作，播完回第 0 步、清历史且不推进小关

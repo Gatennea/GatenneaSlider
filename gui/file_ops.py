@@ -297,11 +297,28 @@ class FileOpsMixin:
                 # 恢复教程进度（闯关模式）——无论棋盘状态如何都需还原
                 tut = config.get('tutorial')
                 if isinstance(tut, dict) and hasattr(self, 'tut_progress'):
+                    # subcompleted：各关已完成的小关列表（闯关解锁依据）。
+                    # 必须一并还原，否则每次重启关卡内进度归零、小关重新锁上。
+                    sub = tut.get('subcompleted')
+                    subcompleted = {}
+                    if isinstance(sub, dict):
+                        for k, v in sub.items():
+                            if isinstance(v, list) and str(k).lstrip('-').isdigit():
+                                subcompleted[int(k)] = [str(s) for s in v]
+                    # best_scores：各小关最高分（键为子题 id，如 '2.1'）
+                    bs = tut.get('best_scores')
+                    best_scores = {}
+                    if isinstance(bs, dict):
+                        for k, v in bs.items():
+                            if isinstance(v, (int, float)):
+                                best_scores[str(k)] = int(v)
                     self.tut_progress = {
                         'started': bool(tut.get('started', False)),
                         'skipped': bool(tut.get('skipped', False)),
                         'completed': [int(x) for x in tut.get('completed', []) if isinstance(x, (int, float))],
                         'current': tut.get('current'),
+                        'subcompleted': subcompleted,
+                        'best_scores': best_scores,
                     }
 
                 if last_path and os.path.exists(last_path):

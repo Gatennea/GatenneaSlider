@@ -1404,10 +1404,20 @@ class RendererMixin:
         pad_x, pad_y = 10, 6
         box_w = text_w + pad_x * 2
         box_h = text_h + pad_y * 2
+        self._macro_notify_rect = pygame.Rect(0, 0, box_w, box_h)   # 位置确定后回填
 
         # 位于状态栏上方、右侧面板左侧的右下角
         box_x = self.screen_width - self.right_panel_width - box_w - 12
         box_y = self.screen_height - self.status_bar_height - box_h - 8
+        # 新手教程：教程面板占据右下角会遮住提示 → 提示栏改挂到面板正上方
+        # （面板矩形由上一帧 draw_tutorial_panel 记录；位置稳定，仅首帧略滞后）
+        tut_rect = getattr(self, 'tut_panel_rect', None)
+        if getattr(self, 'tutorial_active', False) and tut_rect is not None:
+            box_x = tut_rect.right - box_w
+            box_y = tut_rect.top - box_h - 8
+            if box_y < 8:                 # 面板贴近顶部时改为挂在面板下方
+                box_y = tut_rect.bottom + 8
+        self._macro_notify_rect.topleft = (box_x, box_y)
 
         # 淡入淡出：持久模式不走淡出，否則前15帧淡入，后30帧淡出
         persistent = getattr(self, 'macro_notify_persistent', False)
@@ -1623,3 +1633,58 @@ class RendererMixin:
             knob_color = self.colors['button_hover'] if self.slider_dragging else self.colors['button_bg']
             self.slider_knob_rect = pygame.Rect(speed_x - 10, knob_y - 6, 20, 12)
             pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
+
+    # ==================================================================
+    # 左键单击反馈（全 GUI 生效的涟漪动效）
+    # ==================================================================
+    CLICK_FEEDBACK_MS = 380          # 单次涟漪时长（毫秒）
+    CLICK_FEEDBACK_RADIUS = 34       # 涟漪最大半径（像素）
+    CLICK_FEEDBACK_MAX = 12          # 同时存在的涟漪上限（防连点堆积）
+
+    def spawn_click_feedback(self, pos):
+        """记录一次左键单击的涟漪。
+
+        在事件分发最前面调用，故与命中的控件无关：棋盘、菜单、面板、
+        对话框、教程面板等任意位置的左键单击都会有反馈。
+        """
+        if not pos:
+            return
+        fx = getattr(self, '_click_feedback', None)
+        if fx is None:
+            fx = self._click_feedback = []
+        fx.append({'x': int(pos[0]), 'y': int(pos[1]),
+                   't0': pygame.time.get_ticks()})
+        if len(fx) > self.CLICK_FEEDBACK_MAX:
+            del fx[:-self.CLICK_FEEDBACK_MAX]
+
+    def draw_click_feedback(self):
+        """绘制左键单击涟漪：外扩圆环 + 中心亮点，随时间淡出。
+
+        在整帧绘制的最上层调用（模态对话框之上），保证任何界面都能看到。
+        """
+        fx = getattr(self, '_click_feedback', None)
+        if not fx:
+            return
+        now = pygame.time.get_ticks()
+        r_max = self.CLICK_FEEDBACK_RADIUS
+        alive = []
+        for item in fx:
+            p = (now - item['t0']) / float(self.CLICK_FEEDBACK_MS)
+            if p >= 1.0:
+                continue
+            alive.append(item)
+            alpha = int(170 * (1.0 - p))
+            if alpha <= 0:
+                continue
+            # 缓出：半径先快后慢地扩张
+            radius = 6 + (r_max - 6) * (1.0 - (1.0 - p) ** 2)
+            size = int(radius) * 2 + 4
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            center = (size // 2, size // 2)
+            pygame.draw.circle(surf, (150, 220, 255, alpha), center, int(radius), 2)
+            # 中心亮点：快速收缩，让「点到了」更明确
+            dot_r = max(1, int(4 * (1.0 - p)))
+            pygame.draw.circle(surf, (225, 245, 255, min(255, alpha + 60)),
+                               center, dot_r)
+            self.screen.blit(surf, (item['x'] - center[0], item['y'] - center[1]))
+        self._click_feedback = alive

@@ -1624,6 +1624,13 @@ class AnnotationMixin:
                     getattr(self, '_ann_btn_build_' + suffix)()
                     return True
             return True
+        # 右侧面板（快捷开关 / 缩放、速度滑条）与状态栏不属于棋盘：
+        # 放行给常规事件处理，否则这些正常操作会被吞掉，
+        # 且因棋盘网格是无限的而被误判为「点选超出可构造范围」
+        if x >= self.screen_width - self.right_panel_width:
+            return False
+        if y > self.screen_height - self.status_bar_height:
+            return False
         # 弹窗外：直接在主棋盘点选增删滑块
         cell = self.get_cell_at_pos(x, y)
         if cell is None:
