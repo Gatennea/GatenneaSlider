@@ -119,12 +119,26 @@ class RendererMixin:
                 sr, sc = self.anim_start_pos[i]
                 anim_map[id(block)] = (sr + dr, sc + dc)
 
+        # 构建拖拽跟随渲染位置映射（非整数格坐标，实时预览）
+        # 偏移已在 events.py 夹紧到 [0, max_cells]，此处直接使用（单一数据源）
+        follow_map = {}
+        if self.drag_following:
+            dr, dc = self.drag_follow_offset
+            if abs(dr) > 1e-9 or abs(dc) > 1e-9:
+                for block in self.game.blocks:
+                    if block.be_opted:
+                        follow_map[id(block)] = (block.location[0] + dr, block.location[1] + dc)
+
         # 悬停连锁提示：预计算高亮格集合（含空格），块循环中直接提亮原色
         hint_cells, hint_hover = self._chain_hint_cells()
 
         # 绘制所有滑块
         for block in self.game.blocks:
-            if id(block) in anim_map:
+            if id(block) in follow_map:
+                lr, lc = follow_map[id(block)]
+                x = board_x + lc * (scaled_cell + scaled_gap)
+                y = board_y + lr * (scaled_cell + scaled_gap)
+            elif id(block) in anim_map:
                 lr, lc = anim_map[id(block)]
                 x = board_x + lc * (scaled_cell + scaled_gap)
                 y = board_y + lr * (scaled_cell + scaled_gap)
@@ -145,22 +159,27 @@ class RendererMixin:
                 fill = self.colors['block_selected']
             else:
                 fill = self.colors['block']
-            # 连锁提示：同组格直接提亮原色（像原图层变亮，而非叠图层）
-            if hint_cells is not None:
-                bl = tuple(block.location)
-                if bl in hint_cells:
-                    amt = 0.55 if bl == hint_hover else 0.35
-                    fill = self._lighten(fill, amt)
-
+            # 拖拽跟随无效（碰撞/断开）时：变暗滑块 + 橙色边框提示不可移动
+            if (self.drag_following and self.drag_follow_invalid
+                    and id(block) in follow_map):
+                fill = tuple(int(ch * 0.45) for ch in fill[:3])
+                border_color = (220, 80, 40)
+                border_w = max(1, int(3 * self.zoom))
+            else:
+                # 连锁提示：同组格直接提亮原色（像原图层变亮，而非叠图层）
+                if hint_cells is not None:
+                    bl = tuple(block.location)
+                    if bl in hint_cells:
+                        amt = 0.55 if bl == hint_hover else 0.35
+                        fill = self._lighten(fill, amt)
+                if getattr(self, 'coloring_enabled', False) and self.current_step > 1:
+                    border_color = self._group_color(block.location[0], block.location[1])
+                    border_w = max(2, int(7 * self.zoom)) #暫定7,不要改
+                else:
+                    border_color = self.colors['border']
+                    border_w = max(1, int(2 * self.zoom))
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
             pygame.draw.rect(self.screen, fill, rect, border_radius=int(5 * self.zoom))
-            if getattr(self, 'coloring_enabled', False) and self.current_step > 1:
-                # 分组色描边（更宽，凸显分组信息）
-                border_color = self._group_color(block.location[0], block.location[1])
-                border_w = max(2, int(7 * self.zoom)) #暫定7,不要改
-            else:
-                border_color = self.colors['border']
-                border_w = max(1, int(2 * self.zoom))
             pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=int(5 * self.zoom))
 
         # 连锁提示：高亮的空格（无滑块）同样提亮

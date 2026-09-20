@@ -354,7 +354,46 @@ class EventsMixin:
                         st['dy'] = event.pos[1] - st['sy']
                         th = getattr(self, 'drag_threshold', 14)
                         if abs(st['dx']) >= th or abs(st['dy']) >= th:
-                            st['moved'] = True
+                            # 首次超过阈值：进入跟随状态
+                            if not st.get('follow_active'):
+                                st['follow_active'] = True
+                                block = st.get('block')
+                                if block is not None and self._init_drag_follow(block, st['dx'], st['dy']):
+                                    st['follow_active'] = True
+                                    self.drag_follow_start_screen = (st['sx'], st['sy'])
+                                else:
+                                    # 跟随初始化失败：回退到旧路径
+                                    st['follow_active'] = False
+                                    st['moved'] = True
+                        # 跟随中：每帧更新偏移（不受阈值限制——拖回起点附近时位移会小于阈值，
+                        # 若受阈值门控，偏移会冻结在旧值，导致松手后仍按旧偏移移动）
+                        if self.drag_following:
+                            cell_px = self.cell_size + self.gap_width
+                            px_dx = event.pos[0] - self.drag_follow_start_screen[0]
+                            px_dy = event.pos[1] - self.drag_follow_start_screen[1]
+                            dc = px_dx / (cell_px * self.zoom)
+                            dr = px_dy / (cell_px * self.zoom)
+                            # 沿主方向轴取屏幕位移分量
+                            gap_type = self.drag_follow_gap[0] if self.drag_follow_gap else 'h'
+                            raw = dc if gap_type == 'h' else dr
+                            # 投影到锁定方向的「前进」轴上：'d'/'s' 是屏幕正方向，'a'/'w' 是屏幕负方向。
+                            # 方向在 _init_drag_follow 时已锁定，故必须乘方向符号；否则上/左拖拽
+                            # （屏幕位移为负）会被下面的夹紧吃掉，表现为「完全无法上下/向左拖动」。
+                            forward = raw if self.drag_follow_direction in ('d', 's') else -raw
+                            # 夹紧：反向拖回起点后停在原位；向前不超过可达上限
+                            max_cells = getattr(self, 'drag_follow_max_cells', 0)
+                            clamped = max(0.0, min(forward, float(max_cells)))
+                            if self.drag_follow_direction == 'd':
+                                self.drag_follow_offset = (0.0, clamped)
+                            elif self.drag_follow_direction == 'a':
+                                self.drag_follow_offset = (0.0, -clamped)
+                            elif self.drag_follow_direction == 's':
+                                self.drag_follow_offset = (clamped, 0.0)
+                            else:  # 'w'
+                                self.drag_follow_offset = (-clamped, 0.0)
+                            # 触点越过可达上限 → 提示不可继续
+                            # 容差 0.05 格：覆盖像素取整误差（1px ≈ 0.016 格），恰好贴边时不误报
+                            self.drag_follow_invalid = (forward > max_cells + 0.05)
                 
                 # 鼠标点击
                 elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -543,6 +582,9 @@ class EventsMixin:
                             }
 
                         if gap is not None:
+                            # 跟随中点击缝隙 → 清除跟随，不执行移动
+                            if self.drag_following:
+                                self.clear_drag_follow()
                             if selectable:
                                 # 选中变化 → 结束上一次选中会话（后续移动另起快照）
                                 self._bump_move_session()
@@ -562,6 +604,9 @@ class EventsMixin:
                                     self._tut_on_gap_clicked()
                             # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，不选中、不平移
                         elif block is not None and self.selected_gap is not None and selectable:
+                            # 跟随中点击滑块 → 清除跟随
+                            if self.drag_following:
+                                self.clear_drag_follow()
                             # 重新选中滑块组 → 结束上一次选中会话（后续移动另起快照）
                             self._bump_move_session()
                             direction, line = self.selected_gap
@@ -574,6 +619,9 @@ class EventsMixin:
                             # 新手教程：步骤2 选中滑块组 → 步骤3
                             self._tut_on_block_clicked()
                         elif self.is_blank_area(x, y):
+                            # 跟随中点击空白 → 清除跟随，允许平移地图
+                            if self.drag_following:
+                                self.clear_drag_follow()
                             # 调试面板打开时，点击洞选中（标记学习）
                             if getattr(self, 'show_metrics_panel', False):
                                 hole = self.get_hole_at_pos(x, y)
@@ -594,6 +642,8 @@ class EventsMixin:
                     
                     elif event.button == 3:
                         # 右键取消选中
+                        if self.drag_following:
+                            self.clear_drag_follow()
                         self._bump_move_session()
                         self.selected_gap = None
                         self.selected_block = None
@@ -609,8 +659,13 @@ class EventsMixin:
                         if self._mouse_drag_state is not None:
                             st = self._mouse_drag_state
                             self._mouse_drag_state = None
-                            if st.get('moved') and st.get('block') is not None:
-                                self._drag_slide(st['block'], st.get('dx', 0), st.get('dy', 0))
+                            # 跟随模式由 _commit_drag_move 处理，不走旧路径
+                            if not self.drag_following:
+                                if st.get('moved') and st.get('block') is not None:
+                                    self._drag_slide(st['block'], st.get('dx', 0), st.get('dy', 0))
+                            # 跟随模式释放：提交移动
+                            if self.drag_following:
+                                self._commit_drag_move()
                         self.is_dragging = False
                         self.slider_dragging = False
                         self.zoom_slider_dragging = False

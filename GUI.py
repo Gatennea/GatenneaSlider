@@ -491,6 +491,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._anim_dr = 0.0
         self._anim_dc = 0.0
 
+        # 拖拽跟随状态（实时预览）
+        self.drag_following = False
+        self.drag_follow_block = None
+        self.drag_follow_start_pos = None
+        self.drag_follow_start_screen = None
+        self.drag_follow_offset = (0.0, 0.0)
+        self.drag_follow_max_cells = 0                    # 本方向可连续推进的最大格数（current_step 的整数倍）
+        self.drag_follow_auto_deselect = False            # 本次跟随是否由单次触控发起（结束时需自动取消选中）
+        self.drag_follow_gap = None
+        self.drag_follow_direction = None
+        self.drag_follow_step = 0
+        self.drag_follow_invalid = False
+
         # 右侧面板控件
         self.slider_dragging = False
         self.slider_rect = None
@@ -904,17 +917,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 新手教程：状态提交后推进教学进度（移动/撤销/重做/过关）
         self._tut_on_state_commit(via_redo=via_redo, suppress=suppress)
 
-    def move_selected_blocks(self, direction: str):
+    def move_selected_blocks(self, direction: str, step: int = None):
         """
         移动所有选中的滑块，逐步验证（每次1格，共step次），
         所有步骤都通过后才提交。支持动画。
 
         参数：
             direction: 移动方向 'w'上 's'下 'a'左 'd'右
+            step: 移动步数，默认为 self.current_step
 
         返回：
             bool - 是否真正执行了移动（被拦截/未选中/移动不合法均为 False）
         """
+        move_step = step if step is not None else self.current_step
         # 教程解法播放中：锁定棋盘操作（不得打断回放）
         if self._tut_board_locked():
             return False
@@ -952,7 +967,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return False
 
         # 调用 game.py 的 try_move 进行纯逻辑验证（附带失败原因）
-        final_positions, fail_reason = self.game.try_move_ex(direction, self.current_step)
+        final_positions, fail_reason = self.game.try_move_ex(direction, move_step)
         if not final_positions:
             # 失败提示（右下角浮窗）：断开 / 重叠；无选中时不提示
             if fail_reason == 'disconnected':
@@ -968,7 +983,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'gap_type': self.selected_gap[0] if self.selected_gap else None,
             'gap_line': self.selected_gap[1] if self.selected_gap else None,
             'direction': direction,
-            'step': self.current_step,
+            'step': move_step,
             'moved_positions': [list(b.location) for b in selected],
         }
         self._pending_move_info = move_info
@@ -988,11 +1003,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.start_animation(selected, final_positions)
             dir_names = {'w': '上', 's': '下', 'a': '左', 'd': '右'}
             dir_str = dir_names.get(direction, direction)
-            self.macro_notify_msg = f"向{dir_str}移动 {self.current_step}步"
+            self.macro_notify_msg = f"向{dir_str}移动 {move_step}步"
             self.macro_notify_timer = 120
         else:
             self.game.commit_move(final_positions)
-            self.step_count += 1
+            self.step_count += move_step
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
             self._pending_move_info = None
@@ -1000,7 +1015,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             # 操作提示先于过关判定：过关/教程播报优先级更高，不应被“向X移动”覆盖
             dir_names = {'w': '上', 's': '下', 'a': '左', 'd': '右'}
             dir_str = dir_names.get(direction, direction)
-            self.macro_notify_msg = f"向{dir_str}移动 {self.current_step}步"
+            self.macro_notify_msg = f"向{dir_str}移动 {move_step}步"
             self.macro_notify_timer = 120
             self._maybe_show_solved_popup()
             self._mark_file_dirty()
@@ -1012,6 +1027,153 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         在选中变化（点缝隙/点方块/右键取消）与撤销/重做/跳步时调用。
         """
         self._move_session_id = getattr(self, '_move_session_id', 0) + 1
+
+    def clear_drag_follow(self):
+        """清除拖拽跟随状态，恢复滑块原始位置与选中态。"""
+        if not self.drag_following:
+            return
+        auto_deselect = self.drag_follow_auto_deselect
+        self.drag_following = False
+        self.drag_follow_block = None
+        self.drag_follow_start_pos = None
+        self.drag_follow_start_screen = None
+        self.drag_follow_offset = (0.0, 0.0)
+        self.drag_follow_max_cells = 0
+        self.drag_follow_auto_deselect = False
+        self.drag_follow_gap = None
+        self.drag_follow_direction = None
+        self.drag_follow_step = 0
+        self.drag_follow_invalid = False
+        # 单次触控发起的跟随：拖动结束后自动取消选中（与旧 _drag_slide 行为一致）
+        # 两次触控（预选缝隙）发起时不取消，保留缝隙选中以便继续操作
+        if auto_deselect and getattr(self, 'selected_gap', None):
+            self.selected_gap = None
+            self.selected_block = None
+            for b in self.game.blocks:
+                b.be_opted = False
+            self._bump_move_session()
+
+    def _init_drag_follow(self, block, dx, dy):
+        """初始化拖拽跟随：确定缝隙、选中滑块组、记录初始位置。
+
+        返回 True 如果成功进入跟随状态，False 否则。
+        """
+        # 已在跟随中则不重复初始化
+        if self.drag_following:
+            return False
+        # 正在动画中不允许进入跟随
+        if self.animating:
+            return False
+        # 宏执行中不允许
+        if getattr(self, 'macro_executing', False):
+            return False
+
+        gap = self.selected_gap
+        if gap is None:
+            # 单次触控：8 区角度直接判定
+            if not getattr(self, 'control_single_touch', True):
+                return False
+            import math
+            angle = math.degrees(math.atan2(-dy, dx)) % 360
+            sector = int(angle // 45) % 8
+            GAP_SEQ = ['d', 'l', 'r', 'd', 'u', 'r', 'l', 'u']
+            DIR_SEQ = ['r', 'u', 'u', 'l', 'l', 'd', 'd', 'r']
+            gap_abbr = GAP_SEQ[sector]
+            move_dir = DIR_SEQ[sector]
+            r, c = block.location
+            if gap_abbr == 'd':
+                gap_type, line = 'h', r
+            elif gap_abbr == 'u':
+                gap_type, line = 'h', r - 1
+            elif gap_abbr == 'l':
+                gap_type, line = 'v', c - 1
+            else:  # 'r'
+                gap_type, line = 'v', c
+            self.selected_gap = (gap_type, line)
+        else:
+            # 两次触控：沿已有缝隙的主方向轴
+            if not getattr(self, 'control_two_touch', True):
+                return False
+            gap_type, line = gap
+            if gap_type == 'h':
+                move_dir = 'r' if dx > 0 else 'l'
+            else:  # v
+                move_dir = 'd' if dy > 0 else 'u'
+
+        # 缝隙必须落在棋形内部
+        gap_valid = (self.game.is_valid_h_line(line) if gap_type == 'h'
+                     else self.game.is_valid_v_line(line))
+        if not gap_valid:
+            self.selected_gap = None
+            self.selected_block = None
+            for b in self.game.blocks:
+                b.be_opted = False
+            self.macro_notify_msg = "缝隙在棋形外沿：整体移动所有滑块没有意义"
+            self.macro_notify_timer = 120
+            self.clear_drag_follow()
+            return False
+
+        # 选中包含起点滑块的连通组
+        self.game.opt(gap_type, line, block)
+        self.selected_block = block
+        dir_map = {'r': 'd', 'u': 'w', 'l': 'a', 'd': 's'}
+        direction = dir_map[move_dir]
+
+        # 记录初始位置，进入跟随状态
+        self.drag_following = True
+        self.drag_follow_block = block
+        self.drag_follow_start_pos = list(block.location)
+        self.drag_follow_start_screen = None  # 由 events.py 传入
+        self.drag_follow_offset = (0.0, 0.0)
+        self.drag_follow_gap = (gap_type, line)
+        self.drag_follow_direction = direction
+        self.drag_follow_step = 0
+        self.drag_follow_invalid = False
+        # 无预选缝隙（gap is None）= 单次触控发起 → 结束时需自动取消选中
+        self.drag_follow_auto_deselect = (gap is None)
+        # 探测本方向可达上限：跟随期间棋盘状态不变，只需探测一次
+        self.drag_follow_max_cells = self._probe_max_cells(direction)
+        return True
+
+    def _probe_max_cells(self, direction: str) -> int:
+        """探测沿 direction 可连续推进的最大格数，向下取整到 current_step 的整数倍。
+
+        跟随期间棋盘状态不变，故只需在进入跟随时探测一次。
+        """
+        limit = 64  # 安全上限，防止异常情况下死循环
+        reach = 0
+        while reach < limit:
+            _, reason = self.game.try_move_ex(direction, reach + 1)
+            if reason != '':
+                break
+            reach += 1
+        step_size = max(1, self.current_step)
+        return (reach // step_size) * step_size
+
+    def _commit_drag_move(self):
+        """提交拖拽跟随移动：根据夹紧后的偏移计算步数并执行移动。"""
+        if not self.drag_following:
+            return
+        direction = self.drag_follow_direction
+
+        # 偏移已在跟随期间夹紧到 [0, drag_follow_max_cells]，此处直接取用（单一数据源）
+        # max(0.0, ...) 为防御：负偏移（反向拖过起点）一律视为不移动，绝不产生反向位移
+        dr, dc = self.drag_follow_offset
+        cells = max(0.0, abs(dr) + abs(dc))
+        # 取整用 int(x + 0.5)（等价 floor），规避 round() 的银行家舍入；再量化到 current_step 整数倍
+        step_size = max(1, self.current_step)
+        step = int(cells / step_size + 0.5) * step_size
+
+        # 循环递减：从最大合法步长开始，逐次减少 step_size，找到第一个可接受的值（兜底）
+        moved = False
+        while step > 0:
+            moved = self.move_selected_blocks(direction, step)
+            if moved:
+                break
+            step -= step_size
+
+        # 清除跟随状态（含 single-touch auto-deselect）
+        self.clear_drag_follow()
 
     def _move_merge_key(self):
         """当前移动所属「选中会话」标识；None = 不合并。

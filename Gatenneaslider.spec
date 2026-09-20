@@ -78,7 +78,7 @@ excludes = [
     'smtplib',
     'telnetlib',
     'ftplib',
-    'webbrowser',
+    # 注意：webbrowser 不可排除 —— gui/events.py 的「官网」菜单用它开启浏览器
     'wsgiref',
     'cgi',
     'turtledemo',

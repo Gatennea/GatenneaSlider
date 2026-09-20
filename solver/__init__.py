@@ -71,7 +71,7 @@ SOLVER_ALGORITHMS = {
     #'distance': ('  距离求解', distance_solve),
     'gather': ('  聚拢', gather_solve),
     'gather_gradient': ('  梯度聚拢', gradient_gather),
-    'human_ai': ('  人类模仿', ai_human_solve),
+    #'human_ai': ('  人类模仿', ai_human_solve),
     'fill_macro': ('  填洞宏', solve_fill_macro),
 }
 
