@@ -15,6 +15,8 @@ class FakeEvent:
         self.type = 768  # KEYDOWN
         self.key = key
         self.unicode = unicode
+        # handle_event 会读 event.mod 传给 _start_repeat/_process_key
+        self.mod = 0
 
 import pygame
 pygame.init()

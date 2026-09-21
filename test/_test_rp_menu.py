@@ -19,6 +19,9 @@ def check(name, cond):
 
 # ---------- 构造实例 ----------
 gui = SliderGUI(m=6, n=6, step=1)
+# 构造函数会恢复 config/temp_history.json，可能把 current_step / 形态改成别的
+# （前置测试留下的存档）→ 显式建一次局，让本测试的状态确定下来
+gui.new_puzzle(6, 6, 1)
 gui.show_records_panel = True  # 测试环境强制开启（config 恢复可能关闭）
 gui.draw_menu_bar()
 

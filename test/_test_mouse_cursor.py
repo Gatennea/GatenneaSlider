@@ -4,10 +4,13 @@ import sys
 sys.path.insert(0, 'e:/program_project/py/貓九的滑塊遊戲')
 
 from gui.text_input import TextInput
+from GUI import _gui_safe_font
 import pygame
 pygame.init()
 
-font = pygame.font.SysFont('SimHei', 20)
+# 与产品同一条字体加载路径：直接 SysFont 会扫描系统字体注册表，
+# 某些机器上该表被写入过非字符串项，splitext 会抛 TypeError
+font = _gui_safe_font('SimHei', 20)
 
 # 测试 set_cursor_by_pixel
 t = TextInput('hello')

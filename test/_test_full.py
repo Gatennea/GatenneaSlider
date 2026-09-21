@@ -4,10 +4,14 @@ import sys
 sys.path.insert(0, 'e:/program_project/py/貓九的滑塊遊戲')
 
 from gui.text_input import TextInput
+from GUI import _gui_safe_font
 import pygame
 pygame.init()
 
-font = pygame.font.SysFont('SimHei', 20)
+# 直接用 pygame.font.SysFont 会扫描系统字体注册表；某些机器上该表被写入过
+# 非字符串项（如 sdk_init_timestamp），splitext 会抛 TypeError。GUI 内部
+# 已改用 _gui_safe_font，测试与产品保持同一条加载路径。
+font = _gui_safe_font('SimHei', 20)
 
 print("=== 基础功能测试 ===")
 
@@ -19,6 +23,7 @@ class FakeEvent:
         self.type = 768
         self.key = key
         self.unicode = unicode
+        self.mod = 0
 
 # 测试 Left
 t.handle_event(FakeEvent(pygame.K_LEFT))
