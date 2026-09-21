@@ -15,8 +15,8 @@ import os
 import json
 import pygame
 from datetime import datetime
-from game import SliderMatrix
 from records import format_time
+from puzzle_types import create_puzzle, puzzle_key
 
 
 class RecordsPanelMixin:
@@ -64,7 +64,9 @@ class RecordsPanelMixin:
         self._rp_fonts = {}              # 自适应字号字体缓存
 
     def _rp_current_key(self):
-        return f"{self.current_step}~{self.current_m}*{self.current_n}"
+        return puzzle_key(self.current_step, self.current_m, self.current_n,
+                          kind=self._current_kind(),
+                          triangle_side=self.game.k if getattr(self, 'triangle_mode', False) else None)
 
     def _rp_detail_record(self):
         """返回当前展开详情的记录，不存在则置空返回 None"""
@@ -465,21 +467,35 @@ class RecordsPanelMixin:
     def _rp_save_as_puzzle(self, rec) -> str:
         """把该打乱另存为 .json 存档（结构同普通存档，可直接「文件-打开」载入）"""
         try:
-            game = SliderMatrix(rec['m'], rec['n'])
+            numbered = bool(rec.get('numbered')) or str(rec.get('puzzle_key', '')).endswith('#num')
+            game = create_puzzle(rec['m'], rec['n'], rec['step'])
             if not game.import_map(self._rp_record_map_str(rec)):
                 return ''
             game.update_matrix()
+            if numbered:
+                for i, block in enumerate(sorted(game.blocks, key=lambda b: (b.location[0], b.location[1]))):
+                    block.number = i + 1
             snap = {
                 'matrix': [r[:] for r in game.matrix],
                 'bounds': dict(game.matrix_bounds),
                 'move_info': None,
             }
+            if numbered:
+                bounds = dict(game.matrix_bounds)
+                num_map = {tuple(b.location): b.number for b in game.blocks}
+                snap['numbers'] = [
+                    [num_map.get((bounds['min_row'] + ri, bounds['min_col'] + ci), 0) if v else 0
+                     for ci, v in enumerate(row)]
+                    for ri, row in enumerate(game.matrix)
+                ]
             data = {
-                'version': 1,
+                'version': 2 if numbered else 1,
                 'puzzle': {'m': rec['m'], 'n': rec['n'], 'step': rec['step']},
                 'step_count': 0,
                 'history': {'history_index': 0, 'snapshots': [snap]},
             }
+            if numbered:
+                data['puzzle']['type'] = 'numbered'
             ts = datetime.now().strftime('%Y%m%d-%H%M%S')
             name = f"{rec['step']}-{rec['m']}-{rec['n']}-{ts}.json"
             os.makedirs(self.save_dir, exist_ok=True)
@@ -494,13 +510,18 @@ class RecordsPanelMixin:
         """把该打乱载入为当前谜题（练习模式），立即复现"""
         if self.animating:
             self.cancel_animation()
+        numbered = bool(rec.get('numbered')) or str(rec.get('puzzle_key', '')).endswith('#num')
         self.current_m = rec['m']
         self.current_n = rec['n']
         self.current_step = rec['step']
         self.step_count = 0
-        self.game = SliderMatrix(rec['m'], rec['n'])
+        self.numbered = numbered
+        self.game = create_puzzle(rec['m'], rec['n'], rec['step'])
         self.game.import_map(self._rp_record_map_str(rec))
         self.game.update_matrix()
+        if numbered:
+            for i, block in enumerate(sorted(self.game.blocks, key=lambda b: (b.location[0], b.location[1]))):
+                block.number = i + 1
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
         self.ensure_blocks_visible()

@@ -633,7 +633,7 @@ class DialogsMixin:
         self.screen.blit(overlay, (0, 0))
 
         dialog_width = 320
-        dialog_height = 280
+        dialog_height = 320
         dialog_x = (self.screen_width - dialog_width) // 2
         dialog_y = (self.screen_height - dialog_height) // 2
 
@@ -648,6 +648,18 @@ class DialogsMixin:
         pygame.draw.line(self.screen, self.colors['dialog_border'],
                         (dialog_x + 15, line_y), (dialog_x + dialog_width - 15, line_y))
 
+        label_x = dialog_x + 25
+        field_x = dialog_x + 170
+
+        # 带序号勾选框：单独一行，位于分隔线与输入字段之间
+        checkbox_label = '带序号'
+        checkbox_state = 'x' if getattr(self, 'custom_numbered', False) else ''
+        checkbox_text = f'[ {checkbox_state} ] {checkbox_label}'
+        checkbox_surface = self.input_font.render(checkbox_text, True, self.colors['dialog_text'])
+        checkbox_y = dialog_y + 65
+        self.screen.blit(checkbox_surface, (label_x, checkbox_y + 5))
+        self.custom_numbered_rect = checkbox_surface.get_rect(topleft=(label_x, checkbox_y + 5))
+
         fields = [
             ('m', '行数:', self.custom_fields['m']),
             ('n', '列数:', self.custom_fields['n']),
@@ -656,11 +668,9 @@ class DialogsMixin:
 
         field_width = 80
         field_height = 30
-        label_x = dialog_x + 25
-        field_x = dialog_x + 170
 
         self.custom_field_rects = {}
-        y_offset = dialog_y + 65
+        y_offset = dialog_y + 65 + 35
 
         for key, label, value in fields:
             label_surface = self.input_font.render(label, True, self.colors['dialog_text'])
@@ -731,6 +741,10 @@ class DialogsMixin:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             x, y = event.pos
 
+            if hasattr(self, 'custom_numbered_rect') and self.custom_numbered_rect.collidepoint(x, y):
+                self.custom_numbered = not getattr(self, 'custom_numbered', False)
+                return True
+
             for key, rect in self.custom_field_rects.items():
                 if rect.collidepoint(x, y):
                     self.custom_active_field = key
@@ -752,7 +766,8 @@ class DialogsMixin:
                         self.custom_error = f"等级必须 < {max(m, n)}"
                         return True
 
-                    self.new_puzzle(m, n, step)
+                    numbered = getattr(self, 'custom_numbered', False)
+                    self.new_puzzle(m, n, step, numbered=numbered)
                     self.show_custom_dialog = False
                     self.custom_error = ''
                     return True

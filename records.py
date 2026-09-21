@@ -64,7 +64,7 @@ class Records:
         except Exception as e:
             print(f"[Records] 保存失败: {e}")
 
-    def add_record(self, puzzle_key, m, n, step, initial_matrix, time_ms, moves, dnf):
+    def add_record(self, puzzle_key, m, n, step, initial_matrix, time_ms, moves, dnf, numbered=False):
         """追加一条成绩（仅内存），增量更新 series 缓存，返回记录"""
         record = {
             'id': uuid.uuid4().hex,
@@ -77,6 +77,7 @@ class Records:
             'time_ms': int(round(time_ms)),
             'moves': moves,
             'dnf': bool(dnf),
+            'numbered': bool(numbered),
         }
         records = self.data.setdefault(puzzle_key, [])
         records.append(record)

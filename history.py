@@ -136,6 +136,25 @@ class GameHistory:
         if self.history_index < len(self.history) - 1:
             self.history = self.history[:self.history_index + 1]
 
+        # 编号矩阵辅助：将 game.blocks 的 number 映射到 matrix 对齐的二维表
+        # 必须按位置查找：移动后 game.blocks 的顺序不再是矩阵扫描序
+        def _numbers_matrix():
+            num_map = {tuple(b.location): b.number for b in game.blocks}
+            bounds = game.matrix_bounds
+            min_row = bounds['min_row']
+            min_col = bounds['min_col']
+            nums = []
+            for row_idx, row in enumerate(game.matrix):
+                new_row = []
+                for col_idx, val in enumerate(row):
+                    if val == 1:
+                        num = num_map.get((min_row + row_idx, min_col + col_idx))
+                        new_row.append(num if num is not None else 0)
+                    else:
+                        new_row.append(0)
+                nums.append(new_row)
+            return nums
+
         # 合并：同一次选中的连续移动只占一个矩阵快照
         if (session_key is not None and move_info is not None and self.history
                 and self.history[-1].get('session_key') == session_key):
@@ -146,6 +165,11 @@ class GameHistory:
             snap['steps'] += 1
             snap['step_total'] += 1
             snap['move_info'] = compose_move_info(snap['moves'])
+            # 同步编号快照（若有）
+            if any(getattr(b, 'number', None) is not None for b in game.blocks):
+                snap['numbers'] = _numbers_matrix()
+            else:
+                snap.pop('numbers', None)
             return
 
         prev_total = self.history[-1].get('step_total', 0) if self.history else 0
@@ -159,6 +183,8 @@ class GameHistory:
             'step_total': prev_total + steps,
             'session_key': session_key,
         }
+        if any(getattr(b, 'number', None) is not None for b in game.blocks):
+            snapshot['numbers'] = _numbers_matrix()
 
         # 追加快照
         self.history.append(snapshot)
@@ -192,13 +218,36 @@ class GameHistory:
         
         min_row = bounds['min_row']
         min_col = bounds['min_col']
+
+        if hasattr(game, 'k'):
+            # 三角形密鋪：matrix 為菱形胞 2-bit 網格（bit0=▲、bit1=▼）
+            game.blocks = []
+            for row_idx, row in enumerate(matrix):
+                for col_idx, val in enumerate(row):
+                    if val & 1:
+                        game.blocks.append(Block([min_row + row_idx, min_col + col_idx, True]))
+                    if val & 2:
+                        game.blocks.append(Block([min_row + row_idx, min_col + col_idx, False]))
+        else:
+            # 根據矩陣重建滑塊列表
+            game.blocks = []
+            for row_idx, row in enumerate(matrix):
+                for col_idx, val in enumerate(row):
+                    if val == 1:
+                        game.blocks.append(Block([min_row + row_idx, min_col + col_idx]))
         
-        # 根据矩阵重建滑块列表
-        game.blocks = []
-        for row_idx, row in enumerate(matrix):
-            for col_idx, val in enumerate(row):
-                if val == 1:
-                    game.blocks.append(Block([min_row + row_idx, min_col + col_idx]))
+        # 恢复编号信息（若有）
+        numbers = snapshot.get('numbers')
+        if numbers:
+            num_map = {}
+            for row_idx, row in enumerate(numbers):
+                for col_idx, val in enumerate(row):
+                    if val != 0:
+                        r = min_row + row_idx
+                        c = min_col + col_idx
+                        num_map[(r, c)] = val
+            for block in game.blocks:
+                block.number = num_map.get(tuple(block.location))
         
         # 更新游戏内部状态
         game.matrix = [r[:] for r in matrix]
