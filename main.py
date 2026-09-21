@@ -6,6 +6,8 @@
     python main.py                  # 使用默认参数 2~4*4, HTTP 端口 5050
     python main.py m n step         # 指定参数，如 python main.py 6 6 2
     python main.py m n step port    # 指定 HTTP 端口，如 python main.py 4 4 2 8080
+    python main.py m n step tri     # 正三角形密铺谜题（m 作大三角边长 k），如 python main.py 6 6 1 tri
+    python main.py m n step num     # 带序号谜题
     python main.py --no-http        # 禁用 HTTP 服务（仅终端交互）
     python main.py --http-port PORT # 指定 HTTP 端口
 """
@@ -83,10 +85,14 @@ def stdin_reader(cmd_queue: queue.Queue):
 
 
 def parse_args():
-    """解析命令行参数，返回 (m, n, step, http_port, enable_http)"""
+    """解析命令行参数，返回 (m, n, step, http_port, enable_http, kind)
+
+    kind: 'square' | 'numbered' | 'triangle'（第 4 个参数为 tri/num 时生效）
+    """
     m, n, step = 4, 4, 2
     http_port = 5050
     enable_http = True
+    kind = 'square'
 
     args = sys.argv[1:]
     if '--no-http' in args:
@@ -113,21 +119,32 @@ def parse_args():
             sys.exit(1)
     elif len(args) == 4:
         try:
-            m, n, step, http_port = int(args[0]), int(args[1]), int(args[2]), int(args[3])
+            m, n, step = int(args[0]), int(args[1]), int(args[2])
         except ValueError:
-            print("参数错误，用法: python main.py m n step port")
+            print("参数错误，用法: python main.py m n step [port|tri|num]")
             sys.exit(1)
+        forth = args[3].lower()
+        if forth in ('tri', 'triangle'):
+            kind = 'triangle'
+        elif forth in ('num', 'numbered'):
+            kind = 'numbered'
+        else:
+            try:
+                http_port = int(forth)
+            except ValueError:
+                print(f"参数错误: {args[3]}（第 4 个参数应为端口数字或 tri/num）")
+                sys.exit(1)
     elif len(args) > 0:
-        print("用法: python main.py [m n step] [--http-port PORT] [--no-http]")
+        print("用法: python main.py [m n step [port|tri|num]] [--http-port PORT] [--no-http]")
         sys.exit(1)
 
-    return m, n, step, http_port, enable_http
+    return m, n, step, http_port, enable_http, kind
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
         _log_error('===== 游戏启动 =====')
-        m, n, step, http_port, enable_http = parse_args()
+        m, n, step, http_port, enable_http, kind = parse_args()
 
         # 创建命令队列
         cmd_queue = queue.Queue()
@@ -140,7 +157,7 @@ if __name__ == "__main__":
         if enable_http:
             http_server = start_http_server(cmd_queue, http_port)
 
-        gui = SliderGUI(m=m, n=n, step=step, cmd_queue=cmd_queue)
+        gui = SliderGUI(m=m, n=n, step=step, cmd_queue=cmd_queue, kind=kind)
         gui.run()
     except Exception:
         _log_error(f'启动失败:\n{traceback.format_exc()}')

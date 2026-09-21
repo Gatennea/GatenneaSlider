@@ -97,7 +97,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
     滑块游戏图形界面类
     """
 
-    def __init__(self, m: int = 6, n: int = 6, step: int = 1, cmd_queue: queue.Queue = None):
+    def __init__(self, m: int = 6, n: int = 6, step: int = 1, cmd_queue: queue.Queue = None,
+                 kind: str = 'square'):
         """
         初始化游戏界面
 
@@ -106,6 +107,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             n: 初始滑块列数，默认为6
             step: 移动步数（等级），默认为1
             cmd_queue: 命令队列（用于接收终端指令），默认为None
+            kind: 开局形态 'square' / 'numbered' / 'triangle'（三角形时 m 作边长 k）
         """
         _gui_log_error(f'GUI初始化开始: m={m}, n={n}, step={step}')
         try:
@@ -640,6 +642,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 加载上次状态
         self.load_last_state()
+
+        # 命令行显式指定形态：以命令行为准，覆盖上面恢复的上次局面
+        # （kind='square' 是默认值，不覆盖，保持「记住上次关闭时的样子」）
+        if kind == 'triangle':
+            self.new_triangle_puzzle(m, step)
+        elif kind == 'numbered':
+            self.new_puzzle(m, n, step, numbered=True)
 
         # 首次启动：弹出新手教程引导
         self._tut_check_first_launch()
