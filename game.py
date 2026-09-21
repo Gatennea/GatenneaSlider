@@ -22,7 +22,7 @@ class Block:
         be_opted: bool - 是否被选中（用于高亮显示）
     """
     
-    __slots__ = ('location', 'be_opted')
+    __slots__ = ('location', 'be_opted', 'number')
     
     def __init__(self, location: list[int], be_opted: bool = False):
         """
@@ -34,6 +34,7 @@ class Block:
         """
         self.location = location
         self.be_opted = be_opted
+        self.number = None
     
     def __eq__(self, other) -> bool:
         """
