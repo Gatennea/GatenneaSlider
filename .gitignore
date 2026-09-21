@@ -39,6 +39,9 @@ macro/*.json
 test/_tmp_save/
 測試/_tmp_save/
 
+# ===== 人工核对用截图（由 test/_shot_triangle.py 重新生成）=====
+test/_shot_triangle.png
+
 # ===== Web 版（独立仓库，自行版本管理，勿入库）=====
 web/
 
@@ -46,8 +49,8 @@ web/
 .clinerules/
 .trae/
 .vscode/
+.zcode/
 参考/
 本機環境.md
 
-# ===== 独立项目：加密工具（与本游戏无关，如需入库请 git add -f encrypt）=====
-encrypt/
+開發約定/
