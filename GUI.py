@@ -27,7 +27,7 @@ from game_triangle import tri_key
 from gui.renderer import RendererMixin
 from gui.dialogs import DialogsMixin
 from gui.animation import AnimationMixin
-from gui.file_ops import FileOpsMixin
+from gui.file_ops import FileOpsMixin, DEFAULT_KEYBINDINGS
 from gui.events import EventsMixin
 from gui.virtual_keyboard import VirtualKeyboardMixin
 from gui.metrics_panel import MetricsPanelMixin
@@ -576,28 +576,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._settings_anim_toggle_rect = None
         self._settings_slider_track_rect = None
 
-        # 快捷键配置（默认值）
-        self.keybindings = {
-            'undo': {'key': 'z', 'modifiers': ['ctrl']},
-            'redo': {'key': 'x', 'modifiers': ['ctrl']},
-            'shuffle': {'key': 's', 'modifiers': ['alt']},
-            'reset': {'key': 'r', 'modifiers': ['ctrl']},
-            'save': {'key': 's', 'modifiers': ['ctrl']},
-            'load': {'key': 'o', 'modifiers': ['ctrl']},
-            'move_up': {'key': 'w', 'modifiers': []},
-            'move_down': {'key': 's', 'modifiers': []},
-            'move_left': {'key': 'a', 'modifiers': []},
-            'move_right': {'key': 'd', 'modifiers': []},
-            # 三角形密铺的另外两个对角方向（w/a/d/s 复用上面的四向键位）
-            'tri_up_right': {'key': 'e', 'modifiers': []},
-            'tri_down_left': {'key': 'z', 'modifiers': []},
-            'tri_down_right': {'key': 'x', 'modifiers': []},
-            'auto_solve': {'key': 's', 'modifiers': ['ctrl', 'alt']},
-            'macro_record': {'key': 'm', 'modifiers': ['ctrl']},
-            'virtual_keyboard': {'key': 'f1', 'modifiers': []},
-            'metrics_panel': {'key': 'f2', 'modifiers': []},
-            'records_panel': {'key': 'f3', 'modifiers': []},
-        }
+        # 快捷键配置：直接取 file_ops 的默认表（加载失败或文件缺失时的兜底），
+        # 不在这里另抄一份——两份表一旦漂移，新动作就会在加载时被静默丢掉
+        self.keybindings = dict(DEFAULT_KEYBINDINGS)
 
         # 快捷键动作显示名
         self.keybinding_labels = {

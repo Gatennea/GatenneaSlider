@@ -80,7 +80,9 @@ def _compact_json_dumps(data, indent=2, max_line_width=200):
 
     return _format(data, 0)
 
-# 默认快捷键配置（作为 fallback）
+# 快捷键默认表，也是唯一底表：加载时按它补全缺失动作、文件损坏时按它回退，
+# GUI 启动时的初值同样用它（GUI.py 不再另抄一份）。加新动作必须同时改这里，
+# 否则已有配置文件的用户在加载时会被静默丢掉新键位（三角形 E/Z/X 就这么丢过）。
 DEFAULT_KEYBINDINGS = {
     'undo': {'key': 'z', 'modifiers': ['ctrl']},
     'redo': {'key': 'x', 'modifiers': ['ctrl']},
@@ -92,6 +94,10 @@ DEFAULT_KEYBINDINGS = {
     'move_down': {'key': 's', 'modifiers': []},
     'move_left': {'key': 'a', 'modifiers': []},
     'move_right': {'key': 'd', 'modifiers': []},
+    # 三角形密铺的另外三个方向（w/a/d/s 复用上面的四向键位，六键围成六边形）
+    'tri_up_right': {'key': 'e', 'modifiers': []},
+    'tri_down_left': {'key': 'z', 'modifiers': []},
+    'tri_down_right': {'key': 'x', 'modifiers': []},
     'auto_solve': {'key': 'a', 'modifiers': ['ctrl']},
     'macro_record': {'key': 'm', 'modifiers': ['ctrl']},
     'virtual_keyboard': {'key': 'f1', 'modifiers': []},
