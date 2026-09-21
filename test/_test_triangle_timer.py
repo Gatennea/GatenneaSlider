@@ -137,20 +137,21 @@ probe = TriangleSliderMatrix(rec['m'])
 check("initial_matrix 可被三角局解析", probe.import_map(rec['initial_matrix']))
 check("载入练习后位置与 initial_matrix 一致",
       set(gui.game.positions()) == set(probe.positions()))
-check(f"目标轮廓仍是边长 6 实心大三角（{len(gui._tri_goal_cells)} 格）",
-      gui._tri_goal_cells == gui.game.goal_cells())
+check(f"目标轮廓仍是边长 6 实心大三角（{len(gui.game.goal_cells())} 格）",
+      gui.game.goal_cells() == TriangleSliderMatrix(6).goal_cells())
 check(f"载入练习后 game_mode = {gui.game_mode}", gui.game_mode == 'practice')
 check("载入练习后步数归零", gui.step_count == 0)
 check("载入练习后历史只有导入态一条", len(gui.game_history.history) == 1)
 
-# ================================================================ 地图导入刷新轮廓
-print("== _do_load_map 刷新目标轮廓 ==")
+# ================================================================ 地图导入不改变目标轮廓
+print("== _do_load_map 后目标轮廓只由边长决定 ==")
 gui.new_triangle_puzzle(6, 1)
-before = set(gui._tri_goal_cells)
+before = gui.game.goal_cells()
 gui._do_load_map('\n'.join('^' * 6 for _ in range(6)))     # 纯 ▲ 菱形片，形状完全不同
-check(f"导入后目标轮廓未随局部形状改变（{len(gui._tri_goal_cells)} 格）",
-      gui._tri_goal_cells == before)
-check("导入后轮廓 = 边长 6 实心大三角", gui._tri_goal_cells == gui.game.goal_cells())
+check(f"导入后目标轮廓未随局部形状改变（{len(gui.game.goal_cells())} 格）",
+      gui.game.goal_cells() == before)
+check("导入后轮廓 = 边长 6 实心大三角",
+      gui.game.goal_cells() == TriangleSliderMatrix(6).goal_cells())
 check(f"导入后块数 = {len(gui.game.blocks)}", len(gui.game.blocks) == 36)
 
 # ================================================================ 回归

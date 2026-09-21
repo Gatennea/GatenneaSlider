@@ -550,8 +550,6 @@ class RecordsPanelMixin:
         if triangle:
             self.game = create_puzzle(rec['m'], rec['n'], rec['step'],
                                       kind='triangle', triangle_side=rec['m'])
-            # 先取目标轮廓再导入打乱态：轮廓只由边长决定，不随 initial_matrix 变
-            self._tri_goal_cells = self.game.goal_cells()
         else:
             self.game = create_puzzle(rec['m'], rec['n'], rec['step'])
         self.game.import_map(self._rp_record_map_str(rec))

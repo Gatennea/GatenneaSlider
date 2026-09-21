@@ -446,10 +446,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.custom_numbered = False
 
         # 三角形密铺模式（Stage B）：self.game 为 TriangleSliderMatrix 时为 True
-        # B1 仅静态渲染；滑动/撤回/竞速等交互在 B2 起逐阶开放
         self.triangle_mode = False
         self.triangle_side = 6
-        self._tri_goal_cells = None   # 目标大三角形的位置集合（渲染虚线轮廓用）
 
         # 历史记录
         self.game_history = GameHistory()
@@ -692,7 +690,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_step = step
         # 切回方形：清除三角形模式标记（存档/热键路径都走这里）
         self.triangle_mode = False
-        self._tri_goal_cells = None
 
         # 创建新的游戏对象
         kind = 'numbered' if numbered else 'square'
@@ -767,8 +764,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.numbered = False
 
         self.game = create_puzzle(k, k, step, kind='triangle', triangle_side=k)
-        # 目标轮廓：初始实心大三角形的位置集合（判定时允许平移/旋转）
-        self._tri_goal_cells = self.game.goal_cells()
 
         # 重置状态
         self.zoom = self._fit_triangle_zoom()
@@ -872,12 +867,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """确保所有滑块都在可视区域内，超出时自动调整相机"""
         if not self.game.blocks:
             return
-        # 三角形密铺：包围盒走 board_view（B1 无需自动可见，仅居中即可）
-        if getattr(self, 'triangle_mode', False):
-            return
 
         scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
 
         # 可视区域（排除菜单栏、状态栏和右侧面板）
         view_left = 0
@@ -888,20 +879,30 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 留一些边距
         margin = scaled_cell * 0.5
 
-        # 计算所有滑块的屏幕坐标范围
-        min_screen_x = float('inf')
-        max_screen_x = float('-inf')
-        min_screen_y = float('inf')
-        max_screen_y = float('-inf')
+        if getattr(self, 'triangle_mode', False):
+            # 三角形密铺：包围盒走 board_view（世界坐标 → 屏幕坐标）。
+            # 打乱/移动后形状可能摊开超出视口，与方形同样拉回可见区。
+            view = self._tri_view()
+            min_x, min_y, max_x, max_y = view.bounding_box(self.game.positions())
+            min_screen_x, min_screen_y = self.world_to_screen(min_x, min_y)
+            max_screen_x, max_screen_y = self.world_to_screen(max_x, max_y)
+        else:
+            scaled_gap = self.gap_width * self.zoom
 
-        for block in self.game.blocks:
-            screen_x = block.location[1] * (scaled_cell + scaled_gap) + self.camera_x
-            screen_y = block.location[0] * (scaled_cell + scaled_gap) + self.camera_y
+            # 计算所有滑块的屏幕坐标范围
+            min_screen_x = float('inf')
+            max_screen_x = float('-inf')
+            min_screen_y = float('inf')
+            max_screen_y = float('-inf')
 
-            min_screen_x = min(min_screen_x, screen_x)
-            max_screen_x = max(max_screen_x, screen_x + scaled_cell)
-            min_screen_y = min(min_screen_y, screen_y)
-            max_screen_y = max(max_screen_y, screen_y + scaled_cell)
+            for block in self.game.blocks:
+                screen_x = block.location[1] * (scaled_cell + scaled_gap) + self.camera_x
+                screen_y = block.location[0] * (scaled_cell + scaled_gap) + self.camera_y
+
+                min_screen_x = min(min_screen_x, screen_x)
+                max_screen_x = max(max_screen_x, screen_x + scaled_cell)
+                min_screen_y = min(min_screen_y, screen_y)
+                max_screen_y = max(max_screen_y, screen_y + scaled_cell)
 
         # 检查是否超出可视区域
         need_adjust = False
@@ -1875,6 +1876,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
+        if getattr(self, 'triangle_mode', False):
+            # 三角形的缩放本就是自动适配的（建局/载入都走 _fit_triangle_zoom），
+            # 而打乱会把形状摊得比初始大三角更开，原 zoom 可能被 max_zoom 夹过、
+            # 单靠平移拉不回视口 → 按打乱后的包围盒重新适配并居中
+            self.zoom = self._fit_triangle_zoom()
+            self.center_map()
         self.ensure_blocks_visible()
         if self.game_mode == 'timed':
             self._timer_enter_ready()

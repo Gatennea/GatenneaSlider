@@ -593,6 +593,15 @@ class EventsMixin:
                         else:
                             gap = self.get_gap_at_pos(x, y)
                             block = self.get_block_at_pos(x, y)
+                            # 三角形密铺：单位三角内切圆半径仅 ~17px，而缝隙命中容差
+                            # 10px，实测约六成落在棋盘内的点击会先撞上某条缝隙线——
+                            # 缝隙优先会让「点滑块」频频变成「选中一条不想选的缝」。
+                            # 三角形本就允许先点滑块、再由方向键/拖拽定缝（resolve_drag
+                            # 按「缝线穿过该块」推导线号），故点中滑块时不再让位给缝隙；
+                            # 缝隙仍可点在形状外的空白处选中。
+                            if (gap is not None and block is not None
+                                    and getattr(self, 'triangle_mode', False)):
+                                gap = None
 
                         # 控制模式开关（独立布尔，可任意组合）
                         two_touch_on = getattr(self, 'control_two_touch', True)
@@ -1193,8 +1202,6 @@ class EventsMixin:
         if getattr(self, 'triangle_mode', False):
             # 导入的地图包围盒可能与原局不同 → 重新适配缩放（存档不保存 zoom）
             self.zoom = self._fit_triangle_zoom()
-            # 目标轮廓只由边长决定，不随导入的局部形状改变（否则虚线轮廓会画错）
-            self._tri_goal_cells = self.game.goal_cells()
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()

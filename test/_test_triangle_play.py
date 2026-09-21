@@ -59,7 +59,7 @@ print("== 建局 ==")
 check(gui.triangle_mode is True, "triangle_mode 置位")
 check(len(gui.game.blocks) == N, f"滑块数 = {N}（实际 {len(gui.game.blocks)}）")
 check(gui.is_solved() is True, "建局即实心大三角：起手是还原态")
-check(set(gui.game.positions()) == set(gui._tri_goal_cells), "建局位置 = 目标轮廓")
+check(set(gui.game.positions()) == gui.game.goal_cells(), "建局位置 = 目标轮廓")
 check(TriangleSliderMatrix.is_single_connected(gui.game.positions()),
       "实心大三角单一连通")
 check(gui.step_count == 0, "步数归零")
@@ -274,7 +274,7 @@ check(gui.step_count == 0, "打乱后步数归零")
 print("== 還原判定 ==")
 gui.new_triangle_puzzle(K, 1)
 # 直接把局面設成初始實心大三角形（允許平移/旋轉）
-goal = gui._tri_goal_cells
+goal = gui.game.goal_cells()
 gui.game.blocks = []
 from game import Block  # noqa: E402
 min_i = min(i for i, j, _ in goal)

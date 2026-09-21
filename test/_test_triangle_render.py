@@ -42,12 +42,11 @@ check(isinstance(gui.game, TriangleSliderMatrix), "game 为 TriangleSliderMatrix
 check(len(gui.game.blocks) == 36, f"滑块数 = 36（实际 {len(gui.game.blocks)}）")
 check(gui.current_m == 6 and gui.current_n == 6 and gui.current_step == 2,
       "current_m/n/step 同步")
-# 建局即还原态（与方形 new_puzzle 一致：打乱是独立动作），目标轮廓已记录
+# 建局即还原态（与方形 new_puzzle 一致：打乱是独立动作）
 check(gui.is_solved() is True, "建局即实心大三角：起手是还原态")
-check(set(gui.game.positions()) == set(gui._tri_goal_cells),
-      "建局位置 = 目标轮廓")
-check(len(gui._tri_goal_cells) == 36,
-      f"目标轮廓 = 边长 6 的大三角（{len(gui._tri_goal_cells)} 格）")
+goal = gui.game.goal_cells()
+check(set(gui.game.positions()) == goal, "建局位置 = 目标轮廓")
+check(len(goal) == 36, f"目标轮廓 = 边长 6 的大三角（{len(goal)} 格）")
 check(gui.step_count == 0, "步数归零")
 check(len(gui.game_history.history) == 1, "历史仅存初始态这一条快照")
 check(gui.new_triangle_puzzle(6, 6) is False, "等级 >= 边长被拒绝")
@@ -92,7 +91,7 @@ expect_cy = (gui.menu_bar_height +
 check(abs(scx - expect_cx) < 1.0 and abs(scy - expect_cy) < 1.0,
       f"棋盤居中於可視區（{scx:.0f},{scy:.0f} vs {expect_cx:.0f},{expect_cy:.0f}）")
 gui.ensure_blocks_visible()
-check(True, "ensure_blocks_visible 在三角模式下直接返回（不崩潰）")
+check(True, "ensure_blocks_visible 不崩潰")
 
 print("== 状态栏判定 ==")
 # 建局即实心大三角：先确认初始就是还原态，再打乱确认会变成非还原态
@@ -100,7 +99,7 @@ from game import Block  # noqa: E402
 check(gui.is_solved() is True, "建局态走 GUI 层判定为复原")
 gui.shuffle_puzzle()
 check(gui.is_solved() is False, "打乱后判为非复原")
-gui.game.blocks = [Block(list(key)) for key in gui._tri_goal_cells]
+gui.game.blocks = [Block(list(key)) for key in gui.game.goal_cells()]
 check(gui.is_solved() is True, "摆回目标大三角后判复原")
 
 print("== 互動護欄（B2 起滑動/打亂開放，求解器與競速仍攔截）==")

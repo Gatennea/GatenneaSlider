@@ -15,7 +15,7 @@ import math
 
 import pygame
 
-from game_triangle import convex_hull, tri_key, tri_vertices
+from game_triangle import tri_key
 from gui.triangle_view import TriangleBoardView
 from records import format_time
 
@@ -85,41 +85,30 @@ class RendererMixin:
                 p2 = self.world_to_screen(x_bottom, world_bottom)
                 pygame.draw.line(self.screen, color, p1, p2, 1)
 
-    def _draw_triangle_goal(self, view: TriangleBoardView):
-        """繪製目標大三角形的虛線輪廓（提示還原目標位置）。"""
-        cells = getattr(self, '_tri_goal_cells', None)
-        if not cells:
-            return
-        verts = set()
-        for key in cells:
-            verts.update(tri_vertices(*key))
-        hull = convex_hull(verts)
-        if len(hull) != 3:
-            return
-        pts = [self.world_to_screen(*view.to_world(a, b)) for (a, b) in hull]
-        color = (120, 150, 190)
-        for t in range(3):
-            x1, y1 = pts[t]
-            x2, y2 = pts[(t + 1) % 3]
-            self._draw_dashed_line(color, (x1, y1), (x2, y2),
-                                   max(2, int(6 * self.zoom)), 6)
+    def _draw_triangle_selected_gap(self, view: TriangleBoardView):
+        """繪製選中的縫隙線（三族之一），與方形版同樣整屏畫、由滑塊覆蓋。
 
-    def _draw_dashed_line(self, color, p1, p2, dash: int, gap: int):
-        """簡易虛線（B1 靜態提示用）。"""
-        x1, y1 = p1
-        x2, y2 = p2
-        length = math.hypot(x2 - x1, y2 - y1)
-        if length <= 0:
+        沒有這條線時，選中縫隙只有右下角文字提示，玩家看不到選了哪條。
+        """
+        gap = getattr(self, 'selected_gap', None)
+        if not gap:
             return
-        dx, dy = (x2 - x1) / length, (y2 - y1) / length
-        pos = 0.0
-        while pos < length:
-            end = min(pos + dash, length)
-            pygame.draw.line(
-                self.screen, color,
-                (x1 + dx * pos, y1 + dy * pos),
-                (x1 + dx * end, y1 + dy * end), 2)
-            pos = end + gap
+        gap_type, line = gap
+        if gap_type not in ('h', 'p', 'n'):
+            return
+        world_left, world_top = self.screen_to_world(0, 0)
+        world_right, world_bottom = self.screen_to_world(
+            self.screen_width, self.screen_height)
+        if gap_type == 'h':
+            y = view.grid_h_y(line)
+            p1 = self.world_to_screen(world_left, y)
+            p2 = self.world_to_screen(world_right, y)
+        else:
+            x_top = view.grid_oblique_x(gap_type, line, world_top)
+            x_bottom = view.grid_oblique_x(gap_type, line, world_bottom)
+            p1 = self.world_to_screen(x_top, world_top)
+            p2 = self.world_to_screen(x_bottom, world_bottom)
+        pygame.draw.line(self.screen, self.colors['line'], p1, p2, 3)
 
     def draw_triangle_board(self):
         """繪製三角形密鋪棋盤（含 B2 的拖拽實時預覽）。"""
@@ -127,7 +116,7 @@ class RendererMixin:
 
         view = self._tri_view()
         self._draw_triangle_grid(view)
-        self._draw_triangle_goal(view)
+        self._draw_triangle_selected_gap(view)
 
         scaled_cell = self.cell_size * self.zoom
         # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）

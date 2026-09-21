@@ -291,8 +291,8 @@ class TriangleSliderMatrix:
     def goal_cells(self) -> set:
         """目標輪廓：邊長 k 實心大三角形（尖朝上）的單位三角位置集合。
 
-        分布與建局一致；導入局部地圖後目標輪廓不隨之改變，
-        供渲染虛線輪廓與「另存為謎題」判斷形態用。
+        分布與建局一致；導入局部地圖後目標輪廓不隨之改變。
+        供測試構造「已還原」局面與另存為謎題判斷形態用。
         """
         cells = {(i, j, True) for i in range(self.k) for j in range(self.k - i)}
         cells |= {(i, j, False)
