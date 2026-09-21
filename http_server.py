@@ -55,6 +55,17 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
+    def _send_analysis(self, result):
+        """局面分析响应：游戏侧对未实现形态回 reason=unsupported → 400。
+
+        方形谜题保持 200；这样调用方无需解析 message 就能从状态码区分
+        「该形态不支持」与「分析结果为空」。
+        """
+        status = 400 if (isinstance(result, dict)
+                         and not result.get('ok', True)
+                         and result.get('reason') == 'unsupported') else 200
+        self._send_json(result, status)
+
     def _post_command(self, cmd_str, payload=None):
         """将命令放入队列并等待结果
 
@@ -101,12 +112,14 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
 
     def _dispatch_get(self, path):
         # —— 局面分析 ——
+        # 三角形密铺的洞/窗口/动作语义未实现：游戏侧回 reason=unsupported，
+        # _send_analysis 映射为 400，让调用方能从状态码看出「该形态不支持」
         if path == '/analysis/window':
-            self._send_json(self._post_command('window'))
+            self._send_analysis(self._post_command('window'))
         elif path == '/analysis/holes':
-            self._send_json(self._post_command('holes'))
+            self._send_analysis(self._post_command('holes'))
         elif path == '/analysis/actions':
-            self._send_json(self._post_command('actions'))
+            self._send_analysis(self._post_command('actions'))
         # —— 求解器 ——
         elif path == '/solver/algorithms':
             self._send_json(self._post_command('solver_algorithms'))
@@ -167,8 +180,12 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
 
         elif path == '/move':
             direction = body.get('direction', '')
-            if direction not in ('w', 's', 'a', 'd'):
-                self._send_json({"ok": False, "message": "direction 必须是 w/s/a/d"}, 400)
+            # 方形 w/s/a/d；三角形密铺另加 e/z/x（wedxza 六向）。合法性与
+            # 「该方向是否平行于选中缝隙」由游戏侧判定，这里只挡明显非法的字母
+            if direction not in ('w', 's', 'a', 'd', 'e', 'z', 'x'):
+                self._send_json(
+                    {"ok": False,
+                     "message": "direction 必须是 w/s/a/d（三角形另加 e/z/x）"}, 400)
                 return
             result = self._post_command(f'move {direction}')
             self._send_json(result)
@@ -196,7 +213,16 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             if m is None or n is None or step is None:
                 self._send_json({"ok": False, "message": "需要 m, n, step 参数"}, 400)
                 return
-            result = self._post_command(f'new {m} {n} {step}')
+            # type 可选：square（默认）/ numbered / triangle。
+            # 三角形用 m 作大三角边长 k，n 仍须给出（ CLI 同款签名 new m n step tri ）
+            kind = body.get('type', 'square')
+            if kind not in ('square', 'numbered', 'triangle'):
+                self._send_json(
+                    {"ok": False, "message": "type 必须是 square/numbered/triangle"}, 400)
+                return
+            suffix = '' if kind == 'square' else ('num' if kind == 'numbered' else 'tri')
+            cmd = f'new {m} {n} {step}' + (f' {suffix}' if suffix else '')
+            result = self._post_command(cmd)
             self._send_json(result)
 
         elif path == '/deselect':
@@ -259,8 +285,11 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/select_gap':
             gap_type = body.get('type', '')
             line = body.get('line')
-            if gap_type not in ('h', 'v') or line is None:
-                self._send_json({"ok": False, "message": "需要 type (h/v) 和 line"}, 400)
+            # 方形 h/v；三角形密铺另加 p/n（3 族缝隙）。线号合法性由游戏侧判定
+            if gap_type not in ('h', 'v', 'p', 'n') or line is None:
+                self._send_json(
+                    {"ok": False,
+                     "message": "需要 type (h/v，三角形另加 p/n) 和 line"}, 400)
                 return
             result = self._post_command(f'select_gap {gap_type} {line}')
             self._send_json(result)

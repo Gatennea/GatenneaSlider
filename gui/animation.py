@@ -142,15 +142,26 @@ class AnimationMixin:
         """动作位移（格）→ (dr, dc)。
 
         合并快照的合成动作直接给 'delta'（各步位移之和，方向可能不是单向）；
-        单步动作按 direction × step 换算。
+        单步动作按 direction × step 换算。三角形密铺走 game_triangle.DIRECTIONS
+        （六向），方形走四向表；位移只作用在前兩個分量，第三分量（▲/▼ 朝向）
+        沿縫平行滑動時不變。
         """
         delta = move_info.get('delta')
         if delta is not None:
             return delta[0], delta[1]
+        step = move_info.get('step', self.current_step)
+        if getattr(self, 'triangle_mode', False):
+            from game_triangle import DIRECTIONS
+            d = DIRECTIONS.get(move_info.get('direction'), (0, 0))
+            return d[0] * step, d[1] * step
         d = {'w': (-1, 0), 's': (1, 0),
              'a': (0, -1), 'd': (0, 1)}.get(move_info.get('direction'), (0, 0))
-        step = move_info.get('step', self.current_step)
         return d[0] * step, d[1] * step
+
+    @staticmethod
+    def _shift_pos(pos, delta):
+        """位置 + 位移：只平移前兩個分量，其餘分量（▲/▼ 朝向）原樣保留。"""
+        return (pos[0] + delta[0], pos[1] + delta[1]) + tuple(pos[2:])
 
     def _flash_move_selection(self, move_info, is_undo, after_commit=False):
         """选中动画：撤销/重做每一步，短暂高亮该步选中的缝隙与滑块组。
@@ -174,7 +185,7 @@ class AnimationMixin:
             targets = [list(p) for p in moved]
         else:
             # 未提交的撤销 / 已提交的重做：滑块在「移动后」位置
-            targets = [(r + delta[0], c + delta[1]) for r, c in moved]
+            targets = [list(self._shift_pos(p, delta)) for p in moved]
         blocks = self._find_blocks_at_positions(targets)
         for b in blocks:
             b.be_opted = True
@@ -210,8 +221,7 @@ class AnimationMixin:
         delta = self._move_delta(move_info)
 
         if is_undo:
-            post_positions = [(r + delta[0], c + delta[1])
-                              for r, c in moved_positions]
+            post_positions = [self._shift_pos(p, delta) for p in moved_positions]
             anim_blocks = self._find_blocks_at_positions(post_positions)
             if len(anim_blocks) != len(moved_positions):
                 return False
@@ -223,8 +233,7 @@ class AnimationMixin:
             anim_blocks = self._find_blocks_at_positions(moved_positions)
             if len(anim_blocks) != len(moved_positions):
                 return False
-            post_positions = [(r + delta[0], c + delta[1])
-                              for r, c in moved_positions]
+            post_positions = [self._shift_pos(p, delta) for p in moved_positions]
             self.anim_blocks = list(anim_blocks)
             self.anim_start_pos = [list(b.location) for b in anim_blocks]
             self.anim_end_pos = [list(p) for p in post_positions]

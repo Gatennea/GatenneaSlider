@@ -15,6 +15,8 @@ import math
 
 import pygame
 
+from game_triangle import convex_hull, tri_key, tri_vertices
+from gui.triangle_view import TriangleBoardView
 from records import format_time
 
 
@@ -45,8 +47,165 @@ class RendererMixin:
                 rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
                 pygame.draw.rect(self.screen, self.colors['grid'], rect, 1)
 
+    def _tri_view(self) -> TriangleBoardView:
+        """三角形棋盤視圖（隨 cell_size/gap_width 緩存重建）。"""
+        view = getattr(self, '_triangle_view', None)
+        if (view is None or view.cell_size != self.cell_size
+                or view.gap_width != self.gap_width):
+            view = TriangleBoardView(self.cell_size, self.gap_width)
+            self._triangle_view = view
+        return view
+
+    def _draw_triangle_grid(self, view: TriangleBoardView):
+        """繪製三角網格背景（三族平行線，間距 = 三角高）。
+
+        直接由世界座標除以間距求起止索引，不像方形版那樣逐格矩形，
+        因此不存在 double-zoom 類的累計誤差。
+        """
+        world_left, world_top = self.screen_to_world(0, 0)
+        world_right, world_bottom = self.screen_to_world(
+            self.screen_width, self.screen_height)
+        corners = ((world_left, world_top), (world_right, world_top),
+                   (world_left, world_bottom), (world_right, world_bottom))
+        color = self.colors['grid']
+
+        # 水平族
+        for level in view.grid_h_levels(world_top, world_bottom):
+            y = view.grid_h_y(level)
+            p1 = self.world_to_screen(world_left, y)
+            p2 = self.world_to_screen(world_right, y)
+            pygame.draw.line(self.screen, color, p1, p2, 1)
+
+        # 兩組斜族
+        for gap_type in ('p', 'n'):
+            for level in view.grid_oblique_levels(gap_type, corners):
+                x_top = view.grid_oblique_x(gap_type, level, world_top)
+                x_bottom = view.grid_oblique_x(gap_type, level, world_bottom)
+                p1 = self.world_to_screen(x_top, world_top)
+                p2 = self.world_to_screen(x_bottom, world_bottom)
+                pygame.draw.line(self.screen, color, p1, p2, 1)
+
+    def _draw_triangle_goal(self, view: TriangleBoardView):
+        """繪製目標大三角形的虛線輪廓（提示還原目標位置）。"""
+        cells = getattr(self, '_tri_goal_cells', None)
+        if not cells:
+            return
+        verts = set()
+        for key in cells:
+            verts.update(tri_vertices(*key))
+        hull = convex_hull(verts)
+        if len(hull) != 3:
+            return
+        pts = [self.world_to_screen(*view.to_world(a, b)) for (a, b) in hull]
+        color = (120, 150, 190)
+        for t in range(3):
+            x1, y1 = pts[t]
+            x2, y2 = pts[(t + 1) % 3]
+            self._draw_dashed_line(color, (x1, y1), (x2, y2),
+                                   max(2, int(6 * self.zoom)), 6)
+
+    def _draw_dashed_line(self, color, p1, p2, dash: int, gap: int):
+        """簡易虛線（B1 靜態提示用）。"""
+        x1, y1 = p1
+        x2, y2 = p2
+        length = math.hypot(x2 - x1, y2 - y1)
+        if length <= 0:
+            return
+        dx, dy = (x2 - x1) / length, (y2 - y1) / length
+        pos = 0.0
+        while pos < length:
+            end = min(pos + dash, length)
+            pygame.draw.line(
+                self.screen, color,
+                (x1 + dx * pos, y1 + dy * pos),
+                (x1 + dx * end, y1 + dy * end), 2)
+            pos = end + gap
+
+    def draw_triangle_board(self):
+        """繪製三角形密鋪棋盤（含 B2 的拖拽實時預覽）。"""
+        self.screen.fill(self.colors['background'])
+
+        view = self._tri_view()
+        self._draw_triangle_grid(view)
+        self._draw_triangle_goal(view)
+
+        scaled_cell = self.cell_size * self.zoom
+        # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）
+        follow_map = {}
+        if self.drag_following:
+            di, dj = self.drag_follow_offset
+            if abs(di) > 1e-9 or abs(dj) > 1e-9:
+                for block in self.game.blocks:
+                    if block.be_opted:
+                        i, j, up = tri_key(block)
+                        follow_map[id(block)] = (i + di, j + dj, up)
+
+        # 移動動畫 / 撤銷重做動畫：整組沿同一斜座標位移插值（up 朝向不變）
+        anim_map = {}
+        if self.animating and self.anim_blocks:
+            t = self.ease_out(self.anim_progress)
+            di = self._anim_dr * t
+            dj = self._anim_dc * t
+            for idx, block in enumerate(self.anim_blocks):
+                si, sj, sup = self.anim_start_pos[idx]
+                anim_map[id(block)] = (si + di, sj + dj, sup)
+
+        selected = []
+        normal = []
+        for block in self.game.blocks:
+            if id(block) in follow_map:
+                i, j, up = follow_map[id(block)]
+                is_follow = True
+            elif id(block) in anim_map:
+                i, j, up = anim_map[id(block)]
+                is_follow = False
+            else:
+                i, j, up = tri_key(block)
+                is_follow = False
+            cx, cy = view.piece_center(i, j, up)
+            sx, sy = self.world_to_screen(cx, cy)
+            if (sx < -scaled_cell or sx > self.screen_width + scaled_cell
+                    or sy < -scaled_cell or sy > self.screen_height + scaled_cell):
+                continue
+            (selected if block.be_opted else normal).append(
+                (block, i, j, up, is_follow))
+
+        for group, is_selected in ((normal, False), (selected, True)):
+            for block, i, j, up, is_follow in group:
+                fill = self.colors['block_selected'] if is_selected else self.colors['block']
+                border_color = self.colors['border']
+                border_w = max(1, int(2 * self.zoom))
+                # 拖拽越界（碰撞/斷開/超過可達上限）：變暗 + 橙色邊框提示不可移動
+                if is_follow and self.drag_follow_invalid:
+                    fill = tuple(int(ch * 0.45) for ch in fill[:3])
+                    border_color = (220, 80, 40)
+                    border_w = max(1, int(3 * self.zoom))
+                poly = [self.world_to_screen(*p)
+                        for p in view.piece_polygon(i, j, up)]
+                pygame.draw.polygon(self.screen, fill, poly)
+                pygame.draw.polygon(self.screen, border_color, poly, border_w)
+
+                if getattr(self, 'numbered', False) and getattr(block, 'number', None):
+                    font_size = max(12, int(scaled_cell * 0.45))
+                    if not hasattr(self, '_num_font_cache'):
+                        self._num_font_cache = {}
+                    font = self._num_font_cache.get(font_size)
+                    if font is None:
+                        from GUI import _gui_safe_font
+                        font = _gui_safe_font('SimHei', font_size)
+                        self._num_font_cache[font_size] = font
+                    cx, cy = view.piece_center(i, j, up)
+                    text = font.render(str(block.number), True, (0, 0, 0))
+                    text_rect = text.get_rect(
+                        center=self.world_to_screen(cx, cy))
+                    self.screen.blit(text, text_rect)
+
     def draw_board(self):
         """绘制游戏主界面"""
+        if getattr(self, 'triangle_mode', False):
+            self.draw_triangle_board()
+            return
+
         self.screen.fill(self.colors['background'])
 
         board_x = 0
@@ -181,6 +340,20 @@ class RendererMixin:
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
             pygame.draw.rect(self.screen, fill, rect, border_radius=int(5 * self.zoom))
             pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=int(5 * self.zoom))
+
+            if getattr(self, 'numbered', False) and getattr(block, 'number', None):
+                font_size = max(12, int(scaled_cell * 0.45))
+                if not hasattr(self, '_num_font_cache'):
+                    self._num_font_cache = {}
+                font = self._num_font_cache.get(font_size)
+                if font is None:
+                    # 延遲導入：GUI 模組在 import 期尚未定義 _gui_safe_font
+                    from GUI import _gui_safe_font
+                    font = _gui_safe_font('SimHei', font_size)
+                    self._num_font_cache[font_size] = font
+                text = font.render(str(block.number), True, (0, 0, 0))
+                text_rect = text.get_rect(center=(screen_x + scaled_cell / 2, screen_y + scaled_cell / 2))
+                self.screen.blit(text, text_rect)
 
         # 连锁提示：高亮的空格（无滑块）同样提亮
         if hint_cells is not None:
@@ -343,10 +516,16 @@ class RendererMixin:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
             is_current = False
-            if len(preset) == 4:
-                _, pm, pn, ps = preset
-                if pm == self.current_m and pn == self.current_n and ps == self.current_step:
-                    is_current = True
+            if len(preset) >= 4:
+                _, pm, pn, ps = preset[:4]
+                pkind = preset[4] if len(preset) > 4 else 'square'
+                if pkind == 'triangle':
+                    if (getattr(self, 'triangle_mode', False)
+                            and pm == self.current_m and ps == self.current_step):
+                        is_current = True
+                elif not getattr(self, 'triangle_mode', False):
+                    if pm == self.current_m and pn == self.current_n and ps == self.current_step:
+                        is_current = True
 
             name = preset[0]
             color = self.colors['menu_selected'] if is_current else self.colors['menu_text']
@@ -437,8 +616,8 @@ class RendererMixin:
 
         text_y = status_y + (self.status_bar_height - 14) // 2
 
-        # 左侧：复原状态
-        solved = self.game.is_solved()
+        # 左侧：复原状态（走 GUI 层判定：带序号模式会额外检查编号顺序）
+        solved = self.is_solved()
         status_text = "状态：复原" if solved else "状态：未复原"
         status_color = self.colors['solved'] if solved else self.colors['unsolved']
         status_surface = self.status_font.render(status_text, True, status_color)

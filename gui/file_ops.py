@@ -13,7 +13,7 @@
 import json
 import os
 import pygame
-from game import SliderMatrix
+from puzzle_types import create_puzzle
 
 
 def _compact_json_dumps(data, indent=2, max_line_width=200):
@@ -400,9 +400,14 @@ class FileOpsMixin:
                 snap_data['steps'] = snap['steps']
             if snap.get('step_total'):
                 snap_data['step_total'] = snap['step_total']
+            if snap.get('numbers'):
+                snap_data['numbers'] = snap['numbers']
             history_data['snapshots'].append(snap_data)
+        numbered = bool(getattr(self, 'numbered', False))
+        triangle = bool(getattr(self, 'triangle_mode', False))
         data = {
-            'version': 1,
+            # 带序号/三角形谜题写 v2（puzzle.type 标明形态）；普通方形保持 v1 不变
+            'version': 2 if (numbered or triangle) else 1,
             'puzzle': {
                 'm': self.current_m,
                 'n': self.current_n,
@@ -411,6 +416,11 @@ class FileOpsMixin:
             'step_count': self.step_count,
             'history': history_data
         }
+        if numbered:
+            data['puzzle']['type'] = 'numbered'
+        if triangle:
+            data['puzzle']['type'] = 'triangle'
+            data['puzzle']['triangle_side'] = self.game.k
         if getattr(self, 'save_readonly_flag', False):
             data['readonly'] = True
         return data
@@ -421,10 +431,20 @@ class FileOpsMixin:
         self._ann_cancel_session('载入存档')
         # 载入只读标志：带 readonly:true 的存档载入后为只读
         self._readonly = bool(save_data.get('readonly', False))
+        version = int(save_data.get('version', 1))
         puzzle = save_data.get('puzzle', {})
         m = puzzle.get('m', 4)
         n = puzzle.get('n', 4)
         step = puzzle.get('step', 2)
+        kind = 'square'
+        if version >= 2:
+            kind = puzzle.get('type', 'square')
+        # v1 存档的 snapshots 若带 numbers（搭便车存档），也按带序号还原
+        self.numbered = kind == 'numbered' or any(
+            snap.get('numbers') for snap in save_data.get('history', {}).get('snapshots', []))
+        # 三角形密铺：mode 标记 + 大三角形边长（k 缺省时退回 m）
+        self.triangle_mode = kind == 'triangle'
+        triangle_side = puzzle.get('triangle_side', m)
 
         self.current_m = m
         self.current_n = n
@@ -450,13 +470,21 @@ class FileOpsMixin:
                 # 载入后不承接旧选中会话，避免与后续移动误合并
                 'session_key': None,
             }
+            if snap.get('numbers'):
+                entry['numbers'] = snap['numbers']
             self.game_history.history.append(entry)
         self.game_history.history_index = history_data.get('history_index', 0)
         # 步数以历史累计值为准（合并快照一条覆盖多步，不能再按索引算）
         self.step_count = self.game_history.current_step_total()
 
-        # 从快照重建游戏状态
-        self.game = SliderMatrix(m, n)
+        # 从快照重建游戏状态（依版本/形態分派）
+        self.game = create_puzzle(m, n, step, kind=kind, triangle_side=triangle_side)
+        if kind == 'triangle':
+            self.current_m = self.current_n = self.game.k
+            self._tri_goal_cells = set(self.game.positions())
+            # 载入后按当前棋盘大小重新适配缩放并居中（存档不保存 zoom）
+            self.zoom = self._fit_triangle_zoom()
+            self.center_map()
         self.game_history.restore_snapshot(self.game, self.game_history.history_index)
 
         self.selected_gap = None

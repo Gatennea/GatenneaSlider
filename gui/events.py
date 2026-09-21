@@ -11,6 +11,7 @@ import pygame
 import queue
 import traceback
 from gui.text_input import TextInput
+from puzzle_types import puzzle_key
 
 
 class EventsMixin:
@@ -371,29 +372,42 @@ class EventsMixin:
                             cell_px = self.cell_size + self.gap_width
                             px_dx = event.pos[0] - self.drag_follow_start_screen[0]
                             px_dy = event.pos[1] - self.drag_follow_start_screen[1]
-                            dc = px_dx / (cell_px * self.zoom)
-                            dr = px_dy / (cell_px * self.zoom)
-                            # 沿主方向轴取屏幕位移分量
-                            gap_type = self.drag_follow_gap[0] if self.drag_follow_gap else 'h'
-                            raw = dc if gap_type == 'h' else dr
-                            # 投影到锁定方向的「前进」轴上：'d'/'s' 是屏幕正方向，'a'/'w' 是屏幕负方向。
-                            # 方向在 _init_drag_follow 时已锁定，故必须乘方向符号；否则上/左拖拽
-                            # （屏幕位移为负）会被下面的夹紧吃掉，表现为「完全无法上下/向左拖动」。
-                            forward = raw if self.drag_follow_direction in ('d', 's') else -raw
-                            # 夹紧：反向拖回起点后停在原位；向前不超过可达上限
                             max_cells = getattr(self, 'drag_follow_max_cells', 0)
-                            clamped = max(0.0, min(forward, float(max_cells)))
-                            if self.drag_follow_direction == 'd':
-                                self.drag_follow_offset = (0.0, clamped)
-                            elif self.drag_follow_direction == 'a':
-                                self.drag_follow_offset = (0.0, -clamped)
-                            elif self.drag_follow_direction == 's':
-                                self.drag_follow_offset = (clamped, 0.0)
-                            else:  # 'w'
-                                self.drag_follow_offset = (-clamped, 0.0)
-                            # 触点越过可达上限 → 提示不可继续
-                            # 容差 0.05 格：覆盖像素取整误差（1px ≈ 0.016 格），恰好贴边时不误报
-                            self.drag_follow_invalid = (forward > max_cells + 0.05)
+                            if getattr(self, 'triangle_mode', False):
+                                # 三角：把螢幕位移投影到鎖定方向的單位向量上，得到沿該
+                                # 晶格方向走了幾格；再換算回斜座標 (di, dj) 偏移
+                                from game_triangle import DIRECTIONS, DIRECTION_SCREEN
+                                sx, sy = DIRECTION_SCREEN[self.drag_follow_direction]
+                                scale = cell_px * self.zoom
+                                proj = (px_dx * sx + px_dy * sy) / scale
+                                clamped = max(0.0, min(proj, float(max_cells)))
+                                di, dj = DIRECTIONS[self.drag_follow_direction]
+                                self.drag_follow_offset = (di * clamped, dj * clamped)
+                                # 觸點越過可達上限 → 提示不可繼續（容差 0.05 格覆蓋像素取整誤差）
+                                self.drag_follow_invalid = (proj > max_cells + 0.05)
+                            else:
+                                dc = px_dx / (cell_px * self.zoom)
+                                dr = px_dy / (cell_px * self.zoom)
+                                # 沿主方向轴取屏幕位移分量
+                                gap_type = self.drag_follow_gap[0] if self.drag_follow_gap else 'h'
+                                raw = dc if gap_type == 'h' else dr
+                                # 投影到锁定方向的「前进」轴上：'d'/'s' 是屏幕正方向，'a'/'w' 是屏幕负方向。
+                                # 方向在 _init_drag_follow 时已锁定，故必须乘方向符号；否则上/左拖拽
+                                # （屏幕位移为负）会被下面的夹紧吃掉，表现为「完全无法上下/向左拖动」。
+                                forward = raw if self.drag_follow_direction in ('d', 's') else -raw
+                                # 夹紧：反向拖回起点后停在原位；向前不超过可达上限
+                                clamped = max(0.0, min(forward, float(max_cells)))
+                                if self.drag_follow_direction == 'd':
+                                    self.drag_follow_offset = (0.0, clamped)
+                                elif self.drag_follow_direction == 'a':
+                                    self.drag_follow_offset = (0.0, -clamped)
+                                elif self.drag_follow_direction == 's':
+                                    self.drag_follow_offset = (clamped, 0.0)
+                                else:  # 'w'
+                                    self.drag_follow_offset = (-clamped, 0.0)
+                                # 触点越过可达上限 → 提示不可继续
+                                # 容差 0.05 格：覆盖像素取整误差（1px ≈ 0.016 格），恰好贴边时不误报
+                                self.drag_follow_invalid = (forward > max_cells + 0.05)
                 
                 # 鼠标点击
                 elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -460,9 +474,13 @@ class EventsMixin:
                                         # 计时/练习模式切换
                                         self.toggle_game_mode()
                                         puzzle_clicked = True
-                                    elif len(preset) == 4:
-                                        _, pm, pn, ps = preset
-                                        self.new_puzzle(pm, pn, ps)
+                                    elif len(preset) >= 4:
+                                        _, pm, pn, ps = preset[:4]
+                                        kind = preset[4] if len(preset) > 4 else 'square'
+                                        if kind == 'triangle':
+                                            self.new_triangle_puzzle(pm, ps)
+                                        else:
+                                            self.new_puzzle(pm, pn, ps)
                                         puzzle_clicked = True
                                     break
                             self.close_all_menus()
@@ -597,8 +615,8 @@ class EventsMixin:
                                     self.selected_block = None
                                     # 操作提示：选中缝隙
                                     gap_type, line = gap
-                                    type_str = '纵向' if gap_type == 'v' else '横向'
-                                    self.macro_notify_msg = f"选中{type_str}缝隙" if gap_type == 'v' else f"选中{type_str}缝隙"
+                                    self.macro_notify_msg = (
+                                        f"选中{self._gap_type_name(gap_type)}缝隙")
                                     self.macro_notify_timer = 120
                                     # 新手教程：步骤1 选中缝隙 → 步骤2
                                     self._tut_on_gap_clicked()
@@ -618,6 +636,18 @@ class EventsMixin:
                             self.macro_notify_timer = 120
                             # 新手教程：步骤2 选中滑块组 → 步骤3
                             self._tut_on_block_clicked()
+                        elif (block is not None and self.selected_gap is None
+                              and getattr(self, 'triangle_mode', False)):
+                            # 三角形密鋪：沒有預選縫隙時，點擊滑塊只是指定「參考塊」——
+                            # 縫隙線由該塊位置按方向族即時推導，不需要玩家點看不見的縫
+                            if self.drag_following:
+                                self.clear_drag_follow()
+                            self._bump_move_session()
+                            self.selected_block = block
+                            for b in self.game.blocks:
+                                b.be_opted = False
+                            self.macro_notify_msg = "已选中滑块：按 W/E/A/D/Z/X 或直接拖动滑动"
+                            self.macro_notify_timer = 120
                         elif self.is_blank_area(x, y):
                             # 跟随中点击空白 → 清除跟随，允许平移地图
                             if self.drag_following:
@@ -755,6 +785,10 @@ class EventsMixin:
                         # 教程解法播放中：锁定棋盘操作（方向键移动）
                         if self._tut_board_locked():
                             continue
+                        # 三角形密铺：6 向键盘映射（W E / A D / Z X，围住 S 成六边形）
+                        if getattr(self, 'triangle_mode', False):
+                            self._triangle_keyboard_move(event)
+                            continue
                         # 方向键移动（需要匹配配置且无修饰键冲突；由 control_mouse_kb 开关控制）
                         if getattr(self, 'control_mouse_kb', True):
                             move_actions = {
@@ -813,14 +847,27 @@ class EventsMixin:
         """
         self.game.update_matrix()
         step = self.current_step
+        tri = getattr(self, 'triangle_mode', False)
         blocks = [
             {"row": b.location[0], "col": b.location[1],
-             "mod": [b.location[0] % step, b.location[1] % step]}
+             "mod": [b.location[0] % step, b.location[1] % step],
+             "num": getattr(b, 'number', None)}
             for b in self.game.blocks
         ]
+        if tri:
+            # 三角形密铺：附带 up 朝向（▲/▼），供调用方还原密铺结构
+            for blk, b in zip(blocks, self.game.blocks):
+                blk['up'] = bool(b.location[2])
         solver_state = self._get_solver_state()
+        if tri:
+            kind = 'triangle'
+        elif getattr(self, 'numbered', False):
+            kind = 'numbered'
+        else:
+            kind = 'square'
         return {
-            "puzzle": f"{step}~{self.current_m}*{self.current_n}",
+            "puzzle": puzzle_key(step, self.current_m, self.current_n, kind=kind,
+                                 triangle_side=self.game.k if tri else None),
             "step_count": self.step_count,
             "solved": self.is_solved(),
             "matrix": self.game.matrix,
@@ -1042,6 +1089,10 @@ class EventsMixin:
                 return False, "只读存档无法使用求解器"
             if getattr(self, '_ann_recording', False):
                 return False, "标注录制中无法使用求解器"
+            # 三角形密铺：求解器未实现。必须在 _start_auto_solve() 之前判定，
+            # 否则按钮路径的拦截只落在 macro_notify，这里仍会回「已启动」
+            if self._triangle_blocked('自动求解'):
+                return False, self.macro_notify_msg
         self._start_auto_solve()
         if active:
             return True, "已请求停止求解"
@@ -1116,6 +1167,10 @@ class EventsMixin:
         self.current_n = self.game.n
         if step is not None:
             self.current_step = step
+        # 带序号谜题导入地图后按行主序重排号（地图串只记录形状，不带身份）
+        if getattr(self, 'numbered', False):
+            for i, block in enumerate(sorted(self.game.blocks, key=lambda b: (b.location[0], b.location[1]))):
+                block.number = i + 1
         self.selected_gap = None
         self.selected_block = None
         self.animating = False
@@ -1228,10 +1283,51 @@ class EventsMixin:
                     self._cmd_reply(resp_q, True, f"已重置为 {self.current_step}~{self.current_m}*{self.current_n}")
                 
                 elif action == 'move':
+                    tri = getattr(self, 'triangle_mode', False)
                     if len(parts) < 2:
-                        self._cmd_reply(resp_q, False, "用法: move w/s/a/d")
+                        usage = ("用法: move w/e/a/d/z/x" if tri
+                                 else "用法: move w/s/a/d")
+                        self._cmd_reply(resp_q, False, usage)
                         continue
                     direction = parts[1].lower()
+                    if tri:
+                        # 三角形：6 向（wedxza 六邊形）。selected_block 必需；
+                        # selected_gap 可選——有則鎖定該縫，無則由 resolve_drag
+                        # 按「縫隙線穿過手指」規則決定（與單次觸控拖動同源）
+                        from game_triangle import DIRECTIONS, GAP_DIRECTIONS
+                        if direction not in DIRECTIONS:
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"方向必须是 {'/'.join(DIRECTIONS.keys())}")
+                            continue
+                        if self.selected_block is None:
+                            self._cmd_reply(resp_q, False, "未选中滑块",
+                                            {'reason': 'not_selected'})
+                            continue
+                        if self.selected_gap is not None:
+                            gap_type, _line = self.selected_gap
+                            if direction not in GAP_DIRECTIONS[gap_type]:
+                                self._cmd_reply(
+                                    resp_q, False,
+                                    f"当前缝隙不允许 {direction} 方向移动",
+                                    {'reason': 'wrong_direction'})
+                                continue
+                        # 只读存档 / 计时就绪态禁止滑动
+                        if self._readonly_blocked() or (
+                                self.game_mode == 'timed'
+                                and self.timer_state == 'ready'):
+                            self._cmd_reply(
+                                resp_q, False,
+                                "当前状态禁止滑动（计时就绪态或只读存档）",
+                                {'reason': 'timer_blocked'})
+                            continue
+                        moved = self.move_selected_blocks(direction)
+                        if moved:
+                            self._cmd_reply(resp_q, True, f"已移动 {direction}")
+                        else:
+                            self._cmd_reply(resp_q, False, "移动未生效",
+                                            {'reason': 'no_move'})
+                        continue
                     if direction not in ('w', 's', 'a', 'd'):
                         self._cmd_reply(resp_q, False, "方向必须是 w/s/a/d")
                         continue
@@ -1278,7 +1374,7 @@ class EventsMixin:
                 
                 elif action == 'new':
                     if len(parts) < 4:
-                        self._cmd_reply(resp_q, False, "用法: new m n step")
+                        self._cmd_reply(resp_q, False, "用法: new m n step [num|tri]")
                         continue
                     try:
                         nm = int(parts[1])
@@ -1287,8 +1383,21 @@ class EventsMixin:
                     except ValueError:
                         self._cmd_reply(resp_q, False, "参数必须是整数")
                         continue
-                    if self.new_puzzle(nm, nn, ns):
-                        self._cmd_reply(resp_q, True, f"新谜题 {ns}~{nm}*{nn}")
+                    # 第 4 参：num = 带序号方形；tri = 三角形密铺（用 m 作边长 k）
+                    numbered = len(parts) >= 5 and parts[4] in ('1', 'num', 'true')
+                    is_tri = len(parts) >= 5 and parts[4] in ('tri', 'triangle')
+                    if is_tri:
+                        if self.new_triangle_puzzle(nm, ns):
+                            self._cmd_reply(resp_q, True, f"新谜题 {ns}~tri{nm}")
+                        else:
+                            self._cmd_reply(resp_q, False,
+                                            f"三角形边长必须 >=2 且等级 < 边长（{nm}）")
+                        continue
+                    if self.new_puzzle(nm, nn, ns, numbered=numbered):
+                        label = f"{ns}~{nm}*{nn}"
+                        if numbered:
+                            label += '#num'
+                        self._cmd_reply(resp_q, True, f"新谜题 {label}")
                     else:
                         self._cmd_reply(resp_q, False, f"等级必须小于 max({nm}, {nn})")
                 
@@ -1299,24 +1408,41 @@ class EventsMixin:
                     self.import_map()
                 
                 elif action == 'select_gap':
+                    tri = getattr(self, 'triangle_mode', False)
                     if len(parts) < 3:
-                        self._cmd_reply(resp_q, False, "用法: select_gap h/v line")
+                        self._cmd_reply(
+                            resp_q, False,
+                            "用法: select_gap h/p/n line" if tri
+                            else "用法: select_gap h/v line")
                         continue
                     gap_type = parts[1].lower()
-                    if gap_type not in ('h', 'v'):
-                        self._cmd_reply(resp_q, False, "类型必须是 h 或 v")
-                        continue
                     try:
                         line = int(parts[2])
                     except ValueError:
                         self._cmd_reply(resp_q, False, "line 必须是整数")
                         continue
-                    if gap_type == 'h' and not self.game.is_valid_h_line(line):
-                        self._cmd_reply(resp_q, False, f"横向分割线 {line} 不合法")
-                        continue
-                    if gap_type == 'v' and not self.game.is_valid_v_line(line):
-                        self._cmd_reply(resp_q, False, f"纵向分割线 {line} 不合法")
-                        continue
+                    if tri:
+                        # 三角形：3 族縫（h=水平 / p=i 常數 / n=i+j 常數）
+                        from game_triangle import GAP_DIRECTIONS
+                        if gap_type not in GAP_DIRECTIONS:
+                            self._cmd_reply(resp_q, False,
+                                            "类型必须是 h、p 或 n")
+                            continue
+                        if not self.game.is_valid_gap(gap_type, line):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"{self._gap_type_name(gap_type)}缝隙 {line} 不合法")
+                            continue
+                    else:
+                        if gap_type not in ('h', 'v'):
+                            self._cmd_reply(resp_q, False, "类型必须是 h 或 v")
+                            continue
+                        if gap_type == 'h' and not self.game.is_valid_h_line(line):
+                            self._cmd_reply(resp_q, False, f"横向分割线 {line} 不合法")
+                            continue
+                        if gap_type == 'v' and not self.game.is_valid_v_line(line):
+                            self._cmd_reply(resp_q, False, f"纵向分割线 {line} 不合法")
+                            continue
                     self.selected_gap = (gap_type, line)
                     for b in self.game.blocks:
                         b.be_opted = False
@@ -1324,6 +1450,46 @@ class EventsMixin:
                     self._cmd_reply(resp_q, True, f"已选中缝隙: {gap_type} {line}")
                 
                 elif action == 'select_block':
+                    tri = getattr(self, 'triangle_mode', False)
+                    if tri:
+                        # 三角形：select_block i j [up]（up 省略時優先 ▲）
+                        if len(parts) < 3:
+                            self._cmd_reply(resp_q, False,
+                                            "用法: select_block i j [up]")
+                            continue
+                        try:
+                            row = int(parts[1])
+                            col = int(parts[2])
+                            want_up = (int(parts[3]) != 0) if len(parts) >= 4 else True
+                        except ValueError:
+                            self._cmd_reply(resp_q, False, "i/j/up 必须是整数")
+                            continue
+                        block = None
+                        fallback = None
+                        for b in self.game.blocks:
+                            if b.location[0] == row and b.location[1] == col:
+                                if bool(b.location[2]) == want_up:
+                                    block = b
+                                    break
+                                if fallback is None:
+                                    fallback = b
+                        if block is None:
+                            block = fallback
+                        if block is None:
+                            self._cmd_reply(
+                                resp_q, False, f"位置 ({row}, {col}) 没有滑块")
+                            continue
+                        if self.selected_gap is not None:
+                            gap_type, line = self.selected_gap
+                            self.game.opt(gap_type, line, block)
+                        self.selected_block = block
+                        selected_count = sum(
+                            1 for b in self.game.blocks if b.be_opted)
+                        self._cmd_reply(
+                            resp_q, True,
+                            f"已选中滑块 ({row},{col},{int(bool(block.location[2]))}), "
+                            f"选中区域: {selected_count} 个")
+                        continue
                     if len(parts) < 3:
                         self._cmd_reply(resp_q, False, "用法: select_block row col")
                         continue
@@ -1498,7 +1664,8 @@ class EventsMixin:
                     })
 
                 elif action == 'records':
-                    key = f"{self.current_step}~{self.current_m}*{self.current_n}"
+                    key = puzzle_key(self.current_step, self.current_m, self.current_n,
+                                     kind='numbered' if getattr(self, 'numbered', False) else 'square')
                     st = self.records.stats(key)
                     self._cmd_reply(resp_q, True, f"共 {st['count']} 条", {
                         'puzzle': key,
@@ -1659,6 +1826,10 @@ class EventsMixin:
 
                 # ========== 局面分析指令 ==========
                 elif action == 'window':
+                    if self._triangle_blocked('局面分析'):
+                        self._cmd_reply(resp_q, False, self.macro_notify_msg,
+                                        {'reason': 'unsupported'})
+                        continue
                     win = self._analysis_window()
                     if resp_q:
                         resp_q.put({'ok': True, 'window': win,
@@ -1672,6 +1843,10 @@ class EventsMixin:
                             print("（无方块，无目标窗口）")
 
                 elif action == 'holes':
+                    if self._triangle_blocked('局面分析'):
+                        self._cmd_reply(resp_q, False, self.macro_notify_msg,
+                                        {'reason': 'unsupported'})
+                        continue
                     win, holes, protrusions = self._analysis_holes()
                     if resp_q:
                         resp_q.put({'ok': True, 'window': win, 'holes': holes,
@@ -1685,6 +1860,10 @@ class EventsMixin:
                             print(f"  {kind}({h['size']}): {h['cells']}")
 
                 elif action == 'actions':
+                    if self._triangle_blocked('局面分析'):
+                        self._cmd_reply(resp_q, False, self.macro_notify_msg,
+                                        {'reason': 'unsupported'})
+                        continue
                     acts = self._analysis_actions()
                     if resp_q:
                         resp_q.put({'ok': True, 'actions': acts})
