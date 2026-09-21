@@ -1146,7 +1146,11 @@ class EventsMixin:
         width = len(lines[0])
         if any(len(ln) != width for ln in lines):
             return False, "地图各行长度不一致"
-        if '#' not in ''.join(lines):
+        # 「有方块」判据按形态分：方形只认 '#'；三角还能是纯 '^'（仅▲）或纯 'v'（仅▼）
+        joined = ''.join(lines)
+        tri = getattr(self, 'triangle_mode', False)
+        needed = ('#', '^', 'v') if tri else ('#',)
+        if not any(ch in joined for ch in needed):
             return False, "地图中没有方块（#）"
         if step is not None:
             if not isinstance(step, int) or step < 1 or step >= max(len(lines), width):
@@ -1177,9 +1181,15 @@ class EventsMixin:
         self.anim_blocks = []
         self.step_count = 0
         self.game_history.reset()
+        if getattr(self, 'triangle_mode', False):
+            # 导入的地图包围盒可能与原局不同 → 重新适配缩放（存档不保存 zoom）
+            self.zoom = self._fit_triangle_zoom()
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
+        if tri:
+            return True, (f"已导入三角地图：边长 {self.game.k}，"
+                          f"{len(self.game.blocks)} 个单位三角")
         return True, f"已导入地图：{self.game.m}×{self.game.n}，{len(self.game.blocks)} 块"
 
     def _do_set_mode(self, mode):
