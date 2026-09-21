@@ -85,9 +85,12 @@ class RendererMixin:
                 p2 = self.world_to_screen(x_bottom, world_bottom)
                 pygame.draw.line(self.screen, color, p1, p2, 1)
 
-    def _draw_triangle_selected_gap(self, view: TriangleBoardView):
-        """繪製選中的縫隙線（三族之一），與方形版同樣整屏畫、由滑塊覆蓋。
+    def _draw_triangle_selected_gap(self, view: TriangleBoardView, hull):
+        """繪製選中的縫隙線（三族之一），只畫在棋形範圍內。
 
+        方形版的紅線貫穿整個視窗、由滑塊蓋住；三角版的棋形是三角形，
+        畫到形狀外的線段只是雜訊，故裁剪到棋形凸包。裁剪只看凸包、不看
+        「縫隙兩側是否都有相鄰塊」，所以洞裡紅線仍然連續，與原版一致。
         沒有這條線時，選中縫隙只有右下角文字提示，玩家看不到選了哪條。
         """
         gap = getattr(self, 'selected_gap', None)
@@ -96,40 +99,35 @@ class RendererMixin:
         gap_type, line = gap
         if gap_type not in ('h', 'p', 'n'):
             return
-        world_left, world_top = self.screen_to_world(0, 0)
-        world_right, world_bottom = self.screen_to_world(
-            self.screen_width, self.screen_height)
-        if gap_type == 'h':
-            y = view.gap_h_y(line)
-            p1 = self.world_to_screen(world_left, y)
-            p2 = self.world_to_screen(world_right, y)
-        else:
-            x_top = view.gap_oblique_x(gap_type, line, world_top)
-            x_bottom = view.gap_oblique_x(gap_type, line, world_bottom)
-            p1 = self.world_to_screen(x_top, world_top)
-            p2 = self.world_to_screen(x_bottom, world_bottom)
-        pygame.draw.line(self.screen, self.colors['line'], p1, p2, 3)
+        seg = view.gap_line_segment(gap_type, line, hull)
+        if seg is None:
+            return
+        pygame.draw.line(self.screen, self.colors['line'],
+                         self.world_to_screen(*seg[0]),
+                         self.world_to_screen(*seg[1]), 3)
 
-    def _draw_triangle_gaps(self, view: TriangleBoardView):
+    def _draw_triangle_gaps(self, view: TriangleBoardView, cells, hull):
         """繪製未選中的縫隙（灰色），與方形版一致：選中那條改畫紅線。
 
-        方形版把棋盤範圍內每條 h/v 分割線畫成 colors['gap']；三角版對應的
-        就是當前全部有效縫隙（線兩側都有滑塊），裁剪到形狀包圍盒內。
+        方形版把棋盤矩形範圍內每條 h/v 分割線畫成 colors['gap']；三角版的
+        棋形不是矩形，改為裁剪到棋形凸包，線就不會伸到三角形外面的空白處。
+        原版先畫線、後畫滑塊蓋住，洞裡也留直線，故這裡不按相鄰塊截斷。
+        矩形四邊在原版裡也畫灰線，故這裡補上外輪廓，棋盤才有完整邊界。
         """
-        gaps = self.game.all_gaps()
-        if not gaps:
-            return
-        box = view.bounding_box(self.game.positions())
         width = max(1, int(self.gap_width * self.zoom))
-        for gap_type, line in gaps:
+        for gap_type, line in self.game.all_gaps():
             if self.selected_gap == (gap_type, line):
                 continue
-            seg = view.gap_segment(gap_type, line, box)
+            seg = view.gap_line_segment(gap_type, line, hull)
             if seg is None:
                 continue
             pygame.draw.line(self.screen, self.colors['gap'],
                              self.world_to_screen(*seg[0]),
                              self.world_to_screen(*seg[1]), width)
+        for p1, p2 in view.boundary_edges(cells):
+            pygame.draw.line(self.screen, self.colors['gap'],
+                             self.world_to_screen(*p1),
+                             self.world_to_screen(*p2), width)
 
     def draw_triangle_board(self):
         """繪製三角形密鋪棋盤（含 B2 的拖拽實時預覽）。"""
@@ -137,8 +135,10 @@ class RendererMixin:
 
         view = self._tri_view()
         self._draw_triangle_grid(view)
-        self._draw_triangle_gaps(view)
-        self._draw_triangle_selected_gap(view)
+        cells = self.game.positions()
+        hull = view.board_hull(cells)
+        self._draw_triangle_gaps(view, cells, hull)
+        self._draw_triangle_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
         # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）
@@ -178,10 +178,9 @@ class RendererMixin:
             if (sx < -scaled_cell or sx > self.screen_width + scaled_cell
                     or sy < -scaled_cell or sy > self.screen_height + scaled_cell):
                 continue
-            # 未預選縫隙時點擊的「參考塊」也要高亮：三角允許先點塊再定向，
-            # 不高亮的話點了完全看不出選中了哪一塊
-            hi = (block.be_opted
-                  or block is getattr(self, 'selected_block', None))
+            # 高亮只认 be_opted：未選縫隙時點滑塊不會有任何反應（與方形一致），
+            # 單獨的 selected_block 不是一種可視狀態
+            hi = block.be_opted
             (selected if hi else normal).append(
                 (block, i, j, up, is_follow))
 

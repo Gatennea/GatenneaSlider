@@ -593,15 +593,6 @@ class EventsMixin:
                         else:
                             gap = self.get_gap_at_pos(x, y)
                             block = self.get_block_at_pos(x, y)
-                            # 三角形密铺：单位三角内切圆半径仅 ~17px，而缝隙命中容差
-                            # 10px，实测约六成落在棋盘内的点击会先撞上某条缝隙线——
-                            # 缝隙优先会让「点滑块」频频变成「选中一条不想选的缝」。
-                            # 三角形本就允许先点滑块、再由方向键/拖拽定缝（resolve_drag
-                            # 按「缝线穿过该块」推导线号），故点中滑块时不再让位给缝隙；
-                            # 缝隙仍可点在形状外的空白处选中。
-                            if (gap is not None and block is not None
-                                    and getattr(self, 'triangle_mode', False)):
-                                gap = None
 
                         # 控制模式开关（独立布尔，可任意组合）
                         two_touch_on = getattr(self, 'control_two_touch', True)
@@ -654,18 +645,6 @@ class EventsMixin:
                             self.macro_notify_timer = 120
                             # 新手教程：步骤2 选中滑块组 → 步骤3
                             self._tut_on_block_clicked()
-                        elif (block is not None and self.selected_gap is None
-                              and getattr(self, 'triangle_mode', False)):
-                            # 三角形密鋪：沒有預選縫隙時，點擊滑塊只是指定「參考塊」——
-                            # 縫隙線由該塊位置按方向族即時推導，不需要玩家點看不見的縫
-                            if self.drag_following:
-                                self.clear_drag_follow()
-                            self._bump_move_session()
-                            self.selected_block = block
-                            for b in self.game.blocks:
-                                b.be_opted = False
-                            self.macro_notify_msg = "已选中滑块：按 W/E/A/D/Z/X 或直接拖动滑动"
-                            self.macro_notify_timer = 120
                         elif self.is_blank_area(x, y):
                             # 跟随中点击空白 → 清除跟随，允许平移地图
                             if self.drag_following:

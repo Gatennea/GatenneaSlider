@@ -1261,10 +1261,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
     def _triangle_prepare_move(self, direction: str, step: int):
         """三角形密铺：為一次移動準備選中組與最終位置。
 
-        兩條路徑：
-        - 已預選縫隙（兩次觸控）→ 沿用該縫，opt 後沿縫方向走 step 格；
-        - 未預選（鍵盤捷徑 / 拖拽提交）→ resolve_drag 用「縫隙線穿過
-          參考滑塊」規則自動選縫，並把步數夾緊到實際可行值。
+        需要 selected_block 作參考塊（沒有就提示先點選縫隙、或直接拖動滑塊），
+        並沿用已選中的縫隙——縫隙要麼由「點縫→點塊」兩次觸控選定，要麼由拖拽
+        發起時 resolve_drag 的「縫隙線穿過手指」規則定下，此處不再自行猜一條。
 
         回傳 (selected, final_positions, actual_step)；失敗回 None 並提示。
         """
@@ -1300,10 +1299,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 return None
             actual_step = step
         else:
+            # 未預選縫隙：仍以 selected_block 為參考塊（由拖拽發起時置位）。
+            # 沒有參考塊就明說，不偷偷拿 blocks[0] 頂替——那會讓「什麼都沒選」
+            # 的按鍵憑空移走一組，與方形版「未選中縫隙和滑塊時方向鍵無反應」不一致
             block = getattr(self, 'selected_block', None)
             if block is None:
-                block = self.game.blocks[0] if self.game.blocks else None
-            if block is None:
+                self.macro_notify_msg = "三角形密铺：请先点选缝隙，或直接拖动滑块"
+                self.macro_notify_timer = 90
                 return None
             positions, gap_type, line, reason, actual_step = \
                 self.game.resolve_drag(tri_key(block), direction, step)

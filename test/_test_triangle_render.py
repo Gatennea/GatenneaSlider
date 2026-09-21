@@ -84,6 +84,17 @@ from game_triangle import neighbors, side_of  # noqa: E402
 cells = gui.game.positions()
 
 
+def _pixel_count(color):
+    """屏幕上该颜色的像素数（隔行隔列采样，够用）。"""
+    n = 0
+    w, h = gui.screen.get_size()
+    for y in range(0, h, 2):
+        for x in range(0, w, 4):
+            if gui.screen.get_at((x, y))[:3] == color:
+                n += 1
+    return n
+
+
 def _pixel_rows(color):
     """返回屏幕上出现该颜色的所有行号（隔行采样，够用）。"""
     rows = set()
@@ -145,26 +156,86 @@ check(seam_ok, "选中缝隙的红线落在真实分界（rank=line+1）上")
 # ---- 2. 未选中的缝隙画灰线（与原版一致），选中的那条改画红线 ----
 gui.selected_gap = None
 gui.draw_board()
-grays = _pixel_rows(gui.colors['gap'])
-check(len(grays) > 0, f"未选中缝隙画成灰色（{len(grays)} 行有灰像素）")
+grays = _pixel_count(gui.colors['gap'])
+check(grays > 0, f"未选中缝隙画成灰色（{grays} 个灰像素）")
 gui.selected_gap = gui.game.all_gaps()[0]
 gui.draw_board()
-grays_after = _pixel_rows(gui.colors['gap'])
-check(len(grays_after) < len(grays),
-      f"选中后该缝隙改画红线（灰行 {len(grays)} → {len(grays_after)}）")
+grays_after = _pixel_count(gui.colors['gap'])
+reds = _pixel_count(gui.colors['line'])
+check(grays_after < grays,
+      f"选中后该缝隙不再画灰线（灰像素 {grays} → {grays_after}）")
+check(reds > 0, f"选中后画出红线（{reds} 个红像素）")
 
-# ---- 3. 未预选缝隙时点击的参考块要高亮 ----
+# ---- 2b. 缝隙线段必须落在棋形凸包内：不画到三角形外面的空白处 ----
+# 方形版把缝隙线裁到棋盤矩形；三角版的棋形不是矩形，裁到棋形凸包。
+# 原版先画线、后画滑块盖住，洞里也留一条直线，所以每条缝隙只画一段：
+# 线段端点可以落在洞里（那里没有滑块），但整段都不能越出凸包。
+import pygame as _pg  # noqa: E402
+_orig_line = _pg.draw.line
+_drawn = []
+
+
+def _spy_line(surf, color, p1, p2, width=1):
+    _drawn.append((tuple(color[:3]), p1, p2))
+    return _orig_line(surf, color, p1, p2, width)
+
+
+def _in_hull(pt, hull):
+    """點是否在凸包內（含邊界）：凸多邊形要求所有邊的叉積同號。"""
+    pos = neg = False
+    n = len(hull)
+    for k in range(n):
+        x1, y1 = hull[k]
+        x2, y2 = hull[(k + 1) % n]
+        cr = (x2 - x1) * (pt[1] - y1) - (y2 - y1) * (pt[0] - x1)
+        pos = pos or cr > 1e-6
+        neg = neg or cr < -1e-6
+    return not (pos and neg)
+
+
+_pg.draw.line = _spy_line
+try:
+    gui.selected_gap = None
+    gui.draw_board()
+    gui.selected_gap = gui.game.all_gaps()[1]
+    gui.draw_board()
+finally:
+    _pg.draw.line = _orig_line
+gap_c = gui.colors['gap'][:3]
+line_c = gui.colors['line'][:3]
+hull = view.board_hull(cells)
+outside = [d for d in _drawn
+           if d[0] in (gap_c, line_c)
+           and not (_in_hull(gui.screen_to_world(*d[1]), hull)
+                    and _in_hull(gui.screen_to_world(*d[2]), hull))]
+check(not outside,
+      f"缝隙线段全部落在棋形凸包内（越界 {len(outside)} 条）")
+for color, p1, p2 in outside[:3]:
+    print(f"      越界线段 {color} {p1}→{p2}")
+reds = [d for d in _drawn if d[0] == line_c]
+check(len(reds) == 1,
+      f"选中的缝隙只画一段红线（洞里也不断）：实际 {len(reds)} 段")
+
+# ---- 3. 高亮只认 be_opted：单独选中一个滑块不高亮（与方形一致，
+#          「未选缝隙就点滑块」在三角里也不再有反应）----
 gui.selected_gap = None
 ref = gui.game.blocks[0]
 gui.selected_block = ref
 for b in gui.game.blocks:
     b.be_opted = False
 gui.draw_board()
-check(_block_color(ref) == gui.colors['block_selected'],
-      f"参考块高亮为选中色（{_block_color(ref)}）")
-other = next(b for b in gui.game.blocks if b is not ref)
-check(_block_color(other) == gui.colors['block'],
-      f"其它块保持原色（{_block_color(other)}）")
+check(_block_color(ref) == gui.colors['block'],
+      f"仅 selected_block 不高亮（{_block_color(ref)}）")
+# 选中缝隙后 opt 出的一组才高亮
+gap_type, line = gui.game.all_gaps()[0]
+gui.selected_gap = (gap_type, line)
+gui.game.opt(gap_type, line, ref)
+gui.draw_board()
+opted = [b for b in gui.game.blocks if b.be_opted]
+check(opted and _block_color(ref) == gui.colors['block_selected'],
+      f"opt 出的滑块组高亮为选中色（{len(opted)} 个）")
+check(_block_color(next(b for b in gui.game.blocks if not b.be_opted))
+      == gui.colors['block'], "组外滑块保持原色")
 
 # ---- 4. 缝隙点击命中：点在真实分界上能选中该缝隙 ----
 gap_hit_ok = True

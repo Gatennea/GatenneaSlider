@@ -30,6 +30,63 @@ _SQRT3 = math.sqrt(3.0)
 GAP_LINE_OFFSET = 1
 
 
+def _convex_hull(points) -> list:
+    """二維點集的凸包（單調鏈；共線點保留也無妨，裁剪只問穿邊交點）。"""
+    pts = sorted(set(points))
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    def half(seq):
+        chain = []
+        for p in seq:
+            while len(chain) >= 2 and cross(chain[-2], chain[-1], p) <= 0:
+                chain.pop()
+            chain.append(p)
+        return chain
+
+    lower = half(pts)
+    upper = half(reversed(pts))
+    return lower[:-1] + upper[:-1]
+
+
+def _chord(pts, level: int, axis: str):
+    """斜座標凸多邊形與 axis = level 這條直線相交的參數區間 (t_min, t_max)。
+
+    axis: 'a' → a=level（沿 b 參數化）；'b' → b=level（沿 a 參數化）；
+    's' → a+b=level（沿 a 參數化）。凸多邊形與直線相交成一條線段，
+    故把所有穿邊交點的另一個座標取最小/最大即得兩端；頂點正好落在線上
+    也要算進來（叉積為 0 不算「同側」）。只在一個頂點相切時回傳 None。
+    """
+    ts = []
+    n = len(pts)
+    for k in range(n):
+        a1, b1 = pts[k]
+        a2, b2 = pts[(k + 1) % n]
+        if axis == 'a':
+            v1, v2, t1, t2 = a1, a2, b1, b2
+        elif axis == 'b':
+            v1, v2, t1, t2 = b1, b2, a1, a2
+        else:
+            v1, v2, t1, t2 = a1 + b1, a2 + b2, a1, a2
+        d1, d2 = v1 - level, v2 - level
+        if d1 == 0:
+            ts.append(t1)
+        if d2 == 0:
+            ts.append(t2)
+        if d1 == 0 or d2 == 0 or (d1 > 0) == (d2 > 0):
+            continue
+        ts.append(t1 + (level - v1) * (t2 - t1) / (v2 - v1))
+    if not ts:
+        return None
+    lo, hi = min(ts), max(ts)
+    if hi - lo <= 1e-9:
+        return None
+    return (lo, hi)
+
+
 class TriangleBoardView:
     """正三角形密鋪棋盤的座標轉換與命中計算。
 
@@ -113,44 +170,80 @@ class TriangleBoardView:
         """'h' 族縫隙 line 的世界 y。"""
         return self.grid_h_y(line + GAP_LINE_OFFSET)
 
-    def gap_oblique_x(self, gap_type: str, line: int, wy: float) -> float:
-        """'p'/'n' 族縫隙 line 在世界 y = wy 處的 x。"""
-        return self.grid_oblique_x(gap_type, line + GAP_LINE_OFFSET, wy)
+    def shared_edge(self, key_a: tuple, key_b: tuple):
+        """兩個邊相鄰單位三角的公共邊（世界座標兩端點）。
 
-    def gap_segment(self, gap_type: str, line: int, box,
-                    margin: float = 20.0):
-        """縫隙線落在世界包圍盒 (min_x, min_y, max_x, max_y) 內的線段。
-
-        完全在盒外（含外扩 margin）返回 None。斜族按 x 單調性解出 wy 區間，
-        避免把線畫到形狀外太遠。
+        密鋪中相鄰兩三角恰有一條公共邊，故取兩多边形頂點的公共點；
+        頂點由不同公式算得，用容差而不是精確相等來比對。
+        非相鄰（無公共邊）回傳 None。
         """
-        min_x, min_y, max_x, max_y = box
-        x0, x1 = min_x - margin, max_x + margin
-        y0, y1 = min_y - margin, max_y + margin
-        if gap_type == 'h':
-            y = self.gap_h_y(line)
-            if not (y0 <= y <= y1):
-                return None
-            return ((x0, y), (x1, y))
-        if gap_type not in ('p', 'n'):
-            raise ValueError(f"unknown gap type: {gap_type}")
-        level = (line + GAP_LINE_OFFSET) * self.cell_size
-        sign = 1.0 if gap_type == 'p' else -1.0
-
-        def x_at(wy):
-            return level - sign * wy / _SQRT3
-
-        def wy_at(x):
-            return sign * _SQRT3 * (level - x)
-
-        if sign > 0:      # 'p'：x 隨 wy 增大而減小
-            wy_lo, wy_hi = wy_at(x1), wy_at(x0)
-        else:             # 'n'：x 隨 wy 增大而增大
-            wy_lo, wy_hi = wy_at(x0), wy_at(x1)
-        lo, hi = max(y0, wy_lo), min(y1, wy_hi)
-        if lo > hi:
+        tol = 1e-6
+        pts = []
+        for p in self.piece_polygon(*key_a, inset=False):
+            for q in self.piece_polygon(*key_b, inset=False):
+                if abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol:
+                    pts.append(p)
+                    break
+        if len(pts) != 2:
             return None
-        return ((x_at(lo), lo), (x_at(hi), hi))
+        return (pts[0], pts[1])
+
+    def board_hull(self, positions) -> list:
+        """棋形（滑塊併集）的凸包（世界座標頂點列表）。
+
+        原版把縫隙線畫滿棋盤矩形，三角版的棋盤不是矩形，對應的「棋盤範圍」
+        就是這個凸包：縫隙線裁剪到它上面，才不會畫到形狀外面的空白處。
+        """
+        pts = []
+        for (i, j, up) in positions:
+            pts.extend(self.piece_polygon(i, j, up, inset=False))
+        return _convex_hull(pts)
+
+    def gap_line_segment(self, gap_type: str, line: int, hull):
+        """縫隙 line 與棋形凸包相交的那一段（世界座標兩端點）；不相交回傳 None。
+
+        原版先畫縫隙線、後畫滑塊蓋住，所以洞裡也留一條直線；三角版照做——
+        只按凸包裁剪，不按「縫隙兩側是否都有相鄰塊」截斷，選中的紅線因此
+        不會在洞處斷開。凸多邊形與直線相交成一條線段，故把所有穿邊交點
+        的另一個座標取最小/最大即得兩端。裁剪在斜座標裡做：三族縫隙線
+        分別是 b=level、a=level、a+b=level，只需比較一個座標分量。
+        """
+        level = line + GAP_LINE_OFFSET
+        if not hull:
+            return None
+        pts = [self.to_oblique(x, y) for (x, y) in hull]
+        if gap_type == 'h':
+            rng = _chord(pts, level, 'b')
+            ends = [(t, level) for t in rng] if rng else None
+        elif gap_type == 'p':
+            rng = _chord(pts, level, 'a')
+            ends = [(level, t) for t in rng] if rng else None
+        elif gap_type == 'n':
+            rng = _chord(pts, level, 's')
+            ends = [(t, level - t) for t in rng] if rng else None
+        else:
+            raise ValueError(f"unknown gap type: {gap_type}")
+        if not ends:
+            return None
+        return tuple(self.to_world(*p) for p in ends)
+
+    def boundary_edges(self, cells) -> list:
+        """棋形外輪廓的每一條單位邊（另一側沒有相鄰滑塊的邊）。
+
+        原版把棋盤矩形的四邊也畫成灰線，棋盤因此有完整輪廓；三角版的
+        棋形不是矩形，對應的就是外周這些單位邊。沒有它們的話，三角形
+        只有內部縫隙、邊界只是方塊邊框，看上去不像一個完整的棋盤。
+        """
+        from game_triangle import neighbors
+        edges = []
+        for a in cells:
+            for b in neighbors(a):
+                if b in cells:
+                    continue
+                seg = self.shared_edge(a, b)
+                if seg is not None:
+                    edges.append(seg)
+        return edges
 
     # ---------- 網格背景輔助 ----------
     def grid_h_levels(self, wy_top: float, wy_bottom: float) -> range:
