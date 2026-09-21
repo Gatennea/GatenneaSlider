@@ -1,6 +1,6 @@
 # 貓九的滑塊遊戲（Gatennea Slider）
 
-這是給 AI Agent 的readme。
+這是給 AI Agent 的readme。在讀該文檔前應當先著重理解“開發約定（尤其是通用開發約定）”。
 
 ---
 
@@ -64,6 +64,8 @@ curl http://127.0.0.1:5050/status
 | 移動 move | `w/s/a/d`（上/下/左/右）。**限制：`v` 縫隙只能 `w/s`；`h` 縫隙只能 `a/d`**（見 `gui/events.py` 移動分支） |
 | step | 等級/基本步距；每次移動方塊組整體平移 step 的整數倍 |
 | solved | 所有方塊構成**任意位置**的 `m×n` 或 `n×m` 實心矩形（含轉置，不含形狀模板） |
+| 帶序號 numbered | `Block.number`（`int|None`）可選欄位。**不改變移動/幾何語義**，只影響判勝與渲染。puzzle 標籤加 `#num` 後綴；存檔為 v2（`puzzle.type='numbered'` + `snapshots[].numbers`） |
+| 帶序號 solved | 實心矩形 **且** 編號按行主序排佈，但允許整體旋轉/鏡像（矩形二面體群 D4 共 8 種：恆等/旋轉 90/180/270/上下左右鏡像/主副對角線翻轉）。非正方（如 4×3）轉置後朝向變 3×4 也算 |
 | puzzle 標籤 | 字串 `"{step}~{m}*{n}"`，例 `2~4*4`。成績/宏/建表皆以它分組 |
 | map 文本 | `#`=方塊、`_`=空白 的棋盤框文本；`export_map()/import_map()` 序列化格式 |
 
@@ -265,7 +267,7 @@ python -m solver.ml.human_solver
 | POST | `/command` | `{"cmd":"<任意 CLI 指令>"}`（§7 全集） |
 | POST | `/move` | `{"direction":"w|s|a|d"}`；失敗帶 `reason`（§下方列舉） |
 | POST | `/undo` `/redo` `/shuffle` `/reset` `/deselect` `/quit` | — |
-| POST | `/new` | `{"m","n","step"}` |
+| POST | `/new` | `{"m","n","step","numbered"?:bool}`；`numbered=true` 建帶序號謎題（行主序賦 1..m·n） |
 | POST | `/select_gap` | `{"type":"h|v","line":N}` |
 | POST | `/select_block` | `{"row","col"}` |
 | POST | `/solve`（= `/solver/solve`） | `{"algorithm?":"<key>"}`；省略用目前算法；**執行中呼叫 = 取消** |
@@ -346,7 +348,7 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `undo` / `redo` | — | 快照式撤銷/重做 |
 | `shuffle` | — | 打亂 |
 | `reset` | — | 回到打亂前 |
-| `new` | `m n step` | 換謎題 |
+| `new` | `m n step [numbered]` | 換謎題；第四參數 `1/num/true` = 帶序號模式 |
 | `select_gap` | `h\|v line` | 例 `select_gap v 1` |
 | `select_block` | `row col` | 例 `select_block 0 0` |
 | `deselect` | — | 清選中 |
@@ -467,5 +469,6 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 ## 12. 已知限制 / 長期目標
 
-- 目前滑塊皆為同尺寸正方形；暫不支援三角形/編號方塊等變體。
+- 帶序號模式（`numbered`）：求解器/建表/ML 管線**暫不支援**（狀態需身份感知，動作語義也不同），入口直接拒絕並提示；其餘功能（撤銷重做/動畫/競速/存讀檔/地圖導入）全部可用。
+- 三角形密鋪變體：規劃中（`game_triangle.py` + `TriangleBoardView`，3 族縫隙、6 向滑動），尚未實作。
 - 求解長期目標：以「梯度聚攏粗調 + AI 收尾」完成高階謎題。人類模仿（`human_ai`）已接入 `SOLVER_ALGORITHMS`（§5.4 管線 B）；AI 收尾模型仍在提升中。
