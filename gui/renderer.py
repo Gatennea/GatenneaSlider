@@ -635,8 +635,8 @@ class RendererMixin:
         timer_x = step_x + step_surface.get_width() + 30
         self.screen.blit(timer_surface, (timer_x, text_y))
 
-        # 中间：当前谜题信息
-        puzzle_text = f"谜题：{self.current_step}~{self.current_m}*{self.current_n}"
+        # 中间：当前谜题信息（带形态后缀：带序号 #num / 三角形 tri{k}）
+        puzzle_text = f"谜题：{self._current_puzzle_key()}"
         puzzle_surface = self.status_font.render(puzzle_text, True, self.colors['status_text'])
         puzzle_x = (self.screen_width - puzzle_surface.get_width()) // 2
         self.screen.blit(puzzle_surface, (puzzle_x, text_y))

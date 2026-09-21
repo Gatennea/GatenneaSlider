@@ -1923,6 +1923,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return 'numbered'
         return 'square'
 
+    def _current_puzzle_key(self) -> str:
+        """当前谜题完整标识：方形 2~4*4 / 带序号 2~4*4#num / 三角 2~tri6。"""
+        tri = getattr(self, 'triangle_mode', False)
+        return puzzle_key(
+            self.current_step, self.current_m, self.current_n,
+            kind=self._current_kind(),
+            triangle_side=self.game.k if tri else None)
+
     def _timer_enter_ready(self):
         """打乱完成后进入就绪态，捕获初始矩阵"""
         # 取消可能正在后台运行的求解器

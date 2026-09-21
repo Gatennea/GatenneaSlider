@@ -502,10 +502,13 @@ class FileOpsMixin:
             self.save_as()
 
     def _default_save_name(self) -> str:
-        """自动命名：step-m-n-日期时间.json（24小时制），如 2-6-6-20230827-112821.json"""
+        """自动命名：step-m-n[-num]-日期时间.json（24小时制），
+        如 2-6-6-20230827-112821.json；带序号谜题加 -num 段，
+        如 2-4-4-num-20230827-112821.json"""
         from datetime import datetime
         ts = datetime.now().strftime('%Y%m%d-%H%M%S')
-        return f"{self.current_step}-{self.current_m}-{self.current_n}-{ts}.json"
+        tag = '-num' if getattr(self, 'numbered', False) else ''
+        return f"{self.current_step}-{self.current_m}-{self.current_n}{tag}-{ts}.json"
 
     def save_as(self):
         """另存为：弹出 pygame 文件对话框（默认名自动生成）"""

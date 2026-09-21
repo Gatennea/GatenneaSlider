@@ -27,7 +27,7 @@ sys.path.insert(0, _PROJECT)
 
 from game import Block, SliderMatrix                      # noqa: E402
 from history import (GameHistory, expand_snapshot_moves,  # noqa: E402
-                     snapshot_cells)
+                     snapshot_cells, snapshot_numbers)
 
 ok_all = True
 
@@ -46,6 +46,20 @@ def _move(direction, step, moved, gap='h', line=1):
 def _set_cells(g, cells):
     g.blocks = [Block(list(c)) for c in sorted(cells)]
     g.update_matrix()
+
+
+def _set_numbered(g, cell_num):
+    """按 {坐标: 编号} 布块（带序號谜题）"""
+    g.blocks = []
+    for cell, num in sorted(cell_num.items()):
+        b = Block(list(cell))
+        b.number = num
+        g.blocks.append(b)
+    g.update_matrix()
+
+
+def _block_numbers(g) -> dict:
+    return {tuple(b.location): b.number for b in g.blocks}
 
 
 # ---------------------------------------------------------------------------
@@ -245,11 +259,67 @@ def test_gui_end_to_end():
     _check('选中变化后会话号 +1', gui._move_session_id == sid + 1, '')
 
 
+# ---------------------------------------------------------------------------
+# 8. 带序号：合并快照同步 numbers，逐步撤销的拆分也必须带 numbers
+#    （否则 restore_snapshot 重建出的块全部 number=None → 数字消失、无法还原）
+# ---------------------------------------------------------------------------
+def test_numbered_history():
+    st0 = {(0, 0): 1, (0, 1): 2, (0, 2): 3,
+           (1, 0): 4, (1, 1): 5, (1, 2): 6,
+           (2, 0): 7, (2, 1): 8, (2, 2): 9}
+    # 选中 h 缝 1 上方一行，连按两次 'a'（左移）
+    st1 = {(0, -1): 1, (0, 0): 2, (0, 1): 3,
+           (1, 0): 4, (1, 1): 5, (1, 2): 6,
+           (2, 0): 7, (2, 1): 8, (2, 2): 9}
+    st2 = {(0, -2): 1, (0, -1): 2, (0, 0): 3,
+           (1, 0): 4, (1, 1): 5, (1, 2): 6,
+           (2, 0): 7, (2, 1): 8, (2, 2): 9}
+    mv1 = _move('a', 1, [(0, 0), (0, 1), (0, 2)])
+    mv2 = _move('a', 1, [(0, -1), (0, 0), (0, 1)])
+
+    g = SliderMatrix(3, 3)
+    h = GameHistory()
+    _set_numbered(g, st0)
+    h.save_snapshot(g)
+    _check('参考态快照带 numbers', bool(h.history[0].get('numbers')), '')
+    _set_numbered(g, st1)
+    h.save_snapshot(g, mv1, session_key=5)
+    _set_numbered(g, st2)
+    h.save_snapshot(g, mv2, session_key=5)
+
+    snap = h.history[-1]
+    _check('合并快照带 numbers', bool(snap.get('numbers')), '')
+    _check('合并快照编号 = 末态', snapshot_numbers(snap) == st2,
+           str(sorted(snapshot_numbers(snap).items())))
+    expanded = expand_snapshot_moves(h.history[0], snap)
+    posts = [snapshot_numbers(p) for _pre, p, _mv in expanded]
+    _check('展开中间态编号随块移动（不换号）', posts == [st1, st2],
+           str([sorted(p.items()) for p in posts]))
+
+    # ---- 逐步撤销：合并段惰性拆成单步，拆分出的快照必须带 numbers ----
+    h.history_index = 1
+    n_before = len(h.history)
+    h.undo(g)
+    _check('拆分后条数 = 原条数 + 1', len(h.history) == n_before + 1,
+           f'n={len(h.history)}')
+    _check('撤销一步后编号不丢（= 第 1 步末态）', _block_numbers(g) == st1,
+           str(sorted(_block_numbers(g).items())))
+    h.undo(g)
+    _check('撤到起点编号归位', _block_numbers(g) == st0,
+           str(sorted(_block_numbers(g).items())))
+    h.redo(g)
+    _check('重做一步编号不丢', _block_numbers(g) == st1, '')
+    h.redo(g)
+    _check('重做回末态编号不丢', _block_numbers(g) == st2, '')
+
+
 def main():
     print('A. GameHistory 合并逻辑')
     test_history_unit()
     print('\nB. GUI 端到端')
     test_gui_end_to_end()
+    print('\nC. 带序号历史（合并快照的 numbers 传递）')
+    test_numbered_history()
     print('\n' + ('ALL PASS' if ok_all else 'SOME FAILED'))
     return 0 if ok_all else 1
 

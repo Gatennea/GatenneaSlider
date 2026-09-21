@@ -40,6 +40,29 @@ def cells_to_snapshot(cells: set) -> dict:
                        'min_col': mnc, 'max_col': mxc}}
 
 
+def snapshot_numbers(snap) -> dict:
+    """快照 numbers 表 → {(r, c): 编号}（带序号谜题；方形/无编号返回 {}）"""
+    numbers = snap.get('numbers')
+    if not numbers:
+        return {}
+    bounds = snap.get('bounds', {})
+    min_row = bounds.get('min_row', 0)
+    min_col = bounds.get('min_col', 0)
+    return {(min_row + i, min_col + j): val
+            for i, row in enumerate(numbers)
+            for j, val in enumerate(row) if val}
+
+
+def numbers_matrix(num_map: dict, bounds: dict) -> list:
+    """{(r, c): 编号} → 与 matrix 对齐的二维编号表（空格 0）"""
+    min_row = bounds['min_row']
+    min_col = bounds['min_col']
+    rows = bounds['max_row'] - min_row + 1
+    cols = bounds['max_col'] - min_col + 1
+    return [[num_map.get((min_row + i, min_col + j), 0)
+             for j in range(cols)] for i in range(rows)]
+
+
 def compose_move_info(moves: list):
     """把一段连续移动合成一个动作（供撤销/重做整段位移动画）。
 
@@ -86,6 +109,8 @@ def expand_snapshot_moves(prev_snap, snap) -> list:
     if not all(mv and mv.get('moved_positions') for mv in moves):
         return [(prev_snap, snap, moves[-1])]
     cells = set(snapshot_cells(prev_snap))
+    # 带序号：编号随块一起动（块移动不换号），逐步重建中间态的编号表
+    num_map = snapshot_numbers(prev_snap)
     out = []
     pre = prev_snap
     for i, mv in enumerate(moves):
@@ -96,7 +121,14 @@ def expand_snapshot_moves(prev_snap, snap) -> list:
         cells = (cells - moved) | {(r + dr, c + dc) for r, c in moved}
         if not cells:
             break
+        if num_map:
+            shifted = {(r + dr, c + dc): v for (r, c), v in num_map.items()
+                       if (r, c) in moved}
+            num_map = {p: v for p, v in num_map.items() if p not in moved}
+            num_map.update(shifted)
         post = snap if i == len(moves) - 1 else cells_to_snapshot(cells)
+        if num_map and post is not snap:
+            post['numbers'] = numbers_matrix(num_map, post['bounds'])
         out.append((pre, post, mv))
         pre = post
     return out
@@ -278,7 +310,7 @@ class GameHistory:
         base_total = self.step_total_at(index - 1)
         new_snaps = []
         for k, (_pre, post, mv) in enumerate(expanded):
-            new_snaps.append({
+            snap_new = {
                 'matrix': [row[:] for row in post['matrix']],
                 'bounds': dict(post['bounds']),
                 'move_info': mv,
@@ -286,7 +318,12 @@ class GameHistory:
                 'steps': 1,
                 'step_total': base_total + k + 1,
                 'session_key': None,
-            })
+            }
+            # 编号必须跟着拆分一起带走：否则撤销/重做恢复到这些中间态时
+            # restore_snapshot 重建出的块全部 number=None（数字消失、永远无法还原）
+            if post.get('numbers'):
+                snap_new['numbers'] = [row[:] for row in post['numbers']]
+            new_snaps.append(snap_new)
         self.history[index:index + 1] = new_snaps
         return index + len(new_snaps) - 1
 
