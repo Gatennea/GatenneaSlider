@@ -506,13 +506,13 @@ class RendererMixin:
             self.screen.blit(text_surface, text_rect)
 
     def draw_puzzle_menu(self):
-        """绘制谜题下拉菜单"""
+        """绘制谜题下拉菜单：按形态分组，底部一行显示当前谜题"""
         puzzle_rect = self.menu_item_rects[2]
         menu_x = puzzle_rect.x
         menu_y = self.menu_bar_height
 
-        item_height = 28
-        menu_width = 180
+        item_height = 26
+        menu_width = 200
 
         total_items = len(self.puzzle_presets)
         menu_height = item_height * total_items
@@ -522,51 +522,57 @@ class RendererMixin:
         pygame.draw.rect(self.screen, self.colors['border'], dropdown_rect, 1)
 
         self.puzzle_menu_rects = []
+        current_key = self._current_puzzle_key()
         for i, preset in enumerate(self.puzzle_presets):
             y_pos = menu_y + i * item_height
             item_rect = pygame.Rect(menu_x, y_pos, menu_width, item_height)
             self.puzzle_menu_rects.append(item_rect)
+            center_y = y_pos + item_height // 2
 
             if len(preset) == 1 and preset[0] == '---':
                 pygame.draw.line(self.screen, self.colors['separator'],
-                               (menu_x + 8, y_pos + item_height // 2),
-                               (menu_x + menu_width - 8, y_pos + item_height // 2))
+                               (menu_x + 8, center_y),
+                               (menu_x + menu_width - 8, center_y))
+                continue
+
+            # 分组标题：不可点击，也不随悬停高亮
+            if len(preset) == 2 and preset[0] == '__group__':
+                title_surface = self.menu_font.render(
+                    preset[1], True, self.colors['menu_selected'])
+                title_rect = title_surface.get_rect()
+                title_rect.x = menu_x + 12
+                title_rect.centery = center_y
+                self.screen.blit(title_surface, title_rect)
+                continue
+
+            # 底部状态行：模式切换挪走后，这里是唯一提示「当前玩的哪一档」的地方
+            if len(preset) == 1 and preset[0] == '__current__':
+                label = '当前：' + self._current_puzzle_label()
+                label_surface = self.status_font.render(label, True, self.colors['menu_text'])
+                label_rect = label_surface.get_rect(
+                    center=(menu_x + menu_width // 2, center_y))
+                self.screen.blit(label_surface, label_rect)
                 continue
 
             if i == self.puzzle_menu_hovered:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
-            is_current = False
-            if len(preset) >= 4:
-                _, pm, pn, ps = preset[:4]
-                pkind = preset[4] if len(preset) > 4 else 'square'
-                if pkind == 'triangle':
-                    if (getattr(self, 'triangle_mode', False)
-                            and pm == self.current_m and ps == self.current_step):
-                        is_current = True
-                elif not getattr(self, 'triangle_mode', False):
-                    if pm == self.current_m and pn == self.current_n and ps == self.current_step:
-                        is_current = True
+            is_current = (len(preset) >= 4
+                          and self._preset_puzzle_key(preset) == current_key)
 
             name = preset[0]
             color = self.colors['menu_selected'] if is_current else self.colors['menu_text']
-            # 特殊项：计时/练习模式切换（显示中文而非 __mode__）
-            if len(preset) == 1 and preset[0] == '__mode__':
-                if getattr(self, 'game_mode', 'timed') == 'timed':
-                    name = '切换为练习模式'
-                else:
-                    name = '切换为竞速模式'
             text_surface = self.menu_font.render(name, True, color)
             text_rect = text_surface.get_rect()
             text_rect.x = menu_x + 12
-            text_rect.centery = y_pos + item_height // 2
+            text_rect.centery = center_y
             self.screen.blit(text_surface, text_rect)
 
             if is_current:
                 check_surface = self.menu_font.render('✓', True, self.colors['menu_selected'])
                 check_rect = check_surface.get_rect()
                 check_rect.right = menu_x + menu_width - 10
-                check_rect.centery = y_pos + item_height // 2
+                check_rect.centery = center_y
                 self.screen.blit(check_surface, check_rect)
 
     def draw_macro_menu(self):

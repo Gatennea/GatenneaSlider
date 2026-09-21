@@ -466,11 +466,21 @@ class EventsMixin:
                         # 谜题菜单项点击
                         if self.show_puzzle_menu:
                             puzzle_clicked = False
+                            puzzle_keep_open = False
                             for i, rect in enumerate(self.puzzle_menu_rects):
                                 if rect.collidepoint(x, y):
                                     preset = self.puzzle_presets[i]
-                                    if len(preset) == 1 and preset[0] == '自定义...':
+                                    if ((len(preset) == 1 and preset[0] == '__current__')
+                                            or (len(preset) == 2
+                                                and preset[0] == '__group__')):
+                                        # 分组标题和底部状态行：点了不该关掉菜单
+                                        puzzle_keep_open = True
+                                    elif len(preset) == 1 and preset[0] == '自定义...':
                                         self.show_custom_dialog = True
+                                        kind = self._current_kind()
+                                        self.custom_kind = ('triangle' if kind == 'triangle'
+                                                            else 'numbered' if kind == 'numbered'
+                                                            else 'rect')
                                         self.custom_fields = {
                                             'm': str(self.current_m),
                                             'n': str(self.current_n),
@@ -479,19 +489,19 @@ class EventsMixin:
                                         self.custom_active_field = 'm'
                                         self.custom_error = ''
                                         puzzle_clicked = True
-                                    elif len(preset) == 1 and preset[0] == '__mode__':
-                                        # 计时/练习模式切换
-                                        self.toggle_game_mode()
-                                        puzzle_clicked = True
                                     elif len(preset) >= 4:
                                         _, pm, pn, ps = preset[:4]
                                         kind = preset[4] if len(preset) > 4 else 'square'
                                         if kind == 'triangle':
                                             self.new_triangle_puzzle(pm, ps)
+                                        elif kind == 'numbered':
+                                            self.new_puzzle(pm, pn, ps, numbered=True)
                                         else:
                                             self.new_puzzle(pm, pn, ps)
                                         puzzle_clicked = True
                                     break
+                            if puzzle_keep_open:
+                                continue
                             self.close_all_menus()
                             if puzzle_clicked:
                                 continue

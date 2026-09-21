@@ -340,29 +340,38 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.show_puzzle_menu = False
         self.puzzle_menu_rects = []
         self.puzzle_menu_hovered = -1
-        # 预设选项: (显示名, m, n, step) 或 ('---',) 分隔线 或 ('自定义...',) 自定义
-        # 或 ('__mode__',) 计时/练习切换（新手教程入口已移至菜单栏最右“帮助”右侧）
+        # 预设选项（第一项是给玩家看的名字，不带内部键名）：
+        #   ('__group__', 标题)   分组标题，不可点击
+        #   ('---',)             分隔线
+        #   ('自定义...',)        打开自定义对话框
+        #   ('__current__',)     底部「当前谜题」状态行，不可点击
+        #   (显示名, m, n, step[, kind])  kind 为 'triangle' / 'numbered'，缺省矩形
+        # 「当前是哪一档」由 _preset_puzzle_key() 和 _current_puzzle_key() 比对，
+        # 以后再加形态也不用改渲染分支。模式切换已移到主窗口右下角，故不再放这里
         self.puzzle_presets = [
-            ('2~4*4', 4, 4, 2),
-            ('2~5*5', 5, 5, 2),
-            ('2~6*6', 6, 6, 2),
-            ('2~7*7', 7, 7, 2),
-            ('2~8*8', 8, 8, 2),
-            ('2~9*9', 9, 9, 2),
-            ('2~10*10', 10, 10, 2),
+            ('__group__', '矩形谜题'),
+            ('4×4 等级2', 4, 4, 2),
+            ('5×5 等级2', 5, 5, 2),
+            ('6×6 等级2', 6, 6, 2),
+            ('7×7 等级2', 7, 7, 2),
+            ('8×8 等级2', 8, 8, 2),
+            ('9×9 等级2', 9, 9, 2),
+            ('10×10 等级2', 10, 10, 2),
             ('---',),
-            ('3~6*6', 6, 6, 3),
-            ('3~7*7', 7, 7, 3),
-            ('3~8*8', 8, 8, 3),
-            ('3~9*9', 9, 9, 3),
-            ('3~10*10', 10, 10, 3),
-            ('---',),
-            ('1~tri4', 4, 4, 1, 'triangle'),
-            ('2~tri6', 6, 6, 2, 'triangle'),
-            ('2~tri8', 8, 8, 2, 'triangle'),
+            ('6×6 等级3', 6, 6, 3),
+            ('8×8 等级3', 8, 8, 3),
+            ('10×10 等级3', 10, 10, 3),
+            ('__group__', '三角形谜题'),
+            ('边长4 等级1', 4, 4, 1, 'triangle'),
+            ('边长6 等级2', 6, 6, 2, 'triangle'),
+            ('边长8 等级2', 8, 8, 2, 'triangle'),
+            ('__group__', '数字谜题'),
+            ('4×4 等级2', 4, 4, 2, 'numbered'),
+            ('6×6 等级2', 6, 6, 2, 'numbered'),
+            ('8×8 等级2', 8, 8, 2, 'numbered'),
             ('---',),
             ('自定义...',),
-            ('__mode__',),   # 计时/练习模式切换（特殊项，见 renderer/events 处理）
+            ('__current__',),   # 底部「当前：矩形 6×6 等级2」状态行
         ]
 
         # 自动求解状态
@@ -443,7 +452,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.custom_fields = {'m': '6', 'n': '6', 'step': '1'}
         self.custom_active_field = None  # 'm', 'n', 'step'
         self.custom_error = ''
-        self.custom_numbered = False
+        self.custom_kind = 'rect'       # 'rect' 矩形 / 'triangle' 三角 / 'numbered' 数字
 
         # 三角形密铺模式（Stage B）：self.game 为 TriangleSliderMatrix 时为 True
         self.triangle_mode = False
@@ -1932,6 +1941,27 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.current_step, self.current_m, self.current_n,
             kind=self._current_kind(),
             triangle_side=self.game.k if tri else None)
+
+    def _preset_puzzle_key(self, preset) -> str:
+        """谜题菜单预设项对应的分榜键（与 _current_puzzle_key 同格式，用于比对当前项）。
+
+        原先「当前是哪一档」是逐项比 m/n/step，三角形还漏比了边长；改成比键之后，
+        同一预设不可能即命中方格又命中数字，新增形态也不必再写分支。
+        """
+        if len(preset) < 4:
+            return ''
+        _, pm, pn, ps = preset[:4]
+        kind = preset[4] if len(preset) > 4 else 'square'
+        return puzzle_key(ps, pm, pn, kind=kind,
+                          triangle_side=pm if kind == 'triangle' else None)
+
+    def _current_puzzle_label(self) -> str:
+        """当前谜题的人话描述（谜题菜单底部状态行用）。"""
+        if getattr(self, 'triangle_mode', False):
+            k = getattr(self.game, 'k', self.current_m)
+            return f'三角形 边长{k} 等级{self.current_step}'
+        name = '数字' if getattr(self, 'numbered', False) else '矩形'
+        return f'{name} {self.current_m}×{self.current_n} 等级{self.current_step}'
 
     def _timer_enter_ready(self):
         """打乱完成后进入就绪态，捕获初始矩阵"""

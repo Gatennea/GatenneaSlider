@@ -627,7 +627,7 @@ class DialogsMixin:
         self.screen.blit(close_text, close_rect)
 
     def draw_custom_puzzle_dialog(self):
-        """绘制自定义谜题对话框"""
+        """绘制自定义谜题对话框：先选形态，再填尺寸与等级"""
         overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 150))
         self.screen.blit(overlay, (0, 0))
@@ -651,26 +651,46 @@ class DialogsMixin:
         label_x = dialog_x + 25
         field_x = dialog_x + 170
 
-        # 带序号勾选框：单独一行，位于分隔线与输入字段之间
-        checkbox_label = '带序号'
-        checkbox_state = 'x' if getattr(self, 'custom_numbered', False) else ''
-        checkbox_text = f'[ {checkbox_state} ] {checkbox_label}'
-        checkbox_surface = self.input_font.render(checkbox_text, True, self.colors['dialog_text'])
-        checkbox_y = dialog_y + 65
-        self.screen.blit(checkbox_surface, (label_x, checkbox_y + 5))
-        self.custom_numbered_rect = checkbox_surface.get_rect(topleft=(label_x, checkbox_y + 5))
+        # 形态三选一：矩形 / 三角 / 数字（分段按钮，选中项高亮）
+        kind = getattr(self, 'custom_kind', 'rect')
+        kind_label = self.input_font.render('形态:', True, self.colors['dialog_text'])
+        kind_y = dialog_y + 62
+        self.screen.blit(kind_label, (label_x, kind_y + 6))
 
-        fields = [
-            ('m', '行数:', self.custom_fields['m']),
-            ('n', '列数:', self.custom_fields['n']),
-            ('step', '等级:', self.custom_fields['step']),
-        ]
+        self.custom_kind_rects = {}
+        btn_w, btn_h = 68, 26
+        kind_x = dialog_x + 85
+        for kid, kname in (('rect', '矩形'), ('triangle', '三角'), ('numbered', '数字')):
+            btn = pygame.Rect(kind_x, kind_y, btn_w, btn_h)
+            self.custom_kind_rects[kid] = btn
+            active = (kind == kid)
+            pygame.draw.rect(self.screen,
+                             self.colors['button_hover'] if active else self.colors['input_bg'],
+                             btn, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], btn, 1, border_radius=4)
+            text = self.input_font.render(
+                kname, True, (255, 255, 255) if active else self.colors['dialog_text'])
+            self.screen.blit(text, text.get_rect(center=btn.center))
+            kind_x += btn_w + 6
+
+        # 输入字段随形态变化：三角只有边长和等级，矩形/数字是行数、列数、等级
+        if kind == 'triangle':
+            fields = [
+                ('m', '边长:', self.custom_fields['m']),
+                ('step', '等级:', self.custom_fields['step']),
+            ]
+        else:
+            fields = [
+                ('m', '行数:', self.custom_fields['m']),
+                ('n', '列数:', self.custom_fields['n']),
+                ('step', '等级:', self.custom_fields['step']),
+            ]
 
         field_width = 80
         field_height = 30
 
         self.custom_field_rects = {}
-        y_offset = dialog_y + 65 + 35
+        y_offset = dialog_y + 105
 
         for key, label, value in fields:
             label_surface = self.input_font.render(label, True, self.colors['dialog_text'])
@@ -705,7 +725,8 @@ class DialogsMixin:
         btn_width = 80
         btn_height = 32
         btn_x = dialog_x + dialog_width // 2 - btn_width - 10
-        btn_y = y_offset + 15
+        # 按钮位置固定：字段数随形态变（三角少一个列数），按钮不跟着上下跳
+        btn_y = dialog_y + 272
         self.custom_ok_btn = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
 
         mouse_pos = pygame.mouse.get_pos()
@@ -728,6 +749,12 @@ class DialogsMixin:
         #hint_rect = hint_text.get_rect(center=(self.screen_width // 2, dialog_y + dialog_height - 15))
         #self.screen.blit(hint_text, hint_rect)
 
+    def _custom_field_order(self) -> list:
+        """自定义对话框当前可见的输入字段（三角形态没有列数）。"""
+        if getattr(self, 'custom_kind', 'rect') == 'triangle':
+            return ['m', 'step']
+        return ['m', 'n', 'step']
+
     def handle_custom_dialog_events(self, event) -> bool:
         """
         处理自定义谜题对话框事件
@@ -741,9 +768,19 @@ class DialogsMixin:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             x, y = event.pos
 
-            if hasattr(self, 'custom_numbered_rect') and self.custom_numbered_rect.collidepoint(x, y):
-                self.custom_numbered = not getattr(self, 'custom_numbered', False)
+            # 对话框还没画过一帧（双击的第二下、或刚被别的路径打开）时没有任何
+            # 可点的矩形，直接吞掉这个点击，不要去摸不存在的 custom_field_rects
+            if not hasattr(self, 'custom_ok_btn'):
                 return True
+
+            for kid, rect in getattr(self, 'custom_kind_rects', {}).items():
+                if rect.collidepoint(x, y):
+                    if self.custom_kind != kid:
+                        self.custom_kind = kid
+                        # 切到三角后列数用不上了，焦点落回第一个字段
+                        self.custom_active_field = 'm'
+                        self.custom_error = ''
+                    return True
 
             for key, rect in self.custom_field_rects.items():
                 if rect.collidepoint(x, y):
@@ -753,20 +790,33 @@ class DialogsMixin:
             if self.custom_ok_btn.collidepoint(x, y):
                 try:
                     m = int(self.custom_fields['m'])
-                    n = int(self.custom_fields['n'])
                     step = int(self.custom_fields['step'])
 
-                    if m < 2 or n < 2:
-                        self.custom_error = "行数和列数必须 >= 2"
-                        return True
                     if step < 1:
                         self.custom_error = "等级必须 >= 1"
+                        return True
+
+                    if getattr(self, 'custom_kind', 'rect') == 'triangle':
+                        if m < 2:
+                            self.custom_error = "边长必须 >= 2"
+                            return True
+                        if step >= m:
+                            self.custom_error = f"等级必须 < {m}"
+                            return True
+                        self.new_triangle_puzzle(m, step)
+                        self.show_custom_dialog = False
+                        self.custom_error = ''
+                        return True
+
+                    n = int(self.custom_fields['n'])
+                    if m < 2 or n < 2:
+                        self.custom_error = "行数和列数必须 >= 2"
                         return True
                     if step >= max(m, n):
                         self.custom_error = f"等级必须 < {max(m, n)}"
                         return True
 
-                    numbered = getattr(self, 'custom_numbered', False)
+                    numbered = getattr(self, 'custom_kind', 'rect') == 'numbered'
                     self.new_puzzle(m, n, step, numbered=numbered)
                     self.show_custom_dialog = False
                     self.custom_error = ''
@@ -782,8 +832,8 @@ class DialogsMixin:
 
             dialog_rect = pygame.Rect(
                 (self.screen_width - 320) // 2,
-                (self.screen_height - 280) // 2,
-                320, 280
+                (self.screen_height - 320) // 2,
+                320, 320
             )
             if not dialog_rect.collidepoint(x, y):
                 self.show_custom_dialog = False
@@ -802,7 +852,7 @@ class DialogsMixin:
                     button=1, pos=self.custom_ok_btn.center)
                 return self.handle_custom_dialog_events(fake_event)
             elif event.key == pygame.K_TAB:
-                fields = ['m', 'n', 'step']
+                fields = self._custom_field_order()
                 if self.custom_active_field in fields:
                     idx = fields.index(self.custom_active_field)
                     self.custom_active_field = fields[(idx + 1) % len(fields)]
