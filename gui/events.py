@@ -1184,6 +1184,8 @@ class EventsMixin:
         if getattr(self, 'triangle_mode', False):
             # 导入的地图包围盒可能与原局不同 → 重新适配缩放（存档不保存 zoom）
             self.zoom = self._fit_triangle_zoom()
+            # 目标轮廓只由边长决定，不随导入的局部形状改变（否则虚线轮廓会画错）
+            self._tri_goal_cells = self.game.goal_cells()
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()

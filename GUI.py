@@ -730,8 +730,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             k: 大三角形边长（单元三角个数，共 k² 个滑块）
             step: 移动步数（等级），须小于 k
 
-        建局后立即按三族隨機打亂，起手就不是還原態。
-        競速計時仍禁用（B5 開放），求解器/著色等高級功能照計劃禁用。
+        建局即为实心大三角形（還原態），Alt+S 另行打亂。
+        求解器/著色等高級功能照計劃禁用。
         """
         if self._tut_board_locked():
             return False
@@ -759,7 +759,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         self.game = create_puzzle(k, k, step, kind='triangle', triangle_side=k)
         # 目标轮廓：初始实心大三角形的位置集合（判定时允许平移/旋转）
-        self._tri_goal_cells = set(self.game.positions())
+        self._tri_goal_cells = self.game.goal_cells()
 
         # 重置状态
         self.zoom = self._fit_triangle_zoom()
@@ -1906,11 +1906,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def _timer_enter_ready(self):
         """打乱完成后进入就绪态，捕获初始矩阵"""
-        # 三角形密铺：竞速计时/成绩在 B5 开放（B1 只有静态棋盘）
-        if getattr(self, 'triangle_mode', False):
-            self.macro_notify_msg = "三角形密铺：竞速计时尚未实现（B5 开发中）"
-            self.macro_notify_timer = 120
-            return
         # 取消可能正在后台运行的求解器
         if self._auto_solve_running:
             self._auto_solve_cancel = True
@@ -1919,15 +1914,23 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.timer_m = self.current_m
         self.timer_n = self.current_n
         self.timer_step = self.current_step
+        tri = getattr(self, 'triangle_mode', False)
         self.timer_puzzle_key = puzzle_key(
             self.current_step, self.current_m, self.current_n,
-            kind=self._current_kind()
-        )
+            kind=self._current_kind(),
+            triangle_side=self.game.k if tri else None)
+        self.timer_initial_matrix = self._timer_initial_map()
+
+    def _timer_initial_map(self) -> str:
+        """竞速初始局面的存档串。
+
+        方形/序号转成 0/1（成绩面板按 █/· 渲染、可转回 #/_ 地图）；
+        三角形保留 #^v_ 原生编码——菱形胞 2-bit 信息量比 0/1 大，
+        且 import_map 能直接吃回，载入练习/另存为谜题都不用改编码。
+        """
         if getattr(self, 'triangle_mode', False):
-            self.timer_puzzle_key = puzzle_key(
-                self.current_step, self.current_m, self.current_n,
-                kind='triangle', triangle_side=self.game.k)
-        self.timer_initial_matrix = self.game.export_map().replace('#', '1').replace('_', '0')
+            return self.game.export_map()
+        return self.game.export_map().replace('#', '1').replace('_', '0')
 
     def _timer_cancel(self):
         """取消当前计时会话（回到空闲态）"""

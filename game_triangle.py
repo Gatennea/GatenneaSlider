@@ -288,6 +288,17 @@ class TriangleSliderMatrix:
         self.matrix_bounds = None
         self.update_matrix()
 
+    def goal_cells(self) -> set:
+        """目標輪廓：邊長 k 實心大三角形（尖朝上）的單位三角位置集合。
+
+        分布與建局一致；導入局部地圖後目標輪廓不隨之改變，
+        供渲染虛線輪廓與「另存為謎題」判斷形態用。
+        """
+        cells = {(i, j, True) for i in range(self.k) for j in range(self.k - i)}
+        cells |= {(i, j, False)
+                  for i in range(self.k - 1) for j in range(self.k - 1 - i)}
+        return cells
+
     # ---------- 位置集合 ----------
     def positions(self) -> set:
         """全部滑塊位置 (i, j, up) 集合。"""

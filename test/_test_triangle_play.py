@@ -262,7 +262,8 @@ gui._start_auto_solve()
 check('尚未实现' in gui.macro_notify_msg, f"自动求解被拦截：{gui.macro_notify_msg}")
 gui.macro_notify_msg = ''
 gui._timer_enter_ready()
-check(gui.timer_state != 'ready', "竞速就绪态被拦截")
+check(gui.timer_state == 'ready', "竞速就绪态已开放（B5）")
+check(gui.timer_puzzle_key == f'1~tri{K}', f"竞速 key = {gui.timer_puzzle_key}")
 # 打乱现在可用
 gui.new_triangle_puzzle(K, 1)
 before = set(gui.game.positions())

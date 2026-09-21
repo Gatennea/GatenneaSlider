@@ -481,7 +481,7 @@ class FileOpsMixin:
         self.game = create_puzzle(m, n, step, kind=kind, triangle_side=triangle_side)
         if kind == 'triangle':
             self.current_m = self.current_n = self.game.k
-            self._tri_goal_cells = set(self.game.positions())
+            self._tri_goal_cells = self.game.goal_cells()
             # 载入后按当前棋盘大小重新适配缩放并居中（存档不保存 zoom）
             self.zoom = self._fit_triangle_zoom()
             self.center_map()

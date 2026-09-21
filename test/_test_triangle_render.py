@@ -118,7 +118,8 @@ gui._start_auto_solve()
 check('尚未实现' in gui.macro_notify_msg, f"自动求解仍被攔截：{gui.macro_notify_msg}")
 gui.macro_notify_msg = ''
 gui._timer_enter_ready()
-check(gui.timer_state != 'ready', "競速就緒態被攔截")
+check(gui.timer_state == 'ready', "競速就緒態已開放（B5）")
+check(gui.timer_puzzle_key == f'2~tri6', f"競速 key = {gui.timer_puzzle_key}")
 
 print("== 切回方形 ==")
 check(gui.new_puzzle(6, 6, 2) is True, "new_puzzle 成功")

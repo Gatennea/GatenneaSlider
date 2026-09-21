@@ -68,6 +68,11 @@ class RecordsPanelMixin:
                           kind=self._current_kind(),
                           triangle_side=self.game.k if getattr(self, 'triangle_mode', False) else None)
 
+    @staticmethod
+    def _rp_is_triangle(rec) -> bool:
+        """该成绩是否三角形谜题（key 形如 {step}~tri{k}；方形/序号记录不含 ~tri）"""
+        return '~tri' in str(rec.get('puzzle_key', ''))
+
     def _rp_detail_record(self):
         """返回当前展开详情的记录，不存在则置空返回 None"""
         if not self.rp_detail_id:
@@ -363,7 +368,8 @@ class RecordsPanelMixin:
         left_w = 132
         label = self.status_font.render("初始状态（点击）", True, (140, 160, 200))
         self.screen.blit(label, (x + self._RP_PAD + 8, y + 6))
-        matrix = rec['initial_matrix'].replace('1', '█').replace('0', '·')
+        matrix = self._rp_matrix_display(rec['initial_matrix'],
+                                         self._rp_is_triangle(rec))
         raw_lines = matrix.split('\n')
         lines = [ln for ln in raw_lines if ln]
         cols = max((len(ln) for ln in lines), default=0)
@@ -460,15 +466,34 @@ class RecordsPanelMixin:
         except Exception:
             return False
 
+    @staticmethod
+    def _rp_matrix_display(initial_matrix: str, triangle: bool) -> str:
+        """成绩初始串 → 面板可读字符。方形 0/1 → █/·；三角形 #^v_ → █▲▼·"""
+        if triangle:
+            return (initial_matrix.replace('#', '█').replace('^', '▲')
+                    .replace('v', '▼').replace('_', '·'))
+        return initial_matrix.replace('1', '█').replace('0', '·')
+
     def _rp_record_map_str(self, rec) -> str:
-        """记录初始矩阵（0/1）转回地图字符串（#/_）"""
+        """记录初始矩阵转回地图字符串。
+
+        方形/序号存的是 0/1，需换回 #/_；三角形存的就是 #^v_ 原生编码，原样返回。
+        """
+        if self._rp_is_triangle(rec):
+            return rec['initial_matrix']
         return rec['initial_matrix'].replace('1', '#').replace('0', '_')
 
     def _rp_save_as_puzzle(self, rec) -> str:
         """把该打乱另存为 .json 存档（结构同普通存档，可直接「文件-打开」载入）"""
         try:
             numbered = bool(rec.get('numbered')) or str(rec.get('puzzle_key', '')).endswith('#num')
-            game = create_puzzle(rec['m'], rec['n'], rec['step'])
+            triangle = self._rp_is_triangle(rec)
+            if triangle:
+                # 三角形记录：m == n == 边长 k
+                game = create_puzzle(rec['m'], rec['n'], rec['step'],
+                                     kind='triangle', triangle_side=rec['m'])
+            else:
+                game = create_puzzle(rec['m'], rec['n'], rec['step'])
             if not game.import_map(self._rp_record_map_str(rec)):
                 return ''
             game.update_matrix()
@@ -489,13 +514,16 @@ class RecordsPanelMixin:
                     for ri, row in enumerate(game.matrix)
                 ]
             data = {
-                'version': 2 if numbered else 1,
+                'version': 2 if (numbered or triangle) else 1,
                 'puzzle': {'m': rec['m'], 'n': rec['n'], 'step': rec['step']},
                 'step_count': 0,
                 'history': {'history_index': 0, 'snapshots': [snap]},
             }
             if numbered:
                 data['puzzle']['type'] = 'numbered'
+            if triangle:
+                data['puzzle']['type'] = 'triangle'
+                data['puzzle']['triangle_side'] = rec['m']
             ts = datetime.now().strftime('%Y%m%d-%H%M%S')
             name = f"{rec['step']}-{rec['m']}-{rec['n']}-{ts}.json"
             os.makedirs(self.save_dir, exist_ok=True)
@@ -511,12 +539,21 @@ class RecordsPanelMixin:
         if self.animating:
             self.cancel_animation()
         numbered = bool(rec.get('numbered')) or str(rec.get('puzzle_key', '')).endswith('#num')
+        triangle = self._rp_is_triangle(rec)
         self.current_m = rec['m']
         self.current_n = rec['n']
         self.current_step = rec['step']
         self.step_count = 0
         self.numbered = numbered
-        self.game = create_puzzle(rec['m'], rec['n'], rec['step'])
+        self.triangle_mode = triangle
+        self.triangle_side = rec['m'] if triangle else None
+        if triangle:
+            self.game = create_puzzle(rec['m'], rec['n'], rec['step'],
+                                      kind='triangle', triangle_side=rec['m'])
+            # 先取目标轮廓再导入打乱态：轮廓只由边长决定，不随 initial_matrix 变
+            self._tri_goal_cells = self.game.goal_cells()
+        else:
+            self.game = create_puzzle(rec['m'], rec['n'], rec['step'])
         self.game.import_map(self._rp_record_map_str(rec))
         self.game.update_matrix()
         if numbered:
@@ -524,6 +561,8 @@ class RecordsPanelMixin:
                 block.number = i + 1
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
+        if triangle:
+            self.zoom = self._fit_triangle_zoom()
         self.ensure_blocks_visible()
         self.selected_gap = None
         self.selected_block = None
