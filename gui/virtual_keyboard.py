@@ -3,7 +3,7 @@
 虚拟键盘 Mixin
 
 提供可拖动、独立浮动的虚拟键盘面板：
-- 方向键：上 / 下 / 左 / 右
+- 方向键：方形 上/下/左/右；三角形 六向（↖↗ / ←→ / ↙↘，对应 W/E/A/D/Z/X）
 - 编辑键：撤销 / 重做
 
 面板通过标题栏拖动，点击右上角 × 关闭。
@@ -45,13 +45,30 @@ class VirtualKeyboardMixin:
 
     def _vk_panel_size(self):
         """计算面板宽高"""
+        dir_rows = self._vk_direction_rows()
         width = self._VK_PAD * 2 + self._VK_ACTION_BTN_W * 2 + self._VK_STICKY_W + self._VK_BTN_GAP * 2
         height = (self._VK_TITLE_H + self._VK_PAD
-                  + self._VK_BTN + self._VK_BTN_GAP
-                  + self._VK_BTN + self._VK_BTN_GAP
+                  + self._VK_BTN * dir_rows + self._VK_BTN_GAP * dir_rows
                   + self._VK_ACTION_BTN_H + self._VK_BTN_GAP
                   + self._VK_JUMP_H + self._VK_PAD)
         return width, height
+
+    def _vk_direction_rows(self) -> int:
+        """方向键行数：方形 2 行（上 / 左下右）；三角形 3 行（↖↗ / ←→ / ↙↘）"""
+        return 3 if getattr(self, 'triangle_mode', False) else 2
+
+    def _vk_build_triangle_dirs(self, top_row_y, center_x) -> dict:
+        """三角形六向：按屏幕方向排三行两列，与键盘 W/E/A/D/Z/X 的六边形对应。"""
+        btn, gap = self._VK_BTN, self._VK_BTN_GAP
+        left_x = center_x - gap // 2 - btn
+        right_x = center_x + gap // 2
+        rects = {}
+        for row, (left_action, right_action) in enumerate(
+                (('move_ul', 'move_ur'), ('move_l', 'move_r'), ('move_dl', 'move_dr'))):
+            ry = top_row_y + row * (btn + gap)
+            rects[left_action] = pygame.Rect(left_x, ry, btn, btn)
+            rects[right_action] = pygame.Rect(right_x, ry, btn, btn)
+        return rects
 
     def _vk_build_layout(self):
         """根据当前 vk_pos 计算所有按钮矩形"""
@@ -74,30 +91,34 @@ class VirtualKeyboardMixin:
 
         rects = {}
 
-        # 方向键：上（第1行居中）
+        # 方向键区（行数随形态变：方形 2 行 / 三角形 3 行）
         top_row_y = y + self._VK_TITLE_H + self._VK_PAD
-        rects['move_up'] = pygame.Rect(
-            center_x - self._VK_BTN // 2, top_row_y,
-            self._VK_BTN, self._VK_BTN
-        )
+        if getattr(self, 'triangle_mode', False):
+            rects.update(self._vk_build_triangle_dirs(top_row_y, center_x))
+        else:
+            rects['move_up'] = pygame.Rect(
+                center_x - self._VK_BTN // 2, top_row_y,
+                self._VK_BTN, self._VK_BTN
+            )
 
-        # 方向键：左 / 下 / 右（第2行）
-        mid_row_y = top_row_y + self._VK_BTN + self._VK_BTN_GAP
-        rects['move_left'] = pygame.Rect(
-            center_x - self._VK_BTN - self._VK_BTN_GAP - self._VK_BTN // 2, mid_row_y,
-            self._VK_BTN, self._VK_BTN
-        )
-        rects['move_down'] = pygame.Rect(
-            center_x - self._VK_BTN // 2, mid_row_y,
-            self._VK_BTN, self._VK_BTN
-        )
-        rects['move_right'] = pygame.Rect(
-            center_x + self._VK_BTN_GAP + self._VK_BTN // 2, mid_row_y,
-            self._VK_BTN, self._VK_BTN
-        )
+            # 方向键：左 / 下 / 右（第2行）
+            mid_row_y = top_row_y + self._VK_BTN + self._VK_BTN_GAP
+            rects['move_left'] = pygame.Rect(
+                center_x - self._VK_BTN - self._VK_BTN_GAP - self._VK_BTN // 2, mid_row_y,
+                self._VK_BTN, self._VK_BTN
+            )
+            rects['move_down'] = pygame.Rect(
+                center_x - self._VK_BTN // 2, mid_row_y,
+                self._VK_BTN, self._VK_BTN
+            )
+            rects['move_right'] = pygame.Rect(
+                center_x + self._VK_BTN_GAP + self._VK_BTN // 2, mid_row_y,
+                self._VK_BTN, self._VK_BTN
+            )
 
-        # 粘滞开关 + 撤销 / 重做（第3行）
-        action_row_y = mid_row_y + self._VK_BTN + self._VK_BTN_GAP
+        # 粘滞开关 + 撤销 / 重做（方向键区下面一行）
+        action_row_y = (top_row_y
+                        + (self._VK_BTN + self._VK_BTN_GAP) * self._vk_direction_rows())
         total_action_w = self._VK_STICKY_W + self._VK_ACTION_BTN_W * 2 + self._VK_BTN_GAP * 2
         action_start_x = center_x - total_action_w // 2
         rects['sticky'] = pygame.Rect(
@@ -171,11 +192,19 @@ class VirtualKeyboardMixin:
         self.screen.blit(close_surface, close_surface.get_rect(center=self.vk_close_rect.center))
 
         # 按钮
-        labels = {
-            'move_up': '↑', 'move_down': '↓',
-            'move_left': '←', 'move_right': '→',
-            'sticky': '粘滞', 'undo': '撤销', 'redo': '重做',
-        }
+        if getattr(self, 'triangle_mode', False):
+            labels = {
+                'move_ul': '↖', 'move_ur': '↗',
+                'move_l': '←', 'move_r': '→',
+                'move_dl': '↙', 'move_dr': '↘',
+                'sticky': '粘滞', 'undo': '撤销', 'redo': '重做',
+            }
+        else:
+            labels = {
+                'move_up': '↑', 'move_down': '↓',
+                'move_left': '←', 'move_right': '→',
+                'sticky': '粘滞', 'undo': '撤销', 'redo': '重做',
+            }
         for action, rect in rects.items():
             hovered = rect.collidepoint(mouse_pos)
             if action == 'sticky':
@@ -312,10 +341,15 @@ class VirtualKeyboardMixin:
                 self._toggle_continuous('redo')
             else:
                 self.redo()
-        elif action in ('move_up', 'move_down', 'move_left', 'move_right'):
+        elif action in ('move_up', 'move_down', 'move_left', 'move_right',
+                        'move_ul', 'move_ur', 'move_l', 'move_r',
+                        'move_dl', 'move_dr'):
             direction = {
                 'move_up': 'w', 'move_down': 's',
                 'move_left': 'a', 'move_right': 'd',
+                'move_ul': 'w', 'move_ur': 'e',
+                'move_l': 'a', 'move_r': 'd',
+                'move_dl': 'z', 'move_dr': 'x',
             }[action]
 
             if self.animating:
@@ -329,13 +363,15 @@ class VirtualKeyboardMixin:
                 return
 
             gap_type, _ = self.selected_gap
-            can_move = False
-            if gap_type == 'v' and direction in ('w', 's'):
-                can_move = True
-            elif gap_type == 'h' and direction in ('a', 'd'):
-                can_move = True
+            # 方向必须与选中缝隙平行：方形 h→a/d、v→w/s；
+            # 三角形 h→a/d、p→e/z、n→w/x（表驱动，换形态只改表）
+            from game_triangle import GAP_DIRECTIONS
+            if getattr(self, 'triangle_mode', False):
+                allowed = GAP_DIRECTIONS.get(gap_type, ())
+            else:
+                allowed = ('w', 's') if gap_type == 'v' else ('a', 'd')
 
-            if can_move:
+            if direction in allowed:
                 self.move_selected_blocks(direction)
             else:
                 self.macro_notify_msg = "移动方向与缝隙方向不匹配"

@@ -170,6 +170,9 @@ class RendererMixin:
             (selected if block.be_opted else normal).append(
                 (block, i, j, up, is_follow))
 
+        # 悬停连锁提示：同 (i%step, j%step) 的单位三角提亮（悬停格更亮）
+        hint_keys, hint_hover = self._chain_hint_cells()
+
         for group, is_selected in ((normal, False), (selected, True)):
             for block, i, j, up, is_follow in group:
                 fill = self.colors['block_selected'] if is_selected else self.colors['block']
@@ -180,6 +183,10 @@ class RendererMixin:
                     fill = tuple(int(ch * 0.45) for ch in fill[:3])
                     border_color = (220, 80, 40)
                     border_w = max(1, int(3 * self.zoom))
+                elif hint_keys is not None and (i, j, up) in hint_keys:
+                    amt = 0.55 if (i, j) == hint_hover else 0.35
+                    fill = tuple(min(255, int(ch + (255 - ch) * amt))
+                                 for ch in fill[:3])
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
                 pygame.draw.polygon(self.screen, fill, poly)
@@ -942,6 +949,10 @@ class RendererMixin:
 
         返回 (cells, hover_cell)；未开启/无悬停/无效时返回 (None, None)。
         注意：shuffle 后棋盘坐标可为负，用棋盘实际边界判定。
+
+        方形：同 (row%step, col%step) 的格子。
+        三角形：同 (i%step, j%step) 的单位三角——三族移动向量都是 step 的
+        整数倍，所以这个不变量在三种缝隙下都成立（up 朝向不参与）。
         """
         if not getattr(self, 'chain_hint_enabled', False):
             return None, None
@@ -961,6 +972,14 @@ class RendererMixin:
         blocks = self.game.blocks
         if not blocks:
             return None, None
+        if getattr(self, 'triangle_mode', False):
+            # 高亮集合按 (i, j, up) 三元组算，避免同格 ▲/▼ 被一起点亮后
+            # 渲染端还要再判一次朝向
+            return {
+                tri_key(b) for b in blocks
+                if tri_key(b)[0] % step == hr % step
+                and tri_key(b)[1] % step == hc % step
+            }, (hr, hc)
         rs = [b.location[0] for b in blocks]
         cs = [b.location[1] for b in blocks]
         r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)

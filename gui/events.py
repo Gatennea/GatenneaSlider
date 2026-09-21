@@ -275,7 +275,16 @@ class EventsMixin:
                         try:
                             # 注意：shuffle 后棋盘坐标可为负，用 bounds 判定而非 0 起索引
                             b = self.game.get_boundaries()
-                            c = self.get_cell_at_pos(mx, my)
+                            if getattr(self, 'triangle_mode', False):
+                                # 三角形：悬停的是单位三角 (i, j, up)，取 (i, j) 参与 mod 判定
+                                wx, wy = self.screen_to_world(mx, my)
+                                cell = self._tri_view().world_to_cell(wx, wy)
+                                if cell is not None:
+                                    c = (cell[0], cell[1])
+                                else:
+                                    c = None
+                            else:
+                                c = self.get_cell_at_pos(mx, my)
                             if c is not None and (
                                 b['min_row'] - 1 <= c[0] <= b['max_row'] + 1 and
                                 b['min_col'] - 1 <= c[1] <= b['max_col'] + 1
