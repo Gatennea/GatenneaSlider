@@ -178,7 +178,9 @@ t9 = TextInput('hello')
 input_rect = pygame.Rect(100, 100, 200, 30)
 
 # 点击起始位置附近
-e = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(105, 110))
+# 取左边界内 1px：落在首字符左半区，与字体度量无关（首字符宽度
+# 随回退字体变化，取到字符正中会一半机器判 0、一半判 1）
+e = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(101, 110))
 t9.handle_event(e, font, input_rect)
 check("点击起始位置", t9.cursor_pos == 0)
 

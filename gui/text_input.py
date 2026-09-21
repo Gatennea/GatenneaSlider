@@ -297,13 +297,13 @@ class TextInput:
                 # 替换选中内容
                 s, e = self.get_selection_range()
                 self.text = self.text[:s] + unicode_char + self.text[e:]
-                self.cursor_pos = s + 1
+                self.cursor_pos = s + len(unicode_char)
                 self._selection_start = self.cursor_pos
                 self._selection_end = self.cursor_pos
             else:
                 # 在光标位置插入
                 self.text = self.text[:self.cursor_pos] + unicode_char + self.text[self.cursor_pos:]
-                self.cursor_pos += 1
+                self.cursor_pos += len(unicode_char)
             return True
 
         return False

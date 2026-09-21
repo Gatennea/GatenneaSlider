@@ -4,6 +4,8 @@ import sys
 sys.path.insert(0, 'e:/program_project/py/貓九的滑塊遊戲')
 
 from gui.text_input import TextInput
+import pygame
+pygame.init()
 
 # 测试基本功能
 t = TextInput('hello')
@@ -11,15 +13,12 @@ print('1. Init:', 'text=', repr(t.text), 'cursor_pos=', t.cursor_pos, 'blink_vis
 
 # 创建假的键盘事件
 class FakeEvent:
-    def __init__(self, key, unicode=''):
-        self.type = 768  # KEYDOWN
+    def __init__(self, key, unicode='', type_=pygame.KEYDOWN):
+        self.type = type_
         self.key = key
         self.unicode = unicode
         # handle_event 会读 event.mod 传给 _start_repeat/_process_key
         self.mod = 0
-
-import pygame
-pygame.init()
 
 # 测试 Left 键
 t.handle_event(FakeEvent(pygame.K_LEFT))
@@ -65,6 +64,8 @@ assert t.cursor_pos == len(t.text)
 print('8. After Right at end:', 'cursor_pos=', t.cursor_pos)
 
 # 测试闪烁
+# 先松开按键：长按重复每触发一次都会重置闪烁计时，按住不放测不到翻转
+t.handle_event(FakeEvent(pygame.K_RIGHT, type_=pygame.KEYUP))
 t.update(600)
 assert t.blink_visible == False, f"Expected False after 600ms, got {t.blink_visible}"
 print('9. After 600ms update:', 'blink_visible=', t.blink_visible)
@@ -92,7 +93,10 @@ print('13. clear:', 'text=', repr(t.text), 'cursor_pos=', t.cursor_pos)
 
 # 测试 get_display_text 和 get_cursor_offset
 t2 = TextInput('hello world')
-font = pygame.font.SysFont('SimHei', 20)
+# 与产品同一条字体加载路径：直接 SysFont 会扫描系统字体注册表，
+# 某些机器上该表被写入过非字符串项，splitext 会抛 TypeError
+from GUI import _gui_safe_font
+font = _gui_safe_font('SimHei', 20)
 display, visible = t2.get_display_text(font, 200, 'placeholder', True)
 print('14. get_display_text (short):', repr(display), 'visible=', visible)
 offset = t2.get_cursor_offset(font)
