@@ -78,6 +78,106 @@ check(gui.get_gap_at_pos(int(sx), int(sy)) is None, "滑塊內部不命中縫隙
 far_x = int(sx + 4000)
 check(gui.get_block_at_pos(far_x, int(sy)) is None, "棋盤外不命中滑塊")
 
+print("== 縫隙線渲染（選中紅線 / 未選中灰線 / 參考塊高亮）==")
+gui.shuffle_puzzle()
+from game_triangle import neighbors, side_of  # noqa: E402
+cells = gui.game.positions()
+
+
+def _pixel_rows(color):
+    """返回屏幕上出现该颜色的所有行号（隔行采样，够用）。"""
+    rows = set()
+    w, h = gui.screen.get_size()
+    for y in range(0, h, 2):
+        for x in range(0, w, 4):
+            if gui.screen.get_at((x, y))[:3] == color:
+                rows.add(y)
+                break
+    return sorted(rows)
+
+
+def _block_color(block):
+    cx, cy = view.piece_center(*tri_key(block))
+    px, py = gui.world_to_screen(cx, cy)
+    return gui.screen.get_at((int(px), int(py)))[:3]
+
+
+def _seam_point(gap_type, line):
+    """縫隙兩側相鄰塊公共邊的中點（世界座標）。
+
+    這個點只落在該族縫隙線上：它不是格點（三族縫隙在此交叉），
+    因此可以用來無歧義地驗證「點在這條縫上能選中它」。
+    """
+    for a in cells:
+        if side_of(gap_type, line, a) != 0:
+            continue
+        for b in neighbors(a):
+            if b in cells and side_of(gap_type, line, b) == 1:
+                ax, ay = view.piece_center(*a)
+                bx, by = view.piece_center(*b)
+                return (ax + bx) / 2, (ay + by) / 2
+    return None
+
+
+# ---- 1. 选中的缝隙画红线，且线落在「被它分开的两侧相邻块」的公共边上 ----
+seam_ok = True
+for gap_type, line in gui.game.all_gaps():
+    gui.selected_gap = (gap_type, line)
+    gui.selected_block = None
+    gui.draw_board()
+    if gap_type == 'h':
+        reds = _pixel_rows((255, 0, 0))
+        _, seam_y = gui.world_to_screen(0.0, view.gap_h_y(line))
+        near = any(abs(y - seam_y) <= 3 for y in reds)
+    else:
+        # 斜族：取公共边中点，检查该点附近有红像素
+        wx, wy = _seam_point(gap_type, line)
+        mx, my = gui.world_to_screen(wx, wy)
+        w, h = gui.screen.get_size()
+        near = any(abs(x - mx) <= 4 and abs(y - my) <= 4
+                   for y in range(0, h, 2) for x in range(0, w, 4)
+                   if gui.screen.get_at((x, y))[:3] == (255, 0, 0))
+    if not near:
+        seam_ok = False
+        print(f"      縫隙 {gap_type}{line} 的紅線沒落在公共分界上")
+check(seam_ok, "选中缝隙的红线落在真实分界（rank=line+1）上")
+
+# ---- 2. 未选中的缝隙画灰线（与原版一致），选中的那条改画红线 ----
+gui.selected_gap = None
+gui.draw_board()
+grays = _pixel_rows(gui.colors['gap'])
+check(len(grays) > 0, f"未选中缝隙画成灰色（{len(grays)} 行有灰像素）")
+gui.selected_gap = gui.game.all_gaps()[0]
+gui.draw_board()
+grays_after = _pixel_rows(gui.colors['gap'])
+check(len(grays_after) < len(grays),
+      f"选中后该缝隙改画红线（灰行 {len(grays)} → {len(grays_after)}）")
+
+# ---- 3. 未预选缝隙时点击的参考块要高亮 ----
+gui.selected_gap = None
+ref = gui.game.blocks[0]
+gui.selected_block = ref
+for b in gui.game.blocks:
+    b.be_opted = False
+gui.draw_board()
+check(_block_color(ref) == gui.colors['block_selected'],
+      f"参考块高亮为选中色（{_block_color(ref)}）")
+other = next(b for b in gui.game.blocks if b is not ref)
+check(_block_color(other) == gui.colors['block'],
+      f"其它块保持原色（{_block_color(other)}）")
+
+# ---- 4. 缝隙点击命中：点在真实分界上能选中该缝隙 ----
+gap_hit_ok = True
+for gap_type, line in gui.game.all_gaps():
+    wx, wy = _seam_point(gap_type, line)
+    px, py = gui.world_to_screen(wx, wy)
+    if gui.get_gap_at_pos(int(px), int(py)) != (gap_type, line):
+        gap_hit_ok = False
+        print(f"      點擊 {gap_type}{line} 的分界未命中")
+check(gap_hit_ok, "点击真实分界能选中对应缝隙")
+# 后续段落假设「刚建局」的状态：重建一盘
+gui.new_triangle_puzzle(6, 2)
+
 print("== 相機居中 ==")
 gui.zoom = 1.0
 gui.center_map()
@@ -118,7 +218,7 @@ check('尚未实现' in gui.macro_notify_msg, f"自动求解仍被攔截：{gui.
 gui.macro_notify_msg = ''
 gui._timer_enter_ready()
 check(gui.timer_state == 'ready', "競速就緒態已開放（B5）")
-check(gui.timer_puzzle_key == f'2~tri6', f"競速 key = {gui.timer_puzzle_key}")
+check(gui.timer_puzzle_key == '2~tri6', f"競速 key = {gui.timer_puzzle_key}")
 
 print("== 切回方形 ==")
 check(gui.new_puzzle(6, 6, 2) is True, "new_puzzle 成功")

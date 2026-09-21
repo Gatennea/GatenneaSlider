@@ -15,6 +15,8 @@ from game_triangle import (  # noqa: E402
     DIRECTIONS,
     GAP_DIRECTIONS,
     TriangleSliderMatrix,
+    neighbors,
+    side_of,
     tri_vertices,
 )
 from gui.triangle_view import TriangleBoardView  # noqa: E402
@@ -126,21 +128,53 @@ far = view.world_to_cell(5000.0, -7000.0)
 check(far is not None and far not in cells, f"遠處點落到棋盤外的晶格三角：{far}")
 
 print("== 縫隙距離 ==")
-# 'h' 族：b = 1 的水平線在 y = -height
-check(abs(view.gap_line_distance('h', 1, 123.0, -view.height)) < 1e-9,
-      "'h' 線上距離為 0")
-check(abs(view.gap_line_distance('h', 1, 0.0, 0.0) - view.height) < 1e-9,
-      "原點到 'h'(1) 距離 = 三角高")
-# 'p' 族：a = 1 的線通過 to_world(1, 0)
-px, py = view.to_world(1, 0)
-check(abs(view.gap_line_distance('p', 1, px, py)) < 1e-9, "'p' 線上距離為 0")
-# 'n' 族：a+b = 1 的線通過 to_world(1, 0) 與 to_world(0, 1)
-nx, ny = view.to_world(0, 1)
-check(abs(view.gap_line_distance('n', 1, px, py)) < 1e-9
-      and abs(view.gap_line_distance('n', 1, nx, ny)) < 1e-9,
-      "'n' 線穿過 (1,0) 與 (0,1)")
-# 候選縫隙：貼著 'h'(1) 線取點
-gaps = view.candidate_gaps(0.0, -view.height, cells, tolerance=3.0)
+# game 的 line 是「rank 分界」：縫隙 line 分隔 rank<=line 與 rank>line 兩側
+# （side_of）。滑塊 (i,j) 佔斜座標 [i,i+1]×[j,j+1] 的菱形胞，因此分界在
+# 幾何上位於網格線 line+1：'h' 族 b=line+1、'p' 族 a=line+1、'n' 族 a+b=line+1。
+# 漏掉這個 +1 會讓紅線/點擊熱區整體偏離真正的分界一格。
+hx, hy = view.to_world(0, 2)
+check(abs(view.gap_line_distance('h', 1, hx, hy)) < 1e-9,
+      "'h'(1) 線在 b=2（rank 分界）上")
+check(abs(view.gap_line_distance('h', 1, *view.to_world(0, 1)) - view.height) < 1e-9,
+      "'h'(1) 到 b=1 距離 = 一格（舊的錯位已修）")
+px, py = view.to_world(2, 0)
+check(abs(view.gap_line_distance('p', 1, px, py)) < 1e-9,
+      "'p'(1) 線在 a=2 上")
+check(abs(view.gap_line_distance('p', 1, *view.to_world(1, 0)) - view.height) < 1e-9,
+      "'p'(1) 到 a=1 距離 = 一格（舊的錯位已修）")
+nx, ny = view.to_world(0, 2)
+check(abs(view.gap_line_distance('n', 1, nx, ny)) < 1e-9,
+      "'n'(1) 線在 a+b=2 上")
+check(abs(view.gap_line_distance('n', 1, *view.to_world(0, 1)) - view.height) < 1e-9,
+      "'n'(1) 到 a+b=1 距離 = 一格（舊的錯位已修）")
+# 語義不變式：縫隙線必須穿過「被它分開的兩側相鄰塊」的公共邊
+# （相鄰三角重心連線的中點落在公共邊上，故該點到縫隙線距離應為 0）
+cells3 = g.positions()
+seam_ok = True
+for gap_type, line in g.all_gaps():
+    pair = None
+    for a in cells3:
+        if side_of(gap_type, line, a) != 0:
+            continue
+        for b in neighbors(a):
+            if b in cells3 and side_of(gap_type, line, b) == 1:
+                pair = (a, b)
+                break
+        if pair:
+            break
+    if pair is None:
+        seam_ok = False
+        print(f"      縫隙 {gap_type}{line} 兩側找不到相鄰塊")
+        continue
+    ax, ay = view.piece_center(*pair[0])
+    bx, by = view.piece_center(*pair[1])
+    d = view.gap_line_distance(gap_type, line, (ax + bx) / 2, (ay + by) / 2)
+    if d > 1e-6:
+        seam_ok = False
+        print(f"      縫隙 {gap_type}{line} 的線偏離公共邊 {d:.3f}px")
+check(seam_ok, "全部有效縫隙的線穿過兩側相鄰塊的公共邊")
+# 候選縫隙：貼著 'h'(1) 的 rank 分界（b=2）取點
+gaps = view.candidate_gaps(*view.to_world(0, 2), cells, tolerance=3.0)
 check(('h', 1) in gaps, f"貼線命中 'h'(1)：{gaps}")
 
 print("== 多邊形與間隙 ==")

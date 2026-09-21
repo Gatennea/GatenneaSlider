@@ -100,15 +100,36 @@ class RendererMixin:
         world_right, world_bottom = self.screen_to_world(
             self.screen_width, self.screen_height)
         if gap_type == 'h':
-            y = view.grid_h_y(line)
+            y = view.gap_h_y(line)
             p1 = self.world_to_screen(world_left, y)
             p2 = self.world_to_screen(world_right, y)
         else:
-            x_top = view.grid_oblique_x(gap_type, line, world_top)
-            x_bottom = view.grid_oblique_x(gap_type, line, world_bottom)
+            x_top = view.gap_oblique_x(gap_type, line, world_top)
+            x_bottom = view.gap_oblique_x(gap_type, line, world_bottom)
             p1 = self.world_to_screen(x_top, world_top)
             p2 = self.world_to_screen(x_bottom, world_bottom)
         pygame.draw.line(self.screen, self.colors['line'], p1, p2, 3)
+
+    def _draw_triangle_gaps(self, view: TriangleBoardView):
+        """繪製未選中的縫隙（灰色），與方形版一致：選中那條改畫紅線。
+
+        方形版把棋盤範圍內每條 h/v 分割線畫成 colors['gap']；三角版對應的
+        就是當前全部有效縫隙（線兩側都有滑塊），裁剪到形狀包圍盒內。
+        """
+        gaps = self.game.all_gaps()
+        if not gaps:
+            return
+        box = view.bounding_box(self.game.positions())
+        width = max(1, int(self.gap_width * self.zoom))
+        for gap_type, line in gaps:
+            if self.selected_gap == (gap_type, line):
+                continue
+            seg = view.gap_segment(gap_type, line, box)
+            if seg is None:
+                continue
+            pygame.draw.line(self.screen, self.colors['gap'],
+                             self.world_to_screen(*seg[0]),
+                             self.world_to_screen(*seg[1]), width)
 
     def draw_triangle_board(self):
         """繪製三角形密鋪棋盤（含 B2 的拖拽實時預覽）。"""
@@ -116,6 +137,7 @@ class RendererMixin:
 
         view = self._tri_view()
         self._draw_triangle_grid(view)
+        self._draw_triangle_gaps(view)
         self._draw_triangle_selected_gap(view)
 
         scaled_cell = self.cell_size * self.zoom
@@ -156,7 +178,11 @@ class RendererMixin:
             if (sx < -scaled_cell or sx > self.screen_width + scaled_cell
                     or sy < -scaled_cell or sy > self.screen_height + scaled_cell):
                 continue
-            (selected if block.be_opted else normal).append(
+            # 未預選縫隙時點擊的「參考塊」也要高亮：三角允許先點塊再定向，
+            # 不高亮的話點了完全看不出選中了哪一塊
+            hi = (block.be_opted
+                  or block is getattr(self, 'selected_block', None))
+            (selected if hi else normal).append(
                 (block, i, j, up, is_follow))
 
         # 悬停连锁提示：同 (i%step, j%step) 的单位三角提亮（悬停格更亮）

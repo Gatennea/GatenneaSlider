@@ -22,6 +22,13 @@ from game_triangle import (
 
 _SQRT3 = math.sqrt(3.0)
 
+# game 的 line 是「rank 分界」：縫隙 line 分隔 rank<=line 與 rank>line 兩側
+# （見 game_triangle.side_of）。滑塊 (i,j) 佔據斜座標 [i, i+1]×[j, j+1] 的
+# 菱形胞，因此這個分界在幾何上正是網格線 line+1：h 族 b=line+1、p 族
+# a=line+1、n 族 a+b=line+1（相鄰 rank 的遠側邊）。繪製與命中都必須帶這個
+# +1，否則紅線/點擊熱區整體偏離真正的分界一格。
+GAP_LINE_OFFSET = 1
+
 
 class TriangleBoardView:
     """正三角形密鋪棋盤的座標轉換與命中計算。
@@ -86,19 +93,64 @@ class TriangleBoardView:
                           wx: float, wy: float) -> float:
         """點到某條縫隙線的垂直距離（像素）。
 
-        直線方程式（由 to_world 反解，注意 b 軸向上）：
-            'h'：b = line          → y = -line * height（水平）
-            'p'：a = line          → x + y/√3 = line * s（平行 e2）
-            'n'：a+b = line        → x - y/√3 = line * s（平行 e2-e1）
+        直線方程式（由 to_world 反解，注意 b 軸向上），level = line + 1：
+            'h'：b = level          → y = -level * height（水平）
+            'p'：a = level          → x + y/√3 = level * s（平行 e2）
+            'n'：a+b = level        → x - y/√3 = level * s（平行 e2−e1）
         """
         s = self.cell_size
+        level = line + GAP_LINE_OFFSET
         if gap_type == 'h':
-            return abs(wy + line * self.height)
+            return abs(wy + level * self.height)
         if gap_type == 'p':
-            return abs(wx + wy / _SQRT3 - line * s) * _SQRT3 / 2.0
+            return abs(wx + wy / _SQRT3 - level * s) * _SQRT3 / 2.0
         if gap_type == 'n':
-            return abs(wx - wy / _SQRT3 - line * s) * _SQRT3 / 2.0
+            return abs(wx - wy / _SQRT3 - level * s) * _SQRT3 / 2.0
         raise ValueError(f"unknown gap type: {gap_type}")
+
+    # ---------- 縫隙線定位（繪製用；level = line + 1，見 GAP_LINE_OFFSET） ----------
+    def gap_h_y(self, line: int) -> float:
+        """'h' 族縫隙 line 的世界 y。"""
+        return self.grid_h_y(line + GAP_LINE_OFFSET)
+
+    def gap_oblique_x(self, gap_type: str, line: int, wy: float) -> float:
+        """'p'/'n' 族縫隙 line 在世界 y = wy 處的 x。"""
+        return self.grid_oblique_x(gap_type, line + GAP_LINE_OFFSET, wy)
+
+    def gap_segment(self, gap_type: str, line: int, box,
+                    margin: float = 20.0):
+        """縫隙線落在世界包圍盒 (min_x, min_y, max_x, max_y) 內的線段。
+
+        完全在盒外（含外扩 margin）返回 None。斜族按 x 單調性解出 wy 區間，
+        避免把線畫到形狀外太遠。
+        """
+        min_x, min_y, max_x, max_y = box
+        x0, x1 = min_x - margin, max_x + margin
+        y0, y1 = min_y - margin, max_y + margin
+        if gap_type == 'h':
+            y = self.gap_h_y(line)
+            if not (y0 <= y <= y1):
+                return None
+            return ((x0, y), (x1, y))
+        if gap_type not in ('p', 'n'):
+            raise ValueError(f"unknown gap type: {gap_type}")
+        level = (line + GAP_LINE_OFFSET) * self.cell_size
+        sign = 1.0 if gap_type == 'p' else -1.0
+
+        def x_at(wy):
+            return level - sign * wy / _SQRT3
+
+        def wy_at(x):
+            return sign * _SQRT3 * (level - x)
+
+        if sign > 0:      # 'p'：x 隨 wy 增大而減小
+            wy_lo, wy_hi = wy_at(x1), wy_at(x0)
+        else:             # 'n'：x 隨 wy 增大而增大
+            wy_lo, wy_hi = wy_at(x0), wy_at(x1)
+        lo, hi = max(y0, wy_lo), min(y1, wy_hi)
+        if lo > hi:
+            return None
+        return ((x_at(lo), lo), (x_at(hi), hi))
 
     # ---------- 網格背景輔助 ----------
     def grid_h_levels(self, wy_top: float, wy_bottom: float) -> range:
