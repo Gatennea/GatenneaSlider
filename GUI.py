@@ -1211,7 +1211,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 120
         else:
             self.game.commit_move(final_positions)
-            self.step_count += move_step
+            # 一次移动 = 一步：与动画路径（animation.py）、宏播放路径
+            # （events.py）和历史快照的 steps 计数保持一致。按 move_step 累加
+            # 会让读档/撤销后的步数（取历史累计）比实际少，计时成绩也对不上。
+            self.step_count += 1
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
             self._pending_move_info = None
