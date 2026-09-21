@@ -4,7 +4,6 @@
 
 包含：
 - draw_board: 绘制游戏主界面（网格、缝隙、滑块）
-- draw_infinite_grid: 绘制无限网格背景
 - draw_menu_bar: 绘制顶部菜单栏
 - draw_status_bar: 绘制底部状态栏
 - draw_right_panel: 绘制右侧动画控制面板
@@ -22,30 +21,6 @@ from records import format_time
 
 class RendererMixin:
     """渲染相关方法 Mixin"""
-
-    def draw_infinite_grid(self):
-        """绘制无限网格背景"""
-        world_left, world_top = self.screen_to_world(0, 0)
-        world_right, world_bottom = self.screen_to_world(
-            self.screen_width - self.right_panel_width, self.screen_height)
-
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
-
-        start_col = int(world_left // (scaled_cell + scaled_gap)) - 1
-        end_col = int(world_right // (scaled_cell + scaled_gap)) + 2
-        start_row = int(world_top // (scaled_cell + scaled_gap)) - 1
-        end_row = int(world_bottom // (scaled_cell + scaled_gap)) + 2
-
-        for row in range(start_row, end_row):
-            for col in range(start_col, end_col):
-                x = col * (scaled_cell + scaled_gap)
-                y = row * (scaled_cell + scaled_gap)
-
-                screen_x, screen_y = self.world_to_screen(x, y)
-
-                rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
-                pygame.draw.rect(self.screen, self.colors['grid'], rect, 1)
 
     def _tri_view(self) -> TriangleBoardView:
         """三角形棋盤視圖（隨 cell_size/gap_width 緩存重建）。"""
