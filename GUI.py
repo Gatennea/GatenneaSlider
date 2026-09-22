@@ -1442,6 +1442,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         'd2': ((1.0, -1.0), (1.0, 1.0), 'e', 'z'),
     }
 
+    # 米字格「一格」按族定義（規劃表 22）：一格 = 該方向能滑動的最小量，
+    # 與幾何長度是兩件事，所以同時把長度說清楚。橫豎一步是一條格邊長，
+    # 斜向一步是半個格身的斜向距離（√2/2）；選中縫隙時把這句話一起顯示，
+    # 玩家才好預期這一格到底滑多遠
+    MI_STEP_NOTE = {
+        'h': '横向一格 = 一条格边',
+        'v': '纵向一格 = 一条格边',
+        'd1': '斜向一格 = 半个格身的斜向距离',
+        'd2': '斜向一格 = 半个格身的斜向距离',
+    }
+
     def _triangle_keyboard_move(self, event) -> bool:
         """三角形密铺的 6 向键盘操作：W E / A D / Z X（围住 S 成六边形）。"""
         if not getattr(self, 'control_mouse_kb', True):
@@ -1523,6 +1534,76 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         return selected, final_positions, actual_step
 
     # ---------- 米字格（M2）：选组 + 定向 ----------
+    def _mi_shifted(self) -> bool:
+        """米字格是否處於錯位態：任一塊落在半整數座標上。
+
+        斜向一格是平移 ±(½,½)，走完之後一半的塊落進 B 晶格（半整數座標），
+        此後橫豎縫大量失效——半整數層級的格邊整條穿過塊的內部，選不動也
+        滑不動。規劃 H3 新增的幾處提示都只在這裡多說一句，對齊態的言行
+        逐字不變，回歸面最小（對齊態的整數格邊本來就切不進任何塊）。
+        """
+        return any(r % 1 or c % 1 for (r, c, _q) in self.game.positions())
+
+    def _mi_fam_counts(self) -> dict:
+        """各族有效縫隙的條數（錯位態下橫豎族可能歸零，提示要按實數說）。"""
+        counts = {'h': 0, 'v': 0, 'd1': 0, 'd2': 0}
+        for fam, _line in self.game.all_gaps():
+            if fam in counts:
+                counts[fam] += 1
+        return counts
+
+    def _mi_hv_left(self, fam: str) -> str:
+        """錯位態下橫豎一族還剩什麼、該怎麼辦（按實際剩餘條數說）。
+
+        規劃 §1.3：不是所有橫豎縫都鎖——6×6 沿 d1 走一格後 h 還剩 3 條、
+        v 還剩 2 條，所以先數一遍再說：還有剩就勸他點選其中的一條，一條
+        不剩才勸他沿斜向滑（把任一半再推一格就回到單一晶格，橫豎縫全數
+        復活，H4 的實測已核對過這個數）。一律「先沿斜向滑回去」會把
+        「還有 3 條能用」說成「全鎖了」，反而誤導。
+        """
+        name = '横向' if fam == 'h' else '纵向'
+        left = self._mi_fam_counts()[fam]
+        if left:
+            return f"{name}缝隙还剩 {left} 条，先点选其中一条"
+        return f"错位了：{name}缝隙一条不剩，先沿斜向滑回去"
+
+    def _mi_locked_seam(self, gap, cells) -> bool:
+        """這條選不動的縫，是不是錯位態切在塊裡的那種（半整數橫豎縫）。
+
+        判據用幾何原文：線嚴格落進某塊的跨度內部（與引擎 is_valid_gap
+        同一套判據）。對角族永遠 False——兩個晶格的 y−x、x+y 都恆為整數，
+        斜縫切不進塊；棋形外沿的縫也不算（一側沒有塊，整體平移沒有意義，
+        與舊版一致地安靜捨棄）。
+        """
+        gap_type, line = gap
+        if gap_type not in ('h', 'v') or not self._mi_shifted():
+            return False
+        from game_mi import span
+        return any(lo < line < hi
+                   for (lo, hi) in (span(gap_type, k) for k in cells))
+
+    def _mi_click_query(self, screen_x: int, screen_y: int) -> tuple:
+        """米字格一次點擊的命中結果 (縫隙, 滑塊)，選不動的縫改走提示。
+
+        錯位態的半整數橫豎縫：畫面畫得出來、也點得到，就是選不動（線整條
+        穿過塊的內部）。這種點擊只給提示並當作沒點中——照常放行的話它會
+        落進兩次觸控的第二下分支，玩家點一條看得見卻選不動的縫就提交一次
+        移動，方向還是由上一記落點瞎猜的（規劃 §5 手動驗收第 3 條：「而不是
+        無反應」）。其餘情況與 get_gap_at_pos / get_block_at_pos 分別查詢
+        等價（那兩個是純查詢，不發提示，供測試與其他地方複用）。
+        """
+        world_x, world_y = self.screen_to_world(screen_x, screen_y)
+        cells = self.game.positions()
+        gap = self._mi_view().gap_at(world_x, world_y, cells)
+        if gap is not None and not self.game.is_valid_gap(*gap):
+            if self._mi_locked_seam(gap, cells):
+                self.macro_notify_msg = (
+                    f"这条缝选不动（错位态切在块里）：{self._mi_hv_left(gap[0])}")
+                self.macro_notify_timer = 120
+                return None, None
+            gap = None
+        return gap, self.get_block_at_pos(screen_x, screen_y)
+
     def _mi_prepare_move(self, direction: str, step: int):
         """米字格：為一次移動準備選中組與最終位置。
 
@@ -1560,10 +1641,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 return None
             final_positions, reason = self.game.try_move_ex(direction, step)
             if not final_positions:
-                self.macro_notify_msg = {
+                msg = {
                     'disconnected': "滑动失败：移动后滑块会断开",
                     'collision': "滑动失败：移动后滑块会重叠",
                 }.get(reason, "滑动失败")
+                if gap_type in ('h', 'v') and self._mi_shifted():
+                    # 錯位態的半整數橫豎縫容易被另一側卡住：沿斜向把任一半
+                    # 再推一格就回到單一晶格，橫豎縫全數復活（H4 已實測核對）
+                    msg += "（错位态可先沿斜向滑回去）"
+                self.macro_notify_msg = msg
                 self.macro_notify_timer = 90
                 return None
             actual_step = step

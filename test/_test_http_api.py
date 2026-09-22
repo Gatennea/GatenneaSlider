@@ -137,11 +137,21 @@ print("=== AC-1 /status 新字段 ===")
 for k in ('m', 'n', 'step', 'game_mode', 'timer_state', 'readonly',
           'blocks', 'macro', 'solver'):
     check(f"  /status 新字段 {k}", k in st, str(st.get(k))[:60])
-check("  blocks 条目含 row/col/mod",
-      all({'row', 'col', 'mod'} <= set(b) for b in st['blocks']) and st['blocks'])
-check("  mod == [row%step, col%step]（AC-9）",
-      all(b['mod'] == [b['row'] % st['step'], b['col'] % st['step']]
-          for b in st['blocks']))
+# 启动时会从 config/temp_history.json 恢复上次的谜题：若那是米字格存档，
+# GUI 就在 mi_mode 下起步，此时 blocks 带 q 朝向 + 晶格记号 lat 而不是 mod
+# （米字格错位态的 [r%step, c%step] 会在 0.0/0.5 之间翻，不再是不变式）
+_mi_startup = 'mi' in str(st.get('puzzle', ''))
+if _mi_startup:
+    check("  blocks 条目含 row/col/q/lat（米字格起始局面）",
+          all({'row', 'col', 'q', 'lat'} <= set(b) for b in st['blocks'])
+          and all(b['lat'] in ('A', 'B') for b in st['blocks'])
+          and all('mod' not in b for b in st['blocks']))
+else:
+    check("  blocks 条目含 row/col/mod",
+          all({'row', 'col', 'mod'} <= set(b) for b in st['blocks']) and st['blocks'])
+    check("  mod == [row%step, col%step]（AC-9）",
+          all(b['mod'] == [b['row'] % st['step'], b['col'] % st['step']]
+              for b in st['blocks']))
 check("  macro 含 recording/executing",
       {'recording', 'executing'} <= set(st['macro']))
 check("  solver 含 state/algorithm",

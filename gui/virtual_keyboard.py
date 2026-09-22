@@ -408,8 +408,12 @@ class VirtualKeyboardMixin:
             if not self.selected_gap or (not mi and not self.selected_block):
                 # 米字格只要先选缝隙：滑块没点过时 _mi_prepare_move 会退回
                 # 第一块，方向由按键给定，不必强制二次点选
-                self.macro_notify_msg = "请先选中缝隙和滑块" if not mi \
-                    else "请先点选缝隙"
+                msg = "请先选中缝隙和滑块" if not mi else "请先点选缝隙"
+                if mi and self._mi_shifted() and direction in ('a', 'd', 'w', 's'):
+                    # 错位态下这一族可能一条不剩，连「该点哪条」都得先交代
+                    msg += "（错位态：%s）" % self._mi_hv_left(
+                        'h' if direction in ('a', 'd') else 'v')
+                self.macro_notify_msg = msg
                 self.macro_notify_timer = 90
                 return
 
@@ -428,6 +432,13 @@ class VirtualKeyboardMixin:
 
             if direction in allowed:
                 self.move_selected_blocks(direction)
+            elif mi and self._mi_shifted() and direction in ('a', 'd', 'w', 's'):
+                # 错位态：横竖縫大半切在块里，按这一族实际还剩几条说，
+                # 别只说「不平行」（规划 §5 手动验收第 3 条）
+                fam = 'h' if direction in ('a', 'd') else 'v'
+                self.macro_notify_msg = ("移动方向与缝隙方向不匹配（错位态："
+                                         + self._mi_hv_left(fam) + "）")
+                self.macro_notify_timer = 120
             else:
                 self.macro_notify_msg = "移动方向与缝隙方向不匹配"
                 self.macro_notify_timer = 90

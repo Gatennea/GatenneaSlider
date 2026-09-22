@@ -634,8 +634,9 @@ class EventsMixin:
                             # 缝隙与滑块都要 editable（走与方形/三角相同的
                             # gap_at/block_at 命中），差别只在第二下触控的
                             # 定向——由两下的世界位移投影到缝隙切向定方向。
-                            gap = self.get_gap_at_pos(x, y)
-                            block = self.get_block_at_pos(x, y)
+                            # 错位态选不动的缝也在这里被拦下（只提示，不当
+                            # 第二下触控），见 _mi_click_query
+                            gap, block = self._mi_click_query(x, y)
                         else:
                             gap = self.get_gap_at_pos(x, y)
                             block = self.get_block_at_pos(x, y)
@@ -679,8 +680,13 @@ class EventsMixin:
                                         self._mi_gap_point = self.screen_to_world(x, y)
                                     # 操作提示：选中缝隙
                                     gap_type, line = gap
-                                    self.macro_notify_msg = (
-                                        f"选中{self._gap_type_name(gap_type)}缝隙")
+                                    msg = f"选中{self._gap_type_name(gap_type)}缝隙"
+                                    note = self.MI_STEP_NOTE.get(gap_type)
+                                    if getattr(self, 'mi_mode', False) and note:
+                                        # 米字格的「一格」按族定義，選縫時就把
+                                        # 距離說清楚，玩家才好預期滑多遠
+                                        msg += f"（{note}）"
+                                    self.macro_notify_msg = msg
                                     self.macro_notify_timer = 120
                                     # 新手教程：步骤1 选中缝隙 → 步骤2
                                     self._tut_on_gap_clicked()
@@ -947,7 +953,8 @@ class EventsMixin:
 
         旧字段（puzzle/step_count/solved/matrix/selected_gap/selected_block/
         animating）保持原义不变；新增 m/n/step/game_mode/timer_state/readonly/
-        blocks（含 mod 分组）/macro/solver，供 AI 一次取齐决策信息。
+        blocks（含 mod 分组；米字格为 q 朝向 + 晶格记号 lat）、macro/solver，
+        供 AI 一次取齐决策信息。
         """
         self.game.update_matrix()
         step = self.current_step
@@ -966,8 +973,15 @@ class EventsMixin:
         if mi:
             # 米字格：附带 q 朝向（N/E/S/W，斜边朝向哪条格边）。平移不改 q，
             # 因此同一格可能缺块（导入/打乱后），调用方要靠 q 才能定位单元
+            from game_mi import lattice_of
             for blk, b in zip(blocks, self.game.blocks):
                 blk['q'] = b.location[2] if len(b.location) >= 3 else None
+                # 斜向一格走完，一半的块落进 B 晶格（半整数坐标），此时
+                # [r%step, c%step] 会在 0.0/0.5 之间来回翻，不再是那种
+                # 「同组块余数相同」的不变式。改发晶格记号 A/B（整数/A、
+                # 半整/B），它是错位态唯一稳定的分组依据（规划表 20）
+                blk['lat'] = ('A', 'B')[lattice_of(b.location)]
+                del blk['mod']
         solver_state = self._get_solver_state()
         if mi:
             kind = 'mi'

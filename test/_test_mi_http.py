@@ -4,8 +4,9 @@
 機制與 _test_http_api.py 相同：HTTP 在背景執行緒收請求並阻塞等 resp_q，
 主執行緒（本測試）循環 gui.process_commands() 排空佇列，請求執行緒才會返回。
 
-覆蓋：/new type=mi、/status 帶 q 朝向、/select_gap 四族（h/v/d1/d2）、
-      /select_block r c q、/move 八向含 q、非平行方向被 wrong_direction 擋下、
+覆蓋：/new type=mi、/status 帶 q 朝向與晶格記號 lat、/select_gap 四族
+      （h/v/d1/d2）、/select_block r c q（含半整數座標）、/move 八向含 q、
+      非平行方向被 wrong_direction 擋下、
       進階功能（局面分析 / 宏錄製 / 宏執行 / 求解）在米字格下一律攔截、
       map/load_map 十六進位矩陣往返、/command 裸 CLI 通道、方形無迴歸。
 """
@@ -21,7 +22,7 @@ from GUI import SliderGUI  # noqa: E402
 from http_server import start_http_server  # noqa: E402
 from game_mi import (  # noqa: E402
     DIRECTIONS as MI_DIRECTIONS, GAP_DIRECTIONS as MI_GAP_DIRECTIONS,
-    MiSliderMatrix, mi_key,
+    MiSliderMatrix, lattice_of, mi_key,
 )
 
 PORT = 5097
@@ -216,6 +217,57 @@ check("非法方向字母回 400", code == 400 and not r.get('ok'))
 code, r = api('POST', '/move', {'direction': 'q'})
 check("米字格斜向字母 'q' 不被 HTTP 層攔（只由遊戲側判合法性）",
       code == 200, r.get('message', ''))
+
+print("=== 錯位態 /status：半整數座標 + lat 晶格記號 ===")
+api('POST', '/new', {'m': M, 'n': N, 'step': STEP, 'type': 'mi'})
+# 斜向一格是 ±(½,½)：挑一條斜縫真的滑一格，棋盤立刻錯成兩個晶格
+moved_gap = None
+for line in [ln for gt, ln in gui.game.all_gaps() if gt == 'd1']:
+    blk, direction = pick_movable('d1', line)
+    if blk is not None:
+        moved_gap = ('d1', line, mi_key(blk), direction)
+        break
+check("  开局有可動的斜縫", moved_gap is not None)
+if moved_gap:
+    gap_type, line, (r1, c1, q1), direction = moved_gap
+    code, r = api('POST', '/select_gap', {'type': gap_type, 'line': line})
+    code, r = api('POST', '/select_block', {'row': r1, 'col': c1, 'q': q1})
+    check("  錯位前選塊成功", r.get('ok'), r.get('message', ''))
+    steps_before = gui.step_count
+    code, r = api('POST', '/move', {'direction': direction})
+    check("  斜向一格提交成功", r.get('ok')
+          and gui.step_count == steps_before + 1, r.get('message', ''))
+
+    def _twice(row, col):
+        return (int(round(2 * row)), int(round(2 * col)))
+
+    positions = gui.game.positions()
+    half = [k for k in positions if k[0] % 1 or k[1] % 1]
+    check("  走完確實有塊落在半整數座標上", len(half) > 0,
+          f"半整數塊 {len(half)}/{len(positions)}")
+    code, st = api('GET', '/status')
+    check("  建局態就沒有 mod 欄位（不再是那種不變式）",
+          code == 200 and all('mod' not in b for b in st['blocks']))
+    want = {_twice(r, c) + (q,) for (r, c, q) in positions}
+    got = {_twice(b['row'], b['col']) + (b['q'],) for b in st['blocks']}
+    check("  半整數 row/col JSON 原樣可過（與引擎逐塊一致）",
+          want == got, f"缺 {sorted(want - got)[:3]} 多 {sorted(got - want)[:3]}")
+    check("  lat 晶格記號與引擎 lattice_of 逐塊一致",
+          all(b['lat'] == ('A', 'B')[lattice_of((b['row'], b['col'], b['q']))]
+              for b in st['blocks']),
+          str([(b['row'], b['col'], b['lat']) for b in st['blocks']][:4]))
+    lats = {b['lat'] for b in st['blocks']}
+    check("  錯位態兩個晶格都在（A 建局 / B 半整）", lats == {'A', 'B'},
+          f"實際 {sorted(lats)}")
+    n_b = sum(1 for b in st['blocks'] if b['lat'] == 'B')
+    check("  B 晶格塊數 = 真正錯位的那批", n_b == len(half),
+          f"B {n_b} vs 半整數塊 {len(half)}")
+    # 終端/HTTP 這條路徑也吃得下半整數錨點：再選半格上的塊
+    b_key = next(k for k in positions if lattice_of(k))
+    code, r = api('POST', '/select_block',
+                  {'row': b_key[0], 'col': b_key[1], 'q': b_key[2]})
+    check("  選半整數座標的塊也成功", code == 200 and r.get('ok'),
+          r.get('message', ''))
 
 print("=== 米字格下的進階功能一律攔截 ===")
 for ep in ('/analysis/window', '/analysis/holes', '/analysis/actions'):
