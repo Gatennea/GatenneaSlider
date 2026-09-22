@@ -411,9 +411,10 @@ class FileOpsMixin:
             history_data['snapshots'].append(snap_data)
         numbered = bool(getattr(self, 'numbered', False))
         triangle = bool(getattr(self, 'triangle_mode', False))
+        mi = bool(getattr(self, 'mi_mode', False))
         data = {
-            # 带序号/三角形谜题写 v2（puzzle.type 标明形态）；普通方形保持 v1 不变
-            'version': 2 if (numbered or triangle) else 1,
+            # 带序号/三角形/米字格谜题写 v2（puzzle.type 标明形态）；普通方形保持 v1 不变
+            'version': 2 if (numbered or triangle or mi) else 1,
             'puzzle': {
                 'm': self.current_m,
                 'n': self.current_n,
@@ -427,6 +428,8 @@ class FileOpsMixin:
         if triangle:
             data['puzzle']['type'] = 'triangle'
             data['puzzle']['triangle_side'] = self.game.k
+        if mi:
+            data['puzzle']['type'] = 'mi'
         if getattr(self, 'save_readonly_flag', False):
             data['readonly'] = True
         return data
@@ -450,6 +453,9 @@ class FileOpsMixin:
             snap.get('numbers') for snap in save_data.get('history', {}).get('snapshots', []))
         # 三角形密铺：mode 标记 + 大三角形边长（k 缺省时退回 m）
         self.triangle_mode = kind == 'triangle'
+        # 米字格：mode 标记；切回别的形态时必须一起清掉，否则旧旗标会让
+        # 渲染/命中继续走米字格分支
+        self.mi_mode = kind == 'mi'
         triangle_side = puzzle.get('triangle_side', m)
 
         self.current_m = m
@@ -490,10 +496,15 @@ class FileOpsMixin:
             # 载入后按当前棋盘大小重新适配缩放并居中（存档不保存 zoom）
             self.zoom = self._fit_triangle_zoom()
             self.center_map()
+        elif kind == 'mi':
+            # 米字格同理：包围盒走 mi_view（世界坐标无 gap 间距）
+            self.zoom = self._fit_mi_zoom()
+            self.center_map()
         self.game_history.restore_snapshot(self.game, self.game_history.history_index)
 
         self.selected_gap = None
         self.selected_block = None
+        self._mi_gap_point = None
         self.animating = False
         self.anim_blocks = []
 

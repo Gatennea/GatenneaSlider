@@ -18,12 +18,14 @@ import json
 import time
 import traceback
 import queue
+import math
 from datetime import datetime
 from game import SliderMatrix, Block
 from history import GameHistory
 from records import Records, format_time
 from puzzle_types import create_puzzle, puzzle_key
 from game_triangle import tri_key
+from game_mi import mi_key
 from gui.renderer import RendererMixin
 from gui.dialogs import DialogsMixin
 from gui.animation import AnimationMixin
@@ -107,7 +109,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             n: 初始滑块列数，默认为6
             step: 移动步数（等级），默认为1
             cmd_queue: 命令队列（用于接收终端指令），默认为None
-            kind: 开局形态 'square' / 'numbered' / 'triangle'（三角形时 m 作边长 k）
+            kind: 开局形态 'square' / 'numbered' / 'triangle' / 'mi'
+                （三角形时 m 作边长 k；米字格 m/n 为行数/列数）
         """
         _gui_log_error(f'GUI初始化开始: m={m}, n={n}, step={step}')
         try:
@@ -365,6 +368,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             ('边长4 等级1', 4, 4, 1, 'triangle'),
             ('边长6 等级2', 6, 6, 2, 'triangle'),
             ('边长8 等级2', 8, 8, 2, 'triangle'),
+            ('__group__', '米字格谜题'),
+            ('4×4 等级1', 4, 4, 1, 'mi'),
+            ('4×4 等级2', 4, 4, 2, 'mi'),
+            ('6×6 等级2', 6, 6, 2, 'mi'),
+            ('8×8 等级2', 8, 8, 2, 'mi'),
             ('__group__', '数字谜题'),
             ('4×4 等级2', 4, 4, 2, 'numbered'),
             ('6×6 等级2', 6, 6, 2, 'numbered'),
@@ -452,11 +460,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.custom_fields = {'m': '6', 'n': '6', 'step': '1'}
         self.custom_active_field = None  # 'm', 'n', 'step'
         self.custom_error = ''
-        self.custom_kind = 'rect'       # 'rect' 矩形 / 'triangle' 三角 / 'numbered' 数字
+        self.custom_kind = 'rect'       # 'rect' 矩形 / 'triangle' 三角 / 'mi' 米字 / 'numbered' 数字
 
         # 三角形密铺模式（Stage B）：self.game 为 TriangleSliderMatrix 时为 True
         self.triangle_mode = False
         self.triangle_side = 6
+
+        # 米字格模式（Stage M）：self.game 为 MiSliderMatrix 时为 True。
+        # 交互走两次触控：第一下选缝隙，第二下点滑块提交；方向由两下的
+        # 世界位移在缝隙切向上的符号定，故要把第一下的落点记下来。
+        self.mi_mode = False
+        self._mi_gap_point = None   # 第一下触控的世界坐标（选缝隙时的落点）
 
         # 历史记录
         self.game_history = GameHistory()
@@ -635,6 +649,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # （kind='square' 是默认值，不覆盖，保持「记住上次关闭时的样子」）
         if kind == 'triangle':
             self.new_triangle_puzzle(m, step)
+        elif kind == 'mi':
+            self.new_mi_puzzle(m, n, step)
         elif kind == 'numbered':
             self.new_puzzle(m, n, step, numbered=True)
 
@@ -678,8 +694,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_m = m
         self.current_n = n
         self.current_step = step
-        # 切回方形：清除三角形模式标记（存档/热键路径都走这里）
+        # 切回方形：清除三角形/米字格模式标记（存档/热键路径都走这里）
         self.triangle_mode = False
+        self.mi_mode = False
 
         # 创建新的游戏对象
         kind = 'numbered' if numbered else 'square'
@@ -751,6 +768,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_step = step
         self.triangle_side = k
         self.triangle_mode = True
+        # 切回三角形也要清米字格旗标：两个形态的缝隙族/方向表不同，留着会让
+        # 渲染、命中、HTTP 的状态字段继续走米字格分支（ symptom：/status 的
+        # puzzle 仍是 n~mi*m 而三族缝隙只剩 'h' 选得中）
+        self.mi_mode = False
         self.numbered = False
 
         self.game = create_puzzle(k, k, step, kind='triangle', triangle_side=k)
@@ -787,6 +808,95 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.macro_notify_timer = 120
         return True
 
+    def _form_blocked(self, action: str) -> bool:
+        """新形态（三角形 / 米字格）尚未实现的操作：统一拦截并给一致提示。
+
+        局面分析等建立在方形 h/v 缝隙的动作语义上，换形态后要么直接报错
+        （MiSliderMatrix 没有 is_valid_h_line）要么给出无意义的窗口，因此在
+        入口处一并挡下。两个单形态助手各自带自己的措辞。
+        """
+        if self._triangle_blocked(action):
+            return True
+        return self._mi_blocked(action, '后续阶段开发中')
+
+    def new_mi_puzzle(self, m: int, n: int, step: int = 1) -> bool:
+        """创建米字格谜题（M1：静态预览，尚不可交互）。
+
+        参数：
+            m: 行数
+            n: 列数
+            step: 移动步数（等级），须小于 max(m, n)
+
+        建局即为实心 m×n 米字格（还原态）。交互走 M2 定案的两次触控：
+        第一下点缝隙、第二下点滑块提交，方向由偏移的切向符号定；单次触控
+        与拖拽在米字格下一律关闭（指向缝隙或滑块，提示用）。
+        """
+        if self._tut_board_locked():
+            return False
+        # 切换谜题会重置棋盘 → 终止梯度流水线 / 连续撤销重做
+        self._stop_gradient_pipeline()
+        self._stop_continuous_undo_redo()
+        self._last_timed_result = None
+        self._ann_cancel_session('切换谜题')
+
+        if m < 2 or n < 2 or step >= max(m, n):
+            return False
+        if self.timer_state == 'running':
+            self.macro_notify_msg = "计时中无法切换谜题"
+            self.macro_notify_timer = 90
+            return False
+        self._timer_cancel()
+        detached = self._detach_readonly_save()
+
+        self.current_m = m
+        self.current_n = n
+        self.current_step = step
+        self.mi_mode = True
+        self.triangle_mode = False
+        self.numbered = False
+        # 米字格按冻结决策禁用单次触控（只做两次触控 + 虚拟键盘）；
+        # 摆在模式切换处而不是每次点击处检查，避免开着单次触控进米字格
+        self.control_single_touch = False
+
+        self.game = create_puzzle(m, n, step, kind='mi')
+
+        # 重置状态
+        self.zoom = self._fit_mi_zoom()
+        self.selected_gap = None
+        self.selected_block = None
+        self._mi_gap_point = None
+        self.step_count = 0
+        self.animating = False
+        self.anim_blocks = []
+        for block in self.game.blocks:
+            block.number = None
+
+        self.game_history.reset()
+        self.center_map()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+
+        self.macro_notify_msg = (
+            f"切换谜题：米字格 {m}×{n} 等级{step}"
+            "（两次触控：先点缝隙，再点滑块）")
+        self.macro_notify_timer = 150
+        return True
+
+    def _mi_blocked(self, action: str, hint: str = '') -> bool:
+        """米字格模式下不可用的操作：给出一致提示并拦截。
+
+        M2 起滑动/选组/虚拟键盘已开放；这里只剩求解器等后续阶段功能，
+        以及冻结决策里明确禁用的拖拽——一律走两次触控。
+        """
+        if not getattr(self, 'mi_mode', False):
+            return False
+        msg = f"米字格：{action}不可用"
+        if hint:
+            msg += f"（{hint}）"
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = 120
+        return True
+
     def _fit_triangle_zoom(self, fill: float = 0.78) -> float:
         """三角形棋盘初始缩放：让大三角形铺满可视区的主要部分。"""
         view = self._tri_view()
@@ -809,6 +919,43 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                          (self.screen_height - self.menu_bar_height - self.status_bar_height) / 2)
         self.camera_x = game_center_x - board_cx * self.zoom
         self.camera_y = game_center_y - board_cy * self.zoom
+
+    def _fit_mi_zoom(self, fill: float = 0.78) -> float:
+        """米字格棋盘初始缩放：包围盒是矩形，走与三角形同一条算式。"""
+        view = self._mi_view()
+        min_x, min_y, max_x, max_y = view.bounding_box(self.game.positions())
+        bw = max(1e-6, max_x - min_x)
+        bh = max(1e-6, max_y - min_y)
+        avail_w = (self.screen_width - self.right_panel_width) * fill
+        avail_h = (self.screen_height - self.menu_bar_height - self.status_bar_height) * fill
+        return max(self.min_zoom, min(self.max_zoom,
+                                      min(avail_w / bw, avail_h / bh)))
+
+    def _center_mi(self):
+        """米字格棋盘居中：按矩形包围盒算相机偏移。"""
+        view = self._mi_view()
+        min_x, min_y, max_x, max_y = view.bounding_box(self.game.positions())
+        board_cx = (min_x + max_x) / 2.0
+        board_cy = (min_y + max_y) / 2.0
+        game_center_x = (self.screen_width - self.right_panel_width) / 2
+        game_center_y = (self.menu_bar_height +
+                         (self.screen_height - self.menu_bar_height - self.status_bar_height) / 2)
+        self.camera_x = game_center_x - board_cx * self.zoom
+        self.camera_y = game_center_y - board_cy * self.zoom
+
+    def _mi_hit_board(self, screen_x: int, screen_y: int) -> bool:
+        """点击是否落在米字格棋盘包围盒内（M1 用來決定要不要弹提示）。
+
+        米字格還沒有單位塊命中（屬 M2），這裡只問「在不在棋盤範圍裡」，
+        好让空白处的点击安静地走相机平移。
+        """
+        try:
+            view = self._mi_view()
+            min_x, min_y, max_x, max_y = view.bounding_box(self.game.positions())
+            wx, wy = self.screen_to_world(screen_x, screen_y)
+            return min_x <= wx <= max_x and min_y <= wy <= max_y
+        except Exception:
+            return False
 
     def is_solved(self) -> bool:
         """判断当前是否为复原状态（比较0-1矩阵形状；带序号时额外检查编号顺序）"""
@@ -876,6 +1023,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             min_x, min_y, max_x, max_y = view.bounding_box(self.game.positions())
             min_screen_x, min_screen_y = self.world_to_screen(min_x, min_y)
             max_screen_x, max_screen_y = self.world_to_screen(max_x, max_y)
+        elif getattr(self, 'mi_mode', False):
+            # 米字格同理：一格 = 1 个世界单位（无 gap 间距），必须走 board_view，
+            # 直接套方形那套 (cell+gap) 间距会把包围盒算大
+            view = self._mi_view()
+            min_x, min_y, max_x, max_y = view.bounding_box(self.game.positions())
+            min_screen_x, min_screen_y = self.world_to_screen(min_x, min_y)
+            max_screen_x, max_screen_y = self.world_to_screen(max_x, max_y)
         else:
             scaled_gap = self.gap_width * self.zoom
 
@@ -920,6 +1074,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """将地图居中显示在游戏区域中"""
         if getattr(self, 'triangle_mode', False):
             self._center_triangle()
+            return
+        if getattr(self, 'mi_mode', False):
+            self._center_mi()
             return
         bounds = self.game.get_boundaries()
         min_row, max_row = bounds['min_row'], bounds['max_row']
@@ -987,6 +1144,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                         return block
                 return None
 
+            if getattr(self, 'mi_mode', False):
+                key = self._mi_view().world_to_cell(world_x, world_y,
+                                                   self.game.positions())
+                if key is None:
+                    return None
+                for block in self.game.blocks:
+                    if mi_key(block) == key:
+                        return block
+                return None
+
             for block in self.game.blocks:
                 x, y, w, h = self.board_view.block_rect(*block.location)
                 rect = pygame.Rect(x, y, w, h)
@@ -1025,6 +1192,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     if self.game.is_valid_gap(gap_type, line):
                         return (gap_type, line)
                 return None
+
+            if getattr(self, 'mi_mode', False):
+                # 米字格：最近單位邊裁定（等距取長邊）。命中的那條可能落在
+                # 棋形外沿（兩側不全有塊），這種縫整體平移沒有意義，捨棄
+                cells = self.game.positions()
+                gap = self._mi_view().gap_at(world_x, world_y, cells)
+                if gap is None:
+                    return None
+                if not self.game.is_valid_gap(*gap):
+                    return None
+                return gap
 
             bounds = self.game.get_boundaries()
             for kind, idx in self.board_view.candidate_gaps(world_x, world_y, bounds):
@@ -1146,7 +1324,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 90
             return False
 
-        if getattr(self, 'triangle_mode', False):
+        # 计时模式：就绪态（已打乱未开始）禁止滑动，保证公平
+        if self.game_mode == 'timed' and self.timer_state == 'ready':
+            self.macro_notify_msg = "计时模式：按空格开始计时后才能滑动"
+            self.macro_notify_timer = 90
+            return False
+
+        if getattr(self, 'mi_mode', False):
+            prepared = self._mi_prepare_move(direction, move_step)
+            if prepared is None:
+                return False
+            selected, final_positions, move_step = prepared
+        elif getattr(self, 'triangle_mode', False):
             prepared = self._triangle_prepare_move(direction, move_step)
             if prepared is None:
                 return False
@@ -1227,8 +1416,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     @staticmethod
     def _gap_type_name(gap_type: str) -> str:
-        """缝隙族 → 中文名（方形 h/v，三角 h/p/n）。"""
-        names = {'h': '横向', 'v': '纵向', 'p': '斜向', 'n': '反向斜'}
+        """缝隙族 → 中文名（方形 h/v，三角 h/p/n，米字 h/v/d1/d2）。"""
+        names = {'h': '横向', 'v': '纵向', 'p': '斜向', 'n': '反向斜',
+                 'd1': '主对角', 'd2': '副对角'}
         return names.get(gap_type, gap_type)
 
     # 三角六向键位 → 晶格方向字母（与 game_triangle.DIRECTIONS 一致；
@@ -1236,6 +1426,20 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
     TRI_MOVE_KEYS = {
         'move_up': 'w', 'tri_up_right': 'e', 'move_left': 'a',
         'move_right': 'd', 'tri_down_left': 'z', 'tri_down_right': 'x',
+    }
+
+    # 米字格四族縫隙的切向／法向（格座標，y 軸向下）與兩個方向字母。
+    # 切向平行於縫隙線，正方向對應第一個字母；法向指向 rank 增大的一側
+    # （side_of 的 1 側），第二下觸控就靠這兩個分量定向：
+    #   h（橫邊）   切向 (1, 0)    法向 (0, 1)      d=右 / a=左
+    #   v（豎邊）   切向 (0, 1)    法向 (1, 0)      s=下 / w=上
+    #   d1（"\"）   切向 (1, 1)/√2  法向 (-1, 1)/√2  x=↘ / q=↖
+    #   d2（"/"）   切向 (1, -1)/√2 法向 (1, 1)/√2   e=↗ / z=↙
+    MI_GAP_AXES = {
+        'h': ((1.0, 0.0), (0.0, 1.0), 'd', 'a'),
+        'v': ((0.0, 1.0), (1.0, 0.0), 's', 'w'),
+        'd1': ((1.0, 1.0), (-1.0, 1.0), 'x', 'q'),
+        'd2': ((1.0, -1.0), (1.0, 1.0), 'e', 'z'),
     }
 
     def _triangle_keyboard_move(self, event) -> bool:
@@ -1318,6 +1522,101 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return None
         return selected, final_positions, actual_step
 
+    # ---------- 米字格（M2）：选组 + 定向 ----------
+    def _mi_prepare_move(self, direction: str, step: int):
+        """米字格：為一次移動準備選中組與最終位置。
+
+        與三角版的差別：不做單次觸控拖拽（resolve_drag 不存在），因此
+        一定要有 selected_gap + selected_block——縫隙由第一下觸控選定，
+        滑塊由第二下觸控選定並順帶定出方向，虛擬鍵盤複用同一份選中態。
+        方向必須平行於已選縫隙，否則提示並放棄。
+        """
+        from game_mi import DIRECTIONS, GAP_DIRECTIONS, mi_key
+        if direction not in DIRECTIONS:
+            self.macro_notify_msg = f"米字格：未知方向 {direction}"
+            self.macro_notify_timer = 90
+            return None
+
+        gap = getattr(self, 'selected_gap', None)
+        if gap is not None:
+            gap_type, line = gap
+            if gap_type not in GAP_DIRECTIONS:
+                return None
+            if direction not in GAP_DIRECTIONS[gap_type]:
+                self.macro_notify_msg = "滑动失败：该方向与选中的缝隙不平行"
+                self.macro_notify_timer = 90
+                return None
+            block = getattr(self, 'selected_block', None)
+            if block is None:
+                # 沒有參考塊時退回第一塊：虛擬鍵盤路徑只要求先選縫隙，
+                # 此時「移哪一側」由第一塊所在側決定（可預期：它就是
+                # 建局時的第一塊，縫隙選定後側面也就固定了）
+                block = self.game.blocks[0] if self.game.blocks else None
+            if block is None:
+                return None
+            self.game.opt(gap_type, line, block)
+            selected = [b for b in self.game.blocks if b.be_opted]
+            if not selected:
+                return None
+            final_positions, reason = self.game.try_move_ex(direction, step)
+            if not final_positions:
+                self.macro_notify_msg = {
+                    'disconnected': "滑动失败：移动后滑块会断开",
+                    'collision': "滑动失败：移动后滑块会重叠",
+                }.get(reason, "滑动失败")
+                self.macro_notify_timer = 90
+                return None
+            actual_step = step
+        else:
+            # 未選縫隙：米字格不猜縫（沒有拖拽那條捷徑），明說要兩次觸控
+            self.macro_notify_msg = "米字格：请先点选缝隙，再点滑块移动"
+            self.macro_notify_timer = 90
+            return None
+
+        selected = [b for b in self.game.blocks if b.be_opted]
+        # 缝隙落在棋形外沿時會選中全部滑塊：整體平移形狀不變，禁止
+        if len(selected) == len(self.game.blocks):
+            self.macro_notify_msg = "不能整体移动所有滑块（形状不变，没有意义）"
+            self.macro_notify_timer = 120
+            return None
+        return selected, final_positions, actual_step
+
+    def _mi_tap_direction(self, gap_type: str, line: int, block,
+                          offset_world: tuple):
+        """第二次觸控定向：用「第二下點 − 第一下點」在縫隙切向上的符號定方向。
+
+        切向分量取符號（正 → 切向那個方向字母，負 → 反向），法向分量只作
+        校驗：所點滑塊必須與偏移指向同一側，否則說明玩家點的縫另一邊的塊，
+        給提示而不是照著移（規劃 §3 的斷言）。回傳方向字母；無法判定回 None。
+
+        offset_world 用世界座標（像素），與 _MI_GAP_AXES 的格座標軸同向，
+        投影只問符號，因此不除掉 zoom 也無妨。
+        """
+        axes = self.MI_GAP_AXES.get(gap_type)
+        if axes is None:
+            return None
+        tangent, normal, pos_dir, neg_dir = axes
+        dx, dy = offset_world
+        t_len = math.hypot(*tangent)
+        n_len = math.hypot(*normal)
+        proj_t = (dx * tangent[0] + dy * tangent[1]) / t_len
+        proj_n = (dx * normal[0] + dy * normal[1]) / n_len
+        if abs(proj_t) < 1e-9:
+            self.macro_notify_msg = ("米字格：偏移几乎垂直于这条缝隙，"
+                                     "判断不出滑动方向")
+            self.macro_notify_timer = 90
+            return None
+        direction = pos_dir if proj_t > 0 else neg_dir
+        # 法向校驗：塊所在側與偏移指向要一致
+        from game_mi import mi_key, side_of
+        side = side_of(gap_type, line, mi_key(block))
+        if (side == 1 and proj_n < 0) or (side == 0 and proj_n > 0):
+            self.macro_notify_msg = ("这块在缝隙的另一侧：请点与偏移方向"
+                                     "同侧的滑块")
+            self.macro_notify_timer = 90
+            return None
+        return direction
+
     def _bump_move_session(self):
         """结束当前「选中会话」：之后的移动不再并入同一快照。
 
@@ -1363,6 +1662,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return False
         # 宏执行中不允许
         if getattr(self, 'macro_executing', False):
+            return False
+        # 米字格按冻结决策只做两次触控 + 虚拟键盘，拖拽跟随一律关闭
+        if self._mi_blocked('拖拽', '请用两次触控：先点缝隙，再点滑块'):
             return False
         # 三角形密铺：手勢向量投影吸附到 6 個晶格方向（B2）
         if getattr(self, 'triangle_mode', False):
@@ -1554,6 +1856,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return None
         if getattr(self, 'triangle_mode', False):
             return None
+        if getattr(self, 'mi_mode', False):
+            return None
         return getattr(self, '_move_session_id', 0)
 
     def _drag_slide(self, block, dx, dy):
@@ -1564,6 +1868,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         - 单次触控会在滑动后清空选中。
         返回是否真正移动。
         """
+        # 米字格禁拖拽（冻结决策）：滑块是按 (r, c, q) 三元素标识的，
+        # 这条 8 区角度路径只对方形两坐标成立，米字格必须走两次触控
+        if getattr(self, 'mi_mode', False):
+            self._mi_blocked('拖拽', '请用两次触控：先点缝隙，再点滑块')
+            return False
         gap = self.selected_gap
         if gap is None:
             # 单次触控：8 区角度直接判定
@@ -1832,6 +2141,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 教程解法播放中：锁定棋盘操作
         if self._tut_board_locked():
             return
+        # 米字格打乱已随 game_mi.shuffle 落地（M2），无需拦截
         # 打乱会改变棋盘 → 终止梯度流水线
         self._stop_gradient_pipeline()
         # 打乱会改变棋盘 → 打断连续撤销/重做
@@ -1911,6 +2221,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """当前谜题形态键（puzzle_key / 成绩分榜共用）。"""
         if getattr(self, 'triangle_mode', False):
             return 'triangle'
+        if getattr(self, 'mi_mode', False):
+            return 'mi'
         if getattr(self, 'numbered', False):
             return 'numbered'
         return 'square'
@@ -1941,6 +2253,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if getattr(self, 'triangle_mode', False):
             k = getattr(self.game, 'k', self.current_m)
             return f'三角形 边长{k} 等级{self.current_step}'
+        if getattr(self, 'mi_mode', False):
+            return f'米字格 {self.current_m}×{self.current_n} 等级{self.current_step}'
         name = '数字' if getattr(self, 'numbered', False) else '矩形'
         return f'{name} {self.current_m}×{self.current_n} 等级{self.current_step}'
 
@@ -1970,6 +2284,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """
         if getattr(self, 'triangle_mode', False):
             return self.game.export_map()
+        if getattr(self, 'mi_mode', False):
+            # 米字格 M1 无 export_map；且打乱被拦 → 就绪态到不了这里
+            return ''
         return self.game.export_map().replace('#', '1').replace('_', '0')
 
     def _timer_cancel(self):
@@ -2176,6 +2493,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if getattr(self, 'triangle_mode', False):
             self.macro_notify_msg = "三角形密铺暂不支援自动求解"
             self.macro_notify_timer = 90
+            return
+
+        # 米字格：8 向/4 族缝隙，求解器同样留到后续阶段
+        if self._mi_blocked('自动求解', '求解器后续阶段开发中'):
             return
 
         # 标注录制中：自动回放不是人类示范，禁用

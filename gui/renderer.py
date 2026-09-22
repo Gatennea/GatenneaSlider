@@ -14,7 +14,9 @@ import math
 
 import pygame
 
+from game_mi import mi_key
 from game_triangle import tri_key
+from gui.mi_view import MiBoardView
 from gui.triangle_view import TriangleBoardView
 from records import format_time
 
@@ -29,6 +31,15 @@ class RendererMixin:
                 or view.gap_width != self.gap_width):
             view = TriangleBoardView(self.cell_size, self.gap_width)
             self._triangle_view = view
+        return view
+
+    def _mi_view(self) -> MiBoardView:
+        """米字格棋盤視圖（隨 cell_size/gap_width 緩存重建）。"""
+        view = getattr(self, '_mi_board_view', None)
+        if (view is None or view.cell_size != self.cell_size
+                or view.gap_width != self.gap_width):
+            view = MiBoardView(self.cell_size, self.gap_width)
+            self._mi_board_view = view
         return view
 
     def _draw_triangle_grid(self, view: TriangleBoardView):
@@ -196,10 +207,78 @@ class RendererMixin:
                         center=self.world_to_screen(cx, cy))
                     self.screen.blit(text, text_rect)
 
+    def draw_mi_board(self):
+        """繪製米字格棋盤（M2：可滑动，两次触控 + 虚拟键盘）。
+
+        背景是「方格 + 每格兩條對角線」的米字紋理，按棋形凸包裁剪
+        （與三角版同理：線不伸到棋形外的空白處，洞裡也不畫）。
+        單位塊以內心為中心內縮 gap_width/2，相鄰塊之間剛好留出
+        視覺間隙；be_opted 的塊用選中色，選中的縫疊一條紅線。
+        拖拽跟隨不做（米字格禁單次觸控）；移動動畫屬 M3，這裡不插值。
+        """
+        self.screen.fill(self.colors['background'])
+
+        view = self._mi_view()
+        cells = self.game.positions()
+        hull = view.board_hull(cells)
+        for p1, p2 in view.grid_segments(hull):
+            pygame.draw.line(self.screen, self.colors['gap'],
+                             self.world_to_screen(*p1),
+                             self.world_to_screen(*p2),
+                             max(1, int(self.gap_width * self.zoom * 0.35)))
+        self._draw_mi_selected_gap(view, hull)
+
+        scaled_cell = self.cell_size * self.zoom
+        selected = []
+        normal = []
+        for block in self.game.blocks:
+            r, c, q = mi_key(block)
+            cx, cy = view.piece_center(r, c, q)
+            sx, sy = self.world_to_screen(cx, cy)
+            if (sx < -scaled_cell or sx > self.screen_width + scaled_cell
+                    or sy < -scaled_cell or sy > self.screen_height + scaled_cell):
+                continue
+            (selected if block.be_opted else normal).append((r, c, q))
+
+        for group, is_selected in ((normal, False), (selected, True)):
+            fill = (self.colors['block_selected'] if is_selected
+                    else self.colors['block'])
+            border_w = max(1, int(2 * self.zoom))
+            for r, c, q in group:
+                poly = [self.world_to_screen(*p)
+                        for p in view.piece_polygon(r, c, q)]
+                pygame.draw.polygon(self.screen, fill, poly)
+                pygame.draw.polygon(self.screen, self.colors['border'],
+                                    poly, border_w)
+
+    def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
+        """繪製米字格選中的縫隙線（四族之一），只畫在棋形範圍內。
+
+        米字紋理本身就是「方格 + 每格兩條對角線」，選中哪條縫在背景裡
+        看不出來，必須疊一條紅線（與方形/三角版同一套視覺語言）。對角族
+        的縫是整條對角線鏈（同一條 r−c 或 r+c 上的全部格子），所以線會
+        貫穿整塊棋盤，這正是「一條鏈一條縫」的機制所要求的。
+        """
+        gap = getattr(self, 'selected_gap', None)
+        if not gap:
+            return
+        gap_type, line = gap
+        if gap_type not in ('h', 'v', 'd1', 'd2'):
+            return
+        seg = view.gap_segment(gap_type, line, hull)
+        if seg is None:
+            return
+        pygame.draw.line(self.screen, self.colors['line'],
+                         self.world_to_screen(*seg[0]),
+                         self.world_to_screen(*seg[1]), 3)
+
     def draw_board(self):
         """绘制游戏主界面"""
         if getattr(self, 'triangle_mode', False):
             self.draw_triangle_board()
+            return
+        if getattr(self, 'mi_mode', False):
+            self.draw_mi_board()
             return
 
         self.screen.fill(self.colors['background'])
@@ -641,7 +720,7 @@ class RendererMixin:
         timer_x = step_x + step_surface.get_width() + 30
         self.screen.blit(timer_surface, (timer_x, text_y))
 
-        # 中间：当前谜题信息（带形态后缀：带序号 #num / 三角形 tri{k}）
+        # 中间：当前谜题信息（带形态后缀：带序号 #num / 三角形 tri{k} / 米字格 mi{m}*{n}）
         puzzle_text = f"谜题：{self._current_puzzle_key()}"
         puzzle_surface = self.status_font.render(puzzle_text, True, self.colors['status_text'])
         puzzle_x = (self.screen_width - puzzle_surface.get_width()) // 2

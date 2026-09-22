@@ -19,6 +19,7 @@ from game_triangle import (
     gap_index_range,
     tri_vertices,
 )
+from gui.hull_util import chord, convex_hull
 
 _SQRT3 = math.sqrt(3.0)
 
@@ -29,62 +30,29 @@ _SQRT3 = math.sqrt(3.0)
 # +1，否則紅線/點擊熱區整體偏離真正的分界一格。
 GAP_LINE_OFFSET = 1
 
+# 凸包與穿綫求交與 mi_view 共用 gui/hull_util.py 的實現；hull_util.chord
+# 的契約是「(u, v) 點集與 v = level 相交時 u 的區間」，所以這裡把斜座標
+# 點集換成 (參數, 約束量) 順序：'a' 族約束 a、沿 b 走；'b'/'s' 族沿 a 走。
+
 
 def _convex_hull(points) -> list:
-    """二維點集的凸包（單調鏈；共線點保留也無妨，裁剪只問穿邊交點）。"""
-    pts = sorted(set(points))
-    if len(pts) <= 2:
-        return pts
-
-    def cross(o, a, b):
-        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
-    def half(seq):
-        chain = []
-        for p in seq:
-            while len(chain) >= 2 and cross(chain[-2], chain[-1], p) <= 0:
-                chain.pop()
-            chain.append(p)
-        return chain
-
-    lower = half(pts)
-    upper = half(reversed(pts))
-    return lower[:-1] + upper[:-1]
+    """斜座標點集的凸包（共用實現，見 gui.hull_util.convex_hull）。"""
+    return convex_hull(points)
 
 
 def _chord(pts, level: int, axis: str):
     """斜座標凸多邊形與 axis = level 這條直線相交的參數區間 (t_min, t_max)。
 
     axis: 'a' → a=level（沿 b 參數化）；'b' → b=level（沿 a 參數化）；
-    's' → a+b=level（沿 a 參數化）。凸多邊形與直線相交成一條線段，
-    故把所有穿邊交點的另一個座標取最小/最大即得兩端；頂點正好落在線上
-    也要算進來（叉積為 0 不算「同側」）。只在一個頂點相切時回傳 None。
+    's' → a+b=level（沿 a 參數化）。共用實現見 gui.hull_util.chord。
     """
-    ts = []
-    n = len(pts)
-    for k in range(n):
-        a1, b1 = pts[k]
-        a2, b2 = pts[(k + 1) % n]
-        if axis == 'a':
-            v1, v2, t1, t2 = a1, a2, b1, b2
-        elif axis == 'b':
-            v1, v2, t1, t2 = b1, b2, a1, a2
-        else:
-            v1, v2, t1, t2 = a1 + b1, a2 + b2, a1, a2
-        d1, d2 = v1 - level, v2 - level
-        if d1 == 0:
-            ts.append(t1)
-        if d2 == 0:
-            ts.append(t2)
-        if d1 == 0 or d2 == 0 or (d1 > 0) == (d2 > 0):
-            continue
-        ts.append(t1 + (level - v1) * (t2 - t1) / (v2 - v1))
-    if not ts:
-        return None
-    lo, hi = min(ts), max(ts)
-    if hi - lo <= 1e-9:
-        return None
-    return (lo, hi)
+    if axis == 'a':
+        uv = [(b, a) for (a, b) in pts]
+    elif axis == 'b':
+        uv = pts
+    else:
+        uv = [(a, a + b) for (a, b) in pts]
+    return chord(uv, level)
 
 
 class TriangleBoardView:

@@ -13,6 +13,14 @@ import traceback
 from gui.text_input import TextInput
 from puzzle_types import puzzle_key
 
+# 米字格在物理键盘上要「认出」的移动类动作名。
+# 米字格按冻结决策不给方向键绑定（8 向会用掉 W/A/S/D，与撤销/重做等既有
+# 快捷键冲突），这里只用来在按到这些键时给出提示，让玩家改用虚拟键盘。
+MI_KEY_ACTIONS = (
+    'move_up', 'move_down', 'move_left', 'move_right',
+    'tri_up_right', 'tri_down_left', 'tri_down_right',
+)
+
 
 class EventsMixin:
     """事件处理相关方法"""
@@ -271,7 +279,8 @@ class EventsMixin:
 
                     # 棋盘悬停格（连锁提示用；含空格，越界置空）
                     self.hover_cell = None
-                    if getattr(self, 'chain_hint_enabled', False):
+                    if getattr(self, 'chain_hint_enabled', False) \
+                            and not getattr(self, 'mi_mode', False):
                         try:
                             # 注意：shuffle 后棋盘坐标可为负，用 bounds 判定而非 0 起索引
                             b = self.game.get_boundaries()
@@ -479,6 +488,7 @@ class EventsMixin:
                                         self.show_custom_dialog = True
                                         kind = self._current_kind()
                                         self.custom_kind = ('triangle' if kind == 'triangle'
+                                                            else 'mi' if kind == 'mi'
                                                             else 'numbered' if kind == 'numbered'
                                                             else 'rect')
                                         self.custom_fields = {
@@ -494,6 +504,8 @@ class EventsMixin:
                                         kind = preset[4] if len(preset) > 4 else 'square'
                                         if kind == 'triangle':
                                             self.new_triangle_puzzle(pm, ps)
+                                        elif kind == 'mi':
+                                            self.new_mi_puzzle(pm, pn, ps)
                                         elif kind == 'numbered':
                                             self.new_puzzle(pm, pn, ps, numbered=True)
                                         else:
@@ -600,6 +612,13 @@ class EventsMixin:
                         # 教程解法播放中：锁定棋盘操作（点选缝隙/滑块、拖拽滑动）
                         if self._tut_board_locked():
                             gap = block = None
+                        elif getattr(self, 'mi_mode', False):
+                            # 米字格两次触控：第一下点缝隙、第二下点滑块提交。
+                            # 缝隙与滑块都要 editable（走与方形/三角相同的
+                            # gap_at/block_at 命中），差别只在第二下触控的
+                            # 定向——由两下的世界位移投影到缝隙切向定方向。
+                            gap = self.get_gap_at_pos(x, y)
+                            block = self.get_block_at_pos(x, y)
                         else:
                             gap = self.get_gap_at_pos(x, y)
                             block = self.get_block_at_pos(x, y)
@@ -612,7 +631,10 @@ class EventsMixin:
 
                         # 拖拽滑动：记录起点（按下滑块时记录；最终由 MOUSEBUTTONUP 判定点击/拖拽）
                         # 单次/两次触控都关闭时拖拽无意义，不记录起点，避免残留中间态
-                        if block is not None and not self._readonly_blocked() and \
+                        # 米字格禁拖拽，连起点都不记（否则松手会走 _drag_slide 的
+                        # 8 区角度路径，把三坐标滑块当成两坐标解包）
+                        if block is not None and not getattr(self, 'mi_mode', False) \
+                                and not self._readonly_blocked() and \
                                 (getattr(self, 'control_single_touch', True) or two_touch_on):
                             self._mouse_drag_state = {
                                 'sx': x, 'sy': y, 'block': block, 'moved': False,
@@ -627,11 +649,17 @@ class EventsMixin:
                                 self._bump_move_session()
                                 if self.selected_gap == gap:
                                     self.selected_gap = None
+                                    if getattr(self, 'mi_mode', False):
+                                        self._mi_gap_point = None
                                 else:
                                     self.selected_gap = gap
                                     for b in self.game.blocks:
                                         b.be_opted = False
                                     self.selected_block = None
+                                    # 米字格：记下第一下触控的落点（世界坐标），
+                                    # 第二下触控用它算偏移、投影到切向定方向
+                                    if getattr(self, 'mi_mode', False):
+                                        self._mi_gap_point = self.screen_to_world(x, y)
                                     # 操作提示：选中缝隙
                                     gap_type, line = gap
                                     self.macro_notify_msg = (
@@ -640,6 +668,37 @@ class EventsMixin:
                                     # 新手教程：步骤1 选中缝隙 → 步骤2
                                     self._tut_on_gap_clicked()
                             # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，不选中、不平移
+                        elif getattr(self, 'mi_mode', False) and block is not None \
+                                and self.selected_gap is not None and selectable:
+                            # 米字格第二下触控：选组 + 定向 + 提交一次到位。
+                            # 方向只由「第二下 − 第一下」在缝隙切向上的符号决定，
+                            # 法向只做校验（点的块必须与偏移同侧）。
+                            if self.drag_following:
+                                self.clear_drag_follow()
+                            self._bump_move_session()
+                            gap_type, line = self.selected_gap
+                            self.game.opt(gap_type, line, block)
+                            self.selected_block = block
+                            anchor = getattr(self, '_mi_gap_point', None)
+                            if anchor is None:
+                                # 缝隙不是这一回合点出来的（读档恢复选中/HTTP 选中）：
+                                # 没有参考点就无法定向，先只选组，等虚拟键盘给方向
+                                n_blocks = len(
+                                    [b for b in self.game.blocks if b.be_opted])
+                                self.macro_notify_msg = (
+                                    f"选中滑块组 共{n_blocks}个"
+                                    "（用虚拟键盘给方向）")
+                                self.macro_notify_timer = 120
+                            else:
+                                wx, wy = self.screen_to_world(x, y)
+                                direction = self._mi_tap_direction(
+                                    gap_type, line, block, (wx - anchor[0], wy - anchor[1]))
+                                if direction is not None:
+                                    self.move_selected_blocks(direction)
+                            # 第一下的落點只服務這一次第二下：用掉就清。否則選中態
+                            # 會一直留著，之後每次單擊滑塊都拿這個舊錨點重新定向，
+                            # 出現「只是點了幾下、滑塊自己滑走了」的幽靈移動。
+                            self._mi_gap_point = None
                         elif block is not None and self.selected_gap is not None and selectable:
                             # 跟随中点击滑块 → 清除跟随
                             if self.drag_following:
@@ -684,6 +743,7 @@ class EventsMixin:
                         self._bump_move_session()
                         self.selected_gap = None
                         self.selected_block = None
+                        self._mi_gap_point = None
                         for b in self.game.blocks:
                             b.be_opted = False
                         self.macro_notify_msg = "已取消选中"
@@ -792,6 +852,18 @@ class EventsMixin:
                         # 教程解法播放中：锁定棋盘操作（方向键移动）
                         if self._tut_board_locked():
                             continue
+                        # 米字格按冻结决策不綁物理鍵盤（8 向鍵位會與撤銷/重做等
+                        # 既有快捷鍵爭 W/A/S/D）：按到移動鍵只提示用虛擬鍵盤，
+                        # 其他按鍵照舊放行（對話框輸入、快捷鍵都靠後續分支處理）
+                        if getattr(self, 'mi_mode', False):
+                            move_actions = MI_KEY_ACTIONS
+                            for action_name in move_actions:
+                                if self._is_action_triggered(event, action_name):
+                                    self.macro_notify_msg = (
+                                        "米字格：方向请用虚拟键盘（先点缝隙，再点滑块定向）")
+                                    self.macro_notify_timer = 90
+                                    break
+                            continue
                         # 三角形密铺：6 向键盘映射（W E / A D / Z X，围住 S 成六边形）
                         if getattr(self, 'triangle_mode', False):
                             self._triangle_keyboard_move(event)
@@ -855,6 +927,7 @@ class EventsMixin:
         self.game.update_matrix()
         step = self.current_step
         tri = getattr(self, 'triangle_mode', False)
+        mi = getattr(self, 'mi_mode', False)
         blocks = [
             {"row": b.location[0], "col": b.location[1],
              "mod": [b.location[0] % step, b.location[1] % step],
@@ -865,8 +938,15 @@ class EventsMixin:
             # 三角形密铺：附带 up 朝向（▲/▼），供调用方还原密铺结构
             for blk, b in zip(blocks, self.game.blocks):
                 blk['up'] = bool(b.location[2])
+        if mi:
+            # 米字格：附带 q 朝向（N/E/S/W，斜边朝向哪条格边）。平移不改 q，
+            # 因此同一格可能缺块（导入/打乱后），调用方要靠 q 才能定位单元
+            for blk, b in zip(blocks, self.game.blocks):
+                blk['q'] = b.location[2] if len(b.location) >= 3 else None
         solver_state = self._get_solver_state()
-        if tri:
+        if mi:
+            kind = 'mi'
+        elif tri:
             kind = 'triangle'
         elif getattr(self, 'numbered', False):
             kind = 'numbered'
@@ -1100,6 +1180,9 @@ class EventsMixin:
             # 否则按钮路径的拦截只落在 macro_notify，这里仍会回「已启动」
             if self._triangle_blocked('自动求解'):
                 return False, self.macro_notify_msg
+            # 米字格同理：8 向/4 族缝隙的求解器同样未实现
+            if self._mi_blocked('自动求解'):
+                return False, self.macro_notify_msg
         self._start_auto_solve()
         if active:
             return True, "已请求停止求解"
@@ -1122,6 +1205,9 @@ class EventsMixin:
             return False, "正在录制中，无法执行宏"
         if getattr(self, 'macro_executing', False):
             return False, "正在执行其他宏"
+        # 米字格：宏按方形 h/v 缝隙语义录制，四族缝隙/八向的米字局面回放无意义
+        if self._mi_blocked('宏执行'):
+            return False, self.macro_notify_msg
         self._start_macro_execute(name, reverse=bool(reverse))
         if getattr(self, 'macro_executing', False) and getattr(self, 'macro_selecting_base', False):
             self._confirm_macro_execute(base_row, base_col)
@@ -1153,12 +1239,18 @@ class EventsMixin:
         width = len(lines[0])
         if any(len(ln) != width for ln in lines):
             return False, "地图各行长度不一致"
-        # 「有方块」判据按形态分：方形只认 '#'；三角还能是纯 '^'（仅▲）或纯 'v'（仅▼）
+        # 「有方块」判据按形态分：方形只认 '#'；三角还能是纯 '^'（仅▲）或纯 'v'（仅▼）；
+        # 米字格是每格一个十六进制位（4 块各自的掩码），可能一个 '#' 都没有
         joined = ''.join(lines)
         tri = getattr(self, 'triangle_mode', False)
-        needed = ('#', '^', 'v') if tri else ('#',)
-        if not any(ch in joined for ch in needed):
-            return False, "地图中没有方块（#）"
+        mi = getattr(self, 'mi_mode', False)
+        if mi:
+            if not any(ch not in '0_.' for ch in joined):
+                return False, "地图中没有方块"
+        else:
+            needed = ('#', '^', 'v') if tri else ('#',)
+            if not any(ch in joined for ch in needed):
+                return False, "地图中没有方块（#）"
         if step is not None:
             if not isinstance(step, int) or step < 1 or step >= max(len(lines), width):
                 return False, f"step 必须是 1–{max(len(lines), width) - 1} 的整数"
@@ -1184,6 +1276,7 @@ class EventsMixin:
                 block.number = i + 1
         self.selected_gap = None
         self.selected_block = None
+        self._mi_gap_point = None
         self.animating = False
         self.anim_blocks = []
         self.step_count = 0
@@ -1191,9 +1284,14 @@ class EventsMixin:
         if getattr(self, 'triangle_mode', False):
             # 导入的地图包围盒可能与原局不同 → 重新适配缩放（存档不保存 zoom）
             self.zoom = self._fit_triangle_zoom()
+        elif getattr(self, 'mi_mode', False):
+            self.zoom = self._fit_mi_zoom()
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
+        if mi:
+            return True, (f"已导入米字地图：{self.game.m}×{self.game.n}，"
+                          f"{len(self.game.blocks)} 个单位三角")
         if tri:
             return True, (f"已导入三角地图：边长 {self.game.k}，"
                           f"{len(self.game.blocks)} 个单位三角")
@@ -1301,12 +1399,52 @@ class EventsMixin:
                 
                 elif action == 'move':
                     tri = getattr(self, 'triangle_mode', False)
+                    mi = getattr(self, 'mi_mode', False)
                     if len(parts) < 2:
                         usage = ("用法: move w/e/a/d/z/x" if tri
+                                 else "用法: move w/s/a/d/e/z/q/x" if mi
                                  else "用法: move w/s/a/d")
                         self._cmd_reply(resp_q, False, usage)
                         continue
                     direction = parts[1].lower()
+                    if mi:
+                        # 米字格：8 向（q/w/e/a/d/z/s/x）。方向必须平行于已选
+                        # 缝隙（GAP_DIRECTIONS 四族）；滑块参考块没点过时
+                        # _mi_prepare_move 退回第一块，与虚拟键盘同源
+                        from game_mi import DIRECTIONS as MI_DIRECTIONS
+                        from game_mi import GAP_DIRECTIONS as MI_GAP_DIRECTIONS
+                        if direction not in MI_DIRECTIONS:
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"方向必须是 {'/'.join(MI_DIRECTIONS.keys())}")
+                            continue
+                        if not (self.selected_gap and self.selected_block):
+                            self._cmd_reply(resp_q, False, "未选中缝隙和滑块",
+                                            {'reason': 'not_selected'})
+                            continue
+                        gap_type, _line = self.selected_gap
+                        if direction not in MI_GAP_DIRECTIONS.get(gap_type, ()):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"当前缝隙不允许 {direction} 方向移动",
+                                {'reason': 'wrong_direction'})
+                            continue
+                        # 只读存档 / 计时就绪态禁止滑动
+                        if self._readonly_blocked() or (
+                                self.game_mode == 'timed'
+                                and self.timer_state == 'ready'):
+                            self._cmd_reply(
+                                resp_q, False,
+                                "当前状态禁止滑动（计时就绪态或只读存档）",
+                                {'reason': 'timer_blocked'})
+                            continue
+                        moved = self.move_selected_blocks(direction)
+                        if moved:
+                            self._cmd_reply(resp_q, True, f"已移动 {direction}")
+                        else:
+                            self._cmd_reply(resp_q, False, "移动未生效",
+                                            {'reason': 'no_move'})
+                        continue
                     if tri:
                         # 三角形：6 向（wedxza 六邊形）。selected_block 必需；
                         # selected_gap 可選——有則鎖定該縫，無則由 resolve_drag
@@ -1391,7 +1529,8 @@ class EventsMixin:
                 
                 elif action == 'new':
                     if len(parts) < 4:
-                        self._cmd_reply(resp_q, False, "用法: new m n step [num|tri]")
+                        self._cmd_reply(resp_q, False,
+                                        "用法: new m n step [num|tri|mi]")
                         continue
                     try:
                         nm = int(parts[1])
@@ -1400,9 +1539,19 @@ class EventsMixin:
                     except ValueError:
                         self._cmd_reply(resp_q, False, "参数必须是整数")
                         continue
-                    # 第 4 参：num = 带序号方形；tri = 三角形密铺（用 m 作边长 k）
+                    # 第 4 参：num = 带序号方形；tri = 三角形密铺（用 m 作边长 k）；
+                    # mi = 米字格（m 行 n 列，每格 4 个单元三角）
                     numbered = len(parts) >= 5 and parts[4] in ('1', 'num', 'true')
                     is_tri = len(parts) >= 5 and parts[4] in ('tri', 'triangle')
+                    is_mi = len(parts) >= 5 and parts[4] in ('mi', 'mizi')
+                    if is_mi:
+                        if self.new_mi_puzzle(nm, nn, ns):
+                            self._cmd_reply(resp_q, True, f"新谜题 {ns}~mi{nm}*{nn}")
+                        else:
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"米字格行列必须 >=2 且等级 < max({nm}, {nn})")
+                        continue
                     if is_tri:
                         if self.new_triangle_puzzle(nm, ns):
                             self._cmd_reply(resp_q, True, f"新谜题 {ns}~tri{nm}")
@@ -1426,10 +1575,12 @@ class EventsMixin:
                 
                 elif action == 'select_gap':
                     tri = getattr(self, 'triangle_mode', False)
+                    mi = getattr(self, 'mi_mode', False)
                     if len(parts) < 3:
                         self._cmd_reply(
                             resp_q, False,
                             "用法: select_gap h/p/n line" if tri
+                            else "用法: select_gap h/v/d1/d2 line" if mi
                             else "用法: select_gap h/v line")
                         continue
                     gap_type = parts[1].lower()
@@ -1438,7 +1589,20 @@ class EventsMixin:
                     except ValueError:
                         self._cmd_reply(resp_q, False, "line 必须是整数")
                         continue
-                    if tri:
+                    if mi:
+                        # 米字格：4 族縫（h=橫邊 / v=豎邊 / d1="\" / d2="/"）。
+                        # is_valid_gap 自己判 line 是否落在棋形內
+                        from game_mi import GAP_DIRECTIONS
+                        if gap_type not in GAP_DIRECTIONS:
+                            self._cmd_reply(resp_q, False,
+                                            "类型必须是 h、v、d1 或 d2")
+                            continue
+                        if not self.game.is_valid_gap(gap_type, line):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"{self._gap_type_name(gap_type)}缝隙 {line} 不合法")
+                            continue
+                    elif tri:
                         # 三角形：3 族縫（h=水平 / p=i 常數 / n=i+j 常數）
                         from game_triangle import GAP_DIRECTIONS
                         if gap_type not in GAP_DIRECTIONS:
@@ -1464,10 +1628,58 @@ class EventsMixin:
                     for b in self.game.blocks:
                         b.be_opted = False
                     self.selected_block = None
+                    # 不是「点在缝隙上」选中，米字格的定向锚点作废：
+                    # 之后点滑块只选组，方向交给虚拟键盘或下一轮两次触控
+                    self._mi_gap_point = None
                     self._cmd_reply(resp_q, True, f"已选中缝隙: {gap_type} {line}")
                 
                 elif action == 'select_block':
                     tri = getattr(self, 'triangle_mode', False)
+                    mi = getattr(self, 'mi_mode', False)
+                    if mi:
+                        # 米字格：select_block r c q（q = N/E/S/W）
+                        if len(parts) < 3:
+                            self._cmd_reply(resp_q, False,
+                                            "用法: select_block r c [N/E/S/W]")
+                            continue
+                        try:
+                            row = int(parts[1])
+                            col = int(parts[2])
+                        except ValueError:
+                            self._cmd_reply(resp_q, False, "r/c 必须是整数")
+                            continue
+                        want_q = parts[3].upper() if len(parts) >= 4 else None
+                        if want_q is not None and want_q not in ('N', 'E', 'S', 'W'):
+                            self._cmd_reply(resp_q, False, "q 必须是 N/E/S/W")
+                            continue
+                        from game_mi import mi_key
+                        block = None
+                        for b in self.game.blocks:
+                            if mi_key(b) == (row, col, want_q):
+                                block = b
+                                break
+                        if block is None:
+                            # q 省略，或该朝向不在这格里（打乱后会缺块）→ 退回
+                            # 该格现存的第一块，和方形版「只按 (row,col) 定位」同义
+                            for b in self.game.blocks:
+                                if mi_key(b)[:2] == (row, col):
+                                    block = b
+                                    break
+                        if block is None:
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"位置 ({row}, {col}, {want_q or ''}) 没有滑块")
+                            continue
+                        if self.selected_gap is not None:
+                            gap_type, line = self.selected_gap
+                            self.game.opt(gap_type, line, block)
+                        self.selected_block = block
+                        selected_count = sum(
+                            1 for b in self.game.blocks if b.be_opted)
+                        self._cmd_reply(
+                            resp_q, True,
+                            f"已选中滑块 {mi_key(block)}, 选中区域: {selected_count} 个")
+                        continue
                     if tri:
                         # 三角形：select_block i j [up]（up 省略時優先 ▲）
                         if len(parts) < 3:
@@ -1724,7 +1936,16 @@ class EventsMixin:
                         self._cmd_reply(resp_q, False, "正在执行宏，无法录制")
                     else:
                         self._start_macro_recording()
-                        self._cmd_reply(resp_q, True, "已开始录制，请选择基准方块 (macro_set_base row col)")
+                        if self.macro_recording:
+                            self._cmd_reply(
+                                resp_q, True,
+                                "已开始录制，请选择基准方块 (macro_set_base row col)")
+                        else:
+                            # 拦截路径（米字格等）只落 macro_notify，据实回失败，
+                            # 否则调用方以为录上了，回放时对不上四族缝隙/八向
+                            self._cmd_reply(
+                                resp_q, False,
+                                self.macro_notify_msg or "无法开始录制")
 
                 elif action == 'macro_set_base':
                     if len(parts) < 3:
@@ -1843,7 +2064,7 @@ class EventsMixin:
 
                 # ========== 局面分析指令 ==========
                 elif action == 'window':
-                    if self._triangle_blocked('局面分析'):
+                    if self._form_blocked('局面分析'):
                         self._cmd_reply(resp_q, False, self.macro_notify_msg,
                                         {'reason': 'unsupported'})
                         continue
@@ -1860,7 +2081,7 @@ class EventsMixin:
                             print("（无方块，无目标窗口）")
 
                 elif action == 'holes':
-                    if self._triangle_blocked('局面分析'):
+                    if self._form_blocked('局面分析'):
                         self._cmd_reply(resp_q, False, self.macro_notify_msg,
                                         {'reason': 'unsupported'})
                         continue
@@ -1877,7 +2098,7 @@ class EventsMixin:
                             print(f"  {kind}({h['size']}): {h['cells']}")
 
                 elif action == 'actions':
-                    if self._triangle_blocked('局面分析'):
+                    if self._form_blocked('局面分析'):
                         self._cmd_reply(resp_q, False, self.macro_notify_msg,
                                         {'reason': 'unsupported'})
                         continue
@@ -2262,6 +2483,11 @@ class EventsMixin:
             # 控制 Tab：三种模式开关（独立布尔，可任意组合）
             if self.settings_active_tab == 'control':
                 if hasattr(self, '_settings_ctrl_single_rect') and self._settings_ctrl_single_rect.collidepoint(mx, my):
+                    if getattr(self, 'mi_mode', False) and not self.control_single_touch:
+                        # 米字格按冻结决策只做两次触控 + 虚拟键盘：不许打开
+                        self.macro_notify_msg = "米字格不使用单次触控（请用两次触控 + 虚拟键盘）"
+                        self.macro_notify_timer = 120
+                        return
                     self.control_single_touch = not self.control_single_touch
                     status = '开' if self.control_single_touch else '关'
                     self.macro_notify_msg = f"单次触控：{status}"
@@ -2403,10 +2629,13 @@ class EventsMixin:
                         self.gather_enabled[k] = True
                     self.macro_notify_msg = "已恢复默认参数"
                     self.macro_notify_timer = 90
-                # 恢复控制模式默认值（三种模式全开）
-                self.control_single_touch = True
+                # 恢复控制模式默认值（三种模式全开；米字格仍禁单次触控）
+                self.control_single_touch = not getattr(self, 'mi_mode', False)
                 self.control_two_touch = True
                 self.control_mouse_kb = True
+                if getattr(self, 'mi_mode', False):
+                    self.macro_notify_msg = "已恢复默认参数（米字格保持关闭单次触控）"
+                    self.macro_notify_timer = 120
                 return
 
         # 鼠标释放
@@ -2555,6 +2784,9 @@ class EventsMixin:
         if self._timer_blocked():
             self.macro_notify_msg = "计时中无法使用宏"
             self.macro_notify_timer = 90
+            return
+        # 米字格：录下的动作与四族缝隙/八向不对应，禁止录制
+        if self._mi_blocked('宏录制'):
             return
         self.macro_recording = True
         self.macro_recording_steps = []

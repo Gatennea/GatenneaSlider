@@ -138,8 +138,11 @@ else:
 check("至少一個方向可移動", bool(moved_dirs), f"實際 {moved_dirs}")
 check("步數已累計", gui.step_count > 0)
 
-code, r = api('POST', '/move', {'direction': 'q'})
+code, r = api('POST', '/move', {'direction': 'y'})
 check("非法方向字母回 400", code == 400 and not r.get('ok'))
+code, r = api('POST', '/move', {'direction': 'q'})
+check("米字格斜向字母 'q' 由遊戲側拒絕（HTTP 層為米字格放行）",
+      code == 200 and not r.get('ok'), r.get('message', ''))
 
 print("=== 選中縫隙後的方向平行性 ===")
 # 兩次觸控語義：先選縫，再選塊，只有平行方向可動

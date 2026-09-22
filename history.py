@@ -260,6 +260,15 @@ class GameHistory:
                         game.blocks.append(Block([min_row + row_idx, min_col + col_idx, True]))
                     if val & 2:
                         game.blocks.append(Block([min_row + row_idx, min_col + col_idx, False]))
+        elif hasattr(game, 'Q_ORDER'):
+            # 米字格：matrix 為每格 4-bit 網格（bit0=N、bit1=E、bit2=S、bit3=W）
+            game.blocks = []
+            for row_idx, row in enumerate(matrix):
+                for col_idx, val in enumerate(row):
+                    for bit, q in enumerate(game.Q_ORDER):
+                        if val & (1 << bit):
+                            game.blocks.append(
+                                Block([min_row + row_idx, min_col + col_idx, q]))
         else:
             # 根據矩陣重建滑塊列表
             game.blocks = []

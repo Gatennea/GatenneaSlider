@@ -87,7 +87,7 @@ def stdin_reader(cmd_queue: queue.Queue):
 def parse_args():
     """解析命令行参数，返回 (m, n, step, http_port, enable_http, kind)
 
-    kind: 'square' | 'numbered' | 'triangle'（第 4 个参数为 tri/num 时生效）
+    kind: 'square' | 'numbered' | 'triangle' | 'mi'（第 4 个参数为 tri/num/mi 时生效）
     """
     m, n, step = 4, 4, 2
     http_port = 5050
@@ -121,21 +121,23 @@ def parse_args():
         try:
             m, n, step = int(args[0]), int(args[1]), int(args[2])
         except ValueError:
-            print("参数错误，用法: python main.py m n step [port|tri|num]")
+            print("参数错误，用法: python main.py m n step [port|tri|num|mi]")
             sys.exit(1)
         forth = args[3].lower()
         if forth in ('tri', 'triangle'):
             kind = 'triangle'
+        elif forth in ('mi', 'mizige'):
+            kind = 'mi'
         elif forth in ('num', 'numbered'):
             kind = 'numbered'
         else:
             try:
                 http_port = int(forth)
             except ValueError:
-                print(f"参数错误: {args[3]}（第 4 个参数应为端口数字或 tri/num）")
+                print(f"参数错误: {args[3]}（第 4 个参数应为端口数字或 tri/num/mi）")
                 sys.exit(1)
     elif len(args) > 0:
-        print("用法: python main.py [m n step [port|tri|num]] [--http-port PORT] [--no-http]")
+        print("用法: python main.py [m n step [port|tri|num|mi]] [--http-port PORT] [--no-http]")
         sys.exit(1)
 
     return m, n, step, http_port, enable_http, kind

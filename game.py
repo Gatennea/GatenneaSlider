@@ -12,6 +12,15 @@
 - 从复原状态打乱后还原
 """
 
+# 移动方向字母 → (Δrow, Δcol)（与 TriangleSliderMatrix/MiSliderMatrix 同键名，
+# 供上层按形态统一查表；try_move_ex 内部直接消费这张表）
+DIRECTIONS = {
+    'w': (-1, 0),
+    's': (1, 0),
+    'a': (0, -1),
+    'd': (0, 1),
+}
+
 
 class Block:
     """
@@ -465,7 +474,7 @@ class SliderMatrix:
             return [], 'no_selection'
 
         non_selected_positions = set(tuple(b.location) for b in non_selected)
-        delta_map = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
+        delta_map = DIRECTIONS
         if direction not in delta_map:
             return [], 'no_selection'
         delta = delta_map[direction]
@@ -497,6 +506,17 @@ class SliderMatrix:
         selected = [b for b in self.blocks if b.be_opted]
         for i, block in enumerate(selected):
             block.location = list(final_positions[i])
+
+    def compute_score(self) -> float:
+        """
+        计算当前状态的聚拢度 Score（0~1，复原态 = 1.0）
+
+        与 TriangleSliderMatrix/MiSliderMatrix 的方法名保持一致（共同契约），
+        实现沿用 solver.heuristic.compute_score；延迟导入避免循环依赖
+        （heuristic 反向 import 本模块）。
+        """
+        from solver.heuristic import compute_score
+        return compute_score(self)
 
     def shuffle(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75):
         """

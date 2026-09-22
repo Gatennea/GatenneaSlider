@@ -3,7 +3,7 @@
 虚拟键盘 Mixin
 
 提供可拖动、独立浮动的虚拟键盘面板：
-- 方向键：方形 上/下/左/右；三角形 六向（↖↗ / ←→ / ↙↘，对应 W/E/A/D/Z/X）
+- 方向键：方形 上/下/左/右；三角形 六向（↖↗ / ←→ / ↙↘）；米字格 八向（3×3 方向盘）
 - 编辑键：撤销 / 重做
 
 面板通过标题栏拖动，点击右上角 × 关闭。
@@ -54,8 +54,10 @@ class VirtualKeyboardMixin:
         return width, height
 
     def _vk_direction_rows(self) -> int:
-        """方向键行数：方形 2 行（上 / 左下右）；三角形 3 行（↖↗ / ←→ / ↙↘）"""
-        return 3 if getattr(self, 'triangle_mode', False) else 2
+        """方向键行数：方形 2 行（上 / 左下右）；三角/米字 3 行（六向 / 八向）"""
+        if getattr(self, 'mi_mode', False) or getattr(self, 'triangle_mode', False):
+            return 3
+        return 2
 
     def _vk_build_triangle_dirs(self, top_row_y, center_x) -> dict:
         """三角形六向：按屏幕方向排三行两列，与键盘 W/E/A/D/Z/X 的六边形对应。"""
@@ -68,6 +70,30 @@ class VirtualKeyboardMixin:
             ry = top_row_y + row * (btn + gap)
             rects[left_action] = pygame.Rect(left_x, ry, btn, btn)
             rects[right_action] = pygame.Rect(right_x, ry, btn, btn)
+        return rects
+
+    def _vk_build_mi_dirs(self, top_row_y, center_x) -> dict:
+        """米字格八向：3×3 方向盘，正中间留空（没有「不动」这个方向）。
+
+        按键朝向就是屏幕方向：↑=w ↓=s ←=a →=d，四个斜向按米字格两条
+        对角缝族排：d1（"\\"）给 ↖=q / ↘=x，d2（"/"）给 ↗=e / ↙=z。
+        """
+        btn, gap = self._VK_BTN, self._VK_BTN_GAP
+        left_x = center_x - btn - gap - btn // 2
+        mid_x = center_x - btn // 2
+        right_x = center_x + gap + btn // 2
+        rows = (
+            ('move_ul', 'move_up', 'move_ur'),
+            ('move_left', None, 'move_right'),
+            ('move_dl', 'move_down', 'move_dr'),
+        )
+        rects = {}
+        for row, actions in enumerate(rows):
+            ry = top_row_y + row * (btn + gap)
+            for col, action in enumerate(actions):
+                if action is None:
+                    continue
+                rects[action] = pygame.Rect(left_x + col * (btn + gap), ry, btn, btn)
         return rects
 
     def _vk_build_layout(self):
@@ -91,9 +117,11 @@ class VirtualKeyboardMixin:
 
         rects = {}
 
-        # 方向键区（行数随形态变：方形 2 行 / 三角形 3 行）
+        # 方向键区（行数随形态变：方形 2 行 / 三角形 3 行 / 米字 3 行）
         top_row_y = y + self._VK_TITLE_H + self._VK_PAD
-        if getattr(self, 'triangle_mode', False):
+        if getattr(self, 'mi_mode', False):
+            rects.update(self._vk_build_mi_dirs(top_row_y, center_x))
+        elif getattr(self, 'triangle_mode', False):
             rects.update(self._vk_build_triangle_dirs(top_row_y, center_x))
         else:
             rects['move_up'] = pygame.Rect(
@@ -192,7 +220,14 @@ class VirtualKeyboardMixin:
         self.screen.blit(close_surface, close_surface.get_rect(center=self.vk_close_rect.center))
 
         # 按钮
-        if getattr(self, 'triangle_mode', False):
+        if getattr(self, 'mi_mode', False):
+            labels = {
+                'move_ul': '↖', 'move_up': '↑', 'move_ur': '↗',
+                'move_left': '←', 'move_right': '→',
+                'move_dl': '↙', 'move_down': '↓', 'move_dr': '↘',
+                'sticky': '粘滞', 'undo': '撤销', 'redo': '重做',
+            }
+        elif getattr(self, 'triangle_mode', False):
             labels = {
                 'move_ul': '↖', 'move_ur': '↗',
                 'move_l': '←', 'move_r': '→',
@@ -344,29 +379,49 @@ class VirtualKeyboardMixin:
         elif action in ('move_up', 'move_down', 'move_left', 'move_right',
                         'move_ul', 'move_ur', 'move_l', 'move_r',
                         'move_dl', 'move_dr'):
-            direction = {
-                'move_up': 'w', 'move_down': 's',
-                'move_left': 'a', 'move_right': 'd',
-                'move_ul': 'w', 'move_ur': 'e',
-                'move_l': 'a', 'move_r': 'd',
-                'move_dl': 'z', 'move_dr': 'x',
-            }[action]
+            mi = getattr(self, 'mi_mode', False)
+            if mi:
+                # 米字格八向與三角形六向的按鍵朝向相同、晶格方向字母不同：
+                # ↖ 在米字格是 q（d1 族），三角版才是 w。用錯表的症狀是
+                # 選著對角縫按 ↖ 報「方向不匹配」，選著豎直縫則默默走上。
+                direction = {
+                    'move_up': 'w', 'move_down': 's',
+                    'move_left': 'a', 'move_right': 'd',
+                    'move_ul': 'q', 'move_ur': 'e',
+                    'move_l': 'a', 'move_r': 'd',
+                    'move_dl': 'z', 'move_dr': 'x',
+                }[action]
+            else:
+                direction = {
+                    'move_up': 'w', 'move_down': 's',
+                    'move_left': 'a', 'move_right': 'd',
+                    'move_ul': 'w', 'move_ur': 'e',
+                    'move_l': 'a', 'move_r': 'd',
+                    'move_dl': 'z', 'move_dr': 'x',
+                }[action]
 
             if self.animating:
                 self.macro_notify_msg = "动画播放中，无法移动"
                 self.macro_notify_timer = 90
                 return
 
-            if not (self.selected_gap and self.selected_block):
-                self.macro_notify_msg = "请先选中缝隙和滑块"
+            if not self.selected_gap or (not mi and not self.selected_block):
+                # 米字格只要先选缝隙：滑块没点过时 _mi_prepare_move 会退回
+                # 第一块，方向由按键给定，不必强制二次点选
+                self.macro_notify_msg = "请先选中缝隙和滑块" if not mi \
+                    else "请先点选缝隙"
                 self.macro_notify_timer = 90
                 return
 
             gap_type, _ = self.selected_gap
             # 方向必须与选中缝隙平行：方形 h→a/d、v→w/s；
-            # 三角形 h→a/d、p→e/z、n→w/x（表驱动，换形态只改表）
-            from game_triangle import GAP_DIRECTIONS
-            if getattr(self, 'triangle_mode', False):
+            # 三角形 h→a/d、p→e/z、n→w/x；米字格 h→a/d、v→w/s、
+            # d1→q/x、d2→e/z（全部表驱动，换形态只改表）
+            if mi:
+                from game_mi import GAP_DIRECTIONS as MI_GAP_DIRECTIONS
+                allowed = MI_GAP_DIRECTIONS.get(gap_type, ())
+            elif getattr(self, 'triangle_mode', False):
+                from game_triangle import GAP_DIRECTIONS
                 allowed = GAP_DIRECTIONS.get(gap_type, ())
             else:
                 allowed = ('w', 's') if gap_type == 'v' else ('a', 'd')

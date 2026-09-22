@@ -180,12 +180,13 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
 
         elif path == '/move':
             direction = body.get('direction', '')
-            # 方形 w/s/a/d；三角形密铺另加 e/z/x（wedxza 六向）。合法性与
-            # 「该方向是否平行于选中缝隙」由游戏侧判定，这里只挡明显非法的字母
-            if direction not in ('w', 's', 'a', 'd', 'e', 'z', 'x'):
+            # 方形 w/s/a/d；三角形密铺另加 e/z/x（wedxza 六向）；米字格八向
+            # 再加 q（q/w/e/a/d/z/s/x）。合法性与「该方向是否平行于选中缝隙」
+            # 由游戏侧判定，这里只挡明显非法的字母
+            if direction not in ('w', 's', 'a', 'd', 'e', 'z', 'x', 'q'):
                 self._send_json(
                     {"ok": False,
-                     "message": "direction 必须是 w/s/a/d（三角形另加 e/z/x）"}, 400)
+                     "message": "direction 必须是 w/s/a/d（三角形另加 e/z/x，米字格另加 q）"}, 400)
                 return
             result = self._post_command(f'move {direction}')
             self._send_json(result)
@@ -213,14 +214,16 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             if m is None or n is None or step is None:
                 self._send_json({"ok": False, "message": "需要 m, n, step 参数"}, 400)
                 return
-            # type 可选：square（默认）/ numbered / triangle。
-            # 三角形用 m 作大三角边长 k，n 仍须给出（ CLI 同款签名 new m n step tri ）
+            # type 可选：square（默认）/ numbered / triangle / mi。
+            # 三角形用 m 作大三角边长 k，n 仍须给出（ CLI 同款签名 new m n step tri ）；
+            # 米字格 m 行 n 列，每格 4 个单元三角
             kind = body.get('type', 'square')
-            if kind not in ('square', 'numbered', 'triangle'):
+            if kind not in ('square', 'numbered', 'triangle', 'mi'):
                 self._send_json(
-                    {"ok": False, "message": "type 必须是 square/numbered/triangle"}, 400)
+                    {"ok": False, "message": "type 必须是 square/numbered/triangle/mi"}, 400)
                 return
-            suffix = '' if kind == 'square' else ('num' if kind == 'numbered' else 'tri')
+            suffix = {'numbered': 'num', 'triangle': 'tri',
+                      'mi': 'mi'}.get(kind, '')
             cmd = f'new {m} {n} {step}' + (f' {suffix}' if suffix else '')
             result = self._post_command(cmd)
             self._send_json(result)
@@ -285,11 +288,12 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/select_gap':
             gap_type = body.get('type', '')
             line = body.get('line')
-            # 方形 h/v；三角形密铺另加 p/n（3 族缝隙）。线号合法性由游戏侧判定
-            if gap_type not in ('h', 'v', 'p', 'n') or line is None:
+            # 方形 h/v；三角形密铺另加 p/n（3 族缝隙）；米字格是 d1/d2
+            # （两条对角缝族）。线号合法性由游戏侧判定
+            if gap_type not in ('h', 'v', 'p', 'n', 'd1', 'd2') or line is None:
                 self._send_json(
                     {"ok": False,
-                     "message": "需要 type (h/v，三角形另加 p/n) 和 line"}, 400)
+                     "message": "需要 type (h/v，三角形另加 p/n，米字格另加 d1/d2) 和 line"}, 400)
                 return
             result = self._post_command(f'select_gap {gap_type} {line}')
             self._send_json(result)
@@ -300,7 +304,13 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             if row is None or col is None:
                 self._send_json({"ok": False, "message": "需要 row 和 col"}, 400)
                 return
-            result = self._post_command(f'select_block {row} {col}')
+            cmd = f'select_block {row} {col}'
+            # q 只对米字格有意义（N/E/S/W：斜边朝向哪条格边）；给了就转发，
+            # 省略时游戏侧退回该格第一块
+            q = body.get('q')
+            if q:
+                cmd += f' {q}'
+            result = self._post_command(cmd)
             self._send_json(result)
 
         elif path == '/quit':

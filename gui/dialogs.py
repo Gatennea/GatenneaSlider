@@ -658,9 +658,12 @@ class DialogsMixin:
         self.screen.blit(kind_label, (label_x, kind_y + 6))
 
         self.custom_kind_rects = {}
-        btn_w, btn_h = 68, 26
+        # 形态四选一：矩形 / 三角 / 米字 / 数字（分段按钮，选中项高亮）
+        # 加第四项后按钮收窄，四个并排仍在一行内
+        btn_w, btn_h = 52, 26
         kind_x = dialog_x + 85
-        for kid, kname in (('rect', '矩形'), ('triangle', '三角'), ('numbered', '数字')):
+        for kid, kname in (('rect', '矩形'), ('triangle', '三角'),
+                           ('mi', '米字'), ('numbered', '数字')):
             btn = pygame.Rect(kind_x, kind_y, btn_w, btn_h)
             self.custom_kind_rects[kid] = btn
             active = (kind == kid)
@@ -814,6 +817,12 @@ class DialogsMixin:
                         return True
                     if step >= max(m, n):
                         self.custom_error = f"等级必须 < {max(m, n)}"
+                        return True
+
+                    if getattr(self, 'custom_kind', 'rect') == 'mi':
+                        self.new_mi_puzzle(m, n, step)
+                        self.show_custom_dialog = False
+                        self.custom_error = ''
                         return True
 
                     numbered = getattr(self, 'custom_kind', 'rect') == 'numbered'

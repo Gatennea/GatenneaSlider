@@ -1,0 +1,340 @@
+# -*- coding: utf-8 -*-
+"""
+米字格（方格四切）棋盤幾何視圖（Stage M1：靜態雛形）。
+
+職責：把 (r, c, q) 單位塊轉成螢幕多邊形、算棋形凸包、米字背景網格
+（格邊 + 每格兩條對角線，按凸包裁剪）、包圍盒。
+
+**世界座標與三角形版同基準**：都以像素為單位（一格 = cell_size），
+這樣 camera / world_to_screen / screen_to_world 三條路徑可以原樣復用，
+米字格的矩形包圍盒也就直接走方形相機那套算式。格座標（1 格 = 1 單位）
+只在函式內部出現，進出一律經 to_world / from_world。
+
+單位塊是「貼著格子某一條邊的半格」：斜邊 = 格邊（長 cell_size），
+兩條直角邊 = 半對角線（長 cell_size/√2）。inset 用的縮放中心是**內心**
+而不是重心——重心到三邊的距離不相等（這是米字格與三角版的關鍵差別：
+等邊三角的重心就是內心，直角三角形不是），用重心縮放會讓三邊的
+視覺間隙一大兩小。
+
+滑動與縫隙命中（M2）：world_to_cell 反查單位塊；gap_at 按「最近的單位邊」
+裁定縫隙，gap_line_distance / gap_segment 把 game 的 rank 分界 line 翻成
+幾何直線（level = line + 1，與三角版 GAP_LINE_OFFSET 同理：相鄰 rank 的
+遠側邊才是真正的切口）。
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Optional, Tuple
+
+from game_mi import GAP_DIRECTIONS, gap_index_range, mi_vertices
+from gui.hull_util import chord, convex_hull
+
+# 直角等腰三角的內切圓半徑（格為單位）：面積 1/4、半周長 (1+√2)/2
+#   → r = (1/4) / ((1+√2)/2) = (√2−1)/2
+_INRADIUS = (math.sqrt(2.0) - 1.0) / 2.0
+
+_SQRT2 = math.sqrt(2.0)
+
+# 命中裁定平手時的優先序（h 橫邊、v 豎邊、d1 "\"、d2 "/"）。四族縫在
+# 格心/格角交匯，完全等距的點是真平手，必須有個穩定次序才可預期。
+_FAM_ORDER = {'h': 0, 'v': 1, 'd1': 2, 'd2': 3}
+
+
+class MiBoardView:
+    """米字格棋盤的座標轉換與幾何計算。
+
+    座標系（與 TriangleBoardView 一致）：
+      格座標   (x, y)，一格 = 1×1，y 軸向下，格心 = (c+½, r+½)
+      世界座標 (x, y) * cell_size，即 zoom=1 時的像素位置
+    滑塊身份 (r, c, q) 帶 q，命中反查（world_to_cell）留到 M2。
+    """
+
+    def __init__(self, cell_size: float = 60.0, gap_width: float = 4.0):
+        self.cell_size = float(cell_size)
+        self.gap_width = float(gap_width)
+        self.inradius = self.cell_size * _INRADIUS   # 像素
+
+    # ---------- 座標換算 ----------
+    def to_world(self, x: float, y: float) -> Tuple[float, float]:
+        """格座標 → 世界座標（像素）。"""
+        return (x * self.cell_size, y * self.cell_size)
+
+    def from_world(self, wx: float, wy: float) -> Tuple[float, float]:
+        """世界座標（像素）→ 格座標。"""
+        return (wx / self.cell_size, wy / self.cell_size)
+
+    # ---------- 多邊形 ----------
+    def incenter(self, r: int, c: int, q: str) -> Tuple[float, float]:
+        """單位塊的內心（世界座標，像素）。
+
+        直角等腰三角的內心落在「斜邊中點 → 格心」連線上，距每邊一個
+        內切半徑；q 決定斜邊朝向，也就是內心偏在格子的哪一角。
+        """
+        i = _INRADIUS
+        if q == 'N':      # 斜邊在格子上邊 y=r
+            p = (c + 0.5, r + i)
+        elif q == 'E':    # 斜邊在格子右邊 x=c+1
+            p = (c + 1.0 - i, r + 0.5)
+        elif q == 'S':    # 斜邊在格子下邊 y=r+1
+            p = (c + 0.5, r + 1.0 - i)
+        elif q == 'W':    # 斜邊在格子左邊 x=c
+            p = (c + i, r + 0.5)
+        else:
+            raise ValueError(f"unknown quarter: {q}")
+        return self.to_world(*p)
+
+    def piece_polygon(self, r: int, c: int, q: str,
+                      inset: bool = True) -> list:
+        """單位塊多邊形（世界座標頂點列表，3 個頂點）。"""
+        pts = [self.to_world(x, y) for (x, y) in mi_vertices(r, c, q)]
+        if inset and self.gap_width > 0:
+            # 均勻縮放：每條邊各內縮 gap_width/2，相鄰塊間留出視覺間隙。
+            # 必須以內心為中心，三邊內縮量才一致（重心不行）。
+            f = 1.0 - (self.gap_width / 2.0) / self.inradius
+            f = max(0.4, min(1.0, f))
+            cx, cy = self.incenter(r, c, q)
+            pts = [(cx + (x - cx) * f, cy + (y - cy) * f) for (x, y) in pts]
+        return pts
+
+    def piece_center(self, r: int, c: int, q: str) -> Tuple[float, float]:
+        """單位塊的內心（繪製提示文字/選中圈的錨點）。"""
+        return self.incenter(r, c, q)
+
+    # ---------- 命中 ----------
+    def world_to_cell(self, wx: float, wy: float, cells=None) \
+            -> Optional[Tuple[int, int, str]]:
+        """世界座標 → 單位塊 (r, c, q)；空白（或不在 cells 內）回傳 None。
+
+        四塊剛好鋪滿一格，故只須檢查落點所在格的四個三角形；邊界上的點
+        同時屬於兩塊，依 N/E/S/W 次序取先命中者（穩定、可預期）。
+        """
+        gx, gy = self.from_world(wx, wy)
+        r0, c0 = math.floor(gy), math.floor(gx)
+        for r in (r0 - 1, r0):
+            for c in (c0 - 1, c0):
+                for q in ('N', 'E', 'S', 'W'):
+                    if cells is not None and (r, c, q) not in cells:
+                        continue
+                    if _point_in_tri(wx, wy, self.piece_polygon(r, c, q,
+                                                               inset=False)):
+                        return (r, c, q)
+        return None
+
+    def gap_line_distance(self, gap_type: str, line: int,
+                          wx: float, wy: float) -> float:
+        """點到某條縫隙線的垂直距離（像素）。
+
+        直線方程式（level = line + 1 —— game 的 line 是 rank 分界，
+        相鄰 rank 的遠側邊才是幾何上的切口，與三角版 GAP_LINE_OFFSET 同理）：
+            'h' ：y = level                      （格邊）
+            'v' ：x = level                      （格邊）
+            'd1'：y − x = line/2                 （"\" 對角線，鏈 k = r−c）
+            'd2'：x + y = line/2 + 1             （"/" 對角線，鏈 k = r+c）
+        """
+        s = self.cell_size
+        level = line + 1
+        if gap_type == 'h':
+            return abs(wy - level * s)
+        if gap_type == 'v':
+            return abs(wx - level * s)
+        if gap_type == 'd1':
+            k = (line / 2.0) * s
+            return abs((wy - wx) - k) / _SQRT2
+        if gap_type == 'd2':
+            k = (line / 2.0 + 1.0) * s
+            return abs((wx + wy) - k) / _SQRT2
+        raise ValueError(f"unknown gap type: {gap_type}")
+
+    def gap_at(self, wx: float, wy: float, cells, tolerance: float = None):
+        """世界座標 → 縫隙 (gap_type, line)；太遠回傳 None。
+
+        裁定規則（規劃 §3）：取點擊位置最近的**單位邊**（任何共享邊），
+        該邊所在族與所在線即目標縫隙；等距時取長邊（格邊長 cell_size
+        優先於半對角線長 cell_size/√2），仍平手時按 _FAM_ORDER。
+        單位邊比「到直線的距離」更貼手感：格角附近最近的是那兩條格邊，
+        格心附近最近的是四條半對角線，二者對應玩家肉眼看到的縫。
+        """
+        if tolerance is None:
+            # 一條縫的可點範圍：一格邊長的 0.15（cell_size=60 時 9px）。
+            # 取這個值是為了蓋住「縫畫得很細（約 3px）但鼠標/手指要能瞄」
+            # 的差距，同時又不吃掉整格——單位塊內心距縫約 0.207 格，比
+            # tolerance 深，所以點在格子中間時不會誤選到任何一條縫。
+            tolerance = max(4.0, self.cell_size * 0.15)
+        gx, gy = self.from_world(wx, wy)
+        r0, c0 = math.floor(gy), math.floor(gx)
+        best = None
+        for r in range(r0 - 1, r0 + 2):
+            for c in range(c0 - 1, c0 + 2):
+                for q in ('N', 'E', 'S', 'W'):
+                    if (r, c, q) not in cells:
+                        continue
+                    verts = mi_vertices(r, c, q)
+                    for i in range(3):
+                        p = self.to_world(*verts[i])
+                        t = self.to_world(*verts[(i + 1) % 3])
+                        dist = _point_seg_dist(wx, wy, p, t)
+                        if dist > tolerance:
+                            continue
+                        gap = self._edge_gap(p, t)
+                        if gap is None:
+                            continue
+                        key = (round(dist, 9), -math.dist(p, t),
+                               _FAM_ORDER[gap[0]], gap)
+                        if best is None or key < best:
+                            best = key
+        return best[3] if best is not None else None
+
+    def _edge_gap(self, p, t):
+        """一條單位邊（世界座標兩端點）→ 所屬縫隙 (gap_type, line)。
+
+        三種單位邊：水平/豎直格邊、兩種斜向半對角線。由端點常數反推 line：
+        格邊 y=r → 'h' line = r−1；y−x=k → 'd1' line = 2k；
+        x+y=k（k = r+c+1）→ 'd2' line = 2(k−1) = 2(r+c)。
+        """
+        dx, dy = t[0] - p[0], t[1] - p[1]
+        tol = 1e-6
+        if abs(dy) <= tol and abs(dx) > tol:            # 水平格邊
+            return ('h', int(round(p[1] / self.cell_size)) - 1)
+        if abs(dx) <= tol and abs(dy) > tol:            # 豎直格邊
+            return ('v', int(round(p[0] / self.cell_size)) - 1)
+        if abs(dy - dx) <= tol:                          # "\" 半對角線
+            k = (p[1] - p[0]) / self.cell_size
+            return ('d1', 2 * int(round(k)))
+        if abs(dy + dx) <= tol:                          # "/" 半對角線
+            k = (p[0] + p[1]) / self.cell_size
+            return ('d2', 2 * (int(round(k)) - 1))
+        return None
+
+    def candidate_gaps(self, wx: float, wy: float, cells, tolerance: float = None):
+        """候選縫隙（未經遊戲邏輯驗證），由近到遠（供 HTTP 診斷用）。"""
+        if tolerance is None:
+            # 一條縫的可點範圍：一格邊長的 0.15（cell_size=60 時 9px）。
+            # 取這個值是為了蓋住「縫畫得很細（約 3px）但鼠標/手指要能瞄」
+            # 的差距，同時又不吃掉整格——單位塊內心距縫約 0.207 格，比
+            # tolerance 深，所以點在格子中間時不會誤選到任何一條縫。
+            tolerance = max(4.0, self.cell_size * 0.15)
+        found = []
+        for gap_type in GAP_DIRECTIONS:
+            for line in gap_index_range(gap_type, cells):
+                dist = self.gap_line_distance(gap_type, line, wx, wy)
+                if dist <= tolerance:
+                    found.append((dist, (gap_type, line)))
+        found.sort()
+        return [gap for _dist, gap in found]
+
+    def gap_segment(self, gap_type: str, line: int, hull):
+        """縫隙 line 與棋形凸包相交的那一段（世界座標兩端點）；不相交回 None。
+
+        凸包是棋形的「棋盤範圍」，縫隙線只畫到它上面（與三角版同理：
+        洞裡不斷線，選中的紅線也不會斷在形狀外面）。對角族的縫是整條
+        對角線鏈（r−c 或 r+c 相同的全部格子），不是單獨半條斜邊——
+        這正是規劃裡「一條鏈是完整的一條縫」的意思。
+        """
+        if not hull or len(hull) < 3:
+            return None
+        # 凸包頂點換回格座標，level 也用格座標（一進一出同一個單位）
+        pts = [self.from_world(x, y) for (x, y) in hull]
+        level = line + 1
+        if gap_type == 'h':
+            rng = chord([(x, y) for (x, y) in pts], level)
+            ends = [(t, level) for t in rng] if rng else None
+        elif gap_type == 'v':
+            rng = chord([(y, x) for (x, y) in pts], level)
+            ends = [(level, t) for t in rng] if rng else None
+        elif gap_type == 'd1':
+            k = line / 2.0
+            rng = chord([(x, y - x) for (x, y) in pts], k)
+            ends = [(t, k + t) for t in rng] if rng else None
+        elif gap_type == 'd2':
+            k = line / 2.0 + 1.0
+            rng = chord([(x, x + y) for (x, y) in pts], k)
+            ends = [(t, k - t) for t in rng] if rng else None
+        else:
+            raise ValueError(f"unknown gap type: {gap_type}")
+        if not ends:
+            return None
+        return tuple(self.to_world(*p) for p in ends)
+
+    # ---------- 棋形 ----------
+    def board_hull(self, positions) -> list:
+        """棋形（滑塊併集）的凸包（世界座標頂點列表）。"""
+        pts = []
+        for key in positions:
+            pts.extend(self.to_world(x, y) for (x, y) in mi_vertices(*key))
+        return convex_hull(pts)
+
+    def grid_segments(self, hull) -> list:
+        """米字背景網格：凸包內的格邊 + 兩族對角線（世界座標線段）。
+
+        四族直線各自與凸包求交（hull_util.chord），因此洞裡/形狀外都不畫。
+        實心矩陣時這張圖就是完整的「方格 + 每格兩條對角線」。
+        """
+        if not hull or len(hull) < 3:
+            return []
+        # 四族各取 (參數 u, 約束量 v) 的點集；v 沿著世界座標計，
+        # level 仍以「格」為單位，乘 cell_size 後才是像素級的約束值
+        uv = {
+            'h': [(x, y) for (x, y) in hull],
+            'v': [(y, x) for (x, y) in hull],
+            'd1': [(x, y - x) for (x, y) in hull],
+            'd2': [(x, x + y) for (x, y) in hull],
+        }
+        s = self.cell_size
+        out = []
+        for fam in ('h', 'v', 'd1', 'd2'):
+            vals = [v for (_u, v) in uv[fam]]
+            lo = int(math.floor(min(vals) / s))
+            hi = int(math.ceil(max(vals) / s))
+            for level in range(lo, hi + 1):
+                rng = chord(uv[fam], level * s)
+                if rng is None:
+                    continue
+                t0, t1 = rng
+                if fam == 'h':
+                    ends = ((t0, level * s), (t1, level * s))
+                elif fam == 'v':
+                    ends = ((level * s, t0), (level * s, t1))
+                elif fam == 'd1':      # y - x = level
+                    ends = ((t0, level * s + t0), (t1, level * s + t1))
+                else:                  # x + y = level
+                    ends = ((t0, level * s - t0), (t1, level * s - t1))
+                out.append(ends)
+        return out
+
+    # ---------- 包圍盒 ----------
+    def bounding_box(self, positions) -> Tuple[float, float, float, float]:
+        """全部滑塊的世界座標包圍盒 (min_x, min_y, max_x, max_y)。"""
+        if not positions:
+            return (0.0, 0.0, 0.0, 0.0)
+        min_x = min_y = float('inf')
+        max_x = max_y = float('-inf')
+        for key in positions:
+            for (x, y) in mi_vertices(*key):
+                wx, wy = self.to_world(x, y)
+                min_x, min_y = min(min_x, wx), min(min_y, wy)
+                max_x, max_y = max(max_x, wx), max(max_y, wy)
+        return (min_x, min_y, max_x, max_y)
+
+
+def _point_in_tri(px: float, py: float, pts) -> bool:
+    """點是否在三角形內（含邊界）。"""
+    (ax, ay), (bx, by), (cx, cy) = pts
+    d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
+    d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
+    d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
+    has_neg = d1 < 0 or d2 < 0 or d3 < 0
+    has_pos = d1 > 0 or d2 > 0 or d3 > 0
+    return not (has_neg and has_pos)
+
+
+def _point_seg_dist(px: float, py: float, a, b) -> float:
+    """點到線段的距離（線段退化為點時回傳點距）。"""
+    vx, vy = b[0] - a[0], b[1] - a[1]
+    wx, wy = px - a[0], py - a[1]
+    denom = vx * vx + vy * vy
+    if denom <= 0.0:
+        return math.dist((px, py), a)
+    t = (wx * vx + wy * vy) / denom
+    t = max(0.0, min(1.0, t))
+    return math.dist((px, py), (a[0] + t * vx, a[1] + t * vy))
