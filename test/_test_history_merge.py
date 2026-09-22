@@ -178,6 +178,11 @@ def test_gui_end_to_end():
     gui.animation_enabled = False
     gui._readonly = False
     gui.save_readonly_flag = False
+    if getattr(gui, 'mi_mode', False) or getattr(gui, 'triangle_mode', False):
+        # 构造时会从 config/temp_history.json 恢复上次会话，那里可能是三角/
+        # 米字格存档（棋子是三坐标的）。本测试要方形棋：必须先切回去，
+        # 否则 update_matrix 会按三坐标解包方形棋子而抛 IndexError
+        gui.new_puzzle(3, 3, 1)
 
     # 3×3 去掉 (0,0)：选中 h 缝 1 的连通组后可连按两次 'a'（第三次会断开）
     start = {(0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)}

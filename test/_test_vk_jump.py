@@ -50,6 +50,11 @@ def main():
     gui.animation_enabled = False
     gui._readonly = False
     gui.save_readonly_flag = False
+    if getattr(gui, 'mi_mode', False) or getattr(gui, 'triangle_mode', False):
+        # 构造时会从 config/temp_history.json 恢复上次会话，那里可能是三角/
+        # 米字格存档（棋子是三坐标的）。本测试要方形棋：必须先切回去，
+        # 否则 update_matrix 会按三坐标解包方形棋子而抛 IndexError
+        gui.new_puzzle(5, 5, 2)
     gui.show_virtual_keyboard = True   # 恢复配置可能隐藏面板，测试中强制显示
 
     # ---- 构造三段历史：A(顶缝 1-4行) → B(0-3行) → C(0-3行右移) ----
