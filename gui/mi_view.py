@@ -19,7 +19,9 @@
 滑動與縫隙命中（M2）：world_to_cell 反查單位塊；gap_at 按「最近的單位邊」
 裁定縫隙，gap_line_distance / gap_segment 把 game 的 rank 分界 line 翻成
 幾何直線（level = line + 1，與三角版 GAP_LINE_OFFSET 同理：相鄰 rank 的
-遠側邊才是真正的切口）。
+遠側邊才是真正的切口）。斜向一格之後（規劃 plan-mi-zige-diagonal-unit.md）
+位置出現半整數座標，線號隨之可以是半整數：_hit_cells 把半偏移格也查遍、
+_edge_gap 按 ½ 對齊反推線號、grid_segments 的橫豎層級由塊的邊導出。
 """
 
 from __future__ import annotations
@@ -39,6 +41,18 @@ _SQRT2 = math.sqrt(2.0)
 # 命中裁定平手時的優先序（h 橫邊、v 豎邊、d1 "\"、d2 "/"）。四族縫在
 # 格心/格角交匯，完全等距的點是真平手，必須有個穩定次序才可預期。
 _FAM_ORDER = {'h': 0, 'v': 1, 'd1': 2, 'd2': 3}
+
+
+def _half_round(v: float) -> float:
+    """取最近的 ½ 倍數；結果是整數時回 int。
+
+    錯位態的格邊落在半整數格座標上，線號（= 格邊層級 − 1）隨之是半整數，
+    取整會把縫線號吞成鄰近整數、點到正確的邊卻給出錯的縫。按 ½ 對齊既吃掉
+    反座標換算的浮點誤差，也不吃掉真正的半格。回 int 是為了與
+    gap_candidates 的線號型態一致（顯示/JSON 好看，比較上 1 == 1.0 也無妨）。
+    """
+    h = round(v * 2.0) / 2.0
+    return int(h) if float(h).is_integer() else h
 
 
 class MiBoardView:
@@ -102,26 +116,43 @@ class MiBoardView:
         return self.incenter(r, c, q)
 
     # ---------- 命中 ----------
-    def world_to_cell(self, wx: float, wy: float, cells=None) \
-            -> Optional[Tuple[int, int, str]]:
-        """世界座標 → 單位塊 (r, c, q)；空白（或不在 cells 內）回傳 None。
+    def _hit_cells(self, wx: float, wy: float) -> list:
+        """點擊位置附近要檢查的格子 (r, c) 清單（整數格在前，次序穩定）。
 
-        四塊剛好鋪滿一格，故只須檢查落點所在格的四個三角形；邊界上的點
-        同時屬於兩塊，依 N/E/S/W 次序取先命中者（穩定、可預期）。
+        對齊態：四塊鋪滿一格，落點所在格就夠；點壓在格線上時還要算上/左
+        那一格，落在格線下方/右方不到一個容差時（例如棋形外沿往下 2px）
+        也要算下/右那一格，所以取所在格的 3×3 整數格。
+
+        錯位態（斜向一格之後）：B 晶格的塊 key 是半整數，而它橫跨整數格邊
+        ——半整數格 (r0±½, c0±½) 的盒子正好蓋住落點，它們的上下沿/左右沿
+        就是半整數層級的格邊。不追加這四個半偏移格的話，錯位那一半的塊在
+        hit-test 裡全程不存在：點它的內心也返回 None，gap_at 也看不到它的邊。
         """
         gx, gy = self.from_world(wx, wy)
         r0, c0 = math.floor(gy), math.floor(gx)
-        for r in (r0 - 1, r0):
-            for c in (c0 - 1, c0):
-                for q in ('N', 'E', 'S', 'W'):
-                    if cells is not None and (r, c, q) not in cells:
-                        continue
-                    if _point_in_tri(wx, wy, self.piece_polygon(r, c, q,
-                                                               inset=False)):
-                        return (r, c, q)
+        return [(r, c)
+                for r in (r0 - 1, r0, r0 + 1, r0 - 0.5, r0 + 0.5)
+                for c in (c0 - 1, c0, c0 + 1, c0 - 0.5, c0 + 0.5)]
+
+    def world_to_cell(self, wx: float, wy: float, cells=None) \
+            -> Optional[Tuple[float, float, str]]:
+        """世界座標 → 單位塊 (r, c, q)；空白（或不在 cells 內）回傳 None。
+
+        四塊剛好鋪滿一格，故只須檢查落點附近那幾格的四個三角形；邊界上的點
+        同時屬於兩塊，依清單次序 + N/E/S/W 取先命中者（穩定、可預期）。
+        r/c 可以是半整數（錯位態的 B 晶格塊）。整數格排在半偏移格之前，
+        所以對齊態的裁定與只看整數格時完全一致。
+        """
+        for r, c in self._hit_cells(wx, wy):
+            for q in ('N', 'E', 'S', 'W'):
+                if cells is not None and (r, c, q) not in cells:
+                    continue
+                if _point_in_tri(wx, wy, self.piece_polygon(r, c, q,
+                                                           inset=False)):
+                    return (r, c, q)
         return None
 
-    def gap_line_distance(self, gap_type: str, line: int,
+    def gap_line_distance(self, gap_type: str, line: float,
                           wx: float, wy: float) -> float:
         """點到某條縫隙線的垂直距離（像素）。
 
@@ -131,6 +162,8 @@ class MiBoardView:
             'v' ：x = level                      （格邊）
             'd1'：y − x = line/2                 （"\" 對角線，鏈 k = r−c）
             'd2'：x + y = line/2 + 1             （"/" 對角線，鏈 k = r+c）
+        line 可以是半整數（錯位態的橫豎縫就是半整數線號）；算式本是浮點的，
+        半整數原樣成立。
         """
         s = self.cell_size
         level = line + 1
@@ -161,34 +194,31 @@ class MiBoardView:
             # 12.4px，而玩家瞄的是三角形的視覺中心（重心），它離最近的
             # 格邊只有 10px。容差一旦接近這個數，「點在方塊中間」就有
             # 接近一半的概率被裁定成點在縫上——實測 9px 時塊內均勻
-            # 採樣 93% 判成縫、方块中心上下抖 4~6px 就有 1/3 誤判。
+            # 採樣 93% 判成縫、方塊中心上下抖 4~6px 就有 1/3 誤判。
             # 米字格的第一下選縫、第二下點塊全靠這兩類點擊區分，誤判
             # 的後果是「只是點了幾下方塊、滑塊自己滑走了」：選中縫會
             # 記下定向錨點，下一次點在塊上就直接提交移動。5px 時縫的
-            # 可點帶寬 10px（視覺裂縫 4px 的 2.5 倍），方块中部離最近的
+            # 可點帶寬 10px（視覺裂縫 4px 的 2.5 倍），方塊中部離最近的
             # 縫也還有 5px 以上的餘量，兩邊都夠用。
             tolerance = max(3.0, self.cell_size / 12.0)
-        gx, gy = self.from_world(wx, wy)
-        r0, c0 = math.floor(gy), math.floor(gx)
         best = None
-        for r in range(r0 - 1, r0 + 2):
-            for c in range(c0 - 1, c0 + 2):
-                for q in ('N', 'E', 'S', 'W'):
-                    if (r, c, q) not in cells:
+        for r, c in self._hit_cells(wx, wy):
+            for q in ('N', 'E', 'S', 'W'):
+                if (r, c, q) not in cells:
+                    continue
+                verts = mi_vertices(r, c, q)
+                for i in range(3):
+                    p = self.to_world(*verts[i])
+                    t = self.to_world(*verts[(i + 1) % 3])
+                    dist = _point_seg_dist(wx, wy, p, t)
+                    if dist > tolerance:
                         continue
-                    verts = mi_vertices(r, c, q)
-                    for i in range(3):
-                        p = self.to_world(*verts[i])
-                        t = self.to_world(*verts[(i + 1) % 3])
-                        dist = _point_seg_dist(wx, wy, p, t)
-                        if dist > tolerance:
-                            continue
-                        gap = self._edge_gap(p, t)
-                        if gap is None:
-                            continue
-                        key = (round(dist, 9), -math.dist(p, t),
-                               _FAM_ORDER[gap[0]], gap)
-                        if best is None or key < best:
+                    gap = self._edge_gap(p, t)
+                    if gap is None:
+                        continue
+                    key = (round(dist, 9), -math.dist(p, t),
+                           _FAM_ORDER[gap[0]], gap)
+                    if best is None or key < best:
                             best = key
         return best[3] if best is not None else None
 
@@ -196,20 +226,27 @@ class MiBoardView:
         """一條單位邊（世界座標兩端點）→ 所屬縫隙 (gap_type, line)。
 
         三種單位邊：水平/豎直格邊、兩種斜向半對角線。由端點常數反推 line：
-        格邊 y=r → 'h' line = r−1；y−x=k → 'd1' line = 2k；
+        格邊 y=g → 'h' line = g−1；y−x=k → 'd1' line = 2k；
         x+y=k（k = r+c+1）→ 'd2' line = 2(k−1) = 2(r+c)。
+
+        橫豎的 line 可以是半整數（錯位態的格邊落在半整數層級上，如 y=1.5
+        → 'h' line 0.5），所以按 ½ 對齊取最近值，不能 round 取整——取整會
+        把點到的邊歸到鄰近的整數線上，而那條線多半切在塊裡、is_valid_gap
+        直接否掉，表現就是「點了縫沒反應」。對角族不用改：兩個晶格的
+        y−x、x+y 都恆為整數（不變量，見 game_mi 模組 docstring）。
         """
         dx, dy = t[0] - p[0], t[1] - p[1]
         tol = 1e-6
+        s = self.cell_size
         if abs(dy) <= tol and abs(dx) > tol:            # 水平格邊
-            return ('h', int(round(p[1] / self.cell_size)) - 1)
+            return ('h', _half_round(p[1] / s - 1.0))
         if abs(dx) <= tol and abs(dy) > tol:            # 豎直格邊
-            return ('v', int(round(p[0] / self.cell_size)) - 1)
+            return ('v', _half_round(p[0] / s - 1.0))
         if abs(dy - dx) <= tol:                          # "\" 半對角線
-            k = (p[1] - p[0]) / self.cell_size
+            k = (p[1] - p[0]) / s
             return ('d1', 2 * int(round(k)))
         if abs(dy + dx) <= tol:                          # "/" 半對角線
-            k = (p[0] + p[1]) / self.cell_size
+            k = (p[0] + p[1]) / s
             return ('d2', 2 * (int(round(k)) - 1))
         return None
 
@@ -228,13 +265,16 @@ class MiBoardView:
         found.sort()
         return [gap for _dist, gap in found]
 
-    def gap_segment(self, gap_type: str, line: int, hull):
+    def gap_segment(self, gap_type: str, line: float, hull):
         """縫隙 line 與棋形凸包相交的那一段（世界座標兩端點）；不相交回 None。
 
         凸包是棋形的「棋盤範圍」，縫隙線只畫到它上面（與三角版同理：
         洞裡不斷線，選中的紅線也不會斷在形狀外面）。對角族的縫是整條
         對角線鏈（r−c 或 r+c 相同的全部格子），不是單獨半條斜邊——
         這正是規劃裡「一條鏈是完整的一條縫」的意思。
+
+        line 半整數時（錯位態的橫豎縫）level = line + 1 照樣成立：算式是
+        浮點的，chord 也吃浮點層級，沒有整數假設。
         """
         if not hull or len(hull) < 3:
             return None
@@ -269,11 +309,18 @@ class MiBoardView:
             pts.extend(self.to_world(x, y) for (x, y) in mi_vertices(*key))
         return convex_hull(pts)
 
-    def grid_segments(self, hull) -> list:
+    def grid_segments(self, hull, positions=None) -> list:
         """米字背景網格：凸包內的格邊 + 兩族對角線（世界座標線段）。
 
         四族直線各自與凸包求交（hull_util.chord），因此洞裡/形狀外都不畫。
         實心矩陣時這張圖就是完整的「方格 + 每格兩條對角線」。
+
+        positions 給定時，橫豎層級由**塊的邊**導出（每塊貢獻上/下沿與左/右沿
+        四個層級）：對齊態導出來就是整數，錯位態自動含半整數階層——兩半錯開
+        半格後，格邊本來就落在半整數層級上，只畫整數層級會讓背景與塊對不齊。
+        對角族仍走整數區間：兩個晶格的 y−x、x+y 都恆為整數（見 game_mi
+         docstring 的不變量），且交錯的兩套對角線合起來正好鋪滿整數層級。
+        positions 為 None 時退回舊行為（整數區間），供只看凸包的調用方使用。
         """
         if not hull or len(hull) < 3:
             return []
@@ -286,24 +333,35 @@ class MiBoardView:
             'd2': [(x, x + y) for (x, y) in hull],
         }
         s = self.cell_size
+        levels = {}
+        for fam in ('h', 'v', 'd1', 'd2'):
+            if positions is not None and fam in ('h', 'v'):
+                # 橫邊層級 = 每塊的 r 與 r+1；豎邊層級 = c 與 c+1
+                k = 0 if fam == 'h' else 1
+                vals = {key[k] for key in positions}
+                vals |= {key[k] + 1 for key in positions}
+                levels[fam] = sorted(vals)
+            else:
+                vals = [v for (_u, v) in uv[fam]]
+                lo = int(math.floor(min(vals) / s))
+                hi = int(math.ceil(max(vals) / s))
+                levels[fam] = range(lo, hi + 1)
         out = []
         for fam in ('h', 'v', 'd1', 'd2'):
-            vals = [v for (_u, v) in uv[fam]]
-            lo = int(math.floor(min(vals) / s))
-            hi = int(math.ceil(max(vals) / s))
-            for level in range(lo, hi + 1):
-                rng = chord(uv[fam], level * s)
+            for level in levels[fam]:
+                lv = level * s
+                rng = chord(uv[fam], lv)
                 if rng is None:
                     continue
                 t0, t1 = rng
                 if fam == 'h':
-                    ends = ((t0, level * s), (t1, level * s))
+                    ends = ((t0, lv), (t1, lv))
                 elif fam == 'v':
-                    ends = ((level * s, t0), (level * s, t1))
+                    ends = ((lv, t0), (lv, t1))
                 elif fam == 'd1':      # y - x = level
-                    ends = ((t0, level * s + t0), (t1, level * s + t1))
+                    ends = ((t0, lv + t0), (t1, lv + t1))
                 else:                  # x + y = level
-                    ends = ((t0, level * s - t0), (t1, level * s - t1))
+                    ends = ((t0, lv - t0), (t1, lv - t1))
                 out.append(ends)
         return out
 

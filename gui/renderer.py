@@ -239,7 +239,9 @@ class RendererMixin:
             cells = ((cells - moving)
                      | {(r, c, q) for (r, c, q) in anim_map.values()})
         hull = view.board_hull(cells)
-        for p1, p2 in view.grid_segments(hull):
+        # 背景層級由塊的邊導出（錯位態的橫豎格邊落在半整數層級上），
+        # 只傳凸包的話畫出來的仍是對齊態的整數格，與塊對不齊
+        for p1, p2 in view.grid_segments(hull, cells):
             pygame.draw.line(self.screen, self.colors['gap'],
                              self.world_to_screen(*p1),
                              self.world_to_screen(*p2),
