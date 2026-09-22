@@ -214,12 +214,30 @@ class RendererMixin:
         （與三角版同理：線不伸到棋形外的空白處，洞裡也不畫）。
         單位塊以內心為中心內縮 gap_width/2，相鄰塊之間剛好留出
         視覺間隙；be_opted 的塊用選中色，選中的縫疊一條紅線。
-        拖拽跟隨不做（米字格禁單次觸控）；移動動畫屬 M3，這裡不插值。
+        拖拽跟隨不做（米字格禁單次觸控）；移動動畫整組沿同一格座標
+        位移插值（q 朝向在平移下不變）。
         """
         self.screen.fill(self.colors['background'])
 
         view = self._mi_view()
+        # 移動動畫 / 撤銷重做動畫：整組平移 dr/dc 格（位移表見
+        # gui/animation._move_delta，撤銷時是反向），單位塊的朝向 q 在平移下
+        # 不變，插值只需動前兩個分量。動畫中的當前位置要畫進凸包，否則背景
+        # 網格和紅縫會提前跳到終點。
+        anim_map = {}
+        if self.animating and self.anim_blocks:
+            t = self.ease_out(self.anim_progress)
+            dr = self._anim_dr * t
+            dc = self._anim_dc * t
+            for idx, block in enumerate(self.anim_blocks):
+                sr, sc, sq = self.anim_start_pos[idx]
+                anim_map[id(block)] = (sr + dr, sc + dc, sq)
+
         cells = self.game.positions()
+        if anim_map:
+            moving = {mi_key(b) for b in self.anim_blocks}
+            cells = ((cells - moving)
+                     | {(r, c, q) for (r, c, q) in anim_map.values()})
         hull = view.board_hull(cells)
         for p1, p2 in view.grid_segments(hull):
             pygame.draw.line(self.screen, self.colors['gap'],
@@ -232,7 +250,7 @@ class RendererMixin:
         selected = []
         normal = []
         for block in self.game.blocks:
-            r, c, q = mi_key(block)
+            r, c, q = anim_map.get(id(block)) or mi_key(block)
             cx, cy = view.piece_center(r, c, q)
             sx, sy = self.world_to_screen(cx, cy)
             if (sx < -scaled_cell or sx > self.screen_width + scaled_cell

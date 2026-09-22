@@ -143,8 +143,9 @@ class AnimationMixin:
 
         合并快照的合成动作直接给 'delta'（各步位移之和，方向可能不是单向）；
         单步动作按 direction × step 换算。三角形密铺走 game_triangle.DIRECTIONS
-        （六向），方形走四向表；位移只作用在前兩個分量，第三分量（▲/▼ 朝向）
-        沿縫平行滑動時不變。
+        （六向），米字格走 game_mi.DIRECTIONS（八向，斜族的整格在表里），
+        方形走四向表；位移只作用在前兩個分量，第三分量（▲/▼、縫向）沿縫平行
+        滑動時不變。
         """
         delta = move_info.get('delta')
         if delta is not None:
@@ -152,6 +153,10 @@ class AnimationMixin:
         step = move_info.get('step', self.current_step)
         if getattr(self, 'triangle_mode', False):
             from game_triangle import DIRECTIONS
+            d = DIRECTIONS.get(move_info.get('direction'), (0, 0))
+            return d[0] * step, d[1] * step
+        if getattr(self, 'mi_mode', False):
+            from game_mi import DIRECTIONS
             d = DIRECTIONS.get(move_info.get('direction'), (0, 0))
             return d[0] * step, d[1] * step
         d = {'w': (-1, 0), 's': (1, 0),
