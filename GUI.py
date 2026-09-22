@@ -1817,6 +1817,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """提交拖拽跟随移动：根据夹紧后的偏移计算步数并执行移动。"""
         if not self.drag_following:
             return
+        # 跟随期间若已经有一步在播（按住左键时另一只手按了方向键），提交
+        # 会替换掉正在播的动画 → 只收尾，不移动
+        if self.animating:
+            self.clear_drag_follow()
+            return
         direction = self.drag_follow_direction
 
         # 偏移已在跟随期间夹紧到 [0, drag_follow_max_cells]，此处直接取用（单一数据源）
@@ -1872,6 +1877,22 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 这条 8 区角度路径只对方形两坐标成立，米字格必须走两次触控
         if getattr(self, 'mi_mode', False):
             self._mi_blocked('拖拽', '请用两次触控：先点缝隙，再点滑块')
+            return False
+        # 动画播放中：上一手的落点还没提交，此时再移一次会把正在播的动画
+        # 整组替换掉（起点被改写、上一手被悄悄丢掉），画面表现为「滑块
+        # 自己往回滑了一格」。虚拟键盘早有这道闸门（gui/virtual_keyboard.py
+        # 的「动画播放中，无法移动」），鼠标这条漏了——松手时 st['moved']
+        # 已置位（跟随便初始化失败），于是每一次落在动画窗口里的点击都会
+        # 凭空多走一步。
+        if self.animating:
+            self.macro_notify_msg = "动画播放中，无法移动"
+            self.macro_notify_timer = 90
+            return False
+        # 三角形密铺有自己的跟随入口（_init_triangle_drag_follow）：这条
+        # 8 区角度 + is_valid_h_line/v_line 全是方形两坐标的解法，三角棋盘
+        # 上这两个方法根本不存在。跟随没起来时（方向滑不动）回退到这里，
+        # 只会崩或凭空移一步
+        if getattr(self, 'triangle_mode', False):
             return False
         gap = self.selected_gap
         if gap is None:
@@ -2210,8 +2231,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 90
             return
         self._timer_cancel()
+        # 按当前形态重建：只分「三角 / 其它」会让米字格被当成矩形重建
+        # （Ctrl+R 之后米字格变矩形，尺寸等级还正好是初始预设），
+        # 带序号重建后编号也一起丢掉——两者都是这里漏了分支。
         if getattr(self, 'triangle_mode', False):
             self.new_triangle_puzzle(self.triangle_side, self.current_step)
+        elif getattr(self, 'mi_mode', False):
+            self.new_mi_puzzle(self.current_m, self.current_n, self.current_step)
+        elif getattr(self, 'numbered', False):
+            self.new_puzzle(self.current_m, self.current_n, self.current_step,
+                            numbered=True)
         else:
             self.new_puzzle(self.current_m, self.current_n, self.current_step)
 

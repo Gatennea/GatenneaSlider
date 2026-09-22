@@ -694,7 +694,15 @@ class EventsMixin:
                                 direction = self._mi_tap_direction(
                                     gap_type, line, block, (wx - anchor[0], wy - anchor[1]))
                                 if direction is not None:
-                                    self.move_selected_blocks(direction)
+                                    # 动画播放中：上一手还没落地，这一手只选组
+                                    # 不提交，否则会把正在播的动画整组替换掉
+                                    # （起点被改写、上一手被丢掉）。虚拟键盘
+                                    # 同样在动画期间拒绝移动
+                                    if self.animating:
+                                        self.macro_notify_msg = "动画播放中，无法移动"
+                                        self.macro_notify_timer = 90
+                                    else:
+                                        self.move_selected_blocks(direction)
                             # 第一下的落點只服務這一次第二下：用掉就清。否則選中態
                             # 會一直留著，之後每次單擊滑塊都拿這個舊錨點重新定向，
                             # 出現「只是點了幾下、滑塊自己滑走了」的幽靈移動。

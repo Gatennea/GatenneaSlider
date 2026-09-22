@@ -156,11 +156,18 @@ class MiBoardView:
         格心附近最近的是四條半對角線，二者對應玩家肉眼看到的縫。
         """
         if tolerance is None:
-            # 一條縫的可點範圍：一格邊長的 0.15（cell_size=60 時 9px）。
-            # 取這個值是為了蓋住「縫畫得很細（約 3px）但鼠標/手指要能瞄」
-            # 的差距，同時又不吃掉整格——單位塊內心距縫約 0.207 格，比
-            # tolerance 深，所以點在格子中間時不會誤選到任何一條縫。
-            tolerance = max(4.0, self.cell_size * 0.15)
+            # 一條縫的可點範圍，取 1/12 格（cell_size=60 時 5px）。
+            # 不能再放寬：單位塊是直角等腰三角形，內心到三邊都只有
+            # 12.4px，而玩家瞄的是三角形的視覺中心（重心），它離最近的
+            # 格邊只有 10px。容差一旦接近這個數，「點在方塊中間」就有
+            # 接近一半的概率被裁定成點在縫上——實測 9px 時塊內均勻
+            # 採樣 93% 判成縫、方块中心上下抖 4~6px 就有 1/3 誤判。
+            # 米字格的第一下選縫、第二下點塊全靠這兩類點擊區分，誤判
+            # 的後果是「只是點了幾下方塊、滑塊自己滑走了」：選中縫會
+            # 記下定向錨點，下一次點在塊上就直接提交移動。5px 時縫的
+            # 可點帶寬 10px（視覺裂縫 4px 的 2.5 倍），方块中部離最近的
+            # 縫也還有 5px 以上的餘量，兩邊都夠用。
+            tolerance = max(3.0, self.cell_size / 12.0)
         gx, gy = self.from_world(wx, wy)
         r0, c0 = math.floor(gy), math.floor(gx)
         best = None
@@ -209,11 +216,9 @@ class MiBoardView:
     def candidate_gaps(self, wx: float, wy: float, cells, tolerance: float = None):
         """候選縫隙（未經遊戲邏輯驗證），由近到遠（供 HTTP 診斷用）。"""
         if tolerance is None:
-            # 一條縫的可點範圍：一格邊長的 0.15（cell_size=60 時 9px）。
-            # 取這個值是為了蓋住「縫畫得很細（約 3px）但鼠標/手指要能瞄」
-            # 的差距，同時又不吃掉整格——單位塊內心距縫約 0.207 格，比
-            # tolerance 深，所以點在格子中間時不會誤選到任何一條縫。
-            tolerance = max(4.0, self.cell_size * 0.15)
+            # 與 gap_at 同一個值（理由见 gap_at）：米字格的「點縫」與
+            # 「點塊」必須能分開，放寬容差會讓點方塊中部被判成點縫
+            tolerance = max(3.0, self.cell_size / 12.0)
         found = []
         for gap_type in GAP_DIRECTIONS:
             for line in gap_index_range(gap_type, cells):
