@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-米字格（方格四切）棋盤幾何視圖（Stage M1：靜態雛形）。
+米字格（方格四切）棋盤幾何視圖（Stage M1 建、M2 起承載滑動與縫隙命中）。
 
 職責：把 (r, c, q) 單位塊轉成螢幕多邊形、算棋形凸包、米字背景網格
 （格邊 + 每格兩條對角線，按凸包裁剪）、包圍盒。
@@ -61,7 +61,7 @@ class MiBoardView:
     座標系（與 TriangleBoardView 一致）：
       格座標   (x, y)，一格 = 1×1，y 軸向下，格心 = (c+½, r+½)
       世界座標 (x, y) * cell_size，即 zoom=1 時的像素位置
-    滑塊身份 (r, c, q) 帶 q，命中反查（world_to_cell）留到 M2。
+    滑塊身份 (r, c, q) 帶 q，命中反查見 world_to_cell。
     """
 
     def __init__(self, cell_size: float = 60.0, gap_width: float = 4.0):

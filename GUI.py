@@ -820,7 +820,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         return self._mi_blocked(action, '后续阶段开发中')
 
     def new_mi_puzzle(self, m: int, n: int, step: int = 1) -> bool:
-        """创建米字格谜题（M1：静态预览，尚不可交互）。
+        """创建米字格谜题（可玩：两次触控选组 + 虚拟键盘）。
 
         参数：
             m: 行数
@@ -944,10 +944,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.camera_y = game_center_y - board_cy * self.zoom
 
     def _mi_hit_board(self, screen_x: int, screen_y: int) -> bool:
-        """点击是否落在米字格棋盘包围盒内（M1 用來決定要不要弹提示）。
+        """点击是否落在米字格棋盘包围盒内（落在空白处则不触发任何操作）。
 
-        米字格還沒有單位塊命中（屬 M2），這裡只問「在不在棋盤範圍裡」，
-        好让空白处的点击安静地走相机平移。
+        单位块与缝隙的命中由 mi_view 负责（world_to_cell / gap_at），这里
+        只问「在不在棋盘范围里」，好让空白处的点击安静地走相机平移。
         """
         try:
             view = self._mi_view()
@@ -2400,7 +2400,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if getattr(self, 'triangle_mode', False):
             return self.game.export_map()
         if getattr(self, 'mi_mode', False):
-            # 米字格 M1 无 export_map；且打乱被拦 → 就绪态到不了这里
+            # 米字格已随 M4 一起有 export_map（mi8 编码）；打乱被拦 →
+            # 就绪态到不了这里
             return ''
         return self.game.export_map().replace('#', '1').replace('_', '0')
 

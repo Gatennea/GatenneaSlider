@@ -4,7 +4,7 @@
 
 ---
 
-基於 **Python + pygame-ce** 的滑塊拼圖遊戲。玩家（或 AI）透過「選擇縫隙 → 選擇滑塊組 → 滑動」把打亂的方塊還原成目標形狀：**方形/帶序號**是 `m×n` 或 `n×m` 實心矩形（允許整體平移，不做模板比對）；**三角形密鋪**是邊長 k 的實心大正三角形（k² 個單位三角，允許整體平移與 120°/240° 旋轉）。三種形態共用同一套「縫隙 + 移動」互動模型，只有縫隙族數與方向字母不同。
+基於 **Python + pygame-ce** 的滑塊拼圖遊戲。玩家（或 AI）透過「選擇縫隙 → 選擇滑塊組 → 滑動」把打亂的方塊還原成目標形狀：**方形/帶序號**是 `m×n` 或 `n×m` 實心矩形（允許整體平移，不做模板比對）；**三角形密鋪**是邊長 k 的實心大正三角形（k² 個單位三角，允許整體平移與 120°/240° 旋轉）；**米字格**是實心 m×n 米字矩陣（4mn 個直角三角滑塊，允許整體平移與換晶格）。四種形態共用同一套「縫隙 + 移動」互動模型，只有縫隙族數與方向字母不同。
 
 > ## ⚠️ 給 AI Agent 的速覽（先讀這節）
 >
@@ -13,12 +13,12 @@
 >    - **stdin 指令**：向主程序 stdin 寫一行指令（打包成 `--windowed` exe 時 `sys.stdin is None`，該通道自動停用）。
 > 2. 一次完整移動 = 三個指令依序執行：`select_gap` → `select_block` → `move`，缺一不可（**三角形密鋪例外**：`move` 可省略 `select_gap`，由遊戲按「縫隙線穿過滑塊」規則自動定縫）。
 > 3. 每次「動作型」指令後建議再 `GET /status` 確認結果；所有回應都有 `ok: true/false`。
-> 4. `solved` 不代表「回到最初版面」，而是「方塊在任意位置構成實心矩形／實心大正三角形」。
+> 4. `solved` 不代表「回到最初版面」，而是「方塊在任意位置構成實心矩形／三角形／米字矩陣」。
 > 5. 若要改求解器/調試面板：務必先讀 §2「核心不變量」與 §5「求解器子系統」，避免破壞平移不變量假設。
-> 6. **三種形態**：方形 `{step}~{m}*{n}`、帶序號 `…#num`、三角形密鋪 `{step}~tri{k}`（見 §2 詞彙與 §12 限制；求解器/建表/ML 對後兩者暫不支援）。
+> 6. **四種形態**：方形 `{step}~{m}*{n}`、帶序號 `…#num`、三角形密鋪 `{step}~tri{k}`、米字格 `{step}~mi{m}*{n}`（見 §2 詞彙與 §12 限制；求解器/建表/ML 對後三者暫不支援）。
 >
 > **建議閱讀順序**（由底層到外層）：
-> `game.py` → `solver/actions.py`、`solver/state.py` → `GUI.py` → `gui/events.py`（`process_commands`）→ `http_server.py` → `solver/__init__.py`、`solver/ml/gather_solver.py`。
+> `game.py` → `game_mi.py`／`game_triangle.py` → `solver/actions.py`、`solver/state.py` → `GUI.py` → `gui/events.py`（`process_commands`）→ `http_server.py` → `solver/__init__.py`、`solver/ml/gather_solver.py`。
 
 ---
 
@@ -54,7 +54,7 @@ curl http://127.0.0.1:5050/status
 
 ---
 
-## 2. 詞彙與核心不變量（三形態）
+## 2. 詞彙與核心不變量（四形態）
 
 | 詞彙 | 定義 |
 | --- | --- |
@@ -63,7 +63,7 @@ curl http://127.0.0.1:5050/status
 | 縫隙 gap | 兩區塊之間的**分割線**。`h`=橫向縫隙（row 之間），`v`=縱向縫隙（col 之間）；以 `line` 標號。`select_gap {type,line}` 選它 |
 | 滑塊組 | `select_block {row,col}` 選中縫隙一側**連通**的整組方塊（DFS，`opt()`） |
 | 移動 move | `w/s/a/d`（上/下/左/右）。**限制：`v` 縫隙只能 `w/s`；`h` 縫隙只能 `a/d`**（見 `gui/events.py` 移動分支） |
-| step | 等級/基本步距；每次移動方塊組整體平移 step 的整數倍 |
+| step | 等級/基本步距；每次移動方塊組整體平移 step 個「一格」。**米字格的「一格」按族定義**（橫豎 = 一條格邊、斜向 = √2/2），見下行；方形/三角形則恆為 step 個單位長 |
 | solved | 所有方塊構成**任意位置**的 `m×n` 或 `n×m` 實心矩形（含轉置，不含形狀模板） |
 | 帶序號 numbered | `Block.number`（`int|None`）可選欄位。**不改變移動/幾何語義**，只影響判勝與渲染。puzzle 標籤加 `#num` 後綴；存檔為 v2（`puzzle.type='numbered'` + `snapshots[].numbers`） |
 | 帶序號 solved | 實心矩形 **且** 編號按行主序排佈，但允許整體旋轉/鏡像（矩形二面體群 D4 共 8 種：恆等/旋轉 90/180/270/上下左右鏡像/主副對角線翻轉）。非正方（如 4×3）轉置後朝向變 3×4 也算 |
@@ -75,6 +75,15 @@ curl http://127.0.0.1:5050/status
 | 三角形 solved | 全部 k² 個單位三角拼成邊長 k 實心大正三角形；位置不限（可平移），朝向不限（120°/240° 旋轉等效），顛倒（鏡像）不可達。判定用頂點集凸包（三頂點、三邊長皆 k、殼內單元集合一致） |
 | 三角形 mod 不變量 | `(i % step, j % step)` 永遠不變（三族移動向量都是 step 整數倍），連鎖提示（§2.1 類比）依此高亮 |
 | 三角形 map 文本 | `#`=▲▼俱全、`^`=僅▲、`v`=僅▼、`_`=空白；匯出為菱形胞 2-bit 矩陣（0/1/2/3）。**方形 `#/_` 圖不可餵給三角形**（會整塊判定為非法） |
+| 米字格 mi | `game_mi.py::MiSliderMatrix`。單位塊 `(r, c, q)`：方格沿兩對角線切成 4 個直角等腰三角，`q`∈`N/E/S/W` = 斜邊貼著哪條格邊，整盤 4mn 片。`new m n step mi`，標籤 `{step}~mi{m}*{n}`；建局即實心矩形（還原態），`Alt+S` 打亂。存檔為 v2（`puzzle.type='mi'` + 8-bit 快照） |
+| 米字格縫隙 | **4 族**（皆為穿過棋盤的直線）：`h`=橫格邊、`v`=豎格邊、`d1`=`r-c` 主對角（`\`）、`d2`=`r+c` 副對角（`/`）。`select_gap {type,line}`；`line` 在錯位態可為半整數（如 `h 1.5`），終端/HTTP 座標解析走 `parse_mi_coord` |
+| 米字格移動 | **8 向**，字母 `w/e/a/d/z/x/q/s`。移動**平行於縫隙線**：`h`→`a/d`、`v`→`w/s`、`d1`→`x/q`、`d2`→`e/z`；不平行回 `wrong_direction` |
+| **米字格「一格」** | **一格 = 該方向能滑動的最小量，與幾何長度無關**（用戶口徑 2026-09-23）。橫豎一格 = 一條格邊（長 1）；斜向一格 = 半個格身的斜向距離 √2/2，座標上即平移 ±(½,½)。**不存在「半格滑動」這種說法**；舊版的整格斜距 ±(1,1) 是「斜向兩格」。step=2 的斜向 = 連走兩次 = 舊版等級 1 的斜距 |
+| 錯位態 / 兩晶格 | 斜向一格後一半的塊落進半整數座標，從此有 **A**（整數，建局態）與 **B**（半整數）兩個晶格；`game_mi.lattice_of(key)` 給 0/1。不變量 `2r` 與 `2c` 同奇偶 → `r−c`、`r+c` 恆整，對角縫永不切進塊裡，只有橫豎縫會整條穿過塊內部而選不動。把任一半再沿斜向推一格即回單一晶格 |
+| 米字格 solved | 全部 4mn 片拼成任意位置的實心 m×n 米字矩陣：**可平移、可換晶格（錯開半格也算對）**——一條斜縫兩半朝同向各滑一格就能換晶格，是普通玩法走得到的狀態。判據用 8-bit 矩陣形狀，不要求回到建局那張整數格圖 |
+| 米字格地圖文本 | 每格 8 bit = 4 個 q × 2 個晶格（bit0~3 = A、bit4~7 = B）。匯出端沒有半整數塊時仍是舊的每格一字元（4-bit），有錯位塊時輸出帶 `mi8` 標記行的每格兩字元格式；匯入端兩種都吃 |
+| 米字格 `/status` | `blocks[]` 每條帶 `q`（朝向）與 `lat`（`A`/`B`），**沒有 `mod`**：錯位態的 `r%step` 會在 0 與 0.5 之間翻，不再是那種不變式 |
+| 米字格控制 | 兩次觸控（第一下點縫、第二下點塊，方向由兩下世界位移在縫切向上的符號定）+ 虛擬鍵盤；**單次觸控與拖拽按凍結決策一律禁用**。求解器/建表/ML、`/analysis/*`、宏錄製執行、著色與除錯面板暫不支援（摘要見 §12） |
 
 ### 2.1 Mod 著色不變量（求解器核心，勿違反）
 
@@ -105,6 +114,7 @@ curl http://127.0.0.1:5050/status
 main.py                # 入口：解析 CLI → 開 stdin 執行緒 + HTTP → SliderGUI().run()
 game.py                # 純遊戲邏輯（無 pygame 依賴）：Block、SliderMatrix、is_solved
 game_triangle.py       # 三角形密鋪純邏輯：DIRECTIONS/GAP_DIRECTIONS 兩張方向表、TriangleSliderMatrix
+game_mi.py             # 米字格純邏輯：DIRECTIONS/GAP_DIRECTIONS、兩晶格（lattice_of）、MiSliderMatrix、8-bit 快照/地圖
 GUI.py                 # SliderGUI 主類（8 個 Mixin 聚合）+ 主迴圈/高層操作/資源路徑
 history.py             # GameHistory 快照式撤銷/重做
 records.py             # Records 成績管理器（pickle+XOR 混淆存 config/records.dat）
@@ -113,7 +123,8 @@ http_server.py         # GameHTTPHandler：HTTP REST → 指令佇列（見 §6�
 gui/                   # 全是 Mixin，被 SliderGUI 繼承
   board_view.py        #   SquareBoardView      方形幾何（cell↔像素/命中/方向表/8 區表），事件與渲染委派
   triangle_view.py     #   TriangleBoardView    三角形幾何：(i,j,up)→像素、半平面命中、3 族縫命中、包圍盒
-  renderer.py          #   RendererMixin        繪製棋盤（方形/三角形兩套）/選單/面板/求解器選單/目標框與標記
+  mi_view.py           #   MiBoardView          米字格幾何：(r,c,q)→像素、內切圓縮放、4 族縫命中、半整數線號
+  renderer.py          #   RendererMixin        繪製棋盤（方形/三角形/米字格三套）/選單/面板/求解器選單/目標框與標記
   events.py            #   EventsMixin          滑鼠/鍵盤/快捷鍵/長按/面板互動/指令佇列處理
   animation.py         #   AnimationMixin       移動與 undo/redo 動畫、緩動
   dialogs.py           #   DialogsMixin         幫助/自訂謎題/PygameFileDialog/宏管理與命名框
@@ -278,7 +289,7 @@ python -m solver.ml.human_solver
 | POST | `/move` | `{"direction":"w|s|a|d"}`（方形/序號）或 `{"direction":"w|e|a|d|z|x"}`（三角形，平行於縫隙）；失敗帶 `reason`（§下方列舉） |
 | POST | `/undo` `/redo` `/shuffle` `/reset` `/deselect` `/quit` | — |
 | POST | `/new` | `{"m","n","step","numbered"?:bool}`；`numbered=true` 建帶序號謎題（行主序賦 1..m·n）。`type` 可選 `square`（默認）/`numbered`/`triangle`；`triangle` 以 `m` 作大三角邊長 k（`n` 仍須給） |
-| POST | `/select_gap` | `{"type":"h|v","line":N}`（方形/序號）；三角形為 `{"type":"h|p|n","line":N}`（3 族）。**三角形可省略**：`move` 會按「縫隙線穿過滑塊」自動定縫 |
+| POST | `/select_gap` | `{"type":"h|v","line":N}`（方形/序號）；三角形為 `{"type":"h|p|n","line":N}`（3 族）；米字格為 `{"type":"h|v|d1|d2","line":N}`（4 族，錯位態的 line 可為半整數）。**三角形可省略**：`move` 會按「縫隙線穿過滑塊」自動定縫 |
 | POST | `/select_block` | `{"row","col"}`；三角形填菱形胞 `(i, j)`（`up` 由 `GET /status` 的 `blocks[].up` 取得） |
 | POST | `/solve`（= `/solver/solve`） | `{"algorithm?":"<key>"}`；省略用目前算法；**執行中呼叫 = 取消** |
 | POST | `/solver/cancel` | 請求停止求解（執行中回「已請求停止求解」） |
@@ -320,6 +331,7 @@ curl http://127.0.0.1:5050/status
 
 ```bash
 curl -X POST http://127.0.0.1:5050/new -H "Content-Type: application/json" -d '{"m":6,"n":6,"step":1,"type":"triangle"}'
+curl -X POST http://127.0.0.1:5050/new -H "Content-Type: application/json" -d '{"m":4,"n":4,"step":1,"type":"mi"}'   # 米字格 4×4
 curl http://127.0.0.1:5050/status          # blocks[].up 取 ▲/▼ 朝向
 curl -X POST http://127.0.0.1:5050/select_block -H "Content-Type: application/json" -d '{"row":2,"col":1}'
 curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d '{"direction":"e"}'   # 右上；與當前縫不平行會回 wrong_direction
@@ -341,6 +353,7 @@ curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d '
   "timer_state": "idle",
   "readonly": false,
   "blocks": [ {"row":0,"col":0,"mod":[0,0]}, {"row":0,"col":2,"mod":[0,0]} ],
+           ↓ 米字格時每條改為 {"row":0,"col":0,"q":"N","lat":"A"}（q=斜邊朝向，lat=晶格 A/B；無 mod）
   "macro":  { "recording": false, "executing": false },
   "solver": { "state": "idle", "algorithm": "gather_gradient" }
 }
@@ -502,5 +515,6 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 - 帶序號模式（`numbered`）：求解器/建表/ML 管線**暫不支援**（狀態需身份感知，動作語義也不同），入口直接拒絕並提示；其餘功能（撤銷重做/動畫/競速/存讀檔/地圖導入）全部可用。
 - 三角形密鋪（`triangle`）：已實作核心五步 + P2 體驗（六向鍵盤/虛擬鍵盤/連鎖提示/拖拽 6 向投影/競速成績/地圖導入）。**暫不支援**：求解器/建表/ML（需新動作語義與對稱群）、`/analysis/*`（回 400 降級）、宏與創造模式、著色與調試面板的三角版（P3，未做）；`solved` 只接受「尖朝上/120°/240°」三種朝向，鏡像（顛倒）不可達。
+- 米字格（`mi`）：已實作斜向一格的引擎（`game_mi.py`，含錯位態兩晶格、8-bit 快照與 `mi8` 地圖）、兩次觸控 + 虛擬鍵盤 + 八向動畫 + 競速/存讀檔/打亂/撤銷重做。**暫不支援**：求解器/建表/ML、`/analysis/*`（回 400）、宏錄製執行、著色與調試面板、單次觸控與拖拽（凍結決策）。已知注意點：等級語義漂移（等級 1 斜距 = √2/2，等級 2 = 舊版等級 1）；錯位態橫豎縫會整條穿過塊內部而選不動（提示按剩餘條數說，沿斜向再走一格即復活）；`/status` 的 `blocks[]` 沒有 `mod`，改帶 `q` 與 `lat`。
 - 存量缺陷（**方形同樣存在**，非新形態引入）：多步（批量）移動時 `step_count` 由 `move_selected_blocks` 累加 `move_step`，而 `history.save_snapshot` 每步只記 `steps = 1`，導致存檔重載（`_load_save_data` 以 `current_step_total()` 重算）與 undo/redo 後的步數比實際少。
 - 求解長期目標：以「梯度聚攏粗調 + AI 收尾」完成高階謎題。人類模仿（`human_ai`）已接入 `SOLVER_ALGORITHMS`（§5.4 管線 B）；AI 收尾模型仍在提升中。
