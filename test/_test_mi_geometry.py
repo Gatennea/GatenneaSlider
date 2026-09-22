@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-米字格幾何單元測試（Stage M1 形狀 + M2 命中幾何）。
+米字格幾何單元測試（Stage M1 形狀 + M2 命中幾何；H1 斜向一格後改寫）。
 
 執行：python test/_test_mi_geometry.py
-涵蓋：單位塊頂點公式、內心（inset 縮放中心）、邊相鄰表封閉性與對稱性、
-      8 向平移保持密鋪、凸包裁剪出的背景網格、包圍盒為矩形；
+涵蓋：單位塊頂點公式、內心（inset 縮放中心）、邊相鄰表封閉性與對稱性
+      （H1 起每塊 5 鄰：3 個同晶格 + 2 個跨晶格）、
+      8 向平移保持密鋪（斜向是 ±½,±½，即斜向一格）、凸包裁剪出的背景網格、
+      包圍盒為矩形；
       M2 補：rank 分界 line ↔ 幾何直線的一致性（跨縫的公共邊必須壓在線上）、
       世界座標 → 單位塊命中、縫隙命中（就近單位邊、等距取長邊）、縫隙線段裁剪。
 """
@@ -17,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from game_mi import (  # noqa: E402
     DIRECTIONS,
     MiSliderMatrix,
-    gap_index_range,
+    gap_candidates,
     mi_vertices,
     neighbors,
     side_of,
@@ -66,27 +68,33 @@ check({sq[2][1], sq[2][2]} == {(0.0, 1.0), (1.0, 1.0)}, "S 的斜邊 = 下格邊
 check({sq[3][1], sq[3][2]} == {(0.0, 0.0), (0.0, 1.0)}, "W 的斜邊 = 左格邊")
 
 print("== 邊相鄰表 ==")
-check(neighbors((0, 0, 'N')) == ((0, 0, 'W'), (0, 0, 'E'), (-1, 0, 'S')),
-      "N(r,c) ↔ W(r,c)、E(r,c)、S(r-1,c)")
-check(neighbors((0, 0, 'E')) == ((0, 0, 'N'), (0, 0, 'S'), (0, 1, 'W')),
-      "E(r,c) ↔ N(r,c)、S(r,c)、W(r,c+1)")
-check(neighbors((0, 0, 'S')) == ((0, 0, 'E'), (0, 0, 'W'), (1, 0, 'N')),
-      "S(r,c) ↔ E(r,c)、W(r,c)、N(r+1,c)")
-check(neighbors((0, 0, 'W')) == ((0, 0, 'N'), (0, 0, 'S'), (0, -1, 'E')),
-      "W(r,c) ↔ N(r,c)、S(r,c)、E(r,c-1)")
+# 每塊 5 鄰：3 個同晶格（同格 2 個走半對角線 + 跨格 1 個走格邊）
+# + 2 個跨晶格（斜向一格之後兩半唯一的相連通道，見規劃 §1.4）
+check(neighbors((0, 0, 'N')) == ((0, 0, 'W'), (0, 0, 'E'), (-1, 0, 'S'),
+                                (-0.5, -0.5, 'S'), (-0.5, 0.5, 'S')),
+      "N(r,c) ↔ W(r,c)、E(r,c)、S(r-1,c) 與 S(r-½,c±½)")
+check(neighbors((0, 0, 'E')) == ((0, 0, 'N'), (0, 0, 'S'), (0, 1, 'W'),
+                                (-0.5, 0.5, 'W'), (0.5, 0.5, 'W')),
+      "E(r,c) ↔ N(r,c)、S(r,c)、W(r,c+1) 與 W(r±½,c+½)")
+check(neighbors((0, 0, 'S')) == ((0, 0, 'E'), (0, 0, 'W'), (1, 0, 'N'),
+                                (0.5, -0.5, 'N'), (0.5, 0.5, 'N')),
+      "S(r,c) ↔ E(r,c)、W(r,c)、N(r+1,c) 與 N(r+½,c±½)")
+check(neighbors((0, 0, 'W')) == ((0, 0, 'N'), (0, 0, 'S'), (0, -1, 'E'),
+                                (-0.5, -0.5, 'E'), (0.5, -0.5, 'E')),
+      "W(r,c) ↔ N(r,c)、S(r,c)、E(r,c-1) 與 E(r±½,c-½)")
 
-# 對稱性 + 每塊恰 3 鄰 + 相鄰即共享一條邊
+# 對稱性 + 每塊恰 5 鄰 + 相鄰即共享一條邊
 sym_ok = True
-for r in range(3):
-    for c in range(3):
+for r in (-0.5, 0, 1.5):
+    for c in (-0.5, 0, 1.5):
         for q in ('N', 'E', 'S', 'W'):
             nbs = neighbors((r, c, q))
-            if len(set(nbs)) != 3:
+            if len(set(nbs)) != 5:
                 sym_ok = False
             for nb in nbs:
                 if (r, c, q) not in neighbors(nb):
                     sym_ok = False
-check(sym_ok, "鄰接對稱、每塊恰 3 個不同鄰居")
+check(sym_ok, "鄰接對稱、每塊恰 5 個不同鄰居")
 
 shared_ok = True
 for q in ('N', 'E', 'S', 'W'):
@@ -104,14 +112,17 @@ for q in ('N', 'E', 'S', 'W'):
             shared_ok = False
 check(shared_ok, "邊相鄰 = 恰共享一條邊（公共邊長 1 或 √2/2）")
 
-# 相鄰塊的公共邊：同格 2 鄰走半對角線（短邊）、跨格 1 鄰走格邊（長邊）
+# 相鄰塊的公共邊：同格 2 鄰與跨晶格 2 鄰都走半對角線（短邊），
+# 同晶格跨格的那 1 鄰走格邊（長邊）
 len_ok = True
 for q in ('N', 'E', 'S', 'W'):
     a = set(mi_vertices(1, 1, q))
     nbs = neighbors((1, 1, q))
-    if sum(1 for nb in nbs if nb[0] == 1 and nb[1] == 1) != 2:
-        len_ok = False
-    if sum(1 for nb in nbs if not (nb[0] == 1 and nb[1] == 1)) != 1:
+    same_cell = [nb for nb in nbs if (nb[0], nb[1]) == (1, 1)]
+    cross_cell = [nb for nb in nbs if float(nb[0]).is_integer()
+                  and (nb[0], nb[1]) != (1, 1)]
+    cross_lat = [nb for nb in nbs if not float(nb[0]).is_integer()]
+    if len(same_cell) != 2 or len(cross_cell) != 1 or len(cross_lat) != 2:
         len_ok = False
     for nb in nbs:
         common = a & set(mi_vertices(*nb))
@@ -120,11 +131,11 @@ for q in ('N', 'E', 'S', 'W'):
             continue
         p, t = tuple(common)
         d = math.dist(p, t)
-        same_cell = (nb[0] == 1 and nb[1] == 1)
-        want = math.sqrt(0.5) if same_cell else 1.0
+        # 跨格（同晶格）鄰共享整條格邊；其餘四鄰共享半條對角線
+        want = 1.0 if nb in cross_cell else math.sqrt(0.5)
         if abs(d - want) > 1e-9:
             len_ok = False
-check(len_ok, "每塊恰 2 個同格鄰（半對角線）+ 1 個跨格鄰（格邊）")
+check(len_ok, "每塊 2 個同格鄰 + 1 個跨格鄰 + 2 個跨晶格鄰（公共邊長度各就各位）")
 
 print("== 8 向平移保持密鋪 ==")
 check(len(DIRECTIONS) == 8 and set(DIRECTIONS) == set('qweadzxs'),
@@ -132,9 +143,9 @@ check(len(DIRECTIONS) == 8 and set(DIRECTIONS) == set('qweadzxs'),
 check(DIRECTIONS['w'] == (-1, 0) and DIRECTIONS['s'] == (1, 0)
       and DIRECTIONS['a'] == (0, -1) and DIRECTIONS['d'] == (0, 1),
       "W/S/A/D = 上下左右")
-check(DIRECTIONS['q'] == (-1, -1) and DIRECTIONS['e'] == (-1, 1)
-      and DIRECTIONS['z'] == (1, -1) and DIRECTIONS['x'] == (1, 1),
-      "Q/E/Z/X = 四個斜向")
+check(DIRECTIONS['q'] == (-0.5, -0.5) and DIRECTIONS['e'] == (-0.5, 0.5)
+      and DIRECTIONS['z'] == (0.5, -0.5) and DIRECTIONS['x'] == (0.5, 0.5),
+      "Q/E/Z/X = 四個斜向，每步 ±(½,½)（斜向一格）")
 
 # 任意 (Δr, Δc) 都是晶格平移：單位塊映射到單位塊，且 4 塊填滿一格
 trans_ok = True
@@ -311,7 +322,7 @@ cells = g.positions()
 hull = view.board_hull(cells)
 on_line = off_line = 0
 for fam in ('h', 'v', 'd1', 'd2'):
-    for line in gap_index_range(fam, cells):
+    for line in gap_candidates(fam, cells):
         if not g.is_valid_gap(fam, line):
             continue
         for a in cells:
@@ -339,7 +350,7 @@ check(on_line > 40 and off_line > 0,
 # 縫隙線段：每條有效縫都與凸包有交，線段落在棋形內、中點壓在線上
 seg_n = seg_ok = 0
 for fam in ('h', 'v', 'd1', 'd2'):
-    for line in gap_index_range(fam, cells):
+    for line in gap_candidates(fam, cells):
         if not g.is_valid_gap(fam, line):
             continue
         seg = view.gap_segment(fam, line, hull)

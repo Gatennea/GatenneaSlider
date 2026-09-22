@@ -2,9 +2,10 @@
 """米字格動畫無頭測試（M3 的第一筆：先還上規劃裡漏記的欠賬）。
 
 執行：python test/_test_mi_animation.py
-覆蓋：_move_delta 的米字格八向表（斜族一步半格）、draw_mi_board 的位移插值
-      （原本沒有動畫分支，滑動是「凍結 300ms 再跳」）、斜向移動的撤銷/重做
-      動畫與選中高亮（原本 delta=(0,0)，撤回時找不回原位，直接無動畫瞬移）。
+覆蓋：_move_delta 的米字格八向表（橫豎一格 = ±1 格邊、斜向一格 = ±½ 格邊）、
+      draw_mi_board 的位移插值（原本沒有動畫分支，滑動是「凍結 300ms 再跳」）、
+      斜向移動的撤銷/重做動畫與選中高亮（原本 delta=(0,0)，撤回時找不回原位，
+      直接無動畫瞬移）。
 
 無頭陷阱：測試開頭必須關 save_readonly_flag，否則載入後 new_puzzle 會靜默失敗。
 """
@@ -54,9 +55,10 @@ for d, (dr, dc) in MI_DIRECTIONS.items():
               abs(got[0] - dr * st) < 1e-9 and abs(got[1] - dc * st) < 1e-9)
 # step 缺省時取 current_step
 gui.current_step = 2
+_dr, _dc = MI_DIRECTIONS['x']
 got = gui._move_delta({'direction': 'x'})
 check(f"_move_delta 省略 step 取 current_step=2，實得 {got}",
-      abs(got[0] - 2.0) < 1e-9 and abs(got[1] - 2.0) < 1e-9)
+      abs(got[0] - _dr * 2) < 1e-9 and abs(got[1] - _dc * 2) < 1e-9)
 # 合併快照的合成位移優先（方向可能不是單向）
 got = gui._move_delta({'delta': [3, -2], 'direction': 'x', 'step': 2})
 check(f"_move_delta 優先用合併 delta，實得 {got}", got == (3, -2))

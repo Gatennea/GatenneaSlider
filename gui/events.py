@@ -22,6 +22,23 @@ MI_KEY_ACTIONS = (
 )
 
 
+def parse_mi_coord(text: str):
+    """命令行座標解析：整數或半整數（米字格錯位態的行/列/縫線都是半的）。
+
+    斜向一格把棋盤錯成半整數座標，此時絳線號、錨點行列都不再是整數，
+    終端指令與 HTTP 轉發進來的字串必須兩種都吃得下。解析成 int 或 float
+    都不影響與 location 比較（Python 的 1 == 1.0）。認不出回 None。
+    """
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 class EventsMixin:
     """事件处理相关方法"""
     
@@ -1244,6 +1261,13 @@ class EventsMixin:
         lines = [ln.strip() for ln in normalized.split('\n') if ln.strip()]
         if not lines:
             return False, "地图字符串为空"
+        # 米字格的錯位態地圖帶 `mi8` 標記行（每格兩個十六進位位元，見
+        # game_mi.export_map），先摘掉再查各行等寬，否則標記行會被誤判
+        # 成寬度不齊
+        if getattr(self, 'mi_mode', False) and lines[0].lower() == 'mi8':
+            lines = lines[1:]
+        if not lines:
+            return False, "地图字符串为空"
         width = len(lines[0])
         if any(len(ln) != width for ln in lines):
             return False, "地图各行长度不一致"
@@ -1592,10 +1616,18 @@ class EventsMixin:
                             else "用法: select_gap h/v line")
                         continue
                     gap_type = parts[1].lower()
-                    try:
-                        line = int(parts[2])
-                    except ValueError:
-                        self._cmd_reply(resp_q, False, "line 必须是整数")
+                    if mi:
+                        # 錯位態的絳線號是半整數（如 h 1.5），這裡要放寬到 float
+                        line = parse_mi_coord(parts[2])
+                    else:
+                        try:
+                            line = int(parts[2])
+                        except ValueError:
+                            line = None
+                    if line is None:
+                        self._cmd_reply(
+                            resp_q, False,
+                            "line 必须是整数或半整数" if mi else "line 必须是整数")
                         continue
                     if mi:
                         # 米字格：4 族縫（h=橫邊 / v=豎邊 / d1="\" / d2="/"）。
@@ -1650,11 +1682,12 @@ class EventsMixin:
                             self._cmd_reply(resp_q, False,
                                             "用法: select_block r c [N/E/S/W]")
                             continue
-                        try:
-                            row = int(parts[1])
-                            col = int(parts[2])
-                        except ValueError:
-                            self._cmd_reply(resp_q, False, "r/c 必须是整数")
+                        # 錯位態的錨點行列也是半整數（如 0.5 -1.5）
+                        row = parse_mi_coord(parts[1])
+                        col = parse_mi_coord(parts[2])
+                        if row is None or col is None:
+                            self._cmd_reply(resp_q, False,
+                                            "r/c 必须是整数或半整数")
                             continue
                         want_q = parts[3].upper() if len(parts) >= 4 else None
                         if want_q is not None and want_q not in ('N', 'E', 'S', 'W'):

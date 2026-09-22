@@ -27,10 +27,14 @@ H1 才動 game_mi.py。五節各守一件事：
      h 是 y=g、v 是 x=g、d1 是 y−x=g、d2 是 x+y=g；引擎 line 與 g 的
      換算見 seam_g()，表的 line 欄是引擎 line（與規劃一致）。
 §1.4 鄰接表：跨晶格鄰恰 2 個、表對稱、相鄰而非重疊；並斷言「不擴表的
-     後果」——現行整數鄰接表下，每一次斜向一格都被判 disconnected。
+     後果」——整數鄰接表下，每一次斜向一格都把棋盤裂成 ≥2 個連通分量
+     （H1 起 game_mi.neighbors 本身已含跨晶格鄰，這裡的整數表改為本檔
+     自帶的副本，好讓這條斷言不隨引擎演進而失效；引擎層的對應斷言見
+     test/_test_mi_core.py）。
 §1.5 碰撞判據：同晶格 4032 對零重疊（快速路徑成立）；混合晶格確實有
      正面積重疊（面積恆為 1/8 塊），而且隨機能抵達——一個三步序列讓
-     現行的「位置集合不相交」判據放一個碰撞步過去。
+     「位置集合不相交」這個判據把一個碰撞步放過去（H1 起引擎改跑幾何
+     判定，同一個夾具改在 _test_mi_core.py 斷言它被擋下）。
 
 規劃 §1.5 的絕對計數（「13366 對裡 128 對」）依賴具體的 key 視窗，換個
 視窗數字就變（本檔的視窗：A 4×4 全部 64 塊 × B 同起點 4×4 全部 64 塊
@@ -48,7 +52,6 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 import game_mi  # noqa: E402
 from game_mi import GAP_DIRECTIONS, MiSliderMatrix, mi_vertices  # noqa: E402
-from game_mi import neighbors as int_neighbors  # noqa: E402
 
 EPS = 1e-9
 _failures = []
@@ -76,12 +79,28 @@ CROSS_NEIGHBORS = {
     'W': (('E', -0.5, -0.5), ('E', 0.5, -0.5)),
 }
 
+# 整數鄰接表（3 個同晶格鄰）= game_mi.neighbors 在 H1 之前的樣子。
+# H1 起引擎的 neighbors 已含跨晶格鄰，所以這裡保存一份副本：本檔要斷言的
+# 是「不擴這張表會怎樣」，那份事實不隨引擎演進而改變。
+INT_NEIGHBORS = {
+    'N': ((0, 0, 'W'), (0, 0, 'E'), (-1, 0, 'S')),
+    'E': ((0, 0, 'N'), (0, 0, 'S'), (0, 1, 'W')),
+    'S': ((0, 0, 'E'), (0, 0, 'W'), (1, 0, 'N')),
+    'W': ((0, 0, 'N'), (0, 0, 'S'), (0, -1, 'E')),
+}
+
+
+def int_neighbors(key):
+    """舊的整數鄰接表：每塊恰 3 個同晶格鄰。"""
+    r, c, q = key
+    return tuple((r + dr, c + dc, dq) for dr, dc, dq in INT_NEIGHBORS[q])
+
 
 def ext_neighbors(key):
-    """現行 3 個同晶格鄰 + §1.4 的 2 個跨晶格鄰。"""
+    """整數鄰接表 3 個同晶格鄰 + §1.4 的 2 個跨晶格鄰（共 5 個）。"""
     r, c, q = key
     cross = tuple((r + dr, c + dc, nq) for (nq, dr, dc) in CROSS_NEIGHBORS[q])
-    return tuple(int_neighbors(key)) + cross
+    return int_neighbors(key) + cross
 
 
 def poly(key):
@@ -489,26 +508,9 @@ check("現行整數鄰接表下，每次斜向一格之後棋盤都裂成 ≥2 �
       not bad_old, str(bad_old[:3]))
 check("換成擴展表（+2 個跨晶格鄰）之後合回單一連通分量",
       not bad_new, str(bad_new[:3]))
-
-# 直接問引擎：只換 DIRECTIONS、不換 neighbors，每一次斜向一格都被擋下
-saved_dir = game_mi.DIRECTIONS
-game_mi.DIRECTIONS = NEW_DIRECTIONS
-try:
-    bad_eng = []
-    for (label, m, n, fam, line, d) in SCEN:
-        g = MiSliderMatrix(m, n)
-        cells = g.positions()
-        side1 = {c for c in cells
-                 if side_of_geom(fam, seam_g(fam, line), c) == 1}
-        g.opt(fam, engine_line(fam, seam_g(fam, line)),
-              g.block_at(sorted(side1)[0]))
-        pos, reason = g.try_move_ex(d, 1)
-        if pos or reason != 'disconnected':
-            bad_eng.append((label, reason, len(pos)))
-    check("引擎層：只改方向表不改鄰接表，斜向一格全部被 'disconnected' 擋下",
-          not bad_eng, str(bad_eng[:3]))
-finally:
-    game_mi.DIRECTIONS = saved_dir
+# 引擎層的同一件事（H1 起 game_mi 的 DIRECTIONS / neighbors 就是這两张表，
+# 斜向一格走得通；把 neighbors 換回整數表就又全被 'disconnected' 擋下）
+# 移到 test/_test_mi_core.py —— 那是引擎契約，不是幾何事實。
 
 # ================================================================ §1.5
 print("== §1.5 碰撞判據：同晶格零重疊、混合晶格有正面積重疊 ==")
@@ -539,41 +541,10 @@ check("規劃引用的實例：A 晶格 N(0,0) 與 B 晶格 E(−½,−½) 重�
       abs(overlap_area((0, 0, 'N'), (-0.5, -0.5, 'E')) - 0.125) < EPS,
       f'實得 {overlap_area((0, 0, "N"), (-0.5, -0.5, "E"))}')
 
-# 可達性：一個三步序列讓「位置集合不相交」放一個碰撞步過去。
-# 每一步都是合法步（新方向表 + 擴展鄰接表），前三步的前兩步完全乾淨。
-FIXTURE = [('d2', 4.0, 'e'), ('h', 3.5, 'd'), ('d1', 6.0, 'x')]
-saved_nb, saved_dir = game_mi.neighbors, game_mi.DIRECTIONS
-game_mi.neighbors = ext_neighbors
-game_mi.DIRECTIONS = NEW_DIRECTIONS
-try:
-    g = MiSliderMatrix(6, 6)
-    steps = []
-    for i, (fam, line, d) in enumerate(FIXTURE, 1):
-        cells = g.positions()
-        side1 = {c for c in cells if side_of_geom(fam, seam_g(fam, line), c) == 1}
-        g.opt(fam, line, g.block_at(sorted(side1)[0]))
-        pos, reason = g.try_move_ex(d, 1)
-        if not pos:
-            steps.append((i, f'{fam}{line:g} {d}', 0, f'被擋 {reason}'))
-            break
-        nxt = {(p[0], p[1], p[2]) for p in pos}
-        non_sel = {game_mi.mi_key(b) for b in g.blocks if not b.be_opted}
-        bad = [(a, b) for a, b in itertools.combinations(sorted(nxt | non_sel), 2)
-               if overlap_area(a, b) > EPS]
-        steps.append((i, f'{fam}{line:g} {d}', len(bad),
-                      '位置集合不相交（判據放行）' if not (nxt & non_sel) else '撞 key'))
-        g.commit_move(pos)
-    for (i, what, n_bad, note) in steps:
-        print(f"    第 {i} 步 {what}：正面積重疊 {n_bad} 對，{note}")
-    first_two = steps[:2]
-    check("夾具前兩步都合法且零重疊（不是一上來就亂走）",
-          len(first_two) == 2 and all(s[2] == 0 for s in first_two),
-          str(first_two))
-    check("夾具第三步出現正面積重疊，而現行判據（位置集合不相交）仍然放行",
-          len(steps) == 3 and steps[2][2] > 0 and steps[2][3].startswith('位置集合'),
-          str(steps[2]))
-finally:
-    game_mi.neighbors, game_mi.DIRECTIONS = saved_nb, saved_dir
+# 「混合晶格的重疊在普通玩法裡真的會遇到」——可達性要用引擎證明（opt 只移動
+# 一側的一個連通分量，同側其它分量留下來才會撞上），所以那個三步夾具放在
+# test/_test_mi_core.py：那裡斷言引擎把第三步判 'collision'，並且用手算的
+# 候選位置證明「位置集合不相交」這個舊判據確實會放它過去。
 
 print()
 if _failures:

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""無頭測試：米字格滑動核心（Stage M2）。
+"""無頭測試：米字格滑動核心（Stage M2；H1 改成斜向一格後全面改寫）。
 
-覆蓋：四族縫隙的 rank/side_of 完備性、候選 line（含對角族只取偶數）、
-opt 選組、try_move_ex / commit_move 8 向、compute_score / shuffle、
-export_map / import_map 往返。
+覆蓋：四族縫隙的 rank/side_of、候選 line（端點 + 空帶中點）、
+opt 選組（含跨晶格分組）、try_move_ex / commit_move 八向、
+錯位態縫隙枚舉（與 H0 的幾何參考逐條對照）、幾何碰撞判據、
+compute_score / shuffle、8-bit 矩陣、export_map / import_map 往返、
+存檔快照往返。
 """
 import os
 import sys
@@ -14,11 +16,13 @@ os.environ['SDL_AUDIODRIVER'] = 'dummy'
 _PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJ)
 
+import game_mi  # noqa: E402
 from game_mi import (  # noqa: E402
     DIRECTIONS, GAP_DIRECTIONS, MiSliderMatrix, gap_for_direction,
-    gap_index_range, gap_rank, hull_area_units, mi_key, neighbors,
-    side_of,
+    gap_candidates, gap_rank, hull_area_units, lattice_of, mi_key,
+    neighbors, side_of, span,
 )
+from history import GameHistory  # noqa: E402
 
 _failed = []
 
@@ -39,25 +43,36 @@ g = MiSliderMatrix(4, 5)
 cells = g.positions()
 check("初始 4×5 = 80 塊", len(cells) == 80, f"實得 {len(cells)}")
 
-# 完備性：每族每條候選線兩側都非空，且兩側互補（無遺漏無重疊）
-cover_ok = True
+# 完備性：每條**有效**縫都把全部滑塊劃進兩側（無遺漏無重疊）；
+# 候選線裡一定混著無效線（端點但兩側有一側空的、空帶中點），那些由
+# is_valid_gap 複核掉，side_of 對它們本來就沒有意義
+bad_sides, bad_valid = [], []
 for fam in ('h', 'v', 'd1', 'd2'):
-    lines = list(gap_index_range(fam, cells))
-    check(f"{fam} 族有候選線", len(lines) > 0, f"共 {len(lines)} 條")
-    if fam in ('d1', 'd2') and any(l % 2 for l in lines):
-        cover_ok = False
-    for line in lines:
+    cands = gap_candidates(fam, cells)
+    valid = [l for l in cands if g.is_valid_gap(fam, l)]
+    check(f"{fam} 族候選線非空（有效 {len(valid)} / 候選 {len(cands)}）",
+          len(cands) > 0 and len(valid) > 0)
+    for line in valid:
         sides = [side_of(fam, line, c) for c in cells]
         if set(sides) != {0, 1}:
-            cover_ok = False
-        if len(lines) > 1 and not g.is_valid_gap(fam, line):
-            # 範圍保證兩側非空，與 is_valid_gap 不一致就說明判據漂移
-            cover_ok = False
-check("四族候選線都把全部滑塊劃進兩側（完備）", cover_ok)
+            bad_sides.append((fam, line))
+        # 有效縫的判據自己也要認這條線（兩邊最多只差一個端點）
+        if not g.is_valid_gap(fam, line):
+            bad_valid.append((fam, line))
+check("有效縫的 side_of 劃分完備（兩側非空、無遺漏無重疊）",
+      not bad_sides, str(bad_sides[:3]))
+check("候選線複核結果自洽", not bad_valid, str(bad_valid[:3]))
 
-# 對角族只取偶數 line：奇數 line 對應的線從格心與邊中點之間穿過，會切開塊內部
-check("d1 候選線全是偶數", all(l % 2 == 0 for l in gap_index_range('d1', cells)))
-check("d2 候選線全是偶數", all(l % 2 == 0 for l in gap_index_range('d2', cells)))
+# 候選線必須由跨度端點導出：對齊態的 d1/d2 端點都是偶數整數，
+# 而空帶中點會填進奇數——缺了半條對角鏈時奇數就是合法縫（見本檔末節）
+full = MiSliderMatrix(6, 6).positions()
+check("滿盤 d1 候選線含奇數（空帶中點），但沒有一條合法",
+      any(l % 2 for l in gap_candidates('d1', full))
+      and not any(l % 2 for t, l in MiSliderMatrix(6, 6).all_gaps()
+                  if t == 'd1'))
+check("滿盤上候選線經過複核後一條不多（32 條）",
+      len(MiSliderMatrix(6, 6).all_gaps()) == 32,
+      f"實得 {len(MiSliderMatrix(6, 6).all_gaps())}")
 
 # 同格四塊的取向分界：d1 分 {N,E}｜{S,W}，d2 分 {N,W}｜{E,S}
 r, c = 2, 3
@@ -114,7 +129,8 @@ check("同一條縫、另一側選出互補集合",
       sel_hi and not (sel & sel_hi) and (sel | sel_hi) == g.positions())
 
 for fam in ('v', 'd1', 'd2'):
-    line = next(iter(gap_index_range(fam, g.positions())))
+    line = next(l for l in gap_candidates(fam, g.positions())
+                if g.is_valid_gap(fam, l))
     g.opt(fam, line, g.block_at((1, 1, 'N')))
     s = {mi_key(b) for b in g.blocks if b.be_opted}
     check(f"{fam} 縫也能選出互補兩側", 0 < len(s) < len(g.blocks),
@@ -310,6 +326,281 @@ check("導入單塊後分數 = 1（凸包恰 1 塊，封頂 1.0）",
       f"實得 {g3.compute_score()}")
 check("空導入被拒", not g3.import_map("\n\n"))
 check("不等寬導入被拒", not g3.import_map("###\n#"))
+
+# ================================================================ 錯位態
+# 斜向一格（H1）的直接後果：位置出現兩種晶格（A 整數 / B 半整數）。
+# 下面五節都用「真的走一次斜向一格」造出錯位態，再逐項斷言。
+print("=== 錯位態：一次斜向一格之後 ===")
+EPS = 1e-9
+
+
+def _g_of(fam, vertex):
+    """頂點 (x, y) 在某族縫線座標下的值（與引擎的 span 無關，獨立幾何）。"""
+    x, y = vertex
+    if fam == 'h':
+        return y
+    if fam == 'v':
+        return x
+    if fam == 'd1':
+        return y - x
+    return x + y
+
+
+def _engine_of_g(fam, g):
+    """幾何縫線座標 g → 引擎 line（h/v: L=g−1；d1: L=2g；d2: L=2(g−1)）。"""
+    if fam in ('h', 'v'):
+        return g - 1.0
+    if fam == 'd1':
+        return 2.0 * g
+    return 2.0 * (g - 1.0)
+
+
+def geom_seams(cells, fam):
+    """有效縫線（幾何座標 g，0.5 步進）——不經過引擎的 span/side_of。
+
+    一塊被這條線切開 ⇔ g 嚴格落在它三個頂點的 g 值之間；沒被切的塊整體
+    在某一側（三個頂點全 ≤ g 或全 ≥ g）。縫合法 ⇔ 沒有塊被切，且兩側
+    都至少有一塊。這是規劃 §1.3 判據的幾何原文，用來複核 all_gaps()。
+    """
+    vals = {k: [_g_of(fam, v) for v in game_mi.mi_vertices(*k)] for k in cells}
+    lo = min(min(v) for v in vals.values())
+    hi = max(max(v) for v in vals.values())
+    out, x = [], lo + 0.5
+    while x < hi - EPS:
+        if not any(min(v) < x < max(v) for v in vals.values()):
+            below = any(all(t <= x + EPS for t in v) for v in vals.values())
+            above = any(all(t >= x - EPS for t in v) for v in vals.values())
+            if below and above:
+                out.append(round(x, 3))
+        x += 0.5
+    return out
+
+
+# (說明, m, n, 族, 引擎 line, 方向, 期望的晶格數)
+# 走法全部平行於所選的縫（規劃 §1.3 表）；v line=2 走 z 是唯一一條
+# **不**平行於縫的，引擎現在會用幾何判據把它擋下（§1.5），單列一行。
+SCENARIOS = [
+    ('6×6 沿 d1 line=6 走 x', 6, 6, 'd1', 6, 'x', 2),
+    ('6×6 沿 v line=2 走 z（不平行於縫）', 6, 6, 'v', 2, 'z', None),
+    ('6×1 沿 d2 line=6 走 e', 6, 1, 'd2', 6, 'e', 2),
+    ('1×6 沿 d1 line=0 走 x', 1, 6, 'd1', 0, 'x', 2),
+    ('4×4 沿 d2 line=4 走 e', 4, 4, 'd2', 4, 'e', 2),
+    ('4×4 沿 d1 line=2 走 x', 4, 4, 'd1', 2, 'x', 2),
+    ('4×4 沿 d1 line=0 走 x（對角中線一分為二）', 4, 4, 'd1', 0, 'x', 2),
+    ('4×4 沿 d1 line=0 走 q（同一個退化局面，反方向）', 4, 4, 'd1', 0, 'q', 2),
+    ('2×2 沿 d1 line=0 走 x（最小退化局面）', 2, 2, 'd1', 0, 'x', 2),
+    ('4×4 沿 h line=1 走 a', 4, 4, 'h', 1, 'a', 1),
+]
+for (label, m, n, fam, line, d, want_lat) in SCENARIOS:
+    g = MiSliderMatrix(m, n)
+    ref = g.block_at(sorted(k for k in g.positions()
+                            if side_of(fam, line, k) == 1)[0])
+    g.opt(fam, line, ref)
+    pos, reason = g.try_move_ex(d, 1)
+    if want_lat is None:
+        # 不平行於縫的走法：輪到它把同側分量推出重疊，幾何判據要認出來
+        check(f"{label}：引擎擋下（{reason}）", not pos and reason == 'collision')
+        continue
+    if not pos:
+        check(f"{label}：移動成功", False, f"reason={reason}")
+        continue
+    g.commit_move(pos)
+    lat = {lattice_of(k) for k in g.positions()}
+    check(f"{label}：移動成功", True)
+    check(f"{label}：晶格數 = {want_lat}（斜向換晶格、橫豎不換）",
+          len(lat) == want_lat, f"實得 {sorted(lat)}")
+    mism = []
+    for fam2 in ('h', 'v', 'd1', 'd2'):
+        want = sorted(_engine_of_g(fam2, x) for x in geom_seams(g.positions(), fam2))
+        got = sorted(l for (t, l) in g.all_gaps() if t == fam2)
+        if [float(x) for x in want] != [float(x) for x in got]:
+            mism.append((fam2, want, got))
+    check(f"{label}：錯位態四族縫隙與幾何參考逐條一致", not mism, str(mism[:2]))
+
+# 規劃 §1.3 表的兩個代表數字（引擎 line = 幾何 g − 1）：
+# 6×6 沿 d1 line=6 走 x 之後 h 只剩 [0,1,2]、v 只剩 [3,4]
+g = MiSliderMatrix(6, 6)
+ref = g.block_at(sorted(k for k in g.positions() if side_of('d1', 6, k) == 1)[0])
+g.opt('d1', 6, ref)
+g.commit_move(g.try_move_ex('x', 1)[0])
+check("6×6 d1 line=6 x：錯位後 h = [0,1,2]、v = [3,4]（規劃表 1 逐行斷言）",
+      sorted(l for (t, l) in g.all_gaps() if t == 'h') == [0, 1, 2]
+      and sorted(l for (t, l) in g.all_gaps() if t == 'v') == [3, 4],
+      f"h={[l for (t, l) in g.all_gaps() if t == 'h']} "
+      f"v={[l for (t, l) in g.all_gaps() if t == 'v']}")
+# 沿著走的那族一條不少（跨度不變）
+d1_after = [l for (t, l) in g.all_gaps() if t == 'd1']
+check("沿走族 d1 一條不少（11 條，與錯位前相同）", len(d1_after) == 11,
+      f"{d1_after}")
+
+# ---- 跨晶格 opt 分組：選中的一側同時含 A/B 兩套塊，且仍是單一連通分量
+def _engine_g(fam, line):
+    """引擎 line → 幾何縫線座標 g（_engine_of_g 的反函數）。"""
+    if fam in ('h', 'v'):
+        return line + 1.0
+    if fam == 'd1':
+        return line / 2.0
+    return line / 2.0 + 1.0
+
+
+def _geom_side(fam, line, key):
+    """塊整體在縫的哪一側（幾何，獨立於 side_of）；縫切進塊內回 None。"""
+    g = _engine_g(fam, line)
+    vs = [_g_of(fam, v) for v in game_mi.mi_vertices(*key)]
+    if all(v <= g + EPS for v in vs):
+        return 0
+    if all(v >= g - EPS for v in vs):
+        return 1
+    return None
+
+
+g = MiSliderMatrix(6, 6)
+ref = g.block_at(sorted(k for k in g.positions() if side_of('d1', 6, k) == 1)[0])
+g.opt('d1', 6, ref)
+g.commit_move(g.try_move_ex('x', 1)[0])
+crossed = None
+for (t, l) in g.all_gaps():
+    blk = next((b for b in g.blocks if _geom_side(t, l, mi_key(b)) == 1), None)
+    if blk is None:
+        continue
+    g.opt(t, l, blk)
+    sel = {mi_key(b) for b in g.blocks if b.be_opted}
+    if len({lattice_of(k) for k in sel}) == 2:
+        crossed = (t, l, sel)
+        break
+check("錯位態存在跨晶格的選組（一側同時含 A/B 兩套塊）",
+      crossed is not None,
+      f"{crossed[0]} {crossed[1]} 共 {len(crossed[2])} 塊" if crossed else '')
+if crossed:
+    t, l, sel = crossed
+    side = _geom_side(t, l, next(iter(sel)))
+    same_side = {k for k in g.positions() if _geom_side(t, l, k) == side}
+    check(f"跨晶格選組 = 這條縫的整個一側（{t} {l}，{len(sel)} 塊）",
+          sel == same_side,
+          f"缺 {sorted(same_side - sel)[:2]} 多 {sorted(sel - same_side)[:2]}")
+    check("跨晶格選組單一連通（鄰接表缺了跨晶格鄰就會裂開）",
+          MiSliderMatrix.is_single_connected(sel))
+
+# ---- 整盤錯開半格也判勝（規劃 §3.2 決議）
+g = MiSliderMatrix(3, 3)
+m8 = 'mi8\n' + '\n'.join('0f' * 3 for _ in range(3))
+check("mi8 導入：整盤 B 晶格實心矩形", g.import_map(m8))
+check("  全是半整數座標", {lattice_of(mi_key(b)) for b in g.blocks} == {1})
+check("  錯半格的矩形也判勝", g.is_solved())
+check("  仍單一連通", g.is_single_connected(g.positions()))
+check("  邊界是 0.5 起的矩形",
+      g.get_boundaries() == {'min_row': 0.5, 'max_row': 2.5,
+                             'min_col': 0.5, 'max_col': 2.5},
+      f"{g.get_boundaries()}")
+# 而且普通玩法走得到：一條斜縫的兩半朝同向各走一格 = 整體換一次晶格。
+# 這裡直接搬到 B 晶格等價驗證：導出→導入→再導出，字串一致（8-bit 可逆）
+out1 = g.export_map()
+g2 = MiSliderMatrix(3, 3)
+check("  錯位態導出/導入往返", g2.import_map(out1)
+      and g2.export_map() == out1)
+
+# ---- 8-bit 矩陣：同格兩套三角、floor 歸格
+g = MiSliderMatrix(3, 3)
+g.import_map('mi8\n' + '12' + 'ff' * 2 + '\n' + ('ff' * 3 + '\n') * 2)
+check("同格 A 的 N + B 的 E → matrix[0][0] = 1|(2<<4) = 33",
+      g.get_matrix()[0][0] == 33, f"實得 {g.get_matrix()[0][0]}")
+check("  該格恰兩塊：A(0,0,'N') 與 B(0.5,0.5,'E')",
+      sorted(mi_key(b) for b in g.blocks
+             if b.location[:2] in ([0, 0], [0.5, 0.5]))
+      == [(0, 0, 'N'), (0.5, 0.5, 'E')],
+      f"{sorted(mi_key(b) for b in g.blocks)[:4]}")
+g = MiSliderMatrix(2, 2)
+g.import_map('mi8\n' + '\n'.join('0f' * 2 for _ in range(2)))
+check("整格只有 B 晶格 → matrix = 0xF0 = 240", g.get_matrix() == [[240, 240]] * 2,
+      f"實得 {g.get_matrix()}")
+check("  矩陣邊界按 floor 歸格（半整數座標不炸）",
+      g.matrix_bounds == {'min_row': 0, 'max_row': 1, 'min_col': 0, 'max_col': 1},
+      f"{g.matrix_bounds}")
+
+# ---- 存檔快照往返：save_snapshot 走 update_matrix（表 11 說它會炸）
+g = MiSliderMatrix(4, 4)
+ref = g.block_at(sorted(k for k in g.positions() if side_of('d1', 0, k) == 1)[0])
+g.opt('d1', 0, ref)
+g.commit_move(g.try_move_ex('x', 1)[0])
+saved = sorted(mi_key(b) for b in g.blocks)
+hist = GameHistory()
+hist.save_snapshot(g)
+hist.save_snapshot(g, move_info={'direction': 'x'})
+# 再走一步，然後撤銷回第一次的快照
+g.opt('d1', 2, g.blocks[0])
+pos, reason = g.try_move_ex('q', 1)
+if pos:
+    g.commit_move(pos)
+check("再走一步確實換了局面", sorted(mi_key(b) for b in g.blocks) != saved)
+hist.restore_snapshot(g, 0)
+check("快照還原後位置逐一相等（8-bit 解碼）",
+      sorted(mi_key(b) for b in g.blocks) == saved,
+      f"實得 {sorted(mi_key(b) for b in g.blocks)[:3]}")
+check("快照還原後晶格混合保留下來",
+      {lattice_of(mi_key(b)) for b in g.blocks} == {0, 1})
+check("快照還原後仍連通、塊數不變",
+      MiSliderMatrix.is_single_connected(g.positions())
+      and len(g.blocks) == 64)
+
+# ---- 三步夾具：前兩步乾淨，第三步是正面積重疊，引擎要擋下（§1.5）
+# 夾具原本給 H0 參考實現用（那裡斷言「位置集合不相交」會放它過去）；
+# 這裡改走真引擎，斷言幾何判據把它認出來。
+FIXTURE = [('d2', 4.0, 'e'), ('h', 3.5, 'd'), ('d1', 6.0, 'x')]
+g = MiSliderMatrix(6, 6)
+notes = []
+for i, (fam, line, d) in enumerate(FIXTURE, 1):
+    ref = g.block_at(sorted(k for k in g.positions()
+                            if side_of(fam, line, k) == 1)[0])
+    g.opt(fam, line, ref)
+    pos, reason = g.try_move_ex(d, 1)
+    if not pos:
+        notes.append((i, f'{fam} {line:g} {d}', reason))
+        break
+    g.commit_move(pos)
+    notes.append((i, f'{fam} {line:g} {d}', 'ok'))
+check("夾具前兩步合法、第三步被擋", [n[2] for n in notes] == ['ok', 'ok', 'collision'],
+      str(notes))
+# 第三步的候選位置：與靜止側一個 key 都不撞（舊判據會放行），但有正面積重疊
+g = MiSliderMatrix(6, 6)
+for fam, line, d in FIXTURE[:2]:
+    ref = g.block_at(sorted(k for k in g.positions()
+                            if side_of(fam, line, k) == 1)[0])
+    g.opt(fam, line, ref)
+    g.commit_move(g.try_move_ex(d, 1)[0])
+ref = g.block_at(sorted(k for k in g.positions()
+                        if side_of('d1', 6.0, k) == 1)[0])
+g.opt('d1', 6.0, ref)
+sel = {mi_key(b) for b in g.blocks if b.be_opted}
+non = {mi_key(b) for b in g.blocks if not b.be_opted}
+dr, dc = DIRECTIONS['x']
+cand = {(k[0] + dr, k[1] + dc, k[2]) for k in sel}
+check("第三步：選中組與靜止側一個 key 都不撞（舊判據的口徑）",
+      not (cand & non), f"撞上 {sorted(cand & non)[:3]}")
+bad = [(a, b) for a in cand for b in non
+       if game_mi._tri_overlap(a, b)]
+check("第三步：候選位置與靜止側有正面積重疊（幾何判據的依據）",
+      bool(bad), f"實得 {bad[:2]}")
+check("第三步：被擋的原因正是 collision",
+      g.try_move_ex('x', 1)[1] == 'collision')
+
+# ---- 缺了半條對角鏈：奇數 d1 線號成為合法縫（規劃 §1.3 末段）
+g = MiSliderMatrix(4, 4)
+# 去掉 r−c=1 的全部 S/W 與 r−c=2 的全部 N/E：兩條對角之間就空出
+# 一條帶來，g=1.5（引擎 line 3）整條落在空帶裡
+g.blocks = [b for b in g.blocks
+            if not ((b.location[0] - b.location[1] == 1
+                     and b.location[2] in ('S', 'W'))
+                    or (b.location[0] - b.location[1] == 2
+                        and b.location[2] in ('N', 'E')))]
+g.update_matrix()
+odd = [l for (t, l) in g.all_gaps() if t == 'd1' and int(l) % 2]
+check("缺半條對角鏈時，奇數 d1 線號出現且合法", odd == [3], f"實得 {odd}")
+check("  只由端點生成候選就提不出這條線（空帶中點是必需的）",
+      3 in gap_candidates('d1', g.positions())
+      and 3 not in {span('d1', k)[0] for k in g.positions()}
+      | {span('d1', k)[1] for k in g.positions()})
+check("  滿盤上同一條線不合法（滿盤推進這個斷言才有意義）",
+      not MiSliderMatrix(4, 4).is_valid_gap('d1', 3))
 
 print()
 if _failed:

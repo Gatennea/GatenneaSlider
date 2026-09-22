@@ -27,7 +27,7 @@ from __future__ import annotations
 import math
 from typing import Optional, Tuple
 
-from game_mi import GAP_DIRECTIONS, gap_index_range, mi_vertices
+from game_mi import GAP_DIRECTIONS, gap_candidates, mi_vertices
 from gui.hull_util import chord, convex_hull
 
 # 直角等腰三角的內切圓半徑（格為單位）：面積 1/4、半周長 (1+√2)/2
@@ -221,7 +221,7 @@ class MiBoardView:
             tolerance = max(3.0, self.cell_size / 12.0)
         found = []
         for gap_type in GAP_DIRECTIONS:
-            for line in gap_index_range(gap_type, cells):
+            for line in gap_candidates(gap_type, cells):
                 dist = self.gap_line_distance(gap_type, line, wx, wy)
                 if dist <= tolerance:
                     found.append((dist, (gap_type, line)))
