@@ -166,23 +166,38 @@ def neighbors(key: tuple) -> tuple:
 def gap_rank(gap_type: str, key: tuple) -> float:
     """單位塊在該族縫隙座標下的「低位」索引（side_of 的判據）。
 
-    'h'/'v' 族取格子行列：同格四塊坐在同一條格邊的同一側，取向無關。
+    'h'/'v' 族取該塊投影區間的高端（見 _axis_span）：同格的 W/E（h）或
+    N/S（v）占滿整格，高端就是格子行列；而 h 的 N 只占上半格、v 的 W 只占
+    左半格，高端要扣半格。
     對角族的縫線穿過格心，把同格四塊切成兩半，必須看朝向——
     'd1'（"\\"）分 {N,E}｜{S,W}、'd2'（"/"）分 {N,W}｜{E,S}，故後半側 +1；
     同一條對角線鏈上的格 k 相同，基值一致，一條鏈就是一條完整的縫。
     錯位態下 r−c 與 r+c 仍是整數，所以對角族的 rank 恆為整數；
-    橫豎的 rank 就是 r、c，會是半整數（side_of 照樣正確）。
+    橫豎的 rank 會是半整數（投影區間只有半格的朝向），side_of 照樣正確。
     """
     r, c, q = key
     if gap_type == 'h':
-        return r
+        return r - 0.5 if q == 'N' else r
     if gap_type == 'v':
-        return c
+        return c - 0.5 if q == 'W' else c
     if gap_type == 'd1':
         return 2 * (r - c) + (0 if q in ('N', 'E') else 1)
     if gap_type == 'd2':
         return 2 * (r + c) + (0 if q in ('N', 'W') else 1)
     raise ValueError(f"unknown gap type: {gap_type}")
+
+
+def _axis_span(gap_type: str, key: tuple) -> tuple:
+    """單位塊投影到橫豎族縫線座標上的區間（幾何格座標，見 span 的說明）。
+
+    h 看 y、v 看 x。N 塊尖朝下，只占格子上半 [r, r+½]；S 塊尖朝上，只占
+    下半 [r+½, r+1]；W/E 的豎直邊贯穿整格高。竖縫同理換成 W 占左半
+    [c, c+½]、E 占右半 [c+½, c+1]、N/S 占滿整格寬。
+    """
+    r, c, q = key
+    if gap_type == 'h':
+        return (r + (0.5 if q == 'S' else 0.0), r + (0.5 if q == 'N' else 1.0))
+    return (c + (0.5 if q == 'E' else 0.0), c + (0.5 if q == 'W' else 1.0))
 
 
 def span(gap_type: str, key: tuple) -> tuple:
@@ -192,12 +207,16 @@ def span(gap_type: str, key: tuple) -> tuple:
     內部就把這塊切開了 —— 這正是 is_valid_gap 的判據。
     引擎線號與幾何線號的關係（h/v 的 L = g−1，d1 的 L = 2g，d2 的
     L = 2(g−1)）已經折算進來，所以橫豎的跨度是 (r−1, r) 而不是 (r, r+1)。
+
+    橫豎的跨度必須由投影區間折算，不能一律按整格算：h 的 N/S、v 的 W/E
+    只占半格，錯位態的橫豎縫（半整數線號）正是從這幾類塊的頂點上過去的。
+    舊代價四個朝向都按整格算，於是錯位態每一條橫豎縫都被誤判成「切在塊
+    裡」：玩家點下去只收到「這條縫選不動」，連高亮都沒有。
     """
     r, c, q = key
-    if gap_type == 'h':
-        return (r - 1, r)
-    if gap_type == 'v':
-        return (c - 1, c)
+    if gap_type in ('h', 'v'):
+        lo, hi = _axis_span(gap_type, key)
+        return (lo - 1, hi - 1)
     if gap_type == 'd1':
         k = 2 * (r - c)
     elif gap_type == 'd2':

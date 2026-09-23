@@ -4,10 +4,10 @@
 判据用精确判据而不是旧的 rank 二分（rank 二分在半格位置下会把「骑在线上」
 的块误判到某一侧）：
     一条线 L 有效 <=> L 不严格落在任何块的跨度内部，且线两侧都至少有一块。
-跨度按族取（r/c 可为半整数）：
-    h  (R, R+1)      v  (C, C+1)
-    d1 N/E (k-1, k)  S/W (k, k+1)        k = r-c
-    d2 N/W (k, k+1)  E/S (k+1, k+2)      k = r+c
+跨度按族取，一律由三角顶点在該族座標上的投影區間算（h: y、v: x、
+d1: y−x、d2: x+y）——不能按「四个朝向一律整格」的捷徑表：h 的 N 只占
+半格高、v 的 W 只占半格寬，按整格算會把错位态从這些半格塊頂點上過去的
+半整數縫誤判成切塊（用户存檔 mi-1-2-2 的橫豎縫就是這麽選不動的）。
 """
 import os
 import sys
@@ -17,21 +17,23 @@ os.environ['SDL_AUDIODRIVER'] = 'dummy'
 _PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJ)
 
-from game_mi import MiSliderMatrix, side_of  # noqa: E402
+from game_mi import MiSliderMatrix, mi_vertices, side_of  # noqa: E402
 
 EPS = 1e-9
 
 
-def _span(fam, key):
-    r, c, q = key
+def _g_coord(fam, vertex):
+    x, y = vertex
     if fam == 'h':
-        return (r, r + 1.0)
+        return y
     if fam == 'v':
-        return (c, c + 1.0)
-    k = (r - c) if fam == 'd1' else (r + c)
-    if fam == 'd1':
-        return (k - 1.0, k) if q in ('N', 'E') else (k, k + 1.0)
-    return (k, k + 1.0) if q in ('N', 'W') else (k + 1.0, k + 2.0)
+        return x
+    return (y - x) if fam == 'd1' else (x + y)
+
+
+def _span(fam, key):
+    fs = [_g_coord(fam, v) for v in mi_vertices(*key)]
+    return (min(fs), max(fs))
 
 
 def valid_lines(cells, fam):

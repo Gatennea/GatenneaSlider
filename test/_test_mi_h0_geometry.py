@@ -162,16 +162,14 @@ def overlap_area(a, b):
 
 
 def span(fam, key):
-    """一塊在某族縫線座標 g 下的跨度（r/c 可半整數）。"""
-    r, c, q = key
-    if fam == 'h':
-        return (r, r + 1.0)
-    if fam == 'v':
-        return (c, c + 1.0)
-    k = (r - c) if fam == 'd1' else (r + c)
-    if fam == 'd1':
-        return (k - 1.0, k) if q in ('N', 'E') else (k, k + 1.0)
-    return (k, k + 1.0) if q in ('N', 'W') else (k + 1.0, k + 2.0)
+    """一塊在某族縫線座標 g 下的跨度：三個頂點在 g 上的投影區間。
+
+    直接由頂點取，不用「四個朝向一律整格」的捷徑表：h 的 N 只占半格高、
+    v 的 W 只占半格寬，按整格算會把錯位態從這些半格塊頂點上過去的半整數
+    縫誤判成切塊（用户存檔 mi-1-2-2 的橫豎縫就是這麽選不動的）。
+    """
+    fs = [g_coord(fam, v) for v in poly(key)]
+    return (min(fs), max(fs))
 
 
 def seam_g(fam, line):
