@@ -83,7 +83,7 @@ curl http://127.0.0.1:5050/status
 | 米字格 solved | 全部 4mn 片拼成任意位置的實心 m×n 米字矩陣：**可平移、可換晶格（錯開半格也算對）**——一條斜縫兩半朝同向各滑一格就能換晶格，是普通玩法走得到的狀態。判據用 8-bit 矩陣形狀，不要求回到建局那張整數格圖 |
 | 米字格地圖文本 | 每格 8 bit = 4 個 q × 2 個晶格（bit0~3 = A、bit4~7 = B）。匯出端沒有半整數塊時仍是舊的每格一字元（4-bit），有錯位塊時輸出帶 `mi8` 標記行的每格兩字元格式；匯入端兩種都吃 |
 | 米字格 `/status` | `blocks[]` 每條帶 `q`（朝向）與 `lat`（`A`/`B`），**沒有 `mod`**：錯位態的 `r%step` 會在 0 與 0.5 之間翻，不再是那種不變式 |
-| 米字格控制 | 兩次觸控（第一下點縫、第二下點塊，方向由兩下世界位移在縫切向上的符號定）+ 虛擬鍵盤；**單次觸控與拖拽按凍結決策一律禁用**。求解器/建表/ML、`/analysis/*`、宏錄製執行、著色與除錯面板暫不支援（摘要見 §12） |
+| 米字格控制 | 兩次觸控：第一下點縫；第二下**按住滑塊拖動**才提交——方向取這一次拖動的位移向量在選中縫切向上的投影符號（正側/負側 → 該族兩個方向字母）。第二下只按不拖 = 選中滑塊組並等待，方向交給虛擬鍵盤，**不在按下瞬間猜方向**。**單次觸控按凍結決策禁用**（八向可選，手指一抖就滑錯，誤觸面太大）。求解器/建表/ML、`/analysis/*`、宏錄製執行、著色與除錯面板暫不支援（摘要見 §12） |
 
 ### 2.1 Mod 著色不變量（求解器核心，勿違反）
 
@@ -481,10 +481,18 @@ python test\_test_triangle_history.py / _test_triangle_save.py / _test_triangle_
 python test\_test_triangle_http.py / _test_triangle_play.py / _test_triangle_render.py / _test_triangle_p2.py  # HTTP/互動/渲染
 ```
 
-另有三支**既有**失敗與本次改動無關、亦不觸及任何新形態代碼路徑（改動前即紅）：`_test_textinput.py`、`_test_textinput_full.py`、`_test_tutorial.py`。
+米字格的無頭測試（幾何/引擎/視圖/提示/手動驗收/交互，每支直接執行、通過會印 `全部通過` 或 `anim-click 回归 PASS`）：
+
+```bash
+python test\_test_mi_geometry.py / _test_mi_h0_geometry.py / _test_mi_span.py   # 幾何與 side_of/span
+python test\_test_mi_core.py                                                      # 引擎：opt/try_move/快照/地圖往返
+python test\_test_mi_h2_view.py / _test_mi_h3_hint.py                             # 四族縫命中與被鎖縫提示
+python test\_test_mi_gui.py / _test_mi_hittest.py / _test_mi_drag_direction.py    # 兩次觸控（第二下按住拖動）/命中/八向定向
+python test\_test_mi_h4_acceptance.py / _test_mi_animation.py                     # 規劃 §5 手動驗收清單 / 八向動畫
+python test\_test_anim_click.py                                                   # 動畫窗口裡的鼠標輸入（含米字格第二下）
+```
 
 另有 `test/test/`（pytest 風格：`test_solver/test_table_core/test_bfs_explore/test_profile`）與開發用探針 `_debug_cursor.py`、`_test_mouse_cursor.py` 等。改動求解器核心後，至少重跑 `_test_mod_constraint` 與 `_test_gradient_pipeline`。
-
 若環境有 pyflakes，可用它抓未使用 import/變數（注意殘留的「f-string 無佔位符」與 `emd_solver.py` 的 `candidates` 前向引用屬已知保留項，非錯誤）：
 
 ```bash
@@ -516,6 +524,6 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 - 帶序號模式（`numbered`）：求解器/建表/ML 管線**暫不支援**（狀態需身份感知，動作語義也不同），入口直接拒絕並提示；其餘功能（撤銷重做/動畫/競速/存讀檔/地圖導入）全部可用。
 - 三角形密鋪（`triangle`）：已實作核心五步 + P2 體驗（六向鍵盤/虛擬鍵盤/連鎖提示/拖拽 6 向投影/競速成績/地圖導入）。**暫不支援**：求解器/建表/ML（需新動作語義與對稱群）、`/analysis/*`（回 400 降級）、宏與創造模式、著色與調試面板的三角版（P3，未做）；`solved` 只接受「尖朝上/120°/240°」三種朝向，鏡像（顛倒）不可達。
-- 米字格（`mi`）：已實作斜向一格的引擎（`game_mi.py`，含錯位態兩晶格、8-bit 快照與 `mi8` 地圖）、兩次觸控 + 虛擬鍵盤 + 八向動畫 + 競速/存讀檔/打亂/撤銷重做。**暫不支援**：求解器/建表/ML、`/analysis/*`（回 400）、宏錄製執行、著色與調試面板、單次觸控與拖拽（凍結決策）。已知注意點：等級語義漂移（等級 1 斜距 = √2/2，等級 2 = 舊版等級 1）；錯位態橫豎縫會整條穿過塊內部而選不動（提示按剩餘條數說，沿斜向再走一格即復活）；`/status` 的 `blocks[]` 沒有 `mod`，改帶 `q` 與 `lat`。
+- 米字格（`mi`）：已實作斜向一格的引擎（`game_mi.py`，含錯位態兩晶格、8-bit 快照與 `mi8` 地圖）、兩次觸控（第二下按住滑塊拖動才定向提交，只按不拖則選組等虛擬鍵盤）+ 拖拽跟隨預覽 + 虛擬鍵盤 + 八向動畫 + 競速/存讀檔/打亂/撤銷重做。**暫不支援**：求解器/建表/ML、`/analysis/*`（回 400）、宏錄製執行、著色與調試面板、單次觸控（凍結決策：八向誤觸面太大）。已知注意點：等級語義漂移（等級 1 斜距 = √2/2，等級 2 = 舊版等級 1）；錯位態橫豎縫會整條穿過塊內部而選不動（提示按剩餘條數說，沿斜向再走一格即復活）；`/status` 的 `blocks[]` 沒有 `mod`，改帶 `q` 與 `lat`。
 - 存量缺陷（**方形同樣存在**，非新形態引入）：多步（批量）移動時 `step_count` 由 `move_selected_blocks` 累加 `move_step`，而 `history.save_snapshot` 每步只記 `steps = 1`，導致存檔重載（`_load_save_data` 以 `current_step_total()` 重算）與 undo/redo 後的步數比實際少。
 - 求解長期目標：以「梯度聚攏粗調 + AI 收尾」完成高階謎題。人類模仿（`human_ai`）已接入 `SOLVER_ALGORITHMS`（§5.4 管線 B）；AI 收尾模型仍在提升中。
