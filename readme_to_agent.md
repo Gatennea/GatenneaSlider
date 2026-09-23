@@ -43,7 +43,7 @@ python test\_test_mod_constraint.py
 
 - 參數規則：`m n step`（`step < max(m, n)`）；純數字單參數 = HTTP 端口。
 - 啟動即連開：stdin 讀取執行緒、HTTP daemon 執行緒、`SliderGUI` 主迴圈（60 FPS）。
-- 啟動/異常寫入 `error_log.txt`（與 exe 同目錄；無權限時退回系統 temp），全部異常（含子執行緒）都會記錄。
+- 啟動/異常寫入 `config/error_log.jsonl`（一行一條 JSON；寫不進去時退回系統 temp），全部異常（含子執行緒）都會記錄。
 
 快速健康檢查：
 
@@ -438,7 +438,8 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `config/temp_history.json` | 退出時自動快照，下次啟動還原進度 | |
 | `save/*.json` | 使用者存檔（含 puzzle 參數、map、步數、歷史） | 自動補 `.json` 後綴 |
 | `macro/*.json` | 宏定義 | |
-| `error_log.txt` | 執行期錯誤（含子執行緒） | 位置＝exe/腳本目錄 |
+| `config/error_log.jsonl` | 執行期錯誤（含子執行緒）+ 啟動痕跡，一行一條 JSON，traceback 按行拆成數組 | 常開，超 4MB 輪轉成 `.old`；寫不進去退回系統 temp |
+| `config/op_log.jsonl` | 操作日誌（點擊坐標/命中/提示），調試用 | 默認關，設定→文件→操作日誌 打開 |
 
 `config.json` 關鍵範例（`solver_algorithm` 決定 `POST /solve` 用哪個算法）：
 

@@ -19,7 +19,6 @@ import time
 import traceback
 import queue
 import math
-from datetime import datetime
 from game import SliderMatrix, Block
 from history import GameHistory
 from records import Records, format_time
@@ -38,27 +37,13 @@ from gui.records_panel import RecordsPanelMixin
 from gui.annotation import AnnotationMixin
 from gui.tutorial import TutorialMixin
 from gui.board_view import SquareBoardView
+from gui import log_writer
 
 
-def _gui_log_error(msg: str):
-    """写入错误日志"""
-    try:
-        base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-        log_path = os.path.join(base, 'error_log.txt')
-        with open(log_path, 'a', encoding='utf-8') as f:
-            f.write('')
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(f'[{timestamp}] {msg}\n')
-    except Exception:
-        import tempfile
-        try:
-            log_path = os.path.join(tempfile.gettempdir(), 'gatenneaslider_error_log.txt')
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(f'[{timestamp}] {msg}\n')
-        except Exception:
-            pass
+def _gui_log_error(msg: str, level: str = 'error'):
+    """写错误/运行日志（config/error_log.jsonl，一行一条 JSON）。
+    与 main.py 的 excepthook 共用 gui/log_writer.py，不再另抄一份。"""
+    log_writer.write(msg, level=level)
 
 
 def _gui_safe_font(name, size, bold=False):
@@ -81,7 +66,7 @@ def _gui_safe_font(name, size, bold=False):
     try:
         return pygame.font.SysFont(name, size, bold=bold)
     except Exception:
-        _gui_log_error(f'字体加载失败: {name} {size}, 回退到默认字体')
+        _gui_log_error(f'字体加载失败: {name} {size}, 回退到默认字体', level='warn')
         return pygame.font.Font(None, size)
 
 
@@ -113,11 +98,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             kind: 开局形态 'square' / 'numbered' / 'triangle' / 'mi'
                 （三角形时 m 作边长 k；米字格 m/n 为行数/列数）
         """
-        _gui_log_error(f'GUI初始化开始: m={m}, n={n}, step={step}')
+        _gui_log_error(f'GUI初始化开始: m={m}, n={n}, step={step}', level='info')
         try:
             pygame.init()
         except Exception:
-            _gui_log_error(f'pygame.init() 失败: {traceback.format_exc()}')
+            log_writer.exception('pygame.init() 失败', *sys.exc_info())
             raise
 
         # 界面尺寸配置
@@ -3240,8 +3225,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     if macro_input:
                         macro_input.update(dt_ms)
             except Exception as e:
-                # 非致命：记录到 error_log.txt 并继续运行，避免单帧小异常导致游戏闪退
-                _gui_log_error(f'主循环异常: {traceback.format_exc()}')
+                # 非致命：记进 config/error_log.jsonl 并继续运行，避免单帧小异常导致游戏闪退
+                log_writer.exception('主循环异常', *sys.exc_info())
                 print(f"Run error (non-fatal): {e}")
                 self._frame_error_streak = getattr(self, '_frame_error_streak', 0) + 1
                 # 连续异常约 2 秒（120 帧）仍无法恢复则终止，避免卡死刷屏
