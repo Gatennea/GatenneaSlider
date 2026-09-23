@@ -659,3 +659,12 @@ class TriangleSliderMatrix:
 
 def _make_block(i: int, j: int, up: bool) -> Block:
     return Block([i, j, up])
+
+
+def blocks_from_cells(cells) -> list:
+    """位置集合 → 照位置排序的 Block 列表（創造模式重建局面用）。
+
+    cells：位置集合 (i, j, up)。block.location 是 list，排序與比較前先
+    tuple() 正規化；輸出照位置排序，與建局順序一致。
+    """
+    return [_make_block(*key) for key in sorted(cells, key=tuple)]

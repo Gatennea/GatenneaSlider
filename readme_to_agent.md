@@ -492,6 +492,13 @@ python test\_test_mi_h4_acceptance.py / _test_mi_animation.py                   
 python test\_test_anim_click.py                                                   # 動畫窗口裡的鼠標輸入（含米字格第二下）
 ```
 
+三形態共用的純邏輯測試（移動不變量類／構造校驗，不開窗、不依賴 GUI）：
+
+```bash
+python test\_test_cell_class.py       # 移動不變量類：三形態類不變性／米字錯位態／class_index 與方形算式一致
+python test\_test_shape_validate.py   # 構造校驗：塊數／單連通／類計數＋偏移掃描／空位；blocks_from_cells 重建
+```
+
 另有 `test/test/`（pytest 風格：`test_solver/test_table_core/test_bfs_explore/test_profile`）與開發用探針 `_debug_cursor.py`、`_test_mouse_cursor.py` 等。改動求解器核心後，至少重跑 `_test_mod_constraint` 與 `_test_gradient_pipeline`。
 若環境有 pyflakes，可用它抓未使用 import/變數（注意殘留的「f-string 無佔位符」與 `emd_solver.py` 的 `candidates` 前向引用屬已知保留項，非錯誤）：
 

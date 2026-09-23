@@ -841,3 +841,13 @@ class MiSliderMatrix:
 
 def _make_block(r, c, q: str) -> Block:
     return Block([r, c, q])
+
+
+def blocks_from_cells(cells) -> list:
+    """位置集合 → 照位置排序的 Block 列表（創造模式重建局面用）。
+
+    cells：位置集合 (r, c, q)，r/c 可為半整數（錯位態 B 晶格）。
+    block.location 是 list，排序與比較前先 tuple() 正規化；輸出照位置
+    排序，與建局順序一致。
+    """
+    return [_make_block(*key) for key in sorted(cells, key=tuple)]
