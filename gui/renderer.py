@@ -1361,8 +1361,27 @@ class RendererMixin:
             "打开后，Ctrl+S 一律进入“另存为”，避免误覆盖旧存档", True, (150, 150, 150))
         self.screen.blit(hint, (x + 15, po_y + 34))
 
+        # 操作日志开关（op_log_enabled：把每次点击写进 config/op_log.jsonl）
+        og_y = po_y + 60
+        label3 = self.dialog_font.render("操作日志：", True, self.colors['dialog_text'])
+        self.screen.blit(label3, (x + 15, og_y))
+        self._settings_oplog_toggle_rect = pygame.Rect(toggle_x, og_y, btn_w, btn_h)
+        flag3 = getattr(self, 'op_log_enabled', False)
+        btn_color = self.colors['button_bg'] if flag3 else self.colors['input_bg']
+        btn_text = "ON" if flag3 else "OFF"
+        text_color = (255, 255, 255) if flag3 else (150, 150, 150)
+        pygame.draw.rect(self.screen, btn_color, self._settings_oplog_toggle_rect, border_radius=4)
+        ts3 = self.status_font.render(btn_text, True, text_color)
+        self.screen.blit(ts3, ts3.get_rect(center=self._settings_oplog_toggle_rect.center))
+        hint = self.status_font.render(
+            "打开后，每次点击都记一行：坐标、命中结果、右下角提示", True, (150, 150, 150))
+        self.screen.blit(hint, (x + 15, og_y + 34))
+        hint2 = self.status_font.render(
+            "写在 config/op_log.jsonl，只用于调试，日常请关闭", True, (150, 150, 150))
+        self.screen.blit(hint2, (x + 15, og_y + 54))
+
         # 当前存档路径
-        path_y = po_y + 60
+        path_y = og_y + 80
         plabel = self.dialog_font.render("当前存档：", True, self.colors['dialog_text'])
         self.screen.blit(plabel, (x + 15, path_y))
         path = getattr(self, 'current_file_path', None) or '(未保存/自动暂存)'
@@ -1393,7 +1412,7 @@ class RendererMixin:
         elif self.settings_active_tab == 'gather':
             return 12 + 26 + len(self._gather_param_specs) * 52 + 10
         elif self.settings_active_tab == 'file':
-            return 240  # 存档只读开关 + 防止覆盖开关 + 当前存档路径说明
+            return 320  # 存档只读 + 防止覆盖 + 操作日志 + 当前存档路径说明
         else:
             # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
             from solver import SOLVER_ALGORITHMS

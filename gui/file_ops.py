@@ -134,6 +134,7 @@ class FileOpsMixin:
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
+            'op_log_enabled': getattr(self, 'op_log_enabled', False),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
             # 教程进度（闯关模式）
@@ -358,6 +359,9 @@ class FileOpsMixin:
                     # 防止覆盖开关（Ctrl+S 一律进入另存为）
                     if 'prevent_overwrite_flag' in config:
                         self.prevent_overwrite_flag = bool(config['prevent_overwrite_flag'])
+                    # 操作日志开关（默认关；由 GUI.__init__ 末尾调 set_enabled 生效）
+                    if 'op_log_enabled' in config:
+                        self.op_log_enabled = bool(config['op_log_enabled'])
                     # 恢复聚拢参数（缺失的键用默认值）
                     if 'gather_params' in config and isinstance(config['gather_params'], dict):
                         defaults = getattr(self, 'gather_params', {})

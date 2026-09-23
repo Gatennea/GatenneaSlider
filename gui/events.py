@@ -11,6 +11,7 @@ import pygame
 import queue
 import traceback
 from gui.text_input import TextInput
+from gui import op_log
 from puzzle_types import puzzle_key
 
 # 米字格在物理键盘上要「认出」的移动类动作名。
@@ -626,8 +627,28 @@ class EventsMixin:
                             continue
                         
                         # 游戏区域点击
+                        # 操作日志：先把这一下的原始落点记下来（屏幕坐标 + 世界
+                        # 坐标 + 形态/缩放）。玩家报「点了没反应」时说得清的只有
+                        # 屏幕位置，少了它就没法复盘命中判定为什么没对上
+                        op_wx, op_wy = self.screen_to_world(x, y)
+                        op_msg_before = self.macro_notify_msg
+                        op_timer_before = self.macro_notify_timer
+                        if getattr(self, 'mi_mode', False):
+                            op_form = 'mi'
+                        elif getattr(self, 'triangle_mode', False):
+                            op_form = 'tri'
+                        else:
+                            op_form = 'sq'
+                        op_log.log('click', sx=x, sy=y, wx=round(op_wx, 2),
+                                   wy=round(op_wy, 2), form=op_form,
+                                   zoom=round(getattr(self, 'zoom', 1.0), 3),
+                                   readonly=getattr(self, '_readonly', False),
+                                   controls=[bool(getattr(self, 'control_single_touch', True)),
+                                             bool(getattr(self, 'control_two_touch', True)),
+                                             bool(getattr(self, 'control_mouse_kb', True))])
                         # 教程解法播放中：锁定棋盘操作（点选缝隙/滑块、拖拽滑动）
-                        if self._tut_board_locked():
+                        op_locked = self._tut_board_locked()
+                        if op_locked:
                             gap = block = None
                         elif getattr(self, 'mi_mode', False):
                             # 米字格两次触控：第一下点缝隙、第二下点滑块提交。
@@ -766,6 +787,21 @@ class EventsMixin:
                             self.is_dragging = True
                             self.drag_start = (x, y)
                             self.drag_offset = (self.camera_x, self.camera_y)
+
+                        # 操作日志：这一下的裁定与反馈。提示原文照抄（与玩家描述
+                        # 对照的唯一凭据），没有新提示就记 null——记旧提示会
+                        # 把「这一步什么都没说」误读成「说了上一句」
+                        op_new_msg = None
+                        if (self.macro_notify_msg != op_msg_before
+                                or self.macro_notify_timer != op_timer_before):
+                            op_new_msg = self.macro_notify_msg
+                        op_log.log('click_result',
+                                   gap=list(gap) if gap is not None else None,
+                                   block=list(block.location) if block is not None else None,
+                                   selected_gap=list(self.selected_gap) if self.selected_gap is not None else None,
+                                   selected_block=(list(self.selected_block.location)
+                                                  if getattr(self, 'selected_block', None) is not None else None),
+                                   msg=op_new_msg, locked=op_locked)
                     
                     elif event.button == 3:
                         # 右键取消选中
@@ -1121,6 +1157,7 @@ class EventsMixin:
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
+        'op_log_enabled',
     )
     _SETTINGS_INT_KEYS = ('animation_duration_ms',)
     _ANIM_DURATION_RANGE = (50, 1000)
@@ -1157,6 +1194,9 @@ class EventsMixin:
                 return False, f"未知设置键: {key}"
         for attr, val in pending:
             setattr(self, attr, val)
+        # 操作日志是模块级开关，属性赋值不触发 set_enabled，这里补一次
+        if 'op_log_enabled' in updates:
+            op_log.set_enabled(bool(self.op_log_enabled))
         return True, f"已更新 {len(pending)} 项设置"
 
     def _solver_params_get(self):
@@ -2484,6 +2524,17 @@ class EventsMixin:
                     status = '开' if self.prevent_overwrite_flag else '关'
                     self.macro_notify_msg = f"防止覆盖：{status}"
                     self.macro_notify_timer = 90
+                    return
+
+            # 文件 Tab：操作日志开关（立即生效，不等重启）
+            if self.settings_active_tab == 'file' and hasattr(self, '_settings_oplog_toggle_rect'):
+                if self._settings_oplog_toggle_rect.collidepoint(mx, my):
+                    self.op_log_enabled = not self.op_log_enabled
+                    op_log.set_enabled(self.op_log_enabled)
+                    status = '开' if self.op_log_enabled else '关'
+                    self.macro_notify_msg = f"操作日志：{status}"
+                    self.macro_notify_timer = 90
+                    op_log.log('oplog_toggle', on=self.op_log_enabled)
                     return
 
             # 快捷键 Tab：点击按键区域进入录制模式

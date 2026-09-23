@@ -31,6 +31,7 @@ from gui.dialogs import DialogsMixin
 from gui.animation import AnimationMixin
 from gui.file_ops import FileOpsMixin, DEFAULT_KEYBINDINGS
 from gui.events import EventsMixin
+from gui import op_log
 from gui.virtual_keyboard import VirtualKeyboardMixin
 from gui.metrics_panel import MetricsPanelMixin
 from gui.records_panel import RecordsPanelMixin
@@ -438,6 +439,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.save_readonly_flag = False
         # 防止覆盖开关：打开后按 Ctrl+S 一律进入另存为，避免误覆盖旧存档
         self.prevent_overwrite_flag = False
+        # 操作日志开关（gui/op_log.py）：默认关，打开后每次点击都写
+        # config/op_log.jsonl，只用于排障「点了没反应/提示不对」
+        self.op_log_enabled = False
         # 复原成功悬浮窗：
         #  _solved_popup_active：当前是否显示；_solved_popup_t：弹入动画计时
         #  _prev_solved：上一次状态提交后的复原状况（用于判定“刚达成复原”，避免重复弹窗）
@@ -645,6 +649,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 加载上次状态
         self.load_last_state()
 
+        # 操作日志开关：config.json 的恢复在 load_last_state 里，这里才生效
+        op_log.set_enabled(getattr(self, 'op_log_enabled', False))
+
         # 命令行显式指定形态：以命令行为准，覆盖上面恢复的上次局面
         # （kind='square' 是默认值，不覆盖，保持「记住上次关闭时的样子」）
         if kind == 'triangle':
@@ -653,6 +660,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.new_mi_puzzle(m, n, step)
         elif kind == 'numbered':
             self.new_puzzle(m, n, step, numbered=True)
+
+        # 一轮调试的起点标记（日志开着才有这一行，否则什么都不会写）
+        op_log.log('session_start', form=type(self.game).__name__,
+                   zoom=round(getattr(self, 'zoom', 1.0), 3))
 
         # 首次启动：弹出新手教程引导
         self._tut_check_first_launch()
@@ -1597,6 +1608,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         gap = self._mi_view().gap_at(world_x, world_y, cells)
         if gap is not None and not self.game.is_valid_gap(*gap):
             if self._mi_locked_seam(gap, cells):
+                from game_mi import span
+                # 排障日志：这条缝「画得出、点得到、选不动」，是错位态横竖
+                # 缝整条穿过块内部的那种。把切在哪些块里、各族还剩几条一起
+                # 记下来——口头描述只能说到「点了没反应」这一层
+                cut = []
+                for k in cells:
+                    lo, hi = span(gap[0], k)
+                    if lo < gap[1] < hi:
+                        cut.append(list(k))
+                op_log.log('mi_seam_reject', gap=list(gap),
+                           shifted=self._mi_shifted(), valid=False,
+                           left=self._mi_fam_counts(), cut=cut)
                 self.macro_notify_msg = (
                     f"这条缝选不动（错位态切在块里）：{self._mi_hv_left(gap[0])}")
                 self.macro_notify_timer = 120
@@ -1701,6 +1724,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 與「點在縫上」的落點誤差同量級，作不得數
         tol = max(3.0, self._mi_view().cell_size / 12.0)
         if abs(proj_t) <= tol:
+            op_log.log('mi_no_direction', why='tangent_within_tol',
+                       gap=[gap_type, line], proj_t=round(proj_t, 2),
+                       tol=round(tol, 2))
             self.macro_notify_msg = (
                 "米字格：两下几乎正对，判不出滑动方向；"
                 "滑块组已选中，请用虚拟键盘给方向")
@@ -1711,6 +1737,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         from game_mi import mi_key, side_of
         side = side_of(gap_type, line, mi_key(block))
         if (side == 1 and proj_n < 0) or (side == 0 and proj_n > 0):
+            op_log.log('mi_no_direction', why='wrong_side',
+                       gap=[gap_type, line], side=side, proj_n=round(proj_n, 2),
+                       block=list(mi_key(block)))
             self.macro_notify_msg = ("这块在缝隙的另一侧：请点与偏移方向"
                                      "同侧的滑块")
             self.macro_notify_timer = 90

@@ -299,8 +299,10 @@ code, r = api('GET', '/settings')
 check("GET /settings", code == 200 and r.get('ok')
       and 'animation_duration_ms' in r.get('settings', {}), str(r)[:80])
 s = r['settings']
-check("  含 11 个布尔键",
-      sum(1 for k, v in s.items() if isinstance(v, bool)) == 11,
+# 布尔键个数是「白名单有没有悄悄漂移」的守门数：新增一个开关就得改这里
+# （当前第 12 个是 op_log_enabled，操作日志）
+check("  含 12 个布尔键",
+      sum(1 for k, v in s.items() if isinstance(v, bool)) == 12,
       str(sorted(s)))
 code, r = api('POST', '/settings', {'animation_duration_ms': 200})
 check("设置动画速度 ok", code == 200 and r.get('ok'), r.get('message', ''))
