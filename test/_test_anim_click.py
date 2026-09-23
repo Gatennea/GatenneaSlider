@@ -6,8 +6,8 @@
 MOUSEMOTION 于是把 st['moved'] 置位；松手时 _drag_slide 没有任何 animating
 闸门，于是拿 selected_gap（或 8 区角度）重新定向，把「还没提交的那一手」
 整组替换掉——画面上的滑块先滑出去、又跳回起点朝另一个方向滑。虚拟键盘
-一直有「动画播放中，无法移动」这道闸门，鼠标三条路径（拖拽松手、跟随
-提交、米字格第二下）全漏了。
+一直有「动画播放中，无法移动」这道闸门，鼠标三条路径（方形拖拽松手、跟随
+提交、米字格第二下的拖动）全漏了。
 
 执行：python test/_test_anim_click.py
 """
@@ -209,103 +209,172 @@ except AttributeError as exc:
     check("三角 _drag_slide 直接回 False，不崩也不移", False, f"抛了 {exc!r}")
 
 # ================================================================ 米字格
-print("== 米字格：动画窗口里的第二下触控 ==")
+print("== 米字格：动画窗口里的第二次触控 ==")
 gui = build('mi')
 view = gui._mi_view()
+from game_mi import DIRECTIONS as MI_DIRS  # noqa: E402
 
 
-def mi_pair(gap_type, line):
-    """给一条缝找「锚点 + 可定向的滑块」。锚点取缝线段 30% 处。
+def mi_candidates(limit=6):
+    """当前局面里「第一下点缝、第二下按住这块拖一格能提交」的组合。
 
-    线段中点常落在格角/格心（多条单位边等距 0），那时命中的是平手裁决而
-    不是这条缝本身（实测 h/1 的中点命中 d1/-2）；取 30% 处则既在缝上、
-    又在凸包内，第一下一定选得到这条缝。
+    落点取缝线段 30% 处：线段中点常落在格角/格心（多条单位边等距 0），
+    那时命中的是平手裁决而不是这条缝本身（实测 h/1 的中点命中 d1/-2）。
+    另要求屏幕上真点得中这条缝、且该侧真滑得动——组合必须是玩家做得出来
+    的，否则测的是不存在的路径。
     """
+    out = []
     hull = view.board_hull(gui.game.positions())
-    seg = view.gap_segment(gap_type, line, hull)
-    if seg is None:
-        return None
-    ax = seg[0][0] + (seg[1][0] - seg[0][0]) * 0.3
-    ay = seg[0][1] + (seg[1][1] - seg[0][1]) * 0.3
-    for b in gui.game.blocks:
-        key = mi_key(b)
-        wx, wy = view.piece_center(*key)
-        # 偏移方向与「第一下点缝、第二下点块」一致：点的那块减锚点
-        if gui._mi_tap_direction(gap_type, line, b, (wx - ax, wy - ay)) is None:
-            continue
-        return (ax, ay), b, key
-    return None
+    for gt in ('h', 'v', 'd1', 'd2'):
+        for line in sorted({l for (g, l) in gui.game.all_gaps() if g == gt}):
+            seg = view.gap_segment(gt, line, hull)
+            if seg is None:
+                continue
+            anchor = (seg[0][0] + (seg[1][0] - seg[0][0]) * 0.3,
+                      seg[0][1] + (seg[1][1] - seg[0][1]) * 0.3)
+            asx, asy = gui.world_to_screen(*anchor)
+            if gui.get_gap_at_pos(int(asx), int(asy)) != (gt, line):
+                continue
+            for b in gui.game.blocks:
+                for d in (gui.MI_GAP_AXES[gt][2], gui.MI_GAP_AXES[gt][3]):
+                    gui.game.opt(gt, line, b)
+                    movable = bool(gui.game.try_move_ex(d, gui.current_step)[0])
+                    gui.game._clear_selection()
+                    if movable:
+                        out.append(((gt, line), anchor, b, d))
+                        break
+                else:
+                    continue
+                break
+            if len(out) >= limit:
+                return out
+    return out
 
 
-# 第一条可用的横向缝：选中组沿 a/d 之一滑得动
-chosen = None
-for line in range(1, 6):
-    pair = mi_pair('h', line)
-    if pair is None:
-        continue
-    anchor, blk, key = pair
+def mi_drag_vec(letter, cells=1.0):
+    """沿方向字母拖 cells 格的屏幕位移（横竖 1 格、斜向 ½ 格）。"""
+    dr, dc = MI_DIRS[letter]
+    s = view.cell_size * gui.zoom
+    return (dc * s * cells, dr * s * cells)
+
+
+def mi_press_seam(gap, anchor):
+    """第一下触控：点中这条缝。回传是否选中。
+
+    已选中别条缝时第一下只是把它取消掉，得再点一次才选上（照玩家的做法）。
+    """
     asx, asy = gui.world_to_screen(*anchor)
-    if gui.get_gap_at_pos(int(asx), int(asy)) != ('h', line):
-        continue
-    gui.game.opt('h', line, blk)
-    movable = any(gui.game.try_move_ex(d, gui.current_step)[0]
-                  for d in ('a', 'd'))
-    gui.game._clear_selection()
-    if movable:
-        chosen = (line, anchor, blk, key)
-        break
-check("米字格找到可用的缝＋块＋锚点", chosen is not None)
-if chosen is not None:
-    line, anchor, blk, key = chosen
-    asx, asy = gui.world_to_screen(*anchor)
-    bsx, bsy = gui.world_to_screen(*view.piece_center(*key))
-    check("锚点点得中这条缝", gui.get_gap_at_pos(int(asx), int(asy)) == ('h', line))
+    asx, asy = int(round(asx)), int(round(asy))
+    for _ in range(2):
+        if gui.selected_gap == gap:
+            return True
+        fire(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
+                                {'button': 1, 'pos': (asx, asy)}))
+    return gui.selected_gap == gap
+
+
+def mi_press_block(blk):
+    """第二下触控的「按下」：只该选中滑块组，不该提交移动。
+
+    回传 (选中的是不是这块, 提示, 当时步数)。落点每回都按块的当前位置
+    重算——上一手移动之后块已经不在原来的格里了。
+    """
+    bsx, bsy = gui.world_to_screen(*view.piece_center(*mi_key(blk)))
+    bsx, bsy = int(round(bsx)), int(round(bsy))
     fire(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                            {'button': 1, 'pos': (int(asx), int(asy))}))
-    check("第一下选中缝隙并记下锚点",
-          gui.selected_gap == ('h', line) and gui._mi_gap_point is not None)
+                            {'button': 1, 'pos': (bsx, bsy)}))
+    return gui.selected_block is blk, gui.macro_notify_msg, gui.step_count
+
+
+def mi_drag(blk, direction, cells=1.0):
+    """按住滑块沿 direction 拖 cells 格。回传 (是否进了跟随, 松手落点)。"""
+    bsx, bsy = gui.world_to_screen(*view.piece_center(*mi_key(blk)))
+    bsx, bsy = int(round(bsx)), int(round(bsy))
+    vx, vy = mi_drag_vec(direction, cells)
+    tx, ty = int(round(bsx + vx)), int(round(bsy + vy))
+    fire(pygame.event.Event(pygame.MOUSEMOTION,
+                            {'pos': (tx, ty), 'rel': (0, 0),
+                             'buttons': (1, 0, 0)}))
+    return gui.drag_following, (tx, ty)
+
+
+def mi_release(end):
+    fire(pygame.event.Event(pygame.MOUSEBUTTONUP, {'button': 1, 'pos': end}))
+
+
+cands = mi_candidates()
+check("找到可用的缝＋滑块＋方向", bool(cands),
+      f"{len(cands)} 组，如 {[(g, d) for g, _a, _b, d in cands][:3]}")
+
+if cands:
+    gap, anchor, blk, direction = cands[0]
+    # ---- 动画外：完整手势照旧提交一格（也是下面窗口测试的铺垫）
+    check(f"第一下点缝选中 {gap}", mi_press_seam(gap, anchor))
     before = snap(gui)
-    fire(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                            {'button': 1, 'pos': (int(bsx), int(bsy))}))
-    check("第二下提交移动（进入动画）",
-          gui.animating is True and gui.step_count == 0 and snap(gui) == before)
-    check("锚点已被用掉", gui._mi_gap_point is None)
+    hit, msg, steps = mi_press_block(blk)
+    check(f"第二下按下只选中滑块组（提示：{msg}）",
+          hit and msg.startswith('选中滑块组'), msg or '')
+    check("第二下按下不提交移动", steps == 0 and snap(gui) == before,
+          f"step_count={steps}")
+    following, end = mi_drag(blk, direction)
+    check("拖动后进入跟随", following is True)
+    mi_release(end)
+    check("松手把这一步交给动画（步数等动画播完才记）",
+          gui.animating is True and gui.step_count == 0, f"step_count={gui.step_count}")
+    # 动画落点：anim_blocks 走到 anim_end_pos，其余块原地不动
+    anim_set = set(gui.anim_blocks)
+    landed = ({tuple(p) for p in gui.anim_end_pos}
+              | {tuple(b.location) for b in gui.game.blocks
+                 if b not in anim_set})
+    check("动画落点确实动了（不是空动画）", landed != before)
+
+    # ---- 动画窗口里：第二下只能选组，拖动进不了跟随
     mid_anim(gui)
     progress0 = gui.anim_progress
-    # 同一状态再来一轮：取消选中（再点同一条缝）→ 重新点选 → 第二下落在
-    # 动画窗口里。锚点按当前局面重算：动画中途 block.location 还没变，但
-    # 上一手的落点已经写进 selected_gap，重算只是为了保证仍点得中这条缝
-    pair2 = mi_pair('h', line)
-    check("移后仍点得中这条缝", pair2 is not None)
-    if pair2 is not None:
-        anchor2, blk2, key2 = pair2
-        asx2, asy2 = gui.world_to_screen(*anchor2)
-        check("重算的锚点命中的就是同一条缝",
-              gui.get_gap_at_pos(int(asx2), int(asy2)) == ('h', line))
-        fire(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                                {'button': 1, 'pos': (int(asx2), int(asy2))}))
-        check("再点同一条缝取消选中", gui.selected_gap is None)
-        fire(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                                {'button': 1, 'pos': (int(asx2), int(asy2))}))
-        check("重新点选后有新锚点",
-              gui.selected_gap == ('h', line) and gui._mi_gap_point is not None)
-        tx, ty = gui.world_to_screen(*view.piece_center(*key2))
-        check("第二下的落点点得到滑块",
-              gui.get_block_at_pos(int(tx), int(ty)) is not None)
-        gui.macro_notify_msg = ''
-        fire(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                                {'button': 1, 'pos': (int(tx), int(ty))}))
-        check("动画中的第二下不提交移动",
-              abs(gui.anim_progress - progress0) < 0.01 and gui.step_count == 0,
-              f"progress={gui.anim_progress:.2f}")
-        check("提示动画播放中", gui.macro_notify_msg == "动画播放中，无法移动",
-              gui.macro_notify_msg or '')
-        check("锚点仍被用掉", gui._mi_gap_point is None)
-        check("选中组留下来（只选组，等动画结束后再给方向）",
-              len([b for b in gui.game.blocks if b.be_opted]) > 0)
-        gui.commit_animation()
-        check("提交后仍只有最初那一步", gui.step_count == 1,
-              f"step_count={gui.step_count}")
+    check("动画已在半程", 0.4 < progress0 < 0.6, f"progress={progress0:.2f}")
+    steps0 = gui.step_count
+    hit, msg, steps = mi_press_block(blk)
+    check(f"动画中第二下按下仍只选中滑块组（提示：{msg}）",
+          hit and msg.startswith('选中滑块组'), msg or '')
+    check("动画中第二下按下没有多走一步",
+          steps == steps0 and snap(gui) == before, f"step_count={steps}")
+    following, end = mi_drag(blk, direction)
+    check("动画中拖动进不了跟随", following is False)
+    check("动画中拖动给出动画提示",
+          gui.macro_notify_msg == "动画播放中，无法移动",
+          gui.macro_notify_msg or '')
+    st = gui._mouse_drag_state
+    check("拖动位移被记下（跟随便没起来 → 走 moved 兜底）",
+          st is not None and st.get('moved') is True)
+    mi_release(end)
+    check("松手没有提交第二步、也没打断动画",
+          gui.animating is True and gui.step_count == steps0,
+          f"animating={gui.animating} step_count={gui.step_count}（期望 {steps0}）")
+    gui.commit_animation()
+    check("动画播完后仍只有那一步", gui.step_count == 1,
+          f"step_count={gui.step_count}")
+    check("局面就是那一步的落点", snap(gui) == landed)
+
+    # ---- 动画结束后：同一套手势照旧生效（闸门不能把米字格拖拽整体禁掉）。
+    # 上一手之后旧缝可能已经失效，重新探一组当前真做得出来的组合
+    check("动画已结束", gui.animating is False)
+    won = False
+    for gap2, anchor2, blk2, direction2 in mi_candidates():
+        base_steps = gui.step_count
+        base_pos = snap(gui)
+        if not mi_press_seam(gap2, anchor2):
+            continue
+        mi_press_block(blk2)
+        following, end = mi_drag(blk2, direction2)
+        mi_release(end)
+        if following:
+            gui.commit_animation()
+            if gui.step_count == base_steps + 1 and snap(gui) != base_pos:
+                won = True
+                break
+    check("动画结束后同一套手势又提交了一步", won,
+          f"step_count={gui.step_count}")
+
 
 print()
 if _failures:

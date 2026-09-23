@@ -7,17 +7,17 @@
 玩家瞄的是三角形的視覺中心（畫出去的那個三角的重心），它離最近的一條縫
 （格邊）只有約 10px。舊容差 max(4.0, cell_size*0.15) = 9px 已經超過這個
 距離，於是「點在方塊中間」有接近一半的概率被裁定成「點在縫上」——而選中
-縫會記下定向錨點（_mi_gap_point），下一次點在任何一塊上就走兩次觸控的
-第二下分支、直接提交一次移動。全程沒碰虛擬鍵盤、也沒拖拽，滑塊卻自己滑
-走了。實測（test/_dbg_mi_hit.py）：9px 時塊內均勻採樣 93% 判成縫、53%
-走真實屏幕路徑也判成縫；視覺中心上下抖 4~6px 就有 1/3 誤判。
+縫之後，下一次點在任何一塊上就走兩次觸控的第二下分支。全程沒碰虛擬鍵盤、
+也沒拖拽，滑塊卻自己滑走了。實測（test/_dbg_mi_hit.py）：9px 時塊內均勻
+採樣 93% 判成縫、53% 走真實屏幕路徑也判成縫；視覺中心上下抖 4~6px 就有
+1/3 誤判。
 
 現在容差取 cell_size/12（一格 60px 時 5px）：縫的可點帶寬 10px，是視覺裂
 縫（gap_width=4）的 2.5 倍，視覺中心也還留著 5px 以上的餘量。
 
 本文件守兩件事：
   1. 點方塊中部（含幾像素瞄準誤差）→ 不選中縫、不動棋盤；
-  2. 點縫（含裂縫寬度內）→ 照樣選中縫，第二下點塊仍提交一步。
+  2. 點縫（含裂縫寬度內）→ 照樣選中縫，按住塊拖一格仍提交一步。
 只放寬容差會同時破壞 2，只收緊會破壞手感，兩邊都要量。
 
 执行：python test/_test_mi_hittest.py
@@ -153,7 +153,7 @@ before = set(gui.game.positions())
 keys = sorted(cells)
 step = max(1, len(keys) // 14)
 sample = keys[::step]
-bad_move, bad_gap, bad_anchor, bad_hit = [], [], [], []
+bad_move, bad_gap, bad_hit, bad_drag = [], [], [], []
 n_click = 0
 for key in sample:
     gx, gy = drawn_center(key)
@@ -165,8 +165,8 @@ for key in sample:
     n_click += 1
     if gui.selected_gap is not None:
         bad_gap.append((key, gui.selected_gap))
-    if getattr(gui, '_mi_gap_point', None) is not None:
-        bad_anchor.append(key)
+    if gui.drag_following:
+        bad_drag.append(key)
     if set(gui.game.positions()) != before:
         bad_move.append(key)
     # 中途把局面恢復回去，讓下一次點擊仍從同一局面出發（逐塊獨立判定）
@@ -176,8 +176,8 @@ check(f"{n_click} 次點擊都落在塊上（落空 {len(bad_hit)}）",
       n_click >= 10 and not bad_hit, str(bad_hit[:4]))
 check(f"{n_click} 次點塊中間，一次縫隙都沒選中（異常 {len(bad_gap)}）",
       n_click >= 10 and not bad_gap, str(bad_gap[:4]))
-check(f"定向錨點從未記下（異常 {len(bad_anchor)}）", not bad_anchor,
-      str(bad_anchor[:4]))
+check(f"從未進入拖拽跟隨（異常 {len(bad_drag)}）", not bad_drag,
+      str(bad_drag[:4]))
 check(f"棋盤一步都沒動（異常 {len(bad_move)}）", not bad_move, str(bad_move[:4]))
 check(f"步數仍是 0（實得 {gui.step_count}）", gui.step_count == 0)
 check("局面與開局完全相同", set(gui.game.positions()) == before)
@@ -194,17 +194,17 @@ for a, b in zip(pair[::2], pair[1::2]):
 check(f"交替點擊 {len(pair[::2])} 組塊，棋盤仍一步未動",
       set(gui.game.positions()) == before and gui.step_count == 0,
       f"step_count={gui.step_count}")
-check("交替點擊後也沒有選中縫隙/錨點",
-      gui.selected_gap is None and getattr(gui, '_mi_gap_point', None) is None)
+check("交替點擊後也沒有選中縫隙",
+      gui.selected_gap is None)
 
 # ================================================================ 正对照
-print("== 正對照：點縫 + 點塊仍能提交一步 ==")
+print("== 正對照：點縫 + 按住塊拖一格仍能提交一步 ==")
 gui.new_mi_puzzle(6, 6, 2)
 before = set(gui.game.positions())
 
 
 def probe():
-    """找一組（縫, 錨點, 塊, 方向）：第一下點縫、第二下點塊能提交一步。"""
+    """找一組（縫, 錨點, 塊, 方向）：第一下點縫、按住塊拖一格能提交一步。"""
     for gt in ('h', 'v', 'd1', 'd2'):
         for line in sorted({l for (g, l) in gui.game.all_gaps() if g == gt}):
             seg = view.gap_segment(gt, line, hull)
@@ -216,16 +216,13 @@ def probe():
             if gui.get_gap_at_pos(int(sx), int(sy)) != (gt, line):
                 continue
             for blk in gui.game.blocks:
-                # 偏移 = 第二下 − 第一下（與 events.py 同向：點的那塊減錨點）
-                bx, by = view.piece_center(*mi_key(blk))
-                d = gui._mi_tap_direction(gt, line, blk, (bx - at[0], by - at[1]))
-                if d is None:
-                    continue
-                gui.game.opt(gt, line, blk)
-                movable = bool(gui.game.try_move_ex(d, gui.current_step)[0])
-                gui.game._clear_selection()
-                if movable:
-                    return (gt, line), (sx, sy), blk, d
+                for d in (gui.MI_GAP_AXES[gt][2], gui.MI_GAP_AXES[gt][3]):
+                    gui.game.opt(gt, line, blk)
+                    movable = bool(
+                        gui.game.try_move_ex(d, gui.current_step)[0])
+                    gui.game._clear_selection()
+                    if movable:
+                        return (gt, line), (sx, sy), blk, d
     return None, None, None, None
 
 
@@ -240,13 +237,27 @@ if gap is not None:
     check(f"選中組共 {len(group)} 塊", len(group) > 0)
     click(*anchor_xy)
     check(f"第一下點縫選中 {gap}", gui.selected_gap == gap)
-    check("第一下記下錨點", getattr(gui, '_mi_gap_point', None) is not None)
     check("選縫時沒有動過棋盤", set(gui.game.positions()) == before)
     bsx, bsy = gui.world_to_screen(*view.piece_center(*mi_key(blk)))
     click(bsx, bsy)
-    check("第二下點塊提交了一步", gui.step_count == 1,
+    check("第二下先選中滑塊組、還沒有提交",
+          gui.selected_block is blk and gui.step_count == 0,
           f"step_count={gui.step_count}")
-    check("第二下用掉了錨點", getattr(gui, '_mi_gap_point', None) is None)
+    # 位移向量沿該族切向、正向 → 拖一格
+    tangent = gui.MI_GAP_AXES[gap[0]][0]
+    sign = 1.0 if direction == gui.MI_GAP_AXES[gap[0]][2] else -1.0
+    step_px = view.cell_size * gui.zoom
+    tx = int(round(bsx + tangent[0] * sign * step_px))
+    ty = int(round(bsy + tangent[1] * sign * step_px))
+    fire(pygame.event.Event(pygame.MOUSEMOTION,
+                            {'pos': (tx, ty), 'rel': (0, 0),
+                             'buttons': (1, 0, 0)}))
+    check(f"位移向量落在切向{'正' if sign > 0 else '負'}側 → 方向 {direction}",
+          gui.drag_following and gui.drag_follow_direction == direction,
+          f"實得 {getattr(gui, 'drag_follow_direction', None)}")
+    fire(pygame.event.Event(pygame.MOUSEBUTTONUP, {'button': 1, 'pos': (tx, ty)}))
+    check("鬆手提交了一步", gui.step_count == 1,
+          f"step_count={gui.step_count}")
     check("局面確實變了", set(gui.game.positions()) != before)
     from game_mi import DIRECTIONS as MI_DIR
     dv = MI_DIR[direction]

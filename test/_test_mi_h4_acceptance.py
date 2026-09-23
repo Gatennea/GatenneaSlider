@@ -17,7 +17,6 @@
 
 执行：python test/_test_mi_h4_acceptance.py
 """
-import math
 import os
 import sys
 
@@ -110,54 +109,60 @@ def click_seam(gap):
 
 
 def click_cell(key):
-    """第二下觸控：點某一塊的內心（玩家瞄的就是這裡）。"""
+    """第二下觸控：按在某一块的內心（玩家瞄的就是這裡）。"""
     wx, wy = view.incenter(*key)
-    click(*gui.world_to_screen(wx, wy))
+    sx, sy = gui.world_to_screen(wx, wy)
+    fire(pygame.event.Event(pygame.MOUSEBUTTONDOWN,
+                            {'button': 1, 'pos': (int(sx), int(sy))}))
+    return int(sx), int(sy)
+
+
+def dir_vec(letter, cells=1.0):
+    """沿方向字母拖 cells 格的屏幕位移向量（橫豎 1 格、斜向 ½ 格）。"""
+    dr, dc = DIRECTIONS[letter]
+    s = view.cell_size * gui.zoom
+    return (dc * s * cells, dr * s * cells)
 
 
 def two_touch(gap, direction, side=None):
-    """完整的兩次觸控：點縫 → 點 direction 那一側的一塊。
+    """完整的兩次觸控：點縫 → 按住在 side 那一側的一塊 → 沿縫切向拖一格。
 
-    點哪一塊純由「第二下落點 − 第一下落在縫切向上的符號」決定（與
-    `_MI_GAP_AXES` 同判據）：這裡先按 side 過濾，再取切向投影最小、且明顯
-    大於瞄準容差的一塊（貼著縫、最像玩家會點的位置）。回傳 (塊, 提示)；
-    (None, 提示) 表示沒點成。
+    方向由第二下「按住並拖動」的位移向量給出（與 `_MI_GAP_AXES` 同一套
+    軸）：沿切向正向拖 → 正方向字母，負向 → 負方向字母，不看落點、不猜
+    扇區。回傳 (塊, 提示)；(None, 提示) 表示沒點成。
     """
     if not click_seam(gap):
         return None, '縫隙沒選中（點擊被別的物品吃掉）'
-    # 定向用的第一下落點必須是真實錨點（_mi_gap_point），不是縫的中點
-    # ——中點可能壓在別的族的交匯處，玩家實際點到的是旁邊那個位置
-    first = getattr(gui, '_mi_gap_point', None) or seam_points(gap)[2]
-    tangent, _normal, pos_dir, _neg = gui.MI_GAP_AXES[gap[0]]
-    if direction == pos_dir:
-        sign = 1
-    elif direction == _neg:
-        sign = -1
-    else:
+    pos_dir, neg_dir = gui.MI_GAP_AXES[gap[0]][2:]
+    if direction not in (pos_dir, neg_dir):
         return None, f'{direction} 不平行於 {gap[0]} 縫'
-    # 切向投影要遠遠超過瞄準容差才算「指著某一邊」：兩下貼著縫（容差之內）
-    # 現在只把滑塊組留在選中態、提示用虛擬鍵盤給方向，不再直接移動
-    # （見 `_mi_tap_direction`，那條路由 _test_mi_tap_direction.py 釘死）
-    tol = max(3.0, view.cell_size / 12.0)
-    clear = 4 * tol * math.hypot(*tangent)      # 換算成與 tangent 的點積刻度
-    cands = [k for k in gui.game.positions()
-             if (side is None or side_of(gap[0], gap[1], k) == side)]
-    best = None
-    for key in sorted(cands):
-        px, py = view.incenter(*key)
-        proj = (px - first[0]) * tangent[0] + (py - first[1]) * tangent[1]
-        if proj * sign < clear:
+    vx, vy = dir_vec(direction, 1.0)
+    for key in sorted(k for k in gui.game.positions()
+                      if (side is None or
+                          side_of(gap[0], gap[1], k) == side)):
+        if gui.get_block_at_pos(*[
+                int(v) for v in gui.world_to_screen(*view.incenter(*key))]
+        ) is None:
             continue
-        if best is None or abs(proj) < abs(best[1]):
-            best = (key, proj)
-    if best is None:
-        return None, f'side={side} 找不到朝 {direction} 那一側的塊'
-    click_cell(best[0])
-    return best[0], gui.macro_notify_msg
+        sx, sy = click_cell(key)
+        if gui.selected_block is None:
+            continue
+        tx = int(round(sx + vx))
+        ty = int(round(sy + vy))
+        fire(pygame.event.Event(pygame.MOUSEMOTION,
+                                {'pos': (tx, ty), 'rel': (0, 0),
+                                 'buttons': (1, 0, 0)}))
+        locked = getattr(gui, 'drag_follow_direction', None)
+        fire(pygame.event.Event(pygame.MOUSEBUTTONUP,
+                                {'button': 1, 'pos': (tx, ty)}))
+        if locked != direction:
+            return None, f'方向鎖成了 {locked}（期望 {direction}）'
+        return gui.game.block_at(key), gui.macro_notify_msg
+    return None, f'side={side} 找不到點得中的塊'
 
 
 def one_side(gap, direction, side):
-    """點缝 → 點指定側的一塊 → 提交一格（動畫開著，播完才回）。"""
+    """點缝 → 按住指定側的一塊 → 沿縫切向拖一步（動畫開著，播完才回）。"""
     key, msg = two_touch(gap, direction, side)
     if key is None:
         return None, msg, None
