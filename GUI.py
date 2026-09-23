@@ -1677,6 +1677,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         offset_world 用世界座標（像素），與 _MI_GAP_AXES 的格座標軸同向，
         投影只問符號，因此不除掉 zoom 也無妨。
+
+        切向要先過「瞄準容差」這道關（與 gap_at 同一個值 cell_size/12）：
+        第一下選縫本身就允許落在縫線一個容差內，兩下只差幾個像素時切向符號
+        是落點噪音、不是意圖。落在容差裡 → 不猜方向，把已選好的滑塊組留給
+        虛擬鍵盤給方向（與讀檔恢復選中那條沒有錨點的分支同一套兜底），而不是
+        整手拒絕：「點縫 → 點它正下方那塊」這個最自然的手勢切向偏移恰好是 0，
+        舊碼在這裡一律拒絕（新建 2×2 上實測 700 次兩次觸控有 105 次栽在這）。
+        法向那一側的校驗不用加同樣的寬限：能走到「點塊」這個分支的點一定在
+        所有單位邊一個容差之外（否則 gap_at 先把它判成點縫），而縫線正是塊的
+        邊，所以法向符號必然與所點塊同側，校驗天然不會誤觸發。
         """
         axes = self.MI_GAP_AXES.get(gap_type)
         if axes is None:
@@ -1687,10 +1697,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         n_len = math.hypot(*normal)
         proj_t = (dx * tangent[0] + dy * tangent[1]) / t_len
         proj_n = (dx * normal[0] + dy * normal[1]) / n_len
-        if abs(proj_t) < 1e-9:
-            self.macro_notify_msg = ("米字格：偏移几乎垂直于这条缝隙，"
-                                     "判断不出滑动方向")
-            self.macro_notify_timer = 90
+        # 第一下選縫的瞄準容差（見 MiBoardView.gap_at）：小了這個數的偏移
+        # 與「點在縫上」的落點誤差同量級，作不得數
+        tol = max(3.0, self._mi_view().cell_size / 12.0)
+        if abs(proj_t) <= tol:
+            self.macro_notify_msg = (
+                "米字格：两下几乎正对，判不出滑动方向；"
+                "滑块组已选中，请用虚拟键盘给方向")
+            self.macro_notify_timer = 120
             return None
         direction = pos_dir if proj_t > 0 else neg_dir
         # 法向校驗：塊所在側與偏移指向要一致

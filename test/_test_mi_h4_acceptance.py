@@ -17,6 +17,7 @@
 
 执行：python test/_test_mi_h4_acceptance.py
 """
+import math
 import os
 import sys
 
@@ -118,9 +119,9 @@ def two_touch(gap, direction, side=None):
     """完整的兩次觸控：點縫 → 點 direction 那一側的一塊。
 
     點哪一塊純由「第二下落點 − 第一下落在縫切向上的符號」決定（與
-    `_MI_GAP_AXES` 同判據）：這裡先按 side 過濾，再取切向投影最接近 0 的
-    一塊（貼著縫、最像玩家會點的位置）。回傳 (塊, 提示)；(None, 提示)
-    表示沒點成。
+    `_MI_GAP_AXES` 同判據）：這裡先按 side 過濾，再取切向投影最小、且明顯
+    大於瞄準容差的一塊（貼著縫、最像玩家會點的位置）。回傳 (塊, 提示)；
+    (None, 提示) 表示沒點成。
     """
     if not click_seam(gap):
         return None, '縫隙沒選中（點擊被別的物品吃掉）'
@@ -134,13 +135,18 @@ def two_touch(gap, direction, side=None):
         sign = -1
     else:
         return None, f'{direction} 不平行於 {gap[0]} 縫'
+    # 切向投影要遠遠超過瞄準容差才算「指著某一邊」：兩下貼著縫（容差之內）
+    # 現在只把滑塊組留在選中態、提示用虛擬鍵盤給方向，不再直接移動
+    # （見 `_mi_tap_direction`，那條路由 _test_mi_tap_direction.py 釘死）
+    tol = max(3.0, view.cell_size / 12.0)
+    clear = 4 * tol * math.hypot(*tangent)      # 換算成與 tangent 的點積刻度
     cands = [k for k in gui.game.positions()
              if (side is None or side_of(gap[0], gap[1], k) == side)]
     best = None
     for key in sorted(cands):
         px, py = view.incenter(*key)
         proj = (px - first[0]) * tangent[0] + (py - first[1]) * tangent[1]
-        if proj * sign <= 0:
+        if proj * sign < clear:
             continue
         if best is None or abs(proj) < abs(best[1]):
             best = (key, proj)

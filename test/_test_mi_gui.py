@@ -412,9 +412,13 @@ if blk is not None:
               '虚拟键盘' in (gui.macro_notify_msg or ''),
               gui.macro_notify_msg or '')
 
-# —— 定向校驗：純法向偏移 / 塊在偏移背面 都要被拒 ——
+# —— 定向校驗：純法向偏移 / 塊在偏移背面 / 切向正負給方向 ——
 # 直接用軸向量構造偏移、不靠投影湊：切向與法向正交，所以「純法向」就是
 # 精確的零切向分量，「背面」就是精確反號的法向分量。
+# 偏移量要遠遠超過 _mi_tap_direction 的瞄準容差（與 gap_at 同一個值，
+# max(3, cell_size/12)）：小於容差的兩下視為「幾乎正對」，走虛擬鍵盤兜底、
+# 不給方向，那條路由 _test_mi_tap_direction.py 單獨釘死。
+TAP_STEP = 12.0
 for gt in ('h', 'v', 'd1', 'd2'):
     gui.new_mi_puzzle(6, 6, 2)
     view = gui._mi_view()
@@ -426,30 +430,32 @@ for gt in ('h', 'v', 'd1', 'd2'):
     t, n, pos_d, neg_d = gui.MI_GAP_AXES[gt]
     # 法向指向自己所在側的符號（與 GUI 內部 side_of 同一套判據）
     sn = 1.0 if side_of(gt, line, mi_key(blk)) == 1 else -1.0
-    # 純法向偏移（指向自己那一側）→ 沒有切向分量，判不出方向
+    # 純法向偏移（指向自己那一側）→ 沒有切向分量，判不出方向；
+    # 但不整手拒絕：滑塊組留在選中態，提示改用虛擬鍵盤給方向
     gui.macro_notify_msg = ''
-    d = gui._mi_tap_direction(gt, line, blk, (n[0] * sn * 0.4, n[1] * sn * 0.4))
+    d = gui._mi_tap_direction(gt, line, blk, (n[0] * sn * TAP_STEP,
+                                              n[1] * sn * TAP_STEP))
     check(f"{gt}：純法向偏移判不出方向",
-          d is None and '垂直' in (gui.macro_notify_msg or ''),
+          d is None and '虚拟键盘' in (gui.macro_notify_msg or ''),
           gui.macro_notify_msg or '')
     # 法向指向自己那一側的反面（相當於點了縫另一側的塊）→ 校驗攔下
     gui.macro_notify_msg = ''
     d = gui._mi_tap_direction(gt, line, blk,
-                              (-n[0] * sn * 0.4 + t[0] * 0.4,
-                               -n[1] * sn * 0.4 + t[1] * 0.4))
+                              (-n[0] * sn * TAP_STEP + t[0] * TAP_STEP,
+                               -n[1] * sn * TAP_STEP + t[1] * TAP_STEP))
     check(f"{gt}：塊在偏移的背面拿不到方向",
           d is None and '另一侧' in (gui.macro_notify_msg or ''),
           gui.macro_notify_msg or '')
     # 法向指向自己那一側、切向正負 → 分別給正/負方向字母
     gui.macro_notify_msg = ''
     d = gui._mi_tap_direction(gt, line, blk,
-                              (n[0] * sn * 0.4 + t[0] * 0.4,
-                               n[1] * sn * 0.4 + t[1] * 0.4))
+                              (n[0] * sn * TAP_STEP + t[0] * TAP_STEP,
+                               n[1] * sn * TAP_STEP + t[1] * TAP_STEP))
     check(f"{gt}：切向為正向給 {pos_d}", d == pos_d, f"實得 {d}")
     gui.macro_notify_msg = ''
     d = gui._mi_tap_direction(gt, line, blk,
-                              (n[0] * sn * 0.4 - t[0] * 0.4,
-                               n[1] * sn * 0.4 - t[1] * 0.4))
+                              (n[0] * sn * TAP_STEP - t[0] * TAP_STEP,
+                               n[1] * sn * TAP_STEP - t[1] * TAP_STEP))
     check(f"{gt}：切向為負向給 {neg_d}", d == neg_d, f"實得 {d}")
 
 # —— 與選中縫隙不平行的方向被拒 ——
