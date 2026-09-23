@@ -208,14 +208,15 @@ class RendererMixin:
                     self.screen.blit(text, text_rect)
 
     def draw_mi_board(self):
-        """繪製米字格棋盤（M2：可滑动，两次触控 + 虚拟键盘）。
+        """繪製米字格棋盤（两次触控 + 虚拟键盘，方向由第二下的拖动给出）。
 
         背景是「方格 + 每格兩條對角線」的米字紋理，按棋形凸包裁剪
         （與三角版同理：線不伸到棋形外的空白處，洞裡也不畫）。
         單位塊以內心為中心內縮 gap_width/2，相鄰塊之間剛好留出
         視覺間隙；be_opted 的塊用選中色，選中的縫疊一條紅線。
-        拖拽跟隨不做（米字格禁單次觸控）；移動動畫整組沿同一格座標
-        位移插值（q 朝向在平移下不變）。
+        拖拽跟隨時選中組沿鎖定方向平移 dr/dc 個小數格實時預覽（q 朝向
+        在平移下不變），越過可達上限則整組變暗 + 橙色邊框；移動動畫
+        整組沿同一格座標位移插值。
         """
         self.screen.fill(self.colors['background'])
 
@@ -232,6 +233,16 @@ class RendererMixin:
             for idx, block in enumerate(self.anim_blocks):
                 sr, sc, sq = self.anim_start_pos[idx]
                 anim_map[id(block)] = (sr + dr, sc + dc, sq)
+
+        # 拖拽跟隨：選中組沿鎖定方向平移 dr/dc 個小數格（格座標）
+        follow_map = {}
+        if self.drag_following:
+            dr, dc = self.drag_follow_offset
+            if abs(dr) > 1e-9 or abs(dc) > 1e-9:
+                for block in self.game.blocks:
+                    if block.be_opted:
+                        r, c, q = mi_key(block)
+                        follow_map[id(block)] = (r + dr, c + dc, q)
 
         cells = self.game.positions()
         if anim_map:
@@ -252,23 +263,32 @@ class RendererMixin:
         selected = []
         normal = []
         for block in self.game.blocks:
-            r, c, q = anim_map.get(id(block)) or mi_key(block)
+            r, c, q = (anim_map.get(id(block)) or follow_map.get(id(block))
+                       or mi_key(block))
             cx, cy = view.piece_center(r, c, q)
             sx, sy = self.world_to_screen(cx, cy)
             if (sx < -scaled_cell or sx > self.screen_width + scaled_cell
                     or sy < -scaled_cell or sy > self.screen_height + scaled_cell):
                 continue
-            (selected if block.be_opted else normal).append((r, c, q))
+            # 拖過可達上限：這一塊要變暗 + 橙框，連同組別一起畫
+            warn = (self.drag_following and self.drag_follow_invalid
+                    and id(block) in follow_map)
+            (selected if block.be_opted else normal).append(((r, c, q), warn))
 
-        for group, is_selected in ((normal, False), (selected, True)):
-            fill = (self.colors['block_selected'] if is_selected
+        for gi, group in enumerate((normal, selected)):
+            base = (self.colors['block_selected'] if gi
                     else self.colors['block'])
             border_w = max(1, int(2 * self.zoom))
-            for r, c, q in group:
+            for (r, c, q), warn in group:
+                fill = base
+                border_color = self.colors['border']
+                if warn:
+                    fill = tuple(int(ch * 0.45) for ch in base[:3])
+                    border_color = (220, 80, 40)
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 pygame.draw.polygon(self.screen, fill, poly)
-                pygame.draw.polygon(self.screen, self.colors['border'],
+                pygame.draw.polygon(self.screen, border_color,
                                     poly, border_w)
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):

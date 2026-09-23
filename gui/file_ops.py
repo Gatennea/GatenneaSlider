@@ -508,7 +508,6 @@ class FileOpsMixin:
 
         self.selected_gap = None
         self.selected_block = None
-        self._mi_gap_point = None
         self.animating = False
         self.anim_blocks = []
 

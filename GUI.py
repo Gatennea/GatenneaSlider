@@ -24,7 +24,7 @@ from history import GameHistory
 from records import Records, format_time
 from puzzle_types import create_puzzle, puzzle_key
 from game_triangle import tri_key
-from game_mi import mi_key
+from game_mi import mi_key, DIRECTIONS as MI_DIRECTIONS
 from gui.renderer import RendererMixin
 from gui.dialogs import DialogsMixin
 from gui.animation import AnimationMixin
@@ -457,9 +457,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 米字格模式（Stage M）：self.game 为 MiSliderMatrix 时为 True。
         # 交互走两次触控：第一下选缝隙，第二下点滑块提交；方向由两下的
-        # 世界位移在缝隙切向上的符号定，故要把第一下的落点记下来。
+        # 方向不再由「两下落点差」猜，而是由第二下按住拖动时的位移向量
+        # 在选中缝隙切向上的投影给出，故无需记录第一下落点作锚点
         self.mi_mode = False
-        self._mi_gap_point = None   # 第一下触控的世界坐标（选缝隙时的落点）
 
         # 历史记录
         self.game_history = GameHistory()
@@ -860,7 +860,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.zoom = self._fit_mi_zoom()
         self.selected_gap = None
         self.selected_block = None
-        self._mi_gap_point = None
         self.step_count = 0
         self.animating = False
         self.anim_blocks = []
@@ -881,8 +880,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
     def _mi_blocked(self, action: str, hint: str = '') -> bool:
         """米字格模式下不可用的操作：给出一致提示并拦截。
 
-        M2 起滑动/选组/虚拟键盘已开放；这里只剩求解器等后续阶段功能，
-        以及冻结决策里明确禁用的拖拽——一律走两次触控。
+        M2 起滑动/选组/虚拟键盘/拖拽已开放；这里只剩求解器等后续阶段功能。
         """
         if not getattr(self, 'mi_mode', False):
             return False
@@ -1617,10 +1615,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         與三角版的差別：不做單次觸控拖拽（resolve_drag 不存在），因此
         一定要有 selected_gap + selected_block——縫隙由第一下觸控選定，
-        滑塊由第二下觸控選定並順帶定出方向，虛擬鍵盤複用同一份選中態。
+        滑塊由第二下觸控選定（拖動則由那次拖動定向），虛擬鍵盤複用同一份選中態。
         方向必須平行於已選縫隙，否則提示並放棄。
         """
-        from game_mi import DIRECTIONS, GAP_DIRECTIONS, mi_key
+        from game_mi import DIRECTIONS, GAP_DIRECTIONS
         if direction not in DIRECTIONS:
             self.macro_notify_msg = f"米字格：未知方向 {direction}"
             self.macro_notify_timer = 90
@@ -1675,62 +1673,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return None
         return selected, final_positions, actual_step
 
-    def _mi_tap_direction(self, gap_type: str, line: int, block,
-                          offset_world: tuple):
-        """第二次觸控定向：用「第二下點 − 第一下點」在縫隙切向上的符號定方向。
-
-        切向分量取符號（正 → 切向那個方向字母，負 → 反向），法向分量只作
-        校驗：所點滑塊必須與偏移指向同一側，否則說明玩家點的縫另一邊的塊，
-        給提示而不是照著移（規劃 §3 的斷言）。回傳方向字母；無法判定回 None。
-
-        offset_world 用世界座標（像素），與 _MI_GAP_AXES 的格座標軸同向，
-        投影只問符號，因此不除掉 zoom 也無妨。
-
-        切向要先過「瞄準容差」這道關（與 gap_at 同一個值 cell_size/12）：
-        第一下選縫本身就允許落在縫線一個容差內，兩下只差幾個像素時切向符號
-        是落點噪音、不是意圖。落在容差裡 → 不猜方向，把已選好的滑塊組留給
-        虛擬鍵盤給方向（與讀檔恢復選中那條沒有錨點的分支同一套兜底），而不是
-        整手拒絕：「點縫 → 點它正下方那塊」這個最自然的手勢切向偏移恰好是 0，
-        舊碼在這裡一律拒絕（新建 2×2 上實測 700 次兩次觸控有 105 次栽在這）。
-        法向那一側的校驗不用加同樣的寬限：能走到「點塊」這個分支的點一定在
-        所有單位邊一個容差之外（否則 gap_at 先把它判成點縫），而縫線正是塊的
-        邊，所以法向符號必然與所點塊同側，校驗天然不會誤觸發。
-        """
-        axes = self.MI_GAP_AXES.get(gap_type)
-        if axes is None:
-            return None
-        tangent, normal, pos_dir, neg_dir = axes
-        dx, dy = offset_world
-        t_len = math.hypot(*tangent)
-        n_len = math.hypot(*normal)
-        proj_t = (dx * tangent[0] + dy * tangent[1]) / t_len
-        proj_n = (dx * normal[0] + dy * normal[1]) / n_len
-        # 第一下選縫的瞄準容差（見 MiBoardView.gap_at）：小了這個數的偏移
-        # 與「點在縫上」的落點誤差同量級，作不得數
-        tol = max(3.0, self._mi_view().cell_size / 12.0)
-        if abs(proj_t) <= tol:
-            op_log.log('mi_no_direction', why='tangent_within_tol',
-                       gap=[gap_type, line], proj_t=round(proj_t, 2),
-                       tol=round(tol, 2))
-            self.macro_notify_msg = (
-                "米字格：两下几乎正对，判不出滑动方向；"
-                "滑块组已选中，请用虚拟键盘给方向")
-            self.macro_notify_timer = 120
-            return None
-        direction = pos_dir if proj_t > 0 else neg_dir
-        # 法向校驗：塊所在側與偏移指向要一致
-        from game_mi import mi_key, side_of
-        side = side_of(gap_type, line, mi_key(block))
-        if (side == 1 and proj_n < 0) or (side == 0 and proj_n > 0):
-            op_log.log('mi_no_direction', why='wrong_side',
-                       gap=[gap_type, line], side=side, proj_n=round(proj_n, 2),
-                       block=list(mi_key(block)))
-            self.macro_notify_msg = ("这块在缝隙的另一侧：请点与偏移方向"
-                                     "同侧的滑块")
-            self.macro_notify_timer = 90
-            return None
-        return direction
-
     def _bump_move_session(self):
         """结束当前「选中会话」：之后的移动不再并入同一快照。
 
@@ -1773,13 +1715,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return False
         # 正在动画中不允许进入跟随
         if self.animating:
+            if getattr(self, 'mi_mode', False):
+                # 米字格提交移动只有拖拽和虚拟键盘两条路，两条都在动画期间
+                # 被拒；静默返回在玩家看来就是「拖了没反应」，必须明说
+                self.macro_notify_msg = "动画播放中，无法移动"
+                self.macro_notify_timer = 90
             return False
         # 宏执行中不允许
         if getattr(self, 'macro_executing', False):
             return False
-        # 米字格按冻结决策只做两次触控 + 虚拟键盘，拖拽跟随一律关闭
-        if self._mi_blocked('拖拽', '请用两次触控：先点缝隙，再点滑块'):
-            return False
+        # 米字格：位移向量投到已选缝隙的切向定方向（不猜 8 区扇区）
+        if getattr(self, 'mi_mode', False):
+            return self._init_mi_drag_follow(block, dx, dy)
         # 三角形密铺：手勢向量投影吸附到 6 個晶格方向（B2）
         if getattr(self, 'triangle_mode', False):
             return self._init_triangle_drag_follow(block, dx, dy)
@@ -1849,6 +1796,76 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.drag_follow_auto_deselect = (gap is None)
         # 探测本方向可达上限：跟随期间棋盘状态不变，只需探测一次
         self.drag_follow_max_cells = self._probe_max_cells(direction)
+        return True
+
+    def _init_mi_drag_follow(self, block, dx, dy):
+        """米字格的拖拽跟随：把「按住并拖动」的位移向量投到已选缝隙的切向。
+
+        两次触控的第一下已经选定了缝隙，所以这里既不必像方形那样猜 8 区
+        扇区，也不必像三角版那样反推「缝隙线穿过手指」——只问一件事：位移
+        向量投影到选中缝隙的切向后，符号落在正的一侧还是负的一侧（也就是
+        位移落在法线的哪一侧）。正侧 → 该族正方向字母，负侧 → 负方向字母。
+
+        纯法向拖动（切向投影落在瞄准容差里）→ 不进跟随，交回点击语义：那一
+        手只是选中滑块组，方向留给虚拟键盘。这正是「不做单次触控」的代价：
+        一次触控要在 8 个方向里猜一个，误触面大；两次触控只要区分法线两侧。
+
+        dx/dy 是自按下点起算的屏幕像素。偏移按「一步的分量」记进
+        drag_follow_offset（格坐标，可为小数），拖拽预览与松手提交共用同一
+        份数据，不再另设锚点。
+        """
+        gap = getattr(self, 'selected_gap', None)
+        if gap is None:
+            # 米字格没有单次触控这条捷径：没有预选缝隙就无切向可投影
+            return False
+        gap_type, line = gap
+        axes = self.MI_GAP_AXES.get(gap_type)
+        if axes is None:
+            return False
+        tangent, _normal, pos_dir, neg_dir = axes
+        t_len = math.hypot(*tangent)
+        # 切向位移（屏幕像素）。容差与 gap_at 同源（1/12 格、最小 3px）：
+        # 比这更小的切向分量与瞄准噪声同量级，作不得数
+        tan_px = (dx * tangent[0] + dy * tangent[1]) / t_len
+        tol = max(3.0, self._mi_view().cell_size * self.zoom / 12.0)
+        if abs(tan_px) <= tol:
+            op_log.log('mi_drag_reject', gap=[gap_type, line],
+                       why='no_tangent', tan_px=round(tan_px, 2),
+                       tol=round(tol, 2))
+            return False
+        direction = pos_dir if tan_px > 0 else neg_dir
+        # 选中的缝可能在这一手之前就失效（错位态的半整数横竖缝会整条切进
+        # 块里）。失效时清掉选中态，否则 opt 会静默不选组，玩家以为选上了
+        if not self.game.is_valid_gap(gap_type, line):
+            self.selected_gap = None
+            self.selected_block = None
+            for b in self.game.blocks:
+                b.be_opted = False
+            self.macro_notify_msg = (
+                f"这条缝选不动（错位态切在块里）：{self._mi_hv_left(gap_type)}")
+            self.macro_notify_timer = 120
+            return False
+
+        self.selected_gap = (gap_type, line)
+        self.selected_block = block
+        self.game.opt(gap_type, line, block)
+
+        self.drag_following = True
+        self.drag_follow_block = block
+        self.drag_follow_start_pos = list(block.location)
+        self.drag_follow_start_screen = None  # 由 events.py 传入
+        self.drag_follow_offset = (0.0, 0.0)
+        self.drag_follow_gap = (gap_type, line)
+        self.drag_follow_direction = direction
+        self.drag_follow_step = 0
+        self.drag_follow_invalid = False
+        # 米字格一定带着预选缝隙进来，不存在单次触控那种「结束自动取消选中」
+        self.drag_follow_auto_deselect = False
+        # 探测本方向可达上限：跟随期间棋盘状态不变，只需探测一次
+        self.drag_follow_max_cells = self._probe_max_cells(direction)
+        op_log.log('mi_drag_start', gap=[gap_type, line], dir=direction,
+                   tan_px=round(tan_px, 1),
+                   max_cells=self.drag_follow_max_cells)
         return True
 
     def _init_triangle_drag_follow(self, block, dx, dy):
@@ -1945,6 +1962,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 而三角六向中有對角方向（如 w=(-1,+1)），沿該方向走 t 格時兩個分量
         # 都等於 t，只有 max 能正確還原步數
         cells = max(0.0, abs(dr), abs(dc))
+        if getattr(self, 'mi_mode', False) and self.drag_follow_direction:
+            # 米字格一「格」在 (行, 列) 上的分量：橫豎 = 1、斜向 = ½。偏移量
+            # 按分量記，還原成格數要除掉它（不除的話斜向拖一格只能走半程）
+            dr_u, dc_u = MI_DIRECTIONS[self.drag_follow_direction]
+            cells /= max(abs(dr_u), abs(dc_u))
         # 取整用 int(x + 0.5)（等价 floor），规避 round() 的银行家舍入；再量化到 current_step 整数倍
         step_size = max(1, self.current_step)
         step = int(cells / step_size + 0.5) * step_size
@@ -1987,10 +2009,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         - 单次触控会在滑动后清空选中。
         返回是否真正移动。
         """
-        # 米字格禁拖拽（冻结决策）：滑块是按 (r, c, q) 三元素标识的，
-        # 这条 8 区角度路径只对方形两坐标成立，米字格必须走两次触控
+        # 米字格不走这条 8 区角度路径：滑块是按 (r, c, q) 三元素标识的，
+        # 角度扇区只对方形两坐标成立。拖拽有专门入口（_init_mi_drag_follow，
+        # 把位移向量投到已选缝隙的切向定方向），能走到这里说明跟随便没起来
         if getattr(self, 'mi_mode', False):
-            self._mi_blocked('拖拽', '请用两次触控：先点缝隙，再点滑块')
+            self._mi_blocked('拖拽', '先点选缝隙，再按住滑块拖动')
             return False
         # 动画播放中：上一手的落点还没提交，此时再移一次会把正在播的动画
         # 整组替换掉（起点被改写、上一手被悄悄丢掉），画面表现为「滑块

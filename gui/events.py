@@ -9,6 +9,7 @@ import os
 import webbrowser
 import pygame
 import queue
+import math
 import traceback
 from gui.text_input import TextInput
 from gui import op_log
@@ -421,6 +422,20 @@ class EventsMixin:
                                 self.drag_follow_offset = (di * clamped, dj * clamped)
                                 # 觸點越過可達上限 → 提示不可繼續（容差 0.05 格覆蓋像素取整誤差）
                                 self.drag_follow_invalid = (proj > max_cells + 0.05)
+                            elif getattr(self, 'mi_mode', False):
+                                # 米字格：屏幕位移换算成格位移（屏幕 +x ↔ 列 +，
+                                # 屏幕 +y ↔ 行 +），再投影到锁定方向的切向上，折成
+                                # 「沿该族走了几格」；偏移按一步的分量记录
+                                from game_mi import DIRECTIONS as _MI_DIRS
+                                dr_u, dc_u = _MI_DIRS[self.drag_follow_direction]
+                                t = math.hypot(dr_u, dc_u)   # 横竖 1、斜向 √2/2
+                                s = self._mi_view().cell_size * self.zoom
+                                cells = (px_dx * dc_u + px_dy * dr_u) / (s * t * t)
+                                clamped = max(0.0, min(cells, float(max_cells)))
+                                self.drag_follow_offset = (dr_u * clamped,
+                                                           dc_u * clamped)
+                                # 触点越过可达上限 → 提示不可继续（容差同上）
+                                self.drag_follow_invalid = (cells > max_cells + 0.05)
                             else:
                                 dc = px_dx / (cell_px * self.zoom)
                                 dr = px_dy / (cell_px * self.zoom)
@@ -670,10 +685,9 @@ class EventsMixin:
 
                         # 拖拽滑动：记录起点（按下滑块时记录；最终由 MOUSEBUTTONUP 判定点击/拖拽）
                         # 单次/两次触控都关闭时拖拽无意义，不记录起点，避免残留中间态
-                        # 米字格禁拖拽，连起点都不记（否则松手会走 _drag_slide 的
-                        # 8 区角度路径，把三坐标滑块当成两坐标解包）
-                        if block is not None and not getattr(self, 'mi_mode', False) \
-                                and not self._readonly_blocked() and \
+                        # 米字格也记：它的方向就来自这一次「按住并拖动」的位移
+                        # 向量（见 _init_mi_drag_follow），不记等于手势不存在
+                        if block is not None and not self._readonly_blocked() and \
                                 (getattr(self, 'control_single_touch', True) or two_touch_on):
                             self._mouse_drag_state = {
                                 'sx': x, 'sy': y, 'block': block, 'moved': False,
@@ -688,17 +702,11 @@ class EventsMixin:
                                 self._bump_move_session()
                                 if self.selected_gap == gap:
                                     self.selected_gap = None
-                                    if getattr(self, 'mi_mode', False):
-                                        self._mi_gap_point = None
                                 else:
                                     self.selected_gap = gap
                                     for b in self.game.blocks:
                                         b.be_opted = False
                                     self.selected_block = None
-                                    # 米字格：记下第一下触控的落点（世界坐标），
-                                    # 第二下触控用它算偏移、投影到切向定方向
-                                    if getattr(self, 'mi_mode', False):
-                                        self._mi_gap_point = self.screen_to_world(x, y)
                                     # 操作提示：选中缝隙
                                     gap_type, line = gap
                                     msg = f"选中{self._gap_type_name(gap_type)}缝隙"
@@ -714,43 +722,22 @@ class EventsMixin:
                             # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，不选中、不平移
                         elif getattr(self, 'mi_mode', False) and block is not None \
                                 and self.selected_gap is not None and selectable:
-                            # 米字格第二下触控：选组 + 定向 + 提交一次到位。
-                            # 方向只由「第二下 − 第一下」在缝隙切向上的符号决定，
-                            # 法向只做校验（点的块必须与偏移同侧）。
+                            # 米字格第二下按下：只选中滑块组，不提交。
+                            # 方向由这一次「按住并拖动」的位移向量给出——位移在
+                            # 选中缝隙切向上的投影定方向，松手（MOUSEBUTTONUP）
+                            # 才提交，见 _init_mi_drag_follow。按下后没有拖动 =
+                            # 纯粹的选中，方向留给虚拟键盘，与方形/三角的
+                            # 「按下即选中」完全一致
                             if self.drag_following:
                                 self.clear_drag_follow()
                             self._bump_move_session()
                             gap_type, line = self.selected_gap
                             self.game.opt(gap_type, line, block)
                             self.selected_block = block
-                            anchor = getattr(self, '_mi_gap_point', None)
-                            if anchor is None:
-                                # 缝隙不是这一回合点出来的（读档恢复选中/HTTP 选中）：
-                                # 没有参考点就无法定向，先只选组，等虚拟键盘给方向
-                                n_blocks = len(
-                                    [b for b in self.game.blocks if b.be_opted])
-                                self.macro_notify_msg = (
-                                    f"选中滑块组 共{n_blocks}个"
-                                    "（用虚拟键盘给方向）")
-                                self.macro_notify_timer = 120
-                            else:
-                                wx, wy = self.screen_to_world(x, y)
-                                direction = self._mi_tap_direction(
-                                    gap_type, line, block, (wx - anchor[0], wy - anchor[1]))
-                                if direction is not None:
-                                    # 动画播放中：上一手还没落地，这一手只选组
-                                    # 不提交，否则会把正在播的动画整组替换掉
-                                    # （起点被改写、上一手被丢掉）。虚拟键盘
-                                    # 同样在动画期间拒绝移动
-                                    if self.animating:
-                                        self.macro_notify_msg = "动画播放中，无法移动"
-                                        self.macro_notify_timer = 90
-                                    else:
-                                        self.move_selected_blocks(direction)
-                            # 第一下的落點只服務這一次第二下：用掉就清。否則選中態
-                            # 會一直留著，之後每次單擊滑塊都拿這個舊錨點重新定向，
-                            # 出現「只是點了幾下、滑塊自己滑走了」的幽靈移動。
-                            self._mi_gap_point = None
+                            n_blocks = len(
+                                [b for b in self.game.blocks if b.be_opted])
+                            self.macro_notify_msg = f"选中滑块组 共{n_blocks}个"
+                            self.macro_notify_timer = 120
                         elif block is not None and self.selected_gap is not None and selectable:
                             # 跟随中点击滑块 → 清除跟随
                             if self.drag_following:
@@ -810,7 +797,6 @@ class EventsMixin:
                         self._bump_move_session()
                         self.selected_gap = None
                         self.selected_block = None
-                        self._mi_gap_point = None
                         for b in self.game.blocks:
                             b.be_opted = False
                         self.macro_notify_msg = "已取消选中"
@@ -825,7 +811,12 @@ class EventsMixin:
                             self._mouse_drag_state = None
                             # 跟随模式由 _commit_drag_move 处理，不走旧路径
                             if not self.drag_following:
-                                if st.get('moved') and st.get('block') is not None:
+                                # 米字格不走 _drag_slide：那条路按两坐标格解包，
+                                # 会把 (行,列,朝向) 三坐标滑块解错。米字格的拖拽
+                                # 要么进了跟随，要么是纯法向拖动＝没有滑动意图
+                                # （见 _init_mi_drag_follow），松手只清状态
+                                if st.get('moved') and st.get('block') is not None \
+                                        and not getattr(self, 'mi_mode', False):
                                     self._drag_slide(st['block'], st.get('dx', 0), st.get('dy', 0))
                             # 跟随模式释放：提交移动
                             if self.drag_following:
@@ -927,7 +918,7 @@ class EventsMixin:
                             for action_name in move_actions:
                                 if self._is_action_triggered(event, action_name):
                                     self.macro_notify_msg = (
-                                        "米字格：方向请用虚拟键盘（先点缝隙，再点滑块定向）")
+                                        "米字格：方向请用虚拟键盘（或按住滑块拖动定方向）")
                                     self.macro_notify_timer = 90
                                     break
                             continue
@@ -1362,7 +1353,6 @@ class EventsMixin:
                 block.number = i + 1
         self.selected_gap = None
         self.selected_block = None
-        self._mi_gap_point = None
         self.animating = False
         self.anim_blocks = []
         self.step_count = 0
@@ -1722,9 +1712,8 @@ class EventsMixin:
                     for b in self.game.blocks:
                         b.be_opted = False
                     self.selected_block = None
-                    # 不是「点在缝隙上」选中，米字格的定向锚点作废：
-                    # 之后点滑块只选组，方向交给虚拟键盘或下一轮两次触控
-                    self._mi_gap_point = None
+                    # 不是「点在缝隙上」选中：滑塊组要重新点一次才会选中
+                    # （与方形/三角一致），方向由拖动或虚拟键盘给出
                     self._cmd_reply(resp_q, True, f"已选中缝隙: {gap_type} {line}")
                 
                 elif action == 'select_block':
