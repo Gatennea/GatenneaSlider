@@ -205,12 +205,12 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 | key | 顯示名 | 函數 | 特性 |
 | --- | --- | --- | --- |
 | `gather_gradient` | 智能聚攏 | `gather_solver.gradient_gather` | 參數預測 + 多階段 + 路徑優化 |
-| `human_ai` | 人類模仿 | `human_solver.ai_human_solve` | 人類還原記錄訓練的評分模型（§5.4） |
 | `gather` | 普通聚攏 | `gather_solver.gather_solve` | 貪心聚攏 + patience 停機 |
 | `ida_star` | 最少步 | `solver.solve` | 保證最優，較慢 |
 | `fast` | 最快-1 | `solve_fast` | IDA* 放寬 |
 | `greedy` | 最快-2 | `solve_greedy` | 貪心爬山 + 擾動 |
 | `table` | 查表求解 | `table_solver.table_solve` | 需先 `solver.data` 建表 |
+| `fill_macro` | 填洞宏 | `fill_macro.solve_fill_macro` | 單洞 A-B-A' 共軛子宏；多洞無缺口貪心逐 couple（§5.4） |
 
 通用函式庫契約：`f(game, step, max_steps, cancel_check=None, progress_callback=None) → list[action] | None`（`gather` 系回報 `progress_callback` 聚攏指標，即使未還原也回傳動作序列）。新增演算法 = 在 `solver/ml/` 新增模組 + 註冊進 `SOLVER_ALGORITHMS` + 加入設定介面的預設清單。
 
@@ -247,7 +247,7 @@ python -m solver.visualize_table 4 4 2
 **A. 查表導出管線（離線，未接入求解菜單）**
 `features`（特徵/動作編碼）→ `export_data`（從 BFS 表導出）→ `annotate` → `train_baseline` / `train_ranker` / `train_distance` → `ai_solver` / `distance_solver` 推理。
 
-**B. 人類模仿管線（已註冊為 `human_ai`，見 §5.1）**
+**B. 人類模仿管線（`human_ai` 已在代碼中註解掉，暫未接入求解菜單；管線本身仍在 `solver.ml.human_solver`）**
 ```bash
 # 1. 從 save/*.json（人類還原記錄）導出正/負樣本，JSONL 可檢視
 python -m solver.ml.export_human_data
@@ -276,13 +276,13 @@ python -m solver.ml.human_solver
 | GET | `/analysis/window` | 目標聚攏視窗 `{ok,window:{r0,c0,rh,cw,overlap},m,n,step}`；**三角形形態不支援，回 HTTP 400** |
 | GET | `/analysis/holes` | 洞/缺口/凸起 `{ok,window,holes:[{type:"hole"|"dent",size,cells}],protrusions:[[r,c],...]}`；**三角形回 400** |
 | GET | `/analysis/actions` | 合法動作列舉 `{ok,actions:[{gap_type,gap_line,side,move_dir}]}`；**三角形回 400** |
-| GET | `/solver/algorithms` | `{ok,current,algorithms:[{key,name}]}`（8 種算法） |
+| GET | `/solver/algorithms` | `{ok,current,algorithms:[{key,name}]}`（7 種算法） |
 | GET | `/solver/status` | 結構化求解狀態 `{ok,state,algorithm,progress,gradient,result_steps,elapsed_ms}`；state=`idle/running/solved/failed/cancelled` |
 | GET | `/solver/params` | gather 參數 `{ok,params:{<key>:{value,enabled}}}` |
 | GET | `/macro/list` | `{"ok":true,"macros":[{name,description,steps,recorded_step,base_point}]}` |
 | GET | `/macro/status` | `{ok,recording,executing,selecting_base,reverse_mode,recording_steps,current_macro}` |
 | GET | `/mode` | `{ok,mode:"practice"|"timed"}` |
-| GET | `/settings` | `{ok,settings:{<鍵>:<值>}}`（12 個 GUI 開關） |
+| GET | `/settings` | `{ok,settings:{<鍵>:<值>}}`（13 個 GUI 開關 + 動畫時長） |
 | GET | `/records` | 目前謎題成績摘要 |
 | GET | `/timer/status` | `{"ok":true,...}` + `state`/`elapsed_ms` |
 | POST | `/command` | `{"cmd":"<任意 CLI 指令>"}`（§7 全集） |
@@ -360,7 +360,7 @@ curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d '
 ```
 
 `/settings` 鍵名（`*_enabled` 皆為布林；`animation_duration_ms` 為 50–1000 整數毫秒，對應 GUI 的 `animation_duration`）：
-`coloring_enabled`、`chain_hint_enabled`、`show_metrics_panel`、`animation_enabled`、`selection_animation_enabled`、`animation_duration_ms`、`control_single_touch`、`control_two_touch`、`control_mouse_kb`、`macro_reverse_mode`、`save_readonly_flag`、`prevent_overwrite_flag`。
+`coloring_enabled`、`chain_hint_enabled`、`show_metrics_panel`、`animation_enabled`、`selection_animation_enabled`、`animation_duration_ms`、`control_single_touch`、`control_two_touch`、`control_mouse_kb`、`macro_reverse_mode`、`save_readonly_flag`、`prevent_overwrite_flag`、`op_log_enabled`。
 
 `/solver/params` 鍵名：`max_steps`、`patience`、`max_wait_time`、`target_gather_score`、`aggressiveness`，各自另有 `<key>_enabled` 布林（停用＝求解時不設限）；範圍與 GUI 設定對話框的 gather 參數規格同源。
 
@@ -390,7 +390,7 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `actions` | — | 合法動作列舉（enumerate_valid_actions） |
 | `solve` | `[algorithm]` | 啟動自動求解；給算法名則先切換（非法名回錯誤）；**執行中再呼叫 = 取消** |
 | `solve_cancel` | — | 顯式取消（未在求解回 ok:false） |
-| `solver_algorithms` | — | 列出 8 種算法與目前算法 |
+| `solver_algorithms` | — | 列出 7 種算法與目前算法 |
 | `solver_status` | — | 結構化狀態：idle/running/solved/failed/cancelled（含 progress/gradient/result_steps/elapsed_ms） |
 | `solve_status` | — | 舊版純文字 `idle/running/solved(N步)/failed`（保留相容） |
 | `solver_params` | 無參 或 `key=value ...` | 查詢或部分設置 gather 參數；啟用標誌用 `key_enabled=0|1`；越界整批拒絕 |
@@ -527,4 +527,4 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 - 米字格（`mi`）：已實作斜向一格的引擎（`game_mi.py`，含錯位態兩晶格、8-bit 快照與 `mi8` 地圖）、兩次觸控（第二下按住滑塊拖動才定向提交，只按不拖則選組等虛擬鍵盤）+ 拖拽跟隨預覽 + 虛擬鍵盤 + 八向動畫 + 競速/存讀檔/打亂/撤銷重做。**暫不支援**：求解器/建表/ML、`/analysis/*`（回 400）、宏錄製執行、創造模式、著色與調試面板、單次觸控（凍結決策：八向誤觸面太大）。已知注意點：等級語義漂移（等級 1 斜距 = √2/2，等級 2 = 舊版等級 1）；錯位態橫豎縫會整條穿過塊內部而選不動（提示按剩餘條數說，沿斜向再走一格即復活）；`/status` 的 `blocks[]` 沒有 `mod`，改帶 `q` 與 `lat`。
 - 新形態的存量缺陷（修復計劃已備，落地前別當新回歸）：**創造模式的手動構造在非方形下會崩**（構造集寫死兩坐標格，三角/米字一點選就拋 `ValueError: too many values to unpack`）；**數字謎題的手動構造會丟掉全部編號**（重建滑塊時不帶 `number`，應用後畫面不畫編號、`is_solved()` 永遠 False）。修復在 `.zcode/plans/plan-build-*.md`。
 - 存量缺陷（**方形同樣存在**，非新形態引入）：多步（批量）移動時 `step_count` 由 `move_selected_blocks` 累加 `move_step`，而 `history.save_snapshot` 每步只記 `steps = 1`，導致存檔重載（`_load_save_data` 以 `current_step_total()` 重算）與 undo/redo 後的步數比實際少。
-- 求解長期目標：以「梯度聚攏粗調 + AI 收尾」完成高階謎題。人類模仿（`human_ai`）已接入 `SOLVER_ALGORITHMS`（§5.4 管線 B）；AI 收尾模型仍在提升中。
+- 求解長期目標：以「梯度聚攏粗調 + 填洞宏收尾」完成高階謎題。人類模仿（`human_ai`）管線仍在 `solver.ml.human_solver` 但未接入求解菜單（已註解）。填洞宏（`fill_macro`）已註冊為 `SOLVER_ALGORITHMS` 之一，實作單洞 A-B-A' 共軛子宏與多洞無缺口貪心逐 couple（§5.4 管線 B 相關）。
