@@ -824,8 +824,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             step: 移动步数（等级），须小于 max(m, n)
 
         建局即为实心 m×n 米字格（还原态）。交互走 M2 定案的两次触控：
-        第一下点缝隙、第二下点滑块提交，方向由偏移的切向符号定；单次触控
-        与拖拽在米字格下一律关闭（指向缝隙或滑块，提示用）。
+        第一下点缝隙，第二下按住滑块拖动才定向提交（方向取位移在缝隙切向
+        上的投影符号），只按不拖＝选中该组、方向交给虚拟键盘；单次触控
+        永久关闭（八向靠一次触控猜方向误触面太大），物理键盘不绑。
         """
         if self._tut_board_locked():
             return False
