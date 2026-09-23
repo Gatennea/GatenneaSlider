@@ -70,8 +70,9 @@ def main():
     assert sorted(b.number for b in gui.game.blocks) == list(range(1, 26))
     assert gui.step_count == 2, f"重做後 step_count={gui.step_count}"
 
-    # 自動存檔名帶 -num 段（自動命名也要能區分形態）
-    assert '-num-' in gui._default_save_name(), gui._default_save_name()
+    # 自動存檔名帶形態標記（數字 = num-，在最前面；矩形不加）
+    assert gui._default_save_name().startswith('num-1-5-5-'), \
+        gui._default_save_name()
 
     # 存檔往返（臨時文件）
     path = gui._default_save_name()

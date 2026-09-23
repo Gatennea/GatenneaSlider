@@ -519,13 +519,24 @@ class FileOpsMixin:
             self.save_as()
 
     def _default_save_name(self) -> str:
-        """自动命名：step-m-n[-num]-日期时间.json（24小时制），
-        如 2-6-6-20230827-112821.json；带序号谜题加 -num 段，
-        如 2-4-4-num-20230827-112821.json"""
+        """自动命名：形态标记-step-m-n-日期时间.json（24小时制），
+        如 mi-1-2-2-20260922-112821.json；矩形不加标记（保持旧名 2-6-6-…），
+        米字格 mi、三角形 tri、带序号 num 按序追加（可叠加，如 tri-num-…）。
+
+        标记放最前面：四种形态的 step-m-n 完全同形（都是 1-6-6 这种），
+        放在中段会被尺寸数字淹没，扫一眼分不出是哪一局。
+        """
         from datetime import datetime
         ts = datetime.now().strftime('%Y%m%d-%H%M%S')
-        tag = '-num' if getattr(self, 'numbered', False) else ''
-        return f"{self.current_step}-{self.current_m}-{self.current_n}{tag}-{ts}.json"
+        marks = []
+        if getattr(self, 'mi_mode', False):
+            marks.append('mi')
+        if getattr(self, 'triangle_mode', False):
+            marks.append('tri')
+        if getattr(self, 'numbered', False):
+            marks.append('num')
+        tag = ('-'.join(marks) + '-') if marks else ''
+        return f"{tag}{self.current_step}-{self.current_m}-{self.current_n}-{ts}.json"
 
     def save_as(self):
         """另存为：弹出 pygame 文件对话框（默认名自动生成）"""
