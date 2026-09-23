@@ -31,11 +31,14 @@
 
 import os
 import json
-import time
+import math
 import random
+import time
 import pygame
 
 from game import Block
+from game_mi import blocks_from_cells as mi_blocks_from_cells  # noqa: E402
+from game_triangle import blocks_from_cells as tri_blocks_from_cells  # noqa: E402
 from history import GameHistory, expand_snapshot_moves  # noqa: F401  （语义参照，不直接实例化）
 
 # ---------------------------------------------------------------------------
@@ -260,7 +263,10 @@ class AnnotationMixin:
         self._ann_build_fields = {'m': '', 'n': '', 'step': ''}
         self._ann_build_active = 'm'
         self._ann_build_error = ''
-        self._ann_build_coords = set()      # 画布上点出的滑块坐标（全局坐标）
+        self._ann_build_coords = set()      # 画布上点出的滑块位置（全局坐标，各形态完整元组）
+        self._ann_build_numbered = False    # 进入构造时是否为数字谜题（编号栈只对它生效）
+        self._ann_build_numbers = {}        # 位置元组 -> number（仅 numbered，重建时写回 Block）
+        self._ann_build_num_stack = []      # 取下一块把编号压栈；放一块弹栈顶（后进先出）
         self._ann_build_dialog_rect = None
         self._ann_build_field_rects = {}
         self._ann_build_cell_size = 0
@@ -488,7 +494,7 @@ class AnnotationMixin:
             self._ann_saved_inputs = self._ann_load_inputs() or {}
         d = (self._ann_saved_inputs.get(section)
              if isinstance(self._ann_saved_inputs.get(section), dict) else {})
-        keys = ['m', 'n', 'step', 'hole', 'dent']
+        keys = ['m', 'n', 'step', 'k', 'hole', 'dent']
         out = {}
         for k in keys:
             v = str(d.get(k, '')) if k in d else ''
@@ -520,7 +526,11 @@ class AnnotationMixin:
         """随机生成：打开参数对话框（输入框沿用上次内容）。
 
         创造模式下生成完直接成为当前谜题；标注模式下则进入选目标。
+        三角形/米字格没有随机生成：任何入口只给提示、不开参数对话框。
         """
+        if self.triangle_mode or self.mi_mode:
+            self._ann_notify('该谜题没有随机生成功能')
+            return
         saved = self._ann_saved('gen')
         fall = {'m': self.current_m, 'n': self.current_n,
                 'step': self.current_step, 'hole': 1, 'dent': 0}
@@ -544,18 +554,32 @@ class AnnotationMixin:
         m = self.current_m
         n = self.current_n
         step = self.current_step
-        # 备份当前局面：取消构造时可原样恢复（含历史栈）
+        # 备份当前局面：取消构造时可原样恢复（含历史栈、编号与编号栈）
         self._ann_build_backup = {
-            'coords': [list(b.location) for b in self.game.blocks],
-            'm': self.current_m, 'n': self.current_n,
-            'step': self.current_step,
+            'cells': frozenset({tuple(b.location) for b in self.game.blocks}),
+            'numbers': {tuple(b.location): b.number
+                        for b in self.game.blocks if b.number is not None},
+            'stack': [],
+            'numbered': bool(getattr(self, 'numbered', False)),
+            'm': m, 'n': n, 'step': step,
             'history': self.game_history,
         }
-        self._ann_build_fields = {
-            'm': str(m), 'n': str(n), 'step': str(step),
-        }
-        self._ann_build_active = 'm'
+        # 参数行按形态给：三角只填边长与等级
+        if self.triangle_mode:
+            self._ann_build_fields = {'k': str(m), 'step': str(step)}
+        else:
+            self._ann_build_fields = {
+                'm': str(m), 'n': str(n), 'step': str(step),
+            }
+        self._ann_build_active = 'k' if self.triangle_mode else 'm'
         self._ann_build_error = ''
+        # 数字谜题：编号全在盘上（画布初始 = 当前局面），编号栈为空
+        self._ann_build_numbered = bool(getattr(self, 'numbered', False))
+        self._ann_build_numbers = {
+            tuple(b.location): b.number
+            for b in self.game.blocks if b.number is not None
+        }
+        self._ann_build_num_stack = []
         # 以「当前棋盘状态」为基础进入构造，而不是还原态：
         # 画布初始就是当前所有滑块，可直接点格增删、点窗外格补凸起
         coords = {tuple(b.location) for b in self.game.blocks}
@@ -581,27 +605,61 @@ class AnnotationMixin:
                 self.current_m, self.current_n, self.current_step = m, n, step
             except ValueError:
                 pass  # 输入框暂不合法（如清空中）：沿用上一次有效尺寸
-        self.game.m = self.current_m
-        self.game.n = self.current_n
-        self.game.blocks = [Block(list(c))
-                            for c in sorted(self._ann_build_coords)]
+        # 按形态重建：三角/米字走 blocks_from_cells（计划二 A 的产出），
+        # 方形照旧捏 Block；三角还要同步 game.k（m/n 由 current_* 同步）
+        if self.triangle_mode:
+            k = self.current_m
+            self.game.k = k
+            self.game.m = k
+            self.game.n = k
+            blocks = tri_blocks_from_cells(self._ann_build_coords)
+        elif self.mi_mode:
+            self.game.m = self.current_m
+            self.game.n = self.current_n
+            blocks = mi_blocks_from_cells(self._ann_build_coords)
+        else:
+            self.game.m = self.current_m
+            self.game.n = self.current_n
+            blocks = [Block(list(c))
+                      for c in sorted(self._ann_build_coords)]
+        # 数字谜题：把「位置 → 编号」一起带上，不再造无编号的 Block
+        if self._ann_build_numbered:
+            for b in blocks:
+                b.number = self._ann_build_numbers.get(tuple(b.location))
+        else:
+            for b in blocks:
+                b.number = None
+        self.game.blocks = blocks
         self.game.update_matrix()
 
-    def _ann_build_toggle(self, r, c):
-        """主棋盘点选：增/删一个滑块并即时刷新状态。"""
+    def _ann_build_toggle(self, pos):
+        """主棋盘点选：增/删一个滑块（吃各形态完整位置元组）并即时刷新状态。
+
+        数字谜题走编号栈：取下一块（移除）把编号压栈，放一块（添加）弹栈顶
+        编号写给它；栈空时不允许放。
+        """
         try:
             m, n, step = self._ann_build_param()
         except ValueError as e:
             self._ann_build_error = str(e)
             return
         lo_r, hi_r, lo_c, hi_c = self._ann_build_grid(m, n)
-        if not (lo_r <= r <= hi_r and lo_c <= c <= hi_c):
+        if not (lo_r <= pos[0] <= hi_r and lo_c <= pos[1] <= hi_c):
             self._ann_build_error = '点选超出可构造范围'
             return
-        if (r, c) in self._ann_build_coords:
-            self._ann_build_coords.discard((r, c))
+        if pos in self._ann_build_coords:
+            self._ann_build_coords.discard(pos)
+            if self._ann_build_numbered:
+                num = self._ann_build_numbers.pop(pos, None)
+                if num is not None:
+                    self._ann_build_num_stack.append(num)
         else:
-            self._ann_build_coords.add((r, c))
+            if self._ann_build_numbered:
+                if not self._ann_build_num_stack:
+                    self._ann_build_error = '没有可用的编号：先取下一个滑块'
+                    return
+                self._ann_build_numbers[pos] = self._ann_build_num_stack.pop()
+            self._ann_build_coords.add(pos)
         self._ann_build_error = ''
         self._ann_rebuild_game_from_coords()
 
@@ -612,10 +670,31 @@ class AnnotationMixin:
             self.current_m = bk['m']
             self.current_n = bk['n']
             self.current_step = bk['step']
-            # 同步 game.m/n（构造期间可能被改成新尺寸）
-            self.game.m = bk['m']
-            self.game.n = bk['n']
-            self.game.blocks = [Block(list(c)) for c in bk['coords']]
+            # 编号状态一併回复（栈进入前恒空，但按备份原样回）
+            self._ann_build_numbered = bk.get('numbered', False)
+            self._ann_build_numbers = dict(bk.get('numbers') or {})
+            self._ann_build_num_stack = list(bk.get('stack') or [])
+            # 按形态重建（含编号），再让历史快照兜底覆盖
+            if self.triangle_mode:
+                self.game.k = bk['m']
+                self.game.m = bk['m']
+                self.game.n = bk['m']
+                blocks = tri_blocks_from_cells(bk['cells'])
+            elif self.mi_mode:
+                self.game.m = bk['m']
+                self.game.n = bk['n']
+                blocks = mi_blocks_from_cells(bk['cells'])
+            else:
+                self.game.m = bk['m']
+                self.game.n = bk['n']
+                blocks = [Block(list(c)) for c in sorted(bk['cells'])]
+            if self._ann_build_numbered:
+                for b in blocks:
+                    b.number = self._ann_build_numbers.get(tuple(b.location))
+            else:
+                for b in blocks:
+                    b.number = None
+            self.game.blocks = blocks
             self.game.update_matrix()
             self.game_history = bk['history']
             hi = min(self.game_history.history_index,
@@ -1090,7 +1169,7 @@ class AnnotationMixin:
             self._ann_gen_confirm()
             return True
         if event.key == pygame.K_TAB:
-            keys = ['m', 'n', 'step', 'hole', 'dent']
+            keys = ['m', 'n', 'step', 'k', 'hole', 'dent']
             if self._ann_gen_active in keys:
                 idx = keys.index(self._ann_gen_active)
                 self._ann_gen_active = keys[(idx + 1) % len(keys)]
@@ -1426,9 +1505,15 @@ class AnnotationMixin:
         if self._ann_view == 'home':
             if self.create_mode:
                 add('manual_build', '手动构造', (70, 120, 180))
-                add('random_gen', '随机生成', (70, 120, 180))
-                title_text = ('创造模式：随机挖洞/缺口 或 手动构造 · '
-                              '造好即成为当前谜题 · ESC 退出')
+                # 随机生成只对方形开放（三角/米字没有随机生成）
+                if not self.triangle_mode and not self.mi_mode:
+                    add('random_gen', '随机生成', (70, 120, 180))
+                if self.triangle_mode or self.mi_mode:
+                    title_text = ('创造模式：请用[手动构造]造题 · '
+                                  '造好即成为当前谜题 · ESC 退出')
+                else:
+                    title_text = ('创造模式：随机挖洞/缺口 或 手动构造 · '
+                                  '造好即成为当前谜题 · ESC 退出')
             else:
                 add('exit_mode', '退出标注', (120, 90, 90))
                 add('from_current', '④ 当前状态', (70, 120, 180))
@@ -1490,7 +1575,10 @@ class AnnotationMixin:
         fh = 26
         self._ann_build_field_rects = {}
         bx = x + 10
-        for key, label in (('m', '行'), ('n', '列'), ('step', '等级')):
+        # 参数行按形态：三角只填边长 k／等级 step
+        param_fields = (('k', '边长'), ('step', '等级')) \
+            if self.triangle_mode else (('m', '行'), ('n', '列'), ('step', '等级'))
+        for key, label in param_fields:
             ls = self.status_font.render(label, True, (200, 200, 210))
             self.screen.blit(ls, (bx, row1 + 5))
             lbl_w = ls.get_width() + 4
@@ -1562,7 +1650,21 @@ class AnnotationMixin:
     # 手动构造对话框（自由点选画布）
     # ==================================================================
     def _ann_build_param(self):
-        """解析构造参数 → (m,n,step) 或抛 ValueError。"""
+        """解析构造参数 → (m,n,step) 或抛 ValueError。
+
+        三角只有边长 k／等级 step（m=n=k）；米字与方形填行/列/等级。
+        上界沿用 new_triangle_puzzle / new_mi_puzzle / 原方形的守卫。
+        """
+        if self.triangle_mode:
+            k = int(self._ann_build_fields.get('k') or 0)
+            step = int(self._ann_build_fields.get('step') or 0)
+            if k < 2:
+                raise ValueError('边长必须 >= 2')
+            if step < 1:
+                raise ValueError('等级必须 >= 1')
+            if step >= k:
+                raise ValueError(f'等级必须 < {k}')
+            return k, k, step
         m = int(self._ann_build_fields.get('m') or 0)
         n = int(self._ann_build_fields.get('n') or 0)
         step = int(self._ann_build_fields.get('step') or 0)
@@ -1584,14 +1686,34 @@ class AnnotationMixin:
         coords = getattr(self, '_ann_build_coords', None) or set()
         if not coords:
             return -1, m, -1, n
-        rs = [r for r, _ in coords]
-        cs = [c for _, c in coords]
+        # 各形态位置元组的前两个分量取边界盒（三角 (i,j,up)、米字 (r,c,q)）
+        rs = [p[0] for p in coords]
+        cs = [p[1] for p in coords]
         return min(rs) - 1, max(rs) + 1, min(cs) - 1, max(cs) + 1
 
     def _ann_build_status(self, m, n, step):
-        """即时校验状态：返回 (text, is_ok)。"""
-        from solver.ml import ann_gen
+        """即时校验状态：返回 (text, is_ok)。
+
+        方形沿用既有判据（提示文字逐条保持，见计划验收 6）；三角/米字走
+        shape_validate.validate_shape（计划二 A 产出，含偏移扫描 anchor）。
+        """
         coords = frozenset(self._ann_build_coords)
+        if self.triangle_mode or self.mi_mode:
+            from gui.shape_validate import validate_shape
+            kind = 'triangle' if self.triangle_mode else 'mi'
+            params = (m,) if kind == 'triangle' else (m, n)
+            try:
+                ok, msg, _anchor = validate_shape(kind, coords, params, step)
+            except Exception as e:
+                return f'参数无效：{e}', False
+            if not ok:
+                return f'非法棋形：{msg}', False
+            text = (f'合法 {m}×{n} step{step}：{len(coords)} 颗滑块'
+                    f' · 单连通 · 同余一致')
+            if self._ann_build_numbered:
+                text += f' · 可用编号 {len(self._ann_build_num_stack)}'
+            return text, True
+        from solver.ml import ann_gen
         try:
             ok, msg = ann_gen.validate_state(coords, m, n, step)
         except Exception as e:
@@ -1631,11 +1753,20 @@ class AnnotationMixin:
             return False
         if y > self.screen_height - self.status_bar_height:
             return False
-        # 弹窗外：直接在主棋盘点选增删滑块
-        cell = self.get_cell_at_pos(x, y)
+        # 弹窗外：直接在主棋盘点选增删滑块。
+        # 三角/米字用各自 view 的 world_to_cell（不带 cells，空位也给身份）；
+        # 方形照旧用 get_cell_at_pos。
+        if self.triangle_mode:
+            wx, wy = self.screen_to_world(x, y)
+            cell = self._tri_view().world_to_cell(wx, wy)
+        elif self.mi_mode:
+            wx, wy = self.screen_to_world(x, y)
+            cell = self._mi_view().world_to_cell(wx, wy)
+        else:
+            cell = self.get_cell_at_pos(x, y)
         if cell is None:
             return True
-        self._ann_build_toggle(*cell)
+        self._ann_build_toggle(cell)
         return True
 
     def _ann_build_dialog_event(self, event):
@@ -1648,7 +1779,7 @@ class AnnotationMixin:
             self._ann_build_apply()
             return True
         if event.key == pygame.K_TAB:
-            keys = ['m', 'n', 'step']
+            keys = ['k', 'step'] if self.triangle_mode else ['m', 'n', 'step']
             if self._ann_build_active in keys:
                 idx = keys.index(self._ann_build_active)
                 self._ann_build_active = keys[(idx + 1) % len(keys)]
@@ -1669,22 +1800,35 @@ class AnnotationMixin:
         return True
 
     def _ann_build_apply(self):
-        """校验当前构造 → 写历史并进入选目标阶段。"""
+        """校验当前构造 → 写历史并进入选目标阶段。
+
+        方形沿用既有判据与提示文字；三角/米字走 validate_shape。
+        标注模式（ML 取样流程）在三角/米字下不支援：只提示，不进选目标。
+        """
         try:
             m, n, step = self._ann_build_param()
         except ValueError as e:
             self._ann_build_error = str(e)
             return
-        from solver.ml import ann_gen
         coords = frozenset(self._ann_build_coords)
-        ok, msg = ann_gen.validate_state(coords, m, n, step)
-        if not ok:
-            self._ann_build_error = f'非法棋形：{msg}'
-            return
-        vm = window_void_metrics(coords, m, n, step)
-        if vm['void_block_count'] < 1:
-            self._ann_build_error = '窗内没有空位（等于还原态），请挖出至少一个空位'
-            return
+        if self.triangle_mode or self.mi_mode:
+            from gui.shape_validate import validate_shape
+            kind = 'triangle' if self.triangle_mode else 'mi'
+            params = (m,) if kind == 'triangle' else (m, n)
+            ok, msg, _anchor = validate_shape(kind, coords, params, step)
+            if not ok:
+                self._ann_build_error = f'非法棋形：{msg}'
+                return
+        else:
+            from solver.ml import ann_gen
+            ok, msg = ann_gen.validate_state(coords, m, n, step)
+            if not ok:
+                self._ann_build_error = f'非法棋形：{msg}'
+                return
+            vm = window_void_metrics(coords, m, n, step)
+            if vm['void_block_count'] < 1:
+                self._ann_build_error = '窗内没有空位（等于还原态），请挖出至少一个空位'
+                return
         self._ann_build_error = ''
         self._ann_store_inputs('build', self._ann_build_fields)
         self.current_m, self.current_n, self.current_step = m, n, step
@@ -1698,24 +1842,50 @@ class AnnotationMixin:
             # 创造模式：造好即成为当前谜题，留在创造首页
             self._ann_leave_to_home()
             self._ann_notify(f'已应用构造：{m}×{n} step{step}（{len(coords)} 颗）')
+        elif self.triangle_mode or self.mi_mode:
+            self._ann_notify('该形态暂不支援标注取样，请在创造模式下使用手动构造')
         else:
             self._ann_start_target('build', f'手动构造 {m}×{n} step{step} '
                                             f'（{len(coords)} 颗）')
             self._ann_notify('已应用手动构造，请点目标空位与凸起')
 
     def _ann_build_reset(self):
-        """还原为完整 m×n（无洞无凸起），从点空格挖洞开始。"""
+        """还原为完整目标形态（无洞无凸起），从点空格挖洞开始。
+
+        数字谜题按行主序重新编号 1..mn（与 new_puzzle(numbered=True)
+        同一套约定），编号栈清空。
+        """
         try:
             m, n, step = self._ann_build_param()
         except ValueError as e:
             self._ann_build_error = str(e)
             return
-        self._ann_build_coords = set(self._ann_solved_coords(m, n))
+        if self.triangle_mode:
+            from game_triangle import TriangleSliderMatrix
+            self._ann_build_coords = TriangleSliderMatrix(m).positions()
+        elif self.mi_mode:
+            from game_mi import MiSliderMatrix
+            self._ann_build_coords = MiSliderMatrix(m, n).positions()
+        else:
+            self._ann_build_coords = set(self._ann_solved_coords(m, n))
+        if self._ann_build_numbered:
+            ordered = sorted(self._ann_build_coords)
+            self._ann_build_numbers = {
+                pos: idx + 1 for idx, pos in enumerate(ordered)}
+            self._ann_build_num_stack = []
         self._ann_build_error = ''
         self._ann_rebuild_game_from_coords()
 
     def _ann_build_clear(self):
-        """清空全部滑块，从零开始铺。"""
+        """清空全部滑块，从零开始铺。
+
+        数字谜题：盘上所有编号按升序整批压栈（可预期、可复现），
+        于是 mn 个都能重新放下。
+        """
+        if self._ann_build_numbered and self._ann_build_numbers:
+            self._ann_build_num_stack.extend(
+                sorted(self._ann_build_numbers.values()))
+            self._ann_build_numbers = {}
         self._ann_build_coords = set()
         self._ann_build_error = ''
         self._ann_rebuild_game_from_coords()
@@ -1733,10 +1903,11 @@ class AnnotationMixin:
         self._ann_build_cancel()
 
     def _ann_draw_build_canvas(self):
-        """主棋盘构造叠加层：可构造范围网格 + 目标窗口高亮。
+        """主棋盘构造叠加层：可构造范围轮廓 + 目标区域高亮。
 
-        棋盘上的滑块由主渲染器绘制；这里补画空格轮廓与目标窗口框，
-        让用户直接在主窗口点选增删滑块。
+        棋盘上的滑块由主渲染器绘制；这里补画空格轮廓与目标框，
+        让用户直接在主窗口点选增删滑块。空格轮廓按形态画单位片
+        （三角画单位三角、米字画四分之一格），方形照旧画格。
         """
         try:
             m, n, step = self._ann_build_param()
@@ -1745,26 +1916,81 @@ class AnnotationMixin:
         stepw = self.cell_size + self.gap_width
         cs = self.cell_size * self.zoom
         lo_r, hi_r, lo_c, hi_c = self._ann_build_grid(m, n)
-        # 空格轮廓（有滑块处主渲染器已画）
-        for r in range(lo_r, hi_r + 1):
-            for c in range(lo_c, hi_c + 1):
-                if (r, c) in self._ann_build_coords:
-                    continue
-                x, y = self.world_to_screen(c * stepw, r * stepw)
-                pygame.draw.rect(self.screen, (70, 95, 120),
-                                 pygame.Rect(int(x), int(y),
-                                             max(1, int(cs)),
-                                             max(1, int(cs))), 1)
-        # 目标窗口：与求解器/调试面板同源（find_best_window，mod-aware）
-        region = _target_region_of(self._ann_build_coords, m, n, step)
-        if region is not None:
-            r0, c0, (rh, cw) = region
-            x0, y0 = self.world_to_screen(c0 * stepw, r0 * stepw)
-            x1, y1 = self.world_to_screen((c0 + cw) * stepw, (r0 + rh) * stepw)
-            pygame.draw.rect(self.screen, (120, 210, 255),
-                             pygame.Rect(int(x0), int(y0),
-                                         max(1, int(x1 - x0)),
-                                         max(1, int(y1 - y0))), 2)
+        # 米字错位态的 bbox 可能含半整数（B 晶格）：轮廓只枚举整数格范围，
+        # 半整数空位不画轮廓（world_to_cell 命中后仍可点选增删）
+        r_lo = int(math.floor(lo_r))
+        r_hi = int(math.ceil(hi_r))
+        c_lo = int(math.floor(lo_c))
+        c_hi = int(math.ceil(hi_c))
+        outline = (70, 95, 120)
+        if self.triangle_mode:
+            view = self._tri_view()
+            for i in range(r_lo, r_hi + 1):
+                for j in range(c_lo, c_hi + 1):
+                    for up in (True, False):
+                        if (i, j, up) in self._ann_build_coords:
+                            continue
+                        pts = [self.world_to_screen(*p)
+                               for p in view.piece_polygon(i, j, up)]
+                        pygame.draw.polygon(self.screen, outline, pts, 1)
+        elif self.mi_mode:
+            view = self._mi_view()
+            for r in range(r_lo, r_hi + 1):
+                for c in range(c_lo, c_hi + 1):
+                    for q in ('N', 'E', 'S', 'W'):
+                        if (r, c, q) in self._ann_build_coords:
+                            continue
+                        pts = [self.world_to_screen(*p)
+                               for p in view.piece_polygon(r, c, q)]
+                        pygame.draw.polygon(self.screen, outline, pts, 1)
+        else:
+            # 空格轮廓（有滑块处主渲染器已画）
+            for r in range(r_lo, r_hi + 1):
+                for c in range(c_lo, c_hi + 1):
+                    if (r, c) in self._ann_build_coords:
+                        continue
+                    x, y = self.world_to_screen(c * stepw, r * stepw)
+                    pygame.draw.rect(self.screen, outline,
+                                     pygame.Rect(int(x), int(y),
+                                                 max(1, int(cs)),
+                                                 max(1, int(cs))), 1)
+        # 目标框：方形与求解器/调试面板同源（find_best_window，mod-aware）；
+        # 三角/米字没有求解器，用 validate_shape 回传的 anchor 换算画布坐标，
+        # anchor is None（非法）就不画。
+        if self.triangle_mode or self.mi_mode:
+            from gui.shape_validate import validate_shape
+            kind = 'triangle' if self.triangle_mode else 'mi'
+            params = (m,) if kind == 'triangle' else (m, n)
+            try:
+                _ok, _msg, anchor = validate_shape(
+                    kind, frozenset(self._ann_build_coords), params, step)
+            except Exception:
+                anchor = None
+            if anchor is not None:
+                dr, dc = anchor
+                if self.triangle_mode:
+                    view = self._tri_view()
+                    corners = [(dr, dc), (dr + m - 1, dc), (dr, dc + m - 1)]
+                    pts = [self.world_to_screen(*view.to_world(a, b))
+                           for (a, b) in corners]
+                    pygame.draw.polygon(self.screen, (120, 210, 255), pts, 2)
+                else:
+                    view = self._mi_view()
+                    corners = [(dr, dc), (dr + m - 1, dc),
+                               (dr + m - 1, dc + n - 1), (dr, dc + n - 1)]
+                    pts = [self.world_to_screen(*view.to_world(x, y))
+                           for (x, y) in corners]
+                    pygame.draw.polygon(self.screen, (120, 210, 255), pts, 2)
+        else:
+            region = _target_region_of(self._ann_build_coords, m, n, step)
+            if region is not None:
+                r0, c0, (rh, cw) = region
+                x0, y0 = self.world_to_screen(c0 * stepw, r0 * stepw)
+                x1, y1 = self.world_to_screen((c0 + cw) * stepw, (r0 + rh) * stepw)
+                pygame.draw.rect(self.screen, (120, 210, 255),
+                                 pygame.Rect(int(x0), int(y0),
+                                             max(1, int(x1 - x0)),
+                                             max(1, int(y1 - y0))), 2)
         # 顶部操作提示（不遮棋盘中部）
         hint = self.status_font.render(
             '点棋盘格放/取滑块，点窗外格补凸起；改下方参数后 Enter 应用',

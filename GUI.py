@@ -1305,7 +1305,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return False
         # 创造模式：只造题不玩游戏（与练习模式功能解耦）
         if self.create_mode:
-            self.macro_notify_msg = "创造模式：请用[随机生成]或[手动构造]造题"
+            if self.triangle_mode or self.mi_mode:
+                self.macro_notify_msg = "创造模式：请用[手动构造]造题"
+            else:
+                self.macro_notify_msg = "创造模式：请用[随机生成]或[手动构造]造题"
             self.macro_notify_timer = 90
             return False
         # 标注模式的手动构造视图：主棋盘是编辑画布，禁止滑动
@@ -2491,7 +2494,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if mode == 'timed':
             self.macro_notify_msg = "竞速模式：打乱后需按空格开始计时"
         elif mode == 'create':
-            self.macro_notify_msg = "创造模式：随机挖洞/缺口 或 手动构造，造好即成为当前谜题"
+            if self.triangle_mode or self.mi_mode:
+                self.macro_notify_msg = "创造模式：请用[手动构造]造题"
+            else:
+                self.macro_notify_msg = "创造模式：随机挖洞/缺口 或 手动构造，造好即成为当前谜题"
         else:
             self.macro_notify_msg = "练习模式：可自由滑动，不计时"
         self.macro_notify_timer = 120

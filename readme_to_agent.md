@@ -134,6 +134,7 @@ gui/                   # 全是 Mixin，被 SliderGUI 繼承
   records_panel.py     #   RecordsPanelMixin    成績記錄浮動面板（F3）
   tutorial.py          #   TutorialMixin        新手教程引導（首次啟動彈窗/步驟提示）
   text_input.py        #   TextInput            自繪文字輸入框（游標/選取/剪貼簿）
+  annotation.py        #   AnnotationMixin      標注模式（B/Z/M/S 隱藏入口）：標注取樣／手動構造畫布／跟蹤執行；創造模式手動構造（方形/三角/米字）
   tutorial_texts.json  #   新手教程文案（可脫離代碼修改）
 
 solver/                # 求解器（詳見 §5）
@@ -497,6 +498,7 @@ python test\_test_anim_click.py                                                 
 ```bash
 python test\_test_cell_class.py       # 移動不變量類：三形態類不變性／米字錯位態／class_index 與方形算式一致
 python test\_test_shape_validate.py   # 構造校驗：塊數／單連通／類計數＋偏移掃描／空位；blocks_from_cells 重建
+python test\_test_create_build_canvas.py  # 創造模式手動構造：三形態冒煙／非法路徑／取消／數字編號棧 LIFO／隨機生成攔截／標注取樣拒絕
 ```
 
 另有 `test/test/`（pytest 風格：`test_solver/test_table_core/test_bfs_explore/test_profile`）與開發用探針 `_debug_cursor.py`、`_test_mouse_cursor.py` 等。改動求解器核心後，至少重跑 `_test_mod_constraint` 與 `_test_gradient_pipeline`。
@@ -522,7 +524,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 - Python 一律用 `python`（本機路徑見 `本機環境.md`）。
 - `game.py` 不得引入 pygame（保持純邏輯，可被求解器/solver.ml 直接 import）。**三角形密鋪同守此律**：`game_triangle.py` 亦為零 pygame 依賴的純邏輯模組（互動代碼只 import 它的 `DIRECTIONS` / `GAP_DIRECTIONS` / `DIRECTION_SCREEN` / `tri_key` 四張表或函式）。
 - 修改求解器/調試面板不得破壞 §2.1 mod 不變量；目標框與洞/凸起標記必須共用 `find_best_window`。
-- 三角形形態下 `/analysis/*` 一律回 400（降級），`solve`/建表/ML/宏/創造模式等高級功能照 §12 禁用或暫不支援；新增進階功能前先確認形態分支。
+- 三角形形態下 `/analysis/*` 一律回 400（降級），`solve`/建表/ML/宏等高級功能照 §12 禁用或暫不支援（創造模式手動構造已開放，隨機生成不支援）；新增進階功能前先確認形態分支。
 - 不大改 `solver/data/` 產物與 `.gitignore` 列出的個人檔（`.clinerules/`、`.trae/`、`.vscode/`、`参考/` 不入庫）。
 - 快取/執行期生成物（`__pycache__`、`config/records.dat`、`macro/*.json` 視情況）不要誤入 git。
 - 除錯優先無頭測試；只有在需要視覺驗證（目標框/標記位置）時才跑 GUI。
@@ -530,8 +532,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 ## 12. 已知限制 / 長期目標
 
 - 帶序號模式（`numbered`）：求解器/建表/ML 管線**暫不支援**（狀態需身份感知，動作語義也不同），入口直接拒絕並提示；其餘功能（撤銷重做/動畫/競速/存讀檔/地圖導入）全部可用。
-- 三角形密鋪（`triangle`）：已實作核心五步 + P2 體驗（六向鍵盤/虛擬鍵盤/連鎖提示/拖拽 6 向投影/競速成績/地圖導入）。**暫不支援**：求解器/建表/ML（需新動作語義與對稱群）、`/analysis/*`（回 400 降級）、宏與創造模式、著色與調試面板的三角版（P3，未做）；`solved` 只接受「尖朝上/120°/240°」三種朝向，鏡像（顛倒）不可達。
-- 米字格（`mi`）：已實作斜向一格的引擎（`game_mi.py`，含錯位態兩晶格、8-bit 快照與 `mi8` 地圖）、兩次觸控（第二下按住滑塊拖動才定向提交，只按不拖則選組等虛擬鍵盤）+ 拖拽跟隨預覽 + 虛擬鍵盤 + 八向動畫 + 競速/存讀檔/打亂/撤銷重做。**暫不支援**：求解器/建表/ML、`/analysis/*`（回 400）、宏錄製執行、創造模式、著色與調試面板、單次觸控（凍結決策：八向誤觸面太大）。已知注意點：等級語義漂移（等級 1 斜距 = √2/2，等級 2 = 舊版等級 1）；錯位態橫豎縫會整條穿過塊內部而選不動（提示按剩餘條數說，沿斜向再走一格即復活）；`/status` 的 `blocks[]` 沒有 `mod`，改帶 `q` 與 `lat`。
-- 新形態的存量缺陷（修復計劃已備，落地前別當新回歸）：**創造模式的手動構造在非方形下會崩**（構造集寫死兩坐標格，三角/米字一點選就拋 `ValueError: too many values to unpack`）；**數字謎題的手動構造會丟掉全部編號**（重建滑塊時不帶 `number`，應用後畫面不畫編號、`is_solved()` 永遠 False）。修復在 `.zcode/plans/plan-build-*.md`。
+- 三角形密鋪（`triangle`）：已實作核心五步 + P2 體驗（六向鍵盤/虛擬鍵盤/連鎖提示/拖拽 6 向投影/競速成績/地圖導入）。**暫不支援**：求解器/建表/ML（需新動作語義與對稱群）、`/analysis/*`（回 400 降級）、宏、隨機生成（創造模式只能手動構造）、著色與調試面板的三角版（P3，未做）；`solved` 只接受「尖朝上/120°/240°」三種朝向，鏡像（顛倒）不可達。
+- 米字格（`mi`）：已實作斜向一格的引擎（`game_mi.py`，含錯位態兩晶格、8-bit 快照與 `mi8` 地圖）、兩次觸控（第二下按住滑塊拖動才定向提交，只按不拖則選組等虛擬鍵盤）+ 拖拽跟隨預覽 + 虛擬鍵盤 + 八向動畫 + 競速/存讀檔/打亂/撤銷重做。**暫不支援**：求解器/建表/ML、`/analysis/*`（回 400）、宏錄製執行、隨機生成（創造模式只能手動構造）、著色與調試面板、單次觸控（凍結決策：八向誤觸面太大）。已知注意點：等級語義漂移（等級 1 斜距 = √2/2，等級 2 = 舊版等級 1）；錯位態橫豎縫會整條穿過塊內部而選不動（提示按剩餘條數說，沿斜向再走一格即復活）；`/status` 的 `blocks[]` 沒有 `mod`，改帶 `q` 與 `lat`。
 - 存量缺陷（**方形同樣存在**，非新形態引入）：多步（批量）移動時 `step_count` 由 `move_selected_blocks` 累加 `move_step`，而 `history.save_snapshot` 每步只記 `steps = 1`，導致存檔重載（`_load_save_data` 以 `current_step_total()` 重算）與 undo/redo 後的步數比實際少。
 - 求解長期目標：以「梯度聚攏粗調 + 填洞宏收尾」完成高階謎題。人類模仿（`human_ai`）管線仍在 `solver.ml.human_solver` 但未接入求解菜單（已註解）。填洞宏（`fill_macro`）已註冊為 `SOLVER_ALGORITHMS` 之一，實作單洞 A-B-A' 共軛子宏與多洞無缺口貪心逐 couple（§5.4 管線 B 相關）。
