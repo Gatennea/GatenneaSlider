@@ -332,6 +332,44 @@ def test_annotation_reject():
               f"msg={gui.macro_notify_msg}")
 
 
+def test_float_hit_normalize():
+    print("== 7. GUI float 命中规范化（回归：曾致 blocks float → 渲染/矩阵崩）==")
+    gui = _new_gui()
+    gui.game_mode = 'create'
+    gui.new_puzzle(6, 6, 2, numbered=True)
+    gui._ann_btn_manual_build()          # 还原态满盘
+    gui._ann_build_toggle((0.0, 0.0))    # 移除 (0,0)：float 命中匹配 int 键 → 栈 [1]
+    gui._ann_build_toggle((6.0, 0.0))    # 添加 (6,0)：float 命中 → 弹 1 写编号
+    n_float = sum(1 for c in gui._ann_build_coords
+                  if isinstance(c[0], float) or isinstance(c[1], float))
+    check("构造集无 float 位置", n_float == 0, f"n={n_float}")
+    k_float = sum(1 for k in gui._ann_build_numbers
+                  if isinstance(k[0], float) or isinstance(k[1], float))
+    check("编号表 key 无 float", k_float == 0, f"n={k_float}")
+    b_float = sum(1 for b in gui.game.blocks
+                  if isinstance(b.location[0], float)
+                  or isinstance(b.location[1], float))
+    check("blocks 无 float 位置", b_float == 0, f"n={b_float}")
+    gui.game.update_matrix()             # 不抛即通过
+    check("update_matrix 可跑", True)
+    # 打乱态真实命中路径：get_cell_at_pos 返回 float 元组 → toggle
+    gui2 = _new_gui()
+    gui2.game_mode = 'create'
+    gui2.new_puzzle(6, 6, 2, numbered=True)
+    gui2.game.shuffle(20, 2)
+    gui2._ann_btn_manual_build()
+    for _ in range(3):
+        cell = gui2.get_cell_at_pos(400, 300)
+        if cell is None:
+            break
+        gui2._ann_build_toggle((float(cell[0]), float(cell[1])))
+    n2 = sum(1 for c in gui2._ann_build_coords
+             if isinstance(c[0], float) or isinstance(c[1], float))
+    check("真实命中路径无 float 位置", n2 == 0, f"n={n2}")
+    gui2.game.update_matrix()
+    check("真实命中路径 update_matrix 可跑", True)
+
+
 def main():
     test_canvas_smoke()
     test_invalid_paths()
@@ -339,6 +377,7 @@ def main():
     test_number_stack()
     test_random_gen_gate()
     test_annotation_reject()
+    test_float_hit_normalize()
     if _failures:
         print(f'\nFAILURES: {_failures}')
         sys.exit(1)

@@ -556,8 +556,9 @@ class AnnotationMixin:
         step = self.current_step
         # 备份当前局面：取消构造时可原样恢复（含历史栈、编号与编号栈）
         self._ann_build_backup = {
-            'cells': frozenset({tuple(b.location) for b in self.game.blocks}),
-            'numbers': {tuple(b.location): b.number
+            'cells': frozenset({self._ann_normalize_build_pos(tuple(b.location))
+                                for b in self.game.blocks}),
+            'numbers': {self._ann_normalize_build_pos(tuple(b.location)): b.number
                         for b in self.game.blocks if b.number is not None},
             'stack': [],
             'numbered': bool(getattr(self, 'numbered', False)),
@@ -576,13 +577,14 @@ class AnnotationMixin:
         # 数字谜题：编号全在盘上（画布初始 = 当前局面），编号栈为空
         self._ann_build_numbered = bool(getattr(self, 'numbered', False))
         self._ann_build_numbers = {
-            tuple(b.location): b.number
+            self._ann_normalize_build_pos(tuple(b.location)): b.number
             for b in self.game.blocks if b.number is not None
         }
         self._ann_build_num_stack = []
         # 以「当前棋盘状态」为基础进入构造，而不是还原态：
         # 画布初始就是当前所有滑块，可直接点格增删、点窗外格补凸起
-        coords = {tuple(b.location) for b in self.game.blocks}
+        coords = {self._ann_normalize_build_pos(tuple(b.location))
+                  for b in self.game.blocks}
         self._ann_build_coords = coords
         self.current_m, self.current_n, self.current_step = m, n, step
         self._ann_rebuild_game_from_coords()
@@ -605,6 +607,9 @@ class AnnotationMixin:
                 self.current_m, self.current_n, self.current_step = m, n, step
             except ValueError:
                 pass  # 输入框暂不合法（如清空中）：沿用上一次有效尺寸
+        # 防御：构造集统一规范化（GUI 命中可能带 .0 的 float；米字半整数保留）
+        self._ann_build_coords = {
+            self._ann_normalize_build_pos(c) for c in self._ann_build_coords}
         # 按形态重建：三角/米字走 blocks_from_cells（计划二 A 的产出），
         # 方形照旧捏 Block；三角还要同步 game.k（m/n 由 current_* 同步）
         if self.triangle_mode:
@@ -632,12 +637,30 @@ class AnnotationMixin:
         self.game.blocks = blocks
         self.game.update_matrix()
 
+    def _ann_normalize_build_pos(self, pos):
+        """把构造坐标规范化为形态标准表示。
+
+        方形/三角是整数格坐标；GUI 命中的 get_cell_at_pos / world_to_cell
+        可能返回带 .0 的 float（如 (2.0, 2.0)），若原样存进构造集，重建的
+        Block 位置变 float，draw_board/update_matrix 的 range() 与矩阵索引
+        会直接崩。米字错位态的 B 晶格块坐标可以是半整数，必须保留——
+        只有整数分量归一为 int，使集合/字典键与 blocks 位置一致。
+        """
+        r, c = pos[0], pos[1]
+        if self.mi_mode:
+            r = int(r) if float(r).is_integer() else r
+            c = int(c) if float(c).is_integer() else c
+        else:
+            r, c = int(r), int(c)
+        return (r, c) + tuple(pos[2:])
+
     def _ann_build_toggle(self, pos):
         """主棋盘点选：增/删一个滑块（吃各形态完整位置元组）并即时刷新状态。
 
         数字谜题走编号栈：取下一块（移除）把编号压栈，放一块（添加）弹栈顶
         编号写给它；栈空时不允许放。
         """
+        pos = self._ann_normalize_build_pos(pos)
         try:
             m, n, step = self._ann_build_param()
         except ValueError as e:
@@ -672,22 +695,25 @@ class AnnotationMixin:
             self.current_step = bk['step']
             # 编号状态一併回复（栈进入前恒空，但按备份原样回）
             self._ann_build_numbered = bk.get('numbered', False)
-            self._ann_build_numbers = dict(bk.get('numbers') or {})
+            cells_n = {self._ann_normalize_build_pos(c) for c in bk['cells']}
+            numbers_n = {self._ann_normalize_build_pos(k): v
+                         for k, v in (bk.get('numbers') or {}).items()}
+            self._ann_build_numbers = dict(numbers_n)
             self._ann_build_num_stack = list(bk.get('stack') or [])
             # 按形态重建（含编号），再让历史快照兜底覆盖
             if self.triangle_mode:
                 self.game.k = bk['m']
                 self.game.m = bk['m']
                 self.game.n = bk['m']
-                blocks = tri_blocks_from_cells(bk['cells'])
+                blocks = tri_blocks_from_cells(cells_n)
             elif self.mi_mode:
                 self.game.m = bk['m']
                 self.game.n = bk['n']
-                blocks = mi_blocks_from_cells(bk['cells'])
+                blocks = mi_blocks_from_cells(cells_n)
             else:
                 self.game.m = bk['m']
                 self.game.n = bk['n']
-                blocks = [Block(list(c)) for c in sorted(bk['cells'])]
+                blocks = [Block(list(c)) for c in sorted(cells_n)]
             if self._ann_build_numbered:
                 for b in blocks:
                     b.number = self._ann_build_numbers.get(tuple(b.location))
