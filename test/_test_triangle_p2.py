@@ -128,29 +128,33 @@ gui.new_triangle_puzzle(K, 3)
 gui.chain_hint_enabled = True
 step = gui.current_step
 check(f"等级 step = {step}", step == 3)
-# 悬停某个单位三角的 (i, j)
+# 悬停某个单位三角（连锁类含朝向，hover 帶 (i, j, up) 全三元組）
 target = tri_key(gui.game.blocks[0])
-gui.hover_cell = (target[0], target[1])
-keys, hover = gui._chain_hint_cells()
-check(f"高亮集合非空（{len(keys)} 个单位三角）", bool(keys))
+gui.hover_cell = target
+keys, empties, hover = gui._chain_hint_cells()
+check(f"占用集合非空（{len(keys)} 个单位三角）", bool(keys))
 check("高亮集合含悬停格自身", target in keys)
-check(f"悬停格回传 = {hover}", hover == (target[0], target[1]))
-bad = [k for k in keys
-       if k[0] % step != target[0] % step or k[1] % step != target[1] % step]
-check(f"所有高亮格都满足 (i%{step}, j%{step}) 一致（异常 {bad[:3]}）", not bad)
-# 集合必须 ≤ 方块数，且每个高亮格都是真实方块
+check(f"悬停格回传 = {hover}", hover == target)
+bad = [k for k in keys | empties
+       if k[0] % step != target[0] % step or k[1] % step != target[1] % step
+       or k[2] != target[2]]
+check(f"所有高亮格都满足 (i%{step}, j%{step}, up) 一致（异常 {bad[:3]}）", not bad)
+# 占用格全是真实方块；同類空位（幽靈）也在集合裡
 all_keys = set(gui.game.positions())
-check("高亮格全是真实滑块", keys <= all_keys)
-# 悬停格应比同组其他格更亮：渲染端按 (i,j)==hover 区分
-hover_keys = {k for k in keys if (k[0], k[1]) == hover}
-check(f"悬停 (i,j) 对应 {len(hover_keys)} 个单位三角（▲▼ 可能各一）",
-      len(hover_keys) >= 1)
+check("占用格全是真实滑块", keys <= all_keys)
+check("空位集合与滑块互斥", not (empties & all_keys))
+check(f"高亮含同类空位（{len(empties)} 个幽靈）", bool(empties))
+# 悬停格应比同组其他格更亮：渲染端按整鍵 == hover 区分
+hover_keys = {k for k in keys if k == hover}
+check(f"悬停键对应 {len(hover_keys)} 个单位三角（同朝向恰一）",
+      len(hover_keys) == 1)
 
 # 换个悬停格，集合必须不同（证明真的按 mod 分组）
 other = tri_key(gui.game.blocks[7])
-if (other[0] % step, other[1] % step) != (target[0] % step, target[1] % step):
-    gui.hover_cell = (other[0], other[1])
-    keys2, _ = gui._chain_hint_cells()
+if (other[0] % step, other[1] % step, other[2]) \
+        != (target[0] % step, target[1] % step, target[2]):
+    gui.hover_cell = other
+    keys2, _, _ = gui._chain_hint_cells()
     check("换悬停格后高亮集合改变", keys2 != keys)
 else:
     check("（该格与首格同组，跳过对比）", True)
@@ -158,19 +162,19 @@ else:
 # step=1 时不提示（无连锁可言）
 gui.new_triangle_puzzle(K, 1)
 gui.chain_hint_enabled = True
-gui.hover_cell = tri_key(gui.game.blocks[0])[:2]
-check("step=1 时无连锁提示", gui._chain_hint_cells() == (None, None))
+gui.hover_cell = tri_key(gui.game.blocks[0])
+check("step=1 时无连锁提示", gui._chain_hint_cells() == (None, None, None))
 # 关掉开关同样无提示
 gui.new_triangle_puzzle(K, 3)
 gui.chain_hint_enabled = False
-gui.hover_cell = tri_key(gui.game.blocks[0])[:2]
-check("关闭开关后无连锁提示", gui._chain_hint_cells() == (None, None))
+gui.hover_cell = tri_key(gui.game.blocks[0])
+check("关闭开关后无连锁提示", gui._chain_hint_cells() == (None, None, None))
 
 # ================================================================ 渲染冒烟
 print("== 渲染冒烟 ==")
 gui.new_triangle_puzzle(K, 3)
 gui.chain_hint_enabled = True
-gui.hover_cell = tri_key(gui.game.blocks[0])[:2]
+gui.hover_cell = tri_key(gui.game.blocks[0])
 gui.draw_board()
 check(True, "连锁提示开启时三角棋盘绘制正常")
 gui.show_virtual_keyboard = True
@@ -182,11 +186,11 @@ print("== 方形无回归 ==")
 gui.new_puzzle(K, K, 2)
 gui.chain_hint_enabled = True
 gui.hover_cell = (1, 1)
-sq_cells, sq_hover = gui._chain_hint_cells()
-check(f"方形高亮仍是 (row,col) 二元组（{len(sq_cells)} 格）",
-      all(isinstance(c, tuple) and len(c) == 2 for c in sq_cells))
+sq_occ, sq_empty, sq_hover = gui._chain_hint_cells()
+check(f"方形高亮仍是 (row,col) 二元组（{len(sq_occ)} 格）",
+      all(isinstance(c, tuple) and len(c) == 2 for c in sq_occ | sq_empty))
 check("方形高亮格满足 (r%step, c%step) 一致",
-      all(r % 2 == 1 and c % 2 == 1 for r, c in sq_cells))
+      all(r % 2 == 1 and c % 2 == 1 for r, c in sq_occ | sq_empty))
 gui.show_virtual_keyboard = True
 rects = gui._vk_build_layout()
 check("方形键盘无六向按钮", 'move_ul' not in rects and 'move_dr' not in rects)
