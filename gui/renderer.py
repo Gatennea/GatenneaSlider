@@ -186,11 +186,6 @@ class RendererMixin:
                     border_color = (220, 80, 40)
                     border_w = max(1, int(3 * self.zoom))
                 else:
-                    # 连锁提示：同類塊直接提亮原色（像原图层变亮，而非叠图层）
-                    if hint_occ is not None and (i, j, up) in hint_occ:
-                        amt = 0.55 if (i, j, up) == hint_hover else 0.35
-                        fill = tuple(min(255, int(ch + (255 - ch) * amt))
-                                     for ch in fill[:3])
                     # 分组着色：從外側向內一圈的縮環畫法（朝向不參與著色）。
                     # 描邊色不能直接換成組色：pygame 多邊形描邊以邊線為中心
                     # 向外也擴半個線寬，會漫進塊間縫隙蓋住縫線（含選中紅線），
@@ -201,6 +196,9 @@ class RendererMixin:
                         for p in view.piece_polygon(i, j, up)]
                 pygame.draw.polygon(self.screen, fill, poly)
                 pygame.draw.polygon(self.screen, border_color, poly, border_w)
+                # 连锁提示：同類塊叠半透明白（hover 更亮）
+                if hint_occ is not None and (i, j, up) in hint_occ:
+                    self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
                 if ring_color is not None:
                     ring_w = max(2, int(4 * self.zoom))
                     pygame.draw.polygon(self.screen, ring_color,
@@ -222,15 +220,13 @@ class RendererMixin:
                         center=self.world_to_screen(cx, cy))
                     self.screen.blit(text, text_rect)
 
-        # 悬停连锁提示：同類空位以「实心提亮」（与方形空格同一套语言，
+        # 悬停连锁提示：同類空位叠半透明白（与方形空格同一套语言，
         # 不是描边轮廓——轮廓会让空位看着像有块）
         if hint_empty:
             for (i, j, up) in sorted(hint_empty):
-                amt = 0.55 if (i, j, up) == hint_hover else 0.35
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                pygame.draw.polygon(
-                    self.screen, self._lighten(self.colors['block'], amt), poly)
+                self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
 
     def draw_mi_board(self):
         """繪製米字格棋盤（两次触控 + 虚拟键盘，方向由第二下的拖动给出）。
@@ -314,16 +310,14 @@ class RendererMixin:
                     fill = tuple(int(ch * 0.45) for ch in base[:3])
                     border_color = (220, 80, 40)
                     border_w = max(1, int(3 * self.zoom))
-                else:
-                    # 连锁提示：同類塊直接提亮原色（與方形/三角同一套語言）
-                    if hint_occ is not None and (r, c, q) in hint_occ:
-                        amt = 0.55 if (r, c, q) == hint_hover else 0.35
-                        fill = self._lighten(fill, amt)
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 pygame.draw.polygon(self.screen, fill, poly)
                 pygame.draw.polygon(self.screen, border_color,
                                     poly, border_w)
+                # 连锁提示：同類塊叠半透明白（與方形/三角同一套語言）
+                if hint_occ is not None and (r, c, q) in hint_occ:
+                    self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
                 # 分组着色：縮環從外側向內一圈（位置類不含朝向 q，半整數
                 # 座標在 cell_class 內部整數化），線寬沿用方形慣例。pygame
                 # 多邊形描邊向外也擴半個線寬，直接描會漫進縫隙蓋住選中紅線
@@ -335,14 +329,12 @@ class RendererMixin:
                         self.screen, self._group_color_for((r, c)),
                         self._tri_ring(poly, ring_w / 2.0), ring_w)
 
-        # 悬停连锁提示：同類空位以「实心提亮」（与方形空格同一套语言）
+        # 悬停连锁提示：同類空位叠半透明白（与方形空格同一套语言）
         if hint_empty:
             for (r, c, q) in sorted(hint_empty):
-                amt = 0.55 if (r, c, q) == hint_hover else 0.35
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                pygame.draw.polygon(
-                    self.screen, self._lighten(self.colors['block'], amt), poly)
+                self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一），只畫在棋形範圍內。
@@ -456,7 +448,7 @@ class RendererMixin:
                     if block.be_opted:
                         follow_map[id(block)] = (block.location[0] + dr, block.location[1] + dc)
 
-        # 悬停连锁提示：预计算高亮格集合（含空格），块循环中直接提亮原色
+        # 悬停连锁提示：预计算高亮格集合（含空格），块循环中叠半透明白
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
         # 绘制所有滑块
@@ -493,12 +485,6 @@ class RendererMixin:
                 border_color = (220, 80, 40)
                 border_w = max(1, int(3 * self.zoom))
             else:
-                # 连锁提示：同组格直接提亮原色（像原图层变亮，而非叠图层）
-                if hint_occ is not None:
-                    bl = tuple(block.location)
-                    if bl in hint_occ:
-                        amt = 0.55 if bl == hint_hover else 0.35
-                        fill = self._lighten(fill, amt)
                 if getattr(self, 'coloring_enabled', False) and self.current_step > 1:
                     border_color = self._group_color(block.location[0], block.location[1])
                     border_w = max(2, int(7 * self.zoom)) #暫定7,不要改
@@ -508,6 +494,16 @@ class RendererMixin:
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
             pygame.draw.rect(self.screen, fill, rect, border_radius=int(5 * self.zoom))
             pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=int(5 * self.zoom))
+
+            # 连锁提示：同组格叠一层半透明白（hover 更亮），着色描边仍在最上层
+            if hint_occ is not None and tuple(block.location) in hint_occ:
+                bl = tuple(block.location)
+                self._draw_hint_overlay(
+                    [(screen_x, screen_y),
+                     (screen_x + scaled_cell, screen_y),
+                     (screen_x + scaled_cell, screen_y + scaled_cell),
+                     (screen_x, screen_y + scaled_cell)],
+                    bl == hint_hover)
 
             if getattr(self, 'numbered', False) and getattr(block, 'number', None):
                 font_size = max(12, int(scaled_cell * 0.45))
@@ -523,16 +519,16 @@ class RendererMixin:
                 text_rect = text.get_rect(center=(screen_x + scaled_cell / 2, screen_y + scaled_cell / 2))
                 self.screen.blit(text, text_rect)
 
-        # 连锁提示：高亮的空格（无滑块）同样提亮
+        # 连锁提示：高亮的空格（无滑块）同样叠半透明白
         if hint_empty is not None:
             step_px = scaled_cell + scaled_gap
             for (r, c) in sorted(hint_empty):
                 bx = board_x + c * step_px + self.camera_x
                 by = board_y + r * step_px + self.camera_y
-                amt = 0.55 if (r, c) == hint_hover else 0.35
-                pygame.draw.rect(self.screen, self._lighten(self.colors['background'], amt),
-                                 (bx, by, scaled_cell, scaled_cell),
-                                 border_radius=int(5 * self.zoom))
+                self._draw_hint_overlay(
+                    [(bx, by), (bx + scaled_cell, by),
+                     (bx + scaled_cell, by + scaled_cell), (bx, by + scaled_cell)],
+                    (r, c) == hint_hover)
 
         # 宏基准位置标记（固定坐标，无论该格有无滑块）
         base = getattr(self, 'macro_record_base_point', None)
@@ -1128,12 +1124,33 @@ class RendererMixin:
         col.hsva = (hue, 75, 92, 100)
         return col
 
-    def _lighten(self, color: tuple, amount: float) -> tuple:
-        """颜色向白色提亮 amount（0~1）。
+    # 连锁提示：半透明白色叠加层的透明度（hover 更亮）
+    HINT_ALPHA_HOVER = 110
+    HINT_ALPHA_OTHER = 60
 
-        用于连锁提示：直接改变格子原色（像原图层变亮），而非叠加半透明图层。
+    def _draw_hint_overlay(self, poly, is_hover):
+        """在滑块/空位多边形上叠一层半透明白色（连锁提示的本体观感）。
+
+        原版连锁高亮是半透明白色，不是把块的原色提亮：提亮会把选中绿、
+        空位、着色描边各自拉成不同色阶，玩家看到的是「变色」而非「罩了
+        一层白光」。半透明白叠加对任何底色都给出同样的高光，且着色描边
+        与选中状态仍然透得出来。
         """
-        return tuple(int(ch + (255 - ch) * amount) for ch in color[:3])
+        if not poly:
+            return
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        x0, y0 = int(min(xs)) - 1, int(min(ys)) - 1
+        w = int(max(xs)) - x0 + 2
+        h = int(max(ys)) - y0 + 2
+        if w <= 0 or h <= 0:
+            return
+        alpha = (self.HINT_ALPHA_HOVER if is_hover
+                 else self.HINT_ALPHA_OTHER)
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        local = [(p[0] - x0, p[1] - y0) for p in poly]
+        pygame.draw.polygon(surf, (255, 255, 255, alpha), local)
+        self.screen.blit(surf, (x0, y0))
 
     def _tri_ring(self, pts, w):
         """三角形顶点的「外置内环」顶点（屏幕座标）。
