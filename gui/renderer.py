@@ -1203,8 +1203,10 @@ class RendererMixin:
         位置，是假提示）：
         - 方形 (r,c)：類 = (r%step, c%step)，鍵與位置都是二元組；
         - 三角 (i,j,up)：類 = (i%step, j%step, up)；
-        - 米字 (r,c,q)：類 = ((r+c)%step, (r−c)%step, q)，r/c 可為半整數
-          （錯位態 B 晶格），枚舉時兩個晶格、每個位置四個 q 都要算。
+        - 米字 (r,c,q)：類 = ((r+c)%step, (r−c)%step, q)。
+
+        **只高亮當前棋形/晶格內的位置**：不合法的空位（三角棋形外的斜座標、
+        米字的另一個晶格）畫出來玩家無從到達，只是徒增困惑。
 
         occupied_keys 是同類且當前被佔用的位置鍵（塊循環裡提亮），
         empty_positions 是同類的空位（渲染端以實心提亮畫出，與方形空格
@@ -1235,20 +1237,36 @@ class RendererMixin:
             hkey = (cell[0], cell[1], bool(cell[2]))
             hcls = cell_class(hkey, step, 'triangle') + (hkey[2],)
             occ, empty = set(), set()
-            iis = [b.location[0] for b in blocks]
-            jjs = [b.location[1] for b in blocks]
+            keys = {tri_key(b) for b in blocks}
+            iis = [k[0] for k in keys]
+            jjs = [k[1] for k in keys]
+            # 只在「棋形內」枚舉：大三角是 (0..k-1)² 的斜座標方框再切掉
+            # 右下角。菱胞 (i,j) 至少要有一個頂點被真正佔用才算棋形內，
+            # 否則邊界盒的空白角落會亮出懸空提示（玩家無從到達）。
+            in_board = set()
+            for (a, b, _u) in keys:
+                in_board.add((a, b))
+                in_board.add((a + 1, b))
+                in_board.add((a, b + 1))
+                in_board.add((a + 1, b + 1))
             for i in range(min(iis), max(iis) + 1):
                 for j in range(min(jjs), max(jjs) + 1):
                     for up in (True, False):
+                        if (i, j) not in in_board:
+                            continue
                         if cell_class((i, j), step, 'triangle') + (up,) == hcls:
-                            (occ if (i, j, up) in {
-                                tri_key(b) for b in blocks} else empty).add(
+                            (occ if (i, j, up) in keys else empty).add(
                                 (i, j, up))
             return occ, empty, hkey
 
         if getattr(self, 'mi_mode', False):
-            # 懸停與鍵都是 (r, c, q)；位置枚舉含半整數晶格（錯位態），
-            # 每個位置四個 q 都要算（類含 q）
+            # 懸停與鍵都是 (r, c, q)；位置枚舉只收「與懸停塊同晶格、且落在
+            # 棋形內」的位置。米字斜向一格會換晶格（A 整數 ↔ B 半整數），
+            # 兩套晶格可同時存在於盤面上；另一晶格的位置要斜走一格才到得了，
+            # 畫出來就是一堆和滑塊不重合的高亮。判據取「懸停塊自己的座標
+            # 奇偶」，不能取 blocks[0]——棋盤可能是混合晶格。
+            # 棋形內：該位置的幾何格（floor）必須是「有塊佔過的格」，
+            # 否則會把棋盤外的位置（如 6×6 盤的 r=6）也當同類亮起來。
             if len(cell) < 3:
                 return None, None, None
             hkey = (cell[0], cell[1], cell[2])
@@ -1257,9 +1275,17 @@ class RendererMixin:
             occ, empty = set(), set()
             rs2 = [int(round(2 * b.location[0])) for b in blocks]
             cs2 = [int(round(2 * b.location[1])) for b in blocks]
+            lat_r = int(round(2 * hkey[0])) % 2
+            lat_c = int(round(2 * hkey[1])) % 2
+            board_cells = {(math.floor(b.location[0]), math.floor(b.location[1]))
+                           for b in blocks}
             for r2 in range(min(rs2), max(rs2) + 1):
                 for c2 in range(min(cs2), max(cs2) + 1):
+                    if r2 % 2 != lat_r or c2 % 2 != lat_c:
+                        continue
                     r, c = r2 / 2.0, c2 / 2.0
+                    if (math.floor(r), math.floor(c)) not in board_cells:
+                        continue
                     pos_cls = cell_class((r, c), step, 'mi')
                     for q in ('N', 'E', 'S', 'W'):
                         if pos_cls + (q,) != hcls:

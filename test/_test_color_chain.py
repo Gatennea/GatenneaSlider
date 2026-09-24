@@ -7,7 +7,9 @@
   並釘死 step2/step3 的實測 RGB（改動前後一模一樣的回歸錨）
 - 三形態連鎖集合語義：occupied ⊆ 真實滑塊、empty ∩ 滑塊 = ∅、
   兩集合同類（連鎖類含朝向）、hover 更亮的判別鍵在集合裡
-- 三角/米字在 step>1 時連鎖含幽靈空位；移走一塊後該位必為幽靈
+- 三角/米字在 step>1 時連鎖含同類空位；移走一塊後該位必為空位高亮
+- 高亮不外溢：位置必與懸停塊同晶格、且落在棋形內（三角的斜座標方框
+  空白角落、米字的另一晶格都不亮）
 - 米字錯位態（真實斜向一步 → 半整數座標）參與連鎖
 - step=1 與開關關閉回 (None, None, None)
 - events 懸停路徑：MOUSEMOTION 後 hover_cell 的形態
@@ -113,26 +115,28 @@ check("square: 實心 6×6 bbox 內無空位（empty 空）", empty == set())
 
 gui.new_triangle_puzzle(6, 3)
 occ, empty, hover = chain_ok('triangle', 3)
-check("triangle: step>1 連鎖含幽靈空位", bool(empty))
+check("triangle: step>1 連鎖含同類空位", bool(empty))
 check("triangle: occ 全部同朝向（連鎖類含 up）",
       all(k[2] == hover[2] for k in occ))
-# 移走一塊：原位必為幽靈
+# 移走一塊：原位必為空位高亮
 victim = gui.game.blocks.pop()
 vkey = tri_key(victim)
 gui.hover_cell = vkey
 occ, empty, hover = gui._chain_hint_cells()
-check("triangle: 移走的塊原位是幽靈", vkey in empty and hover == vkey)
+check("triangle: 移走的塊原位是空位高亮", vkey in empty and hover == vkey)
 gui.game.blocks.append(victim)
 
 gui.new_mi_puzzle(6, 6, 3)
 occ, empty, hover = chain_ok('mi', 3)
-check("mi: step>1 連鎖含幽靈空位（B 晶格候選）", bool(empty))
+check("mi: 高亮空位必與懸停塊同晶格且落在棋形內",
+      all(abs(k[0] - hover[0]) % 1 < 1e-9 and abs(k[1] - hover[1]) % 1 < 1e-9
+          for k in (occ | empty)))
 check("mi: occ 全部同朝向（連鎖類含 q）", all(k[2] == hover[2] for k in occ))
 victim = gui.game.blocks.pop()
 vkey = mi_key(victim)
 gui.hover_cell = vkey
 occ, empty, hover = gui._chain_hint_cells()
-check("mi: 移走的塊原位是幽靈", vkey in empty and hover == vkey)
+check("mi: 移走的塊原位是空位高亮", vkey in empty and hover == vkey)
 gui.game.blocks.append(victim)
 
 # ================================================================ 米字錯位態
@@ -147,10 +151,23 @@ gui.game.commit_move(final)
 check("錯位態出現半整數座標",
       any(abs(v - round(v)) > 1e-9
           for b in gui.game.blocks for v in mi_key(b)[:2]))
-occ, empty, hover = chain_ok('mi', 3)
-check("mi 錯位態: 連鎖集合含半整數鍵",
-      any(abs(k[0] - round(k[0])) > 1e-9 or abs(k[1] - round(k[1])) > 1e-9
-          for k in (occ | empty)))
+# 懸停一個「半整數晶格」的塊：同類高亮必須全在同晶格（都是半整數）
+half_blk = next(b for b in gui.game.blocks
+                if abs(b.location[0] - round(b.location[0])) > 1e-9)
+gui.hover_cell = mi_key(half_blk)
+occ, empty, hover = gui._chain_hint_cells()
+check("mi 錯位態: 懸停半整數塊時高亮全在半整數晶格",
+      bool(occ) and all(abs(k[0] - round(k[0])) > 1e-9
+                        and abs(k[1] - round(k[1])) > 1e-9
+                        for k in (occ | empty)))
+# 懸停整數晶格的塊：高亮全在整數晶格（不混入半整數）
+int_blk = next(b for b in gui.game.blocks
+               if abs(b.location[0] - round(b.location[0])) < 1e-9)
+gui.hover_cell = mi_key(int_blk)
+occ_i, empty_i, _ = gui._chain_hint_cells()
+check("mi 錯位態: 懸停整數塊時高亮全在整數晶格",
+      all(abs(k[0] - round(k[0])) < 1e-9 and abs(k[1] - round(k[1])) < 1e-9
+          for k in (occ_i | empty_i)))
 
 # ================================================================ 閘門
 print("== step=1 與開關關閉 → (None, None, None) ==")

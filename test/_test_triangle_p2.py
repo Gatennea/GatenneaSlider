@@ -139,11 +139,11 @@ bad = [k for k in keys | empties
        if k[0] % step != target[0] % step or k[1] % step != target[1] % step
        or k[2] != target[2]]
 check(f"所有高亮格都满足 (i%{step}, j%{step}, up) 一致（异常 {bad[:3]}）", not bad)
-# 占用格全是真实方块；同類空位（幽靈）也在集合裡
+# 占用格全是真实方块；同類空位也在集合裡
 all_keys = set(gui.game.positions())
 check("占用格全是真实滑块", keys <= all_keys)
 check("空位集合与滑块互斥", not (empties & all_keys))
-check(f"高亮含同类空位（{len(empties)} 个幽靈）", bool(empties))
+check(f"高亮含同类空位（{len(empties)} 个）", bool(empties))
 # 悬停格应比同组其他格更亮：渲染端按整鍵 == hover 区分
 hover_keys = {k for k in keys if k == hover}
 check(f"悬停键对应 {len(hover_keys)} 个单位三角（同朝向恰一）",
