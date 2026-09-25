@@ -12,7 +12,9 @@
   偶數 step 斜向位移是整數、晶格守恆；奇數 step 斜向走奇數格會換晶格，
   兩個晶格同屬一條軌道，都該亮（舊版按晶格過濾，高亮數被砍掉一半）
 - 米字錯位態（真實斜向一步 → 半整數座標）參與連鎖
-- step=1 與開關關閉回 (None, None, None)
+- step=1 閘門：方形退化成單一組 → 關；三角/米字退化成朝向分組
+  （up 兩組 / q 四組）→ 照常開，且高亮全同朝向、落在棋形凸包內
+- 開關關閉回 (None, None, None)
 - events 懸停路徑：MOUSEMOTION 後 hover_cell 的形態
   （方形 2 元組、三角 3 元組帶 up、米字 3 元組帶 q）
 - 三形態開著色＋連鎖各畫一幀不崩
@@ -243,17 +245,45 @@ check("mi(step=2 偶): 晶格守恆（斜向偶數格不換晶格）",
       bool(occ_e) and lats_e == {lat_of(hover_e)}, str(sorted(lats_e)))
 
 # ================================================================ 閘門
-print("== step=1 與開關關閉 → (None, None, None) ==")
+print("== step=1 閘門：方形關、三角/米字按朝向開；開關關閉 → (None, None, None) ==")
+# 三角/米字的類在 step=1 退化成朝向分組（三角 up 兩組、米字 q 四組）——
+# 這兩個形態「原本就靠朝向分組」，1 級一步一格，一塊能去的恰是同朝向的
+# 任意位置，連鎖照樣有用；方形退化成單一組才要關。
 gui.new_triangle_puzzle(6, 1)
 gui.chain_hint_enabled = True
-gui.hover_cell = tri_key(gui.game.blocks[0])
-check("三角 step=1 無連鎖", gui._chain_hint_cells() == (None, None, None))
+tblk = gui.game.blocks[len(gui.game.blocks) // 2]
+gui.hover_cell = tri_key(tblk)
+occ, empty, hover = gui._chain_hint_cells()
+tview1 = gui._tri_view()
+thull1 = tview1.board_hull(gui.game.positions())
+check("三角 step=1 有連鎖（1 級靠朝向分組）",
+      occ is not None and hover == tri_key(tblk) and hover in occ)
+check("三角 step=1: 高亮全是同朝向（▲/▼ 兩組）",
+      all(k[2] == hover[2] for k in (occ | empty)))
+check("三角 step=1: 高亮全在棋形凸包內",
+      all(gui._point_in_convex(tview1.piece_center(*k), thull1)
+          for k in (occ | empty)))
+
 gui.new_mi_puzzle(6, 6, 1)
-gui.hover_cell = mi_key(gui.game.blocks[0])
-check("米字 step=1 無連鎖", gui._chain_hint_cells() == (None, None, None))
+gui.hover_cell = mi_key(gui.game.blocks[len(gui.game.blocks) // 2])
+occ, empty, hover = gui._chain_hint_cells()
+check("米字 step=1 有連鎖（1 級靠朝向分組）",
+      occ is not None and hover in (occ | empty))
+check("米字 step=1: 高亮全是同朝向 q（N/E/S/W 四組）",
+      all(k[2] == hover[2] for k in (occ | empty)))
+mview1 = gui._mi_view()
+mhull1 = mview1.board_hull(gui.game.positions())
+check("米字 step=1: 高亮全在棋形凸包內",
+      all(gui._point_in_convex(mview1.piece_center(*k), mhull1)
+          for k in (occ | empty)))
+# 1 級的 step=1 是奇數：斜向一格的位移 ±(½,½) 就換晶格，兩晶格都在軌道上
+check("米字 step=1: 高亮橫跨兩晶格（斜向一格換晶格）",
+      {lat_of(k) for k in (occ | empty)} == {0, 1})
+
 gui.new_puzzle(6, 6, 1)
 gui.hover_cell = (1, 1)
-check("方形 step=1 無連鎖", gui._chain_hint_cells() == (None, None, None))
+check("方形 step=1 無連鎖（類退化成單一組）",
+      gui._chain_hint_cells() == (None, None, None))
 gui.new_puzzle(6, 6, 2)
 gui.chain_hint_enabled = False
 check("開關關閉無連鎖", gui._chain_hint_cells() == (None, None, None))

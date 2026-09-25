@@ -182,11 +182,16 @@ if (other[0] % step, other[1] % step, other[2]) \
 else:
     check("（该格与首格同组，跳过对比）", True)
 
-# step=1 时不提示（无连锁可言）
+# step=1：三角的類退化成 up 兩組——「原本就靠朝向分組」，連鎖照樣要開
+# （只有方形的類退化成單一組才需要閘門關掉）
 gui.new_triangle_puzzle(K, 1)
 gui.chain_hint_enabled = True
 gui.hover_cell = tri_key(gui.game.blocks[0])
-check("step=1 时无连锁提示", gui._chain_hint_cells() == (None, None, None))
+occ1, empty1, hover1 = gui._chain_hint_cells()
+check("step=1 仍有连锁提示（1 級靠朝向分組）",
+      occ1 is not None and hover1 in (occ1 | empty1))
+check("step=1 高亮全是同朝向（▲/▼ 兩組）",
+      bool(occ1) and all(k[2] == hover1[2] for k in (occ1 | empty1)))
 # 关掉开关同样无提示
 gui.new_triangle_puzzle(K, 3)
 gui.chain_hint_enabled = False

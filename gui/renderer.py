@@ -1244,7 +1244,15 @@ class RendererMixin:
         if not cell:
             return None, None, None
         step = self.current_step
-        if step <= 1:
+        if step < 1:
+            return None, None, None
+        if step == 1 and not (getattr(self, 'triangle_mode', False)
+                              or getattr(self, 'mi_mode', False)):
+            # 1 級（step=1）位置類退化：方形只剩一組——全盤同類，畫了等於
+            # 沒畫，關掉。三角/米字退化成朝向分組（▲/▼ 兩組、N/E/S/W 四
+            # 族），而這兩形態「原本就靠朝向分組」，1 級一步一格時一塊能去
+            # 的恰是同朝向的任意位置（米字還能斜向一格換晶格），連鎖照常
+            # 有用。著色不含朝向（位置類單色、無資訊），仍只在 >1 級開。
             return None, None, None
         bounds = self.game.get_boundaries()
         if not (
