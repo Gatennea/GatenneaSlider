@@ -1229,8 +1229,10 @@ class RendererMixin:
         - 三角 (i,j,up)：類 = (i%step, j%step, up)；
         - 米字 (r,c,q)：類 = ((r+c)%step, (r−c)%step, q)。
 
-        **只高亮當前棋形/晶格內的位置**：不合法的空位（三角棋形外的斜座標、
-        米字的另一個晶格）畫出來玩家無從到達，只是徒增困惑。
+        **只高亮當前棋形內的位置**：棋形外的空位（三角棋形外的斜座標）
+        畫出來玩家無從到達，只是徒增困惑；棋形＝滑塊併集的凸包（也是背景
+        網格的裁剪範圍）。米字不另按晶格過濾——奇數 step 斜向一步就換晶格，
+        另一晶格是同一條軌道的另一半（見該分支的推導）。
 
         occupied_keys 是同類且當前被佔用的位置鍵（塊循環裡提亮），
         empty_positions 是同類的空位（渲染端以實心提亮畫出，與方形空格
@@ -1283,11 +1285,23 @@ class RendererMixin:
             return occ, empty, hkey
 
         if getattr(self, 'mi_mode', False):
-            # 懸停與鍵都是 (r, c, q)；位置枚舉只收「與懸停塊同晶格、且落在
-            # 棋形內」的位置。米字斜向一格會換晶格（A 整數 ↔ B 半整數），
-            # 兩套晶格可同時存在於盤面上；另一晶格的位置要斜走一格才到得了，
-            # 畫出來就是一堆和滑塊不重合的高亮。判據取「懸停塊自己的座標
-            # 奇偶」，不能取 blocks[0]——棋盤可能是混合晶格。
+            # 懸停與鍵都是 (r, c, q)。位置枚舉＝「凸包內 + 同類（含朝向）」，
+            # **不按晶格過濾**——見下面的推導，過濾在奇數 step 下是錯的。
+            #
+            # 位移生成元：一步走 step 格，橫豎是 (step,0)/(0,step)，斜向是
+            # (±step/2, ±step/2)；橫豎兩個恰是斜向兩個的和，所以真實軌道是
+            #     {(step/2·p, step/2·q) : p ≡ q (mod 2)}
+            # 又「同類」的條件是 (r'+c')−(r+c) 與 (r'−c')−(r−c) 都是 step 的
+            # 倍數，解出 r'−r = step(u+v)/2、c'−c = step(u−v)/2，其中
+            # p = u+v、q = u−v 必同奇偶 —— 兩式完全等價，也就是說
+            # **「同類」就等於「真的到得了」**，晶格不是額外的約束。
+            #   step 偶數：step/2 是整數，位移全整數，晶格確實是不變量；而
+            #     A 晶格有 (r+c)≡(r−c)、B 晶格有 (r+c)≢(r−c) (mod 2)，類匹配
+            #     本來就排除另一晶格，加不加過濾結果一樣。
+            #   step 奇數：斜向走 step（奇數）格的位移 ±(step/2, step/2) 是
+            #     半整數，一步就把整盤換到另一晶格（實測 step=3：(0,0,'N')
+            #     斜走 3 格 ⇒ (−1.5,−1.5,'N')，類不變）。這時另一晶格是同一
+            #     條軌道的另一半，按晶格過濾會把高亮數砍掉一半。
             # 棋形內用「滑塊併集的凸包」裁定（見下面的 hull），不再看該
             # 1×1 格有沒有塊——洞也要亮。
             if len(cell) < 3:
@@ -1298,8 +1312,6 @@ class RendererMixin:
             occ, empty = set(), set()
             rs2 = [int(round(2 * b.location[0])) for b in blocks]
             cs2 = [int(round(2 * b.location[1])) for b in blocks]
-            lat_r = int(round(2 * hkey[0])) % 2
-            lat_c = int(round(2 * hkey[1])) % 2
             # 棋形内：取滑塊併集的凸包，只有落在凸包裡的位置才算數。
             # 凸包正是背景網格的裁剪範圍（grid_segments 按凸包 chord），
             # 所以「地圖上有畫網格的地方」＝凸包內＝這裡的判據；洞在凸包
@@ -1308,9 +1320,13 @@ class RendererMixin:
             # 就是懸停洞時別處都亮、洞自己不亮。
             view = self._mi_view()
             hull = view.board_hull(occupied) if occupied else []
-            for r2 in range(min(rs2), max(rs2) + 1):
-                for c2 in range(min(cs2), max(cs2) + 1):
-                    if r2 % 2 != lat_r or c2 % 2 != lat_c:
+            # 上界多掃一格（r2 的 +2 = 半格）：另一晶格的位置可能落在滑塊
+            # 座標邊界外半格處（如 6×6 盤的 r=5.5），凸包邊界仍可能收它。
+            for r2 in range(min(rs2), max(rs2) + 3):
+                for c2 in range(min(cs2), max(cs2) + 3):
+                    # 合法的米字位置：r、c 同奇偶（A 晶格全整 / B 晶格全半整），
+                    # 一整一半的座標不是任何塊能待的地方。
+                    if r2 % 2 != c2 % 2:
                         continue
                     r, c = r2 / 2.0, c2 / 2.0
                     pos_cls = cell_class((r, c), step, 'mi')

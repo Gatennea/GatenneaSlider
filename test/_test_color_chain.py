@@ -8,8 +8,9 @@
 - 三形態連鎖集合語義：occupied ⊆ 真實滑塊、empty ∩ 滑塊 = ∅、
   兩集合同類（連鎖類含朝向）、hover 更亮的判別鍵在集合裡
 - 三角/米字在 step>1 時連鎖含同類空位；移走一塊後該位必為空位高亮
-- 高亮不外溢：位置必與懸停塊同晶格、且落在棋形內（三角的斜座標方框
-  空白角落、米字的另一晶格都不亮）
+- 高亮不外溢：位置必落在棋形（滑塊併集的凸包）內；晶格則看 step 奇偶——
+  偶數 step 斜向位移是整數、晶格守恆；奇數 step 斜向走奇數格會換晶格，
+  兩個晶格同屬一條軌道，都該亮（舊版按晶格過濾，高亮數被砍掉一半）
 - 米字錯位態（真實斜向一步 → 半整數座標）參與連鎖
 - step=1 與開關關閉回 (None, None, None)
 - events 懸停路徑：MOUSEMOTION 後 hover_cell 的形態
@@ -134,8 +135,13 @@ gui.game.blocks.append(victim)
 
 gui.new_mi_puzzle(6, 6, 3)
 occ, empty, hover = chain_ok('mi', 3)
-check("mi: 高亮空位必與懸停塊同晶格且落在棋形內",
-      all(abs(k[0] - hover[0]) % 1 < 1e-9 and abs(k[1] - hover[1]) % 1 < 1e-9
+# step=3 是奇數：斜向 3 格的位移 ±(1.5, 1.5) 是半整數，一步就換晶格，
+# 兩個晶格同屬一條軌道；所以只斷「落在棋形凸包內 + 同類（含朝向）」，
+# 不再斷「同晶格」（那正是把高亮數砍半的舊行為），晶格語義見下一節。
+mview0 = gui._mi_view()
+hull0 = mview0.board_hull(gui.game.positions())
+check("mi: 高亮全落在棋形凸包內",
+      all(gui._point_in_convex(mview0.piece_center(*k), hull0)
           for k in (occ | empty)))
 check("mi: occ 全部同朝向（連鎖類含 q）", all(k[2] == hover[2] for k in occ))
 victim = gui.game.blocks.pop()
@@ -184,23 +190,57 @@ gui.game.commit_move(final)
 check("錯位態出現半整數座標",
       any(abs(v - round(v)) > 1e-9
           for b in gui.game.blocks for v in mi_key(b)[:2]))
-# 懸停一個「半整數晶格」的塊：同類高亮必須全在同晶格（都是半整數）
+def lat_of(key):
+    """晶格：0 = 整數(A)，1 = 半整數(B)。"""
+    return int(round(2 * key[0])) % 2
+
+
+# step=3（奇）：斜向 step 格的位移 ±(step/2, step/2) 是半整數，一步就換
+# 晶格，所以「同類」橫跨 A/B 兩個晶格。以前只高亮同晶格，高亮數被砍掉
+# 一半——這組斷言就是那個 bug 的回歸錨。
 half_blk = next(b for b in gui.game.blocks
                 if abs(b.location[0] - round(b.location[0])) > 1e-9)
 gui.hover_cell = mi_key(half_blk)
 occ, empty, hover = gui._chain_hint_cells()
-check("mi 錯位態: 懸停半整數塊時高亮全在半整數晶格",
-      bool(occ) and all(abs(k[0] - round(k[0])) > 1e-9
-                        and abs(k[1] - round(k[1])) > 1e-9
+lats = {lat_of(k) for k in (occ | empty)}
+check("mi 錯位態(step=3 奇): 高亮橫跨兩個晶格（斜向奇數格換晶格）",
+      lats == {0, 1}, str(sorted(lats)))
+hcls = cell_class(hover, 3, 'mi') + (hover[2],)
+check("mi 錯位態(step=3 奇): 高亮全同類（含朝向）",
+      bool(occ) and all(cell_class(k, 3, 'mi') + (k[2],) == hcls
                         for k in (occ | empty)))
-# 懸停整數晶格的塊：高亮全在整數晶格（不混入半整數）
+mview = gui._mi_view()
+mhull = mview.board_hull(gui.game.positions())
+check("mi 錯位態(step=3 奇): 高亮全在棋形凸包內",
+      all(gui._point_in_convex(mview.piece_center(*k), mhull)
+          for k in (occ | empty)))
+# 懸停整數晶格的塊同理：同一條軌道，兩個晶格都要出現
 int_blk = next(b for b in gui.game.blocks
                if abs(b.location[0] - round(b.location[0])) < 1e-9)
 gui.hover_cell = mi_key(int_blk)
-occ_i, empty_i, _ = gui._chain_hint_cells()
-check("mi 錯位態: 懸停整數塊時高亮全在整數晶格",
-      all(abs(k[0] - round(k[0])) < 1e-9 and abs(k[1] - round(k[1])) < 1e-9
-          for k in (occ_i | empty_i)))
+occ_i, empty_i, hover_i = gui._chain_hint_cells()
+lats_i = {lat_of(k) for k in (occ_i | empty_i)}
+check("mi 錯位態(step=3 奇): 懸停整數塊同樣橫跨兩晶格",
+      bool(occ_i) and lats_i == {0, 1}, str(sorted(lats_i)))
+
+# 偶數 step 對照組：斜向位移 ±(step/2, step/2) 是整數，晶格是真不變量，
+# 高亮必須守恆（這時「同類」本來就自動排除另一晶格）
+gui.new_mi_puzzle(6, 6, 2)
+ref2 = gui.game.block_at(
+    sorted(k for k in gui.game.positions() if side_of('d1', 4, k) == 1)[0])
+gui.game.opt('d1', 4, ref2)
+final2 = gui.game.try_move_ex('x', 2)[0]
+check("step=2 斜向一步可提交", bool(final2))
+if final2:
+    gui.game.commit_move(final2)
+    check("step=2 斜向後仍是整數晶格（偶數格不換晶格）",
+          all(abs(v - round(v)) < 1e-9
+              for b in gui.game.blocks for v in mi_key(b)[:2]))
+gui.hover_cell = mi_key(gui.game.blocks[len(gui.game.blocks) // 2])
+occ_e, empty_e, hover_e = gui._chain_hint_cells()
+lats_e = {lat_of(k) for k in (occ_e | empty_e)}
+check("mi(step=2 偶): 晶格守恆（斜向偶數格不換晶格）",
+      bool(occ_e) and lats_e == {lat_of(hover_e)}, str(sorted(lats_e)))
 
 # ================================================================ 閘門
 print("== step=1 與開關關閉 → (None, None, None) ==")
