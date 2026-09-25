@@ -654,7 +654,17 @@ class RendererMixin:
         menu_y = self.menu_bar_height
 
         item_height = 26
+        # 动态宽度：以最长文本为基准（左留白 12 + 右侧 ✓ 标记 16 + 右留白 12），
+        # 避免「快速开始：矩形 6×6 等级2」这类长条目文字超出外框
         menu_width = 200
+        for p in self.puzzle_presets:
+            if len(p) == 1 and p[0] == '---':
+                continue
+            if len(p) == 1 and p[0] == '__current__':
+                w = self.status_font.size('当前：' + self._current_puzzle_label())[0]
+            else:
+                w = self.menu_font.size(p[0])[0]
+            menu_width = max(menu_width, w + 40)
 
         total_items = len(self.puzzle_presets)
         menu_height = item_height * total_items
@@ -747,7 +757,15 @@ class RendererMixin:
         """
         items = self.puzzle_sub_presets[subkey]
         item_height = 26
+        # 动态宽度：组标题（如「米字格谜题（最难，奇偶等级难度有波动）」）较长，
+        # 以最长文本为基准，避免文字超出外框
         menu_width = 230
+        for p in items:
+            if len(p) == 1 and p[0] == '---':
+                continue
+            name = p[1] if len(p) == 2 and p[0] == '__group__' else p[0]
+            w = self.menu_font.size(name)[0]
+            menu_width = max(menu_width, w + 40)
         menu_x = sub_x
         menu_y = self.menu_bar_height
         menu_height = item_height * len(items)
