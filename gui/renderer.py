@@ -696,7 +696,91 @@ class RendererMixin:
                 self.screen.blit(label_surface, label_rect)
                 continue
 
+            # 可展开的二级子菜单项：名字 + ▸ 箭头；悬停或展开时高亮，展开时绘制子菜单
+            if len(preset) == 3 and preset[1] == '__sub__':
+                sub_open = (self.puzzle_sub_open == preset[2])
+                if i == self.puzzle_menu_hovered or sub_open:
+                    pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
+
+                text_surface = self.menu_font.render(preset[0], True, self.colors['menu_text'])
+                text_rect = text_surface.get_rect()
+                text_rect.x = menu_x + 12
+                text_rect.centery = center_y
+                self.screen.blit(text_surface, text_rect)
+
+                arrow_surface = self.menu_font.render('▸', True, self.colors['menu_text'])
+                arrow_rect = arrow_surface.get_rect()
+                arrow_rect.right = menu_x + menu_width - 10
+                arrow_rect.centery = center_y
+                self.screen.blit(arrow_surface, arrow_rect)
+
+                if sub_open:
+                    self.draw_puzzle_sub_menu(preset[2], menu_x + menu_width + 2)
+                continue
+
             if i == self.puzzle_menu_hovered:
+                pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
+
+            is_current = (len(preset) >= 4
+                          and self._preset_puzzle_key(preset) == current_key)
+
+            name = preset[0]
+            color = self.colors['menu_selected'] if is_current else self.colors['menu_text']
+            text_surface = self.menu_font.render(name, True, color)
+            text_rect = text_surface.get_rect()
+            text_rect.x = menu_x + 12
+            text_rect.centery = center_y
+            self.screen.blit(text_surface, text_rect)
+
+            if is_current:
+                check_surface = self.menu_font.render('✓', True, self.colors['menu_selected'])
+                check_rect = check_surface.get_rect()
+                check_rect.right = menu_x + menu_width - 10
+                check_rect.centery = center_y
+                self.screen.blit(check_surface, check_rect)
+
+    def draw_puzzle_sub_menu(self, subkey, sub_x):
+        """绘制谜题二级子菜单（画在一级项右侧）。
+
+        条目格式与一级 preset 相同（分组标题/分隔线/谜题档位），
+        「当前✓」用同一套 _preset_puzzle_key 比对。
+        """
+        items = self.puzzle_sub_presets[subkey]
+        item_height = 26
+        menu_width = 230
+        menu_x = sub_x
+        menu_y = self.menu_bar_height
+        menu_height = item_height * len(items)
+
+        dropdown_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
+        pygame.draw.rect(self.screen, self.colors['menu_bg'], dropdown_rect)
+        pygame.draw.rect(self.screen, self.colors['border'], dropdown_rect, 1)
+
+        self.puzzle_sub_rects = []
+        current_key = self._current_puzzle_key()
+        for i, preset in enumerate(items):
+            y_pos = menu_y + i * item_height
+            item_rect = pygame.Rect(menu_x, y_pos, menu_width, item_height)
+            self.puzzle_sub_rects.append(item_rect)
+            center_y = y_pos + item_height // 2
+
+            if len(preset) == 1 and preset[0] == '---':
+                pygame.draw.line(self.screen, self.colors['separator'],
+                               (menu_x + 8, center_y),
+                               (menu_x + menu_width - 8, center_y))
+                continue
+
+            # 分组标题：不可点击，也不随悬停高亮
+            if len(preset) == 2 and preset[0] == '__group__':
+                title_surface = self.menu_font.render(
+                    preset[1], True, self.colors['menu_selected'])
+                title_rect = title_surface.get_rect()
+                title_rect.x = menu_x + 12
+                title_rect.centery = center_y
+                self.screen.blit(title_surface, title_rect)
+                continue
+
+            if i == self.puzzle_sub_hovered:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
             is_current = (len(preset) >= 4

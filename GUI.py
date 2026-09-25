@@ -329,44 +329,63 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.show_puzzle_menu = False
         self.puzzle_menu_rects = []
         self.puzzle_menu_hovered = -1
-        # 预设选项（第一项是给玩家看的名字，不带内部键名）：
-        #   ('__group__', 标题)   分组标题，不可点击
-        #   ('---',)             分隔线
-        #   ('自定义...',)        打开自定义对话框
-        #   ('__current__',)     底部「当前谜题」状态行，不可点击
-        #   (显示名, m, n, step[, kind])  kind 为 'triangle' / 'numbered'，缺省矩形
+        # 谜题菜单一级结构：矩形是默认/基础（正阶魔方地位），异形收进二级子菜单。
+        # 条目格式：
+        #   ('快速开始…', m, n, step[, kind])  置顶快捷项，直接生效（推荐档：矩形 6×6 等级2）
+        #   ('名字 ▸', '__sub__', subkey)     可展开的二级子菜单项
+        #   ('---',) / ('自定义...',) / ('__current__',)  同旧语义
         # 「当前是哪一档」由 _preset_puzzle_key() 和 _current_puzzle_key() 比对，
         # 以后再加形态也不用改渲染分支。模式切换已移到主窗口右下角，故不再放这里
         self.puzzle_presets = [
-            ('__group__', '矩形谜题'),
-            ('4×4 等级2', 4, 4, 2),
-            ('5×5 等级2', 5, 5, 2),
-            ('6×6 等级2', 6, 6, 2),
-            ('7×7 等级2', 7, 7, 2),
-            ('8×8 等级2', 8, 8, 2),
-            ('9×9 等级2', 9, 9, 2),
-            ('10×10 等级2', 10, 10, 2),
-            ('---',),
-            ('6×6 等级3', 6, 6, 3),
-            ('8×8 等级3', 8, 8, 3),
-            ('10×10 等级3', 10, 10, 3),
-            ('__group__', '三角形谜题'),
-            ('边长4 等级1', 4, 4, 1, 'triangle'),
-            ('边长6 等级2', 6, 6, 2, 'triangle'),
-            ('边长8 等级2', 8, 8, 2, 'triangle'),
-            ('__group__', '米字格谜题'),
-            ('4×4 等级1', 4, 4, 1, 'mi'),
-            ('4×4 等级2', 4, 4, 2, 'mi'),
-            ('6×6 等级2', 6, 6, 2, 'mi'),
-            ('8×8 等级2', 8, 8, 2, 'mi'),
-            ('__group__', '数字谜题'),
-            ('4×4 等级2', 4, 4, 2, 'numbered'),
-            ('6×6 等级2', 6, 6, 2, 'numbered'),
-            ('8×8 等级2', 8, 8, 2, 'numbered'),
+            ('快速开始：矩形 6×6 等级2', 6, 6, 2),
+            ('矩形谜题 ▸', '__sub__', 'rect'),
+            ('异形谜题 ▸', '__sub__', 'exotic'),
             ('---',),
             ('自定义...',),
             ('__current__',),   # 底部「当前：矩形 6×6 等级2」状态行
         ]
+
+        # 二级子菜单：条目与旧 puzzle_presets 同格式（分组标题/分隔线/谜题档位），
+        # 渲染与「当前✓」比对逻辑完全复用。
+        # 难度定位：矩形等级1 最低（无教程也能过）、等级2 最经典（教程教学目标）、
+        # 等级3+ 复杂；异形难度升序：三角形 < 米字格（米字格奇偶等级难度有波动）。
+        self.puzzle_sub_presets = {
+            'rect': [
+                ('__group__', '等级1 · 入门'),
+                ('4×4 等级1', 4, 4, 1),
+                ('5×5 等级1', 5, 5, 1),
+                ('6×6 等级1', 6, 6, 1),
+                ('__group__', '等级2 · 经典 ★ 推荐'),
+                ('4×4 等级2', 4, 4, 2),
+                ('5×5 等级2', 5, 5, 2),
+                ('6×6 等级2', 6, 6, 2),
+                ('8×8 等级2', 8, 8, 2),
+                ('10×10 等级2', 10, 10, 2),
+                ('__group__', '等级3 · 复杂'),
+                ('6×6 等级3', 6, 6, 3),
+                ('8×8 等级3', 8, 8, 3),
+                ('10×10 等级3', 10, 10, 3),
+            ],
+            'exotic': [
+                ('__group__', '三角形谜题（比矩形难）'),
+                ('边长4 等级1', 4, 4, 1, 'triangle'),
+                ('边长6 等级2', 6, 6, 2, 'triangle'),
+                ('边长8 等级2', 8, 8, 2, 'triangle'),
+                ('__group__', '米字格谜题（最难，奇偶等级难度有波动）'),
+                ('4×4 等级1', 4, 4, 1, 'mi'),
+                ('4×4 等级2', 4, 4, 2, 'mi'),
+                ('6×6 等级2', 6, 6, 2, 'mi'),
+                ('8×8 等级2', 8, 8, 2, 'mi'),
+                ('__group__', '数字谜题（矩形+编号）'),
+                ('4×4 等级2', 4, 4, 2, 'numbered'),
+                ('6×6 等级2', 6, 6, 2, 'numbered'),
+                ('8×8 等级2', 8, 8, 2, 'numbered'),
+            ],
+        }
+        # 二级子菜单交互状态：当前展开的 subkey（''=无）、条目矩形、悬停项
+        self.puzzle_sub_open = ''
+        self.puzzle_sub_rects = []
+        self.puzzle_sub_hovered = -1
 
         # 自动求解状态
         self._auto_solve_result = None     # None=空闲, list=解法, False=无解
@@ -3099,6 +3118,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.show_puzzle_menu = False
         self.show_settings_menu = False
         self.show_macro_menu = False
+        # 谜题二级子菜单同步收起
+        self.puzzle_sub_open = ''
+        self.puzzle_sub_rects = []
+        self.puzzle_sub_hovered = -1
 
     def is_blank_area(self, screen_x: int, screen_y: int) -> bool:
         """判断指定位置是否为空白区域"""

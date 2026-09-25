@@ -356,6 +356,35 @@ class EventsMixin:
                                 if not (len(preset) == 1 and preset[0] == '---'):
                                     self.puzzle_menu_hovered = i
                                 break
+
+                    # 谜题二级子菜单悬停：悬停在一级可展开项上即展开；
+                    # 鼠标移入子菜单保持打开，离开入口与子菜单则收起
+                    self.puzzle_sub_hovered = -1
+                    if self.show_puzzle_menu:
+                        for i, rect in enumerate(self.puzzle_menu_rects):
+                            if rect.collidepoint(mx, my):
+                                p = self.puzzle_presets[i]
+                                if len(p) == 3 and p[1] == '__sub__':
+                                    self.puzzle_sub_open = p[2]
+                                break
+                        if self.puzzle_sub_open:
+                            in_sub = False
+                            for i, rect in enumerate(self.puzzle_sub_rects):
+                                if rect.collidepoint(mx, my):
+                                    item = self.puzzle_sub_presets[self.puzzle_sub_open][i]
+                                    if not (len(item) == 1 and item[0] == '---'):
+                                        self.puzzle_sub_hovered = i
+                                    in_sub = True
+                                    break
+                            if not in_sub:
+                                entry_hovered = any(
+                                    j == self.puzzle_menu_hovered
+                                    and len(self.puzzle_presets[j]) == 3
+                                    and self.puzzle_presets[j][1] == '__sub__'
+                                    and self.puzzle_presets[j][2] == self.puzzle_sub_open
+                                    for j in range(len(self.puzzle_presets)))
+                                if not entry_hovered:
+                                    self.puzzle_sub_open = ''
                     
                     # 宏定义菜单悬停
                     self.macro_menu_hovered = -1
@@ -510,42 +539,77 @@ class EventsMixin:
                         if self.show_puzzle_menu:
                             puzzle_clicked = False
                             puzzle_keep_open = False
-                            for i, rect in enumerate(self.puzzle_menu_rects):
-                                if rect.collidepoint(x, y):
-                                    preset = self.puzzle_presets[i]
-                                    if ((len(preset) == 1 and preset[0] == '__current__')
-                                            or (len(preset) == 2
-                                                and preset[0] == '__group__')):
-                                        # 分组标题和底部状态行：点了不该关掉菜单
-                                        puzzle_keep_open = True
-                                    elif len(preset) == 1 and preset[0] == '自定义...':
-                                        self.show_custom_dialog = True
-                                        kind = self._current_kind()
-                                        self.custom_kind = ('triangle' if kind == 'triangle'
-                                                            else 'mi' if kind == 'mi'
-                                                            else 'numbered' if kind == 'numbered'
-                                                            else 'rect')
-                                        self.custom_fields = {
-                                            'm': str(self.current_m),
-                                            'n': str(self.current_n),
-                                            'step': str(self.current_step)
-                                        }
-                                        self.custom_active_field = 'm'
-                                        self.custom_error = ''
-                                        puzzle_clicked = True
-                                    elif len(preset) >= 4:
-                                        _, pm, pn, ps = preset[:4]
-                                        kind = preset[4] if len(preset) > 4 else 'square'
-                                        if kind == 'triangle':
-                                            self.new_triangle_puzzle(pm, ps)
-                                        elif kind == 'mi':
-                                            self.new_mi_puzzle(pm, pn, ps)
-                                        elif kind == 'numbered':
-                                            self.new_puzzle(pm, pn, ps, numbered=True)
-                                        else:
-                                            self.new_puzzle(pm, pn, ps)
-                                        puzzle_clicked = True
-                                    break
+                            # 二级子菜单优先：点中的是二级条目
+                            if self.puzzle_sub_open and self.puzzle_sub_rects:
+                                sub_items = self.puzzle_sub_presets[self.puzzle_sub_open]
+                                for i, rect in enumerate(self.puzzle_sub_rects):
+                                    if rect.collidepoint(x, y):
+                                        preset = sub_items[i]
+                                        if ((len(preset) == 2 and preset[0] == '__group__')
+                                                or (len(preset) == 1
+                                                    and preset[0] == '---')):
+                                            # 分组标题和分隔线：点了不该关掉菜单
+                                            puzzle_keep_open = True
+                                        elif len(preset) >= 4:
+                                            _, pm, pn, ps = preset[:4]
+                                            kind = preset[4] if len(preset) > 4 else 'square'
+                                            if kind == 'triangle':
+                                                self.new_triangle_puzzle(pm, ps)
+                                            elif kind == 'mi':
+                                                self.new_mi_puzzle(pm, pn, ps)
+                                            elif kind == 'numbered':
+                                                self.new_puzzle(pm, pn, ps, numbered=True)
+                                            else:
+                                                self.new_puzzle(pm, pn, ps)
+                                            puzzle_clicked = True
+                                        break
+                                if puzzle_keep_open:
+                                    continue
+                            # 一级菜单项点击（二级未命中时）
+                            if not puzzle_clicked:
+                                for i, rect in enumerate(self.puzzle_menu_rects):
+                                    if rect.collidepoint(x, y):
+                                        preset = self.puzzle_presets[i]
+                                        if (len(preset) == 1
+                                                and preset[0] == '__current__'):
+                                            # 底部状态行：点了不该关掉菜单
+                                            puzzle_keep_open = True
+                                        elif len(preset) == 3 and preset[1] == '__sub__':
+                                            # 可展开项：点击切换子菜单开合，菜单保持打开
+                                            if self.puzzle_sub_open == preset[2]:
+                                                self.puzzle_sub_open = ''
+                                            else:
+                                                self.puzzle_sub_open = preset[2]
+                                                self.puzzle_sub_hovered = -1
+                                            puzzle_keep_open = True
+                                        elif len(preset) == 1 and preset[0] == '自定义...':
+                                            self.show_custom_dialog = True
+                                            kind = self._current_kind()
+                                            self.custom_kind = ('triangle' if kind == 'triangle'
+                                                                else 'mi' if kind == 'mi'
+                                                                else 'numbered' if kind == 'numbered'
+                                                                else 'rect')
+                                            self.custom_fields = {
+                                                'm': str(self.current_m),
+                                                'n': str(self.current_n),
+                                                'step': str(self.current_step)
+                                            }
+                                            self.custom_active_field = 'm'
+                                            self.custom_error = ''
+                                            puzzle_clicked = True
+                                        elif len(preset) >= 4:
+                                            _, pm, pn, ps = preset[:4]
+                                            kind = preset[4] if len(preset) > 4 else 'square'
+                                            if kind == 'triangle':
+                                                self.new_triangle_puzzle(pm, ps)
+                                            elif kind == 'mi':
+                                                self.new_mi_puzzle(pm, pn, ps)
+                                            elif kind == 'numbered':
+                                                self.new_puzzle(pm, pn, ps, numbered=True)
+                                            else:
+                                                self.new_puzzle(pm, pn, ps)
+                                            puzzle_clicked = True
+                                        break
                             if puzzle_keep_open:
                                 continue
                             self.close_all_menus()

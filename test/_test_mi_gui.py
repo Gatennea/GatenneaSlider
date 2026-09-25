@@ -63,7 +63,7 @@ check(f"形態鍵 = {gui._current_kind()}", gui._current_kind() == 'mi')
 check(f"標籤 = {gui._current_puzzle_label()}",
       gui._current_puzzle_label() == '米字格 6×6 等级2')
 
-mi_preset = [p for p in gui.puzzle_presets if len(p) >= 5 and p[4] == 'mi']
+mi_preset = [p for p in gui.puzzle_sub_presets['exotic'] if len(p) >= 5 and p[4] == 'mi']
 check(f"謎題菜單有 {len(mi_preset)} 個米字格預設", len(mi_preset) >= 3)
 check("每個米字格預設都能对上當前鍵（打勾邏輯）",
       all(gui._preset_puzzle_key(p) == gui._current_puzzle_key()
@@ -71,7 +71,8 @@ check("每個米字格預設都能对上當前鍵（打勾邏輯）",
 check("米字格預設的等級都小於 max(m,n)",
       all(p[3] < max(p[1], p[2]) for p in mi_preset))
 check("米字格預設自成一個分組（前一项是分组标题）",
-      any(p[:2] == ('__group__', '米字格谜题') for p in gui.puzzle_presets))
+      any(p[0] == '__group__' and p[1].startswith('米字格')
+          for p in gui.puzzle_sub_presets['exotic']))
 
 # 切回方形：鍵與旗標都要回位
 gui.new_puzzle(5, 5, 2)
