@@ -16,6 +16,7 @@ import pygame
 
 from game_mi import mi_key
 from game_triangle import tri_key
+from gui.cell_class import cell_class, class_index
 from gui.mi_view import MiBoardView
 from gui.triangle_view import TriangleBoardView
 from records import format_time
@@ -170,27 +171,39 @@ class RendererMixin:
             (selected if hi else normal).append(
                 (block, i, j, up, is_follow))
 
-        # 悬停连锁提示：同 (i%step, j%step) 的单位三角提亮（悬停格更亮）
-        hint_keys, hint_hover = self._chain_hint_cells()
+        # 悬停连锁提示：同類（含朝向）的塊提亮、空位實心提亮（悬停键更亮）
+        hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
         for group, is_selected in ((normal, False), (selected, True)):
             for block, i, j, up, is_follow in group:
                 fill = self.colors['block_selected'] if is_selected else self.colors['block']
                 border_color = self.colors['border']
                 border_w = max(1, int(2 * self.zoom))
+                ring_color = None
                 # 拖拽越界（碰撞/斷開/超過可達上限）：變暗 + 橙色邊框提示不可移動
                 if is_follow and self.drag_follow_invalid:
                     fill = tuple(int(ch * 0.45) for ch in fill[:3])
                     border_color = (220, 80, 40)
                     border_w = max(1, int(3 * self.zoom))
-                elif hint_keys is not None and (i, j, up) in hint_keys:
-                    amt = 0.55 if (i, j) == hint_hover else 0.35
-                    fill = tuple(min(255, int(ch + (255 - ch) * amt))
-                                 for ch in fill[:3])
+                else:
+                    # 分组着色：從外側向內一圈的縮環畫法（朝向不參與著色）。
+                    # 描邊色不能直接換成組色：pygame 多邊形描邊以邊線為中心
+                    # 向外也擴半個線寬，會漫進塊間縫隙蓋住縫線（含選中紅線），
+                    # 縮環後著色帶整體落在滑塊內，與方形 rect 描邊同觀感
+                    if getattr(self, 'coloring_enabled', False) and self.current_step > 1:
+                        ring_color = self._group_color_for((i, j))
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
                 pygame.draw.polygon(self.screen, fill, poly)
                 pygame.draw.polygon(self.screen, border_color, poly, border_w)
+                # 连锁提示：同類塊叠半透明白（hover 更亮）
+                if hint_occ is not None and (i, j, up) in hint_occ:
+                    self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
+                if ring_color is not None:
+                    ring_w = max(2, int(4 * self.zoom))
+                    pygame.draw.polygon(self.screen, ring_color,
+                                        self._tri_ring(poly, ring_w / 2.0),
+                                        ring_w)
 
                 if getattr(self, 'numbered', False) and getattr(block, 'number', None):
                     font_size = max(12, int(scaled_cell * 0.45))
@@ -206,6 +219,14 @@ class RendererMixin:
                     text_rect = text.get_rect(
                         center=self.world_to_screen(cx, cy))
                     self.screen.blit(text, text_rect)
+
+        # 悬停连锁提示：同類空位叠半透明白（与方形空格同一套语言，
+        # 不是描边轮廓——轮廓会让空位看着像有块）
+        if hint_empty:
+            for (i, j, up) in sorted(hint_empty):
+                poly = [self.world_to_screen(*p)
+                        for p in view.piece_polygon(i, j, up)]
+                self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
 
     def draw_mi_board(self):
         """繪製米字格棋盤（两次触控 + 虚拟键盘，方向由第二下的拖动给出）。
@@ -275,21 +296,45 @@ class RendererMixin:
                     and id(block) in follow_map)
             (selected if block.be_opted else normal).append(((r, c, q), warn))
 
+        # 悬停连锁提示：同類（含朝向 q）的塊提亮、空位實心提亮
+        hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
+
         for gi, group in enumerate((normal, selected)):
             base = (self.colors['block_selected'] if gi
                     else self.colors['block'])
-            border_w = max(1, int(2 * self.zoom))
             for (r, c, q), warn in group:
                 fill = base
                 border_color = self.colors['border']
+                border_w = max(1, int(2 * self.zoom))
                 if warn:
                     fill = tuple(int(ch * 0.45) for ch in base[:3])
                     border_color = (220, 80, 40)
+                    border_w = max(1, int(3 * self.zoom))
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 pygame.draw.polygon(self.screen, fill, poly)
                 pygame.draw.polygon(self.screen, border_color,
                                     poly, border_w)
+                # 连锁提示：同類塊叠半透明白（與方形/三角同一套語言）
+                if hint_occ is not None and (r, c, q) in hint_occ:
+                    self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
+                # 分组着色：縮環從外側向內一圈（位置類不含朝向 q，半整數
+                # 座標在 cell_class 內部整數化），線寬沿用方形慣例。pygame
+                # 多邊形描邊向外也擴半個線寬，直接描會漫進縫隙蓋住選中紅線
+                if (not warn
+                        and getattr(self, 'coloring_enabled', False)
+                        and self.current_step > 1):
+                    ring_w = max(2, int(4 * self.zoom))
+                    pygame.draw.polygon(
+                        self.screen, self._group_color_for((r, c)),
+                        self._tri_ring(poly, ring_w / 2.0), ring_w)
+
+        # 悬停连锁提示：同類空位叠半透明白（与方形空格同一套语言）
+        if hint_empty:
+            for (r, c, q) in sorted(hint_empty):
+                poly = [self.world_to_screen(*p)
+                        for p in view.piece_polygon(r, c, q)]
+                self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一），只畫在棋形範圍內。
@@ -403,8 +448,8 @@ class RendererMixin:
                     if block.be_opted:
                         follow_map[id(block)] = (block.location[0] + dr, block.location[1] + dc)
 
-        # 悬停连锁提示：预计算高亮格集合（含空格），块循环中直接提亮原色
-        hint_cells, hint_hover = self._chain_hint_cells()
+        # 悬停连锁提示：预计算高亮格集合（含空格），块循环中叠半透明白
+        hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
         # 绘制所有滑块
         for block in self.game.blocks:
@@ -440,12 +485,6 @@ class RendererMixin:
                 border_color = (220, 80, 40)
                 border_w = max(1, int(3 * self.zoom))
             else:
-                # 连锁提示：同组格直接提亮原色（像原图层变亮，而非叠图层）
-                if hint_cells is not None:
-                    bl = tuple(block.location)
-                    if bl in hint_cells:
-                        amt = 0.55 if bl == hint_hover else 0.35
-                        fill = self._lighten(fill, amt)
                 if getattr(self, 'coloring_enabled', False) and self.current_step > 1:
                     border_color = self._group_color(block.location[0], block.location[1])
                     border_w = max(2, int(7 * self.zoom)) #暫定7,不要改
@@ -455,6 +494,16 @@ class RendererMixin:
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
             pygame.draw.rect(self.screen, fill, rect, border_radius=int(5 * self.zoom))
             pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=int(5 * self.zoom))
+
+            # 连锁提示：同组格叠一层半透明白（hover 更亮），着色描边仍在最上层
+            if hint_occ is not None and tuple(block.location) in hint_occ:
+                bl = tuple(block.location)
+                self._draw_hint_overlay(
+                    [(screen_x, screen_y),
+                     (screen_x + scaled_cell, screen_y),
+                     (screen_x + scaled_cell, screen_y + scaled_cell),
+                     (screen_x, screen_y + scaled_cell)],
+                    bl == hint_hover)
 
             if getattr(self, 'numbered', False) and getattr(block, 'number', None):
                 font_size = max(12, int(scaled_cell * 0.45))
@@ -470,17 +519,16 @@ class RendererMixin:
                 text_rect = text.get_rect(center=(screen_x + scaled_cell / 2, screen_y + scaled_cell / 2))
                 self.screen.blit(text, text_rect)
 
-        # 连锁提示：高亮的空格（无滑块）同样提亮
-        if hint_cells is not None:
-            occupied = {tuple(b.location) for b in self.game.blocks}
+        # 连锁提示：高亮的空格（无滑块）同样叠半透明白
+        if hint_empty is not None:
             step_px = scaled_cell + scaled_gap
-            for (r, c) in sorted(hint_cells - occupied):
+            for (r, c) in sorted(hint_empty):
                 bx = board_x + c * step_px + self.camera_x
                 by = board_y + r * step_px + self.camera_y
-                amt = 0.55 if (r, c) == hint_hover else 0.35
-                pygame.draw.rect(self.screen, self._lighten(self.colors['background'], amt),
-                                 (bx, by, scaled_cell, scaled_cell),
-                                 border_radius=int(5 * self.zoom))
+                self._draw_hint_overlay(
+                    [(bx, by), (bx + scaled_cell, by),
+                     (bx + scaled_cell, by + scaled_cell), (bx, by + scaled_cell)],
+                    (r, c) == hint_hover)
 
         # 宏基准位置标记（固定坐标，无论该格有无滑块）
         base = getattr(self, 'macro_record_base_point', None)
@@ -1051,57 +1099,216 @@ class RendererMixin:
         col.hsva = (hue, 75, 92, 100)
         return col
 
-    def _lighten(self, color: tuple, amount: float) -> tuple:
-        """颜色向白色提亮 amount（0~1）。
+    def _group_color_for(self, pos):
+        """三形態通用描邊色：位置 → 移動不變量類（不含朝向）→ 色相。
 
-        用于连锁提示：直接改变格子原色（像原图层变亮），而非叠加半透明图层。
+        方形與 _group_color 同源（class_index 對方形給出同一個
+        (r%step)*step+(c%step)），三角用 (i%step, j%step)、米字用
+        ((r+c)%step, (r−c)%step)；朝向（up/q）不參與著色。呼叫端按
+        當前形態傳位置前兩個分量即可，形態分派在 cell_class 內部。
         """
-        return tuple(int(ch + (255 - ch) * amount) for ch in color[:3])
+        if getattr(self, 'triangle_mode', False):
+            kind = 'triangle'
+        elif getattr(self, 'mi_mode', False):
+            kind = 'mi'
+        else:
+            kind = 'square'
+        step = self.current_step
+        k = class_index(cell_class(pos, step, kind), step)
+        n = step * step
+        if n <= 16:
+            hue = k * 360.0 / n
+        else:
+            hue = (k * 0.618033988749895 % 1.0) * 360.0
+        col = pygame.Color(0, 0, 0)
+        col.hsva = (hue, 75, 92, 100)
+        return col
+
+    # 连锁提示：半透明白色叠加层的透明度（hover 更亮）
+    HINT_ALPHA_HOVER = 110
+    HINT_ALPHA_OTHER = 60
+
+    def _draw_hint_overlay(self, poly, is_hover):
+        """在滑块/空位多边形上叠一层半透明白色（连锁提示的本体观感）。
+
+        原版连锁高亮是半透明白色，不是把块的原色提亮：提亮会把选中绿、
+        空位、着色描边各自拉成不同色阶，玩家看到的是「变色」而非「罩了
+        一层白光」。半透明白叠加对任何底色都给出同样的高光，且着色描边
+        与选中状态仍然透得出来。
+        """
+        if not poly:
+            return
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        x0, y0 = int(min(xs)) - 1, int(min(ys)) - 1
+        w = int(max(xs)) - x0 + 2
+        h = int(max(ys)) - y0 + 2
+        if w <= 0 or h <= 0:
+            return
+        alpha = (self.HINT_ALPHA_HOVER if is_hover
+                 else self.HINT_ALPHA_OTHER)
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        local = [(p[0] - x0, p[1] - y0) for p in poly]
+        pygame.draw.polygon(surf, (255, 255, 255, alpha), local)
+        self.screen.blit(surf, (x0, y0))
+
+    def _tri_ring(self, pts, w):
+        """三角形顶点的「外置内环」顶点（屏幕座标）。
+
+        着色要求是「在原有图形基础上，从外侧向内画一圈颜色」，且描边
+        不带圆角/斜接伸出、顶角不留缝、厚度恒定。pygame 的多边形描边
+        以边线为中心向两侧各扩半个线宽，width 一大就 (a) 向外漫进块间
+        缝隙盖住缝线，(b) 尖角按斜接向外伸出。所以先算**多边形各边
+        向内偏移 w** 所得的三条直线的交点（内切的平行边三角形），
+        再以 2w 描边——环带整体落在 [0, 2w] 的内缩区，恰好「从外缘向
+        内一圈」；用直线交点而非顶点缩放，顶角处环带连续无缺口。
+        """
+        if w <= 0 or len(pts) < 3:
+            return pts
+        inward = []
+        for k in range(3):
+            (px, py), (qx, qy) = pts[k], pts[(k + 1) % 3]
+            ex, ey = qx - px, qy - py
+            ln = math.hypot(ex, ey)
+            if ln < 1e-9:
+                return pts
+            cx = sum(p[0] for p in pts) / 3.0
+            cy = sum(p[1] for p in pts) / 3.0
+            # 指向重心的法线就是内向，无需依赖顶点绕向
+            nx, ny = -ey / ln, ex / ln
+            if nx * (cx - px) + ny * (cy - py) < 0:
+                nx, ny = -nx, -ny
+            inward.append(((px + nx * w, py + ny * w),
+                           (qx + nx * w, qy + ny * w)))
+        out = []
+        for k in range(3):
+            (x1, y1), (x2, y2) = inward[k]
+            (x3, y3), (x4, y4) = inward[(k + 1) % 3]
+            den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+            if abs(den) < 1e-9:            # 平行（退化三角形）：退回该边中点
+                out.append(((x1 + x2) / 2.0, (y1 + y2) / 2.0))
+                continue
+            t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+            out.append((x1 + t * (x2 - x1), y1 + t * (y2 - y1)))
+        return out
 
     def _chain_hint_cells(self):
-        """悬停连锁提示的高亮格集合（含空格）。
+        """悬停连锁提示的高亮集合（三形態通用）。
 
-        返回 (cells, hover_cell)；未开启/无悬停/无效时返回 (None, None)。
+        返回 (occupied_keys, empty_positions, hover_cell)；
+        未开启/无悬停/无效时返回 (None, None, None)。
         注意：shuffle 后棋盘坐标可为负，用棋盘实际边界判定。
 
-        方形：同 (row%step, col%step) 的格子。
-        三角形：同 (i%step, j%step) 的单位三角——三族移动向量都是 step 的
-        整数倍，所以这个不变量在三种缝隙下都成立（up 朝向不参与）。
+        連鎖用類含朝向（「這塊能去哪」不含朝向會把 ▲ 指到 ▼ 該去的
+        位置，是假提示）：
+        - 方形 (r,c)：類 = (r%step, c%step)，鍵與位置都是二元組；
+        - 三角 (i,j,up)：類 = (i%step, j%step, up)；
+        - 米字 (r,c,q)：類 = ((r+c)%step, (r−c)%step, q)。
+
+        **只高亮當前棋形/晶格內的位置**：不合法的空位（三角棋形外的斜座標、
+        米字的另一個晶格）畫出來玩家無從到達，只是徒增困惑。
+
+        occupied_keys 是同類且當前被佔用的位置鍵（塊循環裡提亮），
+        empty_positions 是同類的空位（渲染端以實心提亮畫出，與方形空格
+        同一套語言）。方形兩集合的併集與舊版單集合語義一致。
         """
         if not getattr(self, 'chain_hint_enabled', False):
-            return None, None
+            return None, None, None
         cell = getattr(self, 'hover_cell', None)
         if not cell:
-            return None, None
+            return None, None, None
         step = self.current_step
         if step <= 1:
-            return None, None
-        hr, hc = cell
+            return None, None, None
         bounds = self.game.get_boundaries()
         if not (
-            bounds['min_row'] - 1 <= hr <= bounds['max_row'] + 1 and
-            bounds['min_col'] - 1 <= hc <= bounds['max_col'] + 1
+            bounds['min_row'] - 1 <= cell[0] <= bounds['max_row'] + 1 and
+            bounds['min_col'] - 1 <= cell[1] <= bounds['max_col'] + 1
         ):
-            return None, None
+            return None, None, None
         blocks = self.game.blocks
         if not blocks:
-            return None, None
+            return None, None, None
+
         if getattr(self, 'triangle_mode', False):
-            # 高亮集合按 (i, j, up) 三元组算，避免同格 ▲/▼ 被一起点亮后
-            # 渲染端还要再判一次朝向
-            return {
-                tri_key(b) for b in blocks
-                if tri_key(b)[0] % step == hr % step
-                and tri_key(b)[1] % step == hc % step
-            }, (hr, hc)
+            # 懸停與鍵都是 (i, j, up) 三元組，類含朝向
+            if len(cell) < 3:
+                return None, None, None
+            hkey = (cell[0], cell[1], bool(cell[2]))
+            hcls = cell_class(hkey, step, 'triangle') + (hkey[2],)
+            occ, empty = set(), set()
+            keys = {tri_key(b) for b in blocks}
+            iis = [k[0] for k in keys]
+            jjs = [k[1] for k in keys]
+            # 只在「棋形內」枚舉：大三角是 (0..k-1)² 的斜座標方框再切掉
+            # 右下角。菱胞 (i,j) 至少要有一個頂點被真正佔用才算棋形內，
+            # 否則邊界盒的空白角落會亮出懸空提示（玩家無從到達）。
+            in_board = set()
+            for (a, b, _u) in keys:
+                in_board.add((a, b))
+                in_board.add((a + 1, b))
+                in_board.add((a, b + 1))
+                in_board.add((a + 1, b + 1))
+            for i in range(min(iis), max(iis) + 1):
+                for j in range(min(jjs), max(jjs) + 1):
+                    for up in (True, False):
+                        if (i, j) not in in_board:
+                            continue
+                        if cell_class((i, j), step, 'triangle') + (up,) == hcls:
+                            (occ if (i, j, up) in keys else empty).add(
+                                (i, j, up))
+            return occ, empty, hkey
+
+        if getattr(self, 'mi_mode', False):
+            # 懸停與鍵都是 (r, c, q)；位置枚舉只收「與懸停塊同晶格、且落在
+            # 棋形內」的位置。米字斜向一格會換晶格（A 整數 ↔ B 半整數），
+            # 兩套晶格可同時存在於盤面上；另一晶格的位置要斜走一格才到得了，
+            # 畫出來就是一堆和滑塊不重合的高亮。判據取「懸停塊自己的座標
+            # 奇偶」，不能取 blocks[0]——棋盤可能是混合晶格。
+            # 棋形內：該位置的幾何格（floor）必須是「有塊佔過的格」，
+            # 否則會把棋盤外的位置（如 6×6 盤的 r=6）也當同類亮起來。
+            if len(cell) < 3:
+                return None, None, None
+            hkey = (cell[0], cell[1], cell[2])
+            hcls = cell_class(hkey, step, 'mi') + (hkey[2],)
+            occupied = {mi_key(b) for b in blocks}
+            occ, empty = set(), set()
+            rs2 = [int(round(2 * b.location[0])) for b in blocks]
+            cs2 = [int(round(2 * b.location[1])) for b in blocks]
+            lat_r = int(round(2 * hkey[0])) % 2
+            lat_c = int(round(2 * hkey[1])) % 2
+            board_cells = {(math.floor(b.location[0]), math.floor(b.location[1]))
+                           for b in blocks}
+            for r2 in range(min(rs2), max(rs2) + 1):
+                for c2 in range(min(cs2), max(cs2) + 1):
+                    if r2 % 2 != lat_r or c2 % 2 != lat_c:
+                        continue
+                    r, c = r2 / 2.0, c2 / 2.0
+                    if (math.floor(r), math.floor(c)) not in board_cells:
+                        continue
+                    pos_cls = cell_class((r, c), step, 'mi')
+                    for q in ('N', 'E', 'S', 'W'):
+                        if pos_cls + (q,) != hcls:
+                            continue
+                        key = (r, c, q)
+                        if key in occupied:
+                            occ.add(key)
+                        else:
+                            empty.add(key)
+            return occ, empty, hkey
+
+        # 方形：鍵與位置都是 (r, c) 二元組，類不含朝向
+        hr, hc = cell[0], cell[1]
+        hcls = cell_class((hr, hc), step, 'square')
+        occ, empty = set(), set()
         rs = [b.location[0] for b in blocks]
         cs = [b.location[1] for b in blocks]
-        r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
-        cells = {
-            (r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)
-            if r % step == hr % step and c % step == hc % step
-        }
-        return cells, (hr, hc)
+        occupied = {(b.location[0], b.location[1]) for b in blocks}
+        for r in range(min(rs), max(rs) + 1):
+            for c in range(min(cs), max(cs) + 1):
+                if cell_class((r, c), step, 'square') == hcls:
+                    (occ if (r, c) in occupied else empty).add((r, c))
+        return occ, empty, (hr, hc)
 
     def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28):
         """统一排版的开关行：左栏标签(x+15) + 右栏开关(x+220) + 可选说明。
@@ -1173,7 +1380,7 @@ class RendererMixin:
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
-            "按 (位置 mod 步长) 给滑块描边分组着色，同组颜色恒不变，帮助还原")
+            "按移动不变量分组着色（同组颜色的滑块才可能互换位置）")
 
         # 悬停连锁提示开关（独立于着色器）
         self._settings_chain_toggle_rect, ny = self._draw_switch_row(

@@ -298,19 +298,20 @@ class EventsMixin:
 
                     # 棋盘悬停格（连锁提示用；含空格，越界置空）
                     self.hover_cell = None
-                    if getattr(self, 'chain_hint_enabled', False) \
-                            and not getattr(self, 'mi_mode', False):
+                    if getattr(self, 'chain_hint_enabled', False):
                         try:
                             # 注意：shuffle 后棋盘坐标可为负，用 bounds 判定而非 0 起索引
                             b = self.game.get_boundaries()
                             if getattr(self, 'triangle_mode', False):
-                                # 三角形：悬停的是单位三角 (i, j, up)，取 (i, j) 参与 mod 判定
+                                # 三角形：悬停的是单位三角 (i, j, up)；
+                                # 连锁类含朝向，up 必须保留
                                 wx, wy = self.screen_to_world(mx, my)
-                                cell = self._tri_view().world_to_cell(wx, wy)
-                                if cell is not None:
-                                    c = (cell[0], cell[1])
-                                else:
-                                    c = None
+                                c = self._tri_view().world_to_cell(wx, wy)
+                            elif getattr(self, 'mi_mode', False):
+                                # 米字格：不帶 cells，空位也要給身份
+                                # （連鎖提示的空位提亮用）
+                                wx, wy = self.screen_to_world(mx, my)
+                                c = self._mi_view().world_to_cell(wx, wy)
                             else:
                                 c = self.get_cell_at_pos(mx, my)
                             if c is not None and (
