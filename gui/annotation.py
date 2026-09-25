@@ -666,10 +666,19 @@ class AnnotationMixin:
         except ValueError as e:
             self._ann_build_error = str(e)
             return
-        lo_r, hi_r, lo_c, hi_c = self._ann_build_grid(m, n)
-        if not (lo_r <= pos[0] <= hi_r and lo_c <= pos[1] <= hi_c):
-            self._ann_build_error = '点选超出可构造范围'
-            return
+        if self.triangle_mode:
+            lo_i, hi_i, lo_j, hi_j, s_up, s_down = \
+                self._ann_build_tri_range(m)
+            s_bound = s_up if pos[2] else s_down
+            if not (lo_i <= pos[0] <= hi_i and lo_j <= pos[1] <= hi_j
+                    and pos[0] + pos[1] <= s_bound):
+                self._ann_build_error = '点选超出可构造范围'
+                return
+        else:
+            lo_r, hi_r, lo_c, hi_c = self._ann_build_grid(m, n)
+            if not (lo_r <= pos[0] <= hi_r and lo_c <= pos[1] <= hi_c):
+                self._ann_build_error = '点选超出可构造范围'
+                return
         if pos in self._ann_build_coords:
             self._ann_build_coords.discard(pos)
             if self._ann_build_numbered:
@@ -1708,6 +1717,9 @@ class AnnotationMixin:
         只跟随棋形本身，不再并上 m×n 区域——两者取并集的包围盒会把范围
         撑成一大片无关矩形（棋形离原点远时尤其明显）。空画布无边界盒，
         回退到 m×n 各扩一圈，保证有地方落第一颗。
+
+        注意：三角不用本方法——斜坐标矩形在屏幕上呈菱形，三角的可构造
+        范围应是与地图形状一致的「三角环带」（见 _ann_build_tri_range）。
         """
         coords = getattr(self, '_ann_build_coords', None) or set()
         if not coords:
@@ -1716,6 +1728,26 @@ class AnnotationMixin:
         rs = [p[0] for p in coords]
         cs = [p[1] for p in coords]
         return min(rs) - 1, max(rs) + 1, min(cs) - 1, max(cs) + 1
+
+    def _ann_build_tri_range(self, m):
+        """三角可构造范围：当前棋形外扩一圈的三角环带，非斜坐标矩形。
+
+        返回 (lo_i, hi_i, lo_j, hi_j, s_up, s_down)：i/j 边界各外扩 1；
+        斜边按朝向分别外扩——▲ 片 i+j <= s_up、▼ 片 i+j <= s_down（完整
+        大三角 ▲ 上界 i+j<=k-1、▼ 上界 i+j<=k-2，各自外扩一圈 +1）。屏幕
+        上仍是正三角形环带，与矩形/米字「外扩一圈」视觉一致。空画布回退
+        标准三角外扩，保证有地方落第一颗。
+        """
+        coords = getattr(self, '_ann_build_coords', None) or set()
+        if not coords:
+            return -1, m, -1, m, m, m - 1
+        lo_i = min(p[0] for p in coords) - 1
+        hi_i = max(p[0] for p in coords) + 1
+        lo_j = min(p[1] for p in coords) - 1
+        hi_j = max(p[1] for p in coords) + 1
+        s_up = max(p[0] + p[1] for p in coords if p[2]) + 1
+        s_down = max(p[0] + p[1] for p in coords if not p[2]) + 1
+        return lo_i, hi_i, lo_j, hi_j, s_up, s_down
 
     def _ann_build_status(self, m, n, step):
         """即时校验状态：返回 (text, is_ok)。
@@ -1951,9 +1983,13 @@ class AnnotationMixin:
         outline = (70, 95, 120)
         if self.triangle_mode:
             view = self._tri_view()
-            for i in range(r_lo, r_hi + 1):
-                for j in range(c_lo, c_hi + 1):
+            tri_lo_i, tri_hi_i, tri_lo_j, tri_hi_j, s_up, s_down = \
+                self._ann_build_tri_range(m)
+            for i in range(tri_lo_i, tri_hi_i + 1):
+                for j in range(tri_lo_j, tri_hi_j + 1):
                     for up in (True, False):
+                        if i + j > (s_up if up else s_down):
+                            continue
                         if (i, j, up) in self._ann_build_coords:
                             continue
                         pts = [self.world_to_screen(*p)
