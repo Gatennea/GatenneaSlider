@@ -139,6 +139,33 @@ occ, empty, hover = gui._chain_hint_cells()
 check("mi: 移走的塊原位是空位高亮", vkey in empty and hover == vkey)
 gui.game.blocks.append(victim)
 
+# ---- 米字「整格皆空的洞」也要高亮（回歸：洞被棋形過濾誤殺）----
+# 洞是連鎖提示最該指的地方（哪塊能補進來）；判據是凸包，不是「該 1×1
+# 格有沒有塊」。掏空 (2,2) 四個 q 後懸停它，四個 q 都得自亮。
+hole = (2, 2)
+victims = [b for b in gui.game.blocks
+           if int(b.location[0]) == hole[0] and int(b.location[1]) == hole[1]]
+check("mi: 掏空用的一整格有四塊", len(victims) == 4)
+for b in victims:
+    gui.game.blocks.remove(b)
+gui.game.update_matrix()
+for q in ('N', 'E', 'S', 'W'):
+    gui.hover_cell = (hole[0], hole[1], q)
+    occ, empty, hover = gui._chain_hint_cells()
+    check(f"mi: 懸停空洞 (2,2,{q}) 自身必高亮（洞不被過濾）",
+          hover in empty and hover not in occ)
+# 洞的高亮不能外溢凸包：逐個鍵都在棋形凸包內
+view = gui._mi_view()
+hull = view.board_hull(gui.game.positions())
+gui.hover_cell = (hole[0], hole[1], 'N')
+occ, empty, hover = gui._chain_hint_cells()
+out = [k for k in (occ | empty)
+       if not gui._point_in_convex(view.piece_center(*k), hull)]
+check("mi: 洞參與後高亮仍全在棋形凸包內", not out, str(out[:3]))
+for b in victims:
+    gui.game.blocks.append(b)
+gui.game.update_matrix()
+
 # ================================================================ 米字錯位態
 print("== 米字錯位態（半整數座標）參與連鎖 ==")
 gui.new_mi_puzzle(6, 6, 3)

@@ -1152,6 +1152,30 @@ class RendererMixin:
         pygame.draw.polygon(surf, (255, 255, 255, alpha), local)
         self.screen.blit(surf, (x0, y0))
 
+    def _point_in_convex(self, pt, poly, eps=1e-9):
+        """点是否在凸多边形内（含边）。顶点次序任意（凸包保证凸）。
+
+        凸多边形的每条边把平面切成两半，点在内 iff 对所有边都在同一侧
+        （叉积同号）；落在边上（叉积 0）算在內——邊界塊的內心貼著凸包
+        邊時不能因為浮點誤差被判出去。
+        """
+        n = len(poly)
+        if n < 3:
+            return False
+        sign = 0
+        for k in range(n):
+            ox, oy = poly[k]
+            ax, ay = poly[(k + 1) % n]
+            cr = (ax - ox) * (pt[1] - oy) - (ay - oy) * (pt[0] - ox)
+            if abs(cr) <= eps:
+                continue
+            s = 1 if cr > 0 else -1
+            if sign == 0:
+                sign = s
+            elif s != sign:
+                return False
+        return True
+
     def _tri_ring(self, pts, w):
         """三角形顶点的「外置内环」顶点（屏幕座标）。
 
@@ -1265,8 +1289,8 @@ class RendererMixin:
             # 兩套晶格可同時存在於盤面上；另一晶格的位置要斜走一格才到得了，
             # 畫出來就是一堆和滑塊不重合的高亮。判據取「懸停塊自己的座標
             # 奇偶」，不能取 blocks[0]——棋盤可能是混合晶格。
-            # 棋形內：該位置的幾何格（floor）必須是「有塊佔過的格」，
-            # 否則會把棋盤外的位置（如 6×6 盤的 r=6）也當同類亮起來。
+            # 棋形內用「滑塊併集的凸包」裁定（見下面的 hull），不再看該
+            # 1×1 格有沒有塊——洞也要亮。
             if len(cell) < 3:
                 return None, None, None
             hkey = (cell[0], cell[1], cell[2])
@@ -1277,18 +1301,26 @@ class RendererMixin:
             cs2 = [int(round(2 * b.location[1])) for b in blocks]
             lat_r = int(round(2 * hkey[0])) % 2
             lat_c = int(round(2 * hkey[1])) % 2
-            board_cells = {(math.floor(b.location[0]), math.floor(b.location[1]))
-                           for b in blocks}
+            # 棋形内：取滑塊併集的凸包，只有落在凸包裡的位置才算數。
+            # 凸包正是背景網格的裁剪範圍（grid_segments 按凸包 chord），
+            # 所以「地圖上有畫網格的地方」＝凸包內＝這裡的判據；洞在凸包
+            # 內照樣要亮——洞才是連鎖提示最該指的地方（哪塊能補進來）。
+            # 不能用「該 1×1 格有沒有塊」當判據：那會把洞一起排除，表現
+            # 就是懸停洞時別處都亮、洞自己不亮。
+            view = self._mi_view()
+            hull = view.board_hull(occupied) if occupied else []
             for r2 in range(min(rs2), max(rs2) + 1):
                 for c2 in range(min(cs2), max(cs2) + 1):
                     if r2 % 2 != lat_r or c2 % 2 != lat_c:
                         continue
                     r, c = r2 / 2.0, c2 / 2.0
-                    if (math.floor(r), math.floor(c)) not in board_cells:
-                        continue
                     pos_cls = cell_class((r, c), step, 'mi')
                     for q in ('N', 'E', 'S', 'W'):
                         if pos_cls + (q,) != hcls:
+                            continue
+                        # 凸包裁剪（塊的內心在塊內，邊界塊自然也在包內）
+                        if len(hull) >= 3 and not self._point_in_convex(
+                                view.piece_center(r, c, q), hull):
                             continue
                         key = (r, c, q)
                         if key in occupied:
