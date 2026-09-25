@@ -14,7 +14,7 @@ import math
 
 import pygame
 
-from game_mi import mi_key
+from game_mi import mi_key, mi_vertices
 from game_triangle import tri_key
 from gui.cell_class import cell_class, class_index
 from gui.mi_view import MiBoardView
@@ -1286,8 +1286,15 @@ class RendererMixin:
                     for up in (True, False):
                         if cell_class((i, j), step, 'triangle') + (up,) != hcls:
                             continue
-                        if len(hull) >= 3 and not self._point_in_convex(
-                                view.piece_center(i, j, up), hull):
+                        # 凸包裁剪：**整塊都要在包內**。只查內心的話，
+                        # 內心恰好貼在包邊上的空位（本體探出包外，如三角
+                        # 斜邊外側貼著的空菱形）會被放進來，畫出越界高亮。
+                        # 頂點全在包內才亮，與背景網格的裁剪範圍一致；
+                        # 佔用格的頂點本來就是凸包的候選點，必在包內。
+                        if len(hull) >= 3 and not all(
+                                self._point_in_convex(p, hull)
+                                for p in view.piece_polygon(i, j, up,
+                                                            inset=False)):
                             continue
                         (occ if (i, j, up) in keys else empty).add((i, j, up))
             return occ, empty, hkey
@@ -1341,9 +1348,15 @@ class RendererMixin:
                     for q in ('N', 'E', 'S', 'W'):
                         if pos_cls + (q,) != hcls:
                             continue
-                        # 凸包裁剪（塊的內心在塊內，邊界塊自然也在包內）
-                        if len(hull) >= 3 and not self._point_in_convex(
-                                view.piece_center(r, c, q), hull):
+                        # 凸包裁剪：**整塊都要在包內**。只查內心的話，內心
+                        # 恰好貼在包邊上的空位（本體探出包外半格——1 級米字
+                        # 右/下邊的 B 晶格楔形就是這麼漏出去的）會被放進來，
+                        # 畫出越界的高亮。三頂點全在包內才亮，與背景網格的
+                        # 裁剪範圍（grid_segments 按凸包 chord）一致；佔用格
+                        # 的頂點本來就是凸包的候選點，必在包內。
+                        if len(hull) >= 3 and not all(
+                                self._point_in_convex(view.to_world(x, y), hull)
+                                for (x, y) in mi_vertices(r, c, q)):
                             continue
                         key = (r, c, q)
                         if key in occupied:
