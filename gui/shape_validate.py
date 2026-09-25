@@ -13,6 +13,11 @@
 （三角/米字的表非均勻，所以掃偏移、≤ step² 次），掃到的那個偏移就是
 anchor（目標框位置，計劃二 B 用它畫框；三角/米字沒有求解器算框）。
 
+類計數用「類含朝向」（三角 +up、米字 +q）：朝向是平移不變量，也是
+不變量的一部分。若只按位置類計數，「挖 ▲、補 ▼」（位置類相同、朝向
+翻轉）的構造會被誤判合法——它改變了 ▲/▼ 各自的塊數，還原態裡兩者
+不能互相代替。方形無朝向，維持位置類。
+
 anchor 的含義：匹配的偏移 (dr, dc) ∈ [0, step)²——還原態整體平移
 (dr, dc) 後，類計數表與構造態一致。整體平移 step 的整數倍時類不變，
 所以 anchor 是平移向量的 mod step 類；三角/米字的表非均勻，anchor 幾乎
@@ -55,7 +60,17 @@ def _solved_positions(kind, params) -> set:
 
 
 def _class_counts(positions, step, kind, dr=0, dc=0) -> Counter:
-    """位置集合在偏移 (dr, dc) 下的類計數表（cell_class 只吃前兩個分量）。"""
+    """位置集合在偏移 (dr, dc) 下的類計數表（含朝向）。
+
+    三角/米字把朝向併入類鍵（up / q 是平移不變量，見 cell_class.py 的
+    「類（含朝向）」）——否則「挖 ▲ 補 ▼」這類朝向翻轉的構造會被誤判
+    合法。方形無朝向，維持位置類。"""
+    if kind == 'triangle':
+        return Counter(cell_class((p[0] + dr, p[1] + dc), step, kind) + (p[2],)
+                       for p in positions)
+    if kind == 'mi':
+        return Counter(cell_class((p[0] + dr, p[1] + dc), step, kind) + (p[2],)
+                       for p in positions)
     return Counter(cell_class((p[0] + dr, p[1] + dc), step, kind)
                    for p in positions)
 
