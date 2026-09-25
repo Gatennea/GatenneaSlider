@@ -115,9 +115,15 @@ check("square: 實心 6×6 bbox 內無空位（empty 空）", empty == set())
 
 gui.new_triangle_puzzle(6, 3)
 occ, empty, hover = chain_ok('triangle', 3)
-check("triangle: step>1 連鎖含同類空位", bool(empty))
 check("triangle: occ 全部同朝向（連鎖類含 up）",
       all(k[2] == hover[2] for k in occ))
+# 复原态是实心盘：棋形内没有空位，棋形外（斜座標方框右上側）也不该亮
+check("triangle: 復原態實心盤無空位高亮（棋形外不畫）", empty == set())
+tview = gui._tri_view()
+thull = tview.board_hull(gui.game.positions())
+tout = [k for k in (occ | empty)
+        if not gui._point_in_convex(tview.piece_center(*k), thull)]
+check("triangle: 高亮全在棋形凸包內", not tout, str(tout[:3]))
 # 移走一塊：原位必為空位高亮
 victim = gui.game.blocks.pop()
 vkey = tri_key(victim)

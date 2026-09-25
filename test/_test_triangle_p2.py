@@ -143,7 +143,30 @@ check(f"所有高亮格都满足 (i%{step}, j%{step}, up) 一致（异常 {bad[:
 all_keys = set(gui.game.positions())
 check("占用格全是真实滑块", keys <= all_keys)
 check("空位集合与滑块互斥", not (empties & all_keys))
-check(f"高亮含同类空位（{len(empties)} 个）", bool(empties))
+check(f"高亮不含棋形外的空位（复原态实心盘：{len(empties)} 个）",
+      not empties)
+# 高亮不得越出棋形凸包（三角棋盘不是矩形，斜座標方框右上側是形狀外）
+view = gui._tri_view()
+hull = view.board_hull(all_keys)
+out = [k for k in keys | empties
+       if not gui._point_in_convex(view.piece_center(*k), hull)]
+check("高亮全部落在棋形凸包内", not out, str(out[:3]))
+# 掏一个内部块 → 洞（棋形内、无块）必须亮，且仍不越出凸包
+victim = next(b for b in gui.game.blocks
+              if 1 <= tri_key(b)[0] <= 3 and 1 <= tri_key(b)[1] <= 3)
+vkey = tri_key(victim)
+gui.game.blocks.remove(victim)
+gui.game.update_matrix()
+gui.hover_cell = vkey
+keys_h, empties_h, hover_h = gui._chain_hint_cells()
+check(f"掏内部块后洞自身高亮（洞 {vkey}）",
+      vkey in empties_h and hover_h == vkey)
+hull_h = view.board_hull(set(gui.game.positions()))
+out_h = [k for k in keys_h | empties_h
+         if not gui._point_in_convex(view.piece_center(*k), hull_h)]
+check("掏洞后高亮仍全在棋形凸包内", not out_h, str(out_h[:3]))
+gui.game.blocks.append(victim)
+gui.game.update_matrix()
 # 悬停格应比同组其他格更亮：渲染端按整鍵 == hover 区分
 hover_keys = {k for k in keys if k == hover}
 check(f"悬停键对应 {len(hover_keys)} 个单位三角（同朝向恰一）",

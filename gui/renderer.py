@@ -1264,23 +1264,22 @@ class RendererMixin:
             keys = {tri_key(b) for b in blocks}
             iis = [k[0] for k in keys]
             jjs = [k[1] for k in keys]
-            # 只在「棋形內」枚舉：大三角是 (0..k-1)² 的斜座標方框再切掉
-            # 右下角。菱胞 (i,j) 至少要有一個頂點被真正佔用才算棋形內，
-            # 否則邊界盒的空白角落會亮出懸空提示（玩家無從到達）。
-            in_board = set()
-            for (a, b, _u) in keys:
-                in_board.add((a, b))
-                in_board.add((a + 1, b))
-                in_board.add((a, b + 1))
-                in_board.add((a + 1, b + 1))
+            # 棋形內＝落在滑塊併集的凸包裡（與米字同一套判據）：三角棋盤
+            # 不是矩形，斜座標方框的右上側那一大片是形狀外的空白，原版靠
+            # 「菱形格是否與棋形有公共角」擋不住（邊角上的空菱形照樣貼著
+            # 棋形），復原態就會在滑塊組右上側亮出一整片假空位。凸包同時
+            # 也是背景網格的裁剪範圍，所以「有畫網格的地方」＝凸包內。
+            view = self._tri_view()
+            hull = view.board_hull(keys) if keys else []
             for i in range(min(iis), max(iis) + 1):
                 for j in range(min(jjs), max(jjs) + 1):
                     for up in (True, False):
-                        if (i, j) not in in_board:
+                        if cell_class((i, j), step, 'triangle') + (up,) != hcls:
                             continue
-                        if cell_class((i, j), step, 'triangle') + (up,) == hcls:
-                            (occ if (i, j, up) in keys else empty).add(
-                                (i, j, up))
+                        if len(hull) >= 3 and not self._point_in_convex(
+                                view.piece_center(i, j, up), hull):
+                            continue
+                        (occ if (i, j, up) in keys else empty).add((i, j, up))
             return occ, empty, hkey
 
         if getattr(self, 'mi_mode', False):
