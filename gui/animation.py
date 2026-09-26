@@ -27,12 +27,51 @@ class AnimationMixin:
         self.anim_blocks = list(selected)
         self.anim_start_pos = [list(b.location) for b in selected]
         self.anim_end_pos = [list(p) for p in target_positions]
+        # 拖拽提交：把起点接到松手那刻的跟随位置（见 _apply_drag_origin）
+        self._apply_drag_origin()
         self.anim_progress = 0.0
         self.anim_start_time = pygame.time.get_ticks()
         self._anim_dr = self.anim_end_pos[0][0] - self.anim_start_pos[0][0]
         self._anim_dc = self.anim_end_pos[0][1] - self.anim_start_pos[0][1]
         self._undo_redo_type = None  # 普通移动动画，清除撤销/重做标记
         self.animating = True
+
+    def _apply_drag_origin(self):
+        """拖拽提交的动画：起点改用「松手那刻的跟随位置」。
+
+        拖拽跟随是实时预览——松手时整组已经被画到近乎落点的位置。若动画
+        仍从 b.location（起点）播起，松手瞬间整组会先跳回原位、再完整滑一
+        遍，玩家看到的就是「拖完了又播一次滑动动画」。
+
+        做法：按跟随位移在总位移上的占比 s∈[0,1] 把起点前移，动画只滑剩下
+        的那一段；时长按剩余比例缩短，保证整段速度不变（不会变成最后一点
+        点慢慢挪）。s 会被夹紧——跟随量超过落点时（如跟了 1.4 格却只走 1
+        格）起点停在落点，动画退化为一帧落位，也不会往回滑。
+        """
+        origin = getattr(self, '_drag_anim_origin', None)
+        self._drag_anim_origin = None
+        self._anim_true_start = None
+        if not origin or not self.anim_start_pos:
+            return
+        dr0, dc0 = origin
+        if abs(dr0) < 1e-9 and abs(dc0) < 1e-9:
+            return
+        # 真實起點另存一份：取消動畫要把塊放回這裡（anim_start_pos 已被前移）
+        self._anim_true_start = [list(p) for p in self.anim_start_pos]
+        s0, e0 = self.anim_start_pos[0], self.anim_end_pos[0]
+        tr, tc = e0[0] - s0[0], e0[1] - s0[1]
+        den = tr * tr + tc * tc
+        if den < 1e-12:
+            return
+        s = max(0.0, min(1.0, (dr0 * tr + dc0 * tc) / den))
+        for p in self.anim_start_pos:
+            p[0] += s * tr
+            p[1] += s * tc
+        base = getattr(self, '_anim_duration_base', None)
+        if base is None:
+            base = self.animation_duration
+            self._anim_duration_base = base
+        self.animation_duration = max(60, int(base * (1.0 - s)))
 
     def update_animation(self):
         """更新动画进度，完成时提交"""
@@ -95,6 +134,7 @@ class AnimationMixin:
         self.anim_progress = 0.0
         self._anim_dr = 0.0
         self._anim_dc = 0.0
+        self._restore_anim_duration()
 
         # 宏执行模式：动画结束后继续执行下一个宏步骤
         if getattr(self, 'macro_executing', False) and not getattr(self, 'macro_selecting_base', False):
@@ -108,12 +148,22 @@ class AnimationMixin:
         # 连续撤销/重做：一步播完后自动推进下一轮（直到边界或被打断）
         self._advance_continuous_undo_redo()
 
+    def _restore_anim_duration(self):
+        """还原被拖拽接续缩短的动画时长（见 _apply_drag_origin）。"""
+        base = getattr(self, '_anim_duration_base', None)
+        if base:
+            self.animation_duration = base
+            self._anim_duration_base = None
+        self._anim_true_start = None
+
     def cancel_animation(self):
         """取消当前动画，恢复到动画前的位置，并清空队列"""
         if not self.anim_blocks:
             return
+        # 真實起點優先：拖拽接續把 anim_start_pos 前移過（見 _apply_drag_origin）
+        back = getattr(self, '_anim_true_start', None) or self.anim_start_pos
         for i, block in enumerate(self.anim_blocks):
-            block.location = list(self.anim_start_pos[i])
+            block.location = list(back[i])
         self.animating = False
         self._undo_redo_type = None
         self.anim_blocks = []
@@ -123,6 +173,8 @@ class AnimationMixin:
         self._pending_move_info = None
         self._anim_dr = 0.0
         self._anim_dc = 0.0
+        self._anim_true_start = None
+        self._restore_anim_duration()
         # 取消动画时清空队列
         self._animation_queue.clear()
 

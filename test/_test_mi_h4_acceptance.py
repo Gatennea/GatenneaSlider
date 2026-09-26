@@ -71,22 +71,47 @@ def seam_points(gap):
     return [(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t) for t in (0.2, 0.35, 0.5, 0.65, 0.8)]
 
 
+_LAST_ANIM_START = None
+
+
 def drain_animation():
     """播完當前動畫，回傳它的位移（格）——提交後 _anim_dr/_anim_dc 會被清掉。
 
     進度走 `pygame.time.get_ticks()`，所以每幀之間必須真的睡一會兒，
     緊密自旋只會在 progress=0 的空轉裡耗盡保護次數（無頭環境同樣適用）。
+
+    順帶把動畫起點記進 _LAST_ANIM_START：拖拽提交時起點會被「接續」前移
+    到松手那刻的跟隨位置（見 animation._apply_drag_origin），不再等於
+    b.location。拖滿一格時剩餘位移為 0，動畫退化成一幀落位。
     """
+    global _LAST_ANIM_START
     import time
     delta = (gui._anim_dr, gui._anim_dc)
+    if gui.anim_start_pos:
+        _LAST_ANIM_START = list(gui.anim_start_pos[0])
     guard = 0
     while gui.animating and guard < 500:
         delta = (gui._anim_dr, gui._anim_dc)
+        if gui.anim_start_pos:
+            _LAST_ANIM_START = list(gui.anim_start_pos[0])
         gui.update_animation()
         guard += 1
         if gui.animating:
             time.sleep(0.02)
     return delta
+
+
+def anim_only_tail(delta):
+    """拖拽提交的動畫只播跟隨之後剩下的那一段：與提交同向、不超過一格。
+
+    修復前動畫從 b.location 起算、位移恆等於整步（½,½），松手瞬間整組會
+    跳回原位再滑一遍（玩家看到的「拖完又播一次」）。接續後位移只會是剩
+    餘量，可能小到 0（已拖到落點）；反向（負）則說明起點越過了落點。
+    """
+    if delta is None:
+        return False
+    dr, dc = delta
+    return (-1e-9 <= dr <= 0.5 + 1e-9) and (-1e-9 <= dc <= 0.5 + 1e-9)
 
 
 def click_seam(gap):
@@ -225,7 +250,12 @@ check("搬走的那一批全在縫的同一側",
       str(sorted({side_of('d1', 6, k) for k in gone})))
 check("新落點 = 原位置 + (½,½)（一格，不是兩格）",
       new == {(r + 0.5, c + 0.5, q) for (r, c, q) in gone}, str(sorted(new)[:3]))
-check("動畫位移 = (½,½)（與提交一致）", delta == (0.5, 0.5), str(delta))
+check("動畫只播跟隨之後剩下的那一段（不跳回重播整步）",
+      anim_only_tail(delta), str(delta))
+check("松手那刻動畫起點已前移到跟隨位置（≠ 原始格位）",
+      _LAST_ANIM_START is not None
+      and (abs(_LAST_ANIM_START[0]) > 1e-9 or abs(_LAST_ANIM_START[1]) > 1e-9),
+      str(_LAST_ANIM_START))
 check("另一側一塊都沒動", (before - gone) == (after - new),
       f"差 {len((before - gone) ^ (after - new))} 塊")
 check("走完整盤落進兩個晶格（錯位態）", lat_set() == {'A', 'B'}, str(sorted(lat_set())))
@@ -261,7 +291,7 @@ for side in (1, 0):
 check("兩步之後整盤錯到 B 晶格", lat_set() == {'B'}, str(sorted(lat_set())))
 check("兩步之後判勝（錯半格矩形）", gui.is_solved() is True)
 for i, delta in enumerate(deltas):
-    check(f"第 {i + 1} 段動畫位移 = (½,½)", delta == (0.5, 0.5), str(delta))
+    check(f"第 {i + 1} 段動畫只播剩下的那一段", anim_only_tail(delta), str(delta))
 snap2 = set(gui.game.positions())
 steps2 = gui.step_count
 

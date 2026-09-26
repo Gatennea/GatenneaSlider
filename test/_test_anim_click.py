@@ -93,8 +93,14 @@ def start_square_move(gui):
 
 
 def mid_anim(gui):
-    """把动画推到半程（倒退起始时间骗过 get_ticks）。"""
-    gui.anim_start_time -= HALF
+    """把动画推到半程（倒退起始时间骗过 get_ticks）。
+
+    按**当前这段动画的实际时长**取半程，不能写死 150：拖拽提交的动画会
+    「接续」——起点前移到松手那刻的跟随位置、时长按剩余比例缩短（见
+    animation._apply_drag_origin），拖得越满这段越短。写死 150 会直接把
+    它推过 1.0 而提交掉，后面「动画中」的断言就全废了。
+    """
+    gui.anim_start_time -= max(1, int(gui.animation_duration * 0.5))
     gui.update_animation()
 
 
