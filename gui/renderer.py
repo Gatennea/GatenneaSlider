@@ -244,8 +244,8 @@ class RendererMixin:
         view = self._mi_view()
         # 移動動畫 / 撤銷重做動畫：整組平移 dr/dc 格（位移表見
         # gui/animation._move_delta，撤銷時是反向），單位塊的朝向 q 在平移下
-        # 不變，插值只需動前兩個分量。動畫中的當前位置要畫進凸包，否則背景
-        # 網格和紅縫會提前跳到終點。
+        # 不變，插值只需動前兩個分量。插值位置**只用於畫塊本身**，背景網格
+        # 與凸包另用 game.positions()（見下方：網格只在滑動結束後重畫）。
         anim_map = {}
         if self.animating and self.anim_blocks:
             t = self.ease_out(self.anim_progress)
@@ -266,10 +266,12 @@ class RendererMixin:
                         follow_map[id(block)] = (r + dr, c + dc, q)
 
         cells = self.game.positions()
-        if anim_map:
-            moving = {mi_key(b) for b in self.anim_blocks}
-            cells = ((cells - moving)
-                     | {(r, c, q) for (r, c, q) in anim_map.values()})
+        # 背景網格只在「滑動結束後」重畫（與三角/方形同一套時序）：動畫
+        # 播放期間 block.location 仍是起點（commit_animation 才寫入終點），
+        # 所以直接拿 game.positions() 得到的就是滑動開始前的棋形。
+        # 不能把 anim_map 裡插值中的浮點位置混進 cells——橫豎層級是由塊的
+        # 邊導出的，2.4375 這種小數會每幀生成一批位置漂移的線（實測 36→44
+        # 條、7 個非半整數層級），看起來就是「有些線亂跑」。
         hull = view.board_hull(cells)
         # 背景層級由塊的邊導出（錯位態的橫豎格邊落在半整數層級上），
         # 只傳凸包的話畫出來的仍是對齊態的整數格，與塊對不齊

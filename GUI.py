@@ -521,6 +521,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.animation_duration = 300  # 毫秒
         self.animation_enabled = True          # 滑动动画（滑块移动/撤销重做滑动）
         self.selection_animation_enabled = True  # 选中动画（撤销/重做时高亮该步缝隙与滑块组）
+        # 拖拽接续：本次动画的起点偏移（跟随位移，格）与被缩短前的时长基准
+        self._drag_anim_origin = None
+        self._anim_duration_base = None
 
         # 移动元数据（从 move_selected_blocks 传递到 commit_animation）
         self._pending_move_info = None
@@ -1994,6 +1997,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         step_size = max(1, self.current_step)
         step = int(cells / step_size + 0.5) * step_size
 
+        # 拖拽接续：动画起点接到松手那刻的跟随位置，不再从起点重播一遍
+        # （否则松手瞬间整组会跳回原位再滑一次，见 animation._apply_drag_origin）
+        self._drag_anim_origin = (dr, dc)
+
         # 循环递减：从最大合法步长开始，逐次减少 step_size，找到第一个可接受的值（兜底）
         moved = False
         while step > 0:
@@ -2004,6 +2011,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 清除跟随状态（含 single-touch auto-deselect）
         self.clear_drag_follow()
+        # 未移动（或关了动画）时上面的 origin 没人消费，清掉避免污染下一次动画
+        self._drag_anim_origin = None
 
     def _move_merge_key(self):
         """当前移动所属「选中会话」标识；None = 不合并。
