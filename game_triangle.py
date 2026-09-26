@@ -143,7 +143,10 @@ def gap_index_range(gap_type: str, cells) -> range:
 
     cells：位置集合 (i, j, up)。候選範圍按 gap_rank 取，與 side_of 同一
     套判據；是否真的兩側非空由 is_valid_gap 複核。
+    空棋盤（手動構造清空後）沒有滑塊，直接回空 range，避免 min() 空集合。
     """
+    if not cells:
+        return range(0)
     if gap_type == 'h':
         jjs = [j for _, j, _ in cells]
         return range(min(jjs), max(jjs))

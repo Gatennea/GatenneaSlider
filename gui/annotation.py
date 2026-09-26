@@ -1732,22 +1732,28 @@ class AnnotationMixin:
     def _ann_build_tri_range(self, m):
         """三角可构造范围：当前棋形外扩一圈的三角环带，非斜坐标矩形。
 
-        返回 (lo_i, hi_i, lo_j, hi_j, s_up, s_down)：i/j 边界各外扩 1；
+        返回 (lo_i, hi_i, lo_j, hi_j, s_up, s_down)：i/j 下界各外扩 1；
         斜边按朝向分别外扩——▲ 片 i+j <= s_up、▼ 片 i+j <= s_down（完整
-        大三角 ▲ 上界 i+j<=k-1、▼ 上界 i+j<=k-2，各自外扩一圈 +1）。屏幕
-        上仍是正三角形环带，与矩形/米字「外扩一圈」视觉一致。空画布回退
-        标准三角外扩，保证有地方落第一颗。
+        大三角 ▲ 上界 i+j<=k-1、▼ 上界 i+j<=k-2，各自外扩一圈 +1）；hi
+        不截断（对角约束兜底），斜边层的端点（如 (7,-1)、(-1,7)）补进
+        范围。屏幕上仍是正三角形环带，与矩形/米字「外扩一圈」视觉一致。
+        空画布回退标准三角外扩，保证有地方落第一颗。
         """
         coords = getattr(self, '_ann_build_coords', None) or set()
         if not coords:
             return -1, m, -1, m, m, m - 1
         lo_i = min(p[0] for p in coords) - 1
-        hi_i = max(p[0] for p in coords) + 1
         lo_j = min(p[1] for p in coords) - 1
-        hi_j = max(p[1] for p in coords) + 1
-        s_up = max(p[0] + p[1] for p in coords if p[2]) + 1
-        s_down = max(p[0] + p[1] for p in coords if not p[2]) + 1
-        return lo_i, hi_i, lo_j, hi_j, s_up, s_down
+        s_all = max(p[0] + p[1] for p in coords)
+        ups = [p[0] + p[1] for p in coords if p[2]]
+        downs = [p[0] + p[1] for p in coords if not p[2]]
+        # 单朝向兜底：缺 ▲ 或 ▼ 片时，该朝向外扩 = 棋形整体边界 + 1（覆盖邻位）
+        s_up = (max(ups) if ups else s_all) + 1
+        s_down = (max(downs) if downs else s_all) + 1
+        # hi 不截断：斜边外扩层 i+j==s 的端点可达 i/j == s+1（如 (7,-1)、(-1,7)），
+        # 对角约束 i+j<=s 已限定范围；hi 取 s_up+1 保证遍历覆盖端点。
+        hi = s_up + 1
+        return lo_i, hi, lo_j, hi, s_up, s_down
 
     def _ann_build_status(self, m, n, step):
         """即时校验状态：返回 (text, is_ok)。
@@ -2016,34 +2022,11 @@ class AnnotationMixin:
                                      pygame.Rect(int(x), int(y),
                                                  max(1, int(cs)),
                                                  max(1, int(cs))), 1)
-        # 目标框：方形与求解器/调试面板同源（find_best_window，mod-aware）；
-        # 三角/米字没有求解器，用 validate_shape 回传的 anchor 换算画布坐标，
-        # anchor is None（非法）就不画。
-        if self.triangle_mode or self.mi_mode:
-            from gui.shape_validate import validate_shape
-            kind = 'triangle' if self.triangle_mode else 'mi'
-            params = (m,) if kind == 'triangle' else (m, n)
-            try:
-                _ok, _msg, anchor = validate_shape(
-                    kind, frozenset(self._ann_build_coords), params, step)
-            except Exception:
-                anchor = None
-            if anchor is not None:
-                dr, dc = anchor
-                if self.triangle_mode:
-                    view = self._tri_view()
-                    corners = [(dr, dc), (dr + m - 1, dc), (dr, dc + m - 1)]
-                    pts = [self.world_to_screen(*view.to_world(a, b))
-                           for (a, b) in corners]
-                    pygame.draw.polygon(self.screen, (120, 210, 255), pts, 2)
-                else:
-                    view = self._mi_view()
-                    corners = [(dr, dc), (dr + m - 1, dc),
-                               (dr + m - 1, dc + n - 1), (dr, dc + n - 1)]
-                    pts = [self.world_to_screen(*view.to_world(x, y))
-                           for (x, y) in corners]
-                    pygame.draw.polygon(self.screen, (120, 210, 255), pts, 2)
-        else:
+        # 目标框：仅方形画——与求解器/调试面板同源（find_best_window，
+        # mod-aware），是「该还原理的位置」；三角/米字没有求解器，
+        # anchor 只是类匹配偏移、画出的还原态轮廓对用户无意义
+        # （构造中位置漂移时框也不对），故不画。
+        if not (self.triangle_mode or self.mi_mode):
             region = _target_region_of(self._ann_build_coords, m, n, step)
             if region is not None:
                 r0, c0, (rh, cw) = region
