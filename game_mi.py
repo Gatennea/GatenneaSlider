@@ -594,7 +594,7 @@ class MiSliderMatrix:
 
         返回 (positions, reason)：
             positions: [[r, c, q], ...]，與選中滑塊順序一一對應；
-            reason: '' 成功；'no_selection' 無選中或方向不識別；
+            reason: '' 成功；'no_selection' 無選中；'bad_direction' 方向字母無效；
                     'collision' / 'disconnected' 見 _check_step。
         """
         selected = [b for b in self.blocks if b.be_opted]
@@ -602,7 +602,7 @@ class MiSliderMatrix:
         if not selected:
             return [], 'no_selection'
         if direction not in DIRECTIONS:
-            return [], 'no_selection'
+            return [], 'bad_direction'
         delta = DIRECTIONS[direction]
         non_sel = {mi_key(b) for b in non_selected}
         current = [list(b.location) for b in selected]

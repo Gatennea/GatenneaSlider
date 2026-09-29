@@ -96,10 +96,16 @@ def parse_args():
         args.remove('--no-http')
     if '--http-port' in args:
         idx = args.index('--http-port')
-        if idx + 1 < len(args):
+        if idx + 1 >= len(args):
+            print("参数错误: --http-port 缺少端口号（例如 --http-port 5050）")
+            sys.exit(2)
+        try:
             http_port = int(args[idx + 1])
-            args.pop(idx)
-            args.pop(idx)
+        except ValueError:
+            print(f"参数错误: --http-port 需要整数端口号，收到 {args[idx + 1]!r}")
+            sys.exit(2)
+        args.pop(idx)
+        args.pop(idx)
 
     if len(args) == 1:
         try:

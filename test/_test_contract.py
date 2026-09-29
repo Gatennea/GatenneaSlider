@@ -192,9 +192,9 @@ def run_shared_contract(name, ad):
         check(True, "（錨點所在側為空，跳過失敗原因檢查）")
     else:
         pos, reason = g.try_move_ex('?', 1)
-        check(pos == [] and reason == 'no_selection', "未知方向字母被拒")
+        check(pos == [] and reason == 'bad_direction', "未知方向字母被拒")
         pos, reason = g.try_move_ex(_other_dir(ad), 99)
-        check(reason in ('', 'collision', 'disconnected', 'no_selection'),
+        check(reason in ('', 'collision', 'disconnected', 'no_selection', 'bad_direction'),
               f"大步數移動回饋已知原因（{reason!r}）")
 
     # ---- is_solved：初始為真；整體平移後仍為真；缺一塊後為假 ----

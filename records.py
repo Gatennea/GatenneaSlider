@@ -56,11 +56,17 @@ class Records:
         self._series_cache = {}
 
     def save(self):
-        """将内存数据写入磁盘（游戏关闭时调用）"""
+        """将内存数据写入磁盘（游戏关闭时调用）。
+
+        先写同目录临时文件再 os.replace 原子替换：任何时刻磁盘上要么是旧的
+        完整文件、要么是新的完整文件，写一半崩溃不会损坏成绩。
+        """
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
-            with open(self.path, 'wb') as f:
+            tmp_path = self.path + '.tmp'
+            with open(tmp_path, 'wb') as f:
                 f.write(_xor(pickle.dumps(self.data)))
+            os.replace(tmp_path, self.path)
         except Exception as e:
             print(f"[Records] 保存失败: {e}")
 

@@ -91,7 +91,7 @@ check("無選中回 no_selection", not pos3 and reason3 == 'no_selection')
 g4 = TriangleSliderMatrix(4)
 g4.opt('h', 1, g4.block_at((0, 0, True)))
 pos4, reason4 = g4.try_move_ex('k', 1)
-check("未知方向回 no_selection", not pos4 and reason4 == 'no_selection')
+check("未知方向回 bad_direction", not pos4 and reason4 == 'bad_direction')
 
 # ================================================================ 六向都不破壞密鋪/連通
 print("=== 六向滑動保持密鋪與連通 ===")

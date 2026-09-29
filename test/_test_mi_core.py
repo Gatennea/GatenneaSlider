@@ -188,8 +188,12 @@ for d in ('w', 's', 'q', 'e', 'z', 'x'):
     if not ok:
         # game 層只認「有沒有選中」，方向必須由呼叫方按 GAP_DIRECTIONS 校驗
         check(f"{d} 不平行於 h 縫時不自行開綠燈", False, f"pos={p}")
-check("非 DIRECTIONS 方向回 no_selection",
-      g.try_move_ex('y', 1) == ([], 'no_selection'))
+# 显式选中后再试非法字母（无选中时任何方向都回 no_selection，测不出 bad_direction）；
+# 用全新 6×6 实例（上文 g 已被移动污染，opt 不再可靠）
+g2 = MiSliderMatrix(6, 6)
+g2.opt('h', 2, g2.block_at((0, 0, 'N')))
+check("非 DIRECTIONS 方向回 bad_direction",
+      g2.try_move_ex('y', 1) == ([], 'bad_direction'))
 g._clear_selection()
 check("無選中時回 no_selection", g.try_move_ex('d', 1) == ([], 'no_selection'))
 

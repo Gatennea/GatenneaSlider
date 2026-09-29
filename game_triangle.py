@@ -407,7 +407,7 @@ class TriangleSliderMatrix:
 
         返回 (positions, reason)：
             positions: [[i, j, up], ...]，與選中滑塊順序一一對應；
-            reason: '' 成功；'no_selection' 無選中或方向不識別；
+            reason: '' 成功；'no_selection' 無選中；'bad_direction' 方向字母無效；
                     'collision' / 'disconnected' 見 _check_step。
         """
         selected = [b for b in self.blocks if b.be_opted]
@@ -415,7 +415,7 @@ class TriangleSliderMatrix:
         if not selected:
             return [], 'no_selection'
         if direction not in DIRECTIONS:
-            return [], 'no_selection'
+            return [], 'bad_direction'
         delta = DIRECTIONS[direction]
         non_sel = {tri_key(b) for b in non_selected}
         current = [list(b.location) for b in selected]
@@ -478,7 +478,9 @@ class TriangleSliderMatrix:
                 if block is None:
                     return [], gap_type, line, 'no_block', 0
                 self.opt(gap_type, line, block)
-                for n in range(max(1, steps), 0, -1):
+                # steps<=0（手势未形成有效位移）时 range 为空，直接走失败分支，
+                # 不会「没想移动却偷偷走一格」
+                for n in range(steps, 0, -1):
                     positions, reason = self.try_move_ex(direction, n)
                     if positions:
                         return positions, gap_type, line, '', n

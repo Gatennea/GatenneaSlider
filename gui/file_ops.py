@@ -12,8 +12,16 @@
 
 import json
 import os
+import hashlib
 import pygame
 from puzzle_types import create_puzzle
+
+
+def _compute_checksum(data: dict) -> str:
+    """对 puzzle+history 序列化文本算 SHA256（排除 checksum 自身），存档完整性校验。"""
+    payload = {k: v for k, v in data.items() if k != 'checksum'}
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
 def _compact_json_dumps(data, indent=2, max_line_width=200):
@@ -436,6 +444,7 @@ class FileOpsMixin:
             data['puzzle']['type'] = 'mi'
         if getattr(self, 'save_readonly_flag', False):
             data['readonly'] = True
+        data['checksum'] = _compute_checksum(data)
         return data
 
     def _load_save_data(self, save_data: dict):
@@ -445,10 +454,21 @@ class FileOpsMixin:
         # 载入只读标志：带 readonly:true 的存档载入后为只读
         self._readonly = bool(save_data.get('readonly', False))
         version = int(save_data.get('version', 1))
+        # 完整性校验：带 checksum 的存档必须通过；旧存档无该字段则跳过
+        ck = save_data.get('checksum')
+        if ck and _compute_checksum(save_data) != ck:
+            raise ValueError('存档校验失败：文件可能已损坏或被修改')
         puzzle = save_data.get('puzzle', {})
         m = puzzle.get('m', 4)
         n = puzzle.get('n', 4)
         step = puzzle.get('step', 2)
+        # 结构/范围校验：防损坏或篡改的存档产生异常局面（卡死/无法滑动）
+        if not isinstance(m, int) or not isinstance(n, int) or not isinstance(step, int):
+            raise ValueError('存档参数类型错误')
+        if m < 1 or n < 1 or step < 1 or step >= max(m, n):
+            raise ValueError('存档参数超出合法范围')
+        if m * n > 250000:
+            raise ValueError('存档尺寸过大')
         kind = 'square'
         if version >= 2:
             kind = puzzle.get('type', 'square')

@@ -1656,6 +1656,7 @@ class EventsMixin:
                             'disconnected': ('disconnected', "滑动失败：移动后滑块会断开"),
                             'collision': ('collision', "滑动失败：移动后滑块会重叠"),
                             'no_selection': ('not_selected', "未选中滑块组"),
+                            'bad_direction': ('bad_direction', "无效的移动方向"),
                         }
                         r_code, r_msg = reason_map.get(
                             fail_reason, ('disconnected', f"移动不合法（{fail_reason}）"))

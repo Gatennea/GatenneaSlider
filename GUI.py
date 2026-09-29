@@ -59,7 +59,13 @@ def _gui_safe_font(name, size, bold=False):
     filepath = _font_files.get(name)
     if filepath and os.path.exists(filepath):
         try:
-            return pygame.font.Font(filepath, size)
+            f = pygame.font.Font(filepath, size)
+            if bold:
+                try:
+                    f.set_bold(True)
+                except Exception:
+                    pass
+            return f
         except Exception:
             pass
     # 其次尝试 SysFont（可能触发 pygame 注册表扫描 bug）
@@ -193,8 +199,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_n = n
         self.current_step = step
 
-        # 游戏逻辑对象
-        self.game = create_puzzle(m, n, step)
+        # 游戏逻辑对象（带 kind；命令行走位若参数非法，会在下方显式报错而非静默方形）
+        self.game = create_puzzle(m, n, step, kind=kind)
 
         # 幾何抽象（預設正方形；三角形將於 Stage B 替換為 TriangleBoardView）
         self.board_view = SquareBoardView(self.cell_size, self.gap_width)
@@ -662,11 +668,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 命令行显式指定形态：以命令行为准，覆盖上面恢复的上次局面
         # （kind='square' 是默认值，不覆盖，保持「记住上次关闭时的样子」）
         if kind == 'triangle':
-            self.new_triangle_puzzle(m, step)
+            if not self.new_triangle_puzzle(m, step):
+                raise ValueError(f"无效的三角形参数：k={m}, step={step}（需 k≥2 且 step<k）")
         elif kind == 'mi':
-            self.new_mi_puzzle(m, n, step)
+            if not self.new_mi_puzzle(m, n, step):
+                raise ValueError(f"无效的米字格参数：m={m}, n={n}, step={step}（需 m,n≥2 且 step<max）")
         elif kind == 'numbered':
-            self.new_puzzle(m, n, step, numbered=True)
+            if not self.new_puzzle(m, n, step, numbered=True):
+                raise ValueError(f"无效的谜题参数：m={m}, n={n}, step={step}（需 step<max）")
 
         # 一轮调试的起点标记（日志开着才有这一行，否则什么都不会写）
         op_log.log('session_start', form=type(self.game).__name__,
@@ -2378,12 +2387,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.zoom = self._fit_triangle_zoom()
             self.center_map()
         self.ensure_blocks_visible()
+        # 打乱难度门槛：随机重洗到上限后仍可能未达标，如实提示（不静默）
+        unmet = (self.shuffle_min_score is not None
+                 and self.game.compute_score() > self.shuffle_min_score)
         if self.game_mode == 'timed':
             self._timer_enter_ready()
             self.macro_notify_msg = f"已打乱：{attempts}步（空格开始计时）"
         else:
             self._timer_cancel()
             self.macro_notify_msg = f"已打乱：{attempts}步（练习模式）"
+        if unmet:
+            self.macro_notify_msg += "；本次随机打乱未达难度门槛，可再打乱一次"
         self.macro_notify_timer = 120
 
     def reset_puzzle(self):

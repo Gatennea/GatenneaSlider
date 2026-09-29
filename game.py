@@ -29,6 +29,9 @@ class Block:
     属性：
         location: list[int] - 滑块的坐标位置 [行, 列]
         be_opted: bool - 是否被选中（用于高亮显示）
+
+    注意：location 是可变的（commit_move 原地改写），而 __hash__/__eq__ 基于
+    location——禁止把 Block 直接作为 set/dict 的键，一律用 tuple(b.location)。
     """
     
     __slots__ = ('location', 'be_opted', 'number')
@@ -464,6 +467,7 @@ class SliderMatrix:
             (positions, reason)
             - positions: 最终位置列表 [(row, col), ...]；失败为空列表
             - reason: '' 成功；'no_selection' 无选中滑块；
+                      'bad_direction' 方向字母无效；
                       'collision' 移动后与未选中滑块重叠；
                       'disconnected' 移动后整体断开（失去单一连通）
         """
@@ -476,7 +480,7 @@ class SliderMatrix:
         non_selected_positions = set(tuple(b.location) for b in non_selected)
         delta_map = DIRECTIONS
         if direction not in delta_map:
-            return [], 'no_selection'
+            return [], 'bad_direction'
         delta = delta_map[direction]
 
         # 从当前位置开始，逐步预测
@@ -706,20 +710,12 @@ class SliderMatrix:
         返回：
             str - 地图字符串（每行一个字符串，用换行符分隔）
         """
-        bounds = self.get_boundaries()
-        min_row, max_row = bounds['min_row'], bounds['max_row']
-        min_col, max_col = bounds['min_col'], bounds['max_col']
-        
-        rows = []
-        for row in range(min_row, max_row + 1):
-            line = []
-            for col in range(min_col, max_col + 1):
-                # 检查该位置是否有滑块
-                has_block = any(block.location == [row, col] for block in self.blocks)
-                line.append('#' if has_block else '_')
-            rows.append(''.join(line))
-        
-        return '\n'.join(rows)
+        # 直接用 0-1 矩阵生成（O(格数)），不再对每格遍历全部滑块（O(块×格)）
+        self.update_matrix()
+        if not self.matrix:
+            return ''
+        return '\n'.join(''.join('#' if v else '_' for v in row)
+                         for row in self.matrix)
     
     def import_map(self, map_str: str) -> bool:
         """

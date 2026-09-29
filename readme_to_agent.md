@@ -107,7 +107,7 @@ curl http://127.0.0.1:5050/status
 
 `try_move` 只做「純邏輯預測」不修改狀態 → GUI 決定播放動畫後 → `commit_move` → `save_snapshot`。`undo/redo` 走快照（`{matrix, bounds, move_info}`）。
 
-- `game.try_move_ex(direction, step) -> (positions, reason)`：同 `try_move` 但附失敗原因 `''`/`'no_selection'`/`'collision'`（重疊）/`'disconnected'`（斷開，移動後失去單一連通）；`try_move` 為其薄包裝。
+- `game.try_move_ex(direction, step) -> (positions, reason)`：同 `try_move` 但附失敗原因 `''`/`'no_selection'`（無選中）/`'bad_direction'`（方向字母無效）/`'collision'`（重疊）/`'disconnected'`（斷開，移動後失去單一連通）；`try_move` 為其薄包裝。
 - GUI 層 `move_selected_blocks` 失敗時在右下角浮窗提示「滑動失敗：移動後滑塊會斷開/重疊」。
 
 ---
