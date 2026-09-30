@@ -695,8 +695,10 @@ def solve_corner_gap(coords, m, n, step, verbose=False, hole=None,
             p_t = (nv, br)               # 转置后凸起位置（无 setup 时）
             if br == 0:
                 g2 = build_game(gcoords(vg), mv, nv)
-                a2 = next((blk for blk in g2.blocks
-                           if tuple(blk.location) == tuple(vp0)), None)
+                a2 = None
+                if couple and vp0 is not None:
+                    a2 = next((blk for blk in g2.blocks
+                               if tuple(blk.location) == tuple(vp0)), None)
                 for _ in range(step):
                     ok1, a5 = _capture_apply(g2, ('v', nv - 1, 'right', 's'),
                                              step)
@@ -809,6 +811,48 @@ def solve_gap_any(coords, m, n, step, verbose=False):
 
 
 _ROT_TO_TOP = {'U': 'id', 'L': 'cw', 'R': 'ccw', 'D': 'r180'}
+
+
+def _couple_orbit_solve(coords, m, n, step, h, p, kind, verbose=False):
+    """D4 轨道 couple 求解：单缺口链主解读失败时，对轨道成员逐一试。
+
+    数学根据同 solve_gap_any：D4 是游戏规则的完全同构群。主解读（id 成员）
+    的凸起姿态可能恰是链的盲区（如角缺口凸起挂下缘列 0），换轨道成员
+    （反射/旋转）后即落回标准型。失败07终局实证：角链拒（列0），fh 架
+    下补缺链 16 步可解。
+
+    kind='CORNER' → solve_corner_gap couple；否则 solve_edge_gap couple。
+    成功者动作经逆变换映射回原架，并回放验收「洞 h 被填」。
+    返回 (世界动作5元组, stats) 或 (None, stats)。
+    """
+    coords = frozenset(coords)
+    seen = set()
+    reasons = []
+    for tname in _D4_ORDER:
+        tc = frozenset(_tf_pt(tname, q, m, n) for q in coords)
+        tm, tn = _tf_dims(tname, m, n)
+        th = _tf_pt(tname, tuple(h), m, n)
+        tp = _tf_pt(tname, tuple(p), m, n)
+        key = _orbit_key(tc, tm, tn, step)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        if kind == 'CORNER':
+            acts, st = solve_corner_gap(tc, tm, tn, step, hole=th, anchor=tp,
+                                        require_solved=False, verbose=verbose)
+        else:
+            acts, st = solve_edge_gap(tc, tm, tn, step, hole=th, anchor=tp,
+                                      require_solved=False, verbose=verbose)
+        if acts is not None and st.get('solved'):
+            wall = [_tf_act(_INV_T[tname], a, tm, tn) for a in acts]
+            g = build_game(coords, m, n)
+            if _replay_apply(g, wall, m, n, step) and tuple(h) in gcoords(g):
+                return wall, dict(st, orbit=tname)
+            reasons.append('%s架映射回放失败' % tname)
+            continue
+        reasons.append(st.get('reason', st.get('error', '受阻')))
+    return None, {'reason': 'couple轨道全败：%s'
+                            % '；'.join(dict.fromkeys(reasons))}
 
 # 换边等价表达：(side, dir) -> (对侧, 同向)。同缝异侧同向移动与
 # 原侧反向移动的相对位移相同（差一个整体平移），is_solved 不钉死
@@ -1479,11 +1523,23 @@ def _vacancy_couple_hook(gap_only):
             return None, {'reason': 'couple坐标无效'}
         edge = _edge_of(h, _reg[0], _reg[1], _reg[2][0], _reg[2][1])
         if edge in ('L', 'R', 'U', 'D'):
-            return solve_edge_gap(coords, m, n, step, hole=h, anchor=p,
-                                  require_solved=False)
+            acts, st = solve_edge_gap(coords, m, n, step, hole=h, anchor=p,
+                                      require_solved=False)
+            if acts is None:
+                # 主解读盲区（如凸起挂列 0）→ D4 轨道成员逐一试
+                acts, st2 = _couple_orbit_solve(coords, m, n, step, h, p, 'EDGE')
+                st = st2 if acts is None else st2
+            return acts, st
         if edge == 'CORNER':
-            return solve_corner_gap(coords, m, n, step, hole=h, anchor=p,
-                                    require_solved=False)
+            acts, st = solve_corner_gap(coords, m, n, step, hole=h, anchor=p,
+                                        require_solved=False)
+            if acts is None:
+                # 失败07终局实证：角链拒（凸起挂下缘列0），轨道 fh 架下
+                # 补缺链可解 → 主解读失败走 D4 轨道兜底
+                acts, st2 = _couple_orbit_solve(coords, m, n, step, h, p,
+                                                'CORNER')
+                st = st2 if acts is None else st2
+            return acts, st
         if gap_only:
             return None, {'reason': '非缺口（封闭孔洞归填洞宏）'}
         return solve_single_void(coords, m, n, step, hole=h, anchor=p,
