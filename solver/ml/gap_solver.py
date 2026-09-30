@@ -38,6 +38,44 @@ from solver.ml import view_rotate                                          # noq
 
 _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
 
+# 引擎拒绝原因 → 中文（未收录的原样透出）
+_ENG_WHY = {'collision': '碰撞', 'disconnected': '连通断裂',
+            'bad_direction': '方向无效'}
+_SEG_CN = {'seal': '封壳', 'inner': '内部共轭', 'unseal': '拆壳'}
+
+
+def _why_cn(why):
+    return _ENG_WHY.get(why, why or '非法')
+
+
+def _checksum(data):
+    """与 gui/file_ops._compute_checksum 完全一致（存档完整性校验）。"""
+    import hashlib
+    payload = {k: v for k, v in data.items() if k != 'checksum'}
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                      separators=(',', ':'))
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _fail_reason(tr, fallback='受阻'):
+    """trace dict → 填洞宏「需双层」风格的失败原因。
+
+    tr 字段：seg(段名)/index(段内步序)/action(被拒动作4元组或None)/why。
+    action=None 表示非单步被拒（如动作全通但洞未封）。
+    """
+    if not tr:
+        return fallback
+    seg = tr.get('seg', '?')
+    why = tr.get('why', '受阻')
+    act = tr.get('action')
+    if seg == 'verify':
+        return '链走通但未还原(假填洞?)'
+    if act is None:
+        return '%s：%s' % (_SEG_CN.get(seg, seg), why)
+    return '%s第%d步 %s 被拒(%s)' % (_SEG_CN.get(seg, seg),
+                                     tr.get('index', 0) + 1,
+                                     '(%s,%s,%s,%s)' % act[:4], why)
+
 
 # ---------------------------------------------------------------------------
 # 几何判定
@@ -108,11 +146,58 @@ def _apply4(g, a4, step):
     return _capture_apply(g, a4, step)
 
 
-def _seal(vg, vh, step):
+def _apply_dbg(g, a4, step):
+    """调试驱动单步：与 _apply4/_capture_apply 选块、提交语义完全一致，
+    另返回 (引擎拒绝原因, 移动前选中块坐标列表) 供停步报告与存档。
+
+    返回 (ok, 动作5元组, why, moved_pre)。
+    """
+    gap, line, side, d = a4[:4]
+    rep = a4[4] if len(a4) == 5 else None
+    b = g.get_boundaries()
+    if gap == 'h' and not (b['min_row'] <= line < b['max_row']):
+        return False, None, '缝线越界', []
+    if gap == 'v' and not (b['min_col'] <= line < b['max_col']):
+        return False, None, '缝线越界', []
+    tgt = None
+    if rep is not None:
+        for blk in g.blocks:
+            if tuple(blk.location) == tuple(rep):
+                tgt = blk
+                break
+    if tgt is None:                      # = _Runner._side_first_block 语义
+        for blk in g.blocks:
+            r, c = blk.location
+            if gap == 'h':
+                if (side == 'above' and r <= line) or \
+                        (side == 'below' and r > line):
+                    tgt = blk
+                    break
+            elif (side == 'left' and c <= line) or \
+                    (side == 'right' and c > line):
+                tgt = blk
+                break
+    if tgt is None:
+        return False, None, '侧内无块', []
+    g.opt(gap, line, tgt)
+    moved_pre = [list(blk.location) for blk in g.blocks if blk.be_opted]
+    final, why = g.try_move_ex(d, step)
+    if not final:
+        for blk in g.blocks:
+            blk.be_opted = False
+        return False, None, _why_cn(why), []
+    rep_pre = tuple(tgt.location)
+    g.commit_move(final)
+    return True, (gap, line, side, d, rep_pre), '', moved_pre
+
+
+def _seal(vg, vh, step, trace=None):
     """在 view 局面上封壳。成功 → (封壳动作5元组列表, 新局面, 凸起新位置)。
 
     候选逐个在干净副本上试：全部动作合法 + 洞四邻全块 = 封壳成功。
     凸起位置用块对象引用跟踪（commit 改 location，读实例即得）。
+    trace 为 dict 时记录最后一个候选的失败细节：
+    seg/cand/index/action/why/prefix(该候选已成功的动作)。
     """
     hr = vh[0]
     # 原凸起块 = 甩料前窗外且不在窗口列范围的单块？这里取「行 < 0 或列越界」
@@ -124,7 +209,7 @@ def _seal(vg, vh, step):
         if r < 0 or c < 0 or r > b0['max_row'] or c > b0['max_col']:
             pblk = blk
             break
-    for acts, _n in _seal_candidates(hr, step):
+    for ci, (acts, _n) in enumerate(_seal_candidates(hr, step)):
         g2 = build_game(gcoords(vg), vg.m, vg.n)
         # 对应凸起块（同初始坐标）
         p2 = None
@@ -135,15 +220,25 @@ def _seal(vg, vh, step):
                     break
         done = []
         ok = True
-        for a4 in acts:
-            okk, a5 = _apply4(g2, a4, step)
+        for i, a4 in enumerate(acts):
+            if trace is None:
+                okk, a5 = _apply4(g2, a4, step)
+                why = ''
+            else:
+                okk, a5, why, _mv = _apply_dbg(g2, a4, step)
             if not okk:
                 ok = False
+                if trace is not None:
+                    trace.update(seg='seal', cand=ci, index=i, action=a4,
+                                 why=why, prefix=list(done))
                 break
             done.append(a5)
         if ok and _hole_sealed(g2, vh):
             vp = tuple(p2.location) if p2 is not None else None
             return done, g2, vp
+        if ok and trace is not None:
+            trace.update(seg='seal', cand=ci, index=-1, action=None,
+                         why='动作全通但洞未封', prefix=list(done))
     return None
 
 
@@ -199,7 +294,7 @@ def _find_bump(vg):
     return None
 
 
-def _bumpcol_chain(vg, vh, step, verbose=False):
+def _bumpcol_chain(vg, vh, step, verbose=False, trace=None):
     """凸起与洞同列（规范型窗外端点）时的「专列」全链。
 
     规范型：洞 (hr,0) 左边缘，凸起 (−1,0)（上端）或 (mv,0)（下端）。
@@ -237,7 +332,7 @@ def _bumpcol_chain(vg, vh, step, verbose=False):
             unseal4 = [('v', -1, 'left', 'w', None)] * k + \
                       [('h', j, 'above', 'd', None)]
             wall, stats = _run_chain(vg, seal4, inner4, unseal4,
-                                     p0, step)
+                                     p0, step, trace=trace)
             if wall is not None:
                 if verbose:
                     print('  专列(上端)：j=%d k=%d' % (j, k))
@@ -255,7 +350,7 @@ def _bumpcol_chain(vg, vh, step, verbose=False):
             unseal4 = [('v', -1, 'left', 's', None)] * k + \
                       [('h', jp - 1, 'below', 'd', None)]
             wall, stats = _run_chain(vg, seal4, inner4, unseal4,
-                                     p0, step)
+                                     p0, step, trace=trace)
             if wall is not None:
                 if verbose:
                     print('  专列(下端)：j\'=%d k=%d' % (jp, k))
@@ -263,11 +358,12 @@ def _bumpcol_chain(vg, vh, step, verbose=False):
     return None, '专列：候选全败'
 
 
-def _run_chain(vg, seal4, inner4, unseal4, p0, step):
+def _run_chain(vg, seal4, inner4, unseal4, p0, step, trace=None):
     """在副本上执行 封壳→内部→拆壳 三段（rep 动态跟踪凸起）。
 
     全部动作合法且最终 solved 才成功。
     返回 (view 动作5元组列表, stats) 或 (None, None)。
+    trace 为 dict 时记录首个失败：seg/index/action/why/prefix(已成功动作)。
     """
     g2 = build_game(gcoords(vg), vg.m, vg.n)
     p2 = None
@@ -281,13 +377,23 @@ def _run_chain(vg, seal4, inner4, unseal4, p0, step):
         out = []
         for a4 in acts:
             a = a4 if len(a4) == 5 else a4 + (tuple(p2.location),)
-            okk, a5 = _apply4(g2, a, step)
+            if trace is None:
+                okk, a5 = _apply4(g2, a, step)
+                why = ''
+            else:
+                okk, a5, why, _mv = _apply_dbg(g2, a, step)
             if not okk:
+                if trace is not None:
+                    trace.update(seg=name, index=len(out), action=a4,
+                                 why=why, prefix=segs + out)
                 return None, None
             out.append(a5)
         segs += out
         nseg[name] = len(out)
     if not g2.is_solved():
+        if trace is not None:
+            trace.update(seg='verify', index=-1, action=None,
+                         why='链走通但未还原', prefix=list(segs))
         return None, None
     return segs, nseg
 
@@ -309,7 +415,7 @@ def _transpose_wall(wall5):
             for g, ln, sd, d, rp in wall5]
 
 
-def _corner_chain(vg, step, verbose=False):
+def _corner_chain(vg, step, verbose=False, trace=None):
     """角缺口全链（前提：已归一化，角洞在 view (0,0)）。
 
     凸起须为窗外单块且贴在下边缘：(mv, c_b)，c_b ≡ 0 (mod step)。
@@ -354,7 +460,8 @@ def _corner_chain(vg, step, verbose=False):
                ('v', 1 - s, 'left', 'w', None),
                ('h', -1, 'above', 'd', None)] + \
               [('v', 0, 'right', 's', None)] * (k - 1)
-    wall, stats = _run_chain(vg, seal4, inner4, unseal4, (pr, pc), s)
+    wall, stats = _run_chain(vg, seal4, inner4, unseal4, (pr, pc), s,
+                             trace=trace)
     if wall is None:
         return None, '角缺口：链被引擎拒绝或未还原'
     if verbose:
@@ -393,8 +500,18 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
         return None, {'reason': '角归一化异常 %s' % (vh,), 'rot': name}
     vg = build_game(vc, mv, nv)
 
+    def _to_world(a):
+        gap, line, side, d, rep = a
+        gap2, line2, side2, d2 = view_rotate.act_to_world(
+            name, gap, line, side, d, m, n)
+        line2 = line2 + (r0 if gap2 == 'h' else c0)
+        rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
+        return (gap2, line2, side2, d2, (rr + r0, cc + c0))
+
     # ---- 角链：先直接解；失败且凸起在右边缘偶行时，转置视角重试 ----
-    res = _corner_chain(vg, step, verbose=verbose)
+    tr1 = {}
+    res = _corner_chain(vg, step, verbose=verbose, trace=tr1)
+    last = (tr1, res[1], False)          # (trace, 失败原因, 是否转置尝试)
     if res[0] is None:
         outs = [blk for blk in vg.blocks
                 if blk.location[0] < 0 or blk.location[0] >= mv
@@ -405,21 +522,22 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
                             nv, mv)
             if verbose:
                 print('  直接角链未成(%s)，转置重试' % res[1])
-            res2 = _corner_chain(vt, step, verbose=verbose)
+            tr2 = {}
+            res2 = _corner_chain(vt, step, verbose=verbose, trace=tr2)
             if res2[0] is not None:
                 res = (_transpose_wall(res2[0]),
                        dict(res2[1], transposed=True))
+            else:
+                last = (tr2, '%s；转置重试:%s' % (res[1], res2[1]), True)
     if res[0] is None:
-        return None, {'reason': res[1], 'rot': name}
+        tr, reason, transposed = last
+        if transposed:
+            pre = [_to_world(_transpose_wall(a))
+                   for a in tr.get('prefix', [])]
+        else:
+            pre = [_to_world(a) for a in tr.get('prefix', [])]
+        return None, {'reason': reason, 'rot': name, 'fail_world': pre}
     wall5, cstats = res
-
-    def _to_world(a):
-        gap, line, side, d, rep = a
-        gap2, line2, side2, d2 = view_rotate.act_to_world(
-            name, gap, line, side, d, m, n)
-        line2 = line2 + (r0 if gap2 == 'h' else c0)
-        rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
-        return (gap2, line2, side2, d2, (rr + r0, cc + c0))
 
     wall = [_to_world(a) for a in wall5]
     g = build_game(coords, m, n)
@@ -433,6 +551,7 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
              'secs': round(time.time() - t0, 3)}
     if not solved_world:
         stats['reason'] = '角链回放未还原'
+        stats['fail_world'] = wall if ok else []
         return None, stats
     return wall, stats
 
@@ -458,7 +577,7 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
     if edge == 'INNER':
         return None, {'reason': '封闭孔洞（应交填洞宏）'}
     if edge == 'CORNER':
-        return None, {'reason': '角缺口（双层封壳，尚未接入）'}
+        return None, {'reason': '角缺口（应走 solve_corner_gap）'}
 
     # ---- 旋转归一化：缺口 → 左边缘 ----
     name = _ROT_FOR_EDGE[edge]
@@ -478,10 +597,11 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
         return (gap2, line2, side2, d2, (rr + r0, cc + c0))
 
     # ---- 封壳 ----（先试「专列」：凸起与洞同列的窗外端点，2-6-6 型）
+    tr = {}                              # 最后一次失败的细节（last-wins）
     pblk0 = _find_bump(vg)
     if pblk0 is not None and pblk0.location[1] == 0 and \
             pblk0.location[0] in (-1, mv):
-        res = _bumpcol_chain(vg, vh, step, verbose=verbose)
+        res = _bumpcol_chain(vg, vh, step, verbose=verbose, trace=tr)
         if res[0] is not None:
             wall5, bstats = res
             wall = [_to_world(a) for a in wall5]
@@ -496,39 +616,52 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
                      'secs': round(time.time() - t0, 3)}
             if not solved_world:
                 stats['reason'] = '专列回放未还原'
+                stats['fail_world'] = wall if ok else []
                 return None, stats
             return wall, stats
         if verbose:
             print('  专列未成(%s)，回常规封壳' % res[1])
-    sealed = _seal(vg, vh, step)
+    sealed = _seal(vg, vh, step, trace=tr)
     if sealed is None:
-        return None, {'reason': '封壳受阻（候选全败）', 'edge': edge}
+        return None, {'reason': _fail_reason(tr, '封壳受阻（候选全败）'),
+                      'edge': edge,
+                      'fail_world': [_to_world(a)
+                                     for a in tr.get('prefix', [])]}
     seal_acts, vg, vp = sealed
     if verbose:
         print('  封壳 %d 步，凸起 -> %s' % (len(seal_acts), vp))
 
     # ---- 内部共轭（couple 显式指定，本质校验绕窗口）----
     if vp is None:
-        return None, {'reason': '封壳后凸起丢失'}
+        return None, {'reason': '封壳后凸起丢失', 'edge': edge,
+                      'fail_world': [_to_world(a) for a in seal_acts]}
     iacts, istats = _solve_couple(gcoords(vg), mv, nv, step,
                                   vh, vp, keep_partial=True)
-    if iacts is None:
+    if iacts is None or istats.get('partial'):
+        # partial = 填洞宏 _Runner 撞停（如「A段受阻(需双层)」）：
+        # 原因直接透出，已走前缀 = 封壳 + 部分内部动作
         return None, {'reason': '内部共轭失败: %s' % istats.get('reason', '?'),
+                      'edge': edge,
                       'inner': {k: v for k, v in istats.items()
-                                if k not in ('reason', 'partial')}}
+                                if k not in ('reason', 'partial')},
+                      'fail_world': [_to_world(a) for a in
+                                     list(seal_acts) + list(iacts or [])]}
     if verbose:
         print('  内部共轭 %d 步 %s' % (len(iacts), istats))
 
     # 内部共轭动作回放进 vg（solve_single_void 只吃坐标不回写局面）
     if not _replay_apply(vg, iacts, mv, nv, step):
-        return None, {'reason': '内部共轭回放失败'}
+        return None, {'reason': '内部共轭回放失败', 'edge': edge,
+                      'fail_world': [_to_world(a) for a in seal_acts]}
 
     # ---- 拆壳（封壳逆序宏，在已填洞局面上执行）----
     unseal_acts = []
-    for a4 in reversed(seal_acts):
+    for ui, a4 in enumerate(reversed(seal_acts)):
         a_inv = (a4[0], a4[1], a4[2], _INV[a4[3]])
-        okk, a5 = _apply4(vg, a_inv, step)
+        okk, a5, why, _mv = _apply_dbg(vg, a_inv, step)
         if not okk:
+            tr.update(seg='unseal', index=ui, action=a_inv, why=why,
+                      prefix=list(seal_acts) + list(iacts) + list(unseal_acts))
             break
         unseal_acts.append(a5)
     solved = vg.is_solved()
@@ -548,7 +681,11 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
              'view_solved': solved, 'solved': solved_world,
              'secs': round(time.time() - t0, 3)}
     if not solved_world:
-        stats['reason'] = '回放未还原' if not ok else '回放通但未还原'
+        stats['reason'] = ('回放通但未还原' if ok
+                           else '回放未还原于第?步')
+        if not ok:
+            stats['reason'] = '全链回放失败: %s' % _fail_reason(tr, '未知')
+        stats['fail_world'] = wall if ok else []
     return wall, stats
 
 
@@ -600,17 +737,64 @@ def solve_gap(coords, m, n, step):
                   'route': 'fill_macro'}
 
 
+def save_failure_archive(coords, m, n, step, wall5, tag):
+    """把失败案例存成游戏可读档 save/补缺失败-<tag>.json。
+
+    wall5 = 世界坐标动作5元组前缀（全部合法、停在被拒那一步之前；
+    空列表 = 一步未走就被结构性拒绝，如角缺口凸起列 0）。
+    快照序列 = 初始状态 + 每步成功后的状态：游戏载入后停在失败那一刻
+    （history_index 指向末条），可逐步撤销回初始，也可直接按补缺宏观察。
+    格式与 gui/file_ops._build_save_data 一致（含 SHA256 校验和）。
+    返回文件名；写入失败返回 None。
+    """
+    g = build_game(frozenset(coords), m, n)
+    g.update_matrix()
+    snaps = [{'matrix': [row[:] for row in g.matrix],
+              'bounds': dict(g.matrix_bounds),
+              'move_info': None, 'moves': [], 'steps': 0, 'step_total': 0}]
+    total = 0
+    for a5 in wall5:
+        ok, _a, _w, moved = _apply_dbg(g, a5, step)
+        if not ok:
+            break
+        total += 1
+        mi = {'gap_type': a5[0], 'gap_line': a5[1], 'side': a5[2],
+              'direction': a5[3], 'step': step, 'moved_positions': moved}
+        g.update_matrix()
+        snaps.append({'matrix': [row[:] for row in g.matrix],
+                      'bounds': dict(g.matrix_bounds),
+                      'move_info': mi, 'moves': [mi], 'steps': 1,
+                      'step_total': total})
+    data = {'version': 1,
+            'puzzle': {'m': m, 'n': n, 'step': step},
+            'step_count': total,
+            'history': {'history_index': len(snaps) - 1,
+                        'snapshots': snaps}}
+    data['checksum'] = _checksum(data)
+    fname = '补缺失败-%s.json' % tag
+    path = os.path.join(_ROOT, 'save', fname)
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        return fname
+    except OSError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # GUI 求解器入口（与 SOLVER_ALGORITHMS 统一签名）
 # ---------------------------------------------------------------------------
 def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
-                    **kwargs):
+                    stop_on_fail=False, **kwargs):
     """补缺宏（GUI 入口）：单边缺口 → 封壳+内部共轭+拆壳；其余交填洞宏。
 
     返回协议与 solve_fill_macro 一致：
     · 成功 → (actions4, rep_cells)；
     · 失败 → {'type': 'fill_fail', 'reason', 'solver_name': '补缺宏'}；
     · 填洞宏侧结果原样透传（补 solver_name）。
+    stop_on_fail=True：缺口分支失败时停在那一步，不回退填洞宏——reason 为
+    填洞宏「需双层」风格的细节（段+步+动作+引擎原因），并附 fail_world
+    （已成功的世界动作前缀，供 save_failure_archive 落盘复现）。
     """
     coords = frozenset(tuple(b.location) for b in game.blocks)
     m, n = game.m, game.n
@@ -639,6 +823,11 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
         # 缺口分支失败/未复原（如凸起与主体粘连）：回退填洞宏兜底
         gap_why = (stats.get('reason', stats.get('error', '未知'))
                    if wall is None else '回放通但未还原（凸起粘连?）')
+        if stop_on_fail:
+            print('[补缺宏] 失败停步：%s' % gap_why)
+            return {'type': 'fill_fail', 'reason': gap_why,
+                    'solver_name': '补缺宏',
+                    'fail_world': stats.get('fail_world') or []}
         print('[补缺宏] 缺口分支未成（%s），回退填洞宏' % gap_why)
     # 封闭孔洞/多洞/兜底：填洞宏主场，透传
     res = solve_fill_macro(game, step, cancel_check=cancel_check,
