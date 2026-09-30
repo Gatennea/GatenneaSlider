@@ -29,8 +29,8 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noqa: E402
-                                  solve_single_void, _capture_apply,
-                                  _replay_apply)
+                                  solve_single_void, solve_fill_macro,
+                                  _capture_apply, _replay_apply, _Runner)
 from solver.ml import view_rotate                                          # noqa: E402
 
 _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
@@ -147,6 +147,45 @@ def _seal(vg, vh, step):
 # ---------------------------------------------------------------------------
 # 顶层：单个边缺口
 # ---------------------------------------------------------------------------
+def _solve_couple(coords, m, n, step, h, p, keep_partial=True):
+    """couple 内部共轭：流程与 solve_single_void 相同，但 couple 校验用
+    本质判定（h=空位、p=块、同 mod），不经窗口——封壳料条会把
+    find_best_window 的窗口撑得漂移，凸起可能被圈进窗内而遭误杀。
+    （fill_macro 本体不动，此处仅绕过其入口预检，_Runner 语义完全一致。）
+    """
+    coords = frozenset(coords)
+    if h in coords or p not in coords:
+        return None, {'reason': 'couple坐标无效（hole须为空位、anchor须为块）'}
+    if (h[0] - p[0]) % step or (h[1] - p[1]) % step:
+        return None, {'reason': '洞凸不同mod'}
+    (r0, c0, _wh), _ov, _holes, _out = window_of(coords, m, n, step)
+    name = view_rotate.choose_rot(p[0] - r0, p[1] - c0, m, n)
+    if name == 'id':
+        g = build_game(coords, m, n)
+        return _Runner(g, m, n, step, h=tuple(h), p=tuple(p),
+                       require_solved=False,
+                       keep_partial=keep_partial).run()
+    vc = frozenset(view_rotate.rotate_xy(name, r - r0, c - c0, m, n)
+                   for r, c in coords)
+    mv, nv = view_rotate.view_dims(name, m, n)
+    vg = build_game(vc, mv, nv)
+    vh = view_rotate.rotate_xy(name, h[0] - r0, h[1] - c0, m, n)
+    vp = view_rotate.rotate_xy(name, p[0] - r0, p[1] - c0, m, n)
+    acts, stats = _Runner(vg, mv, nv, step, h=vh, p=vp,
+                          require_solved=False,
+                          keep_partial=keep_partial).run()
+    if acts is None:
+        return None, dict(stats, rot=name)
+    wacts = []
+    for gap, line, side, d, rep in acts:
+        gap2, line2, side2, d2 = view_rotate.act_to_world(
+            name, gap, line, side, d, m, n)
+        line2 = line2 + (r0 if gap2 == 'h' else c0)
+        rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
+        wacts.append((gap2, line2, side2, d2, (rr + r0, cc + c0)))
+    return wacts, dict(stats, rot=name)
+
+
 def solve_edge_gap(coords, m, n, step, verbose=False):
     """单边缺口全链求解：封壳 → 内部共轭(couple) → 拆壳。
 
@@ -186,15 +225,15 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
     if verbose:
         print('  封壳 %d 步，凸起 -> %s' % (len(seal_acts), vp))
 
-    # ---- 内部共轭（couple 显式指定）----
+    # ---- 内部共轭（couple 显式指定，本质校验绕窗口）----
     if vp is None:
         return None, {'reason': '封壳后凸起丢失'}
-    iacts, istats = solve_single_void(gcoords(vg), mv, nv, step,
-                                      hole=vh, anchor=vp, keep_partial=True)
+    iacts, istats = _solve_couple(gcoords(vg), mv, nv, step,
+                                  vh, vp, keep_partial=True)
     if iacts is None:
-        return None, {'reason': '内部共轭失败',
+        return None, {'reason': '内部共轭失败: %s' % istats.get('reason', '?'),
                       'inner': {k: v for k, v in istats.items()
-                                if k != 'reason'}}
+                                if k not in ('reason', 'partial')}}
     if verbose:
         print('  内部共轭 %d 步 %s' % (len(iacts), istats))
 
@@ -244,9 +283,10 @@ def solve_inner(coords, m, n, step, hole, anchor):
 
     与 solve_fill_macro 的区别：显式 couple，不做自动识别（多凸起/料条
     场景自动识别会选错 couple 或多走步）。成功 = 洞格被填（不要求整盘）。
+    couple 校验用本质判定（不受窗口漂移影响），见 _solve_couple。
     """
-    acts, stats = solve_single_void(coords, m, n, step, hole=hole,
-                                    anchor=anchor, keep_partial=True)
+    acts, stats = _solve_couple(coords, m, n, step, hole, anchor,
+                                keep_partial=True)
     if acts is None:
         return None, stats
     g = build_game(frozenset(coords), m, n)
@@ -259,7 +299,11 @@ def solve_inner(coords, m, n, step, hole, anchor):
 
 
 def solve_gap(coords, m, n, step):
-    """顶层分流（步骤5 雏形）：封闭孔洞 → 填洞宏；边缺口 → 本模块。"""
+    """顶层分流：封闭孔洞 → 填洞宏；边缺口 → 本模块。
+
+    返回 (动作5元组列表, stats)；fill_macro 侧结果原样透传为
+    ((actions4, reps), stats)。
+    """
     coords = frozenset(coords)
     g = build_game(coords, m, n)
     if g.is_solved():
@@ -273,11 +317,56 @@ def solve_gap(coords, m, n, step):
     # 其余（封闭孔洞/多洞/角缺口）交填洞宏驱动
     from solver.ml.fill_macro import solve_fill_macro
     res = solve_fill_macro(build_game(coords, m, n), step)
-    if isinstance(res, dict) and res.get('type') in ('fill_fail',):
-        return None, {'reason': res.get('reason', '填洞宏失败'),
-                      'route': 'fill_macro'}
-    return res.get('actions', []), {'route': 'fill_macro',
-                                    'steps': len(res.get('actions', []))}
+    if isinstance(res, tuple):
+        return res, {'route': 'fill_macro', 'steps': len(res[0])}
+    return None, {'reason': res.get('reason', '填洞宏失败'),
+                  'route': 'fill_macro'}
+
+
+# ---------------------------------------------------------------------------
+# GUI 求解器入口（与 SOLVER_ALGORITHMS 统一签名）
+# ---------------------------------------------------------------------------
+def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
+                    **kwargs):
+    """补缺宏（GUI 入口）：单边缺口 → 封壳+内部共轭+拆壳；其余交填洞宏。
+
+    返回协议与 solve_fill_macro 一致：
+    · 成功 → (actions4, rep_cells)；
+    · 失败 → {'type': 'fill_fail', 'reason', 'solver_name': '补缺宏'}；
+    · 填洞宏侧结果原样透传（补 solver_name）。
+    """
+    coords = frozenset(tuple(b.location) for b in game.blocks)
+    m, n = game.m, game.n
+    g = build_game(coords, m, n)
+    if g.is_solved():
+        return [], []
+    (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
+    use_gap = (len(holes) == 1 and _edge_of(
+        next(iter(holes)), r0, c0, wh[0], wh[1]) in ('L', 'R', 'U', 'D'))
+    if use_gap:
+        wall, stats = solve_edge_gap(coords, m, n, step)
+        if wall is not None and stats.get('solved'):
+            acts4 = [a[:4] for a in wall]
+            reps = [a[4] for a in wall]
+            print('[补缺宏] 封壳%d+内部共轭%d+拆壳%d = %d 步（edge=%s%s）'
+                  % (stats.get('seal', -1), stats.get('inner', -1),
+                     stats.get('unseal', -1), len(wall), stats.get('edge', '?'),
+                     '，rot=%s' % stats.get('rot') if stats.get('rot') != 'id'
+                     else ''))
+            return acts4, reps
+        # 缺口分支失败/未复原（如凸起与主体粘连）：回退填洞宏兜底
+        gap_why = (stats.get('reason', stats.get('error', '未知'))
+                   if wall is None else '回放通但未还原（凸起粘连?）')
+        print('[补缺宏] 缺口分支未成（%s），回退填洞宏' % gap_why)
+    # 封闭孔洞/多洞/兜底：填洞宏主场，透传
+    res = solve_fill_macro(game, step, cancel_check=cancel_check,
+                           progress_callback=progress_callback)
+    if isinstance(res, dict):
+        res.setdefault('solver_name', '填洞宏')
+        if use_gap:
+            res['reason'] = ('缺口分支未成(%s)；填洞宏：%s'
+                             % (gap_why, res.get('reason', '失败')))
+    return res
 
 
 # ---------------------------------------------------------------------------

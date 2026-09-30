@@ -2953,7 +2953,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return
 
         if isinstance(result, dict) and result.get('type') == 'fill_fail':
-            self.macro_notify_msg = '填洞宏：' + str(result.get('reason', '失败'))
+            self.macro_notify_msg = str(result.get('solver_name', '填洞宏')) \
+                + '：' + str(result.get('reason', '失败'))
             self.macro_notify_timer = 220
             return
 

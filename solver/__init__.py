@@ -59,6 +59,7 @@ from solver.ml.gather_solver import gather_solve
 from solver.ml.gather_solver import gradient_gather
 from solver.ml.human_solver import ai_human_solve
 from solver.ml.fill_macro import solve_fill_macro
+from solver.ml.gap_solver import solve_gap_macro
 from solver.hybrid_solver import hybrid_solve
 
 
@@ -97,6 +98,7 @@ SOLVER_ALGORITHMS = {
     'gather_gradient': ('  梯度聚拢', gradient_gather),
     #'human_ai': ('  人类模仿', ai_human_solve),
     'fill_macro': ('  填洞宏', solve_fill_macro),
+    'gap_macro': ('  补缺宏', solve_gap_macro),
     'hybrid':   ('  混合求解（免表·非最优）', hybrid_solve_with_table),
 }
 
