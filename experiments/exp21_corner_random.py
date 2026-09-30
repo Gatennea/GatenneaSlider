@@ -20,7 +20,6 @@ solve_gap_macro 全链，最后用 replay_and_verify 做独立引擎回放验证
 """
 import os
 import random
-import re
 import sys
 import time
 
@@ -32,6 +31,7 @@ from solver.ml.ann_gen import generate_classified                    # noqa: E40
 from solver.ml.fill_macro import (build_game, window_of,             # noqa: E402
                                   replay_and_verify)
 from solver.ml.gap_solver import (solve_gap_macro, _edge_of,         # noqa: E402
+                                  _tf_act, _tf_dims, normalize_present,
                                   save_failure_archive)
 
 
@@ -50,7 +50,9 @@ def main():
     save_fail = '--save-fail' in sys.argv
     sizes = [(6, 6), (6, 8), (8, 6), (8, 8), (7, 7), (10, 10)]
     rows = []          # (seed, m, n, edge, ok, steps, secs, reason, archive)
-    seen_cls = set()   # 已存档的失败类 (m, n, edge, 归一化原因)
+    seen_cls = set()   # 已存档的规范局面 (coords, m, n)
+    num = [0]          # 序号计数
+    arch_meta = []     # (序号, m, n, edge, why, fname)
     t0 = time.time()
     for si, (m, n) in enumerate(sizes):
         for j in range(per_size):
@@ -71,15 +73,21 @@ def main():
                 ok, steps, archive = False, 0, ''
                 why = out.get('reason', out.get('type', '?'))
                 if save_fail and out.get('fail_world') is not None:
-                    cls = (m, n, edge,
-                           re.sub(r'第\d+步 \([^)]*\)', '第N步', why)[:44])
-                    if cls not in seen_cls:
-                        seen_cls.add(cls)
-                        slug = re.sub(r'[^\w\u4e00-\u9fff]+', '', why)[:14]
-                        tag = '%s-%dx%d-seed%d%s' % (edge, m, n, seed,
-                                                     ('-' + slug) if slug else '')
+                    # 呈现规范形（边缺口上/凸起右下，角缺口左上/凸起右），
+                    # 同一规范局面只存一份，文件名 = 序号
+                    nc, nm, nn, tl = normalize_present(coords, m, n, 2)
+                    key = (frozenset(nc), nm, nn)
+                    if key not in seen_cls:
+                        seen_cls.add(key)
+                        num[0] += 1
+                        fw, cm, cn = list(out['fail_world']), m, n
+                        for t in tl:               # 前缀动作逐级映射进规范架
+                            fw = [_tf_act(t, a, cm, cn) for a in fw]
+                            cm, cn = _tf_dims(t, cm, cn)
                         archive = save_failure_archive(
-                            coords, m, n, 2, out['fail_world'], tag) or ''
+                            nc, nm, nn, 2, fw, 'fail%02d' % num[0],
+                            fname='失败%02d.json' % num[0]) or ''
+                        arch_meta.append((num[0], nm, nn, edge, why, archive))
             else:
                 acts4, reps = out
                 acts5 = [a[:4] + (reps[i],) for i, a in enumerate(acts4)]
@@ -124,10 +132,11 @@ def main():
              100.0 * len(cok) / len(corner) if corner else 0.0,
              ('%.1f' % (sum(r[5] for r in cok) / len(cok))) if cok else '-'))
     archives = [r[8] for r in rows if r[8]]
-    if archives:
-        print('失败存档 %d 份:' % len(archives))
-        for a in archives:
-            print('  save/%s' % a)
+    if arch_meta:
+        print('失败存档 %d 份（呈现规范形，序号即文件名）:' % len(arch_meta))
+        for no, am, an, e, w, fn in arch_meta:
+            print('  失败%02d.json  %dx%d edge=%s  %s'
+                  % (no, am, an, e, w[:60]))
     print('总耗时 %.1fs' % (time.time() - t0))
 
 

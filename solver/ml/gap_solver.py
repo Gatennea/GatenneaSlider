@@ -103,6 +103,117 @@ _ROT_FOR_EDGE = {'L': 'id', 'R': 'r180', 'U': 'ccw', 'D': 'cw'}
 # ccw：上→左；cw：下→左；r180：右→左（均把缺口转到左边缘规范型）
 
 
+# ---------------------------------------------------------------------------
+# 全对称群 D4（4 旋转 × 2 反射）作用层 —— 填洞宏 choose_rot「凸起恒在右侧，
+# 只手写一种规范情况」的思想推广到 8 元群：每种几何只手写一份链，
+# 其余 7 个方位靠群作用搬运，镜像由此获得与旋转同等的覆盖。
+# 箱体恒为 [0,m)×[0,n)（世界坐标），公式对界外坐标（料条/凸起）同样成立。
+# ---------------------------------------------------------------------------
+_D4_ORDER = ('id', 'r180', 'ccw', 'cw', 'fh', 'fv', 'tr', 'at')
+_INV_T = {'id': 'id', 'r180': 'r180', 'ccw': 'cw', 'cw': 'ccw',
+          'fh': 'fh', 'fv': 'fv', 'tr': 'tr', 'at': 'at'}
+_TF_SWAP = ('ccw', 'cw', 'tr', 'at')     # 交换行列的变换
+
+# 方向键映射：(dr,dc) → 变换后的方向
+_DIR_TF = {
+    'id':  {'w': 'w', 'a': 'a', 's': 's', 'd': 'd'},
+    'r180': {'w': 's', 'a': 'd', 's': 'w', 'd': 'a'},
+    'ccw': {'w': 'a', 'a': 's', 's': 'd', 'd': 'w'},
+    'cw':  {'w': 'd', 'a': 'w', 's': 'a', 'd': 's'},
+    'fh':  {'w': 'w', 'a': 'd', 's': 's', 'd': 'a'},
+    'fv':  {'w': 's', 'a': 'a', 's': 'w', 'd': 'd'},
+    'tr':  {'w': 'a', 'a': 'w', 's': 'd', 'd': 's'},
+    'at':  {'w': 's', 'a': 'd', 's': 'w', 'd': 'a'},
+}
+
+
+def _tf_pt(name, p, m, n):
+    """点 (r,c) 经全等变换 name（源箱体 m×n）。"""
+    r, c = p
+    if name == 'id':
+        return (r, c)
+    if name == 'r180':
+        return (m - 1 - r, n - 1 - c)
+    if name == 'ccw':
+        return (n - 1 - c, r)
+    if name == 'cw':
+        return (c, m - 1 - r)
+    if name == 'fh':
+        return (r, n - 1 - c)
+    if name == 'fv':
+        return (m - 1 - r, c)
+    if name == 'tr':
+        return (c, r)
+    return (n - 1 - c, m - 1 - r)                     # at
+
+
+def _tf_dims(name, m, n):
+    return (n, m) if name in _TF_SWAP else (m, n)
+
+
+def _tf_act(name, a, m, n):
+    """源架（箱体 [0,m)×[0,n)）的动作5元组 → name 变换后架的动作5元组。
+
+    缝线：边界 L|L+1 在变换下的像；侧别与方向按同构逐变换推导。
+    rep 为块坐标，直接走 _tf_pt。
+    """
+    gap, line, side, d, rep = a
+    if name == 'id':
+        return a
+    dm = _DIR_TF[name]
+    rp = _tf_pt(name, rep, m, n)
+    o = lambda g, ln, sd: (g, ln, sd, dm[d], rp)      # noqa: E731
+    if name == 'r180':
+        return o(gap, (m if gap == 'h' else n) - 2 - line,
+                 _OPP_SIDE[side])
+    if name == 'fh':
+        return o(gap, line if gap == 'h' else n - 2 - line,
+                 side if gap == 'h' else _OPP_SIDE[side])
+    if name == 'fv':
+        return o(gap, (m - 2 - line) if gap == 'h' else line,
+                 _OPP_SIDE[side] if gap == 'h' else side)
+    if name == 'ccw':
+        return o(_T_GAP[gap], line if gap == 'h' else n - 2 - line,
+                 {'above': 'left', 'below': 'right',
+                  'left': 'below', 'right': 'above'}[side])
+    if name == 'cw':
+        return o(_T_GAP[gap], (m - 2 - line) if gap == 'h' else line,
+                 {'above': 'right', 'below': 'left',
+                  'left': 'above', 'right': 'below'}[side])
+    if name == 'tr':
+        return o(_T_GAP[gap], line,
+                 {'above': 'left', 'below': 'right',
+                  'left': 'above', 'right': 'below'}[side])
+    # at（反对角镜像）
+    return o(_T_GAP[gap], (m - 2 - line) if gap == 'h' else n - 2 - line,
+             {'above': 'right', 'below': 'left',
+              'left': 'below', 'right': 'above'}[side])
+
+
+_OPP_SIDE = {'above': 'below', 'below': 'above',
+             'left': 'right', 'right': 'left'}
+
+
+def _orbit_key(coords, m, n, step):
+    """链规范型键（边缺口→左边缘、角缺口→左上），轨道成员去重用。"""
+    (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
+    if len(holes) != 1:
+        return None
+    h = next(iter(holes))
+    e = _edge_of(h, r0, c0, wh[0], wh[1])
+    if e == 'INNER':
+        return None
+    if e == 'CORNER':
+        top, lef = h[0] == r0, h[1] == c0
+        name = ('id' if (top and lef) else 'ccw' if top
+                else 'cw' if lef else 'r180')
+    else:
+        name = _ROT_FOR_EDGE[e]
+    kf = frozenset(view_rotate.rotate_xy(name, r - r0, c - c0, m, n)
+                   for r, c in coords)
+    return (kf, view_rotate.view_dims(name, m, n))
+
+
 def _hole_sealed(g, h):
     """洞四邻全有块 = 已封成封闭孔洞。"""
     coords = gcoords(g)
@@ -556,6 +667,94 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
     return wall, stats
 
 
+def solve_gap_any(coords, m, n, step, verbose=False):
+    """全对称群轨道求解：对 D4 轨道的每个规范型成员逐一求解，
+    成功者的动作经逆变换映射回原架，并用引擎在原架独立回放验收。
+
+    数学根据：D4 是游戏规则的完全同构群 ⇒ 轨道任一成员可解 ⇔ 全体可解；
+    反射成员正是此前「镜像后失败」病例的解药。
+    返回 (原架世界动作5元组, stats)；全部失败 → (None, stats)。
+    """
+    t0 = time.time()
+    coords = frozenset(coords)
+    (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
+    if len(holes) != 1:
+        return None, {'reason': '非单缺口'}
+    e0 = _edge_of(next(iter(holes)), r0, c0, wh[0], wh[1])
+    if e0 == 'INNER':
+        return None, {'reason': '封闭孔洞（应交填洞宏）'}
+    is_corner = e0 == 'CORNER'
+    seen, reasons, best_fw = set(), [], []
+    for tname in _D4_ORDER:
+        tc = frozenset(_tf_pt(tname, p, m, n) for p in coords)
+        tm, tn = _tf_dims(tname, m, n)
+        key = _orbit_key(tc, tm, tn, step)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        if is_corner:
+            wall, st = solve_corner_gap(tc, tm, tn, step, verbose=verbose)
+        else:
+            wall, st = solve_edge_gap(tc, tm, tn, step, verbose=verbose)
+        if wall is not None and st.get('solved'):
+            wall0 = [_tf_act(_INV_T[tname], a, tm, tn) for a in wall]
+            g = build_game(coords, m, n)
+            if _replay_apply(g, wall0, m, n, step) and g.is_solved():
+                return wall0, dict(st, orbit=tname, steps=len(wall0),
+                                   secs=round(time.time() - t0, 3))
+            reasons.append('%s架映射回放失败' % tname)
+            continue
+        reasons.append(st.get('reason', st.get('error', '受阻')))
+        fw = [_tf_act(_INV_T[tname], a, tm, tn)
+              for a in (st.get('fail_world') or [])]
+        if len(fw) > len(best_fw):
+            best_fw = fw
+    return None, {'reason': '；'.join(dict.fromkeys(reasons)) or '轨道全败',
+                  'edge': e0, 'orbit_n': len(seen),
+                  'fail_world': best_fw}
+
+
+_ROT_TO_TOP = {'U': 'id', 'L': 'cw', 'R': 'ccw', 'D': 'r180'}
+
+
+def normalize_present(coords, m, n, step):
+    """呈现规范形（用户约定）：
+    边缺口 → 上边缘，凸起 → 右侧或下侧（左侧经左右翻并入右侧；
+    上侧因 mod 类限制不可能）；角缺口 → 左上角，凸起 → 右侧
+    （下侧经转置并入右侧；上/左因 mod 类限制不可能）。
+    返回 (coords', m', n', 变换链[t1, t2, ...])——
+    coords' = t2∘t1 作用于 coords，fail 前缀动作可用 _tf_act 逐级映射。
+    """
+    coords = frozenset(coords)
+    (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
+    if len(holes) != 1:
+        return coords, m, n, []
+    h = next(iter(holes))
+    e = _edge_of(h, r0, c0, wh[0], wh[1])
+    if e == 'CORNER':
+        top, lef = h[0] == r0, h[1] == c0
+        name = ('id' if (top and lef) else 'ccw' if top
+                else 'cw' if lef else 'r180')
+    elif e in _ROT_TO_TOP:
+        name = _ROT_TO_TOP[e]
+    else:
+        return coords, m, n, []
+    tlist = [name]
+    tm, tn = _tf_dims(name, m, n)
+    tc = frozenset(_tf_pt(name, p, m, n) for p in coords)
+    outs = [p for p in tc if not (0 <= p[0] < tm and 0 <= p[1] < tn)]
+    if len(outs) == 1:
+        br, bc = outs[0]
+        if e == 'CORNER' and br >= tm:     # 凸起在下侧 → 转置并入右侧
+            tlist.append('tr')
+            tc = frozenset(_tf_pt('tr', p, tm, tn) for p in tc)
+            tm, tn = _tf_dims('tr', tm, tn)
+        elif e != 'CORNER' and bc < 0:     # 凸起在左侧 → 左右翻并入右侧
+            tlist.append('fh')
+            tc = frozenset(_tf_pt('fh', p, tm, tn) for p in tc)
+    return tc, tm, tn, tlist
+
+
 def solve_edge_gap(coords, m, n, step, verbose=False):
     """单边缺口全链求解：封壳 → 内部共轭(couple) → 拆壳。
 
@@ -722,12 +921,9 @@ def solve_gap(coords, m, n, step):
     (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
     if len(holes) == 1:
         edge = _edge_of(next(iter(holes)), r0, c0, wh[0], wh[1])
-        if edge in ('L', 'R', 'U', 'D'):
-            wall, stats = solve_edge_gap(coords, m, n, step)
-            return wall, dict(stats, route='edge_gap')
-        if edge == 'CORNER':
-            wall, stats = solve_corner_gap(coords, m, n, step)
-            return wall, dict(stats, route='corner_gap')
+        if edge in ('L', 'R', 'U', 'D', 'CORNER'):
+            wall, stats = solve_gap_any(coords, m, n, step)
+            return wall, dict(stats, route='gap_any')
     # 其余（封闭孔洞/多洞）交填洞宏驱动
     from solver.ml.fill_macro import solve_fill_macro
     res = solve_fill_macro(build_game(coords, m, n), step)
@@ -737,8 +933,8 @@ def solve_gap(coords, m, n, step):
                   'route': 'fill_macro'}
 
 
-def save_failure_archive(coords, m, n, step, wall5, tag):
-    """把失败案例存成游戏可读档 save/补缺失败-<tag>.json。
+def save_failure_archive(coords, m, n, step, wall5, tag, fname=None):
+    """把失败案例存成游戏可读档（默认 save/补缺失败-<tag>.json）。
 
     wall5 = 世界坐标动作5元组前缀（全部合法、停在被拒那一步之前；
     空列表 = 一步未走就被结构性拒绝，如角缺口凸起列 0）。
@@ -771,7 +967,7 @@ def save_failure_archive(coords, m, n, step, wall5, tag):
             'history': {'history_index': len(snaps) - 1,
                         'snapshots': snaps}}
     data['checksum'] = _checksum(data)
-    fname = '补缺失败-%s.json' % tag
+    fname = fname or ('补缺失败-%s.json' % tag)
     path = os.path.join(_ROOT, 'save', fname)
     try:
         with open(path, 'w', encoding='utf-8') as f:
@@ -807,10 +1003,7 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
         edge = _edge_of(next(iter(holes)), r0, c0, wh[0], wh[1])
     use_gap = edge in ('L', 'R', 'U', 'D', 'CORNER')
     if use_gap:
-        if edge == 'CORNER':
-            wall, stats = solve_corner_gap(coords, m, n, step)
-        else:
-            wall, stats = solve_edge_gap(coords, m, n, step)
+        wall, stats = solve_gap_any(coords, m, n, step)
         if wall is not None and stats.get('solved'):
             acts4 = [a[:4] for a in wall]
             reps = [a[4] for a in wall]
