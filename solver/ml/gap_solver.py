@@ -629,7 +629,10 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
         rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
         return (gap2, line2, side2, d2, (rr + r0, cc + c0))
 
-    # ---- 角链：先直接解；失败且凸起在右边缘偶行时，转置视角重试 ----
+    # ---- 角链：先直接解；失败且凸起贴右缘偶行时，转置视角重试 ----
+    # 凸起贴右缘顶行 (0, nv)（与洞同行）时，四角旋转是自映射救不动：
+    # 先沿右缘下推 step 步到 (step, nv)（正下方全空、每步与 (r,nv-1)
+    # 主带相连保持单连通），转置后即成「挂下边缘列 step」的标准型。
     tr1 = {}
     res = _corner_chain(vg, step, verbose=verbose, trace=tr1)
     last = (tr1, res[1], False)          # (trace, 失败原因, 是否转置尝试)
@@ -637,17 +640,34 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
         outs = [blk for blk in vg.blocks
                 if blk.location[0] < 0 or blk.location[0] >= mv
                 or blk.location[1] < 0 or blk.location[1] >= nv]
+        br = outs[0].location[0] if len(outs) == 1 else None
         if len(outs) == 1 and outs[0].location[1] == nv \
-                and outs[0].location[0] % step == 0:
-            vt = build_game(frozenset((c, r) for r, c in gcoords(vg)),
+                and br % step == 0 and (br > 0 or step <= mv - 1):
+            setup5 = []
+            vg2 = vg
+            if br == 0:
+                g2 = build_game(gcoords(vg), mv, nv)
+                for _ in range(step):
+                    ok1, a5 = _capture_apply(g2, ('v', nv - 1, 'right', 's'),
+                                             step)
+                    if not ok1:
+                        break
+                    setup5.append(a5)
+                if len(setup5) == step:
+                    vg2 = build_game(frozenset(gcoords(g2)), mv, nv)
+                else:
+                    setup5 = []
+            vt = build_game(frozenset((c, r) for r, c in gcoords(vg2)),
                             nv, mv)
             if verbose:
-                print('  直接角链未成(%s)，转置重试' % res[1])
+                print('  直接角链未成(%s)，转置重试%s'
+                      % (res[1], '（先右缘下推 setup）' if setup5 else ''))
             tr2 = {}
             res2 = _corner_chain(vt, step, verbose=verbose, trace=tr2)
             if res2[0] is not None:
-                res = (_transpose_wall(res2[0]),
-                       dict(res2[1], transposed=True))
+                res = (setup5 + _transpose_wall(res2[0]),
+                       dict(res2[1], transposed=True,
+                            setup=len(setup5) if setup5 else 0))
             else:
                 last = (tr2, '%s；转置重试:%s' % (res[1], res2[1]), True)
     if res[0] is None:
@@ -670,6 +690,10 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
              'rot': name, 'edge': 'CORNER', 'route': 'corner',
              'view_solved': True, 'solved': solved_world,
              'secs': round(time.time() - t0, 3)}
+    if cstats.get('transposed'):
+        stats['transposed'] = True
+        if cstats.get('setup'):
+            stats['setup'] = cstats['setup']
     if not solved_world:
         stats['reason'] = '角链回放未还原'
         stats['fail_world'] = wall if ok else []
@@ -803,78 +827,108 @@ def _user_edge_chain(vg, vh, step, verbose=False):
         unseal4 = [('h', -1, 'above', 'a', None),
                    ('v', c - 1, 'left', 's', None)]
 
-    g2 = build_game(gcoords(vg), mv, nv)
-    p2 = None
-    for blk in g2.blocks:
-        if tuple(blk.location) == p0:
-            p2 = blk
-            break
-    prefix = []
-    # 起手 setup（用户教学 2026-09-30，函数最开始就做）：
-    # 凸起与缺口同行（凸起在顶行窗外侧）→ 上移/下移一下；
-    # 凸起与缺口同列（正下/正上）→ 左移/右移一下。
-    # 方向取引擎第一个接受的；单块平移，不参与共轭还原。
-    if p2 is not None:
-        pr, pc = p2.location
-        if pr == 0 and (pc >= nv or pc < 0):        # 同行：顶行外侧
-            scands = ([('v', nv - 1, 'right', 'w', None),
-                       ('v', nv - 1, 'right', 's', None)] if pc >= nv else
-                      [('v', -1, 'left', 'w', None),
-                       ('v', -1, 'left', 's', None)])
-        elif pc == c:                               # 同列：正下方/正上方
-            scands = ([('h', mv - 1, 'below', 'a', None),
-                       ('h', mv - 1, 'below', 'd', None)] if pr >= mv else
-                      [('h', 0, 'above', 'a', None),
-                       ('h', 0, 'above', 'd', None)])
-        else:
-            scands = []
-        if scands:
-            done = False
-            for a4 in scands:
-                okk, a5, _why, _mvd = _apply_dbg(g2, a4, step)
-                if okk:
-                    prefix.append(a5)
-                    done = True
-                    break
-            if not done:
-                return None, {'reason': '起手setup两个方向均受阻',
-                              'prefix': list(prefix)}
-            if verbose:
-                print('  setup：对齐凸起挪位 -> %s' % (tuple(p2.location),))
+    def _find_block(g, pos):
+        for blk in g.blocks:
+            if tuple(blk.location) == pos:
+                return blk
+        return None
 
-    for i, a4 in enumerate(seal4):                 # 封壳（外层共轭）
-        okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
-        if not okk:
-            return None, {'reason': '封壳第%d步被拒(%s)' % (i + 1, why),
-                          'prefix': list(prefix)}
-        prefix.append(a5)
-    if not _hole_sealed(g2, vh):
-        return None, {'reason': '封壳完成但洞未封闭', 'prefix': list(prefix)}
-    vp = tuple(p2.location)
-    if verbose:
-        print('  封壳(用户) %d 步，凸起 %s -> %s' % (len(prefix), p0, vp))
+    def _run(squeeze):
+        """跑一条完整链。squeeze=False 直解；True 先「下面整带挤入」。
+        返回 (动作列表, stats) 或 (None, 失败原因, 已走前缀)。"""
+        g2 = build_game(gcoords(vg), mv, nv)
+        p2 = _find_block(g2, p0)
+        prefix = []
+        # 起手 setup（用户教学 2026-09-30，函数最开始就做）：
+        # 凸起与缺口同行（凸起在顶行窗外侧）→ 上移/下移一下；
+        # 凸起与缺口同列（正下/正上）→ 左移/右移一下。
+        # 方向取引擎第一个接受的；单块平移，不参与共轭还原。
+        if p2 is not None:
+            pr, pc = p2.location
+            if pr == 0 and (pc >= nv or pc < 0):    # 同行：顶行外侧
+                scands = ([('v', nv - 1, 'right', 'w', None),
+                           ('v', nv - 1, 'right', 's', None)] if pc >= nv else
+                          [('v', -1, 'left', 'w', None),
+                           ('v', -1, 'left', 's', None)])
+            elif pc == c:                           # 同列：正下方/正上方
+                scands = ([('h', mv - 1, 'below', 'a', None),
+                           ('h', mv - 1, 'below', 'd', None)] if pr >= mv else
+                          [('h', 0, 'above', 'a', None),
+                           ('h', 0, 'above', 'd', None)])
+            else:
+                scands = []
+            if scands:
+                done = False
+                for a4 in scands:
+                    okk, a5, _why, _mvd = _apply_dbg(g2, a4, step)
+                    if okk:
+                        prefix.append(a5)
+                        done = True
+                        break
+                if not done:
+                    return None, '起手setup两个方向均受阻', list(prefix)
+                if verbose:
+                    print('  setup：对齐凸起挪位 -> %s' % (tuple(p2.location),))
 
-    iacts, istats = _solve_couple(gcoords(g2), mv, nv, step, vh, vp,
-                                  keep_partial=True)
-    if iacts is None or istats.get('partial'):
-        return None, {'reason': '内部共轭失败: %s' % istats.get('reason', '?'),
-                      'prefix': list(prefix) + list(iacts or [])}
-    if verbose:
-        print('  内部共轭 %d 步' % len(iacts))
-    if not _replay_apply(g2, iacts, mv, nv, step):
-        return None, {'reason': '内部共轭回放失败', 'prefix': list(prefix)}
-    prefix += list(iacts)
+        for i, a4 in enumerate(seal4):             # 封壳（外层共轭）
+            okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
+            if not okk:
+                return None, '封壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
+            prefix.append(a5)
+        if not _hole_sealed(g2, vh):
+            return None, '封壳完成但洞未封闭', list(prefix)
+        if verbose:
+            print('  封壳(用户)%s %d 步，凸起 -> %s'
+                  % ('+挤入' if squeeze else '', len(prefix),
+                     tuple(p2.location)))
 
-    for i, a4 in enumerate(unseal4):               # 逆外层共轭
-        okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
-        if not okk:
-            return None, {'reason': '拆壳第%d步被拒(%s)' % (i + 1, why),
-                          'prefix': list(prefix)}
-        prefix.append(a5)
-    if not g2.is_solved():
-        return None, {'reason': '链走通但未还原', 'prefix': list(prefix)}
-    return list(prefix), {'seal': len(seal4), 'inner': len(iacts),
-                          'unseal': len(unseal4), 'flag': flag}
+        if squeeze:
+            # 用户教学（甲/乙型）：凸起未与洞同列时，沿凸起行下缘切缝
+            # ('h', pr-1, below)，把凸起所在部整带逐步推向洞列
+            # （「下面左移/右移」，等效于洞上方整带反向推移）。
+            while p2.location[1] != c:
+                want = 'a' if p2.location[1] > c else 'd'
+                a4 = ('h', p2.location[0] - 1, 'below', want, None)
+                okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
+                if not okk:
+                    return None, '挤入被拒(%s)' % why, list(prefix)
+                prefix.append(a5)
+
+        vp = tuple(p2.location)
+        iacts, istats = _solve_couple(gcoords(g2), mv, nv, step, vh, vp,
+                                      keep_partial=True)
+        if iacts is None or istats.get('partial'):
+            return None, ('内部共轭失败: %s' % istats.get('reason', '?'),
+                          list(prefix) + list(iacts or []))
+        if verbose:
+            print('  内部共轭 %d 步' % len(iacts))
+        if not _replay_apply(g2, iacts, mv, nv, step):
+            return None, '内部共轭回放失败', list(prefix)
+        prefix += list(iacts)
+
+        for i, a4 in enumerate(unseal4):           # 逆外层共轭
+            okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
+            if not okk:
+                return None, '拆壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
+            prefix.append(a5)
+        if not g2.is_solved():
+            return None, '链走通但未还原', list(prefix)
+        return (list(prefix),
+                {'seal': len(seal4), 'inner': len(iacts),
+                 'unseal': len(unseal4), 'flag': flag,
+                 'squeeze': squeeze})
+
+    res = _run(False)                              # ① 直解
+    if res[0] is None:
+        if verbose:
+            print('  直解未成(%s)，试挤入重解' % res[1])
+        res2 = _run(True)                          # ② 挤入重解
+        if res2[0] is not None:
+            return res2
+        best = res2[2] if len(res2[2]) >= len(res[2]) else res[2]
+        return None, {'reason': '直解:%s；挤入:%s' % (res[1], res2[1]),
+                      'prefix': best}
+    return res
 
 
 def solve_edge_gap(coords, m, n, step, verbose=False):
