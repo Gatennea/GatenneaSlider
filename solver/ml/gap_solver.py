@@ -833,8 +833,9 @@ def _user_edge_chain(vg, vh, step, verbose=False):
                 return blk
         return None
 
-    def _run(squeeze):
+    def _run(squeeze, force_rot=None):
         """跑一条完整链。squeeze=False 直解；True 先「下面整带挤入」。
+        force_rot：内层填洞旋转策略（None=choose_rot 自动，'id'=不旋转）。
         返回 (动作列表, stats) 或 (None, 失败原因, 已走前缀)。"""
         g2 = build_game(gcoords(vg), mv, nv)
         p2 = _find_block(g2, p0)
@@ -895,15 +896,24 @@ def _user_edge_chain(vg, vh, step, verbose=False):
                 prefix.append(a5)
 
         vp = tuple(p2.location)
+        # 内层旋转策略（2026-10-01 教学验证）：choose_rot 自动旋转在常规
+        # 批量正确，但特殊姿态下会在封壳临时几何里破坏料条/垫洞的几何
+        # 关系，拆壳逆动作必散架（"链走通但未还原"真因）→ 失败时以
+        # force_rot='id'（不旋转、直接窄缝推入）重试。两级都保留。
         iacts, istats = _solve_couple(gcoords(g2), mv, nv, step, vh, vp,
-                                      keep_partial=True)
+                                      keep_partial=True, force_rot=force_rot)
         if iacts is None or istats.get('partial'):
-            return None, ('内部共轭失败: %s' % istats.get('reason', '?'),
-                          list(prefix) + list(iacts or []))
+            return None, ('内部共轭失败: %s' % istats.get('reason', '?')), \
+                list(prefix) + list(iacts or [])
         if verbose:
             print('  内部共轭 %d 步' % len(iacts))
         if not _replay_apply(g2, iacts, mv, nv, step):
             return None, '内部共轭回放失败', list(prefix)
+        if vh not in gcoords(g2):
+            # 内层返回成功却没填中：_block_at(h) 应有块（h ∈ coords），
+            # 该格仍空 = B 段终止判据被骗，不得拼进链里拆壳
+            return None, ('内部共轭假阳性：洞%s仍空' % (vh,)), \
+                list(prefix) + list(iacts)
         prefix += list(iacts)
 
         for i, a4 in enumerate(unseal4):           # 逆外层共轭
@@ -918,17 +928,22 @@ def _user_edge_chain(vg, vh, step, verbose=False):
                  'unseal': len(unseal4), 'flag': flag,
                  'squeeze': squeeze})
 
-    res = _run(False)                              # ① 直解
-    if res[0] is None:
-        if verbose:
-            print('  直解未成(%s)，试挤入重解' % res[1])
-        res2 = _run(True)                          # ② 挤入重解
-        if res2[0] is not None:
-            return res2
-        best = res2[2] if len(res2[2]) >= len(res[2]) else res[2]
-        return None, {'reason': '直解:%s；挤入:%s' % (res[1], res2[1]),
-                      'prefix': best}
-    return res
+    # 四级尝试：直解(自动旋转) → 直解(id) → 挤入(自动) → 挤入(id)
+    best = []
+    reasons = []
+    for squeeze in (False, True):
+        for fr in (None, 'id'):
+            res = _run(squeeze, fr)
+            if res[0] is not None:
+                return res
+            tag = '直解' if not squeeze else '挤入'
+            rot_tag = '自动' if fr is None else 'id'
+            reasons.append('%s(%s):%s' % (tag, rot_tag, res[1]))
+            if len(res[2]) > len(best):
+                best = res[2]
+            if verbose:
+                print('  %s(%s)未成(%s)' % (tag, rot_tag, res[1]))
+    return None, {'reason': '；'.join(reasons), 'prefix': best}
 
 
 def solve_edge_gap(coords, m, n, step, verbose=False):
