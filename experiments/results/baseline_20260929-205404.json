@@ -1,0 +1,190 @@
+{
+  "rows": [
+    {
+      "config": "4x4x2",
+      "algo": "fill",
+      "n": 3,
+      "solve_rate": "0%",
+      "med_steps": "-",
+      "med_time": "0.21s",
+      "max_time": "0.5s",
+      "med_final": "0.625"
+    },
+    {
+      "config": "4x4x2",
+      "algo": "gather",
+      "n": 3,
+      "solve_rate": "0%",
+      "med_steps": "-",
+      "med_time": "2.89s",
+      "max_time": "5.4s",
+      "med_final": "0.938"
+    },
+    {
+      "config": "4x4x2",
+      "algo": "gradient",
+      "n": 3,
+      "solve_rate": "33%",
+      "med_steps": 587,
+      "med_time": "15.52s",
+      "max_time": "15.7s",
+      "med_final": "0.938"
+    },
+    {
+      "config": "4x4x2",
+      "algo": "greedy",
+      "n": 3,
+      "solve_rate": "0%",
+      "med_steps": "-",
+      "med_time": "1.15s",
+      "max_time": "1.3s",
+      "med_final": "0.625"
+    }
+  ],
+  "records": [
+    {
+      "config": "4x4x2",
+      "seed": 1000,
+      "algo": "gather",
+      "start_score": 0.625,
+      "time": 2.717,
+      "reason": "no_improve",
+      "steps": 6,
+      "verified": false,
+      "solved": false,
+      "final_score": 0.9375
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1000,
+      "algo": "gradient",
+      "start_score": 0.625,
+      "time": 13.51,
+      "reason": "stages_exhausted",
+      "steps": 6,
+      "verified": false,
+      "solved": false,
+      "final_score": 0.9375
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1000,
+      "algo": "fill",
+      "start_score": 0.625,
+      "time": 0.198,
+      "type": "fill_partial",
+      "reason": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)",
+      "solved": false,
+      "steps": 0,
+      "verified": false,
+      "final_score": 0.625
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1000,
+      "algo": "greedy",
+      "start_score": 0.625,
+      "time": 1.152,
+      "solved": false,
+      "steps": 0,
+      "verified": false,
+      "final_score": 0.625
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1001,
+      "algo": "gather",
+      "start_score": 0.625,
+      "time": 5.42,
+      "reason": "no_improve",
+      "steps": 170,
+      "verified": false,
+      "solved": false,
+      "final_score": 0.9375
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1001,
+      "algo": "gradient",
+      "start_score": 0.625,
+      "time": 15.523,
+      "reason": "solved",
+      "steps": 587,
+      "verified": true,
+      "solved": true,
+      "final_score": 1.0
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1001,
+      "algo": "fill",
+      "start_score": 0.625,
+      "time": 0.45,
+      "type": "fill_partial",
+      "reason": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)",
+      "solved": false,
+      "steps": 0,
+      "verified": false,
+      "final_score": 0.625
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1001,
+      "algo": "greedy",
+      "start_score": 0.625,
+      "time": 1.336,
+      "solved": false,
+      "steps": 0,
+      "verified": false,
+      "final_score": 0.625
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1002,
+      "algo": "gather",
+      "start_score": 0.5625,
+      "time": 2.894,
+      "reason": "no_improve",
+      "steps": 14,
+      "verified": false,
+      "solved": false,
+      "final_score": 0.875
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1002,
+      "algo": "gradient",
+      "start_score": 0.5625,
+      "time": 15.665,
+      "reason": "stages_exhausted",
+      "steps": 206,
+      "verified": false,
+      "solved": false,
+      "final_score": 0.9375
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1002,
+      "algo": "fill",
+      "start_score": 0.5625,
+      "time": 0.206,
+      "type": "fill_partial",
+      "reason": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)",
+      "solved": false,
+      "steps": 0,
+      "verified": false,
+      "final_score": 0.5625
+    },
+    {
+      "config": "4x4x2",
+      "seed": 1002,
+      "algo": "greedy",
+      "start_score": 0.5625,
+      "time": 1.151,
+      "solved": false,
+      "steps": 0,
+      "verified": false,
+      "final_score": 0.5625
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+# 交接文档：GatenneaSlider 求解器 —— 给下一个 AI
+
+> 目标：让一个没有上下文的 AI，读完本文档就能接手下一步工作（刚体宏提取）。
+> 全文使用通俗语言 + 精确文件路径/函数名。所有结论均有实验可复现。
+
+---
+
+## 1. 这是什么项目
+
+一个**滑块拼图游戏**（Windows 桌面程序 + 自动求解器），项目根目录：
+
+```
+E:\program_project\other\doubaotest\slider\GatenneaSlider
+```
+
+**谜题规则**（一定要先理解）：
+- 一堆方块散在无限网格上，方块按 `step` 的网格对齐（本任务全用 step=2，即"块占偶数坐标"）。
+- 一次合法移动 = 选一条**缝隙**（两行/两列之间的线），再选缝隙**一侧**，把这一侧中**与该缝隙相邻且连成一片**的方块组整体滑一格（滑动量 = step）。
+- 目标：把所有方块拼成 **m×n 的实心矩形**（形状对即可，方块无编号、可互换）。
+- 动作表示为 4 元组：`(gap_type, gap_line, side, move_dir)`，例 `('v', 1, 'right', 's')` = 在垂直缝隙 x=1 的右侧分量，向下滑 2 格。
+
+**关键术语（全文统一）**：
+- **洞**：目标窗口内空着的格子。
+- **缺口**：贴着窗口边缘的洞（洞在边上）。
+- **凸起**：窗口外的方块（伸出去的部分）。
+- **聚拢度**：窗口内方块数 / 总方块数，越接近 1 越好。
+- **rep_cell（代表格）**：一次移动中，被移动分量里的一个格子坐标，用来"指认"移动的是哪一个分量。
+
+---
+
+## 2. 项目现状（已完成的工作）
+
+### 2.1 已有 8 种求解器（`solver/__init__.py` 注册表 `SOLVER_ALGORITHMS`）
+`ida_star`、`fast`、`greedy`、`table`（查表）、`gather`（聚拢）、`gather_gradient`（梯度聚拢）、`fill_macro`（填洞宏）、**`hybrid`（混合求解，本次新增，最新）**。
+
+### 2.2 真正有用的只有三个
+- **梯度聚拢**（`solver/ml/gather_solver.py::gradient_gather`）：把散块聚成接近矩形，但总是停在固定残局（有洞有凸起）。
+- **填洞宏**（`solver/ml/fill_macro.py::solve_fill_macro`）：聚拢后填洞，但**遇到边缺口/多分量会停机**。
+- **查表**（`solver/table_solver.py`）：靠预建距离表保证最优，但只覆盖建表尺寸（4×4 二级有完整表 55 万状态；5×5 二级表只建到深度 6 就爆炸，更大尺寸不可能全建）。
+
+### 2.3 本次新增：混合求解器（免建表、尺寸无关）
+代码：`solver/hybrid_solver.py::hybrid_solve(game, step)`，返回 `(actions, rep_cells)`。
+
+流水线（三段）：
+1. **梯度聚拢** → 2. **填洞宏**（仅在聚拢度不下降时接受）→ 3. **逐次单缺口 GBFS**（每次只让洞数减 1，重放锚定后再继续）。
+
+其中第 3 段的搜索核心在 `solver/search_core.py`：
+- `expand(coords, step)`：纯坐标枚举所有合法移动，返回 `[(新坐标, 动作, rep), ...]`。
+- `fast_window(coords, m, n)`：快速识别"最佳目标窗口、洞、凸起"。
+- `heuristic(coords, m, n, step)`：启发值 = 洞数 + 凸起到最近洞的步长距离。
+- `guided_reduce_one(coords, m, n, step, budget)`：GBFS，目标只是"少一个洞"。
+
+### 2.4 成绩（全部经过"从头重放验证"）
+| 尺寸 | 样本 | 成功率 | 说明 |
+|---|---|---|---|
+| 4×4 step2 | 20 | **20/20 (100%)** | 含旧方法救不动的硬残局（距离 7） |
+| 5×5 step2 | 10 | **10/10 (100%)** | 免表 |
+| 6×6 step2 | 抽样 | 常见局可解 | **角落缺口 + 远距凸起**的局卡住（见 §4） |
+
+对比数据：4×4 硬残局，旧"最后一公里 IDDFS"40 万节点失败；新 GBFS 约 1600 节点解出。
+
+### 2.5 三个关键根因（本次最重要的发现）
+1. **坐标系帧错位**：聚拢内部会重导出更短的等价路径，重放后状态与求解器内部状态相差一个平移；必须每段用"从初始态重放全部已选动作"的方式重新拿到权威状态。
+2. **多分量歧义（大坑）**：同一缝隙同一侧可能有多块互不相连的方块组。`solver/actions.py::apply_action` 恒取 `side_blocks[0]` 所在的组，而查表/填洞可能移动的是另一组——**同一个 4 元组动作，不同人执行可能移动不同分量**。解法：每个动作带 `rep_cell`，用 `solver/hybrid_solver.py::apply_with_rep(game, action, step, rep_cell)` 精确锁定分量。
+3. **IDA\* 启发太弱**：启发值恒小于 1，等于没剪枝，大局面时间耗尽。
+
+**注意**：`solver/actions.py::apply_action` 的多分量 bug 尚未修复（混合求解器绕过它，但其他算法仍在用）。
+
+---
+
+## 3. 双层共轭结构（下一步工作的理论核心）
+
+来源：新手教程第 4 关「缺口」存档 `beginner_archive/4.1.json`（8×8 step2，8 步解）。
+
+用带标签重放（`experiments/labeled_41.py`）追踪凸起块 P 和缺口 H，得到教科书式结构：
+
+```
+外层 A（步1-3）：把凸起块 P 搬到与缺口 H 同列/同行的位置，并腾出一条直通走廊（缺口仍是空的）
+内层 B（步4-5）：P 沿走廊连续滑动，直接滑进缺口
+外层 A'（步6-8）：把 A 的动作逆序做回去，P 留在缺口里
+```
+
+- 数学上就是群论共轭 **A·B·A⁻¹**。
+- 教程第 5 关「二连刚体凸起」（`5.1.json` 等）是同一模式的推广：**2 格（或 k 格）连成一体的刚性凸起**，整体填入等宽的洞。这就是解"角落缺口"的关键动作，目前还没做成宏。
+
+---
+
+## 4. 当前瓶颈（下一个 AI 要解决的事）
+
+**现象**：6×6 某类残局（例：seed 1001 聚拢后再填一个洞，剩**角缺口**——凸起在窗口顶部，缺口在窗口底部对角）三种搜索都慢：
+- GBFS / 加权 A* / 贪心 DFS 都要探索 ~8 万节点、十几分钟才能找到 ~9 步的解法。
+- 启发值把大量不同状态判成同分，形成巨大"平台"，搜索在这些平台上横着扫。
+
+**本质**：角落缺口需要**先把凸起绕到缺口所在的行/列（往往要绕过角），再滑入**，这个"绕行"是多步刚体 maneuver，不是简单直线。人类靠教程第 5/6 关学过的**宏（固定套路）**解决，搜索没有这个宏就硬算。
+
+**你的任务（刚体宏提取）**：
+1. 拆解 `beginner_archive/5.1.json ~ 5.5.json`（教程第 5 关全部 5 个子关），提取出"刚体凸起 → 填洞"的确定性动作模板。
+2. 把模板参数化（缺口/凸起相对位置可变），做成类似 `fill_macro` 的函数：检测到"角缺口 + k 连刚体凸起"就调用宏，而不是搜索。
+3. 接入 `solver/hybrid_solver.py` 流水线（填洞宏之后、GBFS 之前，或并列为第 4 段）。
+4. 验收：6×6 seed 1001 那类残局应秒级解出。
+
+---
+
+## 5. 代码地图（按重要性排序，请先读这些）
+
+| 文件 | 内容 | 备注 |
+|---|---|---|
+| `solver/search_core.py` | 坐标展开、窗口识别、启发、GBFS | 新写，最干净，先读 |
+| `solver/hybrid_solver.py` | 混合流水线 + `apply_with_rep` | 新写，直接改它接入宏 |
+| `solver/actions.py` | `apply_action`（有 bug）、动作 4 元组定义 | 不要依赖它的分量选择 |
+| `solver/table_core.py` | `canonicalize`、`_side_components`、`is_single_connected` | 坐标基础工具 |
+| `solver/ml/fill_macro.py` | `solve_fill_macro` / `solve_single_void` / `solve_multi_void` | **5 元组动作 `(gap,line,side,d,rep)` 的范式**，做宏参考它 |
+| `solver/ml/gather_solver.py` | `gradient_gather`、`gather_metrics` | 聚拢段 |
+| `experiments/harness.py` | `gen_state` / `load_game` / `coords_of` | 测试用 |
+| `experiments/analyze_notch.py` | 存档读取 + 重放（`build_actions`、`initial_coords`） | 分析存档入口 |
+| `experiments/exp9_rep.py` | `_apply_with_rep`、`replay_steps` | 重放验证 |
+| `experiments/exp11_guided.py` | `guided_reduce_one`、`greedy_dfs` | 搜索实验 |
+
+**Python 环境**：必须用 `D:\python\python.exe`（3.12）；PATH 里的 python 缺依赖。
+
+---
+
+## 6. 存档格式（`beginner_archive/*.json`，分析教程必须懂）
+
+```json
+{
+  "puzzle": {"m": 8, "n": 8, "step": 2},
+  "history": {
+    "history_index": 8,
+    "snapshots": [
+      {"matrix": [...], "bounds": {...}},          // 第 0 个 = 初始状态
+      {"matrix": [...], "move_info": {...}},        // 之后的每个 = 一步之后的快照
+      ...
+    ]
+  }
+}
+```
+
+`move_info` 字段：
+- `gap_type`（'h'/'v'）、`gap_line`、`direction`（'w/s/a/d'）
+- **`step`：这一步实际的滑动量**（可以是 2/4/6，不是固定等于 puzzle.step！必须用它）
+- `moved_positions`：这一步移动的所有块的终点坐标（**用它推断 side，并用第一个格子当 rep_cell**）
+
+坐标换算：`matrix[r][c]==1` 的格子，实际坐标 = `(r + bounds.min_row, c + bounds.min_col)`。
+
+已有工具：`experiments/analyze_notch.py::build_actions(save)` 返回 `[(action, rep_cell, move_step), ...]`，可直接用。
+
+---
+
+## 7. 验证方法（必须做，防返工）
+
+1. **重放验证**：拿到 `(actions, rep_cells)` 后，用 `experiments.exp9_rep.replay_steps(snap, steps)` 从头重放，`is_solved()` 为 True 才算成功。
+   - 带 `rep_cell` 的用 `apply_with_rep`；不带（聚拢段）的用 `apply_action`。
+2. **测试基准**：4×4 用 seeds 1000–1019（`harness.gen_state(4,4,2,seed)` 生成打乱局，正向 shuffle 必然可解）；5×5 用 1000–1009；6×6 用 1000–1001。
+3. **硬残局对照**：4×4 距离 7 的 canonical key（用户提供的完整表可查最优）：
+   `26960769438285125908113663559289765120336278697045450582562818884355`
+
+---
+
+## 8. 运行命令示例
+
+```powershell
+cd E:\program_project\other\doubaotest\slider\GatenneaSlider
+D:\python\python.exe -m experiments.exp12_chain --configs 4x4x2 --n 6   # 混合链回归
+D:\python\python.exe -m experiments.analyze_notch --sub 5.1 --steps     # 渲染第5关
+D:\python\python.exe -m experiments.detect_conj                          # 共轭结构检测
+```
+
+---
+
+## 9. 注意事项 / 坑
+
+- **apply_action 多分量 bug**：永远不要假设"同侧只有一组"，动作必须带 rep 或用 `apply_with_rep`。
+- **帧错位**：任何"续接"都必须重新从初始态重放，不要沿用上一段的游戏对象。
+- **每步 step 独立**：教程存档里一步可能滑 2/4/6 格，重放时用 `move_info.step`，不要用 puzzle.step。
+- **启发平台**：搜索慢不是代码 bug，是启发区分度不够，别浪费时间调参，直接上宏。
+- 用户是作者本人，**会手动解所有 step=2 矩形谜题**，理解"缺口→洞→填洞→还原"的共轭思路，可以请教。
+- 用户偏好：回复用繁体/简体均可但求通俗；输出只要改动部分；**重建表/重算大数据前先问用户有没有现成数据**（用户有完整 4×4 表和其他尺寸部分数据）。

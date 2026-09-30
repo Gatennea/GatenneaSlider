@@ -1,0 +1,24 @@
+﻿4.1  8步  k=3 solved=True
+      A  = [('v', 1, 'right', 's'), ('h', 7, 'below', 'a'), ('h', 6, 'above', 'd')]
+      B  = [('v', 1, 'left', 's'), ('v', 1, 'left', 's')]
+      A' = [('h', 6, 'above', 'a'), ('h', 7, 'below', 'd'), ('v', 1, 'right', 'w')]
+4.2  25步  k=0 solved=False
+      A  = []
+      B  = [('h', 1, 'below', 'a'), ('v', -1, 'left', 'w'), ('h', 1, 'above', 'd'), ('h', 1, 'above', 'd'), ('h', 1, 'above', 'd'), ('v', 5, 'right', 'w'), ('h', 1, 'above', 'a'), ('v', -1, 'left', 's'), ('h', 1, 'above', 'a'), ('v', 1, 'left', 'w'), ('h', -1, 'above', 'd'), ('v', 5, 'right', 's'), ('h', 0, 'above', 'd'), ('h', 0, 'above', 'd'), ('v', 5, 'right', 'w'), ('h', 0, 'above', 'a'), ('h', -1, 'above', 'a'), ('v', 1, 'right', 'w'), ('v', -1, 'right', 's'), ('h', 5, 'below', 'a'), ('h', 4, 'below', 'a'), ('v', -3, 'left', 's'), ('h', 4, 'below', 'd'), ('h', 5, 'below', 'd'), ('v', -1, 'right', 'w')]
+      A' = []
+4.3  9步  k=0 solved=False
+      A  = []
+      B  = [('h', 0, 'below', 'd'), ('v', 7, 'right', 'w'), ('h', -1, 'above', 'a'), ('h', 0, 'above', 'a'), ('v', 3, 'left', 'w'), ('h', 0, 'above', 'd'), ('h', -1, 'above', 'd'), ('v', 7, 'right', 's'), ('h', 0, 'above', 'd')]
+      A' = []
+4.4  11步  k=1 solved=False
+      A  = [('h', 2, 'above', 'a')]
+      B  = [('v', -1, 'left', 's'), ('h', -1, 'above', 'd'), ('v', 0, 'left', 'w'), ('h', -1, 'above', 'a'), ('v', 0, 'left', 's'), ('v', -1, 'left', 'w'), ('h', 2, 'above', 'd'), ('h', 1, 'above', 'a'), ('v', -1, 'left', 'w')]
+      A' = [('h', 1, 'above', 'd')]
+4.5  8步  k=0 solved=True
+      A  = []
+      B  = [('h', 1, 'above', 'd'), ('v', 3, 'right', 's'), ('v', 1, 'left', 'w'), ('h', 1, 'above', 'd'), ('v', 1, 'left', 'w'), ('h', 1, 'below', 'a'), ('v', 1, 'left', 's'), ('h', 1, 'below', 'd')]
+      A' = []
+4.6  18步  k=0 solved=True
+      A  = []
+      B  = [('v', 5, 'right', 's'), ('h', 1, 'below', 'a'), ('h', 1, 'below', 'a'), ('v', -1, 'left', 'w'), ('v', -3, 'left', 'w'), ('h', -1, 'above', 'd'), ('v', -3, 'left', 'w'), ('h', -1, 'above', 'd'), ('h', 1, 'above', 'd'), ('v', 1, 'right', 'w'), ('h', 1, 'above', 'a'), ('v', 1, 'right', 's'), ('h', 3, 'below', 'd'), ('v', 1, 'right', 'w'), ('v', 1, 'right', 'w'), ('h', -1, 'above', 'a'), ('v', 1, 'right', 's'), ('h', -1, 'above', 'd')]
+      A' = []
