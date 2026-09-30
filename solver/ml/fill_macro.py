@@ -583,6 +583,94 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
 
 
 # ---------------------------------------------------------------------------
+# 宏级回溯搜索：消灭贪心顺序依赖
+# ---------------------------------------------------------------------------
+def solve_multi_search(coords, m, n, step, couple_hook=None,
+                       node_budget=400, verbose=False):
+    """宏级 DFS：对 couple 选择回溯，状态图上找「填满窗口」的宏序列。
+
+    背景：贪心驱动存在顺序依赖——同一盘面换个候选随机序，一个能全解一
+    个停机（2026-10-01 失败05/08/09 实证）。这证明「解存在但贪心序列选
+    错」，对 couple 选择做 DFS 回溯即可补完备性。
+
+    状态图：节点=盘面，边=一次「hook 成功且闸门通过」的 couple。每条边
+    窗口方块数严格 +1 → 深度 ≤ 空位数、无环；不同顺序到达的同一中间态
+    用 seen 去重（该状态之下子树相同，败过一次不必再败）。
+
+    couple_hook：(coords,m,n,step,h,p)→(acts,stats)。None = 只填洞。
+    node_budget：DFS 节点上限（每节点要对全 couple 跑 hook，代价高）。
+
+    返回 (actions, stats)：
+    · 全解 → actions 全量，stats['search']=True；
+    · 预算耗尽 → 最深有成果前缀，stats['partial']=True；
+    · 零成果 → (None, stats)。
+    """
+    coords = frozenset(coords)
+    if len(coords) != m * n:
+        return None, {'error': f'格数 {len(coords)} != {m * n}'}
+    if build_game(coords, m, n).is_solved():
+        return [], {'steps': 0, 'search': True}
+    t0 = time.time()
+
+    def _default_hook(cur, m_, n_, s_, h, p):
+        return solve_single_void(cur, m_, n_, s_, hole=h, anchor=p,
+                                 keep_partial=True)
+    hook = couple_hook or _default_hook
+
+    def _couples(cur):
+        _reg, _ov, holes, outside = window_of(cur, m, n, step)
+        out = []
+        for h in holes:
+            for p in outside:
+                if (p[0] - h[0]) % step == 0 and (p[1] - h[1]) % step == 0:
+                    acts, _st = hook(cur, m, n, step, h, p)
+                    if acts is None:
+                        continue
+                    if not _overlap_raised(cur, m, n, step, acts):
+                        continue
+                    out.append(acts)
+        return out
+
+    state = {'nodes': 0, 'best': [], 'exhausted': False, 'seen': set()}
+
+    def dfs(cur, prefix):
+        if state['nodes'] >= node_budget:
+            state['exhausted'] = True
+            return None
+        state['nodes'] += 1
+        if build_game(cur, m, n).is_solved():
+            return list(prefix)
+        if len(prefix) > len(state['best']):
+            state['best'] = list(prefix)
+        for acts in _couples(cur):
+            g2 = build_game(cur, m, n)
+            if not _replay_apply(g2, acts, m, n, step):
+                continue
+            nxt = frozenset(gcoords(g2))
+            if nxt == cur or nxt in state['seen']:
+                continue
+            state['seen'].add(nxt)
+            r = dfs(nxt, prefix + list(acts))
+            if r is not None:
+                return r
+        return None
+
+    r = dfs(coords, [])
+    if r is not None:
+        return (r, {'steps': len(r), 'nodes': state['nodes'],
+                    'search': True, 'secs': round(time.time() - t0, 3)})
+    if state['best']:
+        return (state['best'],
+                {'steps': len(state['best']), 'nodes': state['nodes'],
+                 'search': True, 'partial': True,
+                 'budget_exhausted': state['exhausted'],
+                 'secs': round(time.time() - t0, 3)})
+    return None, {'reason': '搜索：预算内无可行 couple 路径',
+                  'nodes': state['nodes'], 'search': True,
+                  'secs': round(time.time() - t0, 3)}
+
+
+# ---------------------------------------------------------------------------
 # GUI 求解器入口（与 SOLVER_ALGORITHMS 统一签名）
 # ---------------------------------------------------------------------------
 def _split_actions(actions):

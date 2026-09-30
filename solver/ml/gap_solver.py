@@ -39,7 +39,8 @@ if _ROOT not in sys.path:
 from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noqa: E402
                                   solve_single_void, solve_fill_macro,
                                   _capture_apply, _replay_apply, _Runner,
-                                  replay_and_verify, solve_multi_void)
+                                  replay_and_verify, solve_multi_void,
+                                  solve_multi_search)
 from solver.ml import view_rotate                                          # noqa: E402
 
 _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
@@ -1511,7 +1512,19 @@ def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
     acts, stats = solve_multi_void(coords, m, n, step, verbose=verbose,
                                    rng=rng, couple_hook=hook, **kwargs)
     stats['mode'] = mode
-    return acts, stats
+    if acts is not None and not stats.get('partial'):
+        return acts, stats                     # 贪心全解，不进搜索
+    # 贪心停机/partial → 宏级 DFS 回溯兜底（顺序依赖实证：换候选序可解）
+    if verbose:
+        print('  贪心未全解(%s)，宏级搜索兜底' % stats.get('reason', 'partial'))
+    acts2, stats2 = solve_multi_search(coords, m, n, step,
+                                       couple_hook=hook, verbose=verbose)
+    if acts2 is not None and not stats2.get('partial'):
+        stats2['mode'] = mode
+        stats2['greedy'] = {'steps': len(acts) if acts else 0,
+                            'reason': stats.get('reason')}
+        return acts2, stats2
+    return acts, stats                         # 搜索也无全解 → 回贪心产物
 
 
 # ---------------------------------------------------------------------------
