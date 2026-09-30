@@ -5,6 +5,8 @@ r"""缺口求解器（双层共轭）「死代码」— 封壳 + 内部共轭 + 
     手法 = 甩料（切横缝把不含洞行的带向外推 step，甩出料条）
          + 垫洞（料条沿缝平移直到盖住洞的朝外邻格）。
     候选表按总步数升序逐个试，引擎 try_move 当裁判，不回溯、无搜索。
+    角缺口（步骤3）：四角旋转归一化到左上 → _corner_chain
+    （立塔 → 封北 → 西柱南下封西兼作桥 → 末条北移 → 凸起入洞 → 逆序拆壳）。
 内层（复用 fill_macro）：solve_single_void couple 模式——显式指定
     「哪个凸起填哪个洞」，避免 solve_fill_macro 自动识别选错 couple。
 收尾：封壳动作逆序宏（同缝同侧、方向取反、目标=侧首块）拆壳复位。
@@ -30,7 +32,8 @@ if _ROOT not in sys.path:
 
 from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noqa: E402
                                   solve_single_void, solve_fill_macro,
-                                  _capture_apply, _replay_apply, _Runner)
+                                  _capture_apply, _replay_apply, _Runner,
+                                  replay_and_verify)
 from solver.ml import view_rotate                                          # noqa: E402
 
 _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
@@ -289,6 +292,151 @@ def _run_chain(vg, seal4, inner4, unseal4, p0, step):
     return segs, nseg
 
 
+# ---------------------------------------------------------------------------
+# 角缺口（规范型：角洞在 view 左上 (0,0)）——推測題3 官方解参数化
+# ---------------------------------------------------------------------------
+# 转置同构（行列互换）：角洞 (0,0) 不动、连通/碰撞/矩形全部保持、
+# (r%s,c%s) 类计数与转置后还原态一致 ⇒ 右边缘凸起（偶行）↔ 下边缘凸起。
+_T_GAP = {'h': 'v', 'v': 'h'}
+_T_SIDE = {'above': 'left', 'left': 'above',
+           'below': 'right', 'right': 'below'}
+_T_DIR = {'w': 'a', 'a': 'w', 's': 'd', 'd': 's'}
+
+
+def _transpose_wall(wall5):
+    """转置世界动作 → 原世界动作（5 元组）。"""
+    return [(_T_GAP[g], ln, _T_SIDE[sd], _T_DIR[d], (rp[1], rp[0]))
+            for g, ln, sd, d, rp in wall5]
+
+
+def _corner_chain(vg, step, verbose=False):
+    """角缺口全链（前提：已归一化，角洞在 view (0,0)）。
+
+    凸起须为窗外单块且贴在下边缘：(mv, c_b)，c_b ≡ 0 (mod step)。
+    手法（推測題3 官方 11 步参数化，s=step，k=mv//s）：
+      [N]×(k-1)   v 0 right w    东部连同凸起北移，立塔 rows -(mv-s)..-1
+      A2          h -1 above a   塔西移 s，封北 (−1,0)
+      A3          v 1-s left s   塔西柱南下，封西 (0,1-s),(1,1-s) 且当桥
+      [N]         v 0 right w    末条北移：凸起到 (0,c_b)、行0清空；
+                                 col0 残条靠西柱链桥接（无桥则引擎拒 disconnected）
+      C ×c_b/s    h -1 below a   凸起单块逐段西移入洞
+      拆壳 = 前四段逆序反向（rep=None 侧首块语义）。
+    返回 (view 动作5元组列表, stats) 或 (None, 原因)。
+    """
+    mv, nv = vg.m, vg.n
+    s = step
+    if s < 2:
+        return None, '角缺口：仅支持 step>=2'
+    if mv % s:
+        return None, '角缺口：mv=%d 非 step 整倍（奇偶类不容角洞）' % mv
+    if nv < s + 2:
+        return None, '角缺口：nv=%d < step+2，塔无落点' % nv
+    if mv < 2 * s + 1:
+        return None, '角缺口：mv=%d 过矮，西柱无法兼作桥' % mv
+    outs = [blk for blk in vg.blocks
+            if blk.location[0] < 0 or blk.location[0] >= mv
+            or blk.location[1] < 0 or blk.location[1] >= nv]
+    if len(outs) != 1:
+        return None, '角缺口：窗外块 %d 个（需恰 1）' % len(outs)
+    pr, pc = outs[0].location
+    if pr != mv:
+        return None, '角缺口：凸起不在下边缘 %s' % ((pr, pc),)
+    cb = pc
+    if cb < 1 or cb % s or cb > nv - 1:
+        return None, '角缺口：凸起列 %d 非法（需 1..%d 且 ≡0 mod step）' % (cb, nv - 1)
+    k = mv // s
+    seal4 = [('v', 0, 'right', 'w')] * (k - 1) + \
+            [('h', -1, 'above', 'a', (-1, 1)),
+             ('v', 1 - s, 'left', 's', (-1, 1 - s)),
+             ('v', 0, 'right', 'w')]
+    inner4 = [('h', -1, 'below', 'a')] * (cb // s)
+    unseal4 = [('v', 0, 'right', 's', None),
+               ('v', 1 - s, 'left', 'w', None),
+               ('h', -1, 'above', 'd', None)] + \
+              [('v', 0, 'right', 's', None)] * (k - 1)
+    wall, stats = _run_chain(vg, seal4, inner4, unseal4, (pr, pc), s)
+    if wall is None:
+        return None, '角缺口：链被引擎拒绝或未还原'
+    if verbose:
+        print('  角链：k=%d c_b=%d（立塔%d+封北西+末N+入洞%d+拆壳%d）'
+              % (k, cb, k - 1, cb // s, 2 + k))
+    return wall, dict(stats, k=k, cb=cb)
+
+
+def solve_corner_gap(coords, m, n, step, verbose=False):
+    """单角缺口全链求解（步骤3）：四角旋转归一化到左上 → _corner_chain。
+
+    角→旋转：左上 id、右上 ccw、左下 cw、右下 r180（rotate_xy 逐一验证）。
+    返回 (世界动作5元组列表, stats)；失败 → (None, stats)。
+    """
+    t0 = time.time()
+    coords = frozenset(coords)
+    if len(coords) != m * n:
+        return None, {'error': f'格数 {len(coords)} != {m * n}'}
+    g0 = build_game(coords, m, n)
+    if g0.is_solved():
+        return [], {'steps': 0, 'secs': 0.0}
+    (r0, c0, wh), _ov, holes, _outside = window_of(coords, m, n, step)
+    if len(holes) != 1:
+        return None, {'reason': f'非单缺口（窗内空位 {len(holes)} 个）'}
+    h_w = next(iter(holes))
+    top, bot = h_w[0] == r0, h_w[0] == r0 + wh[0] - 1
+    lef, rig = h_w[1] == c0, h_w[1] == c0 + wh[1] - 1
+    if not (top or bot) or not (lef or rig):
+        return None, {'reason': '非角缺口'}
+    name = ('id' if lef else 'ccw') if top else ('cw' if lef else 'r180')
+    mv, nv = view_rotate.view_dims(name, m, n)
+    vc = frozenset(view_rotate.rotate_xy(name, r - r0, c - c0, m, n)
+                   for r, c in coords)
+    vh = view_rotate.rotate_xy(name, h_w[0] - r0, h_w[1] - c0, m, n)
+    if vh != (0, 0):
+        return None, {'reason': '角归一化异常 %s' % (vh,), 'rot': name}
+    vg = build_game(vc, mv, nv)
+
+    # ---- 角链：先直接解；失败且凸起在右边缘偶行时，转置视角重试 ----
+    res = _corner_chain(vg, step, verbose=verbose)
+    if res[0] is None:
+        outs = [blk for blk in vg.blocks
+                if blk.location[0] < 0 or blk.location[0] >= mv
+                or blk.location[1] < 0 or blk.location[1] >= nv]
+        if len(outs) == 1 and outs[0].location[1] == nv \
+                and outs[0].location[0] % step == 0:
+            vt = build_game(frozenset((c, r) for r, c in gcoords(vg)),
+                            nv, mv)
+            if verbose:
+                print('  直接角链未成(%s)，转置重试' % res[1])
+            res2 = _corner_chain(vt, step, verbose=verbose)
+            if res2[0] is not None:
+                res = (_transpose_wall(res2[0]),
+                       dict(res2[1], transposed=True))
+    if res[0] is None:
+        return None, {'reason': res[1], 'rot': name}
+    wall5, cstats = res
+
+    def _to_world(a):
+        gap, line, side, d, rep = a
+        gap2, line2, side2, d2 = view_rotate.act_to_world(
+            name, gap, line, side, d, m, n)
+        line2 = line2 + (r0 if gap2 == 'h' else c0)
+        rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
+        return (gap2, line2, side2, d2, (rr + r0, cc + c0))
+
+    wall = [_to_world(a) for a in wall5]
+    g = build_game(coords, m, n)
+    ok = _replay_apply(g, wall, m, n, step)
+    solved_world = ok and g.is_solved()
+    stats = {'steps': len(wall),
+             'seal': cstats['k'] + 1, 'inner': cstats['cb'] // step,
+             'unseal': cstats['k'] + 2,
+             'rot': name, 'edge': 'CORNER', 'route': 'corner',
+             'view_solved': True, 'solved': solved_world,
+             'secs': round(time.time() - t0, 3)}
+    if not solved_world:
+        stats['reason'] = '角链回放未还原'
+        return None, stats
+    return wall, stats
+
+
 def solve_edge_gap(coords, m, n, step, verbose=False):
     """单边缺口全链求解：封壳 → 内部共轭(couple) → 拆壳。
 
@@ -440,7 +588,10 @@ def solve_gap(coords, m, n, step):
         if edge in ('L', 'R', 'U', 'D'):
             wall, stats = solve_edge_gap(coords, m, n, step)
             return wall, dict(stats, route='edge_gap')
-    # 其余（封闭孔洞/多洞/角缺口）交填洞宏驱动
+        if edge == 'CORNER':
+            wall, stats = solve_corner_gap(coords, m, n, step)
+            return wall, dict(stats, route='corner_gap')
+    # 其余（封闭孔洞/多洞）交填洞宏驱动
     from solver.ml.fill_macro import solve_fill_macro
     res = solve_fill_macro(build_game(coords, m, n), step)
     if isinstance(res, tuple):
@@ -467,10 +618,15 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
     if g.is_solved():
         return [], []
     (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
-    use_gap = (len(holes) == 1 and _edge_of(
-        next(iter(holes)), r0, c0, wh[0], wh[1]) in ('L', 'R', 'U', 'D'))
+    edge = None
+    if len(holes) == 1:
+        edge = _edge_of(next(iter(holes)), r0, c0, wh[0], wh[1])
+    use_gap = edge in ('L', 'R', 'U', 'D', 'CORNER')
     if use_gap:
-        wall, stats = solve_edge_gap(coords, m, n, step)
+        if edge == 'CORNER':
+            wall, stats = solve_corner_gap(coords, m, n, step)
+        else:
+            wall, stats = solve_edge_gap(coords, m, n, step)
         if wall is not None and stats.get('solved'):
             acts4 = [a[:4] for a in wall]
             reps = [a[4] for a in wall]
@@ -526,8 +682,14 @@ def _main():
             coords, m, n, step = _load_case(path)
             print('=' * 60)
             print(fname)
-            acts, stats = solve_edge_gap(coords, m, n, step, verbose=True)
-            print('结果:', '成功' if acts else '失败', stats)
+            acts, stats = solve_gap(coords, m, n, step)
+            if isinstance(acts, tuple):      # fill_macro 透传 (actions4, reps)
+                acts4, reps = acts
+                acts5 = [a[:4] + (reps[i],) for i, a in enumerate(acts4)]
+                ok = replay_and_verify(coords, m, n, step, acts5)
+                print('结果: fill_macro %d 步 回放复原=%s' % (len(acts4), ok))
+            else:
+                print('结果:', '成功' if acts else '失败', stats)
         return
     print(__doc__)
 
