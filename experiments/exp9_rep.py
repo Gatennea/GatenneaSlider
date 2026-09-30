@@ -26,6 +26,28 @@ def replay_steps(snap, steps):
     return g.is_solved(), g
 
 
+def replay_valid(snap, steps):
+    """按 (action, rep) 重放，返回 (每一步是否都合法, game)。
+
+    与 replay_steps 的区别（重要）：
+    - replay_steps 的首返回值是 g.is_solved()，语义是「是否已复原」；
+    - 本函数的首返回值语义是「重放过程有没有非法步」。
+
+    段内推进用「是否复原」当「重放是否成功」会误判：填洞宏 / guided 每次
+    只保证缺口数减少，不保证一次复原，于是合法的中间态被当成失败。
+    需要判断「这段能不能接受」时用本函数；只有最终验收才用 replay_steps。
+    """
+    g = H.load_game(snap)
+    for action, rep in steps:
+        if rep is None:
+            ok = H.apply_action(g, action, snap['step'])
+        else:
+            ok = _apply_with_rep(g, action, snap['step'], rep)
+        if not ok:
+            return False, g
+    return True, g
+
+
 def _apply_with_rep(game, action, step, rep_cell):
     """选中包含 rep_cell 的那个连通分量并执行 action。"""
     from solver.table_core import _side_components, is_single_connected

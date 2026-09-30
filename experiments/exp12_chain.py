@@ -7,7 +7,7 @@ import argparse
 import time
 
 from experiments import harness as H
-from experiments.exp9_rep import replay_steps
+from experiments.exp9_rep import replay_steps, replay_valid
 from experiments.exp11_guided import guided_solve
 
 
@@ -35,7 +35,7 @@ def solve(snap, use_fill=True, use_guided=True, budget=300000,
     if gather_cap is not None:
         acts = acts[:gather_cap]
     steps += [(a, None) for a in acts]
-    _ok, g = replay_steps(snap, steps)
+    _ok, g = replay_valid(snap, steps)
     if g.is_solved():
         return steps, 'gather'
 
@@ -48,14 +48,16 @@ def solve(snap, use_fill=True, use_guided=True, budget=300000,
         elif isinstance(res, dict) and res.get('type') == 'fill_partial':
             f, fr = res.get('actions', []), res.get('rep_cells', [])
             fsteps = list(zip(f, fr))
-        _okb, g_tent = replay_steps(snap, steps + fsteps)
-        before = score_of(replay_steps(snap, steps)[1])
-        after = score_of(g_tent)
-        if g_tent.is_solved():
+        _okb, g_tent = replay_valid(snap, steps + fsteps)
+        if not _okb:
+            g_tent = None
+        before = score_of(replay_valid(snap, steps)[1])
+        after = score_of(g_tent) if g_tent is not None else float('-inf')
+        if g_tent is not None and g_tent.is_solved():
             return steps + fsteps, 'fill'
         if after >= before:
             steps += fsteps
-        _ok, g = replay_steps(snap, steps)
+        _ok, g = replay_valid(snap, steps)
 
     # 段3：逐次单缺口 guided 消解（处理多缺口，每段都很小）
     if use_guided:
@@ -67,9 +69,10 @@ def solve(snap, use_fill=True, use_guided=True, budget=300000,
                                            snap['n'], step)
             if path is None:
                 return None, f'guided_stuck_nodes{used}'
-            ok, g = replay_steps(snap, steps + path)
+            ok, g2 = replay_valid(snap, steps + path)
             if not ok:
                 return None, 'guided_replay_bad'
+            g = g2
             steps += path
         if g.is_solved():
             return steps, 'guided'
