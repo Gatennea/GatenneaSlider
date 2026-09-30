@@ -362,8 +362,12 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
         return None, {'reason': str(e)}
 
 
-def _couple_scan_state(coords, m, n, step, rng):
-    """当前状态遍历全部 couple，返回首个能提升聚拢度的动作片段（含 partial 有成果）。"""
+def _couple_scan_state(coords, m, n, step, rng, couple_hook=None):
+    """当前状态遍历全部 couple，返回首个能提升聚拢度的动作片段（含 partial 有成果）。
+
+    couple_hook：可选 (coords, m, n, step, h, p) → (acts, stats) 的统一
+    求解器（多空位驱动层注入：洞→填洞宏、缺口→补缺链）。为 None 时
+    走原填洞宏 couple。"""
     _reg, _ov, holes, outside = window_of(coords, m, n, step)
     h_list = list(holes)
     rng.shuffle(h_list)
@@ -372,8 +376,11 @@ def _couple_scan_state(coords, m, n, step, rng):
                  if (p[0] - h[0]) % step == 0 and (p[1] - h[1]) % step == 0]
         rng.shuffle(cands)
         for p in cands:
-            acts, _s = solve_single_void(coords, m, n, step, hole=h,
-                                         anchor=p, keep_partial=True)
+            if couple_hook is not None:
+                acts, _s = couple_hook(coords, m, n, step, h, p)
+            else:
+                acts, _s = solve_single_void(coords, m, n, step, hole=h,
+                                             anchor=p, keep_partial=True)
             # 此处替 solve_single_void 把关聚拢度：只认「回放后窗口方块数提升」
             if acts is not None and _overlap_raised(coords, m, n, step, acts):
                 return acts
@@ -401,7 +408,7 @@ def _nondrop_moves(coords, m, n, step, ov0):
 
 
 def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
-                      max_nodes=150):
+                      max_nodes=150, couple_hook=None):
     """有限中性整形预演：≤max_shaping 步「不降聚拢度」动作后收成果。
 
     couple 宏的最小原子是「一次完整 A-B-A′」；有些卡点要先花 0 增益的整带
@@ -422,7 +429,8 @@ def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
             s, prefix = frontier.popleft()
             if window_of(s, m, n, step)[1] > ov0:
                 return prefix            # 纯整形已提升（窗口重定位）
-            cacts = _couple_scan_state(s, m, n, step, rng)
+            cacts = _couple_scan_state(s, m, n, step, rng,
+                                       couple_hook=couple_hook)
             if cacts is not None:
                 return prefix + cacts    # 整形后解锁 couple
             for act, s2 in _nondrop_moves(s, m, n, step, ov0):
@@ -441,8 +449,13 @@ def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
 
 def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                      max_attempts=400, max_shaping=2, max_nodes=150,
-                     rng=None):
+                     rng=None, couple_hook=None):
     """多洞无缺口贪心驱动（确定性死代码，无求解搜索）。
+
+    couple_hook：可选统一 couple 求解器 (coords,m,n,step,h,p)→(acts,stats)。
+    None = 只填洞（原行为）；注入多空位分发器后即为「洞+缺口统一驱动」：
+    缺口 couple 走补缺链（双层共轭），洞 couple 走填洞宏，验收闸门同一把
+    （回放后最佳窗口方块数提升）。
 
     流程：
         1. 取当前窗口内一个洞 h，随机找同 mod 的窗外凸起 p → 一个 couple；
@@ -505,9 +518,12 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
             rng.shuffle(cands)
             for p in cands:
                 attempts += 1
-                acts, stats = solve_single_void(cur, m, n, step,
-                                                hole=h, anchor=p,
-                                                keep_partial=True)
+                if couple_hook is not None:
+                    acts, stats = couple_hook(cur, m, n, step, h, p)
+                else:
+                    acts, stats = solve_single_void(cur, m, n, step,
+                                                    hole=h, anchor=p,
+                                                    keep_partial=True)
                 if acts is None:
                     continue   # 该 couple 完全失败（macro 一步未动）
                 # 聚拢度闸门：只接受「回放后最佳窗口方块数提升」的产物
@@ -537,7 +553,8 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
             # couple 全败 → 有限中性整形预演：≤max_shaping 步不降聚拢度的
             # 整带动作后直接提升 / 解锁 couple（覆盖「需先揉形再填」卡点）
             plan = _shaping_progress(cur, m, n, step, rng, _ov,
-                                     max_shaping, max_nodes)
+                                     max_shaping, max_nodes,
+                                     couple_hook=couple_hook)
             if plan is not None:
                 if not _replay_apply(g, plan, m, n, step):
                     return _stop({'reason': '多洞停机：整形预演推进活盘失败',

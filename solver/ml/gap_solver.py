@@ -39,7 +39,7 @@ if _ROOT not in sys.path:
 from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noqa: E402
                                   solve_single_void, solve_fill_macro,
                                   _capture_apply, _replay_apply, _Runner,
-                                  replay_and_verify)
+                                  replay_and_verify, solve_multi_void)
 from solver.ml import view_rotate                                          # noqa: E402
 
 _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
@@ -479,10 +479,12 @@ def _bumpcol_chain(vg, vh, step, verbose=False, trace=None):
     return None, '专列：候选全败'
 
 
-def _run_chain(vg, seal4, inner4, unseal4, p0, step, trace=None):
+def _run_chain(vg, seal4, inner4, unseal4, p0, step, trace=None,
+               require_solved=True, vh=(0, 0)):
     """在副本上执行 封壳→内部→拆壳 三段（rep 动态跟踪凸起）。
 
-    全部动作合法且最终 solved 才成功。
+    require_solved=True：全部动作合法且最终 solved 才成功；
+    False（couple 模式）：成功判据 = 洞 vh 被填。
     返回 (view 动作5元组列表, stats) 或 (None, None)。
     trace 为 dict 时记录首个失败：seg/index/action/why/prefix(已成功动作)。
     """
@@ -511,10 +513,16 @@ def _run_chain(vg, seal4, inner4, unseal4, p0, step, trace=None):
             out.append(a5)
         segs += out
         nseg[name] = len(out)
-    if not g2.is_solved():
+    if require_solved:
+        if not g2.is_solved():
+            if trace is not None:
+                trace.update(seg='verify', index=-1, action=None,
+                             why='链走通但未还原', prefix=list(segs))
+            return None, None
+    elif vh not in gcoords(g2):
         if trace is not None:
             trace.update(seg='verify', index=-1, action=None,
-                         why='链走通但未还原', prefix=list(segs))
+                         why='链走通但洞未填', prefix=list(segs))
         return None, None
     return segs, nseg
 
@@ -536,9 +544,11 @@ def _transpose_wall(wall5):
             for g, ln, sd, d, rp in wall5]
 
 
-def _corner_chain(vg, step, verbose=False, trace=None):
+def _corner_chain(vg, step, verbose=False, trace=None, p0=None,
+                  require_solved=True):
     """角缺口全链（前提：已归一化，角洞在 view (0,0)）。
 
+    p0：显式指定窗外凸起（多凸起 couple 模式）；None=要求窗外恰一块。
     凸起须为窗外单块且贴在下边缘：(mv, c_b)，c_b ≡ 0 (mod step)。
     手法（推測題3 官方 11 步参数化，s=step，k=mv//s）：
       [N]×(k-1)   v 0 right w    东部连同凸起北移，立塔 rows -(mv-s)..-1
@@ -560,11 +570,21 @@ def _corner_chain(vg, step, verbose=False, trace=None):
         return None, '角缺口：nv=%d < step+2，塔无落点' % nv
     if mv < 2 * s + 1:
         return None, '角缺口：mv=%d 过矮，西柱无法兼作桥' % mv
-    outs = [blk for blk in vg.blocks
-            if blk.location[0] < 0 or blk.location[0] >= mv
-            or blk.location[1] < 0 or blk.location[1] >= nv]
-    if len(outs) != 1:
-        return None, '角缺口：窗外块 %d 个（需恰 1）' % len(outs)
+    if p0 is not None:
+        pb = None
+        for blk in vg.blocks:
+            if tuple(blk.location) == tuple(p0):
+                pb = blk
+                break
+        if pb is None:
+            return None, '角缺口：指定凸起 %s 不在盘上' % (p0,)
+        outs = [pb]
+    else:
+        outs = [blk for blk in vg.blocks
+                if blk.location[0] < 0 or blk.location[0] >= mv
+                or blk.location[1] < 0 or blk.location[1] >= nv]
+        if len(outs) != 1:
+            return None, '角缺口：窗外块 %d 个（需恰 1）' % len(outs)
     pr, pc = outs[0].location
     if pr != mv:
         return None, '角缺口：凸起不在下边缘 %s' % ((pr, pc),)
@@ -582,7 +602,8 @@ def _corner_chain(vg, step, verbose=False, trace=None):
                ('h', -1, 'above', 'd', None)] + \
               [('v', 0, 'right', 's', None)] * (k - 1)
     wall, stats = _run_chain(vg, seal4, inner4, unseal4, (pr, pc), s,
-                             trace=trace)
+                             trace=trace, require_solved=require_solved,
+                             vh=(0, 0))
     if wall is None:
         return None, '角缺口：链被引擎拒绝或未还原'
     if verbose:
@@ -591,9 +612,11 @@ def _corner_chain(vg, step, verbose=False, trace=None):
     return wall, dict(stats, k=k, cb=cb)
 
 
-def solve_corner_gap(coords, m, n, step, verbose=False):
+def solve_corner_gap(coords, m, n, step, verbose=False, hole=None,
+                     anchor=None, require_solved=True):
     """单角缺口全链求解（步骤3）：四角旋转归一化到左上 → _corner_chain。
 
+    couple 模式：显式喂 hole/anchor，成功判据 = 洞被填（不要求整盘还原）。
     角→旋转：左上 id、右上 ccw、左下 cw、右下 r180（rotate_xy 逐一验证）。
     返回 (世界动作5元组列表, stats)；失败 → (None, stats)。
     """
@@ -605,9 +628,18 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
     if g0.is_solved():
         return [], {'steps': 0, 'secs': 0.0}
     (r0, c0, wh), _ov, holes, _outside = window_of(coords, m, n, step)
-    if len(holes) != 1:
-        return None, {'reason': f'非单缺口（窗内空位 {len(holes)} 个）'}
-    h_w = next(iter(holes))
+    couple = hole is not None
+    if couple:
+        h_w = tuple(hole)
+        if h_w not in holes:
+            return None, {'reason': 'couple缺口不是窗内空位'}
+        if anchor is None or tuple(anchor) not in coords:
+            return None, {'reason': 'couple凸起不在盘上'}
+        anchor = tuple(anchor)
+    else:
+        if len(holes) != 1:
+            return None, {'reason': f'非单缺口（窗内空位 {len(holes)} 个）'}
+        h_w = next(iter(holes))
     top, bot = h_w[0] == r0, h_w[0] == r0 + wh[0] - 1
     lef, rig = h_w[1] == c0, h_w[1] == c0 + wh[1] - 1
     if not (top or bot) or not (lef or rig):
@@ -620,6 +652,10 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
     if vh != (0, 0):
         return None, {'reason': '角归一化异常 %s' % (vh,), 'rot': name}
     vg = build_game(vc, mv, nv)
+    vp0 = None
+    if couple:
+        vp0 = view_rotate.rotate_xy(name, anchor[0] - r0, anchor[1] - c0,
+                                    m, n)
 
     def _to_world(a):
         gap, line, side, d, rep = a
@@ -634,19 +670,32 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
     # 先沿右缘下推 step 步到 (step, nv)（正下方全空、每步与 (r,nv-1)
     # 主带相连保持单连通），转置后即成「挂下边缘列 step」的标准型。
     tr1 = {}
-    res = _corner_chain(vg, step, verbose=verbose, trace=tr1)
+    res = _corner_chain(vg, step, verbose=verbose, trace=tr1, p0=vp0,
+                        require_solved=require_solved)
     last = (tr1, res[1], False)          # (trace, 失败原因, 是否转置尝试)
     if res[0] is None:
-        outs = [blk for blk in vg.blocks
-                if blk.location[0] < 0 or blk.location[0] >= mv
-                or blk.location[1] < 0 or blk.location[1] >= nv]
-        br = outs[0].location[0] if len(outs) == 1 else None
-        if len(outs) == 1 and outs[0].location[1] == nv \
-                and br % step == 0 and (br > 0 or step <= mv - 1):
+        # 转置重试资格：凸起贴右缘偶行（couple 模式按指定凸起判定）
+        if couple:
+            avp = next((blk for blk in vg.blocks
+                        if tuple(blk.location) == tuple(vp0)), None)
+            br = avp.location[0] if avp is not None else None
+            ok_t = (avp is not None and avp.location[1] == nv
+                    and br % step == 0 and (br > 0 or step <= mv - 1))
+        else:
+            outs = [blk for blk in vg.blocks
+                    if blk.location[0] < 0 or blk.location[0] >= mv
+                    or blk.location[1] < 0 or blk.location[1] >= nv]
+            br = outs[0].location[0] if len(outs) == 1 else None
+            ok_t = (len(outs) == 1 and outs[0].location[1] == nv
+                    and br % step == 0 and (br > 0 or step <= mv - 1))
+        if ok_t:
             setup5 = []
             vg2 = vg
+            p_t = (nv, br)               # 转置后凸起位置（无 setup 时）
             if br == 0:
                 g2 = build_game(gcoords(vg), mv, nv)
+                a2 = next((blk for blk in g2.blocks
+                           if tuple(blk.location) == tuple(vp0)), None)
                 for _ in range(step):
                     ok1, a5 = _capture_apply(g2, ('v', nv - 1, 'right', 's'),
                                              step)
@@ -654,6 +703,9 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
                         break
                     setup5.append(a5)
                 if len(setup5) == step:
+                    if couple and a2 is not None:
+                        # setup 后凸起随带南下 step；块对象原地跟踪
+                        p_t = (a2.location[1], a2.location[0])
                     vg2 = build_game(frozenset(gcoords(g2)), mv, nv)
                 else:
                     setup5 = []
@@ -663,7 +715,9 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
                 print('  直接角链未成(%s)，转置重试%s'
                       % (res[1], '（先右缘下推 setup）' if setup5 else ''))
             tr2 = {}
-            res2 = _corner_chain(vt, step, verbose=verbose, trace=tr2)
+            res2 = _corner_chain(vt, step, verbose=verbose, trace=tr2,
+                                 p0=p_t if couple else None,
+                                 require_solved=require_solved)
             if res2[0] is not None:
                 res = (setup5 + _transpose_wall(res2[0]),
                        dict(res2[1], transposed=True,
@@ -673,7 +727,7 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
     if res[0] is None:
         tr, reason, transposed = last
         if transposed:
-            pre = [_to_world(_transpose_wall(a))
+            pre = [_to_world(_transpose_wall([a])[0])
                    for a in tr.get('prefix', [])]
         else:
             pre = [_to_world(a) for a in tr.get('prefix', [])]
@@ -683,18 +737,23 @@ def solve_corner_gap(coords, m, n, step, verbose=False):
     wall = [_to_world(a) for a in wall5]
     g = build_game(coords, m, n)
     ok = _replay_apply(g, wall, m, n, step)
-    solved_world = ok and g.is_solved()
+    if require_solved:
+        done_world = ok and g.is_solved()
+    else:
+        done_world = ok and h_w in gcoords(g)
     stats = {'steps': len(wall),
              'seal': cstats['k'] + 1, 'inner': cstats['cb'] // step,
              'unseal': cstats['k'] + 2,
              'rot': name, 'edge': 'CORNER', 'route': 'corner',
-             'view_solved': True, 'solved': solved_world,
+             'view_solved': True, 'solved': done_world,
              'secs': round(time.time() - t0, 3)}
+    if couple:
+        stats['couple'] = True
     if cstats.get('transposed'):
         stats['transposed'] = True
         if cstats.get('setup'):
             stats['setup'] = cstats['setup']
-    if not solved_world:
+    if not done_world:
         stats['reason'] = '角链回放未还原'
         stats['fail_world'] = wall if ok else []
         return None, stats
@@ -804,8 +863,13 @@ def normalize_present(coords, m, n, step):
 # ---------------------------------------------------------------------------
 # 用户算法（2026-09-30 伪代码教学）：封壳 = 整组上移 + 窗顶条带侧移
 # ---------------------------------------------------------------------------
-def _user_edge_chain(vg, vh, step, verbose=False):
+def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
+                     require_solved=True):
     """边缺口用户链（规范型：缺口 (0,c)，c>=1，凸起在窗外）。
+
+    p0：显式指定窗外凸起坐标（多凸起 couple 模式）；None=_find_bump 自取。
+    require_solved=False（couple 模式）：成功判据 = 洞被填，不要求整盘
+    还原（多空位驱动层按聚拢度验收）。
 
     L=c、R=nv-1-c（顶行缺口两侧滑块数）：
     R>step → flag=1：缝 v@c 选右侧整组上移 step；窗顶条带 h@-1 above 左移 step。
@@ -824,9 +888,19 @@ def _user_edge_chain(vg, vh, step, verbose=False):
     else:
         return None, {'reason': '两侧均≤step(L=%d,R=%d，4*4特殊型待补充)'
                                  % (L, R), 'prefix': []}
-    pblk = _find_bump(vg)
-    if pblk is None:
-        return None, {'reason': '找不到窗外凸起', 'prefix': []}
+    if p0 is not None:
+        pblk = None
+        for blk in vg.blocks:
+            if tuple(blk.location) == tuple(p0):
+                pblk = blk
+                break
+        if pblk is None:
+            return None, {'reason': '指定凸起 %s 不在盘上' % (p0,),
+                          'prefix': []}
+    else:
+        pblk = _find_bump(vg)
+        if pblk is None:
+            return None, {'reason': '找不到窗外凸起', 'prefix': []}
     p0 = tuple(pblk.location)
     if flag == 1:
         seal4 = [('v', c, 'right', 'w', (0, c + 1)),
@@ -981,8 +1055,11 @@ def _user_edge_chain(vg, vh, step, verbose=False):
                 if not okk:
                     return None, '拆壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
             prefix.append(a5)
-        if not g2.is_solved():
-            return None, '链走通但未还原', list(prefix)
+        if require_solved:
+            if not g2.is_solved():
+                return None, '链走通但未还原', list(prefix)
+        elif vh not in gcoords(g2):
+            return None, '链走通但洞未填', list(prefix)
         return (list(prefix),
                 {'seal': len(seal4),
                  'inner': len(prefix) - len(seal4) - len(unseal4),
@@ -1008,9 +1085,13 @@ def _user_edge_chain(vg, vh, step, verbose=False):
     return None, {'reason': '；'.join(reasons), 'prefix': best}
 
 
-def solve_edge_gap(coords, m, n, step, verbose=False):
+def solve_edge_gap(coords, m, n, step, verbose=False, hole=None,
+                   anchor=None, require_solved=True):
     """单边缺口全链求解（用户算法）：缺口 → 上边缘 → _user_edge_chain。
 
+    couple 模式（多空位驱动层）：显式喂 hole/anchor（缺口=窗内空位、
+    凸起=窗外块，同 mod），成功判据 = 洞被填（require_solved=False），
+    不要求整盘还原；此时不做 v1 回退（v1 只认单缺口）。
     失败回退 v1（左边缘规范型：专列/甩料封壳）。
     返回 (世界动作5元组列表, stats)；失败 → (None, stats)。
     """
@@ -1023,9 +1104,18 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
         return [], {'steps': 0, 'secs': 0.0}
 
     (r0, c0, wh), _ov, holes, _outside = window_of(coords, m, n, step)
-    if len(holes) != 1:
-        return None, {'reason': f'非单缺口（窗内空位 {len(holes)} 个）'}
-    h_w = next(iter(holes))
+    couple = hole is not None
+    if couple:
+        h_w = tuple(hole)
+        if h_w not in holes:
+            return None, {'reason': 'couple缺口不是窗内空位'}
+        if anchor is None or tuple(anchor) not in coords:
+            return None, {'reason': 'couple凸起不在盘上'}
+        anchor = tuple(anchor)
+    else:
+        if len(holes) != 1:
+            return None, {'reason': f'非单缺口（窗内空位 {len(holes)} 个）'}
+        h_w = next(iter(holes))
     edge = _edge_of(h_w, r0, c0, wh[0], wh[1])
     if edge == 'INNER':
         return None, {'reason': '封闭孔洞（应交填洞宏）'}
@@ -1047,27 +1137,41 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
         rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
         return (gap2, line2, side2, d2, (rr + r0, cc + c0))
 
+    vp0 = None
+    if couple:
+        vp0 = view_rotate.rotate_xy(name, anchor[0] - r0, anchor[1] - c0,
+                                    m, n)
     uacts, ustats = _user_edge_chain(build_game(vc, mv, nv), vh, step,
-                                     verbose=verbose)
+                                     verbose=verbose, p0=vp0,
+                                     require_solved=require_solved)
     if uacts is not None:
         wall = [_to_world(a) for a in uacts]
         g = build_game(coords, m, n)
         ok = _replay_apply(g, wall, m, n, step)
-        solved_world = ok and g.is_solved()
+        if require_solved:
+            done_world = ok and g.is_solved()
+        else:
+            done_world = ok and h_w in gcoords(g)
         stats = {'steps': len(wall),
                  'seal': ustats['seal'], 'inner': ustats['inner'],
                  'unseal': ustats['unseal'], 'flag': ustats['flag'],
                  'rot': name, 'edge': edge, 'route': 'user2',
-                 'view_solved': True, 'solved': solved_world,
+                 'view_solved': True, 'solved': done_world,
                  'secs': round(time.time() - t0, 3)}
-        if solved_world:
+        if couple:
+            stats['couple'] = True
+        if done_world:
             return wall, stats
         u_reason, u_prefix = '用户链回放未还原', []
     else:
         u_reason = ustats['reason']
         u_prefix = [_to_world(a) for a in ustats.get('prefix', [])]
     if verbose:
-        print('  用户链未成(%s)，回退 v1' % u_reason)
+        print('  用户链未成(%s)%s' % (u_reason, '' if couple else '，回退 v1'))
+    if couple:
+        return None, {'reason': u_reason, 'edge': edge, 'couple': True,
+                      'fail_world': u_prefix,
+                      'secs': round(time.time() - t0, 3)}
 
     # ---- 回退 v1：左边缘规范型（专列/甩料封壳）----
     wall1, stats1 = _solve_edge_gap_v1(coords, m, n, step, verbose=verbose)
@@ -1358,6 +1462,56 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
             res['reason'] = ('缺口分支未成(%s)；填洞宏：%s'
                              % (gap_why, res.get('reason', '失败')))
     return res
+
+
+# ---------------------------------------------------------------------------
+# 多空位统一驱动（洞 + 缺口）：框架 = solve_multi_void 贪心 couple 驱动，
+# 唯一差异在求解器分发——洞走填洞宏（A-B-A′ 单层共轭），缺口走补缺链
+# （封壳+内部共轭+拆壳 双层共轭）；验收闸门同一把（窗口方块数提升）。
+# ---------------------------------------------------------------------------
+def _vacancy_couple_hook(gap_only):
+    """构造统一 couple 求解器。gap_only=False：洞回落填洞宏（auto 模式）；
+    True：洞返回无成果（纯缺口模式）。"""
+    def hook(coords, m, n, step, h, p):
+        _reg, _ov, holes, _out = window_of(coords, m, n, step)
+        if h not in holes or p not in coords:
+            return None, {'reason': 'couple坐标无效'}
+        edge = _edge_of(h, _reg[0], _reg[1], _reg[2][0], _reg[2][1])
+        if edge in ('L', 'R', 'U', 'D'):
+            return solve_edge_gap(coords, m, n, step, hole=h, anchor=p,
+                                  require_solved=False)
+        if edge == 'CORNER':
+            return solve_corner_gap(coords, m, n, step, hole=h, anchor=p,
+                                    require_solved=False)
+        if gap_only:
+            return None, {'reason': '非缺口（封闭孔洞归填洞宏）'}
+        return solve_single_void(coords, m, n, step, hole=h, anchor=p,
+                                 keep_partial=True)
+    return hook
+
+
+def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
+                        rng=None, **kwargs):
+    """多空位（洞+缺口）统一贪心驱动（用户设计：与多洞框架同一函数，
+    参数决定填洞/补缺）。
+
+    mode：'auto'=洞→填洞宏、缺口→补缺链；'hole'=只填洞（=原多洞行为）；
+    'gap'=只补缺（封闭孔洞跳过）。
+    返回协议同 solve_multi_void：(actions, stats) / (None, stats)。
+    """
+    coords = frozenset(coords)
+    if len(coords) != m * n:
+        return None, {'error': f'格数 {len(coords)} != {m * n}'}
+    g = build_game(coords, m, n)
+    if g.is_solved():
+        return [], {'steps': 0, 'secs': 0.0, 'multi': True, 'mode': mode}
+    hook = None
+    if mode in ('auto', 'gap'):
+        hook = _vacancy_couple_hook(gap_only=(mode == 'gap'))
+    acts, stats = solve_multi_void(coords, m, n, step, verbose=verbose,
+                                   rng=rng, couple_hook=hook, **kwargs)
+    stats['mode'] = mode
+    return acts, stats
 
 
 # ---------------------------------------------------------------------------
