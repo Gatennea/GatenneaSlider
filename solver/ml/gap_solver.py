@@ -95,8 +95,8 @@ def _seal_candidates(hr, step):
 
 
 def _apply4(g, a4, step):
-    """单步执行（四元组，目标=该侧首块）。返回 (ok, 动作5元组)。"""
-    gap, line, side, _d = a4
+    """单步执行（四/五元组均可，五元组 rep 优先选块）。返回 (ok, 动作5元组)。"""
+    gap, line, side, _d = a4[:4]
     b = g.get_boundaries()
     if gap == 'h' and not (b['min_row'] <= line < b['max_row']):
         return False, None
@@ -186,6 +186,109 @@ def _solve_couple(coords, m, n, step, h, p, keep_partial=True):
     return wacts, dict(stats, rot=name)
 
 
+def _find_bump(vg):
+    """窗外第一块（按窗口 0..m-1 × 0..n-1 判定，单缺口单凸场景恰一块）。"""
+    mv, nv = vg.m, vg.n
+    for blk in vg.blocks:
+        r, c = blk.location
+        if r < 0 or r >= mv or c < 0 or c >= nv:
+            return blk
+    return None
+
+
+def _bumpcol_chain(vg, vh, step, verbose=False):
+    """凸起与洞同列（规范型窗外端点）时的「专列」全链。
+
+    规范型：洞 (hr,0) 左边缘，凸起 (−1,0)（上端）或 (mv,0)（下端）。
+    手法（用户 2-6-6 七步解）：凸起全程骑在料条上，不单独搬运——
+    甩含凸起的带横移出窗 → 料条沿列平移把凸起捎到 (hr,−step)，
+    西邻 (hr,−1) 留空作门 → 凸起单块东移 step 入洞 → 逆序拆壳。
+    返回 (view 动作5元组列表, stats) 或 (None, reason)。
+    """
+    mv = vg.m
+    hr = vh[0]
+    pblk = _find_bump(vg)
+    if pblk is None:
+        return None, '专列：找不到窗外凸起'
+    pr, pc = pblk.location
+    top = (pc == 0 and pr == -1)
+    bot = (pc == 0 and pr == mv)
+    if not (top or bot):
+        return None, '专列：凸起不在洞列端点 %s' % ((pr, pc),)
+    dist = (hr + 1) if top else (mv - hr)
+    if dist % step:
+        return None, '专列：凸起洞距 %d 非步长整倍' % dist
+    k = dist // step
+    p0 = (pr, pc)
+
+    if top:
+        # A：行≤j（含凸起）西移 step，竖条行 0..j；B：竖条南移 k 次
+        # （凸起随带到 (hr,−step)，竖条终行 hr+1..，西门恒开）；
+        # C：h 缝 line=hr 选上侧，凸起单块东移入洞。
+        js = list(range(hr - 1, -1, -1))
+        for j in js:
+            seal4 = [('h', j, 'above', 'a', p0)]
+            inner4 = [('v', -1, 'left', 's')] * k + \
+                     [('h', hr, 'above', 'd')]
+            # 拆壳 rep=None → 侧首块语义（凸起已入洞，不能再用它定位）
+            unseal4 = [('v', -1, 'left', 'w', None)] * k + \
+                      [('h', j, 'above', 'd', None)]
+            wall, stats = _run_chain(vg, seal4, inner4, unseal4,
+                                     p0, step)
+            if wall is not None:
+                if verbose:
+                    print('  专列(上端)：j=%d k=%d' % (j, k))
+                return wall, stats
+    else:
+        # A：行 j'..mv−1（不含凸起行）西移 + 凸起单块西移挂竖条车尾；
+        # B：竖条(含凸起)北移 k 次（凸起到 (hr,−step)，竖条终行 ≤hr−1，门开）；
+        # C：h 缝 line=hr−1 选下侧，凸起单块东移入洞。
+        # （不直接甩含凸起行：同行门位块会随竖条堵住 (hr,−1)。）
+        for jp in range(hr + 1, mv):
+            seal4 = [('h', jp - 1, 'below', 'a', p0),
+                     ('h', mv - 1, 'below', 'a', p0)]
+            inner4 = [('v', -1, 'left', 'w')] * k + \
+                     [('h', hr - 1, 'below', 'd')]
+            unseal4 = [('v', -1, 'left', 's', None)] * k + \
+                      [('h', jp - 1, 'below', 'd', None)]
+            wall, stats = _run_chain(vg, seal4, inner4, unseal4,
+                                     p0, step)
+            if wall is not None:
+                if verbose:
+                    print('  专列(下端)：j\'=%d k=%d' % (jp, k))
+                return wall, stats
+    return None, '专列：候选全败'
+
+
+def _run_chain(vg, seal4, inner4, unseal4, p0, step):
+    """在副本上执行 封壳→内部→拆壳 三段（rep 动态跟踪凸起）。
+
+    全部动作合法且最终 solved 才成功。
+    返回 (view 动作5元组列表, stats) 或 (None, None)。
+    """
+    g2 = build_game(gcoords(vg), vg.m, vg.n)
+    p2 = None
+    for blk in g2.blocks:
+        if tuple(blk.location) == tuple(p0):
+            p2 = blk
+            break
+    segs, nseg = [], {'seal': 0, 'inner': 0, 'unseal': 0}
+    for name, acts in (('seal', seal4), ('inner', inner4),
+                       ('unseal', unseal4)):
+        out = []
+        for a4 in acts:
+            a = a4 if len(a4) == 5 else a4 + (tuple(p2.location),)
+            okk, a5 = _apply4(g2, a, step)
+            if not okk:
+                return None, None
+            out.append(a5)
+        segs += out
+        nseg[name] = len(out)
+    if not g2.is_solved():
+        return None, None
+    return segs, nseg
+
+
 def solve_edge_gap(coords, m, n, step, verbose=False):
     """单边缺口全链求解：封壳 → 内部共轭(couple) → 拆壳。
 
@@ -217,7 +320,38 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
     vh = view_rotate.rotate_xy(name, h_w[0] - r0, h_w[1] - c0, m, n)
     vg = build_game(vc, mv, nv)
 
-    # ---- 封壳 ----
+    # ---- view → world 组装 ----
+    def _to_world(a):
+        gap, line, side, d, rep = a
+        gap2, line2, side2, d2 = view_rotate.act_to_world(
+            name, gap, line, side, d, m, n)
+        line2 = line2 + (r0 if gap2 == 'h' else c0)
+        rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
+        return (gap2, line2, side2, d2, (rr + r0, cc + c0))
+
+    # ---- 封壳 ----（先试「专列」：凸起与洞同列的窗外端点，2-6-6 型）
+    pblk0 = _find_bump(vg)
+    if pblk0 is not None and pblk0.location[1] == 0 and \
+            pblk0.location[0] in (-1, mv):
+        res = _bumpcol_chain(vg, vh, step, verbose=verbose)
+        if res[0] is not None:
+            wall5, bstats = res
+            wall = [_to_world(a) for a in wall5]
+            g = build_game(coords, m, n)
+            ok = _replay_apply(g, wall, m, n, step)
+            solved_world = ok and g.is_solved()
+            stats = {'steps': len(wall),
+                     'seal': bstats['seal'], 'inner': bstats['inner'],
+                     'unseal': bstats['unseal'],
+                     'rot': name, 'edge': edge, 'route': 'bumpcol',
+                     'view_solved': True, 'solved': solved_world,
+                     'secs': round(time.time() - t0, 3)}
+            if not solved_world:
+                stats['reason'] = '专列回放未还原'
+                return None, stats
+            return wall, stats
+        if verbose:
+            print('  专列未成(%s)，回常规封壳' % res[1])
     sealed = _seal(vg, vh, step)
     if sealed is None:
         return None, {'reason': '封壳受阻（候选全败）', 'edge': edge}
@@ -251,15 +385,7 @@ def solve_edge_gap(coords, m, n, step, verbose=False):
         unseal_acts.append(a5)
     solved = vg.is_solved()
 
-    # ---- view → world 组装 ----
-    def _to_world(a):
-        gap, line, side, d, rep = a
-        gap2, line2, side2, d2 = view_rotate.act_to_world(
-            name, gap, line, side, d, m, n)
-        line2 = line2 + (r0 if gap2 == 'h' else c0)
-        rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
-        return (gap2, line2, side2, d2, (rr + r0, cc + c0))
-
+    # ---- view → world 组装（_to_world 已在封壳前定义）----
     wall = [_to_world(a) for a in seal_acts] + \
            [_to_world(a) for a in iacts] + \
            [_to_world(a) for a in unseal_acts]
@@ -392,7 +518,8 @@ def _main():
         return
     if args and args[0] == '--all':
         save = os.path.join(_ROOT, 'save')
-        for fname in ('推測題.json', '推測題2.json', '推測題3.json'):
+        for fname in ('2-6-6-20260930-181940.json', '推測題.json',
+                      '推測題2.json', '推測題3.json'):
             path = os.path.join(save, fname)
             if not os.path.exists(path):
                 continue
