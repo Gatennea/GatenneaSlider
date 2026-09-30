@@ -813,6 +813,212 @@ def _belt_shift_fill(coords, m, n, step, h, verbose=False):
     return None, None
 
 
+def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
+                 max_depth=16, max_nodes=2500, max_comp=None, verbose=False):
+    r"""粘上接走宏（2026-10-01 失败03 教学「粘上接走」参数化）。
+
+    标准 couple 宏解不动时的另一条填洞路：载运带靠上孤立凸起「粘上」
+    （相邻即合并为同一连通分量），再整组搬运把凸起送进洞。
+    03 用户解（15 步中前 5 步）：底带西移清场 → 载运带北移×2 靠上凸起
+    粘成整体 → 合并组南下、整侧东移把凸起 (0,0) 送进洞 (4,4)，底带同时
+    复位，净效果 ov+1；余下部分标准 couple 可直接收尾。
+
+    定向腿搜索（坐标层集合运算逐格模拟 + 终局引擎验收）：
+      · carry 腿：移动含凸起分量，p→h 曼哈顿距离严格下降；
+      · approach 腿：移动不含 p 的分量且该分量与 p 的最小距离下降
+        （靠上去粘住）；
+      · prep 腿：其余单步，仅当移动分量与 p→h 包围盒相交且能清空走廊，
+        全程 ≤max_prep。
+    阶段纪律：先接应（appr/prep，≤max_pickup 步）后搬运（carry），carry
+    开始后不再接应；分量尺寸 >max_comp 的「搬主体」动作一律剔除（junk：
+    终局位移残留必然过不了 ov 闸门，纯烧节点）。
+    所有动作均为 step 距离单步（5 元组带选块坐标，与回放语义一致；
+    任意距离动作可精确分解为若干 step 单步——引擎逐格验证保证）。
+    终点：p 落在 h 且回放后窗口方块数 +1（_overlap_raised 同闸门）。
+    返回 (动作列表或 None, 实际消耗节点数)。
+    """
+    coords = frozenset(coords)
+    h, p = tuple(h), tuple(p)
+    if max_comp is None:
+        max_comp = max(8, len(coords) // 2)
+    if (p[0] - h[0]) % step or (p[1] - h[1]) % step:
+        return None                      # p 要逐 step 落到 h 上，必须同 mod
+    if p not in coords or h in coords:
+        return None
+    bb_r = (min(p[0], h[0]), max(p[0], h[0]))
+    bb_c = (min(p[1], h[1]), max(p[1], h[1]))
+
+    def _comps(S):
+        S = set(S)
+        out, seen = [], set()
+        for q0 in S:
+            if q0 in seen:
+                continue
+            comp, stack = set(), [q0]
+            while stack:
+                q = stack.pop()
+                if q in comp:
+                    continue
+                comp.add(q)
+                seen.add(q)
+                r, c = q
+                for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                    if nb in S and nb not in comp:
+                        stack.append(nb)
+            out.append(frozenset(comp))
+        return out
+
+    def _connected(S):
+        S = set(S)
+        if not S:
+            return False
+        p0 = next(iter(S))
+        seen, stack = {p0}, [p0]
+        while stack:
+            r, c = stack.pop()
+            for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if nb in S and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        return len(seen) == len(S)
+
+    def _mindist(S, q):
+        return min(abs(r - q[0]) + abs(c - q[1]) for r, c in S)
+
+    def _legal_steps(cur):
+        """全部合法 step 单步 → [(act5, comp, delta, nxt)]。
+
+        逐 1 格子步模拟（碰撞 + 全盘连通），与引擎 try_move 语义一致。
+        排除整盘平移（rest 为空）：相对位置不变，纯浪费节点。
+        """
+        out = []
+        rows = [r for r, _c in cur]
+        cols = [c for _r, c in cur]
+        for gap in ('h', 'v'):
+            lines = (range(min(rows) - 2, max(rows) + 3) if gap == 'h'
+                     else range(min(cols) - 2, max(cols) + 3))
+            for line in lines:
+                for side in (('above', 'below') if gap == 'h'
+                             else ('left', 'right')):
+                    if gap == 'h':
+                        st = (lambda q: q[0] <= line) if side == 'above' \
+                            else (lambda q: q[0] > line)
+                    else:
+                        st = (lambda q: q[1] <= line) if side == 'left' \
+                            else (lambda q: q[1] > line)
+                    sel = frozenset(q for q in cur if st(q))
+                    if not sel or sel == cur:
+                        continue
+                    for comp in _comps(sel):
+                        rest = cur - comp
+                        if not rest:
+                            continue
+                        if len(comp) > max_comp:
+                            continue          # 搬主体 = junk，剔除
+                        rep = min(comp)          # 选块坐标（分量任一格）
+                        for d, (dr, dc) in _DIRS.items():
+                            ok = True
+                            for k in range(1, step + 1):
+                                mv_k = frozenset(
+                                    (q[0] + dr * k, q[1] + dc * k)
+                                    for q in comp)
+                                if (mv_k & rest
+                                        or not _connected(rest | mv_k)):
+                                    ok = False
+                                    break
+                            if not ok:
+                                continue
+                            mv = frozenset(
+                                (q[0] + dr * step, q[1] + dc * step)
+                                for q in comp)
+                            out.append(((gap, line, side, d, rep), comp,
+                                        (dr * step, dc * step), rest | mv))
+        return out
+
+    state = {'nodes': 0}
+    seen = {(coords, p)}
+
+    def _corridor_occ(S):
+        """p→h 十字走廊（p 列/h 行在包围盒内的段）占用数。"""
+        n = 0
+        for r, c in S:
+            if ((c == p[1] or c == h[1]) and bb_r[0] <= r <= bb_r[1]) or \
+               ((r == p[0] or r == h[0]) and bb_c[0] <= c <= bb_c[1]):
+                n += 1
+        return n
+
+    def _on_cross(q):
+        """p 是否在十字走廊上（L 形路径的合法位置）。"""
+        return (q[1] == p[1] and bb_r[0] <= q[0] <= bb_r[1]) or \
+               (q[0] == h[0] and bb_c[0] <= q[1] <= bb_c[1])
+
+    def dfs(cur, pcur, prep_used, prefix, carried=False, last_march=None):
+        if state['nodes'] >= max_nodes:
+            return None
+        state['nodes'] += 1
+        if verbose and state['nodes'] % 100 == 0:
+            print('   [convoy节点%d] 深度%d prep已用%d p=%s'
+                  % (state['nodes'], len(prefix), prep_used, pcur))
+        if pcur == h:
+            return list(prefix) if _overlap_raised(coords, m, n, step,
+                                                   prefix) else None
+        if len(prefix) >= max_depth:
+            return None
+        pickup_left = max_pickup - len(prefix)
+        d0 = abs(pcur[0] - h[0]) + abs(pcur[1] - h[1])
+        carry, appr, prep = [], [], []
+        for act5, comp, delta, nxt in _legal_steps(cur):
+            if pcur in comp:
+                np_ = (pcur[0] + delta[0], pcur[1] + delta[1])
+                if abs(np_[0] - h[0]) + abs(np_[1] - h[1]) < d0:
+                    carry.append((0 if _on_cross(np_) else 1, 0,
+                                  act5, nxt, np_, prep_used, None))
+            elif not carried and pickup_left > 0:
+                # 阶段纪律：开始搬运（carry）后不再接应——先粘上后送到位
+                moved = frozenset((q[0] + delta[0], q[1] + delta[1])
+                                  for q in comp)
+                md_c, md_m = _mindist(comp, pcur), _mindist(moved, pcur)
+                if md_m < md_c:
+                    # 行军纪律：只许 ①一步贴上（移完即与 p 相邻=粘上）
+                    # ②同一分量连续行军（含起步：last_march 为空时可起步）
+                    # ——掐断「换分量各挪一步」的乱逛组合
+                    if md_m == 1:
+                        appr.append((md_c - md_m, len(comp), act5, nxt,
+                                     pcur, prep_used, None))
+                    elif last_march is None or comp == last_march:
+                        appr.append((md_c - md_m, len(comp), act5, nxt,
+                                     pcur, prep_used, moved))
+                elif prep_used < max_prep:
+                    freed = _corridor_occ(comp) - _corridor_occ(moved)
+                    if freed > 0 and any(
+                            bb_r[0] <= r <= bb_r[1]
+                            and bb_c[0] <= c <= bb_c[1] for r, c in comp):
+                        prep.append((freed, 0, act5, nxt, pcur,
+                                     prep_used + 1, None))
+        appr.sort(key=lambda x: (-x[0], x[1]))
+        prep.sort(key=lambda x: -x[0])
+        carry.sort(key=lambda x: x[0])
+        # appr 优先：先把载运带靠上凸起（粘上），再整组搬运——
+        # 直接搬含 p 的大主体多为 junk（终局位移残留在闸门被拒）
+        for group in (appr, prep, carry):
+            for _k, _s, act5, nxt, np_, pu, lm in group:
+                if (nxt, np_) in seen:
+                    continue
+                seen.add((nxt, np_))
+                r = dfs(nxt, np_, pu, prefix + [act5],
+                        carried=carried or (group is carry),
+                        last_march=lm if group is appr else None)
+                if r is not None:
+                    if verbose:
+                        print('  粘上接走: 洞%s←凸%s %d步成立(节点%d)'
+                              % (h, p, len(r), state['nodes']))
+                    return r
+        return None
+
+    r = dfs(coords, p, 0, [])
+    return r, state['nodes']
+
+
 def solve_multi_search(coords, m, n, step, couple_hook=None,
                        node_budget=400, verbose=False):
     """宏级 DFS：对 couple 选择回溯，状态图上找「填满窗口」的宏序列。
@@ -859,7 +1065,8 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                     out.append(acts)
         return out
 
-    state = {'nodes': 0, 'best': [], 'exhausted': False, 'seen': set()}
+    state = {'nodes': 0, 'best': [], 'exhausted': False, 'seen': set(),
+             'convoy_left': 8000}
 
     def dfs(cur, prefix):
         if state['nodes'] >= node_budget:
@@ -872,13 +1079,27 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
             state['best'] = list(prefix)
         edges = _couples(cur)
         if not edges:
-            # 标准 couple 全灭 → 带移盖洞原语（2026-10-01 失败02
-            # 教学「拆东墙补西墙」参数化：补料→带移→部分还原）
-            _rg, _ovc, holes_c, _oc = window_of(cur, m, n, step)
-            for h_c in holes_c:
+            # 标准 couple 全灭 → 两个料搬运原语（死端救援）：
+            # ① 带移盖洞（2026-10-01 失败02「拆东墙补西墙」参数化）
+            # ② 粘上接走（2026-10-01 失败03「粘上接走」参数化）
+            # convoy 共享总预算：固有缺陷局面不在无效原语上无限烧时间
+            _rg, _ovc, holes_c, out_c = window_of(cur, m, n, step)
+            for h_c in sorted(holes_c):
                 bacts, _bn = _belt_shift_fill(cur, m, n, step, h_c)
                 if bacts is not None:
                     edges.append(bacts)
+                for p_c in sorted(out_c):
+                    if state['convoy_left'] <= 0:
+                        break
+                    if ((p_c[0] - h_c[0]) % step
+                            or (p_c[1] - h_c[1]) % step):
+                        continue
+                    cacts, used = _convoy_fill(
+                        cur, m, n, step, h_c, p_c,
+                        max_nodes=min(2500, state['convoy_left']))
+                    state['convoy_left'] -= used
+                    if cacts:
+                        edges.append(cacts)
         for acts in edges:
             g2 = build_game(cur, m, n)
             if not _replay_apply(g2, acts, m, n, step):
