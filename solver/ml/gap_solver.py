@@ -1499,6 +1499,19 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
                     'fail_world': stats.get('fail_world') or []}
         print('[补缺宏] 缺口分支未成（%s），回退填洞宏' % gap_why)
     # 封闭孔洞/多洞/兜底：填洞宏主场，透传
+    if len(holes) > 1:
+        # 多空位局面（含缺口）：必须走统一驱动（couple 钩子分发洞/缺口）。
+        # 旧路径 solve_fill_macro 对缺口 couple 全败——失败04 实证"不正常"。
+        acts, mst = solve_multi_vacancy(coords, m, n, step, mode='auto')
+        if acts is not None and not mst.get('partial'):
+            return [a[:4] for a in acts], [a[4] for a in acts]
+        why = mst.get('reason', '多空位驱动未全解')
+        if mst.get('partial'):
+            # partial（有成果未完）：仍返回已走部分，GUI 能看到推进
+            print('[补缺宏] 多空位 partial：%s' % why)
+            return [a[:4] for a in acts], [a[4] for a in acts]
+        return {'type': 'fill_fail', 'reason': why,
+                'solver_name': '多空位驱动', 'fail_world': []}
     res = solve_fill_macro(game, step, cancel_check=cancel_check,
                            progress_callback=progress_callback)
     if isinstance(res, dict):

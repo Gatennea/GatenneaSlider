@@ -585,6 +585,234 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
 # ---------------------------------------------------------------------------
 # 宏级回溯搜索：消灭贪心顺序依赖
 # ---------------------------------------------------------------------------
+def _belt_shift_fill(coords, m, n, step, h, verbose=False):
+    """带移盖洞宏（2026-10-01 失败02 教学「拆东墙补西墙」参数化）。
+
+    洞 h 无同 mod 凸起可配时的填洞法，用户三步结构：
+      ① 补料 a1：一步平移把料搬进带尾上游空位；
+      ② 带移 a2：含 h 的整条连通带平移，h 被错位块盖住；
+      ③ 还原 a3：带的多余段逆移复位（消掉带移的副作用）。
+    净效果：ov +1（h 被填，a2/a3 新增的窗内洞被 a1 预补的料顶住）。
+
+    定向搜索：坐标层粗筛 a2（盖得住 h）→ 枚举 a3（a2 的部分逆移）
+    得净局面与「新窗内洞」→ 反推 a1 目标段与源组 → 引擎逐段验证。
+    返回 (动作列表, 终局coords)；失败 (None, None)。
+    """
+    coords = frozenset(coords)
+    _DIRV = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
+    _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
+    rows = [r for r, c in coords]
+    cols = [c for r, c in coords]
+    rmin, rmax, cmin, cmax = min(rows), max(rows), min(cols), max(cols)
+    _reg, ov0, holes0, _oo = window_of(coords, m, n, step)
+
+    def _side_test(gap, line, side):
+        if gap == 'h':
+            return (lambda r, c: r <= line) if side == 'above' \
+                else (lambda r, c: r > line)
+        return (lambda r, c: c <= line) if side == 'left' \
+            else (lambda r, c: c > line)
+
+    def _comp_of(S, st):
+        sel = {p for p in S if st(*p)}
+        out, seen = [], set()
+        for p0 in sel:
+            if p0 in seen:
+                continue
+            comp, stack = set(), [p0]
+            while stack:
+                q = stack.pop()
+                if q in comp:
+                    continue
+                comp.add(q)
+                seen.add(q)
+                r, c = q
+                for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                    if nb in sel and nb not in comp:
+                        stack.append(nb)
+            out.append(frozenset(comp))
+        return out
+
+    def _conn_ok(S):
+        S = set(S)
+        p0 = next(iter(S))
+        seen, stack = {p0}, [p0]
+        while stack:
+            r, c = stack.pop()
+            for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if nb in S and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        return len(seen) == len(S)
+
+    def _try(g, a5, sel_set):
+        """执行一步 5 元组动作；选块 = sel_set 中属缝侧的首块。"""
+        gap, line, side, dc, rep = a5
+        st = _side_test(gap, line, side)
+        tgt = None
+        for blk in g.blocks:
+            r, c = blk.location
+            if (r, c) in sel_set and st(r, c):
+                tgt = blk
+                break
+        if tgt is None:
+            return False
+        try:
+            g.opt(gap, line, tgt)
+            final, _why = g.try_move_ex(dc, rep)
+            if not final:
+                return False
+            g.commit_move(final)
+        except Exception:
+            return False
+        return True
+
+    # ---- ① 粗筛 a2：单步带移后 h 被盖 ----
+    a2_cands = []
+    for gap2 in ('h', 'v'):
+        lines = (range(rmin - 2, rmax + 3) if gap2 == 'h'
+                 else range(cmin - 2, cmax + 3))
+        for line2 in lines:
+            for side2 in (('above', 'below') if gap2 == 'h'
+                          else ('left', 'right')):
+                for comp2 in _comp_of(coords, _side_test(gap2, line2, side2)):
+                    rest2 = coords - comp2
+                    for dc2, (dr2, dcn2) in _DIRV.items():
+                        for rep2 in (step, 2 * step):
+                            delta2 = (dr2 * rep2, dcn2 * rep2)
+                            moved2 = frozenset(
+                                (p[0] + delta2[0], p[1] + delta2[1])
+                                for p in comp2)
+                            if moved2 & rest2 or h not in moved2:
+                                continue
+                            a2_cands.append((gap2, line2, side2, dc2, rep2,
+                                             comp2, delta2, moved2, rest2))
+
+    # ---- ② 每个 a2：枚举 a3（部分逆移）→ 净局面 → 反推 a1 ----
+    for gap2, line2, side2, dc2, rep2, comp2, delta2, moved2, rest2 in a2_cands:
+        s_a2 = rest2 | moved2
+        if not _conn_ok(s_a2):
+            continue
+        dc3 = _INV[dc2]
+        # a3 与 a2 同侧、不同分界线：还原移动组中 line3 一侧的子段
+        side3 = side2
+        lines3 = (range(rmin - 2, rmax + 3) if gap2 == 'h'
+                  else range(cmin - 2, cmax + 3))
+        for line3 in lines3:
+            st3 = _side_test(gap2, line3, side3)
+            R = frozenset(p for p in moved2 if st3(*p))
+            if not R or R == moved2:
+                continue                       # a3 必须还原「一段」
+            back = frozenset((p[0] - delta2[0], p[1] - delta2[1])
+                             for p in R)
+            s_net = (s_a2 - R) | back
+            if not _conn_ok(s_net) or h not in s_net:
+                continue
+            _rg, ov_net, holes_net, _o = window_of(s_net, m, n, step)
+            if ov_net >= ov0 + 1:
+                need_a1 = False
+                T = None
+            elif ov_net < ov0:
+                need_a1 = True
+                new_holes = set(holes_net) - set(holes0)
+                if not 1 <= len(new_holes) <= 3:
+                    continue
+                # T = 新洞的带移前像（当前须为空；02 教学例：新洞 (4,2)(4,3)
+                # ← T=(4,0)(4,1)，a1 从 (6,0)(6,1) 补两块）
+                T = frozenset((p[0] - delta2[0], p[1] - delta2[1])
+                              for p in new_holes)
+                if not all(q not in coords for q in T):
+                    continue
+            else:
+                continue
+            # ---- ③ a1 反推 + 引擎验证 ----
+            a1_cands = [(None, None, None, None, None, None, None)] \
+                if not need_a1 else []
+            if need_a1:
+                for dc1, (dr1, dcn1) in _DIRV.items():
+                    for rep1 in (step, 2 * step):
+                        delta1 = (dr1 * rep1, dcn1 * rep1)
+                        src = frozenset((q[0] - delta1[0],
+                                         q[1] - delta1[1]) for q in T)
+                        if not src <= coords:
+                            continue
+                        moved1 = frozenset(
+                            (q[0] + delta1[0], q[1] + delta1[1])
+                            for q in src)
+                        if moved1 & (coords - src):
+                            continue
+                        s1 = (coords - src) | moved1
+                        if not _conn_ok(s1):
+                            continue
+                        gap1 = 'v' if dc1 in ('w', 's') else 'h'
+                        a1_cands.append((gap1, dc1, rep1, src, moved1, s1,
+                                         delta1))
+            for a1 in a1_cands:
+                g = build_game(coords, m, n)
+                if need_a1:
+                    gap1, dc1, rep1, src, moved1, s1, delta1 = a1
+                    done = False
+                    if gap1 == 'v':
+                        rng1 = (range(cmin - 2, cmax + 3), ('left', 'right'))
+                    else:
+                        rng1 = (range(rmin - 2, rmax + 3),
+                                ('above', 'below'))
+                    for line1 in rng1[0]:
+                        for side1 in rng1[1]:
+                            g2 = build_game(coords, m, n)
+                            if _try(g2, (gap1, line1, side1, dc1, rep1),
+                                    src) \
+                                    and frozenset(gcoords(g2)) == s1:
+                                g = g2
+                                done = True
+                                break
+                        if done:
+                            break
+                    if not done:
+                        continue
+                    # 重算含 a1 的净局面：a1 补的料属带移组、随带移动
+                    st2 = _side_test(gap2, line2, side2)
+                    comp2_all = comp2 | frozenset(
+                        p for p in moved1 if st2(*p))
+                    s1_rest = s1 - comp2_all
+                    moved2_all = frozenset(
+                        (p[0] + delta2[0], p[1] + delta2[1])
+                        for p in comp2_all)
+                    if moved2_all & s1_rest:
+                        continue
+                    s_a2 = s1_rest | moved2_all
+                    R = frozenset(p for p in moved2_all if st3(*p))
+                    back = frozenset((p[0] - delta2[0], p[1] - delta2[1])
+                                     for p in R)
+                    s_net = (s_a2 - R) | back
+                    if not _conn_ok(s_net) or h not in s_net:
+                        continue
+                if not _try(g, (gap2, line2, side2, dc2, rep2), comp2):
+                    continue
+                sel3 = frozenset(p for p in gcoords(g) if st3(*p))
+                if not _try(g, (gap2, line3, side3, dc3, rep2), sel3):
+                    continue
+                if frozenset(gcoords(g)) != s_net:
+                    continue
+                _rg, ov_f, _hf, _of = window_of(s_net, m, n, step)
+                if ov_f != ov0 + 1:
+                    continue
+                if verbose:
+                    print('  带移盖洞: 洞%s 原语成立 a2=%s@%d%s%s%d '
+                          'a3=%s@%d%s%s%d%s'
+                          % (h, gap2, line2, side2, dc2, rep2,
+                             gap2, line3, side3, dc3, rep2,
+                             '' if not need_a1 else ' +补料'))
+                # 动作列表：a1 暴力试出的参数回填
+                acts = []
+                if need_a1:
+                    acts.append((gap1, line1, side1, dc1, rep1))
+                acts.append((gap2, line2, side2, dc2, rep2))
+                acts.append((gap2, line3, side3, dc3, rep2))
+                return acts, s_net
+    return None, None
+
+
 def solve_multi_search(coords, m, n, step, couple_hook=None,
                        node_budget=400, verbose=False):
     """宏级 DFS：对 couple 选择回溯，状态图上找「填满窗口」的宏序列。
@@ -642,7 +870,16 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
             return list(prefix)
         if len(prefix) > len(state['best']):
             state['best'] = list(prefix)
-        for acts in _couples(cur):
+        edges = _couples(cur)
+        if not edges:
+            # 标准 couple 全灭 → 带移盖洞原语（2026-10-01 失败02
+            # 教学「拆东墙补西墙」参数化：补料→带移→部分还原）
+            _rg, _ovc, holes_c, _oc = window_of(cur, m, n, step)
+            for h_c in holes_c:
+                bacts, _bn = _belt_shift_fill(cur, m, n, step, h_c)
+                if bacts is not None:
+                    edges.append(bacts)
+        for acts in edges:
             g2 = build_game(cur, m, n)
             if not _replay_apply(g2, acts, m, n, step):
                 continue
