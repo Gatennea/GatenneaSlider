@@ -15,7 +15,13 @@ def score_of(g):
     return H.gather_metrics(H.coords_of(g), g.m, g.n)['score']
 
 
-def solve(snap, use_fill=True, use_guided=True, budget=300000):
+def solve(snap, use_fill=True, use_guided=True, budget=300000,
+          gather_cap=None):
+    """混合链求解。
+
+    gather_cap：只取梯度聚拢的前 k 步就交给后面的填洞宏 / guided 搜索
+    （「早交接」）。默认 None = 跑完整段聚拢（原基线行为）。
+    """
     from solver.ml.gather_solver import gradient_gather
     from solver.ml.fill_macro import solve_fill_macro
 
@@ -25,7 +31,10 @@ def solve(snap, use_fill=True, use_guided=True, budget=300000):
     # 段1：梯度聚拢
     g = H.load_game(snap)
     r = gradient_gather(g, step)
-    steps += [(a, None) for a in r['actions']]
+    acts = r['actions']
+    if gather_cap is not None:
+        acts = acts[:gather_cap]
+    steps += [(a, None) for a in acts]
     _ok, g = replay_steps(snap, steps)
     if g.is_solved():
         return steps, 'gather'

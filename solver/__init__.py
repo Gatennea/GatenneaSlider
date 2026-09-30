@@ -61,6 +61,29 @@ from solver.ml.human_solver import ai_human_solve
 from solver.ml.fill_macro import solve_fill_macro
 from solver.hybrid_solver import hybrid_solve
 
+
+def hybrid_solve_with_table(game, step, cancel_check=None,
+                            progress_callback=None, **kwargs):
+    """「混合求解」的入口包装：**有表先用表，無表才走混合**。
+
+    依據 2026-09-30 驗收（`experiments/ACCEPTANCE_混合求解器验收.md`）：
+    hybrid 的定位是「免表兜底、非最優」——4×4 step2 上解長中位是最優的 17.2 倍
+    （最差 136.8），單局耗時中位 12.2s；而查表是亞秒級且**保證最優**。
+    故在已有距離表的尺寸上必須優先查表，避免「12 秒換一個 17 倍長的解」。
+
+    注意：這裡只在**入口層**分流，`hybrid_solve` 本身保持純算法，
+    `experiments/` 裡直接 import hybrid_solve 的基線不受影響。
+    """
+    try:
+        res = table_solve(game, step, cancel_check=cancel_check,
+                          progress_callback=progress_callback)
+    except Exception:
+        res = None
+    if res is not None and res is not False:
+        return res  # 查表成功（元組或空列表 = 已在目標態）
+    return hybrid_solve(game, step, cancel_check=cancel_check,
+                        progress_callback=progress_callback, **kwargs)
+
 SOLVER_ALGORITHMS = {
     'ida_star': ('  IDA*求解', solve),
     'fast': ('  IDA*快速', solve_fast),
@@ -74,7 +97,7 @@ SOLVER_ALGORITHMS = {
     'gather_gradient': ('  梯度聚拢', gradient_gather),
     #'human_ai': ('  人类模仿', ai_human_solve),
     'fill_macro': ('  填洞宏', solve_fill_macro),
-    'hybrid':   ('  混合求解', hybrid_solve),
+    'hybrid':   ('  混合求解（免表·非最优）', hybrid_solve_with_table),
 }
 
 __all__ = ['solve', 'solve_fast', 'solve_greedy', 'SOLVER_ALGORITHMS',
