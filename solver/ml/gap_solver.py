@@ -2,9 +2,15 @@
 r"""缺口求解器（双层共轭）「死代码」— 封壳 + 内部共轭 + 拆壳
 
 外层（本模块新写）：边缘缺口 → 封闭孔洞。
-    手法 = 甩料（切横缝把不含洞行的带向外推 step，甩出料条）
-         + 垫洞（料条沿缝平移直到盖住洞的朝外邻格）。
-    候选表按总步数升序逐个试，引擎 try_move 当裁判，不回溯、无搜索。
+    主路径 = 用户算法（2026-09-30 伪代码教学）：
+    缺口旋转归一化到上边缘 (0,c) → 记 L=c、R=n-1-c（缺口两侧顶行滑块数）→
+    R>step 取右缝 flag=1 / L>step 取左缝 flag=-1（两侧均≤step = 4*4 特殊型，
+    待补充）→ 缺口(flag*右)侧缝整组上移一次 + 窗顶条带(h缝-1上侧)向缺口侧
+    平移一次 = 封壳 → 显式 couple 调填洞宏 → 逆外层共轭拆壳。
+    （>step 的几何意义：条带侧移 step 后与主体的重叠列非空，保持连通。）
+    凸起块开局即跟踪（用户注记：否则可能抓错组）。
+    回退路径 v1 = 甩料（切横缝把不含洞行的带向外推 step，甩出料条）
+    + 垫洞（料条沿缝平移直到盖住洞的朝外邻格），候选表按总步数升序逐个试。
     角缺口（步骤3）：四角旋转归一化到左上 → _corner_chain
     （立塔 → 封北 → 西柱南下封西兼作桥 → 末条北移 → 凸起入洞 → 逆序拆壳）。
 内层（复用 fill_macro）：solve_single_void couple 模式——显式指定
@@ -356,11 +362,15 @@ def _seal(vg, vh, step, trace=None):
 # ---------------------------------------------------------------------------
 # 顶层：单个边缺口
 # ---------------------------------------------------------------------------
-def _solve_couple(coords, m, n, step, h, p, keep_partial=True):
+def _solve_couple(coords, m, n, step, h, p, keep_partial=True,
+                  force_rot=None):
     """couple 内部共轭：流程与 solve_single_void 相同，但 couple 校验用
     本质判定（h=空位、p=块、同 mod），不经窗口——封壳料条会把
     find_best_window 的窗口撑得漂移，凸起可能被圈进窗内而遭误杀。
     （fill_macro 本体不动，此处仅绕过其入口预检，_Runner 语义完全一致。）
+    force_rot：强制旋转名（None=choose_rot 自动）。补缺链传 'id'——
+    封壳后的临时几何（条带在上/空缺在下）就是填洞的缓冲，再旋转会把
+    凸起转到与洞同行，setup 在临时几何里无缝可走（实测失败10）。
     """
     coords = frozenset(coords)
     if h in coords or p not in coords:
@@ -368,7 +378,7 @@ def _solve_couple(coords, m, n, step, h, p, keep_partial=True):
     if (h[0] - p[0]) % step or (h[1] - p[1]) % step:
         return None, {'reason': '洞凸不同mod'}
     (r0, c0, _wh), _ov, _holes, _out = window_of(coords, m, n, step)
-    name = view_rotate.choose_rot(p[0] - r0, p[1] - c0, m, n)
+    name = force_rot or view_rotate.choose_rot(p[0] - r0, p[1] - c0, m, n)
     if name == 'id':
         g = build_game(coords, m, n)
         return _Runner(g, m, n, step, h=tuple(h), p=tuple(p),
@@ -755,9 +765,195 @@ def normalize_present(coords, m, n, step):
     return tc, tm, tn, tlist
 
 
-def solve_edge_gap(coords, m, n, step, verbose=False):
-    """单边缺口全链求解：封壳 → 内部共轭(couple) → 拆壳。
+# ---------------------------------------------------------------------------
+# 用户算法（2026-09-30 伪代码教学）：封壳 = 整组上移 + 窗顶条带侧移
+# ---------------------------------------------------------------------------
+def _user_edge_chain(vg, vh, step, verbose=False):
+    """边缺口用户链（规范型：缺口 (0,c)，c>=1，凸起在窗外）。
 
+    L=c、R=nv-1-c（顶行缺口两侧滑块数）：
+    R>step → flag=1：缝 v@c 选右侧整组上移 step；窗顶条带 h@-1 above 左移 step。
+    L>step → flag=-1：缝 v@(c-1) 选左侧整组上移；窗顶条带右移 step。
+    两侧均≤step → 4*4 特殊型（用户暂未教学，直接报告）。
+    封壳后洞 (0,c) 四邻全块 = 封闭孔洞 → 显式 couple 调填洞宏 → 逆封壳。
+    返回 (view 动作5元组列表, stats) 或 (None, {'reason', 'prefix'})。
+    """
+    mv, nv = vg.m, vg.n
+    c = vh[1]
+    L, R = c, nv - 1 - c
+    if R > step:
+        flag = 1
+    elif L > step:
+        flag = -1
+    else:
+        return None, {'reason': '两侧均≤step(L=%d,R=%d，4*4特殊型待补充)'
+                                 % (L, R), 'prefix': []}
+    pblk = _find_bump(vg)
+    if pblk is None:
+        return None, {'reason': '找不到窗外凸起', 'prefix': []}
+    p0 = tuple(pblk.location)
+    if flag == 1:
+        seal4 = [('v', c, 'right', 'w', (0, c + 1)),
+                 ('h', -1, 'above', 'a', (-1, c + 1))]
+        unseal4 = [('h', -1, 'above', 'd', None),
+                   ('v', c, 'right', 's', None)]
+    else:
+        seal4 = [('v', c - 1, 'left', 'w', (0, c - 1)),
+                 ('h', -1, 'above', 'd', (-1, 0))]
+        unseal4 = [('h', -1, 'above', 'a', None),
+                   ('v', c - 1, 'left', 's', None)]
+
+    g2 = build_game(gcoords(vg), mv, nv)
+    p2 = None
+    for blk in g2.blocks:
+        if tuple(blk.location) == p0:
+            p2 = blk
+            break
+    prefix = []
+    # 起手 setup（用户教学 2026-09-30，函数最开始就做）：
+    # 凸起与缺口同行（凸起在顶行窗外侧）→ 上移/下移一下；
+    # 凸起与缺口同列（正下/正上）→ 左移/右移一下。
+    # 方向取引擎第一个接受的；单块平移，不参与共轭还原。
+    if p2 is not None:
+        pr, pc = p2.location
+        if pr == 0 and (pc >= nv or pc < 0):        # 同行：顶行外侧
+            scands = ([('v', nv - 1, 'right', 'w', None),
+                       ('v', nv - 1, 'right', 's', None)] if pc >= nv else
+                      [('v', -1, 'left', 'w', None),
+                       ('v', -1, 'left', 's', None)])
+        elif pc == c:                               # 同列：正下方/正上方
+            scands = ([('h', mv - 1, 'below', 'a', None),
+                       ('h', mv - 1, 'below', 'd', None)] if pr >= mv else
+                      [('h', 0, 'above', 'a', None),
+                       ('h', 0, 'above', 'd', None)])
+        else:
+            scands = []
+        if scands:
+            done = False
+            for a4 in scands:
+                okk, a5, _why, _mvd = _apply_dbg(g2, a4, step)
+                if okk:
+                    prefix.append(a5)
+                    done = True
+                    break
+            if not done:
+                return None, {'reason': '起手setup两个方向均受阻',
+                              'prefix': list(prefix)}
+            if verbose:
+                print('  setup：对齐凸起挪位 -> %s' % (tuple(p2.location),))
+
+    for i, a4 in enumerate(seal4):                 # 封壳（外层共轭）
+        okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
+        if not okk:
+            return None, {'reason': '封壳第%d步被拒(%s)' % (i + 1, why),
+                          'prefix': list(prefix)}
+        prefix.append(a5)
+    if not _hole_sealed(g2, vh):
+        return None, {'reason': '封壳完成但洞未封闭', 'prefix': list(prefix)}
+    vp = tuple(p2.location)
+    if verbose:
+        print('  封壳(用户) %d 步，凸起 %s -> %s' % (len(prefix), p0, vp))
+
+    iacts, istats = _solve_couple(gcoords(g2), mv, nv, step, vh, vp,
+                                  keep_partial=True)
+    if iacts is None or istats.get('partial'):
+        return None, {'reason': '内部共轭失败: %s' % istats.get('reason', '?'),
+                      'prefix': list(prefix) + list(iacts or [])}
+    if verbose:
+        print('  内部共轭 %d 步' % len(iacts))
+    if not _replay_apply(g2, iacts, mv, nv, step):
+        return None, {'reason': '内部共轭回放失败', 'prefix': list(prefix)}
+    prefix += list(iacts)
+
+    for i, a4 in enumerate(unseal4):               # 逆外层共轭
+        okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
+        if not okk:
+            return None, {'reason': '拆壳第%d步被拒(%s)' % (i + 1, why),
+                          'prefix': list(prefix)}
+        prefix.append(a5)
+    if not g2.is_solved():
+        return None, {'reason': '链走通但未还原', 'prefix': list(prefix)}
+    return list(prefix), {'seal': len(seal4), 'inner': len(iacts),
+                          'unseal': len(unseal4), 'flag': flag}
+
+
+def solve_edge_gap(coords, m, n, step, verbose=False):
+    """单边缺口全链求解（用户算法）：缺口 → 上边缘 → _user_edge_chain。
+
+    失败回退 v1（左边缘规范型：专列/甩料封壳）。
+    返回 (世界动作5元组列表, stats)；失败 → (None, stats)。
+    """
+    t0 = time.time()
+    coords = frozenset(coords)
+    if len(coords) != m * n:
+        return None, {'error': f'格数 {len(coords)} != {m * n}'}
+    g0 = build_game(coords, m, n)
+    if g0.is_solved():
+        return [], {'steps': 0, 'secs': 0.0}
+
+    (r0, c0, wh), _ov, holes, _outside = window_of(coords, m, n, step)
+    if len(holes) != 1:
+        return None, {'reason': f'非单缺口（窗内空位 {len(holes)} 个）'}
+    h_w = next(iter(holes))
+    edge = _edge_of(h_w, r0, c0, wh[0], wh[1])
+    if edge == 'INNER':
+        return None, {'reason': '封闭孔洞（应交填洞宏）'}
+    if edge == 'CORNER':
+        return None, {'reason': '角缺口（应走 solve_corner_gap）'}
+
+    # ---- 用户链：缺口 → 上边缘 ----
+    name = _ROT_TO_TOP[edge]
+    mv, nv = view_rotate.view_dims(name, m, n)
+    vc = frozenset(view_rotate.rotate_xy(name, r - r0, c - c0, m, n)
+                   for r, c in coords)
+    vh = view_rotate.rotate_xy(name, h_w[0] - r0, h_w[1] - c0, m, n)
+
+    def _to_world(a):
+        gap, line, side, d, rep = a
+        gap2, line2, side2, d2 = view_rotate.act_to_world(
+            name, gap, line, side, d, m, n)
+        line2 = line2 + (r0 if gap2 == 'h' else c0)
+        rr, cc = view_rotate.rep_to_world(name, rep[0], rep[1], m, n)
+        return (gap2, line2, side2, d2, (rr + r0, cc + c0))
+
+    uacts, ustats = _user_edge_chain(build_game(vc, mv, nv), vh, step,
+                                     verbose=verbose)
+    if uacts is not None:
+        wall = [_to_world(a) for a in uacts]
+        g = build_game(coords, m, n)
+        ok = _replay_apply(g, wall, m, n, step)
+        solved_world = ok and g.is_solved()
+        stats = {'steps': len(wall),
+                 'seal': ustats['seal'], 'inner': ustats['inner'],
+                 'unseal': ustats['unseal'], 'flag': ustats['flag'],
+                 'rot': name, 'edge': edge, 'route': 'user2',
+                 'view_solved': True, 'solved': solved_world,
+                 'secs': round(time.time() - t0, 3)}
+        if solved_world:
+            return wall, stats
+        u_reason, u_prefix = '用户链回放未还原', []
+    else:
+        u_reason = ustats['reason']
+        u_prefix = [_to_world(a) for a in ustats.get('prefix', [])]
+    if verbose:
+        print('  用户链未成(%s)，回退 v1' % u_reason)
+
+    # ---- 回退 v1：左边缘规范型（专列/甩料封壳）----
+    wall1, stats1 = _solve_edge_gap_v1(coords, m, n, step, verbose=verbose)
+    if wall1 is not None and stats1.get('solved'):
+        return wall1, dict(stats1, user_reason=u_reason, route='v1')
+    fw1 = stats1.get('fail_world') or []
+    return None, {'reason': '用户链:%s；v1:%s'
+                             % (u_reason, stats1.get('reason', '?')),
+                  'edge': edge, 'user_reason': u_reason,
+                  'fail_world': fw1 if len(fw1) >= len(u_prefix) else u_prefix,
+                  'secs': round(time.time() - t0, 3)}
+
+
+def _solve_edge_gap_v1(coords, m, n, step, verbose=False):
+    """v1 回退路径：左边缘规范型 + 甩料封壳（旧算法，保留兜底）。
+
+    单边缺口全链：封壳 → 内部共轭(couple) → 拆壳。
     返回 (世界动作5元组列表, stats)；失败 → (None, stats)。
     """
     t0 = time.time()
