@@ -750,6 +750,18 @@ def solve_gap_any(coords, m, n, step, verbose=False):
 
 _ROT_TO_TOP = {'U': 'id', 'L': 'cw', 'R': 'ccw', 'D': 'r180'}
 
+# 换边等价表达：(side, dir) -> (对侧, 同向)。同缝异侧同向移动与
+# 原侧反向移动的相对位移相同（差一个整体平移），is_solved 不钉死
+# 绝对位置，故拆壳被拒时可换边重试（用户复原失败01实证）。
+_FLIP_SIDE_DIR = {('above', 'a'): ('below', 'd'),
+                  ('above', 'd'): ('below', 'a'),
+                  ('below', 'a'): ('above', 'd'),
+                  ('below', 'd'): ('above', 'a'),
+                  ('left', 's'): ('right', 'w'),
+                  ('left', 'w'): ('right', 's'),
+                  ('right', 's'): ('left', 'w'),
+                  ('right', 'w'): ('left', 's')}
+
 
 def normalize_present(coords, m, n, step):
     """呈现规范形（用户约定）：
@@ -833,9 +845,10 @@ def _user_edge_chain(vg, vh, step, verbose=False):
                 return blk
         return None
 
-    def _run(squeeze, force_rot=None):
+    def _run(squeeze, inner_mode):
         """跑一条完整链。squeeze=False 直解；True 先「下面整带挤入」。
-        force_rot：内层填洞旋转策略（None=choose_rot 自动，'id'=不旋转）。
+        inner_mode：内层填洞方式——'direct'=用户直接共轭（同缝升凸→
+        滑入→降回）；None=通用填洞宏 choose_rot 自动；'id'=宏不旋转。
         返回 (动作列表, stats) 或 (None, 失败原因, 已走前缀)。"""
         g2 = build_game(gcoords(vg), mv, nv)
         p2 = _find_block(g2, p0)
@@ -896,53 +909,102 @@ def _user_edge_chain(vg, vh, step, verbose=False):
                 prefix.append(a5)
 
         vp = tuple(p2.location)
-        # 内层旋转策略（2026-10-01 教学验证）：choose_rot 自动旋转在常规
-        # 批量正确，但特殊姿态下会在封壳临时几何里破坏料条/垫洞的几何
-        # 关系，拆壳逆动作必散架（"链走通但未还原"真因）→ 失败时以
-        # force_rot='id'（不旋转、直接窄缝推入）重试。两级都保留。
-        iacts, istats = _solve_couple(gcoords(g2), mv, nv, step, vh, vp,
-                                      keep_partial=True, force_rot=force_rot)
-        if iacts is None or istats.get('partial'):
-            return None, ('内部共轭失败: %s' % istats.get('reason', '?')), \
-                list(prefix) + list(iacts or [])
-        if verbose:
-            print('  内部共轭 %d 步' % len(iacts))
-        if not _replay_apply(g2, iacts, mv, nv, step):
-            return None, '内部共轭回放失败', list(prefix)
-        if vh not in gcoords(g2):
-            # 内层返回成功却没填中：_block_at(h) 应有块（h ∈ coords），
-            # 该格仍空 = B 段终止判据被骗，不得拼进链里拆壳
-            return None, ('内部共轭假阳性：洞%s仍空' % (vh,)), \
-                list(prefix) + list(iacts)
-        prefix += list(iacts)
+        if inner_mode == 'direct':
+            # 用户教学（2026-10-01 复原五档逐步解码）：内层填洞 =
+            # 「同封壳缝升凸 → 单块滑入洞 → 同缝降回」。升凸/降回必须
+            # 复用封壳的缝与侧（flag=1: v@c 右侧；flag=-1: v@(c-1) 左侧），
+            # 通用填洞宏的 A 段会切换到相邻缝重组（"上移多次+换缝"），
+            # 破坏封壳几何导致拆壳必散——用户明确指出此为 02/04 型错误根源。
+            # 洞凸同 mod ⇒ 升距/滑距均为 step 整数倍，逐 step 执行即等价。
+            seam_line, seam_side = (c, 'right') if flag == 1 else (c - 1, 'left')
+            in_side = (vp[1] >= c + 1) if flag == 1 else (vp[1] <= c - 1)
+            D = vp[0] - vh[0]
+            if not (in_side and D >= 0):
+                return None, ('直接共轭不适用(凸%s不在缝侧或D=%d)' % (vp, D)), \
+                    list(prefix)
+            n_lift = D // step
+            for _ in range(n_lift):                # 升凸：凸起随组升到洞行
+                okk, a5, why, _mvd = _apply_dbg(
+                    g2, ('v', seam_line, seam_side, 'w'), step)
+                if not okk:
+                    return None, '升凸被拒(%s)' % why, list(prefix)
+                prefix.append(a5)
+            if p2.location[1] != vh[1]:            # 单块滑入（rep 指定凸起）
+                sdir = 'd' if p2.location[1] < vh[1] else 'a'
+                for _ in range(abs(p2.location[1] - vh[1]) // step):
+                    a4 = ('h', vh[0] - 1, 'below', sdir, tuple(p2.location))
+                    okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
+                    if not okk:
+                        return None, '滑入被拒(%s)' % why, list(prefix)
+                    prefix.append(a5)
+            for _ in range(n_lift):                # 降回（升凸逆）
+                okk, a5, why, _mvd = _apply_dbg(
+                    g2, ('v', seam_line, seam_side, 's'), step)
+                if not okk:
+                    return None, '降回被拒(%s)' % why, list(prefix)
+                prefix.append(a5)
+            if vh not in gcoords(g2):
+                return None, '直接共轭后洞%s未填' % (vh,), list(prefix)
+            if verbose:
+                print('  直接共轭内层(升%d步+滑入+降) 完成' % n_lift)
+        else:
+            # 内层旋转策略（2026-10-01 教学验证）：choose_rot 自动旋转在常规
+            # 批量正确，但特殊姿态下会在封壳临时几何里破坏料条/垫洞的几何
+            # 关系，拆壳逆动作必散架（"链走通但未还原"真因）→ 失败时以
+            # force_rot='id'（不旋转、直接窄缝推入）重试。两级都保留。
+            iacts, istats = _solve_couple(gcoords(g2), mv, nv, step, vh, vp,
+                                          keep_partial=True,
+                                          force_rot=inner_mode)
+            if iacts is None or istats.get('partial'):
+                return None, ('内部共轭失败: %s' % istats.get('reason', '?')), \
+                    list(prefix) + list(iacts or [])
+            if verbose:
+                print('  内部共轭 %d 步' % len(iacts))
+            if not _replay_apply(g2, iacts, mv, nv, step):
+                return None, '内部共轭回放失败', list(prefix)
+            if vh not in gcoords(g2):
+                # 内层返回成功却没填中：_block_at(h) 应有块（h ∈ coords），
+                # 该格仍空 = B 段终止判据被骗，不得拼进链里拆壳
+                return None, ('内部共轭假阳性：洞%s仍空' % (vh,)), \
+                    list(prefix) + list(iacts)
+            prefix += list(iacts)
 
         for i, a4 in enumerate(unseal4):           # 逆外层共轭
             okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
             if not okk:
-                return None, '拆壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
+                # 换边等价表达（用户复原失败01实证）：同缝异侧反向 ≡
+                # 相对位移相同、绝对位置不同；is_solved 只看实心矩形
+                # 形状不钉死位置，故被拒时换边重试。
+                side2, d2 = _FLIP_SIDE_DIR[(a4[2], a4[3])]
+                okk, a5, why, _mvd = _apply_dbg(
+                    g2, (a4[0], a4[1], side2, d2, None), step)
+                if not okk:
+                    return None, '拆壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
             prefix.append(a5)
         if not g2.is_solved():
             return None, '链走通但未还原', list(prefix)
         return (list(prefix),
-                {'seal': len(seal4), 'inner': len(iacts),
+                {'seal': len(seal4),
+                 'inner': len(prefix) - len(seal4) - len(unseal4),
                  'unseal': len(unseal4), 'flag': flag,
+                 'inner_mode': inner_mode,
                  'squeeze': squeeze})
 
-    # 四级尝试：直解(自动旋转) → 直解(id) → 挤入(自动) → 挤入(id)
+    # 六级尝试：直解(直接共轭/自动/id) → 挤入(直接共轭/自动/id)
     best = []
     reasons = []
     for squeeze in (False, True):
-        for fr in (None, 'id'):
-            res = _run(squeeze, fr)
+        for im in ('direct', None, 'id'):
+            res = _run(squeeze, im)
             if res[0] is not None:
                 return res
             tag = '直解' if not squeeze else '挤入'
-            rot_tag = '自动' if fr is None else 'id'
-            reasons.append('%s(%s):%s' % (tag, rot_tag, res[1]))
+            im_tag = {'direct': '直接', None: '自动', 'id': 'id'}[im]
+            reasons.append('%s(%s):%s' % (tag, im_tag, res[1]))
             if len(res[2]) > len(best):
                 best = res[2]
             if verbose:
-                print('  %s(%s)未成(%s)' % (tag, rot_tag, res[1]))
+                print('  %s(%s)未成(%s)' % (tag, im_tag, res[1]))
     return None, {'reason': '；'.join(reasons), 'prefix': best}
 
 
