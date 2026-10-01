@@ -1020,7 +1020,7 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
 
 
 def solve_multi_search(coords, m, n, step, couple_hook=None,
-                       node_budget=400, verbose=False):
+                       node_budget=400, reshape_budget=3, verbose=False):
     """宏级 DFS：对 couple 选择回溯，状态图上找「填满窗口」的宏序列。
 
     背景：贪心驱动存在顺序依赖——同一盘面换个候选随机序，一个能全解一
@@ -1030,6 +1030,11 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
     状态图：节点=盘面，边=一次「hook 成功且闸门通过」的 couple。每条边
     窗口方块数严格 +1 → 深度 ≤ 空位数、无环；不同顺序到达的同一中间态
     用 seen 去重（该状态之下子树相同，败过一次不必再败）。
+
+    整形动作（带移盖洞 / 粘上接走）同样进回溯（2026-10-01）：不再只在
+    「零 couple」死端触发——本节点 couple 子树全败后，回溯到本节点改试
+    整形边（惰性探测：couple 有戏就不花整形探测的钱）。reshape_budget
+    限制每条根→叶路径上整形次数，防组合爆炸。
 
     couple_hook：(coords,m,n,step,h,p)→(acts,stats)。None = 只填洞。
     node_budget：DFS 节点上限（每节点要对全 couple 跑 hook，代价高）。
@@ -1068,7 +1073,33 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
     state = {'nodes': 0, 'best': [], 'exhausted': False, 'seen': set(),
              'convoy_left': 8000}
 
-    def dfs(cur, prefix):
+    def _reshape_edges(cur):
+        """整形边（惰性）：①带移盖洞 ②粘上接走。
+
+        convoy 共享总预算 state['convoy_left']：固有缺陷局面不在无效
+        原语上无限烧时间。
+        """
+        out = []
+        _rg, _ovc, holes_c, out_c = window_of(cur, m, n, step)
+        for h_c in sorted(holes_c):
+            bacts, _bn = _belt_shift_fill(cur, m, n, step, h_c)
+            if bacts is not None:
+                out.append(bacts)
+            for p_c in sorted(out_c):
+                if state['convoy_left'] <= 0:
+                    return out
+                if ((p_c[0] - h_c[0]) % step
+                        or (p_c[1] - h_c[1]) % step):
+                    continue
+                cacts, used = _convoy_fill(
+                    cur, m, n, step, h_c, p_c,
+                    max_nodes=min(2500, state['convoy_left']))
+                state['convoy_left'] -= used
+                if cacts:
+                    out.append(cacts)
+        return out
+
+    def dfs(cur, prefix, reshape_left):
         if state['nodes'] >= node_budget:
             state['exhausted'] = True
             return None
@@ -1077,30 +1108,7 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
             return list(prefix)
         if len(prefix) > len(state['best']):
             state['best'] = list(prefix)
-        edges = _couples(cur)
-        if not edges:
-            # 标准 couple 全灭 → 两个料搬运原语（死端救援）：
-            # ① 带移盖洞（2026-10-01 失败02「拆东墙补西墙」参数化）
-            # ② 粘上接走（2026-10-01 失败03「粘上接走」参数化）
-            # convoy 共享总预算：固有缺陷局面不在无效原语上无限烧时间
-            _rg, _ovc, holes_c, out_c = window_of(cur, m, n, step)
-            for h_c in sorted(holes_c):
-                bacts, _bn = _belt_shift_fill(cur, m, n, step, h_c)
-                if bacts is not None:
-                    edges.append(bacts)
-                for p_c in sorted(out_c):
-                    if state['convoy_left'] <= 0:
-                        break
-                    if ((p_c[0] - h_c[0]) % step
-                            or (p_c[1] - h_c[1]) % step):
-                        continue
-                    cacts, used = _convoy_fill(
-                        cur, m, n, step, h_c, p_c,
-                        max_nodes=min(2500, state['convoy_left']))
-                    state['convoy_left'] -= used
-                    if cacts:
-                        edges.append(cacts)
-        for acts in edges:
+        for acts in _couples(cur):
             g2 = build_game(cur, m, n)
             if not _replay_apply(g2, acts, m, n, step):
                 continue
@@ -1108,12 +1116,26 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
             if nxt == cur or nxt in state['seen']:
                 continue
             state['seen'].add(nxt)
-            r = dfs(nxt, prefix + list(acts))
+            r = dfs(nxt, prefix + list(acts), reshape_left)
             if r is not None:
                 return r
+        # couple 子树全败 → 回溯到本节点改试整形边（整形进回溯）；
+        # 「零 couple 死端」是 reshape_left>0 时的自然特例
+        if reshape_left > 0:
+            for acts in _reshape_edges(cur):
+                g2 = build_game(cur, m, n)
+                if not _replay_apply(g2, acts, m, n, step):
+                    continue
+                nxt = frozenset(gcoords(g2))
+                if nxt == cur or nxt in state['seen']:
+                    continue
+                state['seen'].add(nxt)
+                r = dfs(nxt, prefix + list(acts), reshape_left - 1)
+                if r is not None:
+                    return r
         return None
 
-    r = dfs(coords, [])
+    r = dfs(coords, [], reshape_budget)
     if r is not None:
         return (r, {'steps': len(r), 'nodes': state['nodes'],
                     'search': True, 'secs': round(time.time() - t0, 3)})

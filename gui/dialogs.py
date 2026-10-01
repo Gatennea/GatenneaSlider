@@ -13,6 +13,7 @@ import pygame
 import os
 import sys
 from gui.text_input import TextInput
+from gui.file_ops import _find_illegal_filename_chars
 
 
 class PygameFileDialog:
@@ -53,6 +54,7 @@ class PygameFileDialog:
         self.result = None
         self.extensions = ['*']
         self.initial_file = ''
+        self.error_msg = ''  # 确定按钮校验失败的提示（如文件名含非法字符）
         
         # UI 布局
         self.dialog_rect = None
@@ -97,6 +99,7 @@ class PygameFileDialog:
         self.result = None
         self.input_active = True
         self.scrollbar_dragging = False
+        self.error_msg = ''
         
         self._refresh_file_list()
         self._calculate_layout()
@@ -349,6 +352,12 @@ class PygameFileDialog:
 
             if self.filename_input:
                 final_name = _ensure_json(self.filename_input)
+                # Windows 非法字符校验：写盘必抛异常，这里提前拦下并留在对话框内提示
+                illegal = _find_illegal_filename_chars(final_name)
+                if illegal:
+                    self.error_msg = f"文件名含非法字符 {' '.join(illegal)}，请修改"
+                    return
+                self.error_msg = ''
                 self.result = os.path.join(self.current_dir, final_name)
             elif self.selected_index >= 0 and self.selected_index < len(self.file_list):
                 name, is_dir = self.file_list[self.selected_index]
@@ -447,6 +456,11 @@ class PygameFileDialog:
         # 文件名输入框
         input_label = self.small_font.render("文件名:", True, self.colors['dialog_text'])
         self.screen.blit(input_label, (self.input_rect.left, self.input_rect.top - 16))
+
+        # 校验错误提示（文件名含非法字符等）：显示在「文件名:」标签右侧
+        if self.error_msg:
+            err_surface = self.small_font.render(self.error_msg, True, (255, 100, 100))
+            self.screen.blit(err_surface, (self.input_rect.left + 60, self.input_rect.top - 16))
         
         bg_color = self.colors['input_active'] if self.input_active else self.colors['input_bg']
         pygame.draw.rect(self.screen, bg_color, self.input_rect, border_radius=4)

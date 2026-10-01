@@ -24,6 +24,19 @@ def _compute_checksum(data: dict) -> str:
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+# Windows 文件名禁止字符（含这些字符写盘必抛 OSError，此前只 print 用户看不到）
+ILLEGAL_FILENAME_CHARS = '<>:"/\\|?*'
+
+
+def _find_illegal_filename_chars(name: str) -> list:
+    """返回文件名中出现的 Windows 非法字符（去重保序），合法名返回空列表"""
+    seen = []
+    for ch in name:
+        if ch in ILLEGAL_FILENAME_CHARS and ch not in seen:
+            seen.append(ch)
+    return seen
+
+
 def _compact_json_dumps(data, indent=2, max_line_width=200):
     """紧凑 JSON 序列化：纯数字/布尔数组输出为单行，短对象也尽量单行"""
 
@@ -574,6 +587,13 @@ class FileOpsMixin:
 
     def _save_to_path(self, path: str):
         """将当前状态保存到指定路径"""
+        # 文件名校验：Windows 非法字符（如 * ? : 等）写盘必抛异常，先拦截并明确提示
+        illegal = _find_illegal_filename_chars(os.path.basename(path))
+        if illegal:
+            self.macro_notify_msg = f"文件名含非法字符 {' '.join(illegal)}，保存取消"
+            self.macro_notify_timer = 240
+            print(f"保存失败: 文件名含非法字符 {' '.join(illegal)}: {path}")
+            return
         save_data = self._build_save_data()
         try:
             os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
@@ -586,6 +606,9 @@ class FileOpsMixin:
             self.macro_notify_timer = 120
             print(f"游戏已保存到 {path}")
         except Exception as e:
+            # 兜底：权限/磁盘/路径等任何异常都要转成用户可见提示，绝不静默
+            self.macro_notify_msg = f"保存失败：{e}"
+            self.macro_notify_timer = 240
             print(f"保存失败: {e}")
 
     def load_from_file(self):
