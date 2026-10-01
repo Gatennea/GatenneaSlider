@@ -755,6 +755,41 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                       % (rounds, h, p, len(acts)))
         if progressed:
             continue
+        if not progressed:
+            # 贴边缺口 setup 轨道（2026-10-02 用户手解归纳）：直接 couple 全败
+            # 且有洞贴窗口边缘时，走「往返捎带」机构——先推带腾通道、窗外源块
+            # 就位、回程捎进洞、还原腾位；全链过段级聚拢度闸门才接受。
+            for h in h_list:
+                _chk(cancel_check)
+                acts_e, info_e = _edge_setup_chain(
+                    cur, m, n, step, h, time_budget=_EDGE_SETUP_BUDGET,
+                    verbose=verbose, cancel_check=cancel_check)
+                if acts_e is None:
+                    if verbose:
+                        print('   round%d 贴边setup 洞%s: %s'
+                              % (rounds, h, info_e))
+                    continue
+                if not _overlap_raised(cur, m, n, step, acts_e):
+                    continue
+                if not _replay_apply(g, acts_e, m, n, step):
+                    return _stop({'reason': '多洞停机：贴边setup推进活盘失败',
+                                  'rounds': rounds, 'steps': len(total)})
+                total.extend(acts_e)
+                progressed = True
+                p = None
+                if segment_cb is not None:
+                    try:
+                        segment_cb('round%d 贴边setup(往返捎带) 洞%s' % (rounds, h),
+                                   list(acts_e))
+                        streamed[0] += len(acts_e)
+                    except Exception:
+                        pass   # 流式回调失败不拖垮求解
+                if verbose:
+                    print('   round%d 贴边setup 洞%s → %d 步'
+                          % (rounds, h, len(acts_e)))
+                break
+            if progressed:
+                continue
         if not progressed and max_shaping:
             # couple 全败 → 有限中性整形预演：≤max_shaping 步不降聚拢度的
             # 整带动作后直接提升 / 解锁 couple（覆盖「需先揉形再填」卡点）
@@ -1761,6 +1796,270 @@ def hole_gaps(coords, hole):
     return [(r + dr, c + dc)
             for dr in (-1, 0, 1) for dc in (-1, 0, 1)
             if (dr or dc) and (r + dr, c + dc) not in coords]
+
+
+# ---------------------------------------------------------------------------
+# 贴边缺口 setup 轨道（2026-10-02，用户手解失败06 段2 归纳的机构）
+#
+# 洞贴窗口边缘时，直接补缺链/填洞宏会产出「填上缺口但整批块搬出窗外」的
+# 灾难方案。用户正解的机构（往返捎带）：
+#   pre    腾位前缀（0~1 个平移，可选）：给骨架清路
+#   T_last 骨架平移：带内块整体推向源侧，腾出带上通道（产物与就位源相邻
+#          则并入同分量）
+#   P      就位：把窗外源块推到带端点 slot（洞沿带轴向源侧 dist 处）
+#   C      回程：T_last 的逆（同缝同侧反向同距离）——源块随分量被捎进洞
+#   R      还原：腾位前缀逆序逆动作
+# 全链按段级聚拢度闸门验收（用户 2026-10-01 原则：结束比开始提升即有效，
+# 中途不管）。
+# ---------------------------------------------------------------------------
+
+_EDGE_SETUP_BUDGET = 6.0   # 单洞 setup 搜索时间预算（秒）
+
+
+def _es_side_blocks(g, gap, line, side):
+    """缝 line 某侧的全部块（按坐标判定，不分量）。"""
+    if gap == 'v':
+        sel = (lambda p: p[1] > line) if side == 'right' \
+            else (lambda p: p[1] <= line)
+    else:
+        sel = (lambda p: p[0] > line) if side == 'below' \
+            else (lambda p: p[0] <= line)
+    return [x for x in g.blocks if sel(tuple(x.location))]
+
+
+def _es_probe_run(g, gap, line, side, rep0, d, times, step, cancel_check=None):
+    """在 g 上从 rep0 块选中分量连滑 times 个 step（多格滑的忠实语义：
+    同一分量连续平移）。成功返回 (True, sub_acts)；中途任一步失败返回
+    (False, [])——g 已部分推进，调用方必须弃盘（本函数只用于副本）。"""
+    blk = None
+    for x in g.blocks:
+        if tuple(x.location) == tuple(rep0):
+            blk = x
+            break
+    if blk is None:
+        return False, []
+    sub = []
+    for _ in range(times):
+        _chk(cancel_check)
+        g.opt(gap, line, blk)
+        fin = g.try_move(d, step)
+        if not fin:
+            return False, []
+        sub.append((gap, line, side, d, tuple(blk.location)))   # 移动前坐标
+        g.commit_move(fin)
+    return True, sub
+
+
+def _es_slide(g, gap, line, side, d, times, step, acts,
+              cancel_check=None, prefer=None):
+    """整段原子滑动：从侧内挑一个能连滑 times 个 step 的分量（先在副本上
+    试探，成功才提交真盘），逐 step 记录带 rep_cell 的动作。
+    成功 True；无可滑分量 False（g 不动）。prefer：优先尝试的代表块。"""
+    _chk(cancel_check)
+    cands = _es_side_blocks(g, gap, line, side)
+    if prefer is not None:
+        cands.sort(key=lambda x: 0 if tuple(x.location) == tuple(prefer) else 1)
+    tried_comps = set()
+    for x in cands:
+        g.opt(gap, line, x)
+        comp = frozenset(tuple(b.location) for b in g.blocks if b.be_opted)
+        for b in g.blocks:
+            b.be_opted = False
+        if comp in tried_comps:
+            continue
+        tried_comps.add(comp)
+        # 副本试探：该分量能否连滑全程
+        gt = build_game(gcoords(g), g.m, g.n)
+        ok, sub = _es_probe_run(gt, gap, line, side,
+                                tuple(x.location), d, times, step)
+        if not ok:
+            continue
+        # 真盘逐 step 重放
+        good = True
+        for a5 in sub:
+            tg = None
+            for bb in g.blocks:
+                if tuple(bb.location) == a5[4]:
+                    tg = bb
+                    break
+            if tg is None:
+                good = False
+                break
+            g.opt(gap, line, tg)
+            fin = g.try_move(d, step)
+            if not fin:
+                good = False
+                break
+            g.commit_move(fin)
+            acts.append(a5)
+        if good:
+            return True
+    return False
+
+
+def _edge_setup_chain(coords, m, n, step, hole, time_budget=_EDGE_SETUP_BUDGET,
+                      verbose=False, cancel_check=None):
+    """贴边缺口「往返捎带」setup 轨道。返回 (acts5, info) 或 (None, reason)。
+
+    洞贴窗口边缘、直接填会灾难时：先把带内块整体推向源侧腾出通道
+    （T_last），窗外源块就位到带端点 slot（P），再以骨架的逆动作回程把
+    源块捎进洞（C），最后还原腾位（R）。全链过段级聚拢度闸门才返回。
+    """
+    coords = frozenset(coords)
+    reg, ov0, holes0, out0 = window_of(coords, m, n, step)
+    r0, c0, (wh, ww) = reg
+    r1, c1 = r0 + wh - 1, c0 + ww - 1
+    dirs = []
+    if hole[0] == r0:
+        dirs.append('w')
+    if hole[0] == r1:
+        dirs.append('s')
+    if hole[1] == c0:
+        dirs.append('a')
+    if hole[1] == c1:
+        dirs.append('d')
+    if not dirs:
+        return None, '洞不贴边'
+    deadline = time.time() + time_budget
+    opp = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
+    tried = 0
+    for d in dirs:
+        horizontal = d in ('w', 's')
+        band_fixed = hole[0] if horizontal else hole[1]
+        band_var0 = hole[1] if horizontal else hole[0]
+        b_lo, b_hi = (c0, c1) if horizontal else (r0, r1)
+        gap_band = 'h' if horizontal else 'v'
+        # 骨架缝（side → line 配对，保证带行/列在侧内）：
+        #   h above: rows≤L 含带行 → L=band_fixed；h below: rows>L → L=band_fixed-1
+        #   v left : cols≤L 含带列 → L=band_fixed；v right: cols>L → L=band_fixed-1
+        side_lines = ((('above', band_fixed), ('below', band_fixed - 1))
+                      if horizontal else
+                      (('left', band_fixed), ('right', band_fixed - 1)))
+        for bd in (('d', 'a') if horizontal else ('s', 'w')):
+            # bd = 源侧方向（洞沿带轴向 bd 出窗外）
+            for k in (1, 2, 3, 4):
+                dist_c = k * step
+                v_slot = band_var0 + (dist_c if bd in ('d', 's') else -dist_c)
+                if b_lo <= v_slot <= b_hi:
+                    continue    # slot 未出窗外，源位不成立
+                slot = (band_fixed, v_slot) if horizontal \
+                    else (v_slot, band_fixed)
+                for side, sline in side_lines:
+                    _chk(cancel_check)
+                    if time.time() > deadline:
+                        return None, ('贴边setup：%.0fs 预算内未找到'
+                                      '（试 %d 组）' % (time_budget, tried))
+                    tried += 1
+                    g = build_game(coords, m, n)
+                    acts = []
+                    # ---- T1：垂直推出带行路径段（把洞到源侧窗缘的带内块
+                    #      整列推出带，产物落在窗外邻带）----
+                    if horizontal:
+                        t1 = ('v', band_var0,
+                              'right' if bd == 'd' else 'left', 'w', 1)
+                    else:
+                        t1 = ('h', band_var0,
+                              'below' if bd == 's' else 'above', 'a', 1)
+                    did_t1 = _es_slide(g, t1[0], t1[1], t1[2], t1[3], t1[4],
+                                       step, acts, cancel_check)
+                    # ---- T2：T1 产物横移对齐（可选）——使 C 时产物与带行块
+                    #      同分量、R1 能对齐还原。T1 成功而 T2 失败 → C 拉不
+                    #      回，弃该骨架。----
+                    did_t2 = False
+                    if did_t1:
+                        if horizontal:
+                            t2 = ('h', band_fixed - 1, 'above',
+                                  'a' if bd == 'd' else 'd', 1)
+                        else:
+                            t2 = ('v', band_fixed - 1, 'left',
+                                  'w' if bd == 's' else 's', 1)
+                        did_t2 = _es_slide(g, t2[0], t2[1], t2[2], t2[3],
+                                           t2[4], step, acts, cancel_check)
+                        if not did_t2:
+                            continue
+                    # ---- T_last：带行块推向源侧 dist_c（腾出通道）----
+                    if not _es_slide(g, gap_band, sline, side, bd,
+                                     k, step, acts, cancel_check):
+                        continue
+                    snap = gcoords(g)
+                    # ---- P：窗外源块就位到 slot（与 slot 同垂直轴）----
+                    if horizontal:
+                        src_axis, other = 1, 0
+                    else:
+                        src_axis, other = 0, 1
+                    srcs = [q for q in snap
+                            if q[src_axis] == v_slot
+                            and q[other] != band_fixed]
+                    for src in srcs:
+                        if horizontal:
+                            dist_p = abs(src[0] - band_fixed)
+                            if dist_p < step or dist_p % step:
+                                continue
+                            pd = 's' if src[0] < band_fixed else 'w'
+                            seams = ((('v', v_slot - 1, 'right')
+                                      if v_slot > b_hi else
+                                      ('v', v_slot, 'left')),)
+                        else:
+                            dist_p = abs(src[1] - band_fixed)
+                            if dist_p < step or dist_p % step:
+                                continue
+                            pd = 'd' if src[1] < band_fixed else 'a'
+                            seams = ((('h', v_slot - 1, 'below')
+                                      if v_slot > b_hi else
+                                      ('h', v_slot, 'above')),)
+                        for pseam in seams:
+                            # P/C/R 全部在「骨架前段后」的副本上试
+                            g2 = build_game(snap, m, n)
+                            acts2 = list(acts)
+                            if not _es_slide(g2, pseam[0], pseam[1],
+                                             pseam[2], pd, dist_p // step,
+                                             step, acts2, cancel_check,
+                                             prefer=src):
+                                continue
+                            if slot not in gcoords(g2):
+                                continue
+                            # ---- C：骨架逆，把源捎进洞 ----
+                            if not _es_slide(g2, gap_band, sline, side,
+                                             opp[bd], k, step, acts2,
+                                             cancel_check, prefer=slot):
+                                continue
+                            if hole not in gcoords(g2):
+                                continue
+                            # ---- R1/R2：T2、T1 逆序还原 ----
+                            okr = True
+                            if did_t2:
+                                if not _es_slide(g2, t2[0], t2[1], t2[2],
+                                                 opp[t2[3]], t2[4], step,
+                                                 acts2, cancel_check):
+                                    okr = False
+                            if okr and did_t1:
+                                if not _es_slide(g2, t1[0], t1[1], t1[2],
+                                                 opp[t1[3]], t1[4], step,
+                                                 acts2, cancel_check):
+                                    okr = False
+                            if not okr:
+                                continue
+                            # ---- 段级聚拢度闸门 ----
+                            if not _overlap_raised(coords, m, n, step,
+                                                   acts2):
+                                continue
+                            if verbose:
+                                print('   [贴边setup] 洞%s edge=%s '
+                                      'T1=%s T2=%s 骨架=%s·L%s·%s·%s·%d格 '
+                                      'P=%s %s %d格 → %d 步'
+                                      % (hole, d,
+                                         t1 if did_t1 else None,
+                                         t2 if did_t2 else None,
+                                         gap_band, sline, side, bd, dist_c,
+                                         pseam, pd, dist_p, len(acts2)))
+                            return list(acts2), {
+                                'hole': hole, 'edge': d,
+                                'skeleton': (gap_band, sline, side, bd,
+                                             dist_c),
+                                'T1': t1 if did_t1 else None,
+                                'T2': t2 if did_t2 else None,
+                                'ov0': ov0, 'tries': tried}
+    return None, '贴边setup：预算 %d 组内未找到' % tried
 
 
 def _enum_paste_moves(coords, m, n, step, min_size=3):
