@@ -271,6 +271,20 @@ class _Runner:
                            'moves': len(self.acts)})
 
 
+def _emit(cb, stage, nodes=None, note=''):
+    """向 GUI progress_callback 发进度（cb 为 None 时零开销）。
+
+    info = {'stage': 阶段名, 'nodes': 节点数, 'path_preview': 描述}，
+    正好落在 GUI 主循环的通用显示分支：[阶段] 节点N 描述 | 用时。
+    """
+    if cb is None:
+        return
+    try:
+        cb({'stage': stage, 'nodes': nodes or 0, 'path_preview': note})
+    except Exception:
+        pass  # 进度显示失败绝不拖垮求解
+
+
 def solve_single_void(coords, m, n, step, hole=None, anchor=None,
                       verbose=False, max_moves=200, keep_partial=False,
                       force_rot=None):
@@ -739,10 +753,12 @@ def _swap_fill(coords, m, n, step, max_nodes=40000, verbose=False):
 _T0 = [0.0]
 
 
-def _compact_rescue(coords, m, n, step, why=''):
+def _compact_rescue(coords, m, n, step, why='', progress_callback=None):
     """紧凑盘移形换位救援：常规链全败后的最后手段（2026-10-01）。"""
     if not (m <= 2 * step and n <= 2 * step):
         return None
+    _emit(progress_callback, '移形换位', 0,
+          '紧凑盘双向BFS（常规链失败:%s）' % why[:30])
     import time as _t
     _T0[0] = _t.time()
     acts = _swap_fill(coords, m, n, step)
@@ -985,7 +1001,8 @@ def _belt_shift_fill(coords, m, n, step, h, verbose=False):
 
 
 def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
-                 max_depth=16, max_nodes=2500, max_comp=None, verbose=False):
+                 max_depth=16, max_nodes=2500, max_comp=None, verbose=False,
+                 progress_callback=None):
     r"""粘上接走宏（2026-10-01 失败03 教学「粘上接走」参数化）。
 
     标准 couple 宏解不动时的另一条填洞路：载运带靠上孤立凸起「粘上」
@@ -1130,6 +1147,9 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
         if verbose and state['nodes'] % 100 == 0:
             print('   [convoy节点%d] 深度%d prep已用%d p=%s'
                   % (state['nodes'], len(prefix), prep_used, pcur))
+        if progress_callback is not None and state['nodes'] % 100 == 0:
+            _emit(progress_callback, '粘上接走', state['nodes'],
+                  '洞%s←凸%s 深度%d' % (h, p, len(prefix)))
         if pcur == h:
             return list(prefix) if _overlap_raised(coords, m, n, step,
                                                    prefix) else None
@@ -1191,7 +1211,8 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
 
 
 def solve_multi_search(coords, m, n, step, couple_hook=None,
-                       node_budget=400, reshape_budget=3, verbose=False):
+                       node_budget=400, reshape_budget=3, verbose=False,
+                       progress_callback=None, cancel_check=None):
     """宏级 DFS：对 couple 选择回溯，状态图上找「填满窗口」的宏序列。
 
     背景：贪心驱动存在顺序依赖——同一盘面换个候选随机序，一个能全解一
@@ -1253,6 +1274,8 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
         out = []
         _rg, _ovc, holes_c, out_c = window_of(cur, m, n, step)
         for h_c in sorted(holes_c):
+            _emit(progress_callback, '带移盖洞', state['nodes'],
+                  '洞%s 整形探测' % (h_c,))
             bacts, _bn = _belt_shift_fill(cur, m, n, step, h_c)
             if bacts is not None:
                 out.append(bacts)
@@ -1262,19 +1285,28 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                 if ((p_c[0] - h_c[0]) % step
                         or (p_c[1] - h_c[1]) % step):
                     continue
+                _emit(progress_callback, '粘上接走', state['nodes'],
+                      '洞%s←凸%s 行军搜索' % (h_c, p_c))
                 cacts, used = _convoy_fill(
                     cur, m, n, step, h_c, p_c,
-                    max_nodes=min(2500, state['convoy_left']))
+                    max_nodes=min(2500, state['convoy_left']),
+                    progress_callback=progress_callback)
                 state['convoy_left'] -= used
                 if cacts:
                     out.append(cacts)
         return out
 
     def dfs(cur, prefix, reshape_left):
+        if cancel_check is not None and cancel_check():
+            state['cancelled'] = True
+            return None
         if state['nodes'] >= node_budget:
             state['exhausted'] = True
             return None
         state['nodes'] += 1
+        if progress_callback is not None and state['nodes'] % 20 == 0:
+            _emit(progress_callback, '宏级搜索', state['nodes'],
+                  '深度%d/预算%d' % (len(prefix), node_budget))
         if build_game(cur, m, n).is_solved():
             return list(prefix)
         if len(prefix) > len(state['best']):
@@ -1314,10 +1346,12 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
         return (state['best'],
                 {'steps': len(state['best']), 'nodes': state['nodes'],
                  'search': True, 'partial': True,
+                 'cancelled': state.get('cancelled', False),
                  'budget_exhausted': state['exhausted'],
                  'secs': round(time.time() - t0, 3)})
     return None, {'reason': '搜索：预算内无可行 couple 路径',
                   'nodes': state['nodes'], 'search': True,
+                  'cancelled': state.get('cancelled', False),
                   'secs': round(time.time() - t0, 3)}
 
 
@@ -1347,19 +1381,23 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
     coords = frozenset(tuple(b.location) for b in game.blocks)
     m, n = game.m, game.n
     _region, _ov, holes, outside = window_of(coords, m, n, step)
+    _emit(progress_callback, '填洞宏', 0,
+          '判型：洞%d 凸%d' % (len(holes), len(outside)))
     if len(holes) == 1 and len(outside) == 1:
         acts, stats = solve_single_void(coords, m, n, step, keep_partial=True)
         if acts is None:
             reason = stats.get('reason', stats.get('error', '未知'))
             print('[填洞宏] 单洞无解：%s' % reason)
-            resc = _compact_rescue(coords, m, n, step, reason)
+            resc = _compact_rescue(coords, m, n, step, reason,
+                                   progress_callback=progress_callback)
             if resc is not None:
                 return resc
             return {'type': 'fill_fail', 'reason': reason}
         if stats.get('partial'):
             reason = stats.get('reason', '中断')
             resc = _compact_rescue(coords, m, n, step,
-                                   '单洞partial:%s' % reason)
+                                   '单洞partial:%s' % reason,
+                                   progress_callback=progress_callback)
             if resc is not None:
                 return resc
             print('[填洞宏] 单洞部分(断在：%s)，已播放 %d 步供观察'
@@ -1370,18 +1408,21 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
         return _split_actions(acts)
     if not holes:
         return [], []   # 已还原
+    _emit(progress_callback, '多洞驱动', 0, '贪心逐couple填')
     acts, stats = solve_multi_void(coords, m, n, step)
     if acts is None:
         reason = stats.get('reason', stats.get('error', '未知'))
         print('[填洞宏] 多洞完全失败：%s' % reason)
-        resc = _compact_rescue(coords, m, n, step, reason)
+        resc = _compact_rescue(coords, m, n, step, reason,
+                               progress_callback=progress_callback)
         if resc is not None:
             return resc
         return {'type': 'fill_fail', 'reason': reason,
                 'stats': {k: v for k, v in stats.items() if k != 'reason'}}
     if stats.get('partial'):
         reason = stats.get('reason', '中断')
-        resc = _compact_rescue(coords, m, n, step, '多洞partial:%s' % reason)
+        resc = _compact_rescue(coords, m, n, step, '多洞partial:%s' % reason,
+                               progress_callback=progress_callback)
         if resc is not None:
             return resc
         print('[填洞宏] 多洞有成果停机(断在：%s)，已播放 %d 步（保留提升）'

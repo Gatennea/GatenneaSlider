@@ -1503,7 +1503,13 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
     if len(holes) > 1:
         # 多空位局面（含缺口）：必须走统一驱动（couple 钩子分发洞/缺口）。
         # 旧路径 solve_fill_macro 对缺口 couple 全败——失败04 实证"不正常"。
-        acts, mst = solve_multi_vacancy(coords, m, n, step, mode='auto')
+        if progress_callback is not None:
+            from solver.ml.fill_macro import _emit
+            _emit(progress_callback, '多空位驱动', 0,
+                  '洞%d 凸%d 统一couple' % (len(holes), len(_out)))
+        acts, mst = solve_multi_vacancy(coords, m, n, step, mode='auto',
+                                        progress_callback=progress_callback,
+                                        cancel_check=cancel_check)
         if acts is not None and not mst.get('partial'):
             return [a[:4] for a in acts], [a[4] for a in acts]
         why = mst.get('reason', '多空位驱动未全解')
@@ -1565,7 +1571,8 @@ def _vacancy_couple_hook(gap_only):
 
 
 def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
-                        rng=None, **kwargs):
+                        rng=None, progress_callback=None, cancel_check=None,
+                        **kwargs):
     """多空位（洞+缺口）统一贪心驱动（用户设计：与多洞框架同一函数，
     参数决定填洞/补缺）。
 
@@ -1590,8 +1597,12 @@ def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
     # 贪心停机/partial → 宏级 DFS 回溯兜底（顺序依赖实证：换候选序可解）
     if verbose:
         print('  贪心未全解(%s)，宏级搜索兜底' % stats.get('reason', 'partial'))
+    from solver.ml.fill_macro import _emit
+    _emit(progress_callback, '宏级搜索', 0, '贪心未全解，DFS 回溯兜底')
     acts2, stats2 = solve_multi_search(coords, m, n, step,
-                                       couple_hook=hook, verbose=verbose)
+                                       couple_hook=hook, verbose=verbose,
+                                       progress_callback=progress_callback,
+                                       cancel_check=cancel_check)
     if acts2 is not None and not stats2.get('partial'):
         stats2['mode'] = mode
         stats2['greedy'] = {'steps': len(acts) if acts else 0,
