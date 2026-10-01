@@ -945,6 +945,9 @@ class EventsMixin:
                     
                     elif self._is_action_triggered(event, 'auto_solve') and not self._tut_board_locked():
                         self._start_auto_solve()
+
+                    elif self._is_action_triggered(event, 'solve_segment') and not self._tut_board_locked():
+                        self._solve_single_segment()
                     
                     elif self._is_action_triggered(event, 'macro_record'):
                         if self.macro_recording:
@@ -3108,6 +3111,11 @@ class EventsMixin:
                 self._update_gather_notify()
 
             if self.macro_exec_index >= len(self.macro_exec_ops):
+                # 流式求解：后台可能还有未播段，暂缓收尾（pump 续段/收尾）
+                if getattr(self, '_stream_active', False) or (
+                        getattr(self, '_stream_queue', None) is not None
+                        and not self._stream_queue.empty()):
+                    return
                 if getattr(self, '_gather_info', None) is not None:
                     self._finish_gather()
                 else:

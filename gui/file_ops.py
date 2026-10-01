@@ -120,6 +120,7 @@ DEFAULT_KEYBINDINGS = {
     'tri_down_left': {'key': 'z', 'modifiers': []},
     'tri_down_right': {'key': 'x', 'modifiers': []},
     'auto_solve': {'key': 'a', 'modifiers': ['ctrl']},
+    'solve_segment': {'key': 'g', 'modifiers': ['ctrl']},
     'macro_record': {'key': 'm', 'modifiers': ['ctrl']},
     'virtual_keyboard': {'key': 'f1', 'modifiers': []},
     'metrics_panel': {'key': 'f2', 'modifiers': []},

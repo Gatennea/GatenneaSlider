@@ -78,12 +78,13 @@ class _Runner:
     """
 
     def __init__(self, game, m, n, step, verbose=False, keep_partial=False,
-                 h=None, p=None, require_solved=True):
+                 h=None, p=None, require_solved=True, cancel_check=None):
         self.g = game
         self.m, self.n, self.step = m, n, step
         self.verbose = verbose
         self.keep_partial = keep_partial
         self.require_solved = require_solved
+        self._cc = cancel_check
         self.acts = []                 # 已执行动作 (gap,line,side,dir,rep)
         if h is not None and p is not None:
             self.h, self.p = tuple(h), tuple(p)   # 调用方已保证同 mod
@@ -212,6 +213,7 @@ class _Runner:
         a_acts = []
         a_moves = 0
         while self.p[1] != self.h[1]:
+            _chk(self._cc)
             want = 'a' if self.p[1] > self.h[1] else 'd'
             done = None
             for c in self._acands(want):
@@ -230,6 +232,7 @@ class _Runner:
         # ---- B 段：竖直把凸起推进洞，直到重合 ----
         b_moves = 0
         while not (self.p[0] == self.h[0] and self.p[1] == self.h[1]):
+            _chk(self._cc)
             want = 'w' if self.p[0] > self.h[0] else 's'
             done = False
             for c in self._v_cands(want):
@@ -285,9 +288,20 @@ def _emit(cb, stage, nodes=None, note=''):
         pass  # 进度显示失败绝不拖垮求解
 
 
+class _Cancelled(Exception):
+    """停止请求：cancel_check() 为 True 时由 _chk 抛出，逐层穿透长循环，
+    由 GUI 入口（solve_fill_macro / solve_gap_macro）统一捕获转失败协议。"""
+
+
+def _chk(cc):
+    """取消检查点：cc() 为 True 立即抛 _Cancelled（cc=None 零开销）。"""
+    if cc is not None and cc():
+        raise _Cancelled()
+
+
 def solve_single_void(coords, m, n, step, hole=None, anchor=None,
                       verbose=False, max_moves=200, keep_partial=False,
-                      force_rot=None):
+                      force_rot=None, cancel_check=None):
     """确定性「填一个洞」宏（视图旋转归一化版）。
 
     两种调用语义：
@@ -300,6 +314,7 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
     返回 (actions, stats)；actions=None 表示失败。
     keep_partial=True：规则中断但已执行合法动作时返回 (部分actions, stats)，
     stats['partial']=True、stats['reason'] 为中断原因，供观察断点。
+    cancel_check：停止请求（_chk 注入 Runner 的 A/B 段循环）。
     """
     coords = frozenset(coords)
     if len(coords) != m * n:
@@ -329,7 +344,8 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
             acts, stats = _Runner(g, m, n, step, verbose,
                                   keep_partial=keep_partial,
                                   h=h_w, p=p_w,
-                                  require_solved=not couple).run()
+                                  require_solved=not couple,
+                                  cancel_check=cancel_check).run()
             if acts is None:
                 return None, stats
             return acts, stats
@@ -344,7 +360,8 @@ def solve_single_void(coords, m, n, step, hole=None, anchor=None,
         acts, stats = _Runner(vg, mv, nv, step, verbose,
                               keep_partial=keep_partial,
                               h=vh, p=vp,
-                              require_solved=not couple).run()
+                              require_solved=not couple,
+                              cancel_check=cancel_check).run()
         if acts is None:
             stats = dict(stats, rot=name)
             return None, stats
@@ -422,7 +439,7 @@ def _nondrop_moves(coords, m, n, step, ov0):
 
 
 def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
-                      max_nodes=150, couple_hook=None):
+                      max_nodes=150, couple_hook=None, cancel_check=None):
     """有限中性整形预演：≤max_shaping 步「不降聚拢度」动作后收成果。
 
     couple 宏的最小原子是「一次完整 A-B-A′」；有些卡点要先花 0 增益的整带
@@ -438,9 +455,11 @@ def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
     seen = {root}
     nodes = 0
     for _depth in range(max_shaping):
+        _chk(cancel_check)
         nxt = deque()
         while frontier:
             s, prefix = frontier.popleft()
+            _chk(cancel_check)
             if window_of(s, m, n, step)[1] > ov0:
                 return prefix            # 纯整形已提升（窗口重定位）
             cacts = _couple_scan_state(s, m, n, step, rng,
@@ -463,7 +482,8 @@ def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
 
 def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                      max_attempts=400, max_shaping=2, max_nodes=150,
-                     rng=None, couple_hook=None):
+                     rng=None, couple_hook=None, cancel_check=None,
+                     segment_cb=None):
     """多洞无缺口贪心驱动（确定性死代码，无求解搜索）。
 
     couple_hook：可选统一 couple 求解器 (coords,m,n,step,h,p)→(acts,stats)。
@@ -501,14 +521,17 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
     attempts = 0
     partial_accepted = 0
     shaping_used = 0
+    streamed = [0]
 
     def _stop(extra):
         """停机出口：有成果(total 非空) → 回传 partial；完全失败 → None。"""
+        extra = dict(extra, end_coords=gcoords(g), streamed=streamed[0])
         if total:
             return list(total), dict(extra, partial=True)
         return None, dict(extra)
 
     while not g.is_solved():
+        _chk(cancel_check)
         rounds += 1
         if rounds > max_rounds:
             return _stop({'reason': '多洞停机：超过最大轮数',
@@ -532,6 +555,7 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
             rng.shuffle(cands)
             for p in cands:
                 attempts += 1
+                _chk(cancel_check)
                 if couple_hook is not None:
                     acts, stats = couple_hook(cur, m, n, step, h, p)
                 else:
@@ -551,6 +575,18 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                                   'steps': len(total)})
                 total.extend(acts)
                 progressed = True
+                if segment_cb is not None:
+                    try:
+                        if stats.get('partial'):
+                            seg = ('round%d 有成果partial(%s) 洞%s←凸%s'
+                                   % (rounds, stats.get('reason', '?'), h, p))
+                        else:
+                            seg = ('round%d 填洞 洞%s←凸%s'
+                                   % (rounds, h, p))
+                        segment_cb(seg, list(acts))
+                        streamed[0] += len(acts)
+                    except Exception:
+                        pass   # 流式回调失败不拖垮求解
                 if stats.get('partial'):
                     partial_accepted += 1
                     if verbose:
@@ -568,7 +604,8 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
             # 整带动作后直接提升 / 解锁 couple（覆盖「需先揉形再填」卡点）
             plan = _shaping_progress(cur, m, n, step, rng, _ov,
                                      max_shaping, max_nodes,
-                                     couple_hook=couple_hook)
+                                     couple_hook=couple_hook,
+                                     cancel_check=cancel_check)
             if plan is not None:
                 if not _replay_apply(g, plan, m, n, step):
                     return _stop({'reason': '多洞停机：整形预演推进活盘失败',
@@ -577,6 +614,13 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                 total.extend(plan)
                 shaping_used += 1
                 progressed = True
+                if segment_cb is not None:
+                    try:
+                        segment_cb('round%d 中性整形预演' % rounds,
+                                   list(plan))
+                        streamed[0] += len(plan)
+                    except Exception:
+                        pass
                 if verbose:
                     print('   round%d 中性整形预演(%d步) → 收下'
                           % (rounds, len(plan)))
@@ -593,13 +637,16 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
     return (total, {'steps': len(total), 'rounds': rounds,
                     'partial_accepted': partial_accepted,
                     'shaping_used': shaping_used,
+                    'streamed': streamed[0],
+                    'end_coords': gcoords(g),
                     'secs': round(time.time() - t0, 3), 'multi': True})
 
 
 # ---------------------------------------------------------------------------
 # 移形换位宏（紧凑盘专用，2026-10-01 用户「2-4-4」三档教学参数化）
 # ---------------------------------------------------------------------------
-def _swap_fill(coords, m, n, step, max_nodes=40000, verbose=False):
+def _swap_fill(coords, m, n, step, max_nodes=40000, verbose=False,
+               cancel_check=None):
     """移形换位宏：紧凑盘（m<=2*step 且 n<=2*step）单缺口/散块构型求解。
 
     用户解法：滑块按 2x2 整组互换位置机动（「移形换位」，对其他谜题
@@ -707,6 +754,7 @@ def _swap_fill(coords, m, n, step, max_nodes=40000, verbose=False):
     nodes = 0
     meet = None
     while f_q and b_q and meet is None and nodes < max_nodes:
+        _chk(cancel_check)
         # 小侧优先扩展一个节点
         if len(f_q) <= len(b_q):
             q, vis, other = f_q, fw, bw
@@ -753,7 +801,8 @@ def _swap_fill(coords, m, n, step, max_nodes=40000, verbose=False):
 _T0 = [0.0]
 
 
-def _compact_rescue(coords, m, n, step, why='', progress_callback=None):
+def _compact_rescue(coords, m, n, step, why='', progress_callback=None,
+                    cancel_check=None):
     """紧凑盘移形换位救援：常规链全败后的最后手段（2026-10-01）。"""
     if not (m <= 2 * step and n <= 2 * step):
         return None
@@ -761,7 +810,7 @@ def _compact_rescue(coords, m, n, step, why='', progress_callback=None):
           '紧凑盘双向BFS（常规链失败:%s）' % why[:30])
     import time as _t
     _T0[0] = _t.time()
-    acts = _swap_fill(coords, m, n, step)
+    acts = _swap_fill(coords, m, n, step, cancel_check=cancel_check)
     if acts is None:
         return None
     print('[移形换位] 常规链失败(%s)，换位机动 %d 步全解'
@@ -772,6 +821,67 @@ def _compact_rescue(coords, m, n, step, why='', progress_callback=None):
 # ---------------------------------------------------------------------------
 # 带移盖洞宏
 # ---------------------------------------------------------------------------
+def _step_split_plan(coords0, m, n, step, plan):
+    """「距离语义」plan（5 元组第 5 位=移动格数）→ 标准 step 动作序列
+    （第 5 位=rep_cell 坐标，每步 step 距离）。
+
+    带移盖洞宏的内部产物用 try_move_ex(dir, 格数) 表达 1~2*step 位移，
+    与宏回放/GUI 的「step 距离+代表格」语义冲突（2-6-7 回归实证：
+    rep_cell=int 使 GUI 解包崩溃、2*step 步回放走错）。这里逐段分解：
+    整段先在副本上执行拿移动集与终局，再按 step 子步逐个引擎验证重放，
+    终局与整段不一致即放弃（返回 None，调用方换下一候选）。
+    """
+    _DIRV = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
+    g = build_game(coords0, m, n)          # 子步执行主副本
+    out = []
+    for gap, line, side, d, dist in plan:
+        n_sub = max(1, int(dist) // step)
+        st = ((lambda r, c: r <= line) if side == 'above'
+              else (lambda r, c: r > line)) if gap == 'h' else \
+             ((lambda r, c: c <= line) if side == 'left'
+              else (lambda r, c: c > line))
+        # 整段参照：独立副本拿 moved 集与终局
+        gr = build_game(gcoords(g), m, n)
+        tgt = None
+        for blk in gr.blocks:
+            if st(*blk.location):
+                tgt = blk
+                break
+        if tgt is None:
+            return None
+        gr.opt(gap, line, tgt)
+        final, _why = gr.try_move_ex(d, dist)
+        if not final:
+            return None
+        moved_pre = frozenset(tuple(b.location) for b in gr.blocks
+                              if b.be_opted)
+        gr.commit_move(final)
+        end_ref = frozenset(gcoords(gr))
+        # 子步执行（在主副本上）
+        rep0 = min(moved_pre)
+        dr, dcn = _DIRV[d]
+        for k in range(n_sub):
+            rr, cc = rep0[0] + dr * step * k, rep0[1] + dcn * step * k
+            tb = None
+            for blk in g.blocks:
+                if tuple(blk.location) == (rr, cc):
+                    tb = blk
+                    break
+            if tb is None:
+                return None
+            g.opt(gap, line, tb)
+            fin = g.try_move(d, step)
+            if not fin:
+                for b in g.blocks:
+                    b.be_opted = False
+                return None
+            g.commit_move(fin)
+            out.append((gap, line, side, d, (rr, cc)))
+        if frozenset(gcoords(g)) != end_ref:
+            return None
+    return out
+
+
 def _belt_shift_fill(coords, m, n, step, h, verbose=False):
     """带移盖洞宏（2026-10-01 失败02 教学「拆东墙补西墙」参数化）。
 
@@ -990,19 +1100,23 @@ def _belt_shift_fill(coords, m, n, step, h, verbose=False):
                           % (h, gap2, line2, side2, dc2, rep2,
                              gap2, line3, side3, dc3, rep2,
                              '' if not need_a1 else ' +补料'))
-                # 动作列表：a1 暴力试出的参数回填
+                # 动作列表：a1 暴力试出的参数回填；出口统一转标准 step
+                # 动作（第 5 位=rep_cell；距离语义在回放/GUI 端不兼容）
                 acts = []
                 if need_a1:
                     acts.append((gap1, line1, side1, dc1, rep1))
                 acts.append((gap2, line2, side2, dc2, rep2))
                 acts.append((gap2, line3, side3, dc3, rep2))
-                return acts, s_net
+                std = _step_split_plan(coords, m, n, step, acts)
+                if std is None:
+                    continue
+                return std, s_net
     return None, None
 
 
 def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
                  max_depth=16, max_nodes=2500, max_comp=None, verbose=False,
-                 progress_callback=None):
+                 progress_callback=None, cancel_check=None):
     r"""粘上接走宏（2026-10-01 失败03 教学「粘上接走」参数化）。
 
     标准 couple 宏解不动时的另一条填洞路：载运带靠上孤立凸起「粘上」
@@ -1144,6 +1258,7 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
         if state['nodes'] >= max_nodes:
             return None
         state['nodes'] += 1
+        _chk(cancel_check)
         if verbose and state['nodes'] % 100 == 0:
             print('   [convoy节点%d] 深度%d prep已用%d p=%s'
                   % (state['nodes'], len(prefix), prep_used, pcur))
@@ -1272,7 +1387,8 @@ def _comps_ml(S):
 
 def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
                 max_depth=20, max_nodes=3000, max_k=4, max_comp=None,
-                allow_appr=None, verbose=False, progress_callback=None):
+                allow_appr=None, verbose=False, progress_callback=None,
+                cancel_check=None):
     """刚体挤入宏：k 格刚体凸起整体填入同形状洞（教程 5.1「直接挤进去」）。
 
     与粘上接走（_convoy_fill）同构，但：
@@ -1381,6 +1497,7 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
         if state['nodes'] >= max_nodes:
             return None
         state['nodes'] += 1
+        _chk(cancel_check)
         if progress_callback is not None and state['nodes'] % 100 == 0:
             _emit(progress_callback, '刚体挤入', state['nodes'],
                   '洞%s←刚体%d格 深度%d' % (h0, k, len(prefix)))
@@ -1539,7 +1656,8 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                     racts, used = _rigid_fill(
                         cur, m, n, step, Hc, Pc,
                         max_nodes=min(6000, state['convoy_left']),
-                        progress_callback=progress_callback)
+                        progress_callback=progress_callback,
+                        cancel_check=cancel_check)
                     state['convoy_left'] -= used
                     if racts:
                         out.append(racts)
@@ -1560,7 +1678,8 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                 cacts, used = _convoy_fill(
                     cur, m, n, step, h_c, p_c,
                     max_nodes=min(2500, state['convoy_left']),
-                    progress_callback=progress_callback)
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check)
                 state['convoy_left'] -= used
                 if cacts:
                     out.append(cacts)
@@ -1639,11 +1758,15 @@ def _split_actions(actions):
 
 
 def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
-                     **kwargs):
+                     segment_cb=None, **kwargs):
     """填洞宏求解（GUI 入口）。
 
     单洞单凸局面 → 单洞整盘求解（keep_partial 观察断点）；
     多洞/多空位局面 → solve_multi_void 贪心驱动（逐 couple 填，全败停机）。
+
+    segment_cb：流式播放回调（label, actions5）——多洞贪心每接受一个
+    couple 即回调一次，GUI 边算边播；返回协议变为 fill_stream dict
+    （streamed=已实时播的步数，actions=未播剩余部分）。
 
     返回 (actions, rep_cells)（actions 为四元组列表）供 GUI 宏播放；
     失败返回 {'type': 'fill_fail', 'reason': str}。
@@ -1653,13 +1776,27 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
     _region, _ov, holes, outside = window_of(coords, m, n, step)
     _emit(progress_callback, '填洞宏', 0,
           '判型：洞%d 凸%d' % (len(holes), len(outside)))
+    try:
+        return _solve_fill_macro_inner(coords, m, n, step, holes, outside,
+                                       cancel_check, progress_callback,
+                                       segment_cb)
+    except _Cancelled:
+        print('[填洞宏] 已停止（cancel）')
+        return {'type': 'fill_fail', 'reason': '已停止', 'cancelled': True}
+
+
+def _solve_fill_macro_inner(coords, m, n, step, holes, outside,
+                            cancel_check, progress_callback, segment_cb):
+    """solve_fill_macro 主体（cancel 异常由外层捕获）。"""
     if len(holes) == 1 and len(outside) == 1:
-        acts, stats = solve_single_void(coords, m, n, step, keep_partial=True)
+        acts, stats = solve_single_void(coords, m, n, step, keep_partial=True,
+                                        cancel_check=cancel_check)
         if acts is None:
             reason = stats.get('reason', stats.get('error', '未知'))
             print('[填洞宏] 单洞无解：%s' % reason)
             resc = _compact_rescue(coords, m, n, step, reason,
-                                   progress_callback=progress_callback)
+                                   progress_callback=progress_callback,
+                                   cancel_check=cancel_check)
             if resc is not None:
                 return resc
             return {'type': 'fill_fail', 'reason': reason}
@@ -1667,7 +1804,8 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
             reason = stats.get('reason', '中断')
             resc = _compact_rescue(coords, m, n, step,
                                    '单洞partial:%s' % reason,
-                                   progress_callback=progress_callback)
+                                   progress_callback=progress_callback,
+                                   cancel_check=cancel_check)
             if resc is not None:
                 return resc
             print('[填洞宏] 单洞部分(断在：%s)，已播放 %d 步供观察'
@@ -1679,12 +1817,16 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
     if not holes:
         return [], []   # 已还原
     _emit(progress_callback, '多洞驱动', 0, '贪心逐couple填')
-    acts, stats = solve_multi_void(coords, m, n, step)
+    acts, stats = solve_multi_void(coords, m, n, step,
+                                   cancel_check=cancel_check,
+                                   segment_cb=segment_cb)
+    streamed = stats.get('streamed', 0)
     if acts is None:
         reason = stats.get('reason', stats.get('error', '未知'))
         print('[填洞宏] 多洞完全失败：%s' % reason)
         resc = _compact_rescue(coords, m, n, step, reason,
-                               progress_callback=progress_callback)
+                               progress_callback=progress_callback,
+                               cancel_check=cancel_check)
         if resc is not None:
             return resc
         return {'type': 'fill_fail', 'reason': reason,
@@ -1692,18 +1834,29 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
     if stats.get('partial'):
         reason = stats.get('reason', '中断')
         resc = _compact_rescue(coords, m, n, step, '多洞partial:%s' % reason,
-                               progress_callback=progress_callback)
+                               progress_callback=progress_callback,
+                               cancel_check=cancel_check)
         if resc is not None:
             return resc
         print('[填洞宏] 多洞有成果停机(断在：%s)，已播放 %d 步（保留提升）'
               % (reason, len(acts)))
-        acts4, reps = _split_actions(acts)
+        rest = acts[streamed:]
+        acts4, reps = _split_actions(rest)
+        if segment_cb is not None:
+            return {'type': 'fill_stream', 'streamed': streamed,
+                    'actions': acts4, 'rep_cells': reps,
+                    'solved': False, 'reason': reason}
         return {'type': 'fill_partial', 'actions': acts4,
                 'rep_cells': reps, 'reason': reason,
                 'stats': {k: v for k, v in stats.items()
                           if k not in ('reason', 'partial')}}
     print('[填洞宏] 多洞还原：%d 步 / %d 轮' % (len(acts),
                                              stats.get('rounds', '?')))
+    rest = acts[streamed:]
+    if segment_cb is not None:
+        acts4, reps = _split_actions(rest)
+        return {'type': 'fill_stream', 'streamed': streamed,
+                'actions': acts4, 'rep_cells': reps, 'solved': True}
     return _split_actions(acts)
 
 

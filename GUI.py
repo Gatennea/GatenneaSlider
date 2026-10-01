@@ -400,6 +400,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._auto_solve_start_time = 0    # 求解开始时间戳
         self._auto_solve_cancel = False    # 是否请求取消
         self._auto_solve_progress = None   # 求解进度信息 dict
+        self._stream_queue = None          # 流式求解段队列（fill/gap 宏边算边播）
+        self._stream_active = False        # 流式后台是否仍在计算
+        self._stream_played = 0            # 流式已实时播放的步数
         self.solver_algorithm = 'ida_star' # 求解算法选择: 'ida_star', 'fast', 'greedy'
 
         # 聚拢求解器参数（GUI 设置对话框可调，保存到 config.json）
@@ -2796,6 +2799,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     # 禁用的参数传 None（不设限）
                     for k, v in self.gather_params.items():
                         kwargs[k] = v if self.gather_enabled.get(k, True) else None
+                # 填洞/补缺宏：流式播放——每解决一个 couple 即推送段
+                if algorithm in ('fill_macro', 'gap_macro'):
+                    import queue as _q
+                    self._stream_queue = _q.Queue()
+                    self._stream_active = True
+                    self._stream_played = 0
+
+                    def segment_cb(label, acts5):
+                        seg_q = self._stream_queue
+                        if seg_q is not None:
+                            seg_q.put((label,
+                                       [tuple(a) for a in acts5]))
+                    kwargs['segment_cb'] = segment_cb
                 solution = solver_func(
                     game_snapshot, step=self.current_step,
                     cancel_check=cancel_check,
@@ -2810,6 +2826,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 print(f"[自动求解] 出错: {e}")
                 self._auto_solve_result = False
             finally:
+                if self._auto_solve_cancel:
+                    # 取消/切盘：丢弃未播的残留段（旧盘面的段不能播到新盘面）
+                    self._stream_queue = None
+                self._stream_active = False   # 流式后台结束（pump 负责收尾）
                 self._auto_solve_running = False
                 self._auto_solve_done = True
 
@@ -2894,6 +2914,145 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._gradient_gen += 1
         self._drain_gradient_queue()
 
+    def _solve_single_segment(self):
+        """手动单段求解（Ctrl+G）：只处理用户点选的凸起。
+
+        用户先点选一个窗外凸起方块，按 Ctrl+G：求解器为它配最近的同
+        mod 空位，走补缺链/填洞宏/粘上接走，产出动作立即播放。
+        """
+        import threading
+        import time
+        from copy import deepcopy
+
+        # 前置检查（与自动求解同口径）
+        if self._triangle_blocked('单段求解'):
+            return
+        if self._timer_blocked():
+            self.macro_notify_msg = "计时中无法使用求解器"
+            self.macro_notify_timer = 90
+            return
+        if self._readonly_blocked():
+            return
+        if getattr(self, 'numbered', False):
+            self.macro_notify_msg = "带序号模式暂不支援单段求解"
+            self.macro_notify_timer = 90
+            return
+        if getattr(self, 'triangle_mode', False):
+            self.macro_notify_msg = "三角形密铺暂不支援单段求解"
+            self.macro_notify_timer = 90
+            return
+        if self._mi_blocked('单段求解', '求解器后续阶段开发中'):
+            return
+        if getattr(self, '_ann_recording', False):
+            self.macro_notify_msg = "标注录制中无法使用单段求解"
+            self.macro_notify_timer = 90
+            return
+        # 正在求解 → 视作停止请求（与自动求解一致）
+        if self._auto_solve_running:
+            self._auto_solve_cancel = True
+            return
+        if self.macro_executing or self.animating:
+            self.macro_notify_msg = "宏播放中，稍后再试"
+            self.macro_notify_timer = 90
+            return
+
+        blk = self.selected_block
+        if blk is None:
+            self.macro_notify_msg = "单段求解：请先点选一个凸起方块"
+            self.macro_notify_timer = 120
+            return
+        p = tuple(blk.location)
+
+        self._auto_solve_result = None
+        self._auto_solve_done = False
+        self._auto_solve_running = True
+        self._auto_solve_cancel = False
+        self._auto_solve_start_time = time.time()
+        self._auto_solve_progress = None
+        self._api_solve_latch = None
+
+        game_snapshot = deepcopy(self.game)
+        step = self.current_step
+
+        def cancel_check():
+            return self._auto_solve_cancel
+
+        def progress_callback(info):
+            self._auto_solve_progress = info
+
+        def solve_thread():
+            try:
+                from solver.ml.gap_solver import solve_single_segment
+                solution = solve_single_segment(
+                    game_snapshot, step=step, p=p,
+                    cancel_check=cancel_check,
+                    progress_callback=progress_callback)
+                self._auto_solve_result = solution
+            except Exception as e:
+                print(f"[单段求解] 出错: {e}")
+                self._auto_solve_result = {
+                    'type': 'fill_fail', 'reason': f'单段求解异常：{e}',
+                    'solver_name': '单段求解'}
+            finally:
+                self._auto_solve_running = False
+                self._auto_solve_done = True
+
+        threading.Thread(target=solve_thread, daemon=True).start()
+
+    def _pump_stream_segments(self):
+        """流式求解（填洞/补缺宏）：把后台算好的段接进宏播放管道。
+
+        后台线程在私有副本上继续算下一段，主线程把已就绪段追加到
+        macro_exec_ops 播放——与梯度流水线同构（边算边播）。
+        """
+        seg_q = getattr(self, '_stream_queue', None)
+        if seg_q is None:
+            return
+        active = getattr(self, '_stream_active', False)
+        if not active and seg_q.empty():
+            # 后台结束且无残留段：若处于流式等待态则收尾
+            if self.macro_executing and not self.animating \
+                    and self.macro_exec_index >= len(self.macro_exec_ops):
+                total = self.macro_exec_index
+                self.macro_executing = False
+                self.macro_exec_ops = []
+                self.macro_exec_index = 0
+                self.macro_notify_msg = ('[%s] 流水播放完成：%d 步'
+                                         % (self.macro_exec_name, total))
+                self.macro_notify_timer = 180
+                self.center_map()
+            return
+        kicked = False
+        while True:
+            try:
+                label, acts5 = seg_q.get_nowait()
+            except Exception:
+                break
+            ops = []
+            for a in acts5:
+                op = {'gap_type': a[0], 'gap_line': a[1], 'side': a[2],
+                      'direction': a[3], 'step': self.current_step}
+                if len(a) > 4 and a[4]:
+                    op['rep_cell'] = a[4]
+                ops.append(op)
+            if not ops:
+                continue
+            if self.macro_executing:
+                self.macro_exec_ops.extend(ops)
+                kicked = True
+            else:
+                self.macro_executing = True
+                self.macro_exec_name = '填洞宏·流水'
+                self.macro_exec_ops = ops
+                self.macro_exec_index = 0
+                self.macro_exec_factor = 1
+                self._execute_next_macro_step()
+            self._stream_played += len(ops)
+            self.macro_notify_msg = '[流水] %s（+%d 步）' % (label, len(ops))
+            self.macro_notify_timer = 120
+        if kicked and self.macro_executing and not self.animating:
+            self._execute_next_macro_step()
+
     def _check_auto_solve_result(self):
         """检查后台求解结果，如有结果则启动宏执行"""
         # 梯度流水线：后台连续计算，这里按序播放已就绪的阶段动画
@@ -2952,6 +3111,48 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._handle_gather_result(result)
             return
 
+        if isinstance(result, dict) and result.get('type') == 'fill_stream':
+            # 流式求解收尾：贪心段已实时播过，这里只接「未播剩余」
+            # （DFS 兜底 / 紧凑救援段）
+            import time as _time
+            _elapsed = int((_time.time() - self._auto_solve_start_time) * 1000) \
+                if getattr(self, '_auto_solve_start_time', 0) else None
+            streamed = int(result.get('streamed', 0))
+            actions = result.get('actions', []) or []
+            reps = result.get('rep_cells', []) or []
+            solved = bool(result.get('solved'))
+            self._api_solve_latch = {
+                'ok': solved, 'steps': streamed + len(actions),
+                'reason': 'solved' if solved
+                else result.get('reason', 'streamed'),
+                'elapsed_ms': _elapsed,
+            }
+            if actions:
+                ops = []
+                for i, action in enumerate(actions):
+                    gap_dir, gap_line, side, move_dir = action
+                    op = {'gap_type': gap_dir, 'gap_line': gap_line,
+                          'side': side, 'direction': move_dir,
+                          'step': self.current_step}
+                    if i < len(reps) and reps[i]:
+                        op['rep_cell'] = reps[i]
+                    ops.append(op)
+                if self.macro_executing:
+                    self.macro_exec_ops.extend(ops)
+                else:
+                    self.macro_executing = True
+                    self.macro_exec_name = '填洞宏·流水(续)'
+                    self.macro_exec_ops = ops
+                    self.macro_exec_index = 0
+                    self.macro_exec_factor = 1
+                    self._execute_next_macro_step()
+            elif not solved and not self.macro_executing:
+                reason = result.get('reason', '未全解')
+                self.macro_notify_msg = ('流水播放 %d 步后停机：%s'
+                                         % (streamed, reason))
+                self.macro_notify_timer = 220
+            return
+
         if isinstance(result, dict) and result.get('type') == 'fill_fail':
             self.macro_notify_msg = str(result.get('solver_name', '填洞宏')) \
                 + '：' + str(result.get('reason', '失败'))
@@ -2990,7 +3191,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         if result is False:
             self._gradient_state = None
-            self.macro_notify_msg = "自动求解：未找到解法"
+            if self._auto_solve_cancel:
+                played = getattr(self, '_stream_played', 0)
+                self.macro_notify_msg = ('已停止（流水已播 %d 步）' % played) \
+                    if played else '已停止'
+            else:
+                self.macro_notify_msg = "自动求解：未找到解法"
             self.macro_notify_timer = 180
             return
 
@@ -3166,6 +3372,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 检查自动求解结果
                 self._check_auto_solve_result()
+
+                # 流式求解：把后台算好的段接进宏播放管道（边算边播）
+                self._pump_stream_segments()
 
                 # 计时器：刷新实时用时 + 检测复原
                 if self.timer_state == 'running':

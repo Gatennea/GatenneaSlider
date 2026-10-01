@@ -40,8 +40,8 @@ from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noq
                                   solve_single_void, solve_fill_macro,
                                   _capture_apply, _replay_apply, _Runner,
                                   replay_and_verify, solve_multi_void,
-                                  _compact_rescue,
-                                  solve_multi_search)
+                                  _compact_rescue, _convoy_fill,
+                                  solve_multi_search, _Cancelled, _emit)
 from solver.ml import view_rotate                                          # noqa: E402
 
 _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
@@ -1458,8 +1458,11 @@ def save_failure_archive(coords, m, n, step, wall5, tag, fname=None):
 # GUI 求解器入口（与 SOLVER_ALGORITHMS 统一签名）
 # ---------------------------------------------------------------------------
 def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
-                    stop_on_fail=False, **kwargs):
+                    stop_on_fail=False, segment_cb=None, **kwargs):
     """补缺宏（GUI 入口）：单边缺口 → 封壳+内部共轭+拆壳；其余交填洞宏。
+
+    segment_cb：流式播放回调（label, actions5）——多空位贪心每解决一个
+    couple 即回调，GUI 边算边播；返回协议含 fill_stream dict。
 
     返回协议与 solve_fill_macro 一致：
     · 成功 → (actions4, rep_cells)；
@@ -1474,6 +1477,18 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
     g = build_game(coords, m, n)
     if g.is_solved():
         return [], []
+    try:
+        return _solve_gap_macro_inner(game, coords, m, n, step,
+                                      cancel_check, progress_callback,
+                                      stop_on_fail, segment_cb)
+    except _Cancelled:
+        print('[补缺宏] 已停止（cancel）')
+        return {'type': 'fill_fail', 'reason': '已停止', 'cancelled': True}
+
+
+def _solve_gap_macro_inner(game, coords, m, n, step, cancel_check,
+                           progress_callback, stop_on_fail, segment_cb=None):
+    """solve_gap_macro 主体（cancel 异常由外层捕获）。"""
     (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
     edge = None
     if len(holes) == 1:
@@ -1509,21 +1524,42 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
                   '洞%d 凸%d 统一couple' % (len(holes), len(_out)))
         acts, mst = solve_multi_vacancy(coords, m, n, step, mode='auto',
                                         progress_callback=progress_callback,
-                                        cancel_check=cancel_check)
+                                        cancel_check=cancel_check,
+                                        segment_cb=segment_cb)
+        if isinstance(acts, dict) and acts.get('type') == 'fill_stream':
+            # 流式：贪心段已实时播放。全解直接回传；未全解再试紧凑救援
+            # （从已播后的局面 end_coords 续算，动作不错位）
+            if acts.get('solved'):
+                return acts
+            why = acts.get('reason', '多空位驱动未全解')
+            resc = _compact_rescue(mst.get('end_coords', coords), m, n,
+                                   step, why, cancel_check=cancel_check)
+            if resc is not None:
+                acts = dict(acts, actions=resc[0], rep_cells=resc[1],
+                            solved=True)
+                return acts
+            print('[补缺宏] 多空位 partial：%s' % why)
+            return acts
         if acts is not None and not mst.get('partial'):
             return [a[:4] for a in acts], [a[4] for a in acts]
         why = mst.get('reason', '多空位驱动未全解')
-        resc = _compact_rescue(coords, m, n, step, why)
+        resc = _compact_rescue(coords, m, n, step, why,
+                               cancel_check=cancel_check)
         if resc is not None:
             return resc
         if mst.get('partial'):
-            # partial（有成果未完）：仍返回已走部分，GUI 能看到推进
+            # partial（有成果未完）：返回 fill_partial（GUI 播已成功部分并
+            # 提示断点）——旧版直接回元组会被 GUI 当全解播完然后停在半路
             print('[补缺宏] 多空位 partial：%s' % why)
-            return [a[:4] for a in acts], [a[4] for a in acts]
+            acts4 = [a[:4] for a in acts]
+            reps = [a[4] if len(a) > 4 else None for a in acts]
+            return {'type': 'fill_partial', 'actions': acts4,
+                    'rep_cells': reps, 'reason': why}
         return {'type': 'fill_fail', 'reason': why,
                 'solver_name': '多空位驱动', 'fail_world': []}
     res = solve_fill_macro(game, step, cancel_check=cancel_check,
-                           progress_callback=progress_callback)
+                           progress_callback=progress_callback,
+                           segment_cb=segment_cb)
     if isinstance(res, dict):
         res.setdefault('solver_name', '填洞宏')
         if use_gap:
@@ -1537,9 +1573,9 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
 # 唯一差异在求解器分发——洞走填洞宏（A-B-A′ 单层共轭），缺口走补缺链
 # （封壳+内部共轭+拆壳 双层共轭）；验收闸门同一把（窗口方块数提升）。
 # ---------------------------------------------------------------------------
-def _vacancy_couple_hook(gap_only):
+def _vacancy_couple_hook(gap_only, cancel_check=None):
     """构造统一 couple 求解器。gap_only=False：洞回落填洞宏（auto 模式）；
-    True：洞返回无成果（纯缺口模式）。"""
+    True：洞返回无成果（纯缺口模式）。cancel_check 注入填洞宏 A/B 段。"""
     def hook(coords, m, n, step, h, p):
         _reg, _ov, holes, _out = window_of(coords, m, n, step)
         if h not in holes or p not in coords:
@@ -1566,18 +1602,107 @@ def _vacancy_couple_hook(gap_only):
         if gap_only:
             return None, {'reason': '非缺口（封闭孔洞归填洞宏）'}
         return solve_single_void(coords, m, n, step, hole=h, anchor=p,
-                                 keep_partial=True)
+                                 keep_partial=True,
+                                 cancel_check=cancel_check)
     return hook
+
+
+def solve_single_segment(game, step, p, cancel_check=None,
+                         progress_callback=None, **kwargs):
+    """手动单段求解（GUI 入口，Ctrl+G）：只处理用户指定的凸起 p。
+
+    配洞规则：当前窗口空位中与 p 同 mod 的候选取曼哈顿距离最近者。
+    求解链：边缘缺口（L/R/U/D）→ 补缺链（轨道兜底）；CORNER → 角链；
+    内部孔洞 → 填洞宏 couple；全败 → 粘上接走（convoy）兜底。
+
+    成功标准：回放全程合法且目标洞 h 被填上（不要求整盘还原——
+    用户逐段点名，驱动权在用户手里）。
+    返回 (actions4, reps) 或 {'type': 'fill_fail', 'reason': ...}。
+    """
+    try:
+        coords = frozenset(tuple(b.location) for b in game.blocks)
+        m, n = game.m, game.n
+        p = tuple(p)
+        _reg, ov0, holes, outside = window_of(coords, m, n, step)
+        if p not in outside:
+            return {'type': 'fill_fail',
+                    'reason': '请点选窗口外的凸起方块（当前选中块不在窗外）'}
+        cands = [h for h in holes
+                 if (h[0] - p[0]) % step == 0 and (h[1] - p[1]) % step == 0]
+        if not cands:
+            return {'type': 'fill_fail',
+                    'reason': '该凸起与所有空位不同 mod（step 错位），无法配对'}
+        h = min(cands, key=lambda q: abs(q[0] - p[0]) + abs(q[1] - p[1]))
+        r0, c0, wh = _reg[0], _reg[1], _reg[2]
+        edge = _edge_of(h, r0, c0, wh[0], wh[1])
+        acts, stats = None, {}
+        if edge in ('L', 'R', 'U', 'D'):
+            acts, stats = solve_edge_gap(coords, m, n, step, hole=h,
+                                         anchor=p, require_solved=False)
+            if acts is None:
+                acts, stats = _couple_orbit_solve(coords, m, n, step, h, p,
+                                                  'EDGE')
+        elif edge == 'CORNER':
+            acts, stats = solve_corner_gap(coords, m, n, step, hole=h,
+                                           anchor=p, require_solved=False)
+            if acts is None:
+                acts, stats = _couple_orbit_solve(coords, m, n, step, h, p,
+                                                  'CORNER')
+        else:
+            acts, stats = solve_single_void(coords, m, n, step, hole=h,
+                                            anchor=p, keep_partial=False,
+                                            cancel_check=cancel_check)
+        if acts is not None:
+            g = build_game(coords, m, n)
+            if (_replay_apply(g, acts, m, n, step)
+                    and any(tuple(b.location) == h for b in g.blocks)
+                    and window_of(frozenset(tuple(b.location)
+                                            for b in g.blocks),
+                                  m, n, step)[1] >= ov0):
+                acts4 = [a[:4] for a in acts]
+                reps = [a[4] if len(a) > 4 else None for a in acts]
+                return acts4, reps
+            acts = None   # 回放失败/洞未填/ov 下降 → 视为失败，继续兜底
+        # 补缺链/填洞宏失败 → 粘上接走兜底（交互场景预算收紧）
+        _emit(progress_callback, '单段·粘上接走', 0,
+              '洞%s←凸%s 行军搜索' % (h, p))
+        cacts, _used = _convoy_fill(coords, m, n, step, h, p,
+                                    max_nodes=800,
+                                    progress_callback=progress_callback,
+                                    cancel_check=cancel_check)
+        if cacts:
+            g2 = build_game(coords, m, n)
+            if (_replay_apply(g2, cacts, m, n, step)
+                    and window_of(frozenset(tuple(b.location)
+                                            for b in g2.blocks),
+                                  m, n, step)[1] >= ov0):
+                acts4 = [a[:4] for a in cacts]
+                reps = [a[4] if len(a) > 4 else None for a in cacts]
+                return acts4, reps
+        why = stats.get('reason', stats.get('error', '失败')) \
+            if isinstance(stats, dict) else '失败'
+        return {'type': 'fill_fail',
+                'reason': '单段求解失败（补缺链+粘上接走均未成）：%s' % why,
+                'solver_name': '单段求解'}
+    except _Cancelled:
+        print('[单段求解] 已停止（cancel）')
+        return {'type': 'fill_fail', 'reason': '已停止', 'cancelled': True}
+    except Exception as e:
+        return {'type': 'fill_fail', 'reason': f'单段求解异常：{e}',
+                'solver_name': '单段求解'}
 
 
 def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
                         rng=None, progress_callback=None, cancel_check=None,
-                        **kwargs):
+                        segment_cb=None, **kwargs):
     """多空位（洞+缺口）统一贪心驱动（用户设计：与多洞框架同一函数，
     参数决定填洞/补缺）。
 
     mode：'auto'=洞→填洞宏、缺口→补缺链；'hole'=只填洞（=原多洞行为）；
     'gap'=只补缺（封闭孔洞跳过）。
+    segment_cb：流式播放回调（贪心每接受一个 couple 即回调）；此时
+    DFS 兜底从「已播段之后的局面」（stats.end_coords）续算，返回协议
+    变为 fill_stream dict（streamed=已实时播的步数）。
     返回协议同 solve_multi_void：(actions, stats) / (None, stats)。
     """
     coords = frozenset(coords)
@@ -1588,18 +1713,30 @@ def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
         return [], {'steps': 0, 'secs': 0.0, 'multi': True, 'mode': mode}
     hook = None
     if mode in ('auto', 'gap'):
-        hook = _vacancy_couple_hook(gap_only=(mode == 'gap'))
+        hook = _vacancy_couple_hook(gap_only=(mode == 'gap'),
+                                    cancel_check=cancel_check)
     acts, stats = solve_multi_void(coords, m, n, step, verbose=verbose,
-                                   rng=rng, couple_hook=hook, **kwargs)
+                                   rng=rng, couple_hook=hook,
+                                   cancel_check=cancel_check,
+                                   segment_cb=segment_cb, **kwargs)
     stats['mode'] = mode
+    streamed = stats.get('streamed', 0)
     if acts is not None and not stats.get('partial'):
+        if segment_cb is not None:
+            from solver.ml.fill_macro import _split_actions
+            acts4, reps = _split_actions(acts[streamed:])
+            return {'type': 'fill_stream', 'streamed': streamed,
+                    'actions': acts4, 'rep_cells': reps, 'solved': True,
+                    'mode': mode}, stats
         return acts, stats                     # 贪心全解，不进搜索
     # 贪心停机/partial → 宏级 DFS 回溯兜底（顺序依赖实证：换候选序可解）
     if verbose:
         print('  贪心未全解(%s)，宏级搜索兜底' % stats.get('reason', 'partial'))
     from solver.ml.fill_macro import _emit
     _emit(progress_callback, '宏级搜索', 0, '贪心未全解，DFS 回溯兜底')
-    acts2, stats2 = solve_multi_search(coords, m, n, step,
+    # 流式模式：贪心段已实时播放，DFS 从已播后的局面续算（动作才不错位）
+    base = stats.get('end_coords', coords) if segment_cb is not None else coords
+    acts2, stats2 = solve_multi_search(base, m, n, step,
                                        couple_hook=hook, verbose=verbose,
                                        progress_callback=progress_callback,
                                        cancel_check=cancel_check)
@@ -1607,7 +1744,20 @@ def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
         stats2['mode'] = mode
         stats2['greedy'] = {'steps': len(acts) if acts else 0,
                             'reason': stats.get('reason')}
+        if segment_cb is not None:
+            from solver.ml.fill_macro import _split_actions
+            acts4, reps = _split_actions(acts2)
+            return {'type': 'fill_stream', 'streamed': streamed,
+                    'actions': acts4, 'rep_cells': reps, 'solved': True,
+                    'mode': mode}, stats2
         return acts2, stats2
+    if segment_cb is not None:
+        # 搜索也无全解：贪心 partial 段已实时播，未播部分=空（贪心产物
+        # 已含在流式段里），只回传流式汇总
+        return {'type': 'fill_stream', 'streamed': streamed,
+                'actions': [], 'rep_cells': [], 'solved': False,
+                'reason': stats.get('reason', '多空位驱动未全解'),
+                'mode': mode}, stats
     return acts, stats                         # 搜索也无全解 → 回贪心产物
 
 
