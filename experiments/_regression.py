@@ -12,35 +12,36 @@ from solver.ml.fill_macro import build_game, _replay_apply  # noqa: E402
 from solver.ml.gap_solver import solve_gap_macro  # noqa: E402
 
 CASES = [
-    # (路径, 期望: 'solved'/'partial'/'fail'/'any')
-    ('beginner_archive/5.1.json', 'solved'),
-    ('beginner_archive/5.5.json', 'solved'),
-    ('beginner_archive/4.4.json', 'fail'),      # 固有缺陷标本，仍应失败
-    ('beginner_archive/4.1.json', 'solved'),
-    ('beginner_archive/4.2.json', 'any'),
-    ('beginner_archive/4.3.json', 'solved'),
-    ('beginner_archive/4.5.json', 'solved'),
-    ('beginner_archive/4.6.json', 'solved'),
-    ('save/2-4-4-20261001-103250.json', 'solved'),
-    ('save/2-4-4-20261001-103347.json', 'solved'),
-    ('save/2-4-4-20261001-103418.json', 'solved'),
-    ('save/失败01.json', 'any'),
-    ('save/失败02.json', 'any'),
-    ('save/失败03.json', 'solved'),
-    ('save/失败04.json', 'any'),
-    ('save/失败05.json', 'any'),
-    ('save/失败06.json', 'any'),
-    ('save/失败07.json', 'any'),
-    ('save/失败08.json', 'any'),
-    ('save/失败09.json', 'any'),
-    ('save/2-6-6-20260930-181940.json', 'any'),
+    # (路径, 期望: 'solved'/'partial'/'fail'/'any', 快照索引可选)
+    ('beginner_archive/5.1.json', 'solved', 0),
+    ('beginner_archive/5.5.json', 'solved', 0),
+    ('beginner_archive/4.4.json', 'fail', 0),      # 固有缺陷标本，仍应失败
+    ('beginner_archive/4.1.json', 'solved', 0),
+    ('beginner_archive/4.2.json', 'any', 0),
+    ('beginner_archive/4.3.json', 'solved', 0),
+    ('beginner_archive/4.5.json', 'solved', 0),
+    ('beginner_archive/4.6.json', 'solved', 0),
+    ('save/2-4-4-20261001-103250.json', 'solved', 0),
+    ('save/2-4-4-20261001-103347.json', 'solved', 0),
+    ('save/2-4-4-20261001-103418.json', 'solved', 0),
+    ('save/2-7-8-20261001-185331.json', 'solved', 31),  # 停机局面：临时粘补边
+    ('save/失败01.json', 'any', 0),
+    ('save/失败02.json', 'any', 0),
+    ('save/失败03.json', 'solved', 0),
+    ('save/失败04.json', 'any', 0),
+    ('save/失败05.json', 'any', 0),
+    ('save/失败06.json', 'any', 0),
+    ('save/失败07.json', 'any', 0),
+    ('save/失败08.json', 'any', 0),
+    ('save/失败09.json', 'any', 0),
+    ('save/2-6-6-20260930-181940.json', 'any', 0),
 ]
 
 
-def load(path):
+def load(path, snap_idx=0):
     with open(path, encoding='utf-8') as f:
         doc = json.load(f)
-    snap = doc['history']['snapshots'][0]
+    snap = doc['history']['snapshots'][snap_idx]
     b = snap['bounds']
     coords = frozenset((b['min_row'] + i, b['min_col'] + j)
                        for i, row in enumerate(snap['matrix'])
@@ -50,12 +51,14 @@ def load(path):
 
 
 fails = 0
-for rel, expect in CASES:
+for case in CASES:
+    rel, expect = case[0], case[1]
+    snap_idx = case[2] if len(case) > 2 else 0
     path = os.path.join(_ROOT, rel)
     if not os.path.exists(path):
         print('%-42s 缺文件' % rel)
         continue
-    coords, m, n, step = load(path)
+    coords, m, n, step = load(path, snap_idx)
     g = build_game(coords, m, n)
     t0 = time.time()
     res = solve_gap_macro(g, step)

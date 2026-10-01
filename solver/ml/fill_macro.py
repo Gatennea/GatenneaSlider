@@ -625,11 +625,18 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                     print('   round%d 中性整形预演(%d步) → 收下'
                           % (rounds, len(plan)))
         if not progressed:
-            return _stop({'reason': '多洞停机：所有couple与≤%d步整形预演均无成果'
-                                    '(算法固有缺陷)' % max_shaping,
+            # 完美洞诊断（用户框架）：8 邻有缺口=不完美洞，标准切割必败
+            imp = [h for h in holes if hole_gaps(cur, h)]
+            why = ('多洞停机：所有couple与≤%d步整形预演均无成果'
+                   '(算法固有缺陷)' % max_shaping)
+            if imp:
+                why += '；不完美洞%d个(8邻有缺口,需临时粘补/setup)：%s' % (
+                    len(imp), sorted(imp))
+            return _stop({'reason': why,
                           'rounds': rounds, 'attempts': attempts,
                           'holes_left': len(holes),
                           'outside_left': len(outside),
+                          'imperfect_holes': len(imp),
                           'steps': len(total)})
     if not g.is_solved():
         return _stop({'reason': '多洞停机：窗内无洞但未还原(含缺口形态?)',
@@ -1579,6 +1586,137 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
     return r, state['nodes']
 
 
+# ---------------------------------------------------------------------------
+# 临时粘一下（共轭让位，2026-10-01 用户框架）
+#
+# 洞能否直接填要看周围 8 格（不只 4 邻）：8 邻有空位（缺口）= 不完美洞，
+# 沿洞侧切割时一侧断成两个分量，标准宏必败。对策 = 「临时粘一下」：
+# 把挡路的带子让位（粘上缺口），腾出通道做标准填入，再原路复位——
+# 复位回来的带子往往顺带填掉大片洞（2-7-8 实证，13 步全解）。
+# ---------------------------------------------------------------------------
+_PASTE_DIRS = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
+_OPP_DIR = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
+
+
+def hole_gaps(coords, hole):
+    """洞的 8 邻空位（缺口）。非空 = 不完美洞：标准切割/选中必败，
+    需要先「临时粘一下」。用户 2026-10-01 框架的实现。"""
+    r, c = hole
+    return [(r + dr, c + dc)
+            for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+            if (dr or dc) and (r + dr, c + dc) not in coords]
+
+
+def _enum_paste_moves(coords, m, n, step, min_size=3):
+    """枚举全部合法单步让位（含同缝多分量）→ [(act5, comp, mv, nxt)]。
+
+    comp=被移分量坐标集，mv=移动后坐标集，nxt=让位后整盘坐标。
+    """
+    out = []
+    rows = [r for r, _c in coords]
+    cols = [c for _r, c in coords]
+    for gap in ('h', 'v'):
+        lines = (range(min(rows) - 2, max(rows) + 3) if gap == 'h'
+                 else range(min(cols) - 2, max(cols) + 3))
+        dirs = ('a', 'd') if gap == 'h' else ('w', 's')
+        for line in lines:
+            for side in (('above', 'below') if gap == 'h'
+                         else ('left', 'right')):
+                if gap == 'h':
+                    sel = frozenset(
+                        q for q in coords
+                        if (q[0] <= line if side == 'above' else q[0] > line))
+                else:
+                    sel = frozenset(
+                        q for q in coords
+                        if (q[1] <= line if side == 'left' else q[1] > line))
+                if not sel or sel == coords:
+                    continue
+                for comp in _comps_ml(sel):
+                    rest = coords - comp
+                    if not rest or len(comp) < min_size:
+                        continue
+                    for d in dirs:
+                        dr, dc = _PASTE_DIRS[d]
+                        ok = True
+                        for k in range(1, step + 1):
+                            mvk = frozenset((q[0] + dr * k, q[1] + dc * k)
+                                            for q in comp)
+                            if mvk & rest or not _connected_ml(rest | mvk):
+                                ok = False
+                                break
+                        if not ok:
+                            continue
+                        mv = frozenset((q[0] + dr * step, q[1] + dc * step)
+                                       for q in comp)
+                        out.append(((gap, line, side, d, min(comp)),
+                                    comp, mv, rest | mv))
+    return out
+
+
+def _paste_relay(coords, m, n, step, max_pairs=400, budget=15.0, min_w=3,
+                 verbose=False, progress_callback=None, cancel_check=None):
+    """「临时粘一下」整段搜索：让位 → 标准填入 →（原路复位）。
+
+    枚举让位动作（分量 ≥min_w），在让位后局面跑现有 couple 宏；
+    两种产物都验收：①复位版本（带子回来常顺带填洞）②不复位版本。
+    整段回放后聚拢度严格提升才收。返回 (acts, used)（acts=None 无推进）。
+    """
+    t0 = time.time()
+    _reg, ov0, _h0, _o0 = window_of(coords, m, n, step)
+    W = _enum_paste_moves(coords, m, n, step, min_size=min_w)
+    if verbose:
+        print('  [临时粘补] 让位候选 %d（分量≥%d）' % (len(W), min_w))
+    best = None
+    tried = 0
+    for (a5w, comp, mv, st1) in W:
+        if cancel_check is not None and cancel_check():
+            raise _Cancelled()
+        if time.time() - t0 > budget or tried >= max_pairs:
+            break
+        _r1, _ov1, holes, outside = window_of(st1, m, n, step)
+        for h in sorted(holes):
+            for p in sorted(outside):
+                if tried >= max_pairs or time.time() - t0 > budget:
+                    break
+                if ((p[0] - h[0]) % step or (p[1] - h[1]) % step):
+                    continue
+                tried += 1
+                cacts, _st = solve_single_void(st1, m, n, step, hole=h,
+                                               anchor=p, keep_partial=True)
+                if not cacts:
+                    continue
+                g1 = build_game(st1, m, n)
+                if not _replay_apply(g1, cacts, m, n, step):
+                    continue
+                after_c = frozenset(gcoords(g1))
+                # ② 不复位版本（段级验收：段末聚拢度 > 段首）
+                ov1b = window_of(after_c, m, n, step)[1]
+                if ov1b > ov0 and (best is None or ov1b > best[1]):
+                    best = ([a5w] + list(cacts), ov1b, after_c)
+                # ① 复位版本：原路退回让位步
+                g2 = build_game(coords, m, n)
+                full_inv = ([a5w] + list(cacts)
+                            + [(a5w[0], a5w[1], a5w[2], _OPP_DIR[a5w[3]],
+                                min(mv))])
+                if _replay_apply(g2, full_inv, m, n, step):
+                    after2 = frozenset(gcoords(g2))
+                    ov2 = window_of(after2, m, n, step)[1]
+                    if ov2 > ov0 and (best is None or ov2 > best[1]):
+                        best = (full_inv, ov2, after2)
+    if verbose:
+        print('  [临时粘补] %.1fs 尝试 %d → %s'
+              % (time.time() - t0, tried,
+                 ('ov→%d (%d步)' % (best[1], len(best[0]))) if best
+                 else '无推进'))
+    if best:
+        if progress_callback is not None:
+            _emit(progress_callback, '临时粘补', tried,
+                  '推进：聚拢度→%d（%d 步）' % (best[1], len(best[0])))
+        return best[0], tried
+    return None, tried
+
+
 def solve_multi_search(coords, m, n, step, couple_hook=None,
                        node_budget=400, reshape_budget=3, verbose=False,
                        progress_callback=None, cancel_check=None):
@@ -1632,7 +1770,7 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
         return out
 
     state = {'nodes': 0, 'best': [], 'exhausted': False, 'seen': set(),
-             'convoy_left': 8000}
+             'convoy_left': 8000, 'paste_left': 2}
 
     def _reshape_edges(cur):
         """整形边（惰性）：①带移盖洞 ②粘上接走 ③刚体挤入。
@@ -1661,6 +1799,21 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                     state['convoy_left'] -= used
                     if racts:
                         out.append(racts)
+        # ④ 临时粘一下（共轭让位）：只在存在不完美洞（8 邻有缺口）时
+        # 探测——完美洞的局面让位基本无意义，省钱。整段=让位+标准填入
+        # +复位，聚拢度提升才收。每次求解最多探测 paste_left 次。
+        if state['paste_left'] > 0 and any(
+                hole_gaps(cur, h) for h in holes_c):
+            state['paste_left'] -= 1
+            _emit(progress_callback, '临时粘补', state['nodes'],
+                  '不完美洞，让位-填-复位探测')
+            pacts, used_p = _paste_relay(
+                cur, m, n, step,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check)
+            state['convoy_left'] -= used_p
+            if pacts:
+                out.append(pacts)
         for h_c in sorted(holes_c):
             _emit(progress_callback, '带移盖洞', state['nodes'],
                   '洞%s 整形探测' % (h_c,))
@@ -1821,6 +1974,25 @@ def _solve_fill_macro_inner(coords, m, n, step, holes, outside,
                                    cancel_check=cancel_check,
                                    segment_cb=segment_cb)
     streamed = stats.get('streamed', 0)
+    if not (acts is not None and not stats.get('partial')):
+        # 贪心未全解 → 宏级 DFS 回溯兜底（整形边：带移/粘上接走/刚体/
+        # 临时粘补）。贪心 partial 已流式播放的段从 end_coords 续算，
+        # GUI 播放序列 = 已播段 + 未播剩余 + DFS 段，与真实验证一致。
+        base = frozenset(stats.get('end_coords', coords))
+        _emit(progress_callback, '宏级搜索', 0, '贪心未全解，DFS 回溯兜底')
+        dacts, dstats = solve_multi_search(
+            base, m, n, step,
+            progress_callback=progress_callback, cancel_check=cancel_check)
+        if dacts is not None and not dstats.get('partial'):
+            full = list(acts[streamed:] if acts else []) + list(dacts)
+            print('[填洞宏] DFS 兜底全解：贪心 %d 步 + 搜索 %d 步'
+                  % (len(acts) if acts else 0, len(dacts)))
+            if segment_cb is not None:
+                acts4, reps = _split_actions(full)
+                return {'type': 'fill_stream', 'streamed': streamed,
+                        'actions': acts4, 'rep_cells': reps, 'solved': True}
+            return _split_actions(full)
+        # DFS 也无全解 → 走原贪心产物路径（fail / partial）
     if acts is None:
         reason = stats.get('reason', stats.get('error', '未知'))
         print('[填洞宏] 多洞完全失败：%s' % reason)
@@ -1909,11 +2081,24 @@ def replay_and_verify(coords, m, n, step, actions):
     return _replay_apply(g, actions, m, n, step) and g.is_solved()
 
 
-def _overlap_raised(coords, m, n, step, actions):
-    """couple 成果判定：从 coords 回放 actions 后「最佳窗口内方块数」提升。
+def _ov_at(coords, rh, cw, r0, c0):
+    """锁框覆盖数：在指定框（r0,c0,rh,cw）内数方块，不重新选框。
 
-    对应「有成果的失败」——能提升聚拢度（多覆盖一格/填上一个空位）但未必
-    整盘还原；只要提升就接受为一步进展。回放失败视为无成果。
+    备用工具（2-6-7 类"固定目标框"评价用）：动态选框会让框跟着搬运
+    的块跑，外层共轭途中"目标框移动"只是求解器视角假象（用户 2026-10-01）。
+    """
+    return sum(1 for q in coords
+               if r0 <= q[0] < r0 + rh and c0 <= q[1] < c0 + cw)
+
+
+def _overlap_raised(coords, m, n, step, actions):
+    """couple 成果判定（段级验收，2026-10-01 用户原则）。
+
+    填洞/补缺都是公式生成器：验收只看公式段**结束后**的聚拢度是否
+    比开始前提升，**中途完全不用管**（外层共轭/搬运类操作中途聚拢度
+    必然波动，不作为拒绝理由）。聚拢度 = 最佳窗口覆盖数（段首段末
+    各自按定义取）。对应「有成果的失败」——提升即接受为一步进展；
+    回放失败视为无成果。
     """
     _reg, ov0, _holes, _out = window_of(coords, m, n, step)
     g = build_game(coords, m, n)
