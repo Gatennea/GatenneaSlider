@@ -1210,6 +1210,258 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
     return r, state['nodes']
 
 
+# ---------------------------------------------------------------------------
+# 刚体挤入宏（教程第 5 关「二连刚体凸起」参数化，2026-10-01）
+# ---------------------------------------------------------------------------
+def _adj_clusters(cells):
+    """格集 → 相邻连通簇列表（4 邻接，仅返回 ≥2 格的簇）。"""
+    S = set(cells)
+    out, seen = [], set()
+    for q0 in sorted(S):
+        if q0 in seen:
+            continue
+        cc, stk = {q0}, [q0]
+        while stk:
+            r, c = stk.pop()
+            for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if nb in S and nb not in cc:
+                    cc.add(nb)
+                    stk.append(nb)
+        cc = frozenset(cc)
+        seen |= cc
+        if len(cc) >= 2:
+            out.append(cc)
+    return out
+
+
+def _connected_ml(S):
+    """S 是否 4 邻接连通（模块级，供各宏共用）。"""
+    S = set(S)
+    if not S:
+        return False
+    p0 = next(iter(S))
+    seen, stk = {p0}, [p0]
+    while stk:
+        r, c = stk.pop()
+        for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+            if nb in S and nb not in seen:
+                seen.add(nb)
+                stk.append(nb)
+    return len(seen) == len(S)
+
+
+def _comps_ml(S):
+    """格集 → 4 邻接连通分量列表（模块级）。"""
+    S = set(S)
+    out, seen = [], set()
+    for q0 in sorted(S):
+        if q0 in seen:
+            continue
+        cc, stk = {q0}, [q0]
+        while stk:
+            r, c = stk.pop()
+            for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if nb in S and nb not in cc:
+                    cc.add(nb)
+                    stk.append(nb)
+        cc = frozenset(cc)
+        seen |= cc
+        out.append(cc)
+    return out
+
+
+def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
+                max_depth=20, max_nodes=3000, max_k=4, max_comp=None,
+                allow_appr=None, verbose=False, progress_callback=None):
+    """刚体挤入宏：k 格刚体凸起整体填入同形状洞（教程 5.1「直接挤进去」）。
+
+    与粘上接走（_convoy_fill）同构，但：
+    · H/P 是格集（相邻 k 格，形状须全等——刚体不可旋转/拆分）；
+    · P 随含它的分量刚性平移（跟踪 P 本身而非锚点单格）；
+    · 动作距离任意 1..max_k 格（引擎逐格验证；step 距离原语表达不了
+      奇数位移——5.1 实证，这是 couple 模型对刚体局失效的根因之一）；
+    · P 落上 H 后允许 ≤max_rest 步「带复位」（不含 P 的带移），使
+      ov 闸门通过（5.1 用户 4 步中第 4 步即复位）。
+
+    返回 (动作列表或 None, 消耗节点数)。
+    """
+    coords = frozenset(coords)
+    H, P = frozenset(H), frozenset(P)
+    k = len(P)
+    if len(H) != k:
+        return None, 0
+    h0, p0 = min(H), min(P)
+    off = sorted((r - p0[0], c - p0[1]) for r, c in P)   # P 的相对形状
+    if sorted((r - h0[0], c - h0[1]) for r, c in H) != off:
+        return None                          # 形状不全等 → 刚体填不进
+    if max_comp is None:
+        max_comp = max(8, len(coords) // 2)
+
+    # P 已连着主体（与非 P 块相邻）→ 无需接应行军，纯 carry+prep
+    attached = any(nb not in P for q in P
+                   for nb in ((q[0]-1, q[1]), (q[0]+1, q[1]),
+                              (q[0], q[1]-1), (q[0], q[1]+1))
+                   if nb in coords)
+    if allow_appr is None:
+        allow_appr = not attached
+
+    state = {'nodes': 0}
+    seen = {(coords, P)}
+
+    def _pset(Pcur, delta):
+        d = delta
+        return frozenset((q[0] + d[0], q[1] + d[1]) for q in Pcur)
+
+    def _legal_steps(cur):
+        """(act5, comp, delta, nxt)——delta 为 1..max_k 格的距离。"""
+        out = []
+        rows = [r for r, _ in cur]
+        cols = [c for _, c in cur]
+        for gap in ('h', 'v'):
+            lines = (range(min(rows) - 1, max(rows) + 2) if gap == 'h'
+                     else range(min(cols) - 1, max(cols) + 2))
+            for line in lines:
+                for side in (('above', 'below') if gap == 'h'
+                             else ('left', 'right')):
+                    if gap == 'h':
+                        st = (lambda q: q[0] <= line) if side == 'above' \
+                            else (lambda q: q[0] > line)
+                    else:
+                        st = (lambda q: q[1] <= line) if side == 'left' \
+                            else (lambda q: q[1] > line)
+                    sel = frozenset(q for q in cur if st(q))
+                    if not sel or sel == cur:
+                        continue
+                    for comp in _comps_ml(sel):
+                        rest = cur - comp
+                        if not rest or len(comp) > max_comp:
+                            continue
+                        rep = min(comp)
+                        for d, (dr, dc) in _DIRS.items():
+                            # 距离恒为 step：回放管线（_capture_apply）按
+                            # step 移动，act5 第 5 位是代表格——
+                            # 5.1 胜利路径全是 step 距离，够用
+                            mv = frozenset((q[0] + dr * step, q[1] + dc * step)
+                                           for q in comp)
+                            ok = True
+                            for u in range(1, step + 1):
+                                mku = frozenset((q[0] + dr * u, q[1] + dc * u)
+                                                for q in comp)
+                                if (mku & rest
+                                        or not _connected_ml(rest | mku)):
+                                    ok = False
+                                    break
+                            if not ok:
+                                continue
+                            out.append(((gap, line, side, d, rep),
+                                        comp, (dr * step, dc * step),
+                                        rest | mv))
+        return out
+
+    def _mdist(A, B):
+        """集合 A 到集合 B 的最小曼哈顿距离。"""
+        return min(abs(ra - rb) + abs(ca - cb) for ra, ca in A
+                   for rb, cb in B)
+
+    bb_r = (min(p0[0], h0[0]) - k, max(p0[0], h0[0]) + k)
+    bb_c = (min(p0[1], h0[1]) - k, max(p0[1], h0[1]) + k)
+    ov0 = window_of(coords, m, n, step)[1]
+
+    def _corridor_occ(S):
+        """锚点十字走廊（p 列/h 行在包围盒内的段）占用数。"""
+        n = 0
+        for r, c in S:
+            if ((c == p0[1] or c == h0[1]) and bb_r[0] <= r <= bb_r[1]) or \
+               ((r == p0[0] or r == h0[0]) and bb_c[0] <= c <= bb_c[1]):
+                n += 1
+        return n
+
+    def dfs(cur, Pcur, prep_used, prefix, carried=False, last_march=None,
+            rest_used=0):
+        if state['nodes'] >= max_nodes:
+            return None
+        state['nodes'] += 1
+        if progress_callback is not None and state['nodes'] % 100 == 0:
+            _emit(progress_callback, '刚体挤入', state['nodes'],
+                  '洞%s←刚体%d格 深度%d' % (h0, k, len(prefix)))
+        docked = Pcur == H
+        if docked and rest_used >= max_rest:
+            return None
+        if len(prefix) >= max_depth:
+            return None
+        # 终局判定逐边做：任一动作使窗口方块数 > 初局 → 候选完成，
+        # 回放验收后即收（胜利路径未必经过「P 落洞」——5.1 实证：
+        # 并排北移后一带移即用常规块填洞，P 只是搭车）
+        moves = _legal_steps(cur)
+        for act5, comp, delta, nxt in moves:
+            if nxt == cur:
+                continue
+            if window_of(nxt, m, n, step)[1] > ov0:
+                full = prefix + [act5]
+                if _overlap_raised(coords, m, n, step, full):
+                    if verbose:
+                        print('  刚体挤入: %d步成立(节点%d)'
+                              % (len(full), state['nodes']))
+                    return full
+        # P 落上洞但 ov 闸门未过 → 带复位阶段（≤max_rest 步不含 P 的带移）
+        if docked:
+            for act5, comp, delta, nxt in moves:
+                if comp & Pcur:
+                    continue
+                if (nxt, Pcur) in seen:
+                    continue
+                seen.add((nxt, Pcur))
+                r = dfs(nxt, Pcur, prep_used, prefix + [act5],
+                        carried=True, rest_used=rest_used + 1)
+                if r is not None:
+                    return r
+            return None
+        pickup_left = max_pickup = 6 - len(prefix) - rest_used
+        carry, appr, prep = [], [], []
+        for act5, comp, delta, nxt in moves:
+            if Pcur <= comp:
+                nP = _pset(Pcur, delta)
+                if _mdist(nP, H) < _mdist(Pcur, H):
+                    carry.append((0, len(comp), act5, nxt, nP,
+                                  prep_used, comp))
+            elif allow_appr and not carried and pickup_left > 0:
+                moved = frozenset((q[0] + delta[0], q[1] + delta[1])
+                                  for q in comp)
+                md_c, md_m = _mdist(comp, Pcur), _mdist(moved, Pcur)
+                if md_m < md_c:
+                    # 行军纪律：一步贴上（与 P 相邻）或同分量连续行军
+                    if md_m == 1:
+                        appr.append((md_c - md_m, len(comp), act5, nxt,
+                                     Pcur, prep_used, None))
+                    elif last_march is None or comp == last_march:
+                        appr.append((md_c - md_m, len(comp), act5, nxt,
+                                     Pcur, prep_used, moved))
+                elif prep_used < max_prep:
+                    freed = _corridor_occ(comp) - _corridor_occ(moved)
+                    if freed > 0:
+                        prep.append((0, len(comp), act5, nxt, Pcur,
+                                     prep_used + 1, comp))
+        appr.sort(key=lambda x: (-x[0], x[1]))
+        for group in (appr, prep, carry):
+            for _k, _s, act5, nxt, nP, pu, lm in group:
+                if (nxt, nP) in seen:
+                    continue
+                seen.add((nxt, nP))
+                r = dfs(nxt, nP, pu, prefix + [act5],
+                        carried=carried or (group is carry),
+                        last_march=lm if group is appr else None,
+                        rest_used=rest_used)
+                if r is not None:
+                    if verbose:
+                        print('  刚体挤入: 洞%s←刚体%d格 %d步成立(节点%d)'
+                              % (h0, k, len(r), state['nodes']))
+                    return r
+        return None
+
+    r = dfs(coords, P, 0, [])
+    return r, state['nodes']
+
+
 def solve_multi_search(coords, m, n, step, couple_hook=None,
                        node_budget=400, reshape_budget=3, verbose=False,
                        progress_callback=None, cancel_check=None):
@@ -1266,13 +1518,31 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
              'convoy_left': 8000}
 
     def _reshape_edges(cur):
-        """整形边（惰性）：①带移盖洞 ②粘上接走。
+        """整形边（惰性）：①带移盖洞 ②粘上接走 ③刚体挤入。
 
         convoy 共享总预算 state['convoy_left']：固有缺陷局面不在无效
         原语上无限烧时间。
         """
         out = []
         _rg, _ovc, holes_c, out_c = window_of(cur, m, n, step)
+        # ③ 刚体挤入优先（k≥2 簇对，先于单格原语——多格局面单格 couple
+        # 从根上不适配，先烧它纯浪费预算）
+        h_clusters = _adj_clusters(holes_c)
+        if h_clusters:
+            p_clusters = [c for c in _comps_ml(out_c) if len(c) >= 2]
+            for Hc in h_clusters:
+                for Pc in p_clusters:
+                    if len(Hc) != len(Pc):
+                        continue
+                    _emit(progress_callback, '刚体挤入', state['nodes'],
+                          '洞%s←刚体%d格' % (min(Hc), len(Pc)))
+                    racts, used = _rigid_fill(
+                        cur, m, n, step, Hc, Pc,
+                        max_nodes=min(6000, state['convoy_left']),
+                        progress_callback=progress_callback)
+                    state['convoy_left'] -= used
+                    if racts:
+                        out.append(racts)
         for h_c in sorted(holes_c):
             _emit(progress_callback, '带移盖洞', state['nodes'],
                   '洞%s 整形探测' % (h_c,))
