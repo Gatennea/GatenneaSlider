@@ -1715,10 +1715,14 @@ def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
     if mode in ('auto', 'gap'):
         hook = _vacancy_couple_hook(gap_only=(mode == 'gap'),
                                     cancel_check=cancel_check)
+    # 并行 couple 探测的 worker 侧描述（子进程重建求解器用）
+    hook_spec = (('vacancy', mode == 'gap') if hook is not None
+                 else (None, False))
     acts, stats = solve_multi_void(coords, m, n, step, verbose=verbose,
                                    rng=rng, couple_hook=hook,
                                    cancel_check=cancel_check,
-                                   segment_cb=segment_cb, **kwargs)
+                                   segment_cb=segment_cb,
+                                   hook_spec=hook_spec, **kwargs)
     stats['mode'] = mode
     streamed = stats.get('streamed', 0)
     if acts is not None and not stats.get('partial'):
@@ -1739,7 +1743,8 @@ def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
     acts2, stats2 = solve_multi_search(base, m, n, step,
                                        couple_hook=hook, verbose=verbose,
                                        progress_callback=progress_callback,
-                                       cancel_check=cancel_check)
+                                       cancel_check=cancel_check,
+                                       hook_spec=hook_spec)
     if acts2 is not None and not stats2.get('partial'):
         stats2['mode'] = mode
         stats2['greedy'] = {'steps': len(acts) if acts else 0,

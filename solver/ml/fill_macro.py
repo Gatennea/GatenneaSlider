@@ -480,10 +480,143 @@ def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
     return None
 
 
+# ---------------------------------------------------------------------------
+# 并行 couple 探测（2026-10-01 用户「并行轮询」思想落地）
+# ---------------------------------------------------------------------------
+# 用户洞察：轮询串行试 A(20s,不可解)→B(20s,不可解)→…→D(2s,可解) 时，
+# 光等 A、B 就烧掉 40s。同一局面下各组 couple 并无依赖，应同时开算——
+# 任一组通过聚拢度闸门立即采纳，其余丢弃；轮询一轮的耗时从「各尝试之和」
+# 降为「最慢单尝试」。失败诊断（07）：第二个缺口大部分时间在等粘上接走，
+# 而先处理另一个缺口剩下的洞就是完美洞——并行让可行顺序更快暴露。
+_PROC_POOL = {}
+# 并行开关（默认关）：实测轮询层 hook 调用毫秒~秒级，进程池 spawn(~5s)+序列化
+# 开销为负收益；真正烧时间的 DFS 整形边（convoy 53s/次、粘补 15s/次）尚未
+# 并行化——待接入后打开此开关（或环境变量 GATENNEA_PARALLEL=1）。
+_PARALLEL_ENABLED = os.environ.get('GATENNEA_PARALLEL') == '1'
+
+
+def _parallel_pool():
+    """惰性常驻进程池（CPU 密集，GIL 下线程无效）。失败 → None 串行回退。"""
+    if 'pool' in _PROC_POOL:
+        return _PROC_POOL['pool']
+    try:
+        import multiprocessing as _mp
+        if _mp.current_process().name != 'MainProcess':
+            _PROC_POOL['pool'] = None
+            return None
+        pool = _mp.Pool(processes=min(8, _mp.cpu_count() or 4))
+        _PROC_POOL['pool'] = pool
+        return pool
+    except Exception:
+        _PROC_POOL['pool'] = None
+        return None
+
+
+def _reset_parallel_pool():
+    """取消/切盘时弃掉整批任务：terminate 清孤儿，下次调用重建池。"""
+    pool = _PROC_POOL.pop('pool', None)
+    if pool is not None:
+        try:
+            pool.terminate()
+        except Exception:
+            pass
+
+
+def _couple_worker(job):
+    """子进程入口：单次 couple 尝试 + 聚拢度闸门。通过 → (h,p,acts,st)。"""
+    (kind, gap_only), coords, m, n, step, h, p = job
+    try:
+        if kind == 'vacancy':
+            from solver.ml.gap_solver import _vacancy_couple_hook
+            hook = _vacancy_couple_hook(gap_only=gap_only)
+            acts, st = hook(coords, m, n, step, h, p)
+        else:
+            acts, st = solve_single_void(coords, m, n, step, hole=h,
+                                         anchor=p, keep_partial=True)
+        if acts is None or not _overlap_raised(coords, m, n, step, acts):
+            return None
+        st = dict(st) if isinstance(st, dict) else {}
+        st.pop('fail_world', None)      # 前缀动作可能不可 pickle，不回传
+        return (h, p, list(acts), st)
+    except Exception:
+        return None
+
+
+def _run_couples_parallel(tasks, hook_spec, coords, m, n, step,
+                           cancel_check=None, first_only=True):
+    """并发跑一批 couple 尝试。
+
+    tasks: [(h, p), ...]（同 mod 已过滤）。
+    hook_spec: ('vacancy', gap_only) 走多空位分发器；None 走填洞宏。
+    first_only=True：任一通过闸门立即返回 (h,p,acts,st)，其余丢弃——
+      贪心轮询语义（接受第一个可行组，下一轮重评局面）。
+    first_only=False：等全部结束，收集所有通过者——DFS 节点枚举全分支
+      语义（节点成本从各尝试之和降为最慢单尝试）。
+    返回 (got, ran)：ran=False 表示池不可用/任务<2，调用方串行回退。
+    cancel 触发 → 弃池抛 _Cancelled（不等批次烧完）。
+    """
+    if not (_PARALLEL_ENABLED and len(tasks) >= 2):
+        return (None if first_only else []), False
+    pool = _parallel_pool()
+    if pool is None:
+        return (None if first_only else []), False
+    kind, gap_only = hook_spec if hook_spec else (None, False)
+    # 单批总闸（秒）：worker 挂死/预算异常时不拖死主进程，弃池串行回退。
+    # 上限 ≈ convoy 单试 2500 节点(~55s) + 粘补 15s + worker 冷启动余量。
+    batch_deadline = time.time() + 100.0
+    try:
+        results = [pool.apply_async(
+            _couple_worker,
+            (((kind, gap_only), coords, m, n, step, h, p),))
+            for (h, p) in tasks]
+        if first_only:
+            pending = list(results)
+            while pending:
+                _chk(cancel_check)
+                if time.time() > batch_deadline:
+                    _reset_parallel_pool()
+                    return (None if first_only else []), False
+                for ar in list(pending):
+                    if not ar.ready():
+                        continue
+                    pending.remove(ar)
+                    got = ar.get()
+                    if got is not None:
+                        if pending:
+                            # 采纳成功即推进；同批慢任务已成孤儿占 worker，
+                            # 会拖累下一批 → 弃池（下次惰性重建，spawn ~2s
+                            # 远比 convoy 孤儿 50s 便宜）
+                            _reset_parallel_pool()
+                        return got, True
+                time.sleep(0.02)
+            return None, True
+        out = []
+        for ar in results:
+            while not ar.ready():
+                _chk(cancel_check)
+                if time.time() > batch_deadline:
+                    _reset_parallel_pool()
+                    return (None if first_only else []), False
+                time.sleep(0.02)
+            got = ar.get()
+            if got is not None:
+                out.append(got)
+        return out, True
+    except _Cancelled:
+        _reset_parallel_pool()
+        raise
+    except Exception:
+        import traceback
+        print('[并行轮询] 进程池异常，串行回退：%s'
+              % traceback.format_exc(limit=1).strip().splitlines()[-1],
+              file=sys.stderr)
+        return (None if first_only else []), False
+
+
 def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                      max_attempts=400, max_shaping=2, max_nodes=150,
                      rng=None, couple_hook=None, cancel_check=None,
-                     segment_cb=None):
+                     segment_cb=None, hook_spec=None):
     """多洞无缺口贪心驱动（确定性死代码，无求解搜索）。
 
     couple_hook：可选统一 couple 求解器 (coords,m,n,step,h,p)→(acts,stats)。
@@ -545,60 +678,83 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                           'rounds': rounds, 'attempts': attempts,
                           'holes_left': len(holes),
                           'steps': len(total)})
-        # 遍历 couple：洞序随机，同 mod 凸起随机序（=「随机找一组」的展开）
+        # 遍历 couple：洞序随机，同 mod 凸起随机序（=「随机找一组」的展开）。
+        # 并行轮询优先（2026-10-01 用户思想）：全部 (h,p) 同时开算，任一通过
+        # 闸门立即采纳；不可解的组不再挡住几秒内可解的组。
         h_list = list(holes)
         rng.shuffle(h_list)
         progressed = False
-        for h in h_list:
-            cands = [p for p in outside
-                     if (p[0] - h[0]) % step == 0 and (p[1] - h[1]) % step == 0]
-            rng.shuffle(cands)
-            for p in cands:
-                attempts += 1
-                _chk(cancel_check)
-                if couple_hook is not None:
-                    acts, stats = couple_hook(cur, m, n, step, h, p)
+        tasks = [(h, p) for h in h_list for p in outside
+                 if (p[0] - h[0]) % step == 0 and (p[1] - h[1]) % step == 0]
+        h = p = None
+        acts = stats = None
+        got, ran = _run_couples_parallel(tasks, hook_spec, cur, m, n, step,
+                                         cancel_check=cancel_check,
+                                         first_only=True)
+        if ran:
+            attempts += len(tasks)
+            if got is not None:
+                h, p, acts, stats = got
+        else:
+            # 串行回退（池不可用 / 单任务）：挨个试，失败就放弃换组
+            for h in h_list:
+                cands = [q for q in outside
+                         if (q[0] - h[0]) % step == 0
+                         and (q[1] - h[1]) % step == 0]
+                rng.shuffle(cands)
+                for p in cands:
+                    attempts += 1
+                    _chk(cancel_check)
+                    if couple_hook is not None:
+                        acts, stats = couple_hook(cur, m, n, step, h, p)
+                    else:
+                        acts, stats = solve_single_void(cur, m, n, step,
+                                                        hole=h, anchor=p,
+                                                        keep_partial=True)
+                    if acts is None:
+                        acts = None
+                        continue   # 该 couple 完全失败（macro 一步未动）
+                    # 聚拢度闸门：只接受「回放后最佳窗口方块数提升」的产物
+                    # （含 partial 有成果）；未提升视为无成果失败，无副作用换组
+                    if not _overlap_raised(cur, m, n, step, acts):
+                        acts = None
+                        continue
+                    break
                 else:
-                    acts, stats = solve_single_void(cur, m, n, step,
-                                                    hole=h, anchor=p,
-                                                    keep_partial=True)
-                if acts is None:
-                    continue   # 该 couple 完全失败（macro 一步未动）
-                # 聚拢度闸门：只接受「回放后最佳窗口方块数提升」的产物
-                # （含 partial 有成果）；未提升视为无成果失败，无副作用换组
-                if not _overlap_raised(cur, m, n, step, acts):
+                    acts = None
                     continue
-                # 有成果（完整填洞或 partial 提升都算）：推进到活盘
-                if not _replay_apply(g, acts, m, n, step):
-                    return _stop({'reason': '多洞停机：推进活盘失败',
-                                  'rounds': rounds,
-                                  'steps': len(total)})
-                total.extend(acts)
-                progressed = True
-                if segment_cb is not None:
-                    try:
-                        if stats.get('partial'):
-                            seg = ('round%d 有成果partial(%s) 洞%s←凸%s'
-                                   % (rounds, stats.get('reason', '?'), h, p))
-                        else:
-                            seg = ('round%d 填洞 洞%s←凸%s'
-                                   % (rounds, h, p))
-                        segment_cb(seg, list(acts))
-                        streamed[0] += len(acts)
-                    except Exception:
-                        pass   # 流式回调失败不拖垮求解
-                if stats.get('partial'):
-                    partial_accepted += 1
-                    if verbose:
-                        print('   round%d 有成果partial(%s) h=%s p=%s → %d 步'
-                              % (rounds, stats.get('reason', '?'), h, p,
-                                 len(acts)))
-                elif verbose:
-                    print('   round%d 填洞 %s 用凸起 %s → %d 步'
-                          % (rounds, h, p, len(acts)))
                 break
-            if progressed:
-                break
+        # 有成果（完整填洞或 partial 提升都算）：推进到活盘
+        if acts is not None:
+            if not _replay_apply(g, acts, m, n, step):
+                return _stop({'reason': '多洞停机：推进活盘失败',
+                              'rounds': rounds,
+                              'steps': len(total)})
+            total.extend(acts)
+            progressed = True
+            if segment_cb is not None:
+                try:
+                    if stats.get('partial'):
+                        seg = ('round%d 有成果partial(%s) 洞%s←凸%s'
+                               % (rounds, stats.get('reason', '?'), h, p))
+                    else:
+                        seg = ('round%d 填洞 洞%s←凸%s'
+                               % (rounds, h, p))
+                    segment_cb(seg, list(acts))
+                    streamed[0] += len(acts)
+                except Exception:
+                    pass   # 流式回调失败不拖垮求解
+            if stats.get('partial'):
+                partial_accepted += 1
+                if verbose:
+                    print('   round%d 有成果partial(%s) h=%s p=%s → %d 步'
+                          % (rounds, stats.get('reason', '?'), h, p,
+                             len(acts)))
+            elif verbose:
+                print('   round%d 填洞 %s 用凸起 %s → %d 步'
+                      % (rounds, h, p, len(acts)))
+        if progressed:
+            continue
         if not progressed and max_shaping:
             # couple 全败 → 有限中性整形预演：≤max_shaping 步不降聚拢度的
             # 整带动作后直接提升 / 解锁 couple（覆盖「需先揉形再填」卡点）
@@ -1719,7 +1875,8 @@ def _paste_relay(coords, m, n, step, max_pairs=400, budget=15.0, min_w=3,
 
 def solve_multi_search(coords, m, n, step, couple_hook=None,
                        node_budget=400, reshape_budget=3, verbose=False,
-                       progress_callback=None, cancel_check=None):
+                       progress_callback=None, cancel_check=None,
+                       hook_spec=None):
     """宏级 DFS：对 couple 选择回溯，状态图上找「填满窗口」的宏序列。
 
     背景：贪心驱动存在顺序依赖——同一盘面换个候选随机序，一个能全解一
@@ -1758,15 +1915,22 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
     def _couples(cur):
         _reg, _ov, holes, outside = window_of(cur, m, n, step)
         out = []
-        for h in holes:
-            for p in outside:
-                if (p[0] - h[0]) % step == 0 and (p[1] - h[1]) % step == 0:
-                    acts, _st = hook(cur, m, n, step, h, p)
-                    if acts is None:
-                        continue
-                    if not _overlap_raised(cur, m, n, step, acts):
-                        continue
-                    out.append(acts)
+        tasks = [(h, p) for h in holes for p in outside
+                 if (p[0] - h[0]) % step == 0 and (p[1] - h[1]) % step == 0]
+        # 并行枚举（2026-10-01）：DFS 每节点要对全 couple 跑 hook，串行时
+        # 单节点成本=各尝试之和（数十秒），并行后=最慢单尝试。
+        got, ran = _run_couples_parallel(tasks, hook_spec, cur, m, n, step,
+                                         cancel_check=cancel_check,
+                                         first_only=False)
+        if ran:
+            return [g[2] for g in got]
+        for h, p in tasks:
+            acts, _st = hook(cur, m, n, step, h, p)
+            if acts is None:
+                continue
+            if not _overlap_raised(cur, m, n, step, acts):
+                continue
+            out.append(acts)
         return out
 
     state = {'nodes': 0, 'best': [], 'exhausted': False, 'seen': set(),
