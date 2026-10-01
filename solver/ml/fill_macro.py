@@ -583,7 +583,178 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
 
 
 # ---------------------------------------------------------------------------
-# 宏级回溯搜索：消灭贪心顺序依赖
+# 移形换位宏（紧凑盘专用，2026-10-01 用户「2-4-4」三档教学参数化）
+# ---------------------------------------------------------------------------
+def _swap_fill(coords, m, n, step, max_nodes=40000, verbose=False):
+    """移形换位宏：紧凑盘（m<=2*step 且 n<=2*step）单缺口/散块构型求解。
+
+    用户解法：滑块按 2x2 整组互换位置机动（「移形换位」，对其他谜题
+    也有效），把边缘缺口逐步围成孔洞后顺势收拢还原。
+
+    实现 = step 级组移动作的全量双向 BFS：
+      · 正向从当前局面、反向从全部还原态（面积界内实心 m×n 矩形）
+        出发，小侧优先扩展，中间相遇；
+      · 动作枚举与引擎同语义：选缝一侧的连通分量平移 step 格，逐格
+        无碰撞且每个中间位置整体连通（= try_move 预测-验证序列）；
+      · 只发 k=step 动作（回放器 _capture_apply 固定 step 距离）；
+        动作关系对称（逐格验证序列正逆相同）→ 反向扩展复用同一枚举器；
+      · 面积界 [-2, m+1]×[-2, n+1]（教学解的机动范围）；
+      · rep = 移动前选块位置（min(分量)），与宏回放语义一致。
+    BFS 最短性 → 动作数不劣于用户手解。
+    返回动作列表（5 元组）或 None。
+    """
+    from collections import deque
+    coords = frozenset(coords)
+    if len(coords) != m * n:
+        return None
+    if build_game(coords, m, n).is_solved():
+        return []
+    area = (-2, m + 1, -2, n + 1)
+
+    def _connected(S):
+        it = iter(S)
+        p0 = next(it)
+        sn = {p0}
+        stk = [p0]
+        while stk:
+            r, c = stk.pop()
+            for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if nb in S and nb not in sn:
+                    sn.add(nb)
+                    stk.append(nb)
+        return len(sn) == len(S)
+
+    def _moves(cur):
+        """全部合法 step 级动作 [(gap,line,side,d,rep,nxt)]。"""
+        rows = [r for r, _ in cur]
+        cols = [c for _, c in cur]
+        out = []
+        for gap in ('h', 'v'):
+            lo = (min(rows) - step) if gap == 'h' else (min(cols) - step)
+            hi = (max(rows) + step) if gap == 'h' else (max(cols) + step)
+            for line in range(lo, hi + 1):
+                for side in (('above', 'below') if gap == 'h'
+                             else ('left', 'right')):
+                    if gap == 'h':
+                        keep = ((lambda q: q[0] <= line) if side == 'above'
+                                else (lambda q: q[0] > line))
+                    else:
+                        keep = ((lambda q: q[1] <= line) if side == 'left'
+                                else (lambda q: q[1] > line))
+                    sel = frozenset(q for q in cur if keep(q))
+                    if not sel or sel == cur:
+                        continue
+                    seen_c = set()
+                    for q0 in sel:
+                        if q0 in seen_c:
+                            continue
+                        comp, stk = {q0}, [q0]
+                        while stk:
+                            r, c = stk.pop()
+                            for nb in ((r - 1, c), (r + 1, c),
+                                       (r, c - 1), (r, c + 1)):
+                                if nb in sel and nb not in comp:
+                                    comp.add(nb)
+                                    stk.append(nb)
+                        seen_c |= comp
+                        comp = frozenset(comp)
+                        rest = cur - comp
+                        if not rest:
+                            continue
+                        for d, (dr, dc) in (('w', (-1, 0)), ('s', (1, 0)),
+                                            ('a', (0, -1)), ('d', (0, 1))):
+                            mv = comp
+                            ok = True
+                            for _cell in range(step):
+                                mv = frozenset((q[0] + dr, q[1] + dc)
+                                               for q in mv)
+                                if mv & rest or not _connected(rest | mv):
+                                    ok = False
+                                    break
+                            if not ok:
+                                continue
+                            final = frozenset((q[0] + dr * step,
+                                               q[1] + dc * step)
+                                              for q in comp)
+                            if any(not (area[0] <= r <= area[1]
+                                        and area[2] <= c <= area[3])
+                                   for r, c in final):
+                                continue
+                            out.append((gap, line, side, d, min(comp),
+                                        rest | final))
+        return out
+
+    goals = [frozenset((r0 + i, c0 + j) for i in range(m) for j in range(n))
+             for r0 in range(area[0], area[1] - m + 2)
+             for c0 in range(area[2], area[3] - n + 2)]
+    fw = {coords: None}
+    bw = {g: None for g in goals}
+    f_q, b_q = deque([coords]), deque(goals)
+    nodes = 0
+    meet = None
+    while f_q and b_q and meet is None and nodes < max_nodes:
+        # 小侧优先扩展一个节点
+        if len(f_q) <= len(b_q):
+            q, vis, other = f_q, fw, bw
+        else:
+            q, vis, other = b_q, bw, fw
+        cur = q.popleft()
+        nodes += 1
+        for _gap, _line, _side, _d, _rep, nxt in _moves(cur):
+            if nxt in vis:
+                continue
+            vis[nxt] = cur
+            if nxt in other:
+                meet = nxt
+                break
+            q.append(nxt)
+    if meet is None:
+        if verbose:
+            print('[移形换位] BFS 未命中（节点 %d）' % nodes)
+        return None
+    # 状态路径：fw 侧 meet→start 逆链 + bw 侧 meet→goal 逆链
+    path = [meet]
+    s = meet
+    while fw.get(s) is not None:
+        s = fw[s]
+        path.append(s)
+    path.reverse()
+    s = meet
+    while bw.get(s) is not None:
+        s = bw[s]
+        path.append(s)
+    # 相邻状态对 → 引擎动作（回扫枚举，避免选块语义推导出错）
+    acts = []
+    for a, b in zip(path, path[1:]):
+        hit = [mv for mv in _moves(a) if mv[5] == b]
+        if not hit:
+            return None
+        acts.append((hit[0][0], hit[0][1], hit[0][2], hit[0][3], hit[0][4]))
+    if verbose:
+        print('[移形换位] %d 步（节点 %d，%.1fs）'
+              % (len(acts), nodes, time.time() - _T0[0]))
+    return acts
+
+
+_T0 = [0.0]
+
+
+def _compact_rescue(coords, m, n, step, why=''):
+    """紧凑盘移形换位救援：常规链全败后的最后手段（2026-10-01）。"""
+    if not (m <= 2 * step and n <= 2 * step):
+        return None
+    import time as _t
+    _T0[0] = _t.time()
+    acts = _swap_fill(coords, m, n, step)
+    if acts is None:
+        return None
+    print('[移形换位] 常规链失败(%s)，换位机动 %d 步全解'
+          % (why[:40], len(acts)))
+    return _split_actions(acts)
+
+
+# ---------------------------------------------------------------------------
+# 带移盖洞宏
 # ---------------------------------------------------------------------------
 def _belt_shift_fill(coords, m, n, step, h, verbose=False):
     """带移盖洞宏（2026-10-01 失败02 教学「拆东墙补西墙」参数化）。
@@ -1181,9 +1352,16 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
         if acts is None:
             reason = stats.get('reason', stats.get('error', '未知'))
             print('[填洞宏] 单洞无解：%s' % reason)
+            resc = _compact_rescue(coords, m, n, step, reason)
+            if resc is not None:
+                return resc
             return {'type': 'fill_fail', 'reason': reason}
         if stats.get('partial'):
             reason = stats.get('reason', '中断')
+            resc = _compact_rescue(coords, m, n, step,
+                                   '单洞partial:%s' % reason)
+            if resc is not None:
+                return resc
             print('[填洞宏] 单洞部分(断在：%s)，已播放 %d 步供观察'
                   % (reason, len(acts)))
             acts4, reps = _split_actions(acts)
@@ -1196,10 +1374,16 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
     if acts is None:
         reason = stats.get('reason', stats.get('error', '未知'))
         print('[填洞宏] 多洞完全失败：%s' % reason)
+        resc = _compact_rescue(coords, m, n, step, reason)
+        if resc is not None:
+            return resc
         return {'type': 'fill_fail', 'reason': reason,
                 'stats': {k: v for k, v in stats.items() if k != 'reason'}}
     if stats.get('partial'):
         reason = stats.get('reason', '中断')
+        resc = _compact_rescue(coords, m, n, step, '多洞partial:%s' % reason)
+        if resc is not None:
+            return resc
         print('[填洞宏] 多洞有成果停机(断在：%s)，已播放 %d 步（保留提升）'
               % (reason, len(acts)))
         acts4, reps = _split_actions(acts)

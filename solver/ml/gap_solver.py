@@ -40,6 +40,7 @@ from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noq
                                   solve_single_void, solve_fill_macro,
                                   _capture_apply, _replay_apply, _Runner,
                                   replay_and_verify, solve_multi_void,
+                                  _compact_rescue,
                                   solve_multi_search)
 from solver.ml import view_rotate                                          # noqa: E402
 
@@ -1506,6 +1507,9 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
         if acts is not None and not mst.get('partial'):
             return [a[:4] for a in acts], [a[4] for a in acts]
         why = mst.get('reason', '多空位驱动未全解')
+        resc = _compact_rescue(coords, m, n, step, why)
+        if resc is not None:
+            return resc
         if mst.get('partial'):
             # partial（有成果未完）：仍返回已走部分，GUI 能看到推进
             print('[补缺宏] 多空位 partial：%s' % why)
