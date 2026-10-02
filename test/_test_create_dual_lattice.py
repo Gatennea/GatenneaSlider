@@ -211,6 +211,126 @@ def t7_hit_two_lattices():
           f'实得 {v.world_to_cell(px, py)}')
 
 
+def t8_incoherent_coord_gate():
+    """T8 奇偶一致性闸门——「重叠还能被构造出来」的根因回归。
+
+    用户 2026-10-03 二次反馈：「现在仍然可以构造出重叠情况」。根因不在
+    闸门位置（落盘确实走 validate_shape），而在两个洞：
+
+      ① game_mi.lattice_of 只看 2r 的奇偶，把「r 整数 / c 半整数」这种
+         奇偶不一致的非法坐标误判成 A 层 → any_overlap 的「同族不重叠」
+         快速过滤直接跳过它。实测 (0,0,'E') 与 (0,0.5,'N') 几何上正面面积
+         重叠（_tri_overlap=True）而 any_overlap 曾回 False。
+      ② 创造模式的点选候选里一半是非法坐标：mi_view._hit_cells 对
+         (r0±½, c0±½) 与 (r0−1,r0,r0+1) 取叉乘，于是 (0, 0.5)、(0.5, 0)
+         随时点得出来（实测 121 个候选里 60 个是这种），而引擎照单全收
+         （blocks_from_cells / update_matrix / export⇄import 全部正常）。
+
+    且这种坐标能同时骗过三道判据：cell_class 把半整数整数化，所以
+    (0.5, 0) 的类算成 (0,0)——和真 A 层同类，类计数表看不出。
+    """
+    print('\n--- T8 奇偶一致性闸门（重叠漏判的根因）---')
+    from game_mi import (MiSliderMatrix, any_overlap, _tri_overlap,
+                         coords_coherent, sublattice_of, lattice_of)
+    from gui import shape_validate as SV
+
+    def par2(x):
+        return int(round(2.0 * x)) & 1
+
+    # (a) lattice_of 对奇偶不一致坐标的误判（这是根因，留作证据）
+    check('T8a lattice_of 把 (0,0.5) 误判成 A 层（已知缺陷，仍在）',
+          lattice_of((0, 0.5, 'N')) == 0
+          and par2(0) != par2(0.5),
+          f'lattice_of={lattice_of((0, 0.5, "N"))} 而 2r&1={par2(0)} 2c&1={par2(0.5)}')
+    check('T8b sublattice_of 对同一坐标判为独立族（修复后的判据）',
+          sublattice_of((0, 0.5, 'N')) == (0, 1),
+          f'实得 {sublattice_of((0, 0.5, "N"))}')
+
+    # (b) any_overlap 现在能抓到这组重叠（修复前 False）
+    pair = {(0, 0, 'E'), (0, 0.5, 'N')}
+    check('T8c 该对几何上确实重叠', _tri_overlap((0, 0, 'E'), (0, 0.5, 'N')))
+    check('T8d any_overlap 曾漏判，现在能抓到', any_overlap(pair),
+          '修复前=False')
+
+    # (c) 「同一 sublattice 族内永不重叠」——快速过滤的正确性依据
+    qs = ('N', 'E', 'S', 'W')
+    groups = {}
+    for r in [x / 2 for x in range(-2, 5)]:
+        for c in [x / 2 for x in range(-2, 5)]:
+            groups.setdefault(sublattice_of((r, c)), []).append((r, c))
+    inner = 0
+    for cs in groups.values():
+        for i, (r1, c1) in enumerate(cs):
+            for (r2, c2) in cs[i + 1:]:
+                for q1 in qs:
+                    for q2 in qs:
+                        if _tri_overlap((r1, c1, q1), (r2, c2, q2)):
+                            inner += 1
+    check('T8e 同一族内零重叠（快速过滤有依据）', inner == 0, f'实测 {inner} 对')
+
+    # (d) 命中层确实能产出奇偶不一致坐标（问题的可达性）
+    from gui.mi_view import MiBoardView
+    v = MiBoardView(60.0, 4.0)
+    seen = set()
+    for wy in range(0, 120, 15):
+        for wx in range(0, 120, 15):
+            seen.update(v._hit_cells(wx, wy))
+    mixed = [(r, c) for (r, c) in sorted(seen) if par2(r) != par2(c)]
+    check('T8f 命中候选含奇偶不一致坐标（所以闸门必要）', len(mixed) > 0,
+          f'{len(mixed)}/{len(seen)} 个候选非法')
+
+    # (e) 闸门拦下奇偶不一致局面，且报出正确原因
+    m, n = 3, 3
+    base = _solved(m, n)
+    bad = set(base)
+    bad.discard((0, 0, 'E'))
+    bad.add((0, 0.5, 'N'))
+    ok, msg, _ = SV.validate_shape('mi', bad, (m, n), 2)
+    check('T8g 奇偶不一致局面被拦下', not ok, f'msg={msg!r}')
+    check('T8h 报错指向坐标合法性（而非块数/连通性）',
+          '奇偶' in msg or '走不' in msg, f'msg={msg!r}')
+
+    # (f) 合法局面零误报：随机走 400 步，coherent 全真且 any_overlap 全否
+    import random
+    from game_mi import GAP_DIRECTIONS
+    random.seed(9)
+    fp = incoherent = tot = 0
+    for _t in range(40):
+        step = random.choice([1, 2, 3])
+        g = MiSliderMatrix(3, 3)
+        g.shuffle(20, step)
+        for _ in range(10):
+            gaps = g.all_gaps()
+            if not gaps:
+                break
+            fam, line = random.choice(gaps)
+            g.opt(fam, line, random.choice(g.blocks))
+            d = random.choice(GAP_DIRECTIONS[fam])
+            pos, _ = g.try_move_ex(d, step)
+            if pos:
+                g.commit_move(pos)
+                g.update_matrix()
+            cells = g.positions()
+            tot += 1
+            if any_overlap(cells):
+                fp += 1
+            if not coords_coherent(cells):
+                incoherent += 1
+    check('T8i 400 步真实局面：any_overlap 零误报', fp == 0, f'误报 {fp} 次')
+    check('T8j 400 步真实局面：coherent 全真（游戏不变量）',
+          incoherent == 0, f'不一致 {incoherent} 次')
+    check('T8k 随机走总步数符合预期', tot == 400, f'{tot} 步')
+
+    # (g) 纯 B 整盘错位态（合法）不被误拦
+    pureB = {(r + 0.5, c + 0.5, q) for r in range(m) for c in range(n)
+             for q in ('N', 'E', 'S', 'W')}
+    check('T8l 纯B 整盘错位态 coherent', coords_coherent(pureB))
+    check('T8m 纯B 整盘错位态无重叠', not any_overlap(pureB))
+    ok2, msg2, _ = SV.validate_shape('mi', pureB, (m, n), 2)
+    check('T8n 纯B 错位态不被坐标闸门误拦', '奇偶' not in msg2,
+          f'msg={msg2!r}（報「無空位」= 已过坐标与重叠闸门，是还原态，正确）')
+
+
 def main():
     print('=' * 68)
     print('mi 创造模式「双层晶格」校验回归')
@@ -222,6 +342,7 @@ def main():
     t5_no_regression()
     t6_domain_shape()
     t7_hit_two_lattices()
+    t8_incoherent_coord_gate()
     print('\n' + '=' * 68)
     if _failures:
         print(f'FAIL {len(_failures)}:')

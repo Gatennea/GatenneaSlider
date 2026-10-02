@@ -28,6 +28,7 @@ from collections import Counter
 from game import SliderMatrix
 from game_mi import MiSliderMatrix, blocks_from_cells as mi_blocks_from_cells
 from game_mi import any_overlap as mi_any_overlap, lattice_of as mi_lattice_of
+from game_mi import coords_coherent as mi_coords_coherent
 from game_triangle import TriangleSliderMatrix, blocks_from_cells as tri_blocks_from_cells
 from gui.cell_class import cell_class
 
@@ -156,6 +157,31 @@ def validate_shape(kind, cells, params, step):
     """
     if not cells:
         return False, '空狀態', None
+    # 奇偶一致性閘門（2026-10-03 補）。**必須排在最前面**，它是座標合法性
+    # 的底線閘門：米字合法位置必有 2r 與 2c 同奇偶（A 晶格全整數 / B 晶格
+    # 全半整數），這是遊戲不變量（實測 4×4 隨機走 450 步零反例，斜滑一格
+    # 後整盤可同時含 A/B 兩族但每塊內部仍一致）。
+    #
+    # 為什麼必須先擋這個，而不是只靠重疊閘門：
+    #  ① 創造模式的點選候選裡**一半是奇偶不一致的座標**——mi_view._hit_cells
+    #     對每個 (r0±½, c0±½) 與 (r0−1, r0, r0+1) 取叉乘，於是 (0, 0.5)、
+    #     (0.5, 0) 這類「r 整數 / c 半整數」隨時點得出來（實測 121 個候選
+    #     座標裡 60 個是這種）。
+    #  ② 這種座標**引擎照單全收**：blocks_from_cells + update_matrix +
+    #     export_map/import_map 往返全部正常，存檔也讀得回來（實測）。
+    #  ③ 它會讓重疊閘門失效：lattice_of 只看 2r 奇偶，把 (0, 0.5) 誤判成 A
+    #     層，any_overlap 的「同族不重疊」快速過濾就把它跳過了——實測
+    #     (0,0,'E') 與 (0,0.5,'N') 幾何上正面積重疊但閘門回 False
+    #     （已另修 any_overlap 的族判據，見 game_mi.sublattice_of）。
+    #  ④ 它還能騙過類計數：cell_class 把半整數整數化再取模，所以 (0.5, 0)
+    #     的類算成 (0,0) —— 和真 A 層同類，類計數表看不出來。
+    #
+    # 也就是說奇偶不一致的座標是「重疊、類計數、連通性三道判據的共同盲區」，
+    # 必須在它們之前單獨攔住。合法局面可以混 A/B 兩族（錯位態），所以這裡
+    # 判的是「每塊內部兩分量同奇偶」，不是「整盤同族」。
+    if kind == 'mi' and not mi_coords_coherent(cells):
+        return False, ('有走不出来的座標（r 與 c 奇偶不一致，'
+                       '遊戲裡不可能出現）'), None
     # 跨晶格正面積重疊閘門（2026-10-03 補）。**必須排在塊數判據之前**：
     # 重疊局面本身就是非法構造，用戶要看到的訊息是「重疊」而不是「塊數不對」
     # ——後者會把真正的原因藏起來，且塊數不對的狀況滿地都是、單獨報錯就夠。

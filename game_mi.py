@@ -324,13 +324,52 @@ def hull_area_units(keys) -> int:
 
 
 # ---------- 跨晶格重疊判定（規劃 §1.5）----------
+def _par2(x) -> int:
+    """2·x 的奇偶（x 恆為 ½ 的倍數，轉整數精確無誤）。"""
+    return int(round(2.0 * x)) & 1
+
+
 def lattice_of(key: tuple) -> int:
     """晶格類：0 = A（整數座標，建局態）、1 = B（半整數座標）。
 
-    合法位置必有 2r 與 2c 同奇偶（見模組 docstring 的不變量），所以看
-    2r 的奇偶就夠了。
+    **只適用於合法位置**——合法位置必有 2r 與 2c 同奇偶（見模組 docstring 的
+    不變量），所以看 2r 的奇偶就夠了。
+
+    ⚠️ 對「r 整數 / c 半整數」這類**奇偶不一致**的非法座標，本函式會誤判：
+    (0, 0.5) 的 2r=0 → 判成 A 層，但它的 c 是半整數，實際上不在任何合法晶格裡。
+    拿它做重疊快速過濾會漏判（見 any_overlap 的族篩選說明）。構造校驗請改用
+    `coords_coherent` + `sublattice_of`，那兩個對非法座標是安全的。
     """
-    return int(round(2.0 * key[0])) & 1
+    return _par2(key[0])
+
+
+def sublattice_of(key: tuple) -> tuple:
+    """ sub-lattice 類 = (2r 的奇偶, 2c 的奇偶)，對非法座標也定義良好。
+
+    這才是重疊判定該用的分族判據：**同一個 (par2(r), par2(c)) 族內兩塊永遠
+    不重疊**（實測窮舉 7×7 範圍內所有 (½ 座標 × 四朝向 × 四朝向) 配對，
+    族內重疊對數 = 0；每個族各自鋪滿平面的一個子區域）。
+
+    四個族裡 (0,0) = A 晶格、(1,1) = B 晶格，另兩個 (0,1)/(1,0) 在合法局面裡
+    永不出現——它們正是「r 整數 / c 半整數」這類遊戲走不出來的位置。
+    """
+    return (_par2(key[0]), _par2(key[1]))
+
+
+def coords_coherent(cells) -> bool:
+    """整盤是否「奇偶一致」：每塊都滿足 2r 與 2c 同奇偶。
+
+    這是**遊戲不變量**（2026-10-03 實測：4×4 隨機走 450 步、step 1/2/3 混合，
+    零反例；斜滑一格後整盤同時含 A/B 兩族，但每塊內部仍然一致）。理由是滑動
+    向量是方向生成元的整數倍，兩分量的奇偶同時翻轉或同時不變。
+
+    構造模式能直接擺出奇偶不一致的塊（gui/mi_view._hit_cells 的候選裡一半是這
+    種），這種局面**引擎照單全收**（blocks_from_cells + update_matrix +
+    export/import 往返都正常），所以必須在校驗層攔——否則就是遊戲裡走不出來
+    的死盤。注意它同時是重疊漏判的根源：非法座標讓 lattice_of 誤判族別，
+    使 any_overlap 的「同族不重疊」快速過濾失效（見 game_mi.any_overlap）。
+    """
+    return all(_par2(k[0]) == _par2(k[1]) for k in cells)
 
 
 def _int_verts(key: tuple) -> list:
@@ -360,13 +399,16 @@ def _tri_overlap(a: tuple, b: tuple) -> bool:
 
 
 def _has_overlap(moved: set, non_selected: set) -> bool:
-    """兩組位置之間是否存在正面積重疊的跨晶格塊對。
+    """兩組位置之間是否存在正面積重疊的跨族塊對。
 
     §1.2 只證了「沿縫滑動時移動側與靜止側不重疊」，但 opt 移動的是一側
     的一個連通分量，同側的其它分量留在 non_selected 裡，錯位態下它們可
     以互相正面積重疊，而位置 key 不同 → 「集合不相交」放它們過去。
-    同晶格的兩塊一定不重疊（單一晶格鋪滿平面、不重不漏），故只有跨晶格
-    對才跑幾何，先用晶格類與包圍盒粗過濾。
+    同一 sub-lattice 族的兩塊一定不重疊（每族各自鋪滿平面的一個子區域，
+    窮舉實測族內零重疊），故只有跨族對才跑幾何，先用族別與包圍盒粗過濾。
+
+    這條路徑的輸入一定是合法局面（引擎自己走出來的），所以用哪個族判據都
+    一樣；為了一致性與安全，统一用 sublattice_of。
     """
     if not moved or not non_selected:
         return False
@@ -382,10 +424,10 @@ def _has_overlap(moved: set, non_selected: set) -> bool:
         return got
 
     for a in moved:
-        lat = lattice_of(a)
+        fam = sublattice_of(a)
         ax1, ay1, ax2, ay2 = _box(a)
         for b in non_selected:
-            if lat == lattice_of(b):
+            if fam == sublattice_of(b):
                 continue
             bx1, by1, bx2, by2 = _box(b)
             if ax2 < bx1 or bx2 < ax1 or ay2 < by1 or by2 < ay1:
@@ -396,15 +438,23 @@ def _has_overlap(moved: set, non_selected: set) -> bool:
 
 
 def any_overlap(cells) -> bool:
-    """整盤自檢：任意兩塊之間是否有正面積重疊（跨晶格對才可能）。
+    """整盤自檢：任意兩塊之間是否有正面積重疊（跨 sub-lattice 族才可能）。
 
     與 _has_overlap 的區別：後者是「移動側 vs 靜止側」的移動期檢查，這裡是
-    「給定一個位置集合，裡面有沒有任何兩塊疊在一起」——給創造模式／存檔
-    校驗用的。同一晶格內鋪滿平面不重不漏，故只對跨晶格對跑幾何判定。
+    「給定一個位置集合，裡面有沒有任何兩塊��在一起」——給創造模式／存檔
+    校驗用的。同一族內鋪滿平面不重不漏，故只對跨族對跑幾何判定。
 
     錯位態下位置 key 不同的兩塊可以正面積重疊（§1.5），單靠「位置集合相
     交」擋不住；創造模式能直接擺出這種局面，所以校驗鏈必須補這一步，
     否則就能構造出遊戲裡根本走不出來的死盤。
+
+    ⚠️ 族判據必須用 `sublattice_of`（(2r奇偶, 2c奇偶)），**不能用
+    `lattice_of`**（只看 2r 奇偶，2026-10-03 修）。創造模式能擺出
+    「r 整數 / c 半整數」這種奇偶不一致的非法座標，lattice_of 會把它誤判成
+    A 層，於是「同族不重疊」的快速過濾把它跳過 —— 實測 (0,0,'E') 與
+    (0,0.5,'N') 幾何上正面積重疊（_tri_overlap=True）但本函式回 False。
+    座標已由 coords_coherent 閘門擋掉時這兩者等價，但本函式不該假設輸入
+    合法 —— 漏判的後果是構造出死盤，寧可多跑幾次幾何判定。
     """
     boxes = {}
 
@@ -421,10 +471,10 @@ def any_overlap(cells) -> bool:
     for x in range(len(items)):
         a = items[x]
         ax1, ay1, ax2, ay2 = _box(a)
-        lat = lattice_of(a)
+        fam = sublattice_of(a)
         for y in range(x + 1, len(items)):
             b = items[y]
-            if lat == lattice_of(b):
+            if fam == sublattice_of(b):
                 continue
             bx1, by1, bx2, by2 = _box(b)
             if ax2 < bx1 or bx2 < ax1 or ay2 < by1 or by2 < ay1:

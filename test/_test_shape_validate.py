@@ -20,9 +20,11 @@ from game_triangle import (  # noqa: E402
 from game_mi import (  # noqa: E402
     MiSliderMatrix, mi_key, neighbors as mi_neighbors,
     side_of as mi_side_of, blocks_from_cells as mi_blocks_from_cells, lattice_of,
+    sublattice_of as _sublattice,
 )
 from gui.cell_class import cell_class  # noqa: E402
-from gui.shape_validate import validate_shape, solved_cell_count  # noqa: E402
+from gui.shape_validate import (  # noqa: E402
+    validate_shape, solved_cell_count, _anchor_domain, _class_counts)
 
 _failures = []
 
@@ -83,6 +85,12 @@ def _break_class(kind, cells, step, params):
     """挖一塊（保持連通）放到異類鄰位（保持連通）：塊數/連通對、類計數錯。
 
     返回變造後的 cells；找不到則回 None（測試會明確標記失敗）。
+
+    **米字分支限制在同 sub-lattice 族內挪**（2026-10-03）：`mi_neighbors`
+    含 2 個跨晶格鄰位，挪過去會造出跨族正面積重疊，於是 validate_shape 的
+    重疊閘門先一步攔下、報文變成「有重��的滑塊」而不是「類計數不一致」。
+    報錯更準確不是回歸，但本用例要專測類計數路徑，所以避開；
+    重疊路徑由 test/_test_create_dual_lattice.py 的 T3/T8 專測。
     """
     for x in sorted(cells):
         rest = cells - {x}
@@ -93,6 +101,8 @@ def _break_class(kind, cells, step, params):
             if y in cells:
                 continue
             if cell_class(y, step, kind) == cx:
+                continue
+            if kind == 'mi' and _sublattice(y) != _sublattice(x):
                 continue
             new = rest | {y}
             if _conn(kind, new):
@@ -131,10 +141,21 @@ for kind, params, step in CASES:
     check(f"{kind} 平移({step},0)=step倍數 通過且 anchor=(0,0)",
           ok and anchor == (0, 0), f"anchor={anchor}")
     if kind in ('triangle', 'mi'):
-        # 非整數倍平移：anchor = 平移的 mod 類（表非退化，這一條是關鍵）
-        ok, _msg, anchor = validate_shape(kind, _shift(cells, 1, 0), params, step)
-        check(f"{kind} 平移(1,0) 通過且 anchor=(1,0)",
-              ok and anchor == (1, 0), f"anchor={anchor}")
+        # 非整數倍平移：anchor 必須是「平移的 mod 類」——即 (1,0) 要在匹配
+        # 集裡。**不能斷言恰好等於 (1,0)**：_match_anchor 回傳掃描次序上的
+        # 第一個命中，而米字的偏移域自 2026-10-03 起含半格（雙層晶格），
+        # 匹配數會變多（實測 mi step3 平移(1,0) 有 4 個匹配錨點：
+        # (0,1.5)/(1,0)/(1.5,0)/(2.5,1.5)，(1,0) 仍在其中）。
+        # 這不影響功能——anchor 目前只在 _ann_build_status / _ann_build_apply
+        # 被以 _anchor 丟棄（兩處都不畫框）。
+        shifted = _shift(cells, 1, 0)
+        ok, _msg, anchor = validate_shape(kind, shifted, params, step)
+        hits = [(dr, dc) for dr, dc in _anchor_domain(kind, step)
+                if _class_counts(_solved_cells(kind, params), step, kind,
+                                 dr, dc) == _class_counts(shifted, step, kind)]
+        check(f"{kind} 平移(1,0) 通過且 (1,0) 在匹配錨點中",
+              ok and (1, 0) in hits,
+              f"anchor={anchor} 全部匹配={hits[:4]}")
 
 print("== 方形：偏移掃描是現行判據的超集 ==")
 sq = shuffled['square']
