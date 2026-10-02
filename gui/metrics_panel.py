@@ -66,6 +66,22 @@ class MetricsPanelMixin:
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
             return {'score': 0.0, 'overlap': 0, 'bbox': (0, 0), 'fill_rate': 0.0}
+        if getattr(self, 'triangle_mode', False):
+            # 三角走 tri_placement：目标形状是大三角、1 个朝向 × 全部平移，
+            # 指标口径与方形对齐（score = 重叠 / 单元数）。
+            from solver.ml.tri_placement import best_placement_of_game
+            best = best_placement_of_game(
+                game, k=getattr(game, 'k', None),
+                step=getattr(self, 'current_step', 1))
+            coords = best.coords
+            rs = [c[0] for c in coords]
+            cs = [c[1] for c in coords]
+            return {'score': best.score,
+                    'overlap': best.overlap,
+                    'bbox': (max(rs) - min(rs) + 1 if rs else 0,
+                             max(cs) - min(cs) + 1 if cs else 0),
+                    'fill_rate': (best.overlap / (best.k * best.k)
+                                  if best.k else 0.0)}
         coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
         return gather_metrics(coords, game.m, game.n)
 
@@ -78,12 +94,23 @@ class MetricsPanelMixin:
         先以着色不變量 detect_target_corner 預判約束維度，再在整個
         邊界盒內枚舉 m×n / n×m 窗口，取覆蓋方塊數（= 聚攏度）最高者。
         返回 (r0, c0, (rh, cw)) 或 None。
+
+        **三角形走另一條路**（2026-10-03）：返回 `TriPlacement` 本身。形狀
+        不對稱（計劃 §5：大三角只有恆等與轉置兩個對稱、**沒有 120° 旋轉**），
+        用 (r0, c0, (rh, cw)) 這種矩形三元組表達不了，所以直接攜帶形狀本身。
+        方形分支不變。
         """
-        from solver.ml.gather_solver import find_best_window, _game_coords
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
             return None
         step = getattr(self, 'current_step', 1)
+        if getattr(self, 'triangle_mode', False):
+            from solver.ml.tri_placement import best_placement_of_game
+            best = best_placement_of_game(
+                game, k=getattr(game, 'k', None), step=step)
+            self._target_region = best
+            return best
+        from solver.ml.gather_solver import find_best_window, _game_coords
         coords = _game_coords(game)
         r0, c0, (rh, cw), _ = find_best_window(coords, game.m, game.n, step)
         self._target_region = (r0, c0, (rh, cw))
@@ -98,6 +125,8 @@ class MetricsPanelMixin:
             目標窗口外的方塊（凸起）              = 斜方形（菱形）
         顏色：大孔洞/缺口 = 紅色，小 = 藍色；凸起 = 黃色。
         """
+        if getattr(self, 'triangle_mode', False):
+            return self._draw_tri_marks()
         from solver.ml.hole_detector import detect_holes
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
@@ -157,6 +186,8 @@ class MetricsPanelMixin:
         窗口位置由 _compute_target_region 計算（mod 約束 + 聚攏度最高），
         與 _draw_debug_holes 共用同一 region，保證標記系統與畫框一致。
         """
+        if getattr(self, 'triangle_mode', False):
+            return self._draw_tri_target_frame()
         region = self._compute_target_region()
         if region is None:
             return None
@@ -175,6 +206,100 @@ class MetricsPanelMixin:
                          (int(x), int(y), int(w), int(h)),
                          max(2, int(2 * self.zoom)))
         return region
+
+    # ------------------------------------------------------------------
+    # 三角形分支（M0 F2，计划 §4/§5）
+    #
+    # 与方形分支的**纪律完全一致**：目标框与洞/缺口/凸起标记都吃
+    # `_compute_target_region()` 的同一个返回值（三角下是 `TriPlacement`），
+    # 绝不各算一份。数据源 = solver/ml/tri_placement.py 与 tri_holes.py，
+    # 与 M1 求解器将要用的完全是同一套。
+    # ------------------------------------------------------------------
+    def _draw_tri_target_frame(self):
+        """三角：綠色框畫出最佳放置的大三角輪廓。
+
+        不能畫矩形——大三角是**斜邊**形狀（計劃 §5：沒有 120° 旋轉對稱），
+        這正是三角不能套方形那套 (r0,c0,rh,cw) 表達的根本原因。所以直接用
+        視圖的 `boundary_edges()` 取目標形狀的外周單位邊，逐條畫。
+        """
+        best = self._compute_target_region()
+        if best is None:
+            return None
+        view = self._tri_view()
+        line_w = max(2, int(2 * self.zoom))
+        origin = self.world_to_screen(0.0, 0.0)
+        for p1w, p2w in view.boundary_edges(best.cells):
+            # boundary_edges 回的是**未缩放的世界坐标**；棋盘原点在屏幕上的
+            # 位置由 world_to_screen(0,0) 给出，缩放/平移围绕该原点进行。
+            p1 = self.world_to_screen(*p1w)
+            p2 = self.world_to_screen(*p2w)
+            q1 = (origin[0] + (p1[0] - origin[0]) * self.zoom,
+                  origin[1] + (p1[1] - origin[1]) * self.zoom)
+            q2 = (origin[0] + (p2[0] - origin[0]) * self.zoom,
+                  origin[1] + (p2[1] - origin[1]) * self.zoom)
+            pygame.draw.line(self.screen, (80, 220, 100), q1, q2, line_w)
+        return best
+
+    def _draw_tri_marks(self):
+        """三角：洞（圓圈）/ 缺口（三角形）/ 凸起（菱形）標記。
+
+        與方形 `_draw_debug_holes` 的記號語義一致（計劃 §4 說「異形版語義
+        在實現時定」→ 定為沿用方形，便於對照驗收）。
+        """
+        from solver.ml.tri_holes import detect_tri_holes, hole_color
+        game = getattr(self, 'game', None)
+        if game is None or not getattr(game, 'blocks', None):
+            return
+        best = getattr(self, '_target_region', None)
+        if best is None or not hasattr(best, 'cells'):
+            best = self._compute_target_region()
+        if best is None or not hasattr(best, 'cells'):
+            return
+
+        coords = frozenset(tuple(b.location) for b in game.blocks)
+        step_len = getattr(self, 'current_step', 1)
+        holes, protrusions = detect_tri_holes(coords, best.cells, step_len)
+
+        view = self._tri_view()
+        scaled_cell = self.cell_size * self.zoom
+        radius = max(3, int(scaled_cell * 0.35))
+        line_w = max(2, int(2 * self.zoom))
+        origin = self.world_to_screen(0.0, 0.0)
+
+        def _center(i, j, up):
+            """單元重心 → 屏幕坐標（含 zoom 與相機）。"""
+            cx, cy = view.piece_center(i, j, up)
+            sx, sy = self.world_to_screen(cx, cy)
+            return (origin[0] + (sx - origin[0]) * self.zoom,
+                    origin[1] + (sy - origin[1]) * self.zoom)
+
+        for h in holes:
+            color = hole_color(h)
+            for (i, j, up) in h['cells']:
+                cx, cy = _center(i, j, up)
+                if h['type'] == 'hole':
+                    pygame.draw.circle(self.screen, color, (int(cx), int(cy)),
+                                       radius, line_w)
+                else:  # gap → 三角形
+                    pygame.draw.polygon(
+                        self.screen, color,
+                        [(cx, cy - radius),
+                         (cx - radius, cy + radius),
+                         (cx + radius, cy + radius)], line_w)
+                if (self.selected_hole is not None
+                        and set(h['cells']) == set(
+                            self.selected_hole.get('cells', []))):
+                    pygame.draw.circle(self.screen, (255, 255, 255),
+                                       (int(cx), int(cy)),
+                                       max(2, radius // 2), 0)
+
+        for (i, j, up) in protrusions:
+            cx, cy = _center(i, j, up)
+            d = radius
+            pygame.draw.polygon(
+                self.screen, (255, 210, 60),
+                [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)],
+                line_w)
 
     def get_hole_at_pos(self, screen_x, screen_y):
         """返回屏幕坐标处的洞（若点击在洞格子上），否则 None。
@@ -293,22 +418,44 @@ class MetricsPanelMixin:
         self.screen.blit(close_surface, close_surface.get_rect(center=self.mp_close_rect.center))
 
         # 指标行（目标框行顯示與畫框同一窗口的實際位置）
-        from solver.ml.gather_solver import detect_target_corner, _game_coords
         game = self.game
         step = getattr(self, 'current_step', 1)
-        tc = detect_target_corner(_game_coords(game), game.m, game.n, step)
         region = getattr(self, '_target_region', None)
         if region is None:
             region = self._compute_target_region()
-        rows = [
-            ("聚拢度", f"{met['score'] * 100:.1f}%"),
-            ("重叠", f"{met['overlap']}/{game.m * game.n}"),
-            ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
-            ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-            ("目标框", f"({region[0]},{region[1]}) {region[2][0]}×{region[2][1]}"
-             if region else "—"),
-            ("mod 状态", "有约束" if tc else ("无约束" if step > 1 else "step=1")),
-        ]
+
+        if getattr(self, 'triangle_mode', False):
+            # 三角：目标形状是大三角、单元数 k²、放置 = 1 朝向 × 平移
+            from solver.ml.tri_placement import best_placement_of_game, placement_offset_ok
+            from solver.ml.tri_holes import detect_tri_holes
+            k = getattr(game, 'k', 0) or 0
+            best = (region if hasattr(region, 'cells')
+                    else best_placement_of_game(game, k=k, step=step))
+            coords = frozenset(tuple(b.location) for b in game.blocks)
+            holes, protrusions = detect_tri_holes(coords, best.cells, step)
+            n_gap = sum(1 for h in holes if h['type'] == 'gap')
+            n_hole = sum(1 for h in holes if h['type'] == 'hole')
+            rows = [
+                ("聚拢度", f"{met['score'] * 100:.1f}%"),
+                ("重叠", f"{met['overlap']}/{k * k}"),
+                ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
+                ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
+                ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) "
+                            f"边长{k}"),
+                ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
+            ]
+        else:
+            from solver.ml.gather_solver import detect_target_corner, _game_coords
+            tc = detect_target_corner(_game_coords(game), game.m, game.n, step)
+            rows = [
+                ("聚拢度", f"{met['score'] * 100:.1f}%"),
+                ("重叠", f"{met['overlap']}/{game.m * game.n}"),
+                ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
+                ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
+                ("目标框", f"({region[0]},{region[1]}) {region[2][0]}×{region[2][1]}"
+                 if region else "—"),
+                ("mod 状态", "有约束" if tc else ("无约束" if step > 1 else "step=1")),
+            ]
         row_y = y + self._MP_TITLE_H + self._MP_PAD
         for label, value in rows:
             label_surf = self.status_font.render(label, True, (170, 170, 180))
