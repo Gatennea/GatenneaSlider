@@ -4,6 +4,28 @@
 
 ---
 
+## 0. 文檔地圖（先查這裡，再決定讀哪份文檔或直接讀代碼）
+
+**權威原則**：文檔是地圖與設計動機，**代碼是唯一真相**；文檔與代碼衝突時以代碼為準，並順手修正文檔。文檔中出現的函數名/文件名都是檢索錨點，可直接跳代碼核實。
+
+| 要做的事 / 要答的問題 | 讀什麼 | 備註 |
+| --- | --- | --- |
+| 統一詞彙、座標口徑、匯報用語 | `術語規定.md` | 對話用戶/寫文檔前先對齊；洞/缺口/空位/聚攏度等詞勿混用 |
+| 理解玩法規則（玩家視角） | `玩家指南.md` | 人讀為主 |
+| 改求解器 / 理解求解算法 | `求解器設計.md` | **求解器主題以它為準**；機構原理、預算常量表、死局教訓、「新增機構怎麼掛怎麼驗收」指引都在那裡，本文 §5 只留註冊表概要 |
+| 改引擎、HTTP/stdin 介面、GUI Mixin、四形態語義 | 本文檔 | §2 不變量、§3 目錄地圖、§6/§7 介面全集 |
+| GUI 快捷鍵與人工操作 | `gui/操作说明.md` | |
+| 玩法數學形式化（狀態空間/動作語義/可逆性） | `experiments/MATH_核心玩法形式化.md` | 自包含；動作 5 元組（rep_cell）修法在此 |
+| 查混合求解器的原始設計報告 | `experiments/REPORT_混合求解器.md` | ⚠️ 歷史快照 |
+| 查混合求解器驗收數據（時間剖面等結論出處） | `experiments/ACCEPTANCE_混合求解器验收.md` | ⚠️ 歷史快照，數據有日期 |
+| 追「早交接」失敗根因 | `experiments/DIAG_早交接失败根因.md` | ⚠️ 歷史快照 |
+| 接手當年遺留任務書 | `experiments/HANDSOFF_交接文档.md` | ⚠️ 歷史快照，其中任務可能已完成 |
+| 數學衍生討論（可逆性猜想等） | `math_question/遊戲衍生的數學問題.md` | 人讀為主 |
+
+**何時直接讀代碼而不是文檔**：要確認當前實際行為（簽名/默認值/常量取值）、要跑實驗、目標文檔標了「歷史快照」、文檔與實測不符——一律以代碼為準。
+
+---
+
 基於 **Python + pygame-ce** 的滑塊拼圖遊戲。玩家（或 AI）透過「選擇縫隙 → 選擇滑塊組 → 滑動」把打亂的方塊還原成目標形狀：**方形/帶序號**是 `m×n` 或 `n×m` 實心矩形（允許整體平移，不做模板比對）；**三角形密鋪**是邊長 k 的實心大正三角形（k² 個單位三角，允許整體平移與 120°/240° 旋轉）；**米字格**是實心 m×n 米字矩陣（4mn 個直角三角滑塊，允許整體平移與換晶格）。四種形態共用同一套「縫隙 + 移動」互動模型，只有縫隙族數與方向字母不同。
 
 > ## ⚠️ 給 AI Agent 的速覽（先讀這節）
@@ -217,6 +239,10 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 | `greedy` | 最快-2 | `solve_greedy` | 貪心爬山 + 擾動 |
 | `table` | 查表求解 | `table_solver.table_solve` | 需先 `solver.data` 建表 |
 | `fill_macro` | 填洞宏 | `fill_macro.solve_fill_macro` | 單洞 A-B-A' 共軛子宏；多洞無缺口貪心逐 couple（§5.4） |
+| `gap_macro` | 補缺宏 | `gap_solver.solve_gap_macro` | **現役主入口**：判型分發（單缺口雙層共軛／多空位統一驅動／單洞填洞） |
+| `hybrid` | 混合求解（免表·非最優） | `hybrid_solver.hybrid_solve_with_table` | 有表先查表；無表走「聚攏+填洞」交替 + GBFS 收尾 |
+
+> 註：上表與實際註冊表可能再度漂移，**以 `solver/__init__.py` 的 `SOLVER_ALGORITHMS` 為準**；各算法的設計動機與機構詳解見 `求解器設計.md`。
 
 通用函式庫契約：`f(game, step, max_steps, cancel_check=None, progress_callback=None) → list[action] | None`（`gather` 系回報 `progress_callback` 聚攏指標，即使未還原也回傳動作序列）。新增演算法 = 在 `solver/ml/` 新增模組 + 註冊進 `SOLVER_ALGORITHMS` + 加入設定介面的預設清單。
 
@@ -255,7 +281,7 @@ python -m solver.visualize_table 4 4 2
 
 **B. 人類模仿管線（`human_ai` 已在代碼中註解掉，暫未接入求解菜單；管線本身仍在 `solver.ml.human_solver`）**
 ```bash
-# 1. 從 save/*.json（人類還原記錄）導出正/負樣本，JSONL 可檢視
+# 1. 從 save/*.json 與 archives/*.json（人類還原記錄；export_human_data 目前只掃 save/）導出正/負樣本，JSONL 可檢視
 python -m solver.ml.export_human_data
 # 2. 訓練評分模型：score(狀態, 動作)，輸出 data/human/model_ranker.pkl
 python -m solver.ml.train_human_ranker
@@ -282,7 +308,7 @@ python -m solver.ml.human_solver
 | GET | `/analysis/window` | 目標聚攏視窗 `{ok,window:{r0,c0,rh,cw,overlap},m,n,step}`；**三角形形態不支援，回 HTTP 400** |
 | GET | `/analysis/holes` | 洞/缺口/凸起 `{ok,window,holes:[{type:"hole"|"dent",size,cells}],protrusions:[[r,c],...]}`；**三角形回 400** |
 | GET | `/analysis/actions` | 合法動作列舉 `{ok,actions:[{gap_type,gap_line,side,move_dir}]}`；**三角形回 400** |
-| GET | `/solver/algorithms` | `{ok,current,algorithms:[{key,name}]}`（7 種算法） |
+| GET | `/solver/algorithms` | `{ok,current,algorithms:[{key,name}]}`（9 種算法） |
 | GET | `/solver/status` | 結構化求解狀態 `{ok,state,algorithm,progress,gradient,result_steps,elapsed_ms}`；state=`idle/running/solved/failed/cancelled` |
 | GET | `/solver/params` | gather 參數 `{ok,params:{<key>:{value,enabled}}}` |
 | GET | `/macro/list` | `{"ok":true,"macros":[{name,description,steps,recorded_step,base_point}]}` |
@@ -396,7 +422,7 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `actions` | — | 合法動作列舉（enumerate_valid_actions） |
 | `solve` | `[algorithm]` | 啟動自動求解；給算法名則先切換（非法名回錯誤）；**執行中再呼叫 = 取消** |
 | `solve_cancel` | — | 顯式取消（未在求解回 ok:false） |
-| `solver_algorithms` | — | 列出 7 種算法與目前算法 |
+| `solver_algorithms` | — | 列出 9 種算法與目前算法 |
 | `solver_status` | — | 結構化狀態：idle/running/solved/failed/cancelled（含 progress/gradient/result_steps/elapsed_ms） |
 | `solve_status` | — | 舊版純文字 `idle/running/solved(N步)/failed`（保留相容） |
 | `solver_params` | 無參 或 `key=value ...` | 查詢或部分設置 gather 參數；啟用標誌用 `key_enabled=0|1`；越界整批拒絕 |
@@ -442,7 +468,8 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `config/keyboard_shortcut.json` | 快捷鍵（動作→key+modifiers），如 undo=`ctrl+z`、panels=`f1/f2/f3` | 設定介面可錄製 |
 | `config/records.dat` | 成績記錄（pickle 以固定 XOR `0x5A` 混淆檔頭，非加密） | 關閉遊戲時統一寫入 |
 | `config/temp_history.json` | 退出時自動快照，下次啟動還原進度 | |
-| `save/*.json` | 使用者存檔（含 puzzle 參數、map、步數、歷史） | 自動補 `.json` 後綴 |
+| `save/*.json` | 使用者存檔（含 puzzle 參數、map、步數、歷史） | 自動補 `.json` 後綴；**不入庫** |
+| `archives/*.json` | 重要研究/教學存檔（失敗01~09 死局樣本、教學實例 1/2/推測題、回歸案例），**已入 git** | 2026-10-02 自 save/ 遷入，玩家日常存檔仍寫 save/ |
 | `macro/*.json` | 宏定義 | |
 | `config/error_log.jsonl` | 執行期錯誤（含子執行緒）+ 啟動痕跡，一行一條 JSON，traceback 按行拆成數組 | 常開，超 4MB 輪轉成 `.old`；寫不進去退回系統 temp |
 | `config/op_log.jsonl` | 操作日誌（點擊坐標/命中/提示），調試用 | 默認關，設定→文件→操作日誌 打開 |
@@ -536,7 +563,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 ## 12. 已知限制 / 長期目標
 
-- 帶序號模式（`numbered`）：求解器/建表/ML 管線**暫不支援**（狀態需身份感知，動作語義也不同），入口直接拒絕並提示；其餘功能（撤銷重做/動畫/競速/存讀檔/地圖導入）全部可用。
+- 帶序號模式（`numbered`）：**Ctrl+A 自動求解已放行**（2026-10-02：求解器只看形狀，先復原矩形、數字亂序為預期行為，播放收尾提示自行調整數字；Ctrl+G 單段求解仍不支援）。建表/ML 管線仍不支援；其餘功能（撤銷重做/動畫/競速/存讀檔/地圖導入）全部可用。
 - 三角形密鋪（`triangle`）：已實作核心五步 + P2 體驗（六向鍵盤/虛擬鍵盤/連鎖提示/分組著色/拖拽 6 向投影/競速成績/地圖導入）。**暫不支援**：求解器/建表/ML（需新動作語義與對稱群）、`/analysis/*`（回 400 降級）、宏、隨機生成（創造模式只能手動構造）、調試面板的三角版（P3，未做）；`solved` 只接受「尖朝上/120°/240°」三種朝向，鏡像（顛倒）不可達。
 - 米字格（`mi`）：已實作斜向一格的引擎（`game_mi.py`，含錯位態兩晶格、8-bit 快照與 `mi8` 地圖）、兩次觸控（第二下按住滑塊拖動才定向提交，只按不拖則選組等虛擬鍵盤）+ 拖拽跟隨預覽 + 虛擬鍵盤 + 八向動畫 + 分組著色與懸停連鎖 + 競速/存讀檔/打亂/撤銷重做。**暫不支援**：求解器/建表/ML、`/analysis/*`（回 400）、宏錄製執行、隨機生成（創造模式只能手動構造）、調試面板、單次觸控（凍結決策：八向誤觸面太大）。已知注意點：等級語義漂移（等級 1 斜距 = √2/2，等級 2 = 舊版等級 1）；錯位態橫豎縫會整條穿過塊內部而選不動（提示按剩餘條數說，沿斜向再走一格即復活）；`/status` 的 `blocks[]` 沒有 `mod`，改帶 `q` 與 `lat`。 origin/main
 - 存量缺陷（**方形同樣存在**，非新形態引入）：多步（批量）移動時 `step_count` 由 `move_selected_blocks` 累加 `move_step`，而 `history.save_snapshot` 每步只記 `steps = 1`，導致存檔重載（`_load_save_data` 以 `current_step_total()` 重算）與 undo/redo 後的步數比實際少。

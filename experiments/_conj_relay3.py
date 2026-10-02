@@ -72,7 +72,7 @@ def conj3(coords, m, n, step, ov0, dists=(1, 2, 3, 4, 5, 6),
 
 
 if __name__ == '__main__':
-    m, n, step, coords = load_start('save/2-6-7-20261001-161826.json', 0)
+    m, n, step, coords = load_start('archives/2-6-7-20261001-161826.json', 0)
     t0 = time.time()
     res = solve_gap_macro(build_game(coords, m, n), step)
     print('求解器 %.0fs → %s' % (time.time() - t0,

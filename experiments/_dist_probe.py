@@ -67,7 +67,7 @@ def ov_of(c, m, n, s):
 
 
 if __name__ == '__main__':
-    m, n, step, coords = load_start('save/2-6-7-20261001-161826.json', 0)
+    m, n, step, coords = load_start('archives/2-6-7-20261001-161826.json', 0)
     # 播掉求解器那 9 步到残局
     from solver.ml.gap_solver import solve_gap_macro
     res = solve_gap_macro(build_game(coords, m, n), step)

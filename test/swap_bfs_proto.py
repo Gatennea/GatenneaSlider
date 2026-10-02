@@ -135,9 +135,9 @@ def bfs_solve(coords, m, n, step, max_nodes=200000, max_depth=16):
     return None, {'nodes': nodes, 'secs': time.time() - t0}
 
 
-for tag in ['save/2-4-4-20261001-103250.json',
-            'save/2-4-4-20261001-103347.json',
-            'save/2-4-4-20261001-103418.json']:
+for tag in ['archives/2-4-4-20261001-103250.json',
+            'archives/2-4-4-20261001-103347.json',
+            'archives/2-4-4-20261001-103418.json']:
     doc = json.load(open(tag, encoding='utf-8'))
     pz = doc['puzzle']
     m, n, step = pz['m'], pz['n'], pz['step']

@@ -3,7 +3,7 @@ r"""帧间暴力解码：把存档 snapshots 逐帧还原成引擎动作 5 元�
 
 对每对相邻帧 (A → B)：枚举 缝(h/v)×线×侧 × 该侧连通分量 × 方向×距离，
 满足 (A − comp) ∪ (comp+Δ) == B 的即该步动作。
-用法：python test/decode_frames.py save/失败03.json
+用法：python test/decode_frames.py archives/失败03.json
 """
 import json
 import sys

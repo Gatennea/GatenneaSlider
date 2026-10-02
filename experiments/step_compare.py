@@ -8,7 +8,7 @@ BFS/最短化原语下求解器应 ≤ 用户；宏链的解可能更长（贪�
 
 用法：
     python experiments/step_compare.py                 # 全部多帧存档
-    python experiments/step_compare.py save/失败03.json
+    python experiments/step_compare.py archives/失败03.json
 """
 import io
 import json

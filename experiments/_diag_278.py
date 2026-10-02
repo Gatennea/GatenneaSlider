@@ -6,8 +6,8 @@ sys.path.insert(0, '.')
 from solver.ml.fill_macro import build_game
 from solver.ml.gap_solver import window_of
 
-F_A = 'save/2-7-8-20261001-182028.json'
-F_B = 'save/2-7-8-20261001-185331.json'
+F_A = 'archives/2-7-8-20261001-182028.json'
+F_B = 'archives/2-7-8-20261001-185331.json'
 
 
 def load(f):

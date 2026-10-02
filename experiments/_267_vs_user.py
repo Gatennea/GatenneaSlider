@@ -23,8 +23,8 @@ def moved_seq(f):
     return out
 
 
-m, n, step, coords = load_start('save/2-6-7-20261001-161826.json', 0)
-user = moved_seq('save/2-6-7-20261001-161826.json')
+m, n, step, coords = load_start('archives/2-6-7-20261001-161826.json', 0)
+user = moved_seq('archives/2-6-7-20261001-161826.json')
 res = solve_gap_macro(build_game(coords, m, n), step)
 g = build_game(coords, m, n)
 acts = [tuple(a) + ((tuple(res['rep_cells'][i]),) if res['rep_cells'][i]
@@ -49,7 +49,7 @@ for i in range(min(9, len(user))):
 
 # 关键局面的洞完美性
 print('\n关键局面的洞完美性：')
-d = __import__('json').load(open('save/2-6-7-20261001-161826.json',
+d = __import__('json').load(open('archives/2-6-7-20261001-161826.json',
                                  encoding='utf-8'))
 frames = []
 for s in d['history']['snapshots']:

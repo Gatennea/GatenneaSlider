@@ -44,7 +44,7 @@ def replay_dist(g, gap, line, side, d, dist, rep, step):
 
 
 def main():
-    doc = json.load(open('save/失败07.json', encoding='utf-8'))
+    doc = json.load(open('archives/失败07.json', encoding='utf-8'))
     snaps = doc['history']['snapshots']
     pz = doc['puzzle']
     m, n, step = pz['m'], pz['n'], pz['step']

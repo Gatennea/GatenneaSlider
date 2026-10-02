@@ -167,10 +167,10 @@ def conj_loop2(coords, m, n, step, max_iter=10, verbose=True, **kw):
 if __name__ == '__main__':
     which = sys.argv[1] if len(sys.argv) > 1 else '267'
     if which == '278':
-        m, n, step, coords = load_start('save/2-7-8-20261001-185331.json', 31)
+        m, n, step, coords = load_start('archives/2-7-8-20261001-185331.json', 31)
         print('== 2-7-8 停机局面(31步后) %dx%d step=%d' % (m, n, step))
     else:
-        m, n, step, coords = load_start('save/2-6-7-20261001-161826.json', 0)
+        m, n, step, coords = load_start('archives/2-6-7-20261001-161826.json', 0)
         print('== 2-6-7 起点 %dx%d step=%d' % (m, n, step))
         t0 = time.time()
         res = solve_gap_macro(build_game(coords, m, n), step)

@@ -1,5 +1,7 @@
 # 诊断：`guided_replay_bad` 到底是哪一类问题
 
+> ⚠️ 历史快照：记录当时的结论与数据，非现状。求解器现状以《求解器設計.md》为准，本文档用于追根因/复盘。
+
 - 诊断脚本：`experiments/exp16_diag.py`（新建，一次性，不改动 `solver/`）
 - 原始日志：`experiments/results/exp16_diag.log`
 - 样本：4×4 step2，seed 1001/1008/1012 × cap 15/8（6 局），外加 cap=None 基线 2 局

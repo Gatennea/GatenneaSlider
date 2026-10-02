@@ -6,7 +6,7 @@
   A. 4×4 step2 seed 1000/1001（有表：新旧都应走表，验证不吃亏）
   B. 5×5 step2 seed 1000/1001/1002（无表：新=补缺宏先行，旧=直接混合流水线）
   C. beginner_archive/5.1.json（刚体案例，无表）
-  D. save/失败04.json（已知死局：验证新入口 fill_partial 断点协议；只跑新）
+  D. archives/失败04.json（已知死局：验证新入口 fill_partial 断点协议；只跑新）
 
 运行：D:/python/python.exe experiments/_auto_planner_bench.py
 """

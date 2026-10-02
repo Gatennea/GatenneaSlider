@@ -10,8 +10,8 @@ sys.path.insert(0, _ROOT)
 from solver.ml.fill_macro import build_game, _replay_apply  # noqa: E402
 from solver.ml.gap_solver import solve_gap_macro  # noqa: E402
 
-CASES = ['save/失败03.json', 'save/失败04.json',
-         'save/2-4-4-20261001-103250.json']
+CASES = ['archives/失败03.json', 'archives/失败04.json',
+         'archives/2-4-4-20261001-103250.json']
 
 
 def load(fname):

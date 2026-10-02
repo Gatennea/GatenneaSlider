@@ -23,7 +23,7 @@ r"""缺口求解器（双层共轭）「死代码」— 封壳 + 内部共轭 + 
     · 每步动作 5 元组 (gap, line, side, dir, rep) 带代表格，精确回放。
 
 运行：
-    D:\python\python.exe -m solver.ml.gap_solver --case save/推測題.json
+    D:\python\python.exe -m solver.ml.gap_solver --case archives/推測題.json
     D:\python\python.exe -m solver.ml.gap_solver --all
 """
 import json

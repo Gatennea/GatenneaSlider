@@ -35,7 +35,7 @@ def show(coords, m, n, step, tag, focus_holes):
 
 
 def endgame_267():
-    m, n, step, coords = load_start('save/2-6-7-20261001-161826.json', 0)
+    m, n, step, coords = load_start('archives/2-6-7-20261001-161826.json', 0)
     res = solve_gap_macro(build_game(coords, m, n), step)
     if isinstance(res, dict) and res.get('actions'):
         g = build_game(coords, m, n)
@@ -49,7 +49,7 @@ def endgame_267():
 
 which = sys.argv[1] if len(sys.argv) > 1 else 'both'
 if which in ('278', 'both'):
-    m, n, step, coords = load_start('save/2-7-8-20261001-185331.json', 31)
+    m, n, step, coords = load_start('archives/2-7-8-20261001-185331.json', 31)
     show(coords, m, n, step, '2-7-8 停机局面(31步后)', [(1, 4), (0, 5)])
 if which in ('267', 'both'):
     m, n, step, coords = endgame_267()

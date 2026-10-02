@@ -5,7 +5,7 @@ sys.path.insert(0, '.')
 
 from solver.ml.gap_solver import window_of
 
-F = 'save/2-7-8-20261001-185331.json'
+F = 'archives/2-7-8-20261001-185331.json'
 
 
 def load(f):
