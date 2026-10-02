@@ -2702,12 +2702,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self._readonly_blocked():
             return
 
-        # 带序号模式：求解器暂不支援（需额外处理编号顺序）
-        if getattr(self, 'numbered', False):
-            self.macro_notify_msg = "带序号模式暂不支援自动求解"
-            self.macro_notify_timer = 90
-            return
-
+        # 带序号模式：求解器只看形状（blocks[].location / m / n），不看 number，
+        # 与矩形谜题共用同一套求解与回放；先复原形状，数字乱序为预期行为，
+        # 玩家之后自行调整（单段求解仍封锁，见 _solve_single_segment）。
         # 三角形密铺：动作语义不同（6 向/3 族缝隙），求解器在 D 阶段再评估
         if getattr(self, 'triangle_mode', False):
             self.macro_notify_msg = "三角形密铺暂不支援自动求解"
@@ -2933,6 +2930,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return
         if self._readonly_blocked():
             return
+        # 带序号模式仍封锁：单段求解按用户点选的凸起逐块处理，其回放定位
+        # 逻辑虽与 number 无关，但本轮不放开（缩小改动面）——待后续统一放开。
         if getattr(self, 'numbered', False):
             self.macro_notify_msg = "带序号模式暂不支援单段求解"
             self.macro_notify_timer = 90
@@ -3055,6 +3054,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.macro_exec_index = 0
                 self.macro_notify_msg = ('[%s] 流水播放完成：%d 步'
                                          % (self.macro_exec_name, total))
+                # 带序号模式：求解器只复原形状，数字乱序是预期行为，提醒玩家自行调整
+                if getattr(self, 'numbered', False) and self.game.is_solved():
+                    self.macro_notify_msg += '（形状已复原，数字排列未调整，请自行调整）'
                 self.macro_notify_timer = 180
                 self.center_map()
             return

@@ -1607,7 +1607,9 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
     h0, p0 = min(H), min(P)
     off = sorted((r - p0[0], c - p0[1]) for r, c in P)   # P 的相对形状
     if sorted((r - h0[0], c - h0[1]) for r, c in H) != off:
-        return None                          # 形状不全等 → 刚体填不进
+        # 契约与全函数一致：主路径一律 (动作或None, 节点数) 元组——
+        # 裸 None 会让调用方 `racts, used = _rigid_fill(...)` 解包炸
+        return None, 0                       # 形状不全等 → 刚体填不进
     if max_comp is None:
         max_comp = max(8, len(coords) // 2)
 

@@ -3124,6 +3124,9 @@ class EventsMixin:
                     macro_name = self.macro_exec_name
                     label = '逆序' if self.macro_exec_reverse else ''
                     self.macro_notify_msg = f'[{macro_name}] {label}执行成功：{total_ops}步'
+                    # 带序号模式：求解器只复原形状，数字乱序是预期行为，提醒玩家自行调整
+                    if getattr(self, 'numbered', False) and self.game.is_solved():
+                        self.macro_notify_msg += '（形状已复原，数字排列未调整，请自行调整）'
                     self.macro_notify_timer = 180  # 3秒 (60fps)
                 # 所有步骤执行完毕
                 # 梯度聚拢：后续阶段由后台流水线推送，无需在此启动

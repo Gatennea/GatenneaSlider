@@ -49,11 +49,21 @@ assert gui.timer_puzzle_key == '2~4*4'
 assert gui._get_game_status()['puzzle'] == '2~4*4'
 print('PASS: 普通方形 key 不变')
 
-# 6. 序號模式下 solve 被拒
+# 6. 序号模式自动求解已放行（求解器只复原形状，数字乱序为预期，玩家后调）
+import time as _time
 gui.new_puzzle(4, 4, 2, numbered=True)
 gui._start_auto_solve()
-assert gui.macro_notify_msg == '带序号模式暂不支援自动求解', gui.macro_notify_msg
-print('PASS: 序號模式 solve 拒绝并提示')
+# 复原盘面秒解：线程可能瞬间退出，不能断言 running；只断言未走旧拒绝分支
+assert gui.macro_notify_msg != '带序号模式暂不支援自动求解', gui.macro_notify_msg
+_t0 = _time.time()
+while (_time.time() - _t0 < 10
+       and (getattr(gui, '_auto_solve_running', False)
+            or getattr(gui, '_auto_solve_done', False))):
+    gui._check_auto_solve_result()
+    _time.sleep(0.01)
+gui._check_auto_solve_result()
+assert '复原' in (gui.macro_notify_msg or ''), gui.macro_notify_msg
+print('PASS: 序号模式自动求解已放行（形状复原为准，数字后调）')
 
 print('A5 numbered timer PASS')
 pygame.quit()
