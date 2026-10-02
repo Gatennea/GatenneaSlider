@@ -14,6 +14,13 @@
 
 import pygame
 
+# 三角形调试记号半径 / cell_size。方形用 0.35（面积占格 38.5%）；三角单元是
+# 等边三角形，外接盒边长 = cell → 面积 (√3/4)·cell² ≈ 0.433·cell²，只有方形的
+# 43.3%，沿用同一半径会让记号相对大 1.5 倍。按**面积占比**对齐：
+#   r_tri = 0.35 · cell · √(√3/4) ≈ 0.230 · cell
+# 用户 2026-10-03 验收时反馈「三角标记太大，和矩形的标记一样最好」。
+_TRI_MARK_RADIUS_RATIO = 0.35 * (3 ** 0.5 / 4) ** 0.5
+
 
 class MetricsPanelMixin:
     """调试面板（渲染 + 事件处理）"""
@@ -226,7 +233,8 @@ class MetricsPanelMixin:
         if best is None:
             return None
         view = self._tri_view()
-        line_w = max(2, int(2 * self.zoom))
+        # 線寬與記號線寬同檔（記號縮小後仍用 2·zoom 會顯得過重）
+        line_w = max(1, int(self.zoom))
         # world_to_screen 已经含 zoom 与相机平移（GUI.py:1154），**不要再乘
         # 一次 zoom**——我第一版多乘了导致框飞到屏幕外只剩两条边。
         # 三角块绘制走的是 view.piece_polygon + world_to_screen，同一条路。
@@ -258,8 +266,13 @@ class MetricsPanelMixin:
 
         view = self._tri_view()
         scaled_cell = self.cell_size * self.zoom
-        radius = max(3, int(scaled_cell * 0.35))
-        line_w = max(2, int(2 * self.zoom))
+        # 標記尺寸與方形「視覺一致」（用戶 2026-10-03 驗收：標記太大）。
+        # 方形單元外接盒 = cell_size 方形，半徑 0.35·cell → 面積佔格 38.5%。
+        # 三角單元是等邊三角形，面積只有方形的 0.433 倍；按**面積佔比**與
+        # 方形對齊（否則記號相對大 1.5 倍）→ r = 0.230·cell。線寬也同步
+        # 收窄一檔，否則小記號配上粗線會糊成一團。
+        radius = max(2, int(scaled_cell * _TRI_MARK_RADIUS_RATIO))
+        line_w = max(1, int(self.zoom))
 
         def _center(i, j, up):
             """單元重心 → 屏幕坐標。与块的绘制同一条路（piece_center +
