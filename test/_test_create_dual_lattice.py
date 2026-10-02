@@ -157,6 +157,60 @@ def t6_domain_shape():
                                        for (dr, dc) in d_mi for v in (dr, dc)))
 
 
+def t7_hit_two_lattices():
+    print('\n--- T7 两层晶格都能被点中（根因回归）---')
+    from gui.mi_view import MiBoardView
+    v = MiBoardView(60.0, 4.0)
+
+    def cen(r, c, q):
+        p = v.piece_polygon(r, c, q, inset=False)
+        return (sum(t[0] for t in p) / 3, sum(t[1] for t in p) / 3)
+
+    # A 层（整数坐标）裸调用——正常游戏点选路径
+    ok = bad = 0
+    for r in range(4):
+        for c in range(4):
+            for q in ('N', 'E', 'S', 'W'):
+                px, py = cen(r, c, q)
+                if v.world_to_cell(px, py) == (r, c, q):
+                    ok += 1
+                else:
+                    bad += 1
+    check('T7a A层 64 块全部命中自身', ok == 64, f'命中 {ok}/64 失配 {bad}')
+    # B 层（半整数坐标）裸调用——创造模式点错位块的路径
+    ok = bad = 0
+    for r in range(4):
+        for c in range(4):
+            for q in ('N', 'E', 'S', 'W'):
+                px, py = cen(r + 0.5, c + 0.5, q)
+                if v.world_to_cell(px, py) == (r + 0.5, c + 0.5, q):
+                    ok += 1
+                else:
+                    bad += 1
+    check('T7b B层 64 块全部命中自身（曾0/100）', ok == 64,
+          f'命中 {ok}/64 失配 {bad}')
+    # A/B 混合 + cells 过滤
+    A = {(r, c, q) for r in range(4) for c in range(4)
+         for q in ('N', 'E', 'S', 'W')}
+    B = {(r + 0.5, c + 0.5, q) for r in range(4) for c in range(4)
+         for q in ('N', 'E', 'S', 'W')}
+    mix = A | B
+    ok = bad = 0
+    for k in mix:
+        px, py = cen(*k)
+        if v.world_to_cell(px, py, cells=mix) == k:
+            ok += 1
+        else:
+            bad += 1
+    check('T7c A/B 混合 128 块 + cells 过滤全命中', ok == 128,
+          f'命中 {ok}/128 失配 {bad}')
+    # 空位仍可命中（创造模式要能点空位新增块）
+    px, py = cen(10.5, 10.5, 'N')
+    check('T7d 空位裸调用返回 B 层 key（可新增）',
+          v.world_to_cell(px, py) == (10.5, 10.5, 'N'),
+          f'实得 {v.world_to_cell(px, py)}')
+
+
 def main():
     print('=' * 68)
     print('mi 创造模式「双层晶格」校验回归')
@@ -167,6 +221,7 @@ def main():
     t4_gate_order()
     t5_no_regression()
     t6_domain_shape()
+    t7_hit_two_lattices()
     print('\n' + '=' * 68)
     if _failures:
         print(f'FAIL {len(_failures)}:')

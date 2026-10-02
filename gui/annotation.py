@@ -1961,6 +1961,13 @@ class AnnotationMixin:
         # 弹窗外：直接在主棋盘点选增删滑块。
         # 三角/米字用各自 view 的 world_to_cell（不带 cells，空位也给身份）；
         # 方形照旧用 get_cell_at_pos。
+        #
+        # 米字這裡**不能傳 cells**：本模式的語義是「點空位新增 / 點已有塊刪除」，
+        # 傳了構造集過濾後空位就點不中、只能刪不能加（實測 A/B 兩層 + cells
+        # 過濾時命中 128/128，但空位返回 None）。MiBoardView.world_to_cell 已
+        # 改成「就近取用」（2026-10-03），裸調用即可同時命中 A/B 兩層——
+        # 舊版「按清單次序取第一個命中者」會讓 B 層塊被 A 層搶走，這才是
+        # 創造模式擺不出混合態的根因。
         if self.triangle_mode:
             wx, wy = self.screen_to_world(x, y)
             cell = self._tri_view().world_to_cell(wx, wy)
