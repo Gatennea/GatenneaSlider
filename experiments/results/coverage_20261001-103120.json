@@ -1,0 +1,26 @@
+{
+ "records": [
+  {
+   "tag": "cover-4x4-s2-h0-d1-seed1",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 4,
+   "secs": 0.0,
+   "note": "缺口分支未成(用户链:两侧均≤step(L=1,R=2，4*4特殊型待补充)；v1:封壳后凸起丢失；用户链:两侧均≤step(L=2,R=1，4*4特殊型待补充)；v1:封壳受阻（候选全败）)；填洞宏：A′逆序宏后未还原(需细化)"
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  }
+ ],
+ "summary": {
+  "solved": 1,
+  "partial": 1,
+  "fail": 0,
+  "total": 2
+ }
+}

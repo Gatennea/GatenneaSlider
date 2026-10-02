@@ -1,0 +1,90 @@
+{
+ "records": [
+  {
+   "tag": "cover-4x4-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 13.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 10.6,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 5.3,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 28.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 38.4,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 22.7,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 6,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  }
+ ],
+ "summary": {
+  "solved": 10,
+  "partial": 0,
+  "fail": 0,
+  "total": 10
+ }
+}

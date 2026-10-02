@@ -1,0 +1,1297 @@
+{
+ "records": [
+  {
+   "tag": "cover-4x4-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 9.7,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 7.7,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 11.1,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 4,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 3.8,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 19.9,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d2-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 89.4,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 28.5,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 16.7,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 17.8,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 6,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d3-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 86.4,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d3-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 108.4,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d3-seed3",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 101.2,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d2-seed1",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 155.3,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 13.2,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d2-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 32.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 10,
+   "secs": 13.6,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 47.6,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d1-seed3",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 38.7,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-4x4-s2-h3-d0-seed1",
+   "result": "gen_fail",
+   "note": "生成失败：400 次内未命中 孔洞3/缺口0（末次孔洞0/缺口2）"
+  },
+  {
+   "tag": "cover-4x4-s2-h3-d0-seed2",
+   "result": "gen_fail",
+   "note": "生成失败：400 次内未命中 孔洞3/缺口0（末次孔洞0/缺口3）"
+  },
+  {
+   "tag": "cover-4x4-s2-h3-d0-seed3",
+   "result": "gen_fail",
+   "note": "生成失败：400 次内未命中 孔洞3/缺口0（末次孔洞1/缺口2）"
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 5,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 4,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 13,
+   "secs": 5.8,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d2-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 9.6,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d2-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 15,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 15,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h2-d0-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 0.9,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-5x5-s2-h2-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d3-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d3-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 25,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d3-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 16,
+   "secs": 20.2,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d2-seed1",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 16.0,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d2-seed2",
+   "result": "partial",
+   "entry": "fill_macro",
+   "steps": 8,
+   "secs": 6.3,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d2-seed3",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 6,
+   "secs": 28.3,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-5x5-s2-h2-d1-seed1",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 6,
+   "secs": 14.5,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-5x5-s2-h2-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h2-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 23,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h3-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 13,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h3-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h3-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 6,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 5,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 14,
+   "secs": 35.3,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 21,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d2-seed3",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 44.4,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d1-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 23.1,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 10,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h2-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h2-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d3-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 29,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d3-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 32,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d3-seed3",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 10,
+   "secs": 78.3,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 28,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 24,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d2-seed3",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 75.6,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-6x6-s2-h2-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 18,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h2-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 20,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h2-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h3-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 14,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h3-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 13,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h3-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 4,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 22,
+   "secs": 0.5,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 21,
+   "secs": 0.6,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d2-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 16,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 14,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 14,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h2-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h2-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d3-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 29,
+   "secs": 0.5,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d3-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 33,
+   "secs": 0.3,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h0-d3-seed3",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 41.2,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 25,
+   "secs": 0.3,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d2-seed2",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 118.3,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-6x8-s2-h1-d2-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 32,
+   "secs": 0.4,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h2-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 25,
+   "secs": 0.9,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h2-d1-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 108.8,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-6x8-s2-h2-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 18,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h3-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 13,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h3-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 20,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x8-s2-h3-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 15,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 5,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 6,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 23,
+   "secs": 0.3,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d2-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 14.2,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d2-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 22,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.8,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 9,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h2-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 15,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h2-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 10,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d3-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 34,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d3-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 132.6,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-8x8-s2-h0-d3-seed3",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 14,
+   "secs": 181.7,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 33,
+   "secs": 0.4,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 30,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h1-d2-seed3",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 17,
+   "secs": 160.2,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-8x8-s2-h2-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h2-d1-seed2",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 146.8,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-8x8-s2-h2-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 24,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h3-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h3-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x8-s2-h3-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 19,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 10,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 4,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 5,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 4,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d2-seed1",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 59.1,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 23,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d2-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 20,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 17,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d1-seed3",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 11.1,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-8x6-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h2-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h2-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d3-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 26,
+   "secs": 0.2,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d3-seed2",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 95.1,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-8x6-s2-h0-d3-seed3",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 21,
+   "secs": 114.4,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 30,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 28,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h1-d2-seed3",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 10,
+   "secs": 99.2,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-8x6-s2-h2-d1-seed1",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 5,
+   "secs": 90.4,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-8x6-s2-h2-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 23,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h2-d1-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 20,
+   "secs": 0.8,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h3-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h3-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 13,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-8x6-s2-h3-d0-seed3",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 17,
+   "secs": 0.1,
+   "note": null
+  }
+ ],
+ "summary": {
+  "solved": 132,
+  "partial": 15,
+  "fail": 12,
+  "total": 159
+ }
+}

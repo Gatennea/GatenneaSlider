@@ -1,0 +1,250 @@
+{
+ "records": [
+  {
+   "tag": "cover-4x4-s2-h0-d1-seed1",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 4,
+   "secs": 0.0,
+   "note": "缺口分支未成(用户链:两侧均≤step(L=1,R=2，4*4特殊型待补充)；v1:封壳后凸起丢失；用户链:两侧均≤step(L=2,R=1，4*4特殊型待补充)；v1:封壳受阻（候选全败）)；填洞宏：A′逆序宏后未还原(需细化)"
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d1-seed2",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 2,
+   "secs": 0.0,
+   "note": "缺口分支未成(角缺口：mv=4 过矮，西柱无法兼作桥；转置重试:角缺口：mv=4 过矮，西柱无法兼作桥；角缺口：mv=4 过矮，西柱无法兼作桥)；填洞宏：A段受阻(需双层)"
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d2-seed1",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 1.5,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-4x4-s2-h0-d2-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 0.6,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d1-seed1",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 4,
+   "secs": 5.7,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-4x4-s2-h1-d1-seed2",
+   "result": "partial",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 2.7,
+   "note": "返回动作回放未还原（partial）"
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 6,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-4x4-s2-h2-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 5,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 13,
+   "secs": 5.7,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h0-d2-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 8.3,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h1-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 15,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 8,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-5x5-s2-h2-d0-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 0.7,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 7,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d1-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 6,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 3,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d2-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 14,
+   "secs": 34.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h0-d2-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 21,
+   "secs": 0.1,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d1-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 12,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h1-d1-seed2",
+   "result": "fail",
+   "entry": "both",
+   "steps": 0,
+   "secs": 17.0,
+   "note": "多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)"
+  },
+  {
+   "tag": "cover-6x6-s2-h2-d0-seed1",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 10,
+   "secs": 0.0,
+   "note": null
+  },
+  {
+   "tag": "cover-6x6-s2-h2-d0-seed2",
+   "result": "solved",
+   "entry": "gap_macro",
+   "steps": 11,
+   "secs": 0.0,
+   "note": null
+  }
+ ],
+ "summary": {
+  "solved": 21,
+  "partial": 4,
+  "fail": 5,
+  "total": 30
+ }
+}

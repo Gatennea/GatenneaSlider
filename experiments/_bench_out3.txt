@@ -1,0 +1,23 @@
+案例                 旧入口(表→混合)                    新入口(自动规划)                   
+------------------------------------------------------------------------------
+[bench] 4x4:1000 旧入口开始
+[bench] 4x4:1000 旧入口结束 0.5s
+[bench] 4x4:1000 新入口结束 0.0s
+4x4:1000           0.5s solved 4 步              0.0s solved 4 步             
+[bench] 4x4:1001 旧入口开始
+[bench] 4x4:1001 旧入口结束 0.1s
+[bench] 4x4:1001 新入口结束 0.0s
+4x4:1001           0.1s solved 8 步              0.0s solved 8 步             
+[bench] archive:5.1.json 旧入口开始
+[bench] archive:5.1.json 旧入口结束 0.9s
+[bench] archive:5.1.json 新入口结束 0.7s
+archive:5.1.json   0.9s solved 11 步             0.7s solved 11 步            
+[bench] save:失败06.json 旧入口开始
+[bench] save:失败06.json 旧入口结束 150.0s
+[bench] save:失败06.json 新入口结束 0.6s
+save:失败06.json     150.0s TIMEOUT               0.6s solved 30 步            
+[bench] save:失败07.json 旧入口开始
+[补缺宏] 多空位 partial：多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)；不完美洞2个(8邻有缺口,需临时粘补/setup)：[(4, 8), (6, 1)]
+save:失败04.json     （旧=混合单项 76.8s partial）       240.0s TIMEOUT              
+------------------------------------------------------------------------------
+完成。主指标=时间；两入口同解则新入口应 ≤ 旧入口。

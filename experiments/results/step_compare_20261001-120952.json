@@ -1,0 +1,51 @@
+[
+ {
+  "archive": "2-4-4-20261001-103250.json",
+  "user": 7,
+  "solver": 7,
+  "note": "ok",
+  "secs": 6.4
+ },
+ {
+  "archive": "2-4-4-20261001-103347.json",
+  "user": 12,
+  "solver": 7,
+  "note": "ok",
+  "secs": 7.8
+ },
+ {
+  "archive": "2-4-4-20261001-103418.json",
+  "user": 8,
+  "solver": 6,
+  "note": "ok",
+  "secs": 1.4
+ },
+ {
+  "archive": "失败03.json",
+  "user": 15,
+  "solver": 18,
+  "note": "ok",
+  "secs": 25.0
+ },
+ {
+  "archive": "失败05.json",
+  "user": 22,
+  "solver": 33,
+  "note": "ok",
+  "secs": 3.6
+ },
+ {
+  "archive": "失败08.json",
+  "user": 24,
+  "solver": 35,
+  "note": "ok",
+  "secs": 0.3
+ },
+ {
+  "archive": "失败09.json",
+  "user": 10,
+  "solver": 31,
+  "note": "ok",
+  "secs": 1.5
+ }
+]

@@ -1,0 +1,54 @@
+{
+ "version": 1,
+ "puzzle": {
+  "m": 4,
+  "n": 4,
+  "step": 2
+ },
+ "step_count": 0,
+ "history": {
+  "history_index": 0,
+  "snapshots": [
+   {
+    "matrix": [
+     [
+      0,
+      1,
+      1,
+      1
+     ],
+     [
+      1,
+      1,
+      1,
+      1
+     ],
+     [
+      1,
+      1,
+      1,
+      0
+     ],
+     [
+      1,
+      1,
+      1,
+      1
+     ],
+     [
+      1,
+      0,
+      0,
+      1
+     ]
+    ],
+    "bounds": {
+     "min_row": 0,
+     "max_row": 4,
+     "min_col": 0,
+     "max_col": 3
+    }
+   }
+  ]
+ }
+}

@@ -1,0 +1,39 @@
+beginner_archive/5.1.json                  solved        13 步   64.7s  OK
+beginner_archive/5.5.json                  solved         9 步   30.7s  OK
+beginner_archive/4.4.json                  solved        17 步   51.3s  ?? 意外全解（信息）
+[补缺宏] 封壳2+内部共轭4+拆壳2 = 8 步（edge=D，rot=r180）
+beginner_archive/4.1.json                  solved         8 步    0.1s  OK
+beginner_archive/4.2.json                  solved        32 步    0.2s  OK
+[补缺宏] 封壳5+内部共轭1+拆壳6 = 13 步（edge=CORNER，rot=ccw）
+beginner_archive/4.3.json                  solved        13 步    0.0s  OK
+[补缺宏] 缺口分支未成（用户链:两侧均≤step(L=2,R=1，4*4特殊型待补充)；v1:封壳受阻（候选全败）；用户链:两侧均≤step(L=1,R=2，4*4特殊型待补充)；v1:封壳后凸起丢失），回退填洞宏
+[填洞宏] 单洞无解：A段受阻(需双层)
+[移形换位] 常规链失败(A段受阻(需双层))，换位机动 7 步全解
+beginner_archive/4.5.json                  solved         7 步    5.6s  OK
+beginner_archive/4.6.json                  solved        24 步    0.1s  OK
+[补缺宏] 缺口分支未成（用户链:两侧均≤step(L=2,R=1，4*4特殊型待补充)；v1:封壳受阻（候选全败）；用户链:两侧均≤step(L=1,R=2，4*4特殊型待补充)；v1:封壳后凸起丢失），回退填洞宏
+[移形换位] 常规链失败(单洞partial:A′逆序宏后未还原(需细化))，换位机动 7 步全解
+save/2-4-4-20261001-103250.json            solved         7 步    7.7s  OK
+[补缺宏] 缺口分支未成（角缺口：mv=4 过矮，西柱无法兼作桥；角缺口：mv=4 过矮，西柱无法兼作桥；转置重试:角缺口：mv=4 过矮，西柱无法兼作桥），回退填洞宏
+[移形换位] 常规链失败(单洞partial:A段受阻(需双层))，换位机动 7 步全解
+save/2-4-4-20261001-103347.json            solved         7 步    9.7s  OK
+[补缺宏] 缺口分支未成（用户链:两侧均≤step(L=2,R=1，4*4特殊型待补充)；v1:内部共轭第1步 (v,-1,left,s) 被拒(连通断裂)；用户链:两侧均≤step(L=1,R=2，4*4特殊型待补充)；v1:封壳后凸起丢失），回退填洞宏
+[移形换位] 常规链失败(单洞partial:A段受阻(需双层))，换位机动 6 步全解
+save/2-4-4-20261001-103418.json            solved         6 步    1.7s  OK
+save/2-7-8-20261001-185331.json            solved        13 步   22.3s  OK
+save/失败01.json                             fail           0 步   49.1s  OK
+save/失败02.json                             solved        11 步   82.1s  OK
+save/失败03.json                             solved        18 步   34.6s  OK
+[补缺宏] 多空位 partial：多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)；不完美洞2个(8邻有缺口,需临时粘补/setup)：[(4, 8), (6, 1)]
+save/失败04.json                             partial       11 步  208.9s  OK
+save/失败05.json                             solved        33 步    0.3s  OK
+[补缺宏] 多空位 partial：多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)；不完美洞2个(8邻有缺口,需临时粘补/setup)：[(0, 2), (1, 0)]
+save/失败06.json                             partial        7 步  214.7s  OK
+[补缺宏] 多空位 partial：多洞停机：所有couple与≤2步整形预演均无成果(算法固有缺陷)；不完美洞2个(8邻有缺口,需临时粘补/setup)：[(7, 2), (8, 3)]
+save/失败07.json                             partial       15 步  189.6s  OK
+save/失败08.json                             solved        35 步    0.3s  OK
+save/失败09.json                             solved        28 步  187.7s  OK
+[补缺宏] 封壳2+内部共轭7+拆壳2 = 11 步（edge=U）
+save/2-6-6-20260930-181940.json            solved        11 步    0.0s  OK
+======================================================================
+退化数: 0
