@@ -61,6 +61,7 @@ from solver.ml.human_solver import ai_human_solve
 from solver.ml.fill_macro import solve_fill_macro
 from solver.ml.gap_solver import solve_gap_macro
 from solver.hybrid_solver import hybrid_solve
+from solver.auto_solver import auto_solve
 
 
 def hybrid_solve_with_table(game, step, cancel_check=None,
@@ -99,7 +100,7 @@ SOLVER_ALGORITHMS = {
     #'human_ai': ('  人类模仿', ai_human_solve),
     'fill_macro': ('  填洞宏', solve_fill_macro),
     'gap_macro': ('  补缺宏', solve_gap_macro),
-    'hybrid':   ('  混合求解（免表·非最优）', hybrid_solve_with_table),
+    'hybrid':   ('  混合求解（自动规划）', auto_solve),
 }
 
 __all__ = ['solve', 'solve_fast', 'solve_greedy', 'SOLVER_ALGORITHMS',
