@@ -110,6 +110,15 @@ def find_best_window(coords, m, n, step):
         r0, c0   : 窗口左上角實際座標
         (rh, cw) : 窗口朝向（(m,n) 或 (n,m)）
         overlap  : 窗口內方塊數
+
+    **米字相容**（2026-10-03修 fatal error）：米字滑塊是 ¼ 格，錯位態
+    （B 晶格）下座標是半整數。舊版 `range(min_r - rh + 1, max_r + 1)` 拿到
+    float 端點會直接 TypeError：
+        TypeError: 'float' object cannot be interpreted as an integer
+    這是 mi 調試面板打不開的直接原因（GUI.run → draw_metrics_panel →
+    _compute_target_region → 本函數）。改用整數內部計數 + ½ 步進的乘法，
+    對整數座標（方形/三角）與半整數座標（米字）都成立，輸出型別與舊版
+    一致（整數輸入 → 整數輸出）。
     """
     if not coords:
         return 0, 0, (m, n), 0
@@ -123,12 +132,24 @@ def find_best_window(coords, m, n, step):
     r_mod = tc[0] if (tc is not None and m % step != 0) else None
     c_mod = tc[1] if (tc is not None and n % step != 0) else None
 
-    best = (min_r, min_c, (m, n), 0)
+    # 半整數相容：以 2× 座標做整數枚舉（米字錯位態的最小步進是 ½）
+    integral = all(float(v).is_integer() for v in rs + cs)
+    scale = 1 if integral else 2
+    lo_r, hi_r = int(round(min_r * scale)), int(round(max_r * scale))
+    lo_c, hi_c = int(round(min_c * scale)), int(round(max_c * scale))
+
+    def _out(v):
+        """把 2× 整數還原成原座標，並在整數局面下回傳 int（保持舊行為）。"""
+        return v // scale if scale == 1 else v / 2.0
+
+    best = (_out(lo_r), _out(lo_c), (m, n), 0)
     for rh, cw in ((m, n), (n, m)):
-        for r0 in range(min_r - rh + 1, max_r + 1):
+        for i_r in range(lo_r - rh * scale + scale, hi_r + scale, scale):
+            r0 = _out(i_r)
             if r_mod is not None and r0 % step != r_mod:
                 continue
-            for c0 in range(min_c - cw + 1, max_c + 1):
+            for i_c in range(lo_c - cw * scale + scale, hi_c + scale, scale):
+                c0 = _out(i_c)
                 if c_mod is not None and c0 % step != c_mod:
                     continue
                 cnt = _overlap_at(coords, rh, cw, r0, c0)

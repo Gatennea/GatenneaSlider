@@ -356,6 +356,18 @@ def sublattice_of(key: tuple) -> tuple:
     return (_par2(key[0]), _par2(key[1]))
 
 
+def _norm_loc(pos) -> tuple:
+    """位置元組歸一化：前兩分量整數化，q 原樣。
+
+    滑動計算出來的是 float，寫進 Block.location 後下游 `range()` / 矩陣索引
+    會炸（見 MiSliderMatrix.commit_move 的 docstring）。回傳 tuple 方便直接
+    展開賦值。**只動前兩分量**——第三個是朝向字串 'N'/'E'/'S'/'W'。
+    """
+    return (int(pos[0]) if float(pos[0]).is_integer() else float(pos[0]),
+            int(pos[1]) if float(pos[1]).is_integer() else float(pos[1])) \
+        + tuple(pos[2:])
+
+
 def coords_coherent(cells) -> bool:
     """整盤是否「奇偶一致」：每塊都滿足 2r 與 2c 同奇偶。
 
@@ -710,10 +722,24 @@ class MiSliderMatrix:
         return positions
 
     def commit_move(self, final_positions: list) -> None:
-        """提交移動結果（與方形版同義：按選中順序寫回 location）。"""
+        """提交移動結果（與方形版同義：按選中順序寫回 location）。
+
+        **座標歸一化**（2026-10-03 修 fatal error）：滑動向量是 ½ 的倍數，
+        算出來是 float，寫回 location 後 `b.location[0]` 就是 3.0 而不是 3。
+        下游有多處拿它做 `range()` / 矩陣索引 / dict 鍵，float 會直接炸——
+        實際打開調試面板即崩：
+          File "solver/ml/gather_solver.py", line 128, in find_best_window
+            for r0 in range(min_r - rh + 1, max_r + 1):
+          TypeError: 'float' object cannot be interpreted as an integer
+        （方形/三角的座標恆整數所以沒事，米字是第一個真正會產生半整數的形態。）
+
+        整數分量轉 int、半整數保持 float，與 gui/annotation.py 的
+        `_ann_normalize_build_pos` 同一套約定。順帶保證 location 的前兩分量
+        永遠是 (int | float, int | float)，下游不需要再做型別防禦。
+        """
         selected = [b for b in self.blocks if b.be_opted]
         for i, block in enumerate(selected):
-            block.location = list(final_positions[i])
+            block.location = list(_norm_loc(final_positions[i]))
 
     def _clear_selection(self) -> None:
         for block in self.blocks:
