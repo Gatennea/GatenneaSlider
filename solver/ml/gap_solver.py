@@ -1608,10 +1608,12 @@ def _vacancy_couple_hook(gap_only, cancel_check=None):
 
 
 def solve_single_segment(game, step, p, cancel_check=None,
-                         progress_callback=None, **kwargs):
+                         progress_callback=None, h=None, **kwargs):
     """手动单段求解（GUI 入口，Ctrl+G）：只处理用户指定的凸起 p。
 
-    配洞规则：当前窗口空位中与 p 同 mod 的候选取曼哈顿距离最近者。
+    配洞规则：用户在调试面板点选了空位（h 给定）→ 按指定配对（2026-10-02
+    用户需求：单独选中一組凸起+空位）；否则取与 p 同 mod 空位中曼哈顿
+    距离最近者。
     求解链：边缘缺口（L/R/U/D）→ 补缺链（轨道兜底）；CORNER → 角链；
     内部孔洞 → 填洞宏 couple；全败 → 粘上接走（convoy）兜底。
 
@@ -1627,12 +1629,19 @@ def solve_single_segment(game, step, p, cancel_check=None,
         if p not in outside:
             return {'type': 'fill_fail',
                     'reason': '请点选窗口外的凸起方块（当前选中块不在窗外）'}
-        cands = [h for h in holes
-                 if (h[0] - p[0]) % step == 0 and (h[1] - p[1]) % step == 0]
-        if not cands:
-            return {'type': 'fill_fail',
-                    'reason': '该凸起与所有空位不同 mod（step 错位），无法配对'}
-        h = min(cands, key=lambda q: abs(q[0] - p[0]) + abs(q[1] - p[1]))
+        if h is not None:
+            h = tuple(h)
+            if h not in holes:
+                return {'type': 'fill_fail',
+                        'reason': '指定的空位 %s 不在当前目标窗口的空位里'
+                                  '（局面已变？已忽略改为自动配对，或重选）' % (h,)}
+        else:
+            cands = [q for q in holes
+                     if (q[0] - p[0]) % step == 0 and (q[1] - p[1]) % step == 0]
+            if not cands:
+                return {'type': 'fill_fail',
+                        'reason': '该凸起与所有空位不同 mod（step 错位），无法配对'}
+            h = min(cands, key=lambda q: abs(q[0] - p[0]) + abs(q[1] - p[1]))
         r0, c0, wh = _reg[0], _reg[1], _reg[2]
         edge = _edge_of(h, r0, c0, wh[0], wh[1])
         acts, stats = None, {}

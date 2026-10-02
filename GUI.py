@@ -2958,10 +2958,46 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         blk = self.selected_block
         if blk is None:
-            self.macro_notify_msg = "单段求解：请先点选一个凸起方块"
+            self.macro_notify_msg = ("单段求解：请先点选一个凸起方块"
+                                     "（可先在调试面板点选目标空位，"
+                                     "将按「凸起+空位」指定配对）")
             self.macro_notify_timer = 120
             return
         p = tuple(blk.location)
+
+        # 用户指定的空位（2026-10-02：单独选中一組凸起+空位）。复用调试
+        # 面板的选洞机制：面板开着时点空位 → selected_hole（簇 cells）。
+        # 簇里取与 p 同 mod 的格（多格簇跨 mod 时可能没有）；局面已变、
+        # 选中的簇不再属于当前空位 → 视为过期，自动降级为最近配对。
+        vh = None
+        sel_hole = getattr(self, 'selected_hole', None)
+        if sel_hole:
+            from solver.ml.hole_detector import detect_holes
+            _coords = frozenset((b.location[0], b.location[1])
+                                for b in self.game.blocks)
+            _region = getattr(self, '_target_region', None)
+            if _region is None:
+                _region = self._compute_target_region()
+            try:
+                _holes, _, _ = detect_holes(_coords, self.game.m, self.game.n,
+                                            self.current_step, region=_region)
+            except Exception:
+                _holes = []
+            _alive = next((q for q in _holes
+                           if set(q.get('cells', []))
+                           == set(sel_hole.get('cells', []))), None)
+            if _alive is None:
+                self.selected_hole = None
+                self.macro_notify_msg = "之前选中的空位已不在局面里，改按最近自动配对"
+                self.macro_notify_timer = 120
+            else:
+                _same = [c for c in _alive['cells']
+                         if (c[0] - p[0]) % self.current_step == 0
+                         and (c[1] - p[1]) % self.current_step == 0]
+                vh = tuple(_same[0]) if _same else tuple(_alive['cells'][0])
+                self.macro_notify_msg = ("单段求解：凸%s → 指定空位%s"
+                                         % (p, vh))
+                self.macro_notify_timer = 120
 
         self._auto_solve_result = None
         self._auto_solve_done = False
@@ -2984,7 +3020,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             try:
                 from solver.ml.gap_solver import solve_single_segment
                 solution = solve_single_segment(
-                    game_snapshot, step=step, p=p,
+                    game_snapshot, step=step, p=p, h=vh,
                     cancel_check=cancel_check,
                     progress_callback=progress_callback)
                 self._auto_solve_result = solution

@@ -1815,6 +1815,11 @@ def hole_gaps(coords, hole):
 
 _EDGE_SETUP_BUDGET = 6.0   # 单洞 setup 搜索时间预算（秒）
 
+# 宏级 DFS 兜底的总时间预算（秒）。2026-10-02 用户拍板：算不出来的局面
+# 尽早发现、发现就停——死局不在整形边（粘上接走/刚体/粘补）上磨到
+# 200+ 秒。可解但贪心选错序的局通常远快于此；死局到点即止损。
+_SEARCH_TIME_BUDGET = 60.0
+
 
 def _es_side_blocks(g, gap, line, side):
     """缝 line 某侧的全部块（按坐标判定，不分量）。"""
@@ -2175,7 +2180,7 @@ def _paste_relay(coords, m, n, step, max_pairs=400, budget=15.0, min_w=3,
 def solve_multi_search(coords, m, n, step, couple_hook=None,
                        node_budget=400, reshape_budget=3, verbose=False,
                        progress_callback=None, cancel_check=None,
-                       hook_spec=None):
+                       hook_spec=None, time_budget=None):
     """宏级 DFS：对 couple 选择回溯，状态图上找「填满窗口」的宏序列。
 
     背景：贪心驱动存在顺序依赖——同一盘面换个候选随机序，一个能全解一
@@ -2193,6 +2198,9 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
 
     couple_hook：(coords,m,n,step,h,p)→(acts,stats)。None = 只填洞。
     node_budget：DFS 节点上限（每节点要对全 couple 跑 hook，代价高）。
+    time_budget：总时间预算（秒，2026-10-02 用户拍板「算不出来尽早发现、
+    发现就停」）——死局不在整形边上磨到天荒地老；超时即停，返回已有
+    成果。None = 用 _SEARCH_TIME_BUDGET 默认值。
 
     返回 (actions, stats)：
     · 全解 → actions 全量，stats['search']=True；
@@ -2204,6 +2212,8 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
         return None, {'error': f'格数 {len(coords)} != {m * n}'}
     if build_game(coords, m, n).is_solved():
         return [], {'steps': 0, 'search': True}
+    if time_budget is None:
+        time_budget = _SEARCH_TIME_BUDGET
     t0 = time.time()
 
     def _default_hook(cur, m_, n_, s_, h, p):
@@ -2224,6 +2234,9 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
         if ran:
             return [g[2] for g in got]
         for h, p in tasks:
+            if _tb_over():
+                state['timeout'] = True
+                break
             acts, _st = hook(cur, m, n, step, h, p)
             if acts is None:
                 continue
@@ -2233,14 +2246,21 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
         return out
 
     state = {'nodes': 0, 'best': [], 'exhausted': False, 'seen': set(),
-             'convoy_left': 8000, 'paste_left': 2}
+             'convoy_left': 8000, 'paste_left': 2, 'timeout': False}
+
+    def _tb_over():
+        """总时间预算检查（尽早发现就停，2026-10-02 用户拍板）。"""
+        return time.time() - t0 >= time_budget
 
     def _reshape_edges(cur):
         """整形边（惰性）：①带移盖洞 ②粘上接走 ③刚体挤入。
 
         convoy 共享总预算 state['convoy_left']：固有缺陷局面不在无效
-        原语上无限烧时间。
+        原语上无限烧时间。总时间预算到点同样停（尽早发现就停）。
         """
+        if _tb_over():
+            state['timeout'] = True
+            return []
         out = []
         _rg, _ovc, holes_c, out_c = window_of(cur, m, n, step)
         # ③ 刚体挤入优先（k≥2 簇对，先于单格原语——多格局面单格 couple
@@ -2284,7 +2304,9 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
             if bacts is not None:
                 out.append(bacts)
             for p_c in sorted(out_c):
-                if state['convoy_left'] <= 0:
+                if state['convoy_left'] <= 0 or _tb_over():
+                    if _tb_over():
+                        state['timeout'] = True
                     return out
                 if ((p_c[0] - h_c[0]) % step
                         or (p_c[1] - h_c[1]) % step):
@@ -2307,6 +2329,9 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
             return None
         if state['nodes'] >= node_budget:
             state['exhausted'] = True
+            return None
+        if _tb_over():
+            state['timeout'] = True
             return None
         state['nodes'] += 1
         if progress_callback is not None and state['nodes'] % 20 == 0:
@@ -2353,10 +2378,15 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                  'search': True, 'partial': True,
                  'cancelled': state.get('cancelled', False),
                  'budget_exhausted': state['exhausted'],
+                 'timeout': state['timeout'],
                  'secs': round(time.time() - t0, 3)})
-    return None, {'reason': '搜索：预算内无可行 couple 路径',
+    why = ('搜索：时间预算 %.0fs 到点，尽早停机（发现就停）'
+           % time_budget) if state['timeout'] \
+        else '搜索：预算内无可行 couple 路径'
+    return None, {'reason': why,
                   'nodes': state['nodes'], 'search': True,
                   'cancelled': state.get('cancelled', False),
+                  'timeout': state['timeout'],
                   'secs': round(time.time() - t0, 3)}
 
 
