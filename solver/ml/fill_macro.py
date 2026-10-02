@@ -790,6 +790,39 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                 break
             if progressed:
                 continue
+        if not progressed:
+            # 带移让位＋粘上接走链（2026-10-02 用户手解 07 归纳＋幽灵块
+            # 追踪提案）：普通 couple 与贴边 setup 全败后，对每对 (h,p)
+            # 试三段机构——洞带让位（幽灵块追踪洞身份）→ 源接应平移 →
+            # 带回位把源捎进原洞。内部已含真盘整链重放 + 聚拢度闸门。
+            for h, p in tasks:
+                _chk(cancel_check)
+                acts_b, info_b = _band_shift_chain(
+                    cur, m, n, step, h, p, verbose=verbose,
+                    cancel_check=cancel_check)
+                if acts_b is None:
+                    if verbose:
+                        print('   round%d 带移链 洞%s←凸%s: %s'
+                              % (rounds, h, p, info_b))
+                    continue
+                if not _replay_apply(g, acts_b, m, n, step):
+                    return _stop({'reason': '多洞停机：带移链推进活盘失败',
+                                  'rounds': rounds, 'steps': len(total)})
+                total.extend(acts_b)
+                progressed = True
+                if segment_cb is not None:
+                    try:
+                        segment_cb('round%d 带移让位(幽灵块追踪) 洞%s←凸%s'
+                                   % (rounds, h, p), list(acts_b))
+                        streamed[0] += len(acts_b)
+                    except Exception:
+                        pass   # 流式回调失败不拖垮求解
+                if verbose:
+                    print('   round%d 带移链 洞%s←凸%s → %d 步'
+                          % (rounds, h, p, len(acts_b)))
+                break
+            if progressed:
+                continue
         if not progressed and max_shaping:
             # couple 全败 → 有限中性整形预演：≤max_shaping 步不降聚拢度的
             # 整带动作后直接提升 / 解锁 couple（覆盖「需先揉形再填」卡点）
@@ -2067,6 +2100,224 @@ def _edge_setup_chain(coords, m, n, step, hole, time_budget=_EDGE_SETUP_BUDGET,
                                 'T2': t2 if did_t2 else None,
                                 'ov0': ov0, 'tries': tried}
     return None, '贴边setup：预算 %d 组内未找到' % tried
+
+
+# ---------------------------------------------------------------------------
+# 带移让位＋粘上接走链（2026-10-02 用户手解 07 归纳 + 幽灵块追踪提案）
+# ---------------------------------------------------------------------------
+_BAND_SHIFT_BUDGET = 6.0   # 单洞带移链搜索时间预算（秒）
+
+_SIDE_SEAMS = (   # (gap, line, side) 组合：side 含 line+1 那行/列
+    ('v', lambda q: (('v', q[1], 'left'), ('v', q[1] - 1, 'right'))),
+    ('h', lambda q: (('h', q[0], 'above'), ('h', q[0] - 1, 'below'))),
+)
+
+
+def _hole_band_seams(hole):
+    """过洞的 4 条带缝候选（side 均含洞所在行/列）。"""
+    return [('v', hole[1], 'left'), ('v', hole[1] - 1, 'right'),
+            ('h', hole[0], 'above'), ('h', hole[0] - 1, 'below')]
+
+
+def _src_seams(p, axis):
+    """源接应的缝候选：p 的行/列贴缝两选，side 取含 p 的那侧。
+
+    axis=0 → 垂直平移（v 缝）；axis=1 → 水平平移（h 缝）。
+    返回 [(gap, line, side)]。"""
+    if axis == 1:
+        return [('h', p[0], 'above'), ('h', p[0] - 1, 'below')]
+    return [('v', p[1], 'left'), ('v', p[1] - 1, 'right')]
+
+
+def _band_shift_chain(coords, m, n, step, hole, p_src,
+                      time_budget=_BAND_SHIFT_BUDGET,
+                      verbose=False, cancel_check=None):
+    """带移让位＋粘上接走链。返回 (acts5, info) 或 (None, reason)。
+
+    适用：洞 h 与窗外凸起 p 同 mod、但普通填洞过不去（途中块/缺口挡路）。
+    用户机构（失败07 步1-4 解码实测）：
+      1) 洞带让位：含洞邻块的整带沿缝法线平移 k*step——洞被挤到带外缘
+         h'，身份随带走。追踪用「幽灵块」（用户 2026-10-02 提案）：在洞位
+         临时放一个只在内存中的块，跟分量移动，段末撤掉——把空格身份
+         推理变成引擎原生的实体移动追踪，且幽灵块占位天然防止让位途中
+         洞被误填。
+      2) 源接应平移：p 所在带沿法线平移 |h'-p|，把 p 送进 h'——p 落位即
+         与洞带连通（＝「粘上」，无需显式粘补）。
+      3) 洞带回位：让位的逆平移——p 随分量被捎进原洞。
+    幽灵块只当追踪器、永不当裁判（用户风险提醒 2026-10-02）：幽灵盘只
+    用于让位段读洞身份；让位/接应/回位三段全部在真盘执行，最终整链在
+    干净盘重放验证。成功判据 = 原洞位被填 ＋ 聚拢度闸门（防搅盘解；
+    链终态窗内块数比链前恰多 1 = 填上的那洞）。
+    """
+    coords = frozenset(coords)
+    deadline = time.time() + time_budget
+    opp = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
+    perp = {'v': ('s', 'w'), 'h': ('d', 'a')}
+    tried = 0
+    for gap_b, line_b, side_b in _hole_band_seams(hole):
+        # 洞带分量代表块：洞的 4 邻实块（它们必属洞带），逐个当 rep0 试
+        nbs = [q for q in ((hole[0] - 1, hole[1]), (hole[0] + 1, hole[1]),
+                           (hole[0], hole[1] - 1), (hole[0], hole[1] + 1))
+               if q in coords]
+        for d in perp[gap_b]:
+            for k in (1, 2, 3, 4):
+                _chk(cancel_check)
+                if time.time() > deadline:
+                    return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
+                                  % (time_budget, tried))
+                # ---- 幽灵盘：让位段追踪洞身份 ----
+                gg = build_game(coords | {hole}, m, n)
+                ghost = None
+                for b in gg.blocks:
+                    if tuple(b.location) == tuple(hole):
+                        ghost = b
+                        break
+                if ghost is None:
+                    continue
+                rep0 = None
+                ok_g, _sub_g = False, []
+                for nb in nbs:   # 邻块逐个试：命中含幽灵块的分量即成
+                    ok_g, _sub_g = _es_probe_run(
+                        gg, gap_b, line_b, side_b, nb, d, k, step,
+                        cancel_check)
+                    if ok_g:
+                        rep0 = nb
+                        break
+                    gg = build_game(coords | {hole}, m, n)   # 弃半推进盘
+                    for b in gg.blocks:
+                        if tuple(b.location) == tuple(hole):
+                            ghost = b
+                            break
+                if not ok_g or rep0 is None:
+                    continue
+                h_new = tuple(ghost.location)
+                if h_new == tuple(hole):
+                    continue          # 幽灵块没动 → 洞不在该带运动路径上
+                # ---- 真盘让位（幽灵块只在追踪盘存在，真盘从无幽灵）----
+                g1 = build_game(coords, m, n)
+                ok1, sub1 = _es_probe_run(g1, gap_b, line_b, side_b,
+                                          rep0, d, k, step, cancel_check)
+                if not ok1:
+                    continue          # 幽灵盘能走真盘不能 → 保守拒绝
+                tried += 1
+                # ---- 源接应（粘上接走）：p 净位移 delta 到 h' ----
+                # 模式A（已粘连）：p 所在分量直接平移 delta；
+                # 模式B（用户 07 手解步2-3）：p 独立分量时，邻近分量先沿
+                #   -delta 平移「贴」上 p（p 粘进该分量），再沿 +delta 平移
+                #   「带回」——p 随分量被送到 h'。
+                delta = (h_new[0] - p_src[0], h_new[1] - p_src[1])
+                axis = 0 if delta[0] else (1 if delta[1] else None)
+                if axis is None or delta[axis] % step or abs(delta[axis]) > 6 * step:
+                    continue
+                k2 = abs(delta[axis]) // step
+                d2 = ('s' if delta[0] > 0 else 'w') if axis == 0 else \
+                     ('d' if delta[1] > 0 else 'a')
+                dr2, dc2 = _DIRS[d2]
+                got2 = None
+                for gap2, line2, side2 in _src_seams(p_src, axis):
+                    _chk(cancel_check)
+                    # 模式A：p 所在分量直接平移（rep=p → opt 选中 p 的分量）
+                    gA = build_game(gcoords(g1), m, n)
+                    okA, subA = _es_probe_run(gA, gap2, line2, side2,
+                                              tuple(p_src), d2, k2, step,
+                                              cancel_check)
+                    if okA and (p_src[0] + dr2 * k2 * step,
+                                p_src[1] + dc2 * k2 * step) == h_new:
+                        got2 = ('A', gA, subA, tuple(p_src))
+                        break
+                    # 模式B：邻近分量反向平移贴上 p → 正向平移带回
+                    # （枚举侧内连通分量为 C，复用分量去重）
+                    side_sel = (lambda q: q[0] <= line2 if side2 == 'above'
+                                else q[0] > line2) if gap2 == 'h' else \
+                               (lambda q: q[1] <= line2 if side2 == 'left'
+                                else q[1] > line2)
+                    tried_comps = set()
+                    for repC0 in sorted({tuple(b.location)
+                                         for b in g1.blocks
+                                         if side_sel(tuple(b.location))
+                                         and tuple(b.location) != tuple(p_src)}):
+                        _chk(cancel_check)
+                        gB = build_game(gcoords(g1), m, n)
+                        blkC0 = None
+                        for b in gB.blocks:
+                            if tuple(b.location) == repC0:
+                                blkC0 = b
+                                break
+                        if blkC0 is None:
+                            continue
+                        gB.opt(gap2, line2, blkC0)
+                        comp0 = frozenset(tuple(b.location) for b in gB.blocks
+                                          if b.be_opted)
+                        for b in gB.blocks:
+                            b.be_opted = False
+                        if comp0 in tried_comps or tuple(p_src) in comp0:
+                            continue   # 重复分量 / 已含 p（模式 A 已试）
+                        tried_comps.add(comp0)
+                        ok_t, sub_t = _es_probe_run(gB, gap2, line2, side2,
+                                                    repC0, opp[d2], k2, step,
+                                                    cancel_check)
+                        if not ok_t:
+                            continue
+                        # 贴上判定：p 与被移分量连通（p 在其 opt 分量内）
+                        drT, dcT = _DIRS[opp[d2]]
+                        cand = (repC0[0] + drT * k2 * step,
+                                repC0[1] + dcT * k2 * step)
+                        blkC = None
+                        for b in gB.blocks:
+                            if tuple(b.location) == cand:
+                                blkC = b
+                                break
+                        if blkC is None:
+                            continue
+                        gB.opt(gap2, line2, blkC)
+                        stuck = any(b.be_opted
+                                    and tuple(b.location) == tuple(p_src)
+                                    for b in gB.blocks)
+                        for b in gB.blocks:
+                            b.be_opted = False
+                        if not stuck:
+                            continue    # 没贴上 p → 换分量
+                        # 带回：从 C 新代表位沿 d2 平移 k2 → p 落 h'
+                        ok_b, sub_b = _es_probe_run(gB, gap2, line2, side2,
+                                                    cand, d2, k2, step,
+                                                    cancel_check)
+                        if ok_b:
+                            got2 = ('B', gB, list(sub_t) + list(sub_b), cand)
+                            break
+                    if got2 is not None:
+                        break
+                if got2 is None:
+                    continue
+                mode2, g2, sub2, repC_end = got2
+                # ---- 洞带回位：p 随分量捎进原洞 ----
+                g3 = build_game(gcoords(g2), m, n)
+                ok3, sub3 = _es_probe_run(g3, gap_b, line_b, side_b,
+                                          tuple(hole), opp[d], k, step,
+                                          cancel_check)
+                if not ok3:
+                    continue
+                if not any(tuple(b.location) == tuple(hole)
+                           for b in g3.blocks):
+                    continue      # 原洞位没被填上 → 该组参数无效
+                all_acts = list(sub1) + list(sub2) + list(sub3)
+                # ---- 终裁：干净盘整链重放 + 聚拢度闸门 ----
+                gfull = build_game(coords, m, n)
+                if not _replay_apply(gfull, all_acts, m, n, step):
+                    continue
+                if not _overlap_raised(coords, m, n, step, all_acts):
+                    continue
+                if verbose:
+                    print('   [带移链] 洞%s←凸%s: 让位(%s,%d,%s,%s,%d格)'
+                          '→洞%s 接应%s(%s,%d,%s,%s,%d格) 回位 → %d 步'
+                          % (hole, p_src, gap_b, line_b, side_b, d,
+                             k * step, h_new, mode2, gap2, line2, side2, d2,
+                             k2 * step, len(all_acts)))
+                return all_acts, {
+                    'hole': hole, 'src': p_src, 'h_shifted': h_new,
+                    'band': (gap_b, line_b, side_b, d, k * step),
+                    'relay': (mode2, gap2, line2, side2, d2, k2 * step),
+                    'tries': tried}
+    return None, '带移链：预算 %d 组内未找到' % tried
 
 
 def _enum_paste_moves(coords, m, n, step, min_size=3):
