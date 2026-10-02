@@ -27,6 +27,7 @@ from collections import Counter
 
 from game import SliderMatrix
 from game_mi import MiSliderMatrix, blocks_from_cells as mi_blocks_from_cells
+from game_mi import any_overlap as mi_any_overlap, lattice_of as mi_lattice_of
 from game_triangle import TriangleSliderMatrix, blocks_from_cells as tri_blocks_from_cells
 from gui.cell_class import cell_class
 
@@ -76,14 +77,32 @@ def _class_counts(positions, step, kind, dr=0, dc=0) -> Counter:
 
 
 def _match_anchor(kind, cells, params, step):
-    """偏移掃描：找 (dr, dc) ∈ [0, step)² 使構造態與還原態逐類相等。"""
+    """偏移掃描：找偏移使構造態與還原態逐類相等。
+
+    **米字格的偏移域必須含半格**（2026-10-03 修）。米字有A/B兩層晶格
+    （整數座標 / 半整數座標），錯位態就是整盤換到B 層。舊版只在
+    [0,step)² 的整數格裡掃，而 B 層的類鍵與 A 層**完全不同**
+    （step=2 實測：A 層落在(0,0)/(1,1)，B 層落在 (0,1)/(1,0)），
+    偏移 (0.5,0.5) 永遠掃不到 → 所有錯位態構造全被冤拒成
+    「不變量類計數與還原態不一致」。
+
+    方形與三角沒有雙層晶格，偏移域不變（仍是 step² 次）。
+    """
     solved = _solved_positions(kind, params)
     target = _class_counts(cells, step, kind)
-    for dr in range(step):
-        for dc in range(step):
-            if _class_counts(solved, step, kind, dr, dc) == target:
-                return (dr, dc)
+    domain = _anchor_domain(kind, step)
+    for dr, dc in domain:
+        if _class_counts(solved, step, kind, dr, dc) == target:
+            return (dr, dc)
     return None
+
+
+def _anchor_domain(kind, step):
+    """偏移掃描域。米字含半格（雙層晶格），其餘為整數格 [0,step)²。"""
+    if kind != 'mi':
+        return [(dr, dc) for dr in range(step) for dc in range(step)]
+    half = [v / 2 for v in range(2 * step)]
+    return [(dr, dc) for dr in half for dc in half]
 
 
 def _square_is_solved(cells, m, n) -> bool:
@@ -137,6 +156,17 @@ def validate_shape(kind, cells, params, step):
     """
     if not cells:
         return False, '空狀態', None
+    # 跨晶格正面積重疊閘門（2026-10-03 補）。**必須排在塊數判據之前**：
+    # 重疊局面本身就是非法構造，用戶要看到的訊息是「重疊」而不是「塊數不對」
+    # ——後者會把真正的原因藏起來，且塊數不對的狀況滿地都是、單獨報錯就夠。
+    #
+    # 米字錯位態下兩塊位置 key 不同卻可以疊在一起（game_mi._tri_overlap /
+    # 規劃 §1.5），「位置集合相交」擋不住。引擎只在移動期查跨層重疊
+    # （_has_overlap），創造模式能直接擺出這種局面——不補這道閘門就能
+    # 構造出遊戲裡根本走不出來的死盤，直接違反「所有合法局面都該由合法
+    # 移動到達」的設計哲學。
+    if kind == 'mi' and mi_any_overlap(cells):
+        return False, '有重疊的滑塊（跨晶格錯位重疊，遊戲中走不出來）', None
     n_expected = solved_cell_count(kind, params)
     if len(cells) != n_expected:
         return False, f'滑塊數 {len(cells)} != {n_expected}', None

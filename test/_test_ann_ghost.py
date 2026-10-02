@@ -31,7 +31,7 @@ def check(name, cond, detail=''):
 
 
 def main():
-    doc = json.load(open(os.path.join(_PROJECT, 'save', '失败07.json'),
+    doc = json.load(open(os.path.join(_PROJECT, 'archives', '失败07.json'),
                          encoding='utf-8'))
     pz = doc['puzzle']
     m, n, step = pz['m'], pz['n'], pz['step']

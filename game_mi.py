@@ -395,6 +395,45 @@ def _has_overlap(moved: set, non_selected: set) -> bool:
     return False
 
 
+def any_overlap(cells) -> bool:
+    """整盤自檢：任意兩塊之間是否有正面積重疊（跨晶格對才可能）。
+
+    與 _has_overlap 的區別：後者是「移動側 vs 靜止側」的移動期檢查，這裡是
+    「給定一個位置集合，裡面有沒有任何兩塊疊在一起」——給創造模式／存檔
+    校驗用的。同一晶格內鋪滿平面不重不漏，故只對跨晶格對跑幾何判定。
+
+    錯位態下位置 key 不同的兩塊可以正面積重疊（§1.5），單靠「位置集合相
+    交」擋不住；創造模式能直接擺出這種局面，所以校驗鏈必須補這一步，
+    否則就能構造出遊戲裡根本走不出來的死盤。
+    """
+    boxes = {}
+
+    def _box(key):
+        got = boxes.get(key)
+        if got is None:
+            vs = _int_verts(key)
+            got = (min(p[0] for p in vs), min(p[1] for p in vs),
+                   max(p[0] for p in vs), max(p[1] for p in vs))
+            boxes[key] = got
+        return got
+
+    items = list(cells)
+    for x in range(len(items)):
+        a = items[x]
+        ax1, ay1, ax2, ay2 = _box(a)
+        lat = lattice_of(a)
+        for y in range(x + 1, len(items)):
+            b = items[y]
+            if lat == lattice_of(b):
+                continue
+            bx1, by1, bx2, by2 = _box(b)
+            if ax2 < bx1 or bx2 < ax1 or ay2 < by1 or by2 < ay1:
+                continue
+            if _tri_overlap(a, b):
+                return True
+    return False
+
+
 class MiSliderMatrix:
     """米字格滑塊矩陣（與 SliderMatrix / TriangleSliderMatrix 同契約）。
 

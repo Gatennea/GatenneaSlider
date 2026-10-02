@@ -74,7 +74,7 @@ check('有表走①查表全解', ok2, '%d 步 %.2fs' % (len(res[0]) if isinstan
 sol_acts, sol_reps = res
 
 # ---- 3. 无表 + 空位主线：②补缺宏全解（失败07） ----
-doc = json.load(open(os.path.join(PROJECT, 'save', '失败07.json'), encoding='utf-8'))
+doc = json.load(open(os.path.join(PROJECT, 'archives', '失败07.json'), encoding='utf-8'))
 s0 = doc['history']['snapshots'][0]
 b0 = s0['bounds']
 coords07 = frozenset((b0['min_row'] + i, b0['min_col'] + j)
