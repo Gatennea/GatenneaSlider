@@ -228,6 +228,15 @@ class RendererMixin:
                         for p in view.piece_polygon(i, j, up)]
                 self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
 
+        # 调试面板打开时：先画目标框（并把同一结果存到 self._target_region），
+        # 再以该结果为基准画洞/缺口/凸起标记，两者严格一致。
+        # **必须在这里调**——方形的同名调用在 draw_board 末尾，三角走的是
+        # draw_triangle_board，不调就永远画不出来（2026-10-03 修：面板数字
+        # 正常显示但棋盘上没有任何标记，就是漏了这一处）。
+        if getattr(self, 'show_metrics_panel', False):
+            self._draw_target_window()
+            self._draw_debug_holes()
+
     def draw_mi_board(self):
         """繪製米字格棋盤（两次触控 + 虚拟键盘，方向由第二下的拖动给出）。
 

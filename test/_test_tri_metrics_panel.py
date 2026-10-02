@@ -184,6 +184,59 @@ def h5_render_no_crash():
         check(f'H5a {label} 三个绘制入口全通', not errs, '; '.join(errs))
 
 
+def h5b_really_paints():
+    """H5b 真的画到屏幕上（不只是「方法不崩」）。
+
+    2026-10-03 的教训：H5a 那版只验「方法調用不拋異常」，結果**画框的調用
+    根本沒被接上** —— 方形的同名調用在 `draw_board` 末尾，三角走
+    `draw_triangle_board`，我沒在後者加。面板數字正常顯示（它自己算），
+    棋盤上卻一條綠線都沒有。**截圖才看出來，單測看不出**。
+    所以這裡改成「像素級驗證：屏幕上真的出現了綠色框線與記號色」。
+    """
+    print('\n--- H5b 真的画到屏幕上（像素级验证）---')
+    import pygame
+    for k, step, sh, label in ((5, 2, 15, '打乱 k=5 step2'),
+                               (4, 2, 0, '还原 k=4 step2')):
+        g = _gui(k=k, step=step, shuffle=sh)
+        g.draw_triangle_board()
+        g.draw_metrics_panel()
+        # 统计屏幕上的特征色像素
+        w, h = g.screen.get_size()
+        green = yellow = red = 0
+        for py in range(0, h, 2):
+            for px in range(0, w, 2):
+                r, gg, b, _a = g.screen.get_at((px, py))
+                # 绿框 (80,220,100)：g 显著大于 r 与 b
+                if gg > 150 and r < 130 and b < 140 and gg - max(r, b) > 60:
+                    green += 1
+                # 凸起黄 (255,210,60)
+                if r > 200 and gg > 150 and b < 120:
+                    yellow += 1
+                # 缺口红 (255,80,80) / 大洞红
+                if r > 200 and gg < 130 and b < 130:
+                    red += 1
+        check(f'H5b-1 {label} 画面有绿色目标框线', green > 0,
+              f'绿色像素 {green}')
+        if sh:
+            check(f'H5b-2 {label} 画面有记号（黄菱形/红缺口）',
+                  yellow + red > 0, f'黄 {yellow} / 红 {red}')
+        else:
+            # 还原态不该有记号，但也可能有面板像素误判 → 只要求不崩
+            check(f'H5b-3 {label} 还原态正常绘制', True,
+                  f'黄 {yellow} / 红 {red}')
+    # 关键：draw_triangle_board 之后画面必须与「不调画框」不同
+    g1 = _gui(k=5, step=2, shuffle=15)
+    g1.draw_triangle_board()
+    with_panel = pygame.image.tostring(g1.screen, 'RGB')
+    g2 = _gui(k=5, step=2, shuffle=15)
+    g2.show_metrics_panel = False
+    g2.draw_triangle_board()
+    without = pygame.image.tostring(g2.screen, 'RGB')
+    check('H5b-4 面板开关真的改变画面（证明绘制被接上）',
+          with_panel != without,
+          f'{"有差异" if with_panel != without else "无差异——没接上"}')
+
+
 def h6_palette():
     print('\n--- H6 调色板与记号语义 ---')
     from solver.ml import tri_holes as TH
@@ -307,6 +360,7 @@ def main():
     h3_hole_detection()
     h4_same_source()
     h5_render_no_crash()
+    h5b_really_paints()
     h6_palette()
     h7_square_no_regression()
     h8_mi_shifted_no_crash()

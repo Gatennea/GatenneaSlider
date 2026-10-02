@@ -227,17 +227,13 @@ class MetricsPanelMixin:
             return None
         view = self._tri_view()
         line_w = max(2, int(2 * self.zoom))
-        origin = self.world_to_screen(0.0, 0.0)
+        # world_to_screen 已经含 zoom 与相机平移（GUI.py:1154），**不要再乘
+        # 一次 zoom**——我第一版多乘了导致框飞到屏幕外只剩两条边。
+        # 三角块绘制走的是 view.piece_polygon + world_to_screen，同一条路。
         for p1w, p2w in view.boundary_edges(best.cells):
-            # boundary_edges 回的是**未缩放的世界坐标**；棋盘原点在屏幕上的
-            # 位置由 world_to_screen(0,0) 给出，缩放/平移围绕该原点进行。
-            p1 = self.world_to_screen(*p1w)
-            p2 = self.world_to_screen(*p2w)
-            q1 = (origin[0] + (p1[0] - origin[0]) * self.zoom,
-                  origin[1] + (p1[1] - origin[1]) * self.zoom)
-            q2 = (origin[0] + (p2[0] - origin[0]) * self.zoom,
-                  origin[1] + (p2[1] - origin[1]) * self.zoom)
-            pygame.draw.line(self.screen, (80, 220, 100), q1, q2, line_w)
+            pygame.draw.line(self.screen, (80, 220, 100),
+                             self.world_to_screen(*p1w),
+                             self.world_to_screen(*p2w), line_w)
         return best
 
     def _draw_tri_marks(self):
@@ -264,14 +260,11 @@ class MetricsPanelMixin:
         scaled_cell = self.cell_size * self.zoom
         radius = max(3, int(scaled_cell * 0.35))
         line_w = max(2, int(2 * self.zoom))
-        origin = self.world_to_screen(0.0, 0.0)
 
         def _center(i, j, up):
-            """單元重心 → 屏幕坐標（含 zoom 與相機）。"""
-            cx, cy = view.piece_center(i, j, up)
-            sx, sy = self.world_to_screen(cx, cy)
-            return (origin[0] + (sx - origin[0]) * self.zoom,
-                    origin[1] + (sy - origin[1]) * self.zoom)
+            """單元重心 → 屏幕坐標。与块的绘制同一条路（piece_center +
+            world_to_screen），world_to_screen 已含 zoom 与相机。"""
+            return self.world_to_screen(*view.piece_center(i, j, up))
 
         for h in holes:
             color = hole_color(h)
