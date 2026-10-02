@@ -178,48 +178,111 @@ def advance_anchor_cells(prev_cells, moved_positions, direction, step,
 
 def advance_void_cells(prev_cells, cur_cells, moved_positions, gap_type,
                        gap_line, direction, step, void_cells):
-    """空位标记：幻影滑块模型（相对传播）。
+    """空位标记：幽灵滑块追踪（2026-10-02 重写，用户提案）。
 
-    规则（近似，必要时由「重选空位」人工修正）：
-        1. 该格被移动组填上（∈ new_m）→ 视为完成（从标记中移除）；
-        2. 否则把空位当作一颗幻影滑块：若把它加入移动组前状态后，它仍
-           属于「被选中滑动的那一组」（与移动组同侧且连通、且没有把别的
-           组件桥接进来），并且它随整体平移的落点 v+delta 正好落在移动组
-           让出的空格上，就把标记平移到该落点（空位相对滑块保持不动）；
-        3. 其余情况保持原位。
+    在标记空格 v 放一颗只在内存中的「幽灵滑块」，按引擎语义推演本步：
+    幽灵滑块若与移动组连通（把它加入后分量恰为 移动组∪{v}，未桥接任何
+    其他块——等价于引擎 opt 会把它选进同组一起平移），就被组「带走」。
+
+    规则：
+        1. v 与移动组连通 且 落点 v+delta 在移动前盘面与真实盘面都为空
+           → 幽灵滑块随组平移，标记跟到 v+delta（洞在带内随带漂移，
+           如 07 带移让位 (7,2)→(9,2)；此情形即使 v 被移动组补上，
+           也**不算完成**——洞只是换了位置，接应段还要继续追）；
+        2. v 与移动组连通 但落点被真实块占（幽灵盘上会碰撞/污染身份）
+           → 回退兜底「被填即完成」（幽灵滑块只当追踪器，永不当裁判）；
+        3. v 不与移动组连通：v ∈ 移动组新位置 → 迎面填上，完成；
+           否则保持原位（不动块不会挪进 v，v 必然仍为空格）。
+
+    （旧版「近似传播」的缺陷：带移让位时 v 被补上即误判完成，身份
+    漂移跟踪不到，只能人工重选——实测出错率极高，故重写。）
 
     返回 (cells, filled_count, status)：
-        cells : 剩余被跟踪的空位（保持原格且仍为空的空位，异常则置 lost）
-        filled_count : 本步被填掉的格数
-        status : 'ok' / 'filled'（全部填完）/ 'lost'（出现矛盾需人工修正）
+        cells : 剩余被跟踪的空位
+        filled_count : 本步判定为「完成」的格数
+        status : 'ok' / 'filled'（全部完成）/ 'lost'（矛盾需人工修正）
     """
     void_cells = [tuple(v) for v in (void_cells or [])]
     if not void_cells or not moved_positions:
         return sorted(void_cells), 0, ('ok' if void_cells else 'filled')
     delta, s_old, new_m = move_group_geometry(moved_positions, direction, step)
     dr, dc = delta
-    vacated = s_old - new_m           # 移动组真正让出的空格（落点候选）
+    prevset = set(prev_cells)
+    curset = set(cur_cells)
+    seed = next(iter(s_old))
     out = []
     filled = 0
-    seed = next(iter(vacated)) if vacated else next(iter(s_old), None)
+    lost = False
     for v in void_cells:
         if v in new_m:
-            filled += 1               # 被填上 → 完成
-            continue
-        if seed is not None and (v[0] + dr, v[1] + dc) in vacated:
-            # 幻影检测：v 若作为滑块加入，是否只属于本次移动的那一组
-            comp = _component_over(prev_cells, seed, (), gap_type, gap_line)
+            # v 被移动组补上：区分「洞随带漂移」与「迎面填上」
             full = _component_over(prev_cells, seed, [v], gap_type, gap_line)
-            if v in full and full - {v} == comp:
-                out.append((v[0] + dr, v[1] + dc))
-                continue
-        out.append(v)
+            v2 = (v[0] + dr, v[1] + dc)
+            if (v in full and full - {v} == set(s_old)
+                    and v2 not in prevset and v2 not in curset):
+                out.append(v2)          # 幽灵滑块随组平移：身份漂移
+            else:
+                filled += 1             # 兜底：被填即完成
+            continue
+        out.append(v)                   # 未被补上 → 原位仍空
+        if v in curset:
+            lost = True                 # 理论不可达（不动块不挪进 v），保险
+    if lost:
+        return out, filled, 'lost'
     if filled and not out:
         return [], filled, 'filled'
-    bad = [c for c in out if c in set(cur_cells)]
-    if bad:
-        return out, filled, 'lost'   # 保持原格的标记竟然被占 → 需要人工修正
     return sorted(out), filled, 'ok'
+
+
+def decode_move_candidates(prev_cells, cur_cells):
+    """帧差独立解码（对照专用，与 test/decode_frames.decode_pair 同语义）。
+
+    枚举所有能解释 prev→cur 的单步动作 (gap_type, gap_line, side,
+    direction, dist, 分量)：缝线扫 bbox±6、两侧、该侧每个连通分量、
+    四方向、距离 1..8，判定 = rest|moved == cur 且 moved 不撞 rest。
+
+    用途（2026-10-02 用户提案「标注模式辅助存档分析」）：录制时把用户
+    真实动作与独立解码结果比对——
+        候选唯一且与真实动作一致 → 解码无歧义（AI 分析可直接采信）；
+        候选多个 → 该步帧差有歧义（AI 分析需结合语义慎断）；
+        真实动作不在候选中 → 解码器盲区（罕见，值得单独检查）。
+    返回 [(gap_type, gap_line, side, direction, dist, comp)]。
+    """
+    rows = [r for r, _ in prev_cells]
+    cols = [c for _, c in prev_cells]
+    if not rows:
+        return []
+    res = []
+    for gap in ('h', 'v'):
+        lines = (range(min(rows) - 6, max(rows) + 7) if gap == 'h'
+                 else range(min(cols) - 6, max(cols) + 7))
+        for line in lines:
+            for side in (('above', 'below') if gap == 'h'
+                         else ('left', 'right')):
+                if gap == 'h':
+                    sel = frozenset(p for p in prev_cells
+                                    if (p[0] <= line) == (side == 'above'))
+                else:
+                    sel = frozenset(p for p in prev_cells
+                                    if (p[1] <= line) == (side == 'left'))
+                if not sel:
+                    continue
+                # 该侧连通分量（不跨缝 4 连通，与 game.opt 选中语义一致）
+                rest_sel = set(sel)
+                while rest_sel:
+                    seed = next(iter(rest_sel))
+                    comp = _component_over(sel, seed, (), gap, line)
+                    rest_sel -= comp
+                    rest = prev_cells - comp
+                    for d, (dr, dc) in _DIR_DELTA.items():
+                        for rep in range(1, 9):
+                            moved = frozenset((p[0] + dr * rep,
+                                               p[1] + dc * rep)
+                                              for p in comp)
+                            if ((rest | moved) == cur_cells
+                                    and not (moved & rest)):
+                                res.append((gap, line, side, d, rep, comp))
+    return res
 
 
 def holes_and_protrusions(coords, m, n, step):
@@ -290,8 +353,12 @@ class AnnotationMixin:
         self._ann_start_anchor = None       # 录制起点时的凸起快照（写盘用）
         self._ann_pick = None               # 'void' / 'anchor' / None
         self._ann_recording = False
-        self._ann_phase = 'A'               # A / B / A'
+        self._ann_phase = 'A'               # A / B / A' / 自定义名
         self._ann_phase_toggle = False
+        # 自定义阶段名输入态（2026-10-02 用户需求：阶段可起名，
+        # 如「粘上接走」「移形换位」——AI 分析存档时的语义分段标签）
+        self._ann_phase_editing = False
+        self._ann_phase_buf = ''
         self._ann_last_hi = None
         self._ann_steps = {}                # idx -> 该步的跟踪快照记录
         self._ann_track_void = None         # 当前跟踪的空位格集
@@ -389,6 +456,36 @@ class AnnotationMixin:
         # 其他模态对话框打开时：不抢事件（隐藏入口已在上方处理）
         if self._ann_modal_conflict():
             return False
+
+        # 自定义阶段名输入态：拦截键盘/鼠标（2026-10-02）
+        if getattr(self, '_ann_phase_editing', False):
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                    name = self._ann_phase_buf.strip()
+                    if name:
+                        self._ann_phase = name
+                        self._ann_phase_toggle = True
+                        self._ann_notify(f'阶段切换为「{name}」')
+                    else:
+                        self._ann_notify('阶段名不能为空，已取消')
+                    self._ann_phase_editing = False
+                elif event.key == pygame.K_ESCAPE:
+                    self._ann_phase_editing = False
+                    self._ann_notify('阶段名输入已取消')
+                elif event.key == pygame.K_BACKSPACE:
+                    self._ann_phase_buf = self._ann_phase_buf[:-1]
+                elif event.unicode and event.unicode.isprintable():
+                    self._ann_phase_buf += event.unicode
+                return True
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                # 点击输入区外 = 确认当前输入
+                if event.button == 1 and self._ann_phase_buf.strip():
+                    self._ann_phase = self._ann_phase_buf.strip()
+                    self._ann_phase_toggle = True
+                    self._ann_notify(f'阶段切换为「{self._ann_phase}」')
+                self._ann_phase_editing = False
+                return True
+            return True
 
         if event.type == pygame.KEYDOWN:
             if self._ann_sub_dialog == 'gen':
@@ -766,6 +863,8 @@ class AnnotationMixin:
         self._ann_track_status = 'none'
         self._ann_recording = False
         self._ann_phase = 'A'
+        self._ann_phase_editing = False
+        self._ann_phase_buf = ''
         self._ann_pick = None               # 目标阶段：点空格=标空位、点滑块=标凸起
         self._ann_last_hi = self.game_history.history_index
         self._ann_steps = {}
@@ -822,6 +921,13 @@ class AnnotationMixin:
         self._ann_phase = "A'"
         self._ann_phase_toggle = True
         self._ann_notify("阶段 A′（拉回隔离块）")
+
+    def _ann_btn_phase_custom(self):
+        """自定义阶段名：进入输入态（键盘敲名，回车确认）。"""
+        self._ann_phase_editing = True
+        self._ann_phase_buf = self._ann_phase \
+            if self._ann_phase not in ('A', 'B', "A'") else ''
+        self._ann_notify('输入阶段名（回车确认，ESC 取消）')
 
     def _ann_btn_finish(self):
         """结束并保存：空位净减 ≥ 1 才写盘。"""
@@ -1077,12 +1183,38 @@ class AnnotationMixin:
             self._ann_notify('跟踪空位已全部被填（空位数应已减少）')
         elif status == 'lost':
             self._ann_notify('跟踪出现矛盾，可用[重选空位]人工修正')
+
+        # 帧差独立解码对照（2026-10-02「标注辅助存档分析」）：
+        # 真实动作 vs 解码器枚举——歧义/盲区即时提示，计数随步骤写盘
+        decode_alt = None
+        decode_ok = None
+        try:
+            pre_cells = self._snapshot_coords(pre_snap)
+            post_cells = self._snapshot_coords(post_snap)
+            cands = decode_move_candidates(pre_cells, post_cells)
+            decode_alt = len(cands)
+            if moved:
+                side = infer_side(gap_type, gap_line, moved)
+                # 单滑动作的真实距离 = step（expand_snapshot_moves 已拆步）
+                decode_ok = any(
+                    g == gap_type and ln == gap_line and sd == side
+                    and dd == direction and rp == step
+                    for g, ln, sd, dd, rp, _comp in cands)
+        except Exception:
+            decode_alt = None
+            decode_ok = None
+        if decode_alt == 0:
+            self._ann_notify('⚠ 帧差无法解码（解码器盲区），此步已标记')
+        elif decode_alt and decode_alt > 1:
+            self._ann_notify(f'此步帧差有 {decode_alt} 种动作解释（歧义已标记）')
         return {
             'void': (sorted(self._ann_track_void)
                      if self._ann_track_void is not None else None),
             'anchor': (sorted(self._ann_track_anchor)
                        if self._ann_track_anchor is not None else None),
             'status': status,
+            'decode_alt': decode_alt,
+            'decode_ok': decode_ok,
         }
 
     def _ann_refresh_metrics(self):
@@ -1376,6 +1508,9 @@ class AnnotationMixin:
                     'gather_score': round(mets['score'], 6),
                     'track_void': mrec.get('void'),
                     'track_anchor': mrec.get('anchor'),
+                    # 帧差独立解码对照：候选数 / 真实动作是否在候选中
+                    'decode_alt': mrec.get('decode_alt'),
+                    'decode_ok': mrec.get('decode_ok'),
                 })
 
         start_coords = self._snapshot_coords(base_snap)
@@ -1575,6 +1710,8 @@ class AnnotationMixin:
                 add('phase_A', 'A', ph_col['A'] if self._ann_phase == 'A' else (90, 90, 100))
                 add('phase_B', 'B', ph_col['B'] if self._ann_phase == 'B' else (90, 90, 100))
                 add('phase_AP', "A′", ph_col["A'"] if self._ann_phase == "A'" else (90, 90, 100))
+                add('phase_custom', '自定义',
+                    (200, 150, 60) if self._ann_phase not in ph_col else (90, 90, 100))
                 add('repoint_void', '重选空位')
                 add('repoint_anchor', '重选凸起')
                 add('abort', '放弃', (150, 90, 90))
@@ -1590,9 +1727,13 @@ class AnnotationMixin:
                 st_c = '●' if self._ann_track_void is not None else '○'
                 an_c = '●' if self._ann_track_anchor is not None else '○'
                 phase_show = {'A': 'A', 'B': 'B', "A'": "A′"}.get(self._ann_phase, self._ann_phase)
-                info = (f'步骤 {n_steps} · 阶段 {phase_show} · '
-                        f'空位 {st.get("void_block_count", "?")}→{cur.get("void_block_count", "?")} · '
-                        f'空位跟踪{st_c} 凸起跟踪{an_c}')
+                if self._ann_phase_editing:
+                    info = (f'阶段名输入: {self._ann_phase_buf}_'
+                            '（回车确认 · ESC 取消）')
+                else:
+                    info = (f'步骤 {n_steps} · 阶段 {phase_show} · '
+                            f'空位 {st.get("void_block_count", "?")}→{cur.get("void_block_count", "?")} · '
+                            f'空位跟踪{st_c} 凸起跟踪{an_c}')
             title = self.status_font.render('标注录制 ' + info, True,
                                             (200, 200, 210))
             self.screen.blit(title, (self._ann_bar_rect.x + 6,
