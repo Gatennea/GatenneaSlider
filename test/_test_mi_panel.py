@@ -325,6 +325,49 @@ w, holes, protr = gui._analysis_holes()
 check('P8e 方形下洞/凸起可算', holes is not None,
       f'{len(holes)} 洞 / {len(protr)} 凸起')
 
+# ================================================================ P9 调用路径
+print("\n--- P9 棋盘绘制路径真的会调起面板（2026-10-04 修的真漏）---")
+# 教训：`show_metrics_panel` 分支原先只加在方形 `draw_board` 与三角路径里，
+# **没加在 `draw_mi_board`** → mi 下面板数字正常但棋盘上永远没有框与记号。
+# 而 P4 那些断言是**直接调** `_draw_mi_target_frame()`，绕过了这条路径，
+# 所以照样全绿 —— 「被调用的方法对」≠「调用点存在」。
+# 这几条断言只认**从 draw_mi_board 进去**的结果。
+gui.new_mi_puzzle(4, 4, 2)
+gui.game.shuffle(40, 2)
+gui.show_metrics_panel = True
+gui.screen.fill((0, 0, 0))
+gui._fit_mi_zoom()
+gui._center_mi()
+gui.draw_mi_board()
+reg = getattr(gui, '_target_region', None)
+check('P9a draw_mi_board 之后 _target_region 被填上（调用点存在）',
+      isinstance(reg, MiPlacement),
+      f'{type(reg).__name__}')
+# 框的颜色 (80,220,100) 真的落在屏幕上
+green = sum(1
+            for yy in range(0, gui.screen_height, 2)
+            for xx in range(0, gui.screen_width, 2)
+            if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
+check('P9b 目标框真的画在屏幕上了（绿像素 > 0）', green > 0, f'{green} 个采样点')
+# 记号颜色（红=大洞 蓝=小洞/缺口 黄=凸起）也要有
+marks = {'红': (255, 80, 80), '蓝': (80, 160, 255), '黄': (255, 210, 60)}
+counts = {name: sum(1
+                     for yy in range(0, gui.screen_height, 2)
+                     for xx in range(0, gui.screen_width, 2)
+                     if gui.screen.get_at((xx, yy))[:3] == rgb)
+          for name, rgb in marks.items()}
+check('P9c 洞/缺口/凸起记号都画出来了', all(v > 0 for v in counts.values()),
+      str(counts))
+# 关掉面板后不该再有这些记号（闸门是 show_metrics_panel 本身）
+gui.show_metrics_panel = False
+gui.screen.fill((0, 0, 0))
+gui.draw_mi_board()
+green_off = sum(1
+                for yy in range(0, gui.screen_height, 2)
+                for xx in range(0, gui.screen_width, 2)
+                if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
+check('P9d 关掉面板后不再画框', green_off == 0, f'{green_off} 个采样点')
+
 # ================================================================ 匯總
 print("\n" + "=" * 60)
 if _failures:

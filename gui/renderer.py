@@ -347,6 +347,20 @@ class RendererMixin:
                         for p in view.piece_polygon(r, c, q)]
                 self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
 
+        # 调试面板打开时：先画目标框（同一结果存进 self._target_region），
+        # 再以该结果为基准画洞/缺口/凸起标记，两者严格一致（同方形纪律）。
+        #
+        # **这一段原先是漏的**（2026-10-04 修）：`show_metrics_panel` 分支只加在
+        # 了 `draw_board`（方形）与三角的绘制路径里，**没加在 `draw_mi_board`**。
+        # 后果是 mi 下调试面板能显示数字（面板本体走 `draw_metrics_panel`），
+        # 但棋盘上**永远不出现目标框与洞/凸起记号** —— 看起来「面板开着但
+        # 什么都不画」。截图脚本 `test/_shot_mi_panel.py` 靠这一帧抓出来
+        # （自动化测试抓不到：那一版直接调 `_draw_mi_target_frame()`，
+        # 绕过了这条调用路径 → 像素有变化，但整段从没被执行）。
+        if getattr(self, 'show_metrics_panel', False):
+            self._draw_target_window()
+            self._draw_debug_holes()
+
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一），只畫在棋形範圍內。
 
