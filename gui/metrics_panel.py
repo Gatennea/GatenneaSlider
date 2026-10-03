@@ -14,12 +14,11 @@
 
 import pygame
 
-# 三角形调试记号半径 / cell_size。方形用 0.35（面积占格 38.5%）；三角单元是
-# 等边三角形，外接盒边长 = cell → 面积 (√3/4)·cell² ≈ 0.433·cell²，只有方形的
-# 43.3%，沿用同一半径会让记号相对大 1.5 倍。按**面积占比**对齐：
-#   r_tri = 0.35 · cell · √(√3/4) ≈ 0.230 · cell
-# 用户 2026-10-03 验收时反馈「三角标记太大，和矩形的标记一样最好」。
-_TRI_MARK_RADIUS_RATIO = 0.35 * (3 ** 0.5 / 4) ** 0.5
+# 三角形调试记号半径 / cell_size。方形用 0.35；三角单元是等边三角形、
+# 面积只有方形的 0.433 倍。用户在 2026-10-03 两次验收里都嫌大 —— 按面积
+# 占比对齐（0.230）之后仍偏大，说明参照的是「屏幕上的视觉大小」而非面积
+# 比例，再收一档到 0.16（约为方形 0.35 的 46%）。
+_TRI_MARK_RADIUS_RATIO = 0.16
 
 
 class MetricsPanelMixin:
@@ -73,6 +72,12 @@ class MetricsPanelMixin:
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
             return {'score': 0.0, 'overlap': 0, 'bbox': (0, 0), 'fill_rate': 0.0}
+        if self._mp_kind() not in self._MP_SUPPORTED:
+            # 未实装形态：返回 None 表示「算不出」，调用方据此走占位行。
+            # **不要在这里退回方形公式** —— mi 的单元是 1/4 格直角三角形，
+            # 用矩形的 m×n 窗口枚举会得到 0.0%/无意义数字，界面看起来
+            # 「数据正常」实际全错，比明说「不支持」糟得多。
+            return None
         if getattr(self, 'triangle_mode', False):
             # 三角走 tri_placement：目标形状是大三角、1 个朝向 × 全部平移，
             # 指标口径与方形对齐（score = 重叠 / 单元数）。
@@ -132,6 +137,8 @@ class MetricsPanelMixin:
             目標窗口外的方塊（凸起）              = 斜方形（菱形）
         顏色：大孔洞/缺口 = 紅色，小 = 藍色；凸起 = 黃色。
         """
+        if self._mp_kind() not in self._MP_SUPPORTED:
+            return None
         if getattr(self, 'triangle_mode', False):
             return self._draw_tri_marks()
         from solver.ml.hole_detector import detect_holes
@@ -187,12 +194,45 @@ class MetricsPanelMixin:
             pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
             pygame.draw.polygon(self.screen, (255, 210, 60), pts, line_w)
 
+    # 形态支持表：哪些形态有「目标框 + 洞/凸起记号」的实现。
+    # 方形与三角已实现（M0），米字**尚未**（M3）——計劃 §1 明确 M0 只做 tri。
+    # 之前 mi 会落进方形分支、用矩形公式在斜坐标上算出无意义的 0.0%，面板
+    # 看起来「开着但什么都不画」。**静默无输出比明确说不支持差得多**，
+    # 所以这里给显式文案。
+    _MP_SUPPORTED = ('square', 'triangle')
+
+    def _mp_kind(self):
+        """当前棋形标识：'square' / 'triangle' / 'mi' / 其它。"""
+        if getattr(self, 'triangle_mode', False):
+            return 'triangle'
+        if getattr(self, 'mi_mode', False):
+            return 'mi'
+        return 'square'
+
+    def _mp_unsupported_rows(self):
+        """未支持形态的占位行——说清「为什么没有」和「什么时候有」。"""
+        k = self._mp_kind()
+        if k == 'mi':
+            return [
+                ("形态", "米字格（mi）"),
+                ("调试面板", "本形态尚未实装"),
+                ("", ""),
+                ("已实装", "方形 / 三角形"),
+                ("计划", "M3（第二期）"),
+            ]
+        return [
+            ("形态", k or "未知"),
+            ("调试面板", "本形态尚未实装"),
+        ]
+
     def _draw_target_window(self):
         """繪製目標窗口預告框（無填充、綠色邊框）。
 
         窗口位置由 _compute_target_region 計算（mod 約束 + 聚攏度最高），
         與 _draw_debug_holes 共用同一 region，保證標記系統與畫框一致。
         """
+        if self._mp_kind() not in self._MP_SUPPORTED:
+            return None
         if getattr(self, 'triangle_mode', False):
             return self._draw_tri_target_frame()
         region = self._compute_target_region()
@@ -234,7 +274,7 @@ class MetricsPanelMixin:
             return None
         view = self._tri_view()
         # 線寬與記號線寬同檔（記號縮小後仍用 2·zoom 會顯得過重）
-        line_w = max(1, int(self.zoom))
+        line_w = max(1, int(self.zoom * 0.6))   # 记号小了，线也要跟着收
         # world_to_screen 已经含 zoom 与相机平移（GUI.py:1154），**不要再乘
         # 一次 zoom**——我第一版多乘了导致框飞到屏幕外只剩两条边。
         # 三角块绘制走的是 view.piece_polygon + world_to_screen，同一条路。
@@ -272,7 +312,7 @@ class MetricsPanelMixin:
         # 方形對齊（否則記號相對大 1.5 倍）→ r = 0.230·cell。線寬也同步
         # 收窄一檔，否則小記號配上粗線會糊成一團。
         radius = max(2, int(scaled_cell * _TRI_MARK_RADIUS_RATIO))
-        line_w = max(1, int(self.zoom))
+        line_w = max(1, int(self.zoom * 0.6))   # 记号小了，线也要跟着收
 
         def _center(i, j, up):
             """單元重心 → 屏幕坐標。与块的绘制同一条路（piece_center +
@@ -426,42 +466,53 @@ class MetricsPanelMixin:
         # 指标行（目标框行顯示與畫框同一窗口的實際位置）
         game = self.game
         step = getattr(self, 'current_step', 1)
-        region = getattr(self, '_target_region', None)
-        if region is None:
-            region = self._compute_target_region()
+        kind = self._mp_kind()
 
-        if getattr(self, 'triangle_mode', False):
-            # 三角：目标形状是大三角、单元数 k²、放置 = 1 朝向 × 平移
-            from solver.ml.tri_placement import best_placement_of_game, placement_offset_ok
-            from solver.ml.tri_holes import detect_tri_holes
-            k = getattr(game, 'k', 0) or 0
-            best = (region if hasattr(region, 'cells')
-                    else best_placement_of_game(game, k=k, step=step))
-            coords = frozenset(tuple(b.location) for b in game.blocks)
-            holes, protrusions = detect_tri_holes(coords, best.cells, step)
-            n_gap = sum(1 for h in holes if h['type'] == 'gap')
-            n_hole = sum(1 for h in holes if h['type'] == 'hole')
-            rows = [
-                ("聚拢度", f"{met['score'] * 100:.1f}%"),
-                ("重叠", f"{met['overlap']}/{k * k}"),
-                ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
-                ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-                ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) "
-                            f"边长{k}"),
-                ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
-            ]
+        if kind not in self._MP_SUPPORTED:
+            # 未实装形态：给占位行，**不跑任何形态专属公式**。
+            # mi 若落进方形分支，会用矩形窗口枚举在斜坐标上算出 0.0% 的聚拢度
+            # —— 数字看着「有效」其实完全无意义，比报错更糟。
+            rows = self._mp_unsupported_rows()
         else:
-            from solver.ml.gather_solver import detect_target_corner, _game_coords
-            tc = detect_target_corner(_game_coords(game), game.m, game.n, step)
-            rows = [
-                ("聚拢度", f"{met['score'] * 100:.1f}%"),
-                ("重叠", f"{met['overlap']}/{game.m * game.n}"),
-                ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
-                ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-                ("目标框", f"({region[0]},{region[1]}) {region[2][0]}×{region[2][1]}"
-                 if region else "—"),
-                ("mod 状态", "有约束" if tc else ("无约束" if step > 1 else "step=1")),
-            ]
+            region = getattr(self, '_target_region', None)
+            if region is None:
+                region = self._compute_target_region()
+
+            if kind == 'triangle':
+                # 三角：目标形状是大三角、单元数 k²、放置 = 1 朝向 × 平移
+                from solver.ml.tri_placement import best_placement_of_game
+                from solver.ml.tri_holes import detect_tri_holes
+                k = getattr(game, 'k', 0) or 0
+                best = (region if hasattr(region, 'cells')
+                        else best_placement_of_game(game, k=k, step=step))
+                coords = frozenset(tuple(b.location) for b in game.blocks)
+                holes, protrusions = detect_tri_holes(coords, best.cells, step)
+                n_gap = sum(1 for h in holes if h['type'] == 'gap')
+                n_hole = sum(1 for h in holes if h['type'] == 'hole')
+                rows = [
+                    ("聚拢度", f"{met['score'] * 100:.1f}%"),
+                    ("重叠", f"{met['overlap']}/{k * k}"),
+                    ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
+                    ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
+                    ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) 边长{k}"),
+                    ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
+                ]
+            else:   # square
+                from solver.ml.gather_solver import (
+                    detect_target_corner, _game_coords,
+                )
+                tc = detect_target_corner(_game_coords(game), game.m, game.n, step)
+                rows = [
+                    ("聚拢度", f"{met['score'] * 100:.1f}%"),
+                    ("重叠", f"{met['overlap']}/{game.m * game.n}"),
+                    ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
+                    ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
+                    ("目标框",
+                     f"({region[0]},{region[1]}) {region[2][0]}×{region[2][1]}"
+                     if region else "—"),
+                    ("mod 状态",
+                     "有约束" if tc else ("无约束" if step > 1 else "step=1")),
+                ]
         row_y = y + self._MP_TITLE_H + self._MP_PAD
         for label, value in rows:
             label_surf = self.status_font.render(label, True, (170, 170, 180))

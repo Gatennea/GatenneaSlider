@@ -351,6 +351,62 @@ def h8_mi_shifted_no_crash():
               f'{type(e).__name__}: {e}')
 
 
+def h9_unsupported_kind_not_silent():
+    """未实装形态（mi）不许「静默无输出」，也不许输出无意义的数字。
+
+    真实缺陷（2026-10-03 用户报「调试参数没了、没有目标框和标记」）：
+    面板开着、画布上什么都没有。根因不是改动弄坏了它，而是 **mi 落进了
+    方形的 `else` 分支**——用矩形 m×n 窗口枚举去算 mi 的斜坐标单元，
+    得出「聚拢度 0.0%、mod 无约束」这种看着有效、实则完全无意义的数字，
+    而且棋盘上一个记号都不画。米字面板是 M3 的事。
+    """
+    import os
+    os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+    os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
+    from GUI import SliderGUI
+    g = SliderGUI(m=4, n=4, step=2)
+    g.new_mi_puzzle(4, 4, 2)
+    g.animation_enabled = False
+    g.show_metrics_panel = True
+    g._mp_build_layout()
+    g.center_map()
+    check('H9a mi 模式判定正确', g._mp_kind() == 'mi', g._mp_kind())
+    check('H9b mi 不在支持表里',
+          g._mp_kind() not in g._MP_SUPPORTED,
+          f'支持={g._MP_SUPPORTED}')
+    check('H9c mi 不跑形态公式（返回 None）',
+          g._mp_current_metrics() is None,
+          f'实际 {g._mp_current_metrics()}')
+    check('H9d mi 画框返回 None（不画方形的框）',
+          g._draw_target_window() is None)
+    check('H9e mi 记号返回 None（不落进方形分支）',
+          g._draw_debug_holes() is None)
+    rows = g._mp_unsupported_rows()
+    labels = [r[0] for r in rows]
+    check('H9f 占位行说清「未实装」', '调试面板' in labels, f'{labels}')
+    check('H9g 占位行标出形态名', '形态' in labels, f'{labels}')
+    # 画面上不该有任何目标框/记号像素
+    g.draw_board()
+    g.draw_metrics_panel()
+    w, h = g.screen.get_size()
+    green = sum(1 for y in range(0, h, 2) for x in range(0, w, 2)
+                if (lambda c: c[1] > 170 and c[0] < 120 and c[2] < 140)
+                (g.screen.get_at((x, y))))
+    check('H9h mi 不画方形的目标框（绿像素 0）', green == 0, f'{green}')
+    # 方形与三角仍在支持表内（别把闸门开太大）。
+    # 注意：**SliderGUI(m=4,n=4,step=2) 的默认形态是 mi**（保存了上次
+    # 关闭时的形态），方形要显式 new_puzzle(..., kind='square') 之外的
+    # 方式构造 —— 这里直接改标志位即可，_mp_kind 只看这两个 bool。
+    g2 = SliderGUI(m=4, n=4, step=2)
+    g2.mi_mode = False
+    g2.triangle_mode = False
+    check('H9i 方形仍受支持', g2._mp_kind() in g2._MP_SUPPORTED,
+          f'kind={g2._mp_kind()}')
+    g2.new_triangle_puzzle(4, 2)
+    check('H9j 三角仍受支持', g2._mp_kind() in g2._MP_SUPPORTED,
+          f'kind={g2._mp_kind()}')
+
+
 def main():
     print('=' * 68)
     print('三角 F2 调试面板回归（M0 验收）')
@@ -364,6 +420,7 @@ def main():
     h6_palette()
     h7_square_no_regression()
     h8_mi_shifted_no_crash()
+    h9_unsupported_kind_not_silent()
     print('\n' + '=' * 68)
     if _failures:
         print(f'FAIL {len(_failures)}:')
