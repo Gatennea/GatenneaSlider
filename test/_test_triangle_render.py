@@ -291,8 +291,15 @@ before = set(gui.game.positions())
 gui.shuffle_puzzle()
 check(set(gui.game.positions()) != before, "打乱已开放（局面改变）")
 gui.macro_notify_msg = ''
+gui.solver_algorithm = 'ida_star'      # 模拟用户手动设成方形算法
+gui._auto_solve_running = False
+gui.macro_executing = False
 gui._start_auto_solve()
-check('尚未实现' in gui.macro_notify_msg, f"自动求解仍被攔截：{gui.macro_notify_msg}")
+# M4 之后三角自动求解已放行：不再拦，而是自动切到 tri_gather。
+# （原断言「尚未实现」是 M1 之前的行为）
+check(gui.solver_algorithm == 'tri_gather',
+      f"自动求解已放行（算法换成 tri_gather，实际 {gui.solver_algorithm}）")
+gui._auto_solve_cancel = True           # 别让后台线程真跑
 gui.macro_notify_msg = ''
 gui._timer_enter_ready()
 check(gui.timer_state == 'ready', "競速就緒態已開放（B5）")

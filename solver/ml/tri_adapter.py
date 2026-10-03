@@ -24,13 +24,14 @@
 异形从第一天就不埋（計劃 §3 明确要求）。
 """
 
+from solver.ml.shape_gather import ShapeGather
 from game_triangle import (
     GAP_DIRECTIONS, TriangleSliderMatrix, gap_index_range, side_of,
 )
 
 __all__ = [
     'TriSpec', 'shape_score', 'enumerate_actions', 'apply_action',
-    'snap', 'restore', 'tri_coords', 'score_of_game',
+    'snap', 'restore', 'tri_coords', 'score_of_game', 'tri_gather_solve',
 ]
 
 # act5 = (gap_type, line, side, dir, rep_key)
@@ -201,3 +202,39 @@ def restore(game: TriangleSliderMatrix, s: dict) -> None:
         b.location = list(loc)
     game._clear_selection()
     game.update_matrix()
+
+# ---------------------------------------------------------------------------
+# 统一入口：与方形求解器同签名，供 SOLVER_ALGORITHMS 注册表 / GUI 使用
+# ---------------------------------------------------------------------------
+def tri_gather_solve(game, step: int = None, cancel_check=None,
+                     progress_callback=None, max_steps=500, patience=150,
+                     max_wait_time=30.0, target_score=1.0, aggressiveness=0.2,
+                     **kw):
+    """三角聚拢求解——签名与方形 `gather_solve` 对齐。
+
+    为什么单独包一层而不是直接用 `ShapeGather`：
+      · GUI 的 `solve_thread` 按 `solver_func(game, step=..., cancel_check=...,
+        progress_callback=...)` 统一签名调用，注册表里的每个算法都得吃这套；
+      · 方形版还吃 `gather_params`（max_steps / patience / ... 逐项可能为
+        None 表示不设限），这里同样支持——**None 透传给 ShapeGather.solve**，
+        它的每个停机条件都是「None = 不设限」，语义一致。
+
+    `step` 缺省用 game 自己的（`TriangleSliderMatrix` 不存 step，从外部传入）。
+    返回 dict 额外带 `type='gather'` 以便 GUI 走 `_handle_gather_result`
+    的同一条路径（計劃 §8 M4：异形 GUI 放行走梯度聚拢）。
+    """
+    sg = ShapeGather(shape_score, enumerate_actions, apply_action,
+                     snap, restore, tri_coords)
+    spec = TriSpec(k=game.k, step=step)
+    # 方形侧「禁用的参数传 None」：把 None 从 kw 里摘掉，让 solve 用默认值
+    params = {k: v for k, v in
+              dict(max_steps=max_steps, patience=patience,
+                   max_wait_time=max_wait_time, target_score=target_score,
+                   aggressiveness=aggressiveness).items()
+              if v is not None}
+    res = sg.solve(game, spec, step, cancel_check=cancel_check,
+                   progress_callback=progress_callback, **params)
+    res['type'] = 'gather'
+    # GUI 的 _handle_gather_result 会读 result['start'/'end'] 拿 bbox 做文案；
+    # 异形没有这两段指标（见 GUI.py 的 is_shape 分支），不给键即可。
+    return res

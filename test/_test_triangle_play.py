@@ -257,9 +257,17 @@ if gaps:
               f"与选中缝隙不平行的方向被拒绝：{gui.macro_notify_msg}")
 
 print("== 護欄 ==")
+# M4 之后三角自动求解已放行：不再拦，而是自动把算法切到 tri_gather。
+# （原先这里断言「尚未实现」被拦——那是 M1 之前的行为。M1 落地后
+#  solver/ml/tri_adapter.tri_gather_solve 已注册，见 test/_test_tri_gui_solve.py。）
 gui.macro_notify_msg = ''
+gui.solver_algorithm = 'ida_star'          # 模拟用户手动设成方形算法
+gui._auto_solve_running = False
+gui.macro_executing = False
 gui._start_auto_solve()
-check('尚未实现' in gui.macro_notify_msg, f"自动求解被拦截：{gui.macro_notify_msg}")
+check(gui.solver_algorithm == 'tri_gather',
+      f"自动求解：方形算法被换成 tri_gather（实际 {gui.solver_algorithm}）")
+gui._auto_solve_cancel = True             # 别让后台线程真跑
 gui.macro_notify_msg = ''
 gui._timer_enter_ready()
 check(gui.timer_state == 'ready', "竞速就绪态已开放（B5）")

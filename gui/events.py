@@ -1314,11 +1314,10 @@ class EventsMixin:
                 return False, "只读存档无法使用求解器"
             if getattr(self, '_ann_recording', False):
                 return False, "标注录制中无法使用求解器"
-            # 三角形密铺：求解器未实现。必须在 _start_auto_solve() 之前判定，
-            # 否则按钮路径的拦截只落在 macro_notify，这里仍会回「已启动」
-            if self._triangle_blocked('自动求解'):
-                return False, self.macro_notify_msg
-            # 米字格同理：8 向/4 族缝隙的求解器同样未实现
+            # 三角形密铺：M1 已落地，只支援 tri_gather。**不在这里拦**——
+            # 算法切换由 _start_auto_solve 负责（自动切到 tri_gather 并提示），
+            # 这里再拦一道会让按钮路径与快捷键路径行为不一致。
+            # 米字格：8 向/4 族缝隙的求解器仍未实现（M3）
             if self._mi_blocked('自动求解'):
                 return False, self.macro_notify_msg
         self._start_auto_solve()

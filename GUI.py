@@ -804,6 +804,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.mi_mode = False
         self.numbered = False
 
+        # 切到三角形时把求解器换成三角版：查表/补缺宏/DFS/IDA* 都是方形
+        # 语义（动作 4 元组 + 矩形目标形状），在 tri 上会静默走错。
+        self.solver_algorithm = 'tri_gather'
+
         self.game = create_puzzle(k, k, step, kind='triangle', triangle_side=k)
 
         # 重置状态
@@ -2688,10 +2692,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         import time
         from copy import deepcopy
 
-        # 三角形密铺：求解器需要新的动作语义（三族缝隙 + 六向），B2 不开放
-        if self._triangle_blocked('自动求解'):
-            return
-
         # 计时中禁止使用求解器
         if self._timer_blocked():
             self.macro_notify_msg = "计时中无法使用求解器"
@@ -2702,14 +2702,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self._readonly_blocked():
             return
 
-        # 带序号模式：求解器只看形状（blocks[].location / m / n），不看 number，
-        # 与矩形谜题共用同一套求解与回放；先复原形状，数字乱序为预期行为，
-        # 玩家之后自行调整（单段求解仍封锁，见 _solve_single_segment）。
-        # 三角形密铺：动作语义不同（6 向/3 族缝隙），求解器在 D 阶段再评估
+        # 三角形密铺：M1 已落地（solver/ml/tri_adapter.py + shape_gather.py），
+        # 动作是 5 元组含 rep，回放层 `_find_block_by_cell` 只比前两分量、
+        # 多带的 up 不影响定位，所以 GUI 侧除下面这条闸外零改动。
+        #
+        # 三角**只能走 tri_gather**（查表/补缺宏/DFS/IDA* 都是方形语义：
+        # 4 元组动作 + 矩形目标形状，套在 tri 上会静默走错）。new_triangle_puzzle
+        # 已自动把 solver_algorithm 切过去；这里再挡一道是为了「用户手动改过
+        # 算法设置」的情况 —— 宁可明确拦下也不要静默走错算法。
         if getattr(self, 'triangle_mode', False):
-            self.macro_notify_msg = "三角形密铺暂不支援自动求解"
-            self.macro_notify_timer = 90
-            return
+            if self.solver_algorithm != 'tri_gather':
+                self.solver_algorithm = 'tri_gather'
+                self.macro_notify_msg = "三角形密铺只支援聚拢求解器，已自动切换"
+                self.macro_notify_timer = 120
 
         # 米字格：8 向/4 族缝隙，求解器同样留到后续阶段
         if self._mi_blocked('自动求解', '求解器后续阶段开发中'):
@@ -2792,11 +2797,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     algorithm, SOLVER_ALGORITHMS['ida_star']
                 )
                 kwargs = {}
-                if algorithm == 'gather':
-                    # 禁用的参数传 None（不设限）
+                if algorithm in ('gather', 'tri_gather'):
+                    # 禁用的参数传 None（不设限）。tri_gather 同样吃这套
+                    # —— 设置面板里的参数不该只对方形生效。
                     for k, v in self.gather_params.items():
-                        kwargs[k] = v if self.gather_enabled.get(k, True) else None
-                # 填洞/补缺宏：流式播放——每解决一个 couple 即推送段
+                        kwargs[k] = v if self.gather_enabled.get(k, True) else None                # 填洞/补缺宏：流式播放——每解决一个 couple 即推送段
                 if algorithm in ('fill_macro', 'gap_macro'):
                     import queue as _q
                     self._stream_queue = _q.Queue()
@@ -3326,11 +3331,22 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         sh, sw = s.get('bbox', (0, 0))
         eh, ew = e.get('bbox', (0, 0))
         gstage = result.get('gradient_stage')
+        # 异形（tri）求解器返回的键名与方形不同：score 走 'score' /
+        # 'best_score'，没有 start/end 两段指标。文案必须分形态写，
+        # 否则会显示「聚拢度 0.0%→0.0%」这种假数字（同 11b 的教训：
+        # 宁可少说，不要说错）。
+        is_shape = 'start' not in result and 'score' in result
         if gstage:
             gtotal = result.get('gradient_total', 4)
             self.macro_notify_msg = (
                 f"梯度聚拢 第{gstage}/{gtotal}阶段完成（{reason_text}）· {len(actions)}步 · "
                 f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
+            )
+        elif is_shape:
+            # 异形：只报能确定的量 —— 步数、终聚拢度、是否还原
+            self.macro_notify_msg = (
+                f"聚拢完成（{reason_text}）· 共{len(actions)}步 · "
+                f"聚拢度 {result.get('score', 0)*100:.1f}%"
             )
         else:
             stages_info = ''
@@ -3352,7 +3368,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         ops = []
         for i, action in enumerate(actions):
-            gap_dir, gap_line, side, move_dir = action
+            # 三角形是 5 元组（族, 线, 侧, 向, rep_key），方形是 4 元组。
+            # rep 直接从动作里取，不再依赖 result['rep_cells'] 旁挂数组
+            # （tri 求解器天然把 rep 固化进动作，計劃 §3 的要求）。
+            if len(action) >= 5:
+                gap_dir, gap_line, side, move_dir, rep = action[:5]
+            else:
+                gap_dir, gap_line, side, move_dir = action[:4]
+                rep = None
             op = {
                 'gap_type': gap_dir,
                 'gap_line': gap_line,
@@ -3360,8 +3383,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 'direction': move_dir,
                 'step': self.current_step,
             }
-            if rep_cells and i < len(rep_cells):
-                op['rep_cell'] = rep_cells[i]
+            if rep is None and rep_cells and i < len(rep_cells):
+                rep = rep_cells[i]
+            if rep is not None:
+                # 方形 rep 是 (row, col)；三角是 (i, j, up)。回放层
+                # `_find_block_by_cell` 只比前两分量，所以三角多带的 up
+                # 不影响定位（同一格上 ▲/▼ 各一块，但 rep 的前两分量
+                # 已足以定位到具体 Block 对象）。
+                op['rep_cell'] = list(rep)[:2]
             ops.append(op)
 
         self._gather_info = {

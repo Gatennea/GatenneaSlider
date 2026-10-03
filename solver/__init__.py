@@ -34,6 +34,7 @@ from solver.ida_star import ida_star_solve as solve
 from solver.ida_star import ida_star_solve as _ida_star_solve
 from solver.greedy import greedy_hill_climbing_solve
 from solver.actions import apply_action, enumerate_valid_actions
+from solver.ml.tri_adapter import tri_gather_solve
 
 
 def solve_fast(game, step: int, max_depth: int = 80,
@@ -101,6 +102,10 @@ SOLVER_ALGORITHMS = {
     'fill_macro': ('  填洞宏', solve_fill_macro),
     'gap_macro': ('  补缺宏', solve_gap_macro),
     'hybrid':   ('  混合求解（自动规划）', auto_solve),
+    # 异形（三角形）：M1 落地后放行 GUI 放行（計劃 §8 M4）。三角只能走这个
+    # —— 查表/补缺宏/DFS 都是方形语义，GUI 侧 `_start_auto_solve` 也据此
+    # 拦掉其它算法。
+    'tri_gather': ('  聚拢（三角形）', tri_gather_solve),
 }
 
 __all__ = ['solve', 'solve_fast', 'solve_greedy', 'SOLVER_ALGORITHMS',
