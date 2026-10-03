@@ -43,15 +43,17 @@ def shoot(gui, name, clip=None):
 def render(gui, panel_xy=None):
     """画一帧完整画面：棋盘（含目标框与记号）+ 调试面板。
 
-    两个要点（我第一版都漏了，截出来一片空白/半截棋盘）：
-      · mi 的棋盘入口是 **`draw_mi_board()`**，不是 `draw_board()`；
-      · 目标框与洞/记号是在棋盘绘制**内部**被调起的（renderer 里
-        `if show_metrics_panel:` 分支），而**面板本身**要单独调
-        `draw_metrics_panel()` —— 只调前者会得到「有框无面板」。
+    踩过的坑（每条都让第一版截出「半截棋盘 + 无框无记号」）：
 
-    相机用 mi 专用的 `_fit_mi_zoom()` + `_center_mi()`：通用 `center_map()`
-    是按方形包围盒算的，mi 的凸包不同，居中会偏（截出来棋盘挤在左上、
-    右下大片空白）。面板位置也挪到右下空白处，免得压住棋盘。
+      · mi 的棋盘入口是 **`draw_mi_board()`**，不是 `draw_board()`；
+      · 相机要用 mi 专用的 **`_fit_mi_zoom()` + `_center_mi()`** ——
+        通用 `center_map()` 按方形包围盒算，mi 凸包不同，居中会偏；
+      · 目标框与洞/记号是在棋盘绘制**内部**被调起的（renderer 里的
+        `if show_metrics_panel:` 分支），而**面板本身**要单独调
+        `draw_metrics_panel()` —— 只调前者会得到「有框无面板」，
+        只调后者会得到「有面板但棋盘上没标记」；
+      · 打乱之后要重新 `_fit_mi_zoom()`：建局时的 zoom 是按还原态定的，
+        打乱后凸包变大，不重算就会截到出界。
     """
     gui.screen.fill((0, 0, 0))
     gui._fit_mi_zoom()
@@ -99,9 +101,13 @@ render(gui, panel_xy=(gui.screen_width - 200, 8))
 shoot(gui, 'mi_panel_holes.png')
 
 # ---------------------------------------------------------------- 面板特写
+# 用 **mp_panel_rect**（上一帧渲染时算出的真实矩形）而不是 `_mp_panel_size()`：
+# 后者不给行数会退回 6 行，mi 的第 7 行（mod 约束）就被裁掉了 —— 我第一版
+# 正是这么写的，截出来的图最后一行缺了一截还以为面板没画全。
 x, y = gui.mp_pos
-w, hgt = gui._mp_panel_size()
+rect = gui.mp_panel_rect
 shoot(gui, 'mi_panel_panel.png',
-      clip=(int(x) - 4, int(y) - 4, int(w) + 8, int(hgt) + 8))
+      clip=(rect.x - 4, rect.y - 4, rect.width + 8, rect.height + 8))
+print(f'面板矩形 {rect.width}×{rect.height}（{gui._mp_row_count()} 行）')
 
 print('done.')

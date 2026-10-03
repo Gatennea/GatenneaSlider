@@ -368,6 +368,77 @@ green_off = sum(1
                 if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
 check('P9d 关掉面板后不再画框', green_off == 0, f'{green_off} 个采样点')
 
+# ================================================================ P10 行数与高度
+print("\n--- P10 面板高度按行数算（第 7 行不再被截断）---")
+# mi 的指标是 7 行（多一行「mod 约束」），而面板高度原先**写死 6 行**
+# → 最后一行画到面板外面，截图里表现为「mod 约束」被截断。
+gui.new_mi_puzzle(4, 4, 2)
+gui.show_metrics_panel = True
+rows_m, _ = gui._mp_rows()
+h_m = gui._mp_panel_size(len(rows_m))[1]
+rows_s = None
+gui.new_puzzle(4, 4, 2)
+rows_s, _ = gui._mp_rows()
+h_s = gui._mp_panel_size(len(rows_s))[1]
+check('P10a mi 是 7 行且比方形高一行',
+      len(rows_m) == 7 and h_m > h_s, f'mi {len(rows_m)} 行/{h_m}px，'
+      f'方形 {len(rows_s)} 行/{h_s}px')
+# 最后一行必须落在面板矩形之内（这是「不被截断」的充要条件）
+gui.new_mi_puzzle(4, 4, 2)
+gui.screen.fill((0, 0, 0))
+gui.draw_metrics_panel()
+rows_m, _ = gui._mp_rows()
+last_y = (gui.mp_pos[1] + gui._MP_TITLE_H + gui._MP_PAD
+          + gui._MP_ROW_H * (len(rows_m) - 1))
+inside = last_y + gui._MP_ROW_H <= gui.mp_pos[1] + h_m
+check('P10b 最后一行在面板矩形内（不被截断）', inside,
+      f'末行底 {last_y + gui._MP_ROW_H} vs 面板底 {gui.mp_pos[1] + h_m}')
+check('P10c mp_panel_rect 的高度与行数一致',
+      gui.mp_panel_rect.height == h_m,
+      f'rect={gui.mp_panel_rect.height} 期望={h_m}')
+# 事件路径（拖动/点标题栏）用的行数推算也要一致，否则拖动时矩形会跳
+check('P10d _mp_row_count 与实际行数一致（事件路径不失配）',
+      gui._mp_row_count() == len(rows_m),
+      f'{gui._mp_row_count()} vs {len(rows_m)}')
+
+# ================================================================ P11 跨形态不串味
+print("\n--- P11 切换形态后 _target_region 不串味（真 bug 回归）---")
+# `_target_region` 的类型随形态变（方形三元组 / TriPlacement / MiPlacement），
+# 原先三个建局入口都没清它 → mi 局切回方形后，方形分支 `region[0]` 直接
+# `TypeError: 'MiPlacement' object is not subscriptable`。真实使用必然触发。
+for first, second, tag in (
+        ('mi', 'square', 'mi→方形'),
+        ('mi', 'triangle', 'mi→三角'),
+        ('square', 'mi', '方形→mi'),
+        ('triangle', 'mi', '三角→mi'),
+):
+    if first == 'mi':
+        gui.new_mi_puzzle(4, 4, 2)
+    elif first == 'triangle':
+        gui.new_triangle_puzzle(4, 2)
+    else:
+        gui.new_puzzle(4, 4, 2)
+    reg_before = getattr(gui, '_target_region', 'CLEAN')
+    if second == 'mi':
+        gui.new_mi_puzzle(4, 4, 2)
+    elif second == 'triangle':
+        gui.new_triangle_puzzle(4, 2)
+    else:
+        gui.new_puzzle(4, 4, 2)
+    check(f'P11 {tag} 切换后 _target_region 已清空',
+          getattr(gui, '_target_region', None) is None,
+          f'切换前={type(reg_before).__name__} 切换后='
+          f'{type(getattr(gui, "_target_region", None)).__name__}')
+    # 且切换后立刻算面板不得抛（这才是原来的崩点）
+    try:
+        rows_after, _ = gui._mp_rows()
+        ok = len(rows_after) > 0
+    except Exception as e:      # noqa: BLE001
+        rows_after, ok = [], False
+        check(f'P11 {tag} 切换后面板可算', False, f'{type(e).__name__}: {e}')
+    if ok:
+        check(f'P11 {tag} 切换后面板可算', True, f'{len(rows_after)} 行')
+
 # ================================================================ 匯總
 print("\n" + "=" * 60)
 if _failures:

@@ -753,6 +753,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 重置历史记录
         self.game_history.reset()
+        self._mp_reset_target_region()
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
@@ -821,6 +822,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             block.number = None
 
         self.game_history.reset()
+        self._mp_reset_target_region()
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
@@ -911,6 +913,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             block.number = None
 
         self.game_history.reset()
+        self._mp_reset_target_region()
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()

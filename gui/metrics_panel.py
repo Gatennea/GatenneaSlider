@@ -50,15 +50,24 @@ class MetricsPanelMixin:
         # （gui/events.py 的点空白分支）。避免选洞与拖动视图抢同一手势。
         self._pending_hole_pick = None
 
-    def _mp_panel_size(self):
-        """计算面板宽高（6 行指标：聚拢度/重叠/边界盒/填充率/目标角点/mod 状态）。"""
-        height = (self._MP_TITLE_H + self._MP_PAD * 2 + self._MP_ROW_H * 6)
+    def _mp_panel_size(self, n_rows=None):
+        """计算面板宽高。
+
+        `n_rows` 是指标行数；不给就按 6 行算（方形/三角的既有行数）。
+        **mi 分支有 7 行**（多一行「mod 约束」，报 |S(step)| 而不是
+        「有无约束」——倍数控法在 mi 上是错的，见 `experiments/_mi_mod_probe.py`），
+        高度写死 6 行会把最后一行画到面板外面去（截图里表现为「mod 约束」
+        那行被截断）。所以这里按调用方给的行数动态算，别再写死。
+        """
+        if n_rows is None:
+            n_rows = 6
+        height = (self._MP_TITLE_H + self._MP_PAD * 2 + self._MP_ROW_H * n_rows)
         return self._MP_WIDTH, height
 
-    def _mp_build_layout(self):
+    def _mp_build_layout(self, n_rows=None):
         """根据当前 mp_pos 计算面板矩形。"""
         x, y = self.mp_pos
-        width, height = self._mp_panel_size()
+        width, height = self._mp_panel_size(n_rows)
         self.mp_panel_rect = pygame.Rect(x, y, width, height)
         self.mp_title_rect = pygame.Rect(x, y, width, self._MP_TITLE_H)
         close_w = 20
@@ -70,7 +79,7 @@ class MetricsPanelMixin:
 
     def _mp_clamp_position(self):
         """将面板限制在屏幕范围内。"""
-        w, h = self._mp_panel_size()
+        w, h = self._mp_panel_size(self._mp_row_count())
         self.mp_pos[0] = max(0, min(self.mp_pos[0], self.screen_width - w))
         self.mp_pos[1] = max(self.menu_bar_height,
                              min(self.mp_pos[1], self.screen_height - self.status_bar_height - h))
@@ -738,10 +747,13 @@ class MetricsPanelMixin:
             return
 
         x, y = self.mp_pos
-        width, height = self._mp_panel_size()
-        self._mp_build_layout()
+        # **先算 rows 再定尺寸**：mi 有 7 行（多一行 mod 约束），高度写死
+        # 6 行会把最后一行画到面板外面（截图里表现为那行被截断）。
+        # 顺序反过来就修不了 —— 背景和 mp_panel_rect 都依赖 rows 的条数。
+        rows, met = self._mp_rows()
+        width, height = self._mp_panel_size(len(rows))
+        self._mp_build_layout(n_rows=len(rows))
         mouse_pos = pygame.mouse.get_pos()
-        met = self._mp_current_metrics()
 
         # 半透明背景
         bg = pygame.Surface((width, height), pygame.SRCALPHA)
@@ -767,89 +779,6 @@ class MetricsPanelMixin:
         close_surface = self.status_font.render("×", True, (255, 255, 255))
         self.screen.blit(close_surface, close_surface.get_rect(center=self.mp_close_rect.center))
 
-        # 指标行（目标框行顯示與畫框同一窗口的實際位置）
-        game = self.game
-        step = getattr(self, 'current_step', 1)
-        kind = self._mp_kind()
-
-        if kind not in self._MP_SUPPORTED:
-            # 未实装形态：给占位行，**不跑任何形态专属公式**。
-            # mi 若落进方形分支，会用矩形窗口枚举在斜坐标上算出 0.0% 的聚拢度
-            # —— 数字看着「有效」其实完全无意义，比报错更糟。
-            rows = self._mp_unsupported_rows()
-        else:
-            region = getattr(self, '_target_region', None)
-            if region is None:
-                region = self._compute_target_region()
-
-            if kind == 'mi':
-                # 米字格：目标形状 = m×n 棋盘轮廓、4mn 个单元、两个形状枚举
-                # （m×n 与 n×m）。指标行与前两形态同构，差别只在「单元数」
-                # 是 4mn 而不是 mn —— 面板显示的「重叠 x/4mn」与求解器
-                # best_placement.overlap/total 同一口径。
-                from solver.ml.mi_placement import best_placement_of_game
-                from solver.ml.mi_holes import detect_mi_holes
-                from solver.ml.mi_adapter import mi_coords
-                best = (region if hasattr(region, 'cells')
-                        else best_placement_of_game(
-                            game, m=getattr(game, 'm', None),
-                            n=getattr(game, 'n', None), step=step))
-                coords = mi_coords(game)
-                holes, protrusions = detect_mi_holes(coords, best.cells, step)
-                n_gap = sum(1 for h in holes if h['type'] == 'gap')
-                n_hole = sum(1 for h in holes if h['type'] == 'hole')
-                m = getattr(game, 'm', 0) or 0
-                n = getattr(game, 'n', 0) or 0
-                shape_txt = f"{m}×{n}" if m == n else f"{m}×{n}/{n}×{m}"
-                rows = [
-                    ("聚拢度", f"{met['score'] * 100:.1f}%"),
-                    ("重叠", f"{met['overlap']}/{4 * m * n}"),
-                    ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
-                    ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-                    ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) {shape_txt}"),
-                    ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
-                ]
-                # mod 约束：mi 的合法偏移不是「step 倍数」而是「类自同构余数对
-                # 集合 S(step)」（实测否证了倍数控法，见 experiments/_mi_mod_probe.py）。
-                # 这里报 S 的大小而不是有无 —— 倍数口径在 mi 上是错的。
-                from solver.ml.mi_placement import mod_auts
-                rows.append(("mod 约束",
-                             f"step={step} S={len(mod_auts(m, n, step))}"))
-            elif kind == 'triangle':
-                # 三角：目标形状是大三角、单元数 k²、放置 = 1 朝向 × 平移
-                from solver.ml.tri_placement import best_placement_of_game
-                from solver.ml.tri_holes import detect_tri_holes
-                k = getattr(game, 'k', 0) or 0
-                best = (region if hasattr(region, 'cells')
-                        else best_placement_of_game(game, k=k, step=step))
-                coords = frozenset(tuple(b.location) for b in game.blocks)
-                holes, protrusions = detect_tri_holes(coords, best.cells, step)
-                n_gap = sum(1 for h in holes if h['type'] == 'gap')
-                n_hole = sum(1 for h in holes if h['type'] == 'hole')
-                rows = [
-                    ("聚拢度", f"{met['score'] * 100:.1f}%"),
-                    ("重叠", f"{met['overlap']}/{k * k}"),
-                    ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
-                    ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-                    ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) 边长{k}"),
-                    ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
-                ]
-            else:   # square
-                from solver.ml.gather_solver import (
-                    detect_target_corner, _game_coords,
-                )
-                tc = detect_target_corner(_game_coords(game), game.m, game.n, step)
-                rows = [
-                    ("聚拢度", f"{met['score'] * 100:.1f}%"),
-                    ("重叠", f"{met['overlap']}/{game.m * game.n}"),
-                    ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
-                    ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-                    ("目标框",
-                     f"({region[0]},{region[1]}) {region[2][0]}×{region[2][1]}"
-                     if region else "—"),
-                    ("mod 状态",
-                     "有约束" if tc else ("无约束" if step > 1 else "step=1")),
-                ]
         row_y = y + self._MP_TITLE_H + self._MP_PAD
         for label, value in rows:
             label_surf = self.status_font.render(label, True, (170, 170, 180))
@@ -859,6 +788,117 @@ class MetricsPanelMixin:
                 x + width - self._MP_PAD - value_surf.get_width(), row_y
             ))
             row_y += self._MP_ROW_H
+
+    def _mp_reset_target_region(self):
+        """清掉缓存的目标窗口（**切换形态/建局时必须调**）。
+
+        `_target_region` 是「当前形态的目标窗口」缓存，但它的类型**随形态
+        变**：方形是 `(r0, c0, (rh, cw))` 三元组，三角/mi 是 `TriPlacement` /
+        `MiPlacement` 对象。不清就会跨形态串味 ——
+
+        实测（2026-10-04）：mi 局切回方形后，方形分支直接
+        `region[0]` 下标访问 → `TypeError: 'MiPlacement' object is not
+        subscriptable`。这条在真实使用里必然触发（玩完 mi 换方形）。
+        根因是三个建局函数都只调 `center_map()`，没有任何人清这个缓存。
+
+        放在三个建局入口的公共收尾处（`game_history.reset()` 之后），
+        一处改动覆盖方形/三角/mi 三条路径。
+        """
+        self._target_region = None
+
+    def _mp_rows(self):
+        """算出面板要显示的指标行 + 指标字典。
+
+        抽成独立方法的理由：**行数会随形态变**（mi 7 行、方形/三角 6 行），
+        而面板高度与命中矩形都得按行数算 —— 两者都必须在画之前拿到 rows。
+        原来 rows 是在 `draw_metrics_panel` 里边算边画的，高度写死 6 行，
+        mi 的第 7 行就画到面板外面去了。
+        """
+        met = self._mp_current_metrics()
+        # 指标行（目标框行顯示與畫框同一窗口的實際位置）
+        game = self.game
+        step = getattr(self, 'current_step', 1)
+        kind = self._mp_kind()
+
+        if kind not in self._MP_SUPPORTED:
+            # 未实装形态：给占位行，**不跑任何形态专属公式**。
+            # mi 若落进方形分支，会用矩形窗口枚举在斜坐标上算出 0.0% 的聚拢度
+            # —— 数字看着「有效」其实完全无意义，比报错更糟。
+            return self._mp_unsupported_rows(), met
+
+        region = getattr(self, '_target_region', None)
+        if region is None:
+            region = self._compute_target_region()
+
+        if kind == 'mi':
+            # 米字格：目标形状 = m×n 棋盘轮廓、4mn 个单元、两个形状枚举
+            # （m×n 与 n×m）。指标行与前两形态同构，差别只在「单元数」
+            # 是 4mn 而不是 mn —— 面板显示的「重叠 x/4mn」与求解器
+            # best_placement.overlap/total 同一口径。
+            from solver.ml.mi_placement import best_placement_of_game
+            from solver.ml.mi_holes import detect_mi_holes
+            from solver.ml.mi_adapter import mi_coords
+            best = (region if hasattr(region, 'cells')
+                    else best_placement_of_game(
+                        game, m=getattr(game, 'm', None),
+                        n=getattr(game, 'n', None), step=step))
+            coords = mi_coords(game)
+            holes, protrusions = detect_mi_holes(coords, best.cells, step)
+            n_gap = sum(1 for h in holes if h['type'] == 'gap')
+            n_hole = sum(1 for h in holes if h['type'] == 'hole')
+            m = getattr(game, 'm', 0) or 0
+            n = getattr(game, 'n', 0) or 0
+            shape_txt = f"{m}×{n}" if m == n else f"{m}×{n}/{n}×{m}"
+            rows = [
+                ("聚拢度", f"{met['score'] * 100:.1f}%"),
+                ("重叠", f"{met['overlap']}/{4 * m * n}"),
+                ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
+                ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
+                ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) {shape_txt}"),
+                ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
+            ]
+            # mod 约束：mi 的合法偏移不是「step 倍数」而是「类自同构余数对
+            # 集合 S(step)」（实测否证了倍数控法，见 experiments/_mi_mod_probe.py）。
+            # 这里报 S 的大小而不是有无 —— 倍数口径在 mi 上是错的。
+            from solver.ml.mi_placement import mod_auts
+            rows.append(("mod 约束",
+                         f"step={step} S={len(mod_auts(m, n, step))}"))
+        elif kind == 'triangle':
+            # 三角：目标形状是大三角、单元数 k²、放置 = 1 朝向 × 平移
+            from solver.ml.tri_placement import best_placement_of_game
+            from solver.ml.tri_holes import detect_tri_holes
+            k = getattr(game, 'k', 0) or 0
+            best = (region if hasattr(region, 'cells')
+                    else best_placement_of_game(game, k=k, step=step))
+            coords = frozenset(tuple(b.location) for b in game.blocks)
+            holes, protrusions = detect_tri_holes(coords, best.cells, step)
+            n_gap = sum(1 for h in holes if h['type'] == 'gap')
+            n_hole = sum(1 for h in holes if h['type'] == 'hole')
+            rows = [
+                ("聚拢度", f"{met['score'] * 100:.1f}%"),
+                ("重叠", f"{met['overlap']}/{k * k}"),
+                ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
+                ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
+                ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) 边长{k}"),
+                ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
+            ]
+        else:   # square
+            from solver.ml.gather_solver import (
+                detect_target_corner, _game_coords,
+            )
+            tc = detect_target_corner(_game_coords(game), game.m, game.n, step)
+            rows = [
+                ("聚拢度", f"{met['score'] * 100:.1f}%"),
+                ("重叠", f"{met['overlap']}/{game.m * game.n}"),
+                ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
+                ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
+                ("目标框",
+                 f"({region[0]},{region[1]}) {region[2][0]}×{region[2][1]}"
+                 if region else "—"),
+                ("mod 状态",
+                 "有约束" if tc else ("无约束" if step > 1 else "step=1")),
+            ]
+        return rows, met
 
     def _get_tri_hole_at_pos(self, screen_x, screen_y):
         """三角版「点洞」：命中判定用**重心距离**，不用方形的矩形盒。
@@ -893,13 +933,27 @@ class MetricsPanelMixin:
                     return h
         return None
 
+    def _mp_row_count(self):
+        """当前形态的面板行数（不重算指标内容）。
+
+        事件处理（拖动/点标题栏）只关心**面板矩形有多大**，不需要重跑一遍
+        洞检测 —— 那玩意不便宜。所以这里用「形态 → 行数」的映射，
+        跟 `_mp_rows` 的实际条数保持一致：mi 7 行（多一行 mod 约束），
+        其余 6 行，未实装形态按占位行数。
+        """
+        if self._mp_kind() == 'mi' and self._mp_kind() in self._MP_SUPPORTED:
+            return 7
+        if self._mp_kind() not in self._MP_SUPPORTED:
+            return len(self._mp_unsupported_rows())
+        return 6
+
     def handle_metrics_panel_event(self, event):
         """处理指标面板事件（拖动 + 关闭），返回 True 表示事件已消费。"""
         if not getattr(self, 'show_metrics_panel', False):
             return False
 
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION, pygame.MOUSEBUTTONUP):
-            self._mp_build_layout()
+            self._mp_build_layout(self._mp_row_count())
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
