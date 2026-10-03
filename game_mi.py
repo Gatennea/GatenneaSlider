@@ -638,6 +638,23 @@ class MiSliderMatrix:
                     out.append((gap_type, line))
         return out
 
+    def side_has_blocks(self, gap_type: str, line, side: int) -> bool:
+        """縫隙的指定側是否有滑塊（side 0/1，`side_of` 的口徑）。
+
+        GUI 的宏回放層用這個接口而不是方形的 `is_valid_h_line` ——
+        mi 的線號可以是半整數（錯位態的橫豎縫），「在邊界盒內」那種
+        範圍比較完全不適用，而且 `SliderMatrix` 根本沒有這兩個方法。
+        這是三形態共有的回放原語（見 `puzzle_types.py` 的說明）。
+        """
+        cells = self.positions()
+        if not cells:
+            return False
+        if gap_type not in GAP_DIRECTIONS:
+            return False
+        if not self._valid_line(gap_type, line, cells):
+            return False
+        return any(side_of(gap_type, line, c) == side for c in cells)
+
     # ---------- 選組 ----------
     def opt(self, gap_type: str, line, selected_block) -> None:
         """按縫隙切分連通組，標記 selected_block 所在的那一側。

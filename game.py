@@ -181,7 +181,44 @@ class SliderMatrix:
         """
         bounds = self.get_boundaries()
         return bounds['min_col'] <= line < bounds['max_col']
-    
+
+    def side_has_blocks(self, gap_type: str, line, side) -> bool:
+        """
+        缝隙的指定侧是否有滑块 —— **三形态共有的回放原语**（与
+        `game_triangle` / `game_mi` 的同名方法同契约）。
+
+        为什么方形也要有这个：GUI 的宏回放层原本直接调
+        `is_valid_h_line` / `is_valid_v_line`，那两个方法**只有方形引擎
+        有**，异形（三角/米字）上会 AttributeError；而且它们的语义是
+        「在边界盒内」，与异形「线两侧都有块」不是一回事。回放层改吃
+        这个方法之后，三形态共用一条路径（gui/events.py 的
+        `_execute_next_macro_step`）。
+
+        方形的 side 用 'above'/'below'/'left'/'right'（历史语义，
+        MacroStep 存的就是这四个词），异形用 0/1（`side_of` 的口徑）。
+        两种都在这里归一，回放层不必分支。
+        """
+        if gap_type == 'h':
+            if not self.is_valid_h_line(line):
+                return False
+            lo, hi = self.get_boundaries()['min_row'], \
+                self.get_boundaries()['max_row']
+        elif gap_type == 'v':
+            if not self.is_valid_v_line(line):
+                return False
+            lo, hi = self.get_boundaries()['min_col'], \
+                self.get_boundaries()['max_col']
+        else:
+            return False
+        for b in self.blocks:
+            v = b.location[0] if gap_type == 'h' else b.location[1]
+            on_lo = v <= line
+            if side in ('above', 'left', 0) and on_lo:
+                return True
+            if side in ('below', 'right', 1) and not on_lo:
+                return True
+        return False
+
     @staticmethod
     def check_move_valid(selected_positions: set, non_selected_positions: set) -> tuple:
         """

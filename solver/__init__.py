@@ -35,6 +35,7 @@ from solver.ida_star import ida_star_solve as _ida_star_solve
 from solver.greedy import greedy_hill_climbing_solve
 from solver.actions import apply_action, enumerate_valid_actions
 from solver.ml.tri_adapter import tri_gather_solve
+from solver.ml.mi_adapter import mi_gather_solve
 
 
 def solve_fast(game, step: int, max_depth: int = 80,
@@ -106,6 +107,9 @@ SOLVER_ALGORITHMS = {
     # —— 查表/补缺宏/DFS 都是方形语义，GUI 侧 `_start_auto_solve` 也据此
     # 拦掉其它算法。
     'tri_gather': ('  聚拢（三角形）', tri_gather_solve),
+    # 异形（米字格）：M3 落地，與 tri 同構（計劃 §8 M3）。動作同樣是 5 元組
+    # （族, 線, 側, 向, rep=(r,c,q)），回放層同樣零改動。
+    'mi_gather': ('  聚拢（米字格）', mi_gather_solve),
 }
 
 __all__ = ['solve', 'solve_fast', 'solve_greedy', 'SOLVER_ALGORITHMS',

@@ -3173,16 +3173,14 @@ class EventsMixin:
             direction = op['direction']
             step = op['step']
 
-            # 检查缝隙有效性
-            if gap_type == 'h' and not self.game.is_valid_h_line(gap_line):
-                self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 横向缝隙 {gap_line} 无效'
-                self.macro_error_timer = 60 * 3
-                self._set_macro_interrupted_notify()
-                self.macro_executing = False
-                self.macro_exec_ops = []
-                return
-            if gap_type == 'v' and not self.game.is_valid_v_line(gap_line):
-                self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 纵向缝隙 {gap_line} 无效'
+            # 检查缝隙有效性 + 该侧有块 —— 走三形态共有的
+            # `side_has_blocks`，不再直接调方形的 `is_valid_h_line/v_line`。
+            # 那两个方法**只有方形引擎有**，异形上会 AttributeError；而它们
+            # 的语义是「在边界盒内」，与异形「线两侧都有块」不是一回事。
+            if not self.game.side_has_blocks(gap_type, gap_line, side):
+                self.macro_error_msg = (
+                    f'宏在第 {self.macro_exec_index + 1} 步失败: '
+                    f'缝隙 {gap_type}{gap_line} 的第 {side} 侧无效或无方块')
                 self.macro_error_timer = 60 * 3
                 self._set_macro_interrupted_notify()
                 self.macro_executing = False
@@ -3196,13 +3194,24 @@ class EventsMixin:
             self.selected_block = None
 
             # 找到缝隙对应侧的任意一个方块（若有 rep_cell 则精确指定）
-            if 'rep_cell' in op:
-                rr, cc = op['rep_cell']
-                target_block = self._find_block_by_cell(rr, cc)
-                if target_block is None:
-                    target_block = self._find_block_on_side(gap_type, gap_line, side)
-            else:
-                target_block = self._find_block_on_side(gap_type, gap_line, side)
+            #
+            # `target_block` 必须在**两条路径上都赋值**：没有 rep_cell 的 op
+            # （方形的老宏、用户手录的宏）也要能走「在侧上随便找一个」这条路。
+            # 我第一版把 `else: target_block = self._find_block_on_side(...)`
+            # 当重复代码删掉了，结果方形老宏一进这里就
+            # `UnboundLocalError: target_block` —— **方形回放整条路径瘫掉**
+            # （G6 抓到的）。分支合并不等于赋值可以省。
+            target_block = None
+            if op.get('rep_cell') is not None:
+                rep = op['rep_cell']
+                rr, cc = rep[0], rep[1]
+                qq = rep[2] if len(rep) > 2 else None
+                target_block = self._find_block_by_cell(rr, cc, qq)
+            if target_block is None:
+                # rep 沒給、給的座標已失效、或指定的塊已被前面的步驟挪走
+                # —— 三種情況都退回「在側上找任意一個塊」。
+                target_block = self._find_block_on_side(
+                    gap_type, gap_line, side)
             if target_block is None:
                 self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 缝隙 {gap_type}{gap_line} {side} 侧无方块'
                 self.macro_error_timer = 60 * 3
@@ -3332,19 +3341,30 @@ class EventsMixin:
         self._gradient_gen += 1
         self._drain_gradient_queue()
 
-    def _find_block_on_side(self, gap_type: str, gap_line: int, side: str):
+    def _find_block_on_side(self, gap_type: str, gap_line, side):
         """
         在缝隙的指定侧找到一个方块
-        
+
         参数:
-            gap_type: 'h' 或 'v'
-            gap_line: 缝隙行/列号
-            side: 'above'/'below' (h) 或 'left'/'right' (v)
+            gap_type: 缝隙族（方形 'h'/'v'，三角 'h'/'p'/'n'，米字四族）
+            gap_line: 缝隙线号
+            side: 方形 'above'/'below'/'left'/'right'，异形 0/1
         返回:
             Block 对象或 None
+
+        **异形走 `side_of` 而不是坐标比较**：米字的线号在错位态下是半整数，
+        坐标也可能是半整数，「r <= line」这种比较要么 TypeError 要么判错。
         """
+        if side in (0, 1):
+            # 异形：委托给引擎的 side_of（三形态都有这个函数）
+            for c in self.game.positions():
+                if _side_of_any(self.game, gap_type, gap_line, c) == side:
+                    b = self.game.block_at(c)
+                    if b is not None:
+                        return b
+            return None
         for block in self.game.blocks:
-            r, c = block.location
+            r, c = block.location[0], block.location[1]
             if gap_type == 'h':
                 if side == 'above' and r <= gap_line:
                     return block
@@ -3357,11 +3377,21 @@ class EventsMixin:
                     return block
         return None
 
-    def _find_block_by_cell(self, row: int, col: int):
-        """根据精确坐标查找方块，供查表求解器指定代表方块。"""
+    def _find_block_by_cell(self, row, col, q=None):
+        """根据坐标查找方块，供求解器的 rep 锚定回放使用。
+
+        `q` 是**米字格必需的第三分量**：mi 的位置是 `(r, c, q)`，同一个
+        `(r, c)` 上最多有 8 块（A/B 两个晶格档 × NESW 四个朝向），只比前两
+        分量会定位到错误的块 —— 而 `opt` 是「从指定块起 DFS」，选错块就是
+        整步动作被静默改写成另一步（GUI 里表现为「解法播到一半走歪」）。
+        方形与三角的位置不含朝向分量，`q=None` 时只比前两分量。
+        """
         for block in self.game.blocks:
-            if block.location[0] == row and block.location[1] == col:
-                return block
+            if block.location[0] != row or block.location[1] != col:
+                continue
+            if q is not None and block.location[2] != q:
+                continue
+            return block
         return None
 
     def handle_macro_base_selection_click(self, x: int, y: int) -> bool:
@@ -3560,3 +3590,28 @@ class EventsMixin:
             return True
         
         return False
+
+
+# ---------------------------------------------------------------------------
+# 三形态共用的回放原语（模块级工具）
+# ---------------------------------------------------------------------------
+def _side_of_any(game, gap_type, line, key) -> int:
+    """缝隙侧判定 —— 方形以外的两种形态各有一个同名 `side_of`，这里按形态分派。
+
+    为什么不直接 `game.side_of`：`side_of` 是**模块级函数**（`game_triangle` /
+    `game_mi` 各自一份，语义一致：0 = 索引小的一侧、1 = 大的一侧），没有挂
+    在引擎类上。回放层要按当前 game 的形态挑对那一份，写成「引擎类 → 函数」
+    的映射比在调用点写 if/else 干净。
+
+    方形走的是坐标比较（`'above'/'below'/'left'/'right'` 词），不参与这个
+    函数 —— 调用方 `_find_block_on_side` 已经先用 `side in (0, 1)` 把方形
+    分流掉了。
+    """
+    mod = type(game).__module__
+    if mod == 'game_mi':
+        from game_mi import side_of
+    elif mod == 'game_triangle':
+        from game_triangle import side_of
+    else:
+        raise ValueError(f'no side_of for {mod}')
+    return side_of(gap_type, line, key)

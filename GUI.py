@@ -893,6 +893,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 摆在模式切换处而不是每次点击处检查，避免开着单次触控进米字格
         self.control_single_touch = False
 
+        # 切到米字格时把求解器换成 mi 版（M3 落地，計劃 §8 M3）：查表/补缺宏/
+        # DFS/IDA* 都是方形语义（4 元组动作 + 矩形目标形状 + 整数坐标），在 mi
+        # 上会静默走错 —— mi 的 rep 是 (r,c,q) 且坐标可能是半整数。
+        self.solver_algorithm = 'mi_gather'
+
         self.game = create_puzzle(m, n, step, kind='mi')
 
         # 重置状态
@@ -2716,9 +2721,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.macro_notify_msg = "三角形密铺只支援聚拢求解器，已自动切换"
                 self.macro_notify_timer = 120
 
-        # 米字格：8 向/4 族缝隙，求解器同样留到后续阶段
-        if self._mi_blocked('自动求解', '求解器后续阶段开发中'):
-            return
+        # 米字格：M3 已落地（solver/ml/mi_adapter.py），与 tri 同构放行。
+        # mi **只能走 mi_gather**，理由同三角：方形算法吃 4 元组动作 + 整数
+        # 坐标 + 矩形目标形状，在 mi 的 5 元组 / 半整数坐标上会静默走错。
+        # （另一半理由是 mi 目标形状有两个 —— m×n 与 n×m 轉置都算還原。）
+        # 这里不再调 `_mi_blocked('自动求解')`：它只在 mi_mode 下生效，而
+        # mi_mode 分支已自己处理完，写成 elif 只是留一条永远走不到的死路。
+        if getattr(self, 'mi_mode', False):
+            if self.solver_algorithm != 'mi_gather':
+                self.solver_algorithm = 'mi_gather'
+                self.macro_notify_msg = "米字格只支援聚拢求解器，已自动切换"
+                self.macro_notify_timer = 120
 
         # 标注录制中：自动回放不是人类示范，禁用
         if getattr(self, '_ann_recording', False):
@@ -2797,8 +2810,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     algorithm, SOLVER_ALGORITHMS['ida_star']
                 )
                 kwargs = {}
-                if algorithm in ('gather', 'tri_gather'):
-                    # 禁用的参数传 None（不设限）。tri_gather 同样吃这套
+                if algorithm in ('gather', 'tri_gather', 'mi_gather'):
+                    # 禁用的参数传 None（不设限）。异形两个同样吃这套
                     # —— 设置面板里的参数不该只对方形生效。
                     for k, v in self.gather_params.items():
                         kwargs[k] = v if self.gather_enabled.get(k, True) else None                # 填洞/补缺宏：流式播放——每解决一个 couple 即推送段
@@ -3386,11 +3399,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             if rep is None and rep_cells and i < len(rep_cells):
                 rep = rep_cells[i]
             if rep is not None:
-                # 方形 rep 是 (row, col)；三角是 (i, j, up)。回放层
-                # `_find_block_by_cell` 只比前两分量，所以三角多带的 up
-                # 不影响定位（同一格上 ▲/▼ 各一块，但 rep 的前两分量
-                # 已足以定位到具体 Block 对象）。
-                op['rep_cell'] = list(rep)[:2]
+                # rep 的第三分量是**米字格必需的**（q 朝向）：mi 的位置是
+                # (r, c, q)，同一个 (r, c) 上最多 8 块，只带前两分量会定位到
+                # 错的块 → opt 从错块起 DFS → 整步动作被静默改写。方形与三角
+                # 的位置不含朝向分量（三角第三位是 up，同格 ▲/▼ 各一块，
+                # 前两分量已足够），所以按形态裁长度。
+                loc = list(rep)
+                op['rep_cell'] = loc[:3] if self.mi_mode else loc[:2]
             ops.append(op)
 
         self._gather_info = {
