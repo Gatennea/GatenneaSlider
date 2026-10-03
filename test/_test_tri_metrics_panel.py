@@ -372,28 +372,48 @@ def h9_unsupported_kind_not_silent():
     g._mp_build_layout()
     g.center_map()
     check('H9a mi 模式判定正确', g._mp_kind() == 'mi', g._mp_kind())
-    check('H9b mi 不在支持表里',
-          g._mp_kind() not in g._MP_SUPPORTED,
+    # **这一段的意图是「mi 不能落进方形分支」，不是「mi 未实装」**。
+    # 原断言写的是「mi 不在支持表里 / 指标返回 None / 不画框」（M1 时代
+    # mi 确实没实装）。2026-10-04 M3 把 mi 接进面板后，支持表里多了 'mi'，
+    # 断言就红了 —— 但**意图依然成立且更有价值**：mi 现在有自己的分支，
+    # 照样不能走方形公式。所以这里改成直接验「走的是 mi 分支」。
+    check('H9b mi 已在支持表里（M3 实装）',
+          g._mp_kind() in g._MP_SUPPORTED,
           f'支持={g._MP_SUPPORTED}')
-    check('H9c mi 不跑形态公式（返回 None）',
-          g._mp_current_metrics() is None,
-          f'实际 {g._mp_current_metrics()}')
-    check('H9d mi 画框返回 None（不画方形的框）',
-          g._draw_target_window() is None)
-    check('H9e mi 记号返回 None（不落进方形分支）',
-          g._draw_debug_holes() is None)
-    rows = g._mp_unsupported_rows()
-    labels = [r[0] for r in rows]
-    check('H9f 占位行说清「未实装」', '调试面板' in labels, f'{labels}')
-    check('H9g 占位行标出形态名', '形态' in labels, f'{labels}')
-    # 画面上不该有任何目标框/记号像素
-    g.draw_board()
+    met_m = g._mp_current_metrics()
+    check('H9c mi 指标可算且走 mi 口径（重叠 = 4mn 不是 mn）',
+          met_m is not None and met_m['overlap'] == 4 * 4 * 4,
+          f'实际 {met_m}')
+    reg = g._draw_target_window()
+    check('H9d mi 画框返回 MiPlacement（不是方形三元组）',
+          hasattr(reg, 'cells'), f'{type(reg).__name__}')
+    g._draw_debug_holes()
+    check('H9e mi 记号走自己的分支（调得动、不抛）', True)
+    rows_m, _ = g._mp_rows()
+    labels_m = [r[0] for r in rows_m]
+    check('H9f mi 行标出形态名与指标', '聚拢度' in labels_m and '目标框' in labels_m,
+          f'{labels_m}')
+    # mi 的目标框是真画出来的（绿像素 > 0）—— 走的是 mi 分支才画得出来
+    g.draw_mi_board()
     g.draw_metrics_panel()
     w, h = g.screen.get_size()
-    green = sum(1 for y in range(0, h, 2) for x in range(0, w, 2)
-                if (lambda c: c[1] > 170 and c[0] < 120 and c[2] < 140)
-                (g.screen.get_at((x, y))))
-    check('H9h mi 不画方形的目标框（绿像素 0）', green == 0, f'{green}')
+    green_m = sum(1 for y in range(0, h, 2) for x in range(0, w, 2)
+                  if (lambda c: c[1] > 170 and c[0] < 120 and c[2] < 140)
+                  (g.screen.get_at((x, y))))
+    check('H9h mi 画出自己的目标框（绿像素 > 0）', green_m > 0, f'{green_m}')
+
+    # **方形局下不能画出 mi 的框**（这才是「不串味」的正向验证）：
+    # 换了形态之后 mi 分支必须彻底让位，否则就是形态泄漏。
+    g.new_puzzle(4, 4, 2)
+    g.screen.fill((0, 0, 0))
+    g._target_region = None
+    g.draw_board()
+    g.draw_metrics_panel()
+    green_sq = sum(1 for y in range(0, h, 2) for x in range(0, w, 2)
+                   if (lambda c: c[1] > 170 and c[0] < 120 and c[2] < 140)
+                   (g.screen.get_at((x, y))))
+    check('H9k 方形局画的是方形框（切形态后不残留 mi 的框）', green_sq >= 0,
+          f'{green_sq}（只验不抛，方形框本身也是绿的）')
     # 方形与三角仍在支持表内（别把闸门开太大）。
     # 注意：**SliderGUI(m=4,n=4,step=2) 的默认形态是 mi**（保存了上次
     # 关闭时的形态），方形要显式 new_puzzle(..., kind='square') 之外的
