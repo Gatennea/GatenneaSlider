@@ -21,6 +21,7 @@ r"""三角 F2 调试面板回归（M0 验收项，计划 §4）。
 """
 
 import os
+import random
 import sys
 
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
@@ -407,6 +408,105 @@ def h9_unsupported_kind_not_silent():
           f'kind={g2._mp_kind()}')
 
 
+def h10_pick_hole_and_drag():
+    """点洞选洞 + 点空白拖动（真实缺陷回归，2026-10-03 用户报）。
+
+    用户症状：「点击空白处无法拖动视图」，控制台一堆 non-fatal：
+        File "gui/events.py", line 827, in handle_events
+          hole = self.get_hole_at_pos(x, y)
+        File "gui/metrics_panel.py", line 366, in get_hole_at_pos
+          holes, _, _ = detect_holes(...)
+        TypeError: cannot unpack non-iterable TriPlacement object
+
+    两层根因：
+      ① `get_hole_at_pos` 是方形专用 —— 把 `_target_region` 当
+         `(r0, c0, (rh, cw))` 解包，而三角下它是 `TriPlacement` 对象。
+      ② **异常抛在 `is_dragging = True` 之前**，所以拖动起不来。
+         而且即使不崩，原来「命中洞就 continue」也等于「点上洞的地方
+         不能拖动」——与「点任意空白拖动」冲突。
+
+    所以要验三件事：① 三角点洞能选中（不是只求不崩）；② 点空白能拖动；
+    ③ 在洞上按下后拖动 → 拖动优先、不选洞。
+    """
+    import pygame
+    from GUI import SliderGUI
+    from solver.ml.tri_holes import detect_tri_holes
+    g = SliderGUI(m=6, n=6, step=2)
+    g.new_triangle_puzzle(4, 2)
+    random.seed(3)
+    g.game.shuffle(120, 2)
+    g.animation_enabled = False
+    g.show_metrics_panel = True
+    g._mp_build_layout()
+    g.center_map()
+    best = g._compute_target_region()
+    check('H10a 三角 region 是 TriPlacement（非三元组）',
+          hasattr(best, 'cells'), type(best).__name__)
+
+    holes, _ = detect_tri_holes(
+        frozenset(tuple(b.location) for b in g.game.blocks), best.cells, 2)
+    view = g._tri_view()
+    w, h = g.screen.get_size()
+
+    def send(t, pos, button=1):
+        pygame.event.clear()
+        pygame.event.post(pygame.event.Event(t, {'pos': pos, 'button': button}))
+        g.handle_events()
+
+    D, U, M = (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP,
+               pygame.MOUSEMOTION)
+    # ① 点空白 → 拖动（原来在这里抛 TypeError）
+    blank = (int(w * 0.85), int(h * 0.85))
+    if not g.is_blank_area(*blank):
+        blank = (int(w * 0.12), int(h * 0.88))
+    cam0 = (g.camera_x, g.camera_y)
+    send(D, blank)
+    check('H10b 点空白后 is_dragging=True（拖动起手不被异常打断）',
+          g.is_dragging is True)
+    send(M, (blank[0] + 40, blank[1] + 25), button=0)
+    send(U, (blank[0] + 40, blank[1] + 25))
+    check('H10c 拖动后 camera 真的动了',
+          abs(g.camera_x - cam0[0]) > 5 or abs(g.camera_y - cam0[1]) > 5,
+          f'Δ=({g.camera_x - cam0[0]:.0f},{g.camera_y - cam0[1]:.0f})')
+    check('H10d 拖动没有误选洞', g.selected_hole is None)
+
+    if not holes:
+        print('     （本局面无洞，跳过点洞部分）')
+        return
+    cell = holes[0]['cells'][0]
+    cx, cy = view.piece_center(*cell)
+    sxy = (int(g.world_to_screen(cx, cy)[0]),
+           int(g.world_to_screen(cx, cy)[1]))
+    # ② 点洞（不拖）→ 选中
+    send(D, sxy)
+    send(U, sxy)
+    check('H10e 三角点洞能选中（不是只求不崩）',
+          g.selected_hole is not None
+          and g.selected_hole['cells'] == holes[0]['cells'],
+          None if g.selected_hole is None else g.selected_hole['type'])
+    # ③ 在洞上拖动 → 拖动优先，不选洞
+    g.selected_hole = None
+    cam1 = (g.camera_x, g.camera_y)
+    send(D, sxy)
+    send(M, (sxy[0] + 50, sxy[1] + 30), button=0)
+    send(U, (sxy[0] + 50, sxy[1] + 30))
+    check('H10f 在洞上拖动 → 拖动优先、不选洞',
+          g.selected_hole is None)
+    check('H10g 在洞上拖动 camera 动了',
+          abs(g.camera_x - cam1[0]) > 5 or abs(g.camera_y - cam1[1]) > 5)
+
+    # ④ mi 也不崩（未实装形态返回 None）
+    g2 = SliderGUI(m=4, n=4, step=2)
+    g2.new_mi_puzzle(4, 4, 2)
+    g2.animation_enabled = False
+    g2.show_metrics_panel = True
+    try:
+        check('H10h mi 点空白处不崩（未实装形态返回 None）',
+              g2.get_hole_at_pos(100, 100) is None)
+    except Exception as e:
+        check('H10h mi 点空白处不崩', False, f'{type(e).__name__}: {e}')
+
+
 def main():
     print('=' * 68)
     print('三角 F2 调试面板回归（M0 验收）')
@@ -420,6 +520,8 @@ def main():
     h6_palette()
     h7_square_no_regression()
     h8_mi_shifted_no_crash()
+    h9_unsupported_kind_not_silent()
+    h10_pick_hole_and_drag()
     h9_unsupported_kind_not_silent()
     print('\n' + '=' * 68)
     if _failures:

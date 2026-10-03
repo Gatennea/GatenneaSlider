@@ -40,6 +40,9 @@ class MetricsPanelMixin:
         self.mp_title_rect = None
         self.mp_close_rect = None
         self.selected_hole = None  # 标记学习：当前选中的洞
+        # 点空白时记下「按在哪个洞上」，松手且**没真正拖动**才真的选它
+        # （gui/events.py 的点空白分支）。避免选洞与拖动视图抢同一手势。
+        self._pending_hole_pick = None
 
     def _mp_panel_size(self):
         """计算面板宽高（6 行指标：聚拢度/重叠/边界盒/填充率/目标角点/mod 状态）。"""
@@ -351,11 +354,25 @@ class MetricsPanelMixin:
         """返回屏幕坐标处的洞（若点击在洞格子上），否则 None。
 
         與調試面板使用同一個目標窗口，確保可點的洞 = 畫出的標記。
+
+        **必须按形态分派**（2026-10-03 修崩溃）：原先只有方形一份，直接把
+        `self._target_region` 当 `(r0, c0, (rh, cw))` 解包喂给 `detect_holes`。
+        三角下 `_target_region` 是 `TriPlacement` 对象 →
+        `TypeError: cannot unpack non-iterable TriPlacement object`，
+        而这条路径在「点空白处选洞」里，**异常会打断拖动视口的起手**，
+        症状是「点空白拖不动 + 控制台一堆 non-fatal」。
+
+        未实装形态（mi）直接返回 None，与面板的「本形态尚未实装」一致。
         """
-        from solver.ml.hole_detector import detect_holes
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
             return None
+        kind = self._mp_kind()
+        if kind not in self._MP_SUPPORTED:
+            return None
+        if kind == 'triangle':
+            return self._get_tri_hole_at_pos(screen_x, screen_y)
+        from solver.ml.hole_detector import detect_holes
         region = getattr(self, '_target_region', None)
         if region is None:
             region = self._compute_target_region()
@@ -522,6 +539,39 @@ class MetricsPanelMixin:
                 x + width - self._MP_PAD - value_surf.get_width(), row_y
             ))
             row_y += self._MP_ROW_H
+
+    def _get_tri_hole_at_pos(self, screen_x, screen_y):
+        """三角版「点洞」：命中判定用**重心距离**，不用方形的矩形盒。
+
+        方形的洞格是世界坐标里的轴对齐矩形（`bx <= wx < bx+cell`）；三角的
+        单元是斜边三角形，矩形盒会溢出到邻格上——点在两格之间的缝上就可能
+        同时命中两格。改用「世界点到该单元重心的距离 < 外接盒半径」，与
+        `_draw_tri_marks` 画记号时用的 `piece_center` 是同一个点，
+        保证**能点到的洞 = 画出的标记**（同方形分支的纪律）。
+        """
+        from solver.ml.tri_holes import detect_tri_holes
+        game = getattr(self, 'game', None)
+        if game is None or not getattr(game, 'blocks', None):
+            return None
+        best = getattr(self, '_target_region', None)
+        if best is None or not hasattr(best, 'cells'):
+            best = self._compute_target_region()
+        if best is None or not hasattr(best, 'cells'):
+            return None
+        coords = frozenset(tuple(b.location) for b in game.blocks)
+        step_len = getattr(self, 'current_step', 1)
+        holes, _ = detect_tri_holes(coords, best.cells, step_len)
+
+        wx, wy = self.screen_to_world(screen_x, screen_y)
+        view = self._tri_view()
+        # 单元外接盒半宽 = 0.5·cell；取 0.55 留一点容差又不至于选中邻格
+        reach = view.cell_size * 0.55
+        for h in holes:
+            for (i, j, up) in h['cells']:
+                cx, cy = view.piece_center(i, j, up)
+                if (wx - cx) ** 2 + (wy - cy) ** 2 <= reach * reach:
+                    return h
+        return None
 
     def handle_metrics_panel_event(self, event):
         """处理指标面板事件（拖动 + 关闭），返回 True 表示事件已消费。"""

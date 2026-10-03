@@ -822,23 +822,27 @@ class EventsMixin:
                             # 跟随中点击空白 → 清除跟随，允许平移地图
                             if self.drag_following:
                                 self.clear_drag_follow()
-                            # 调试面板打开时，点击洞选中（标记学习）
-                            if getattr(self, 'show_metrics_panel', False):
-                                hole = self.get_hole_at_pos(x, y)
-                                if hole is not None:
-                                    if (self.selected_hole is not None and
-                                            set(hole['cells']) == set(self.selected_hole.get('cells', []))):
-                                        # 再点一次已选中的洞 = 取消选中
-                                        self.selected_hole = None
-                                        self.macro_notify_msg = "已取消选中洞"
-                                    else:
-                                        self.selected_hole = hole
-                                        self.macro_notify_msg = f"选中洞：{hole['type']} {hole['size']}（{len(hole['cells'])}格）"
-                                    self.macro_notify_timer = 120
-                                    continue
+                            # 拖动优先起手（2026-10-03 修）：原实现在这里
+                            # 调 get_hole_at_pos 并在命中时 `continue`，
+                            # ① 那个函数是方形专用，三角下抛 TypeError
+                            #    （点空白报 non-fatal 且**拖动起不来**，
+                            #     因为异常发生在下面 is_dragging=True 之前）；
+                            # ② 即使不崩，命中洞就 continue 也等于「点上洞的
+                            #    地方不能拖动」，与「点任意空白拖动」冲突。
+                            # 现在：按下就起拖 + 记下待选洞，松开时若确实
+                            # 没拖动过才做选洞动作。
                             self.is_dragging = True
                             self.drag_start = (x, y)
                             self.drag_offset = (self.camera_x, self.camera_y)
+                            self._pending_hole_pick = None
+                            if getattr(self, 'show_metrics_panel', False):
+                                try:
+                                    self._pending_hole_pick = \
+                                        self.get_hole_at_pos(x, y)
+                                except Exception:
+                                    # 选洞是附属功能，绝不能影响拖动
+                                    self._pending_hole_pick = None
+                            continue
 
                         # 操作日志：这一下的裁定与反馈。提示原文照抄（与玩家描述
                         # 对照的唯一凭据），没有新提示就记 null——记旧提示会
@@ -889,6 +893,32 @@ class EventsMixin:
                         self.is_dragging = False
                         self.slider_dragging = False
                         self.zoom_slider_dragging = False
+
+                        # 点洞选洞（标记学习）：只在「按下→松开之间没真正
+                        # 拖动」时才做，避免与拖动视图抢同一个手势。
+                        # 判据用 camera 是否变过——比比较坐标更可靠（缩放/
+                        # 跟随模式也会动 camera，但那些不是本路径）。
+                        pending = getattr(self, '_pending_hole_pick', None)
+                        self._pending_hole_pick = None
+                        if (pending is not None
+                                and abs(self.camera_x
+                                        - getattr(self, 'drag_offset',
+                                                   self.camera_x)[0]) < 1.0
+                                and abs(self.camera_y
+                                        - getattr(self, 'drag_offset',
+                                                   self.camera_y)[1]) < 1.0):
+                            if (self.selected_hole is not None
+                                    and set(pending['cells'])
+                                    == set(self.selected_hole.get('cells', []))):
+                                # 再点一次已选中的洞 = 取消选中
+                                self.selected_hole = None
+                                self.macro_notify_msg = "已取消选中洞"
+                            else:
+                                self.selected_hole = pending
+                                self.macro_notify_msg = (
+                                    f"选中洞：{pending['type']} {pending['size']}"
+                                    f"（{len(pending['cells'])}格）")
+                            self.macro_notify_timer = 120
                 
                 # 鼠标滚轮
                 elif event.type == pygame.MOUSEWHEEL:
