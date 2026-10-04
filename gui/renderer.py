@@ -792,6 +792,22 @@ class RendererMixin:
         marker_r = max(9.0, min(34.0, block_r * 0.30)) if block_r > 0 else 12.0
         # 让位 = 块半径（贴到切片外沿）+ 标记半径 + 一点呼吸空隙
         pad = block_r + marker_r + max(4.0, block_r * 0.10)
+        # 出屏收缩：斜方向一格很长，标准让位可能把标记推出画面（实测米字
+        # 3×3 对角族右下端 y=880 而屏高 620）。逐步缩短让位，最低贴到
+        # 「切片外沿 + 标记半径」，保证标记可见且仍指向正确的端。
+        m = marker_r + 6
+
+        def _inside(x, y):
+            return m <= x <= self.screen_width - m and m <= y <= self.screen_height - m
+
+        p = pad
+        for _ in range(6):
+            a_hi = (hi_pt[0] + ux * p, hi_pt[1] + uy * p)
+            a_lo = (lo_pt[0] - ux * p, lo_pt[1] - uy * p)
+            if _inside(*a_hi) and _inside(*a_lo):
+                break
+            p *= 0.65
+        pad = max(p, marker_r + 4.0)
         ends = [(dirs[0], (hi_pt[0] + ux * pad, hi_pt[1] + uy * pad),
                  maxstep[dirs[0]], (ux, uy)),
                 (dirs[1], (lo_pt[0] - ux * pad, lo_pt[1] - uy * pad),
