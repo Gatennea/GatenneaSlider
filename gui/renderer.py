@@ -14,8 +14,13 @@ import math
 
 import pygame
 
+from game import DIRECTIONS as SQ_DIRECTIONS
 from game_mi import mi_key, mi_vertices
+from game_mi import DIRECTIONS as MI_DIRECTIONS
+from game_mi import GAP_DIRECTIONS as MI_GAP_DIRECTIONS
 from game_triangle import tri_key
+from game_triangle import DIRECTIONS as TRI_DIRECTIONS
+from game_triangle import GAP_DIRECTIONS as TRI_GAP_DIRECTIONS
 from gui.cell_class import cell_class, class_index
 from gui.mi_view import MiBoardView
 from gui.triangle_view import TriangleBoardView
@@ -174,6 +179,9 @@ class RendererMixin:
         # 悬停连锁提示：同類（含朝向）的塊提亮、空位實心提亮（悬停键更亮）
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+        # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
+        _sel_anim = self._sel_anim_border()
+
         for group, is_selected in ((normal, False), (selected, True)):
             for block, i, j, up, is_follow in group:
                 fill = self.colors['block_selected'] if is_selected else self.colors['block']
@@ -185,6 +193,9 @@ class RendererMixin:
                     fill = tuple(int(ch * 0.45) for ch in fill[:3])
                     border_color = (220, 80, 40)
                     border_w = max(1, int(3 * self.zoom))
+                elif _sel_anim is not None and is_selected:
+                    # S1-2：撤销冷色/重做暖色——只换边框，填充不动（整片高亮是特色）
+                    border_color, border_w = _sel_anim
                 else:
                     # 分组着色：從外側向內一圈的縮環畫法（朝向不參與著色）。
                     # 描邊色不能直接換成組色：pygame 多邊形描邊以邊線為中心
@@ -236,6 +247,9 @@ class RendererMixin:
         if getattr(self, 'show_metrics_panel', False):
             self._draw_target_window()
             self._draw_debug_holes()
+
+        # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
+        self._draw_gap_direction_annotation()
 
     def draw_mi_board(self):
         """繪製米字格棋盤（两次触控 + 虚拟键盘，方向由第二下的拖动给出）。
@@ -310,6 +324,9 @@ class RendererMixin:
         # 悬停连锁提示：同類（含朝向 q）的塊提亮、空位實心提亮
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+        # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
+        _sel_anim = self._sel_anim_border()
+
         for gi, group in enumerate((normal, selected)):
             base = (self.colors['block_selected'] if gi
                     else self.colors['block'])
@@ -321,6 +338,9 @@ class RendererMixin:
                     fill = tuple(int(ch * 0.45) for ch in base[:3])
                     border_color = (220, 80, 40)
                     border_w = max(1, int(3 * self.zoom))
+                elif _sel_anim is not None and gi:
+                    # S1-2：撤销冷色/重做暖色——只换边框，填充不动（整片高亮是特色）
+                    border_color, border_w = _sel_anim
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 pygame.draw.polygon(self.screen, fill, poly)
@@ -332,7 +352,7 @@ class RendererMixin:
                 # 分组着色：縮環從外側向內一圈（位置類不含朝向 q，半整數
                 # 座標在 cell_class 內部整數化），線寬沿用方形慣例。pygame
                 # 多邊形描邊向外也擴半個線寬，直接描會漫進縫隙蓋住選中紅線
-                if (not warn
+                if (not warn and not (_sel_anim is not None and gi)
                         and getattr(self, 'coloring_enabled', False)
                         and self.current_step > 1):
                     ring_w = max(2, int(4 * self.zoom))
@@ -360,6 +380,9 @@ class RendererMixin:
         if getattr(self, 'show_metrics_panel', False):
             self._draw_target_window()
             self._draw_debug_holes()
+
+        # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
+        self._draw_gap_direction_annotation()
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一），只畫在棋形範圍內。
@@ -423,12 +446,6 @@ class RendererMixin:
                 pygame.draw.line(self.screen, self.colors['line'],
                                (screen_gap_x, 0), (screen_gap_x, self.screen_height), 3)
 
-        # S1-4：选中缝两端方向标注（仅增强模式）。整片高亮（be_opted 填充）保留不动。
-        if getattr(self, 'ui_mode', 'enhanced') == 'enhanced':
-            self._draw_gap_direction_annotation(
-                scaled_cell + scaled_gap, board_x, board_y,
-                min_row, max_row, min_col, max_col)
-
         # 绘制未选中的横向缝隙
         for i in range(min_row, max_row + 2):
             gap_y = board_y + i * (scaled_cell + scaled_gap) - scaled_gap // 2
@@ -482,6 +499,9 @@ class RendererMixin:
         # 悬停连锁提示：预计算高亮格集合（含空格），块循环中叠半透明白
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+        # S1-2：撤销/重做的边框配色，整个高亮窗口内共用一处结果（每帧只算一次）
+        _sel_anim = self._sel_anim_border()
+
         # 绘制所有滑块
         for block in self.game.blocks:
             if id(block) in follow_map:
@@ -513,17 +533,10 @@ class RendererMixin:
             else:
                 _is_shaking = False
 
-            # 分组着色：只在滑块边界描边，中心保持原画风（淡蓝/选中淡绿）
-            if block.be_opted:
-                if (getattr(self, 'ui_mode', 'enhanced') == 'enhanced'
-                        and getattr(self, '_sel_anim_timer', 0) > 0
-                        and getattr(self, '_sel_anim_is_undo', None) is not None):
-                    # S1-2：撤销走冷色（蓝）/ 重做走暖色（橙），与「选中缝」纯红、普通选区分色
-                    fill = (90, 150, 235) if self._sel_anim_is_undo else (240, 150, 60)
-                else:
-                    fill = self.colors['block_selected']
-            else:
-                fill = self.colors['block']
+            # 分组着色：只在滑块边界描边，中心保持原画风（淡蓝/选中淡绿）。
+            # S1-2 的撤销/重做**不碰填充**——整片 be_opted 提亮是原始设计特色，
+            # 冷/暖语义改由边框承担（见下方 _sel_anim 分支）。
+            fill = self.colors['block_selected'] if block.be_opted else self.colors['block']
             # 拖拽跟随无效（碰撞/断开）时：变暗滑块 + 橙色边框提示不可移动
             if (self.drag_following and self.drag_follow_invalid
                     and id(block) in follow_map):
@@ -536,7 +549,10 @@ class RendererMixin:
                 border_color = (220, 80, 40)
                 border_w = max(1, int(3 * self.zoom))
             else:
-                if getattr(self, 'coloring_enabled', False) and self.current_step > 1:
+                # S1-2：撤销冷色/重做暖色只换边框，优先级高于分组着色
+                if _sel_anim is not None and block.be_opted:
+                    border_color, border_w = _sel_anim
+                elif getattr(self, 'coloring_enabled', False) and self.current_step > 1:
                     border_color = self._group_color(block.location[0], block.location[1])
                     border_w = max(2, int(7 * self.zoom)) #暫定7,不要改
                 else:
@@ -596,72 +612,217 @@ class RendererMixin:
             self._draw_target_window()
             self._draw_debug_holes()
 
-    # ---------- S1-4：选中缝两端的方向标注 ----------
+        # S1-4：方向标注必须画在**滑块之后**（最上层）。放在缝隙绘制阶段会被
+        # 后画的滑块盖掉一半——圆的一半陷在块底下，看着像画崩了。
+        self._draw_gap_direction_annotation()
+
+    # ---------- S1-2 / S1-4：三形态共用的语义反馈原语 ----------
+    #
+    # **这一段是三形态唯一的样式来源**。任何只写进单一 draw_*_board 的效果
+    # 都会在另外两种谜题里缺席（2026-10-05 用户指出：一处有效、另两种没有）。
+    # 新增任何「发生了什么」的视觉反馈，一律在此处定义、三处各自调用。
+    #
+    # S1-4 曾犯的两个错，改前务必先读：
+    #  (a) 图层：标注必须画在**滑块之后**。原先塞在缝隙绘制之前，滑块一盖只剩
+    #      上半个圆看得见。
+    #  (b) 锚点：必须按 **be_opted 选中切片的实际范围** 定位，不能按整条缝/棋盘
+    #      边界算。缝是刀，同一条缝点不同的块带走的东西不同，端点跟着切片走才对。
+    #
+    # 几何一律由 `game.DIRECTIONS` 的格增量 + 形态自己的 view 反算屏幕位移，
+    # 不维护「方向字母 → 屏幕向量」表：三角的 'w' 与米字的 'w' 屏幕朝向完全
+    # 不同，任何硬编码必然错其一。
+
+    # 撤销=冷色 / 重做=暖色。只换**边框**，不动填充——整片 be_opted 提亮是
+    # 原始设计特色（用户 2026-10-05 明确要求保色）。
+    SEL_ANIM_BORDER_UNDO = (70, 150, 255)
+    SEL_ANIM_BORDER_REDO = (255, 150, 50)
+
+    def _sel_anim_border(self):
+        """S1-2：撤销/重做高亮窗口内的边框配色 → (色, 线宽)，其余时段回 None。
+
+        三形态共用同一处定义。调用方按优先级套用：
+        拖拽越界 / 撞墙抖动 > 本反馈 > 分组着色。
+        """
+        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            return None
+        if getattr(self, '_sel_anim_timer', 0) <= 0:
+            return None
+        undo = getattr(self, '_sel_anim_is_undo', None)
+        if undo is None:
+            return None
+        color = self.SEL_ANIM_BORDER_UNDO if undo else self.SEL_ANIM_BORDER_REDO
+        return (color, max(2, int(4 * self.zoom)))
+
+    def _advance_key(self, key, delta):
+        """形态中立的「key + 格增量」：朝向分量不参与平移。"""
+        if len(key) == 2:
+            return (key[0] + delta[0], key[1] + delta[1])
+        return (key[0] + delta[0], key[1] + delta[1], key[2])
+
+    def _key_center(self, key):
+        """形态中立的 key → 屏幕中心。"""
+        if getattr(self, 'triangle_mode', False):
+            view = self._tri_view()
+            return self.world_to_screen(
+                *view.piece_center(key[0], key[1], bool(key[2])))
+        if getattr(self, 'mi_mode', False):
+            view = self._mi_view()
+            return self.world_to_screen(
+                *view.piece_center(key[0], key[1], key[2]))
+        step_px = self.cell_size * self.zoom + self.gap_width * self.zoom
+        return (key[1] * step_px + step_px / 2.0 + self.camera_x,
+                key[0] * step_px + step_px / 2.0 + self.camera_y)
+
+    def _game_dir_tables(self):
+        """该形态的 (DIRECTIONS, GAP_DIRECTIONS)。
+
+        **两张表都是模块级常量，不是 game 实例的属性** —— 用
+        `getattr(self.game, 'DIRECTIONS')` 取到的是空 dict，标注会静默
+        退化成「什么都不画」（2026-10-05 踩：三形态全返回 None）。
+        方形没有模块级 GAP_DIRECTIONS，缝族只有 h/v，这里内置兜底。
+        """
+        if getattr(self, 'triangle_mode', False):
+            return TRI_DIRECTIONS, TRI_GAP_DIRECTIONS
+        if getattr(self, 'mi_mode', False):
+            return MI_DIRECTIONS, MI_GAP_DIRECTIONS
+        return SQ_DIRECTIONS, {'h': ('a', 'd'), 'v': ('w', 's')}
+
+    def _piece_screen_radius(self):
+        """选中切片里代表性那块的**屏幕外接半径**（中心到最远顶点）。
+
+        标记尺寸与让位距离都以此为准，不用「一格的屏幕长度」：三角/米字在
+        斜方向上一格比块本身长得多（实测三角 k=3 未配好 zoom 时 ulen=235px
+        而盘整个超出屏幕），按格长让位会把标记推到画面外。
+        """
+        for b in self.game.blocks:
+            if not b.be_opted:
+                continue
+            key = tuple(b.location)
+            cx, cy = self._key_center(key)
+            if getattr(self, 'triangle_mode', False):
+                view = self._tri_view()
+                pts = [self.world_to_screen(*p)
+                       for p in view.piece_polygon(
+                           key[0], key[1], bool(key[2]))]
+            elif getattr(self, 'mi_mode', False):
+                view = self._mi_view()
+                pts = [self.world_to_screen(*p)
+                       for p in view.piece_polygon(key[0], key[1], key[2])]
+            else:
+                step_px = self.cell_size * self.zoom + self.gap_width * self.zoom
+                half = step_px / 2.0
+                pts = [(cx - half, cy - half), (cx + half, cy - half),
+                       (cx + half, cy + half), (cx - half, cy + half)]
+            return max(math.hypot(p[0] - cx, p[1] - cy) for p in pts)
+        return 0.0
+
     def _get_gap_direction_annotation(self):
-        """返回选中缝两端能推的方向与最大格数：{direction: max_step}。
-        max_step=0 表示该方向走不了（画灰叉）。仅在缝/切片变化时重算（按选中块签名缓存）。"""
+        """选中缝的方向信息，按「缝 + 选中切片」签名缓存。
+
+        返回 dict 或 None，字段：
+            ends     : [(方向字母, 锚点(x,y), 可走格数, 该端屏幕单位向量), ...] 共两端
+            vec      : dirs[0] 一格的屏幕单位向量 (ux, uy)
+            marker_r : 标记圆半径。按**块尺寸**缩放，不按格长——斜方向一格
+                       远比一块长，按格长缩放会得到一个大到不合适的圆
+        """
         if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
             return None
         gap = getattr(self, 'selected_gap', None)
-        if gap is None:
+        # 动画播放中 block.location 仍是起点，投影会滞后一整个位移；直接不画
+        if gap is None or getattr(self, 'animating', False):
             self._gap_annot = None
             return None
         chosen = [b for b in self.game.blocks if b.be_opted]
         if not chosen:
             self._gap_annot = None
             return None
-        sig = (gap, tuple(b.location for b in chosen))
+        sig = (gap, tuple(tuple(b.location) for b in chosen))
         if getattr(self, '_gap_annot_sig', None) == sig:
             return getattr(self, '_gap_annot', None)
-        gtype = gap[0]
-        dirs = ['a', 'd'] if gtype == 'h' else ['w', 's']
-        result = {}
+
+        deltas, table = self._game_dir_tables()
+        dirs = tuple(table.get(gap[0], ()))
+        if len(dirs) != 2 or dirs[0] not in deltas or dirs[1] not in deltas:
+            self._gap_annot = None
+            return None
+        sample = tuple(chosen[0].location)
+        if len(sample) not in (2, 3):
+            self._gap_annot = None
+            return None
+
+        # 位移轴：dirs[0] 一格的屏幕位移。取数字一个小时/一个地铁都不会出错的
+        # 唯一办法——让形态自己的几何去回答，而不是查字母表。
+        c0 = self._key_center(sample)
+        c1 = self._key_center(self._advance_key(sample, deltas[dirs[0]]))
+        ux, uy = c1[0] - c0[0], c1[1] - c0[1]
+        ulen = math.hypot(ux, uy)
+        if ulen < 1e-6:
+            self._gap_annot = None
+            return None
+        ux, uy = ux / ulen, uy / ulen
+
+        # 切片的两个极端位置 —— **只看选中切片，不看整条缝**（修 bug-b）。
+        # 取投影包围盒的「外沿中点」而不是某个极端块的中心：同一投影值上常常
+        # 排着好几个块（例如横缝上同一列的上下两块），取块中心会让锚点在它们
+        # 之间乱跳，取决于遍历顺序。
+        px, py = -uy, ux                       # 垂直于推行方向
+        ts, ss = [], []
+        for b in chosen:
+            cx, cy = self._key_center(tuple(b.location))
+            ts.append(cx * ux + cy * uy)
+            ss.append(cx * px + cy * py)
+        t_lo, t_hi = min(ts), max(ts)
+        s_mid = (min(ss) + max(ss)) / 2.0
+        hi_pt = (ux * t_hi + px * s_mid, uy * t_hi + py * s_mid)
+        lo_pt = (ux * t_lo + px * s_mid, uy * t_lo + py * s_mid)
+
+        # 可走格数：逐步试算（成本集中在缓存未命中那一帧）
+        maxstep = {}
         for d in dirs:
-            max_step = 0
+            n = 0
             for s in range(1, 80):
-                positions, _ = self.game.try_move_ex(d, s)
+                positions, _reason = self.game.try_move_ex(d, s)
                 if positions:
-                    max_step = s
+                    n = s
                 else:
                     break
-            result[d] = max_step
-        self._gap_annot_sig = sig
-        self._gap_annot = result
-        return result
+            maxstep[d] = n
 
-    def _draw_gap_direction_annotation(self, step, board_x, board_y,
-                                       min_row, max_row, min_col, max_col):
-        """在选中缝两端画方向标记：能走→箭头+格数；不能走→灰叉。仅增强模式。"""
-        gap = getattr(self, 'selected_gap', None)
-        if gap is None:
-            return
+        block_r = self._piece_screen_radius()
+        marker_r = max(9.0, min(34.0, block_r * 0.30)) if block_r > 0 else 12.0
+        # 让位 = 块半径（贴到切片外沿）+ 标记半径 + 一点呼吸空隙
+        pad = block_r + marker_r + max(4.0, block_r * 0.10)
+        ends = [(dirs[0], (hi_pt[0] + ux * pad, hi_pt[1] + uy * pad),
+                 maxstep[dirs[0]], (ux, uy)),
+                (dirs[1], (lo_pt[0] - ux * pad, lo_pt[1] - uy * pad),
+                 maxstep[dirs[1]], (-ux, -uy))]
+        self._gap_annot_sig = sig
+        self._gap_annot = {'ends': ends, 'vec': (ux, uy), 'marker_r': marker_r}
+        return self._gap_annot
+
+    def _draw_gap_direction_annotation(self):
+        """S1-4：切片两端的方向标记。**必须在滑块绘制之后调用**（图层在上）。"""
         annot = self._get_gap_direction_annotation()
         if not annot:
             return
-        gtype, line = gap
-        if gtype == 'h':
-            gy = board_y + (line + 1) * step - step // 2 + self.camera_y
-            lx = max(40, board_x + min_col * step + self.camera_x)
-            rx = min(self.screen_width - 40, board_x + (max_col + 1) * step + self.camera_x)
-            self._draw_gap_end_marker(lx, gy, 'a', annot.get('a', 0), step)
-            self._draw_gap_end_marker(rx, gy, 'd', annot.get('d', 0), step)
-        else:
-            gx = board_x + (line + 1) * step - step // 2 + self.camera_x
-            ty = max(40, board_y + min_row * step + self.camera_y)
-            by = min(self.screen_height - 40, board_y + (max_row + 1) * step + self.camera_y)
-            self._draw_gap_end_marker(gx, ty, 'w', annot.get('w', 0), step)
-            self._draw_gap_end_marker(gx, by, 's', annot.get('s', 0), step)
+        for _d, (ax, ay), max_step, unit_vec in annot['ends']:
+            self._draw_gap_end_marker(ax, ay, unit_vec, max_step,
+                                      annot['marker_r'])
 
-    def _draw_gap_end_marker(self, cx, cy, direction_char, max_step, step):
-        """缝端标记：可走画绿底箭头+格数，不可走画灰底灰叉。"""
-        r = max(9, int(0.16 * step))
+    def _draw_gap_end_marker(self, cx, cy, unit_vec, max_step, r):
+        """缝端标记：可走→绿底箭头+格数；不可走→灰底灰叉。"""
+        r = int(r)
+        # 锚点完全跑出画面时（盘面没居中、或该族的屏幕位移很长）夹回视区内：
+        # 标记不再严格对准切片轴线的延长点，但「看得见」比「准而看不见」有用
+        cx = min(max(cx, r + 4), self.screen_width - r - 4)
+        cy = min(max(cy, r + 4), self.screen_height - r - 4)
         movable = max_step > 0
         bg = (70, 170, 110) if movable else (118, 120, 126)
         pygame.draw.circle(self.screen, bg, (int(cx), int(cy)), r)
-        pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)), r, max(1, r // 6))
+        pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)), r,
+                           max(1, r // 6))
         if movable:
-            arr = r * 0.55
-            pts = self._gap_arrow_points(cx, cy, direction_char, arr)
+            pts = self._gap_arrow_points(cx, cy, unit_vec, r * 0.55)
             pygame.draw.polygon(self.screen, (255, 255, 255), pts)
             if not hasattr(self, '_gap_num_font'):
                 from GUI import _gui_safe_font
@@ -672,18 +833,25 @@ class RendererMixin:
             c = (255, 255, 255)
             d = r * 0.5
             w = max(2, r // 5)
-            pygame.draw.line(self.screen, c, (int(cx - d), int(cy - d)), (int(cx + d), int(cy + d)), w)
-            pygame.draw.line(self.screen, c, (int(cx - d), int(cy + d)), (int(cx + d), int(cy - d)), w)
+            pygame.draw.line(self.screen, c, (int(cx - d), int(cy - d)),
+                             (int(cx + d), int(cy + d)), w)
+            pygame.draw.line(self.screen, c, (int(cx - d), int(cy + d)),
+                             (int(cx + d), int(cy - d)), w)
 
     @staticmethod
-    def _gap_arrow_points(cx, cy, direction_char, arr):
-        if direction_char == 'a':    # 左
-            return [(cx - arr, cy), (cx + arr * 0.6, cy - arr * 0.7), (cx + arr * 0.6, cy + arr * 0.7)]
-        if direction_char == 'd':    # 右
-            return [(cx + arr, cy), (cx - arr * 0.6, cy - arr * 0.7), (cx - arr * 0.6, cy + arr * 0.7)]
-        if direction_char == 'w':    # 上
-            return [(cx, cy - arr), (cx - arr * 0.7, cy + arr * 0.6), (cx + arr * 0.7, cy + arr * 0.6)]
-        return [(cx, cy + arr), (cx - arr * 0.7, cy - arr * 0.6), (cx + arr * 0.7, cy - arr * 0.6)]  # 下
+    def _gap_arrow_points(cx, cy, unit_vec, arr):
+        """按**屏幕单位向量**画箭头，不再按方向字母查表。
+
+        同名字幕在三角与米字里朝向不同（'w' 在三角是左上、在米字是正左），
+        所以这里只认向量：unit_vec 是已经由形态几何算出来的屏幕朝向。
+        """
+        ax, ay = unit_vec
+        px, py = -ay, ax          # 垂直分量
+        return [(cx + ax * arr, cy + ay * arr),
+                (cx - ax * arr * 0.6 + px * arr * 0.7,
+                 cy - ay * arr * 0.6 + py * arr * 0.7),
+                (cx - ax * arr * 0.6 - px * arr * 0.7,
+                 cy - ay * arr * 0.6 - py * arr * 0.7)]
 
     def draw_menu_bar(self):
         """绘制顶部菜单栏"""
