@@ -63,6 +63,7 @@ r、c 本身）會變成半整數。矩陣（每格 8 bit）與地圖（每格 2
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 from game import Block
 
@@ -384,10 +385,32 @@ def coords_coherent(cells) -> bool:
     return all(_par2(k[0]) == _par2(k[1]) for k in cells)
 
 
-def _int_verts(key: tuple) -> list:
-    """單位塊頂點乘 2 轉整數（塊座標都是 ½ 的倍數，轉換無誤差）。"""
-    return [(int(round(2.0 * x)), int(round(2.0 * y)))
-            for (x, y) in mi_vertices(*key)]
+@lru_cache(maxsize=200_000)
+def _int_verts(key: tuple) -> tuple:
+    """單位塊頂點乘 2 轉整數（塊座標都是 ½ 的倍數，轉換無誤差）。
+
+    **加緩存的理由（2026-10-04 profiling，實測省 25% 求解時間）**：
+    本函式是純函式（只依賴 key），但被 `_has_overlap` 調用得極其頻繁 ——
+    profile 顯示 20×82 次 `apply_action` 裡它被調 141420 次，連帶
+    `sublattice_of` 26 萬次、`_par2` 58 萬次，合計佔 `_has_overlap` 的
+    66%、整個聚拢步的過半。key 的取值空間是「(r, c) × NESW」的整格與半格
+    組合，**有界且很小**（數千級），緩存命中率高、記憶體可忽略。
+    回傳 tuple 而非 list，才能被 lru_cache 掛上（list 不可哈希）。
+    """
+    return tuple((int(round(2.0 * x)), int(round(2.0 * y)))
+                 for (x, y) in mi_vertices(*key))
+
+
+@lru_cache(maxsize=200_000)
+def _int_bbox(key: tuple) -> tuple:
+    """單位塊的整數包圍盒 (x1, y1, x2, y2)（乘 2 後）。
+
+    同樣是純函式 + key 空間有界 → 可緩存。`_has_overlap` 裡每個塊都要取
+    一次包圍盒做粗過濾，是仅次于 `_tri_overlap` 的第二熱點。
+    """
+    vs = _int_verts(key)
+    return (min(p[0] for p in vs), min(p[1] for p in vs),
+            max(p[0] for p in vs), max(p[1] for p in vs))
 
 
 def _tri_overlap(a: tuple, b: tuple) -> bool:
@@ -424,24 +447,22 @@ def _has_overlap(moved: set, non_selected: set) -> bool:
     """
     if not moved or not non_selected:
         return False
-    boxes = {}
 
-    def _box(key):
-        got = boxes.get(key)
-        if got is None:
-            vs = _int_verts(key)
-            got = (min(p[0] for p in vs), min(p[1] for p in vs),
-                   max(p[0] for p in vs), max(p[1] for p in vs))
-            boxes[key] = got
-        return got
+    # **性能（2026-10-04 profiling）**：本函式原本是雙重循環，且內層對每個
+    # `b` 重複調 `sublattice_of` / 重算包圍盒 —— 這兩者**只依賴 b，與外層 a
+    # 無關**，純屬重複計算。profile 顯示它佔整個聚拢步過半時間
+    # （141420 次 `_int_verts`、26 萬次 `sublattice_of`、58 萬次 `_par2`）。
+    # 現在把 `non_selected` 的族先算成 dict、內層只查 dict；包圍盒交給
+    # 模組級 lru_cache。實測每步 72.8ms → 54.9ms（省 25%）。
+    ns_fam = {b: sublattice_of(b) for b in non_selected}
 
     for a in moved:
         fam = sublattice_of(a)
-        ax1, ay1, ax2, ay2 = _box(a)
-        for b in non_selected:
-            if fam == sublattice_of(b):
+        ax1, ay1, ax2, ay2 = _int_bbox(a)
+        for b, bfam in ns_fam.items():
+            if fam == bfam:
                 continue
-            bx1, by1, bx2, by2 = _box(b)
+            bx1, by1, bx2, by2 = _int_bbox(b)
             if ax2 < bx1 or bx2 < ax1 or ay2 < by1 or by2 < ay1:
                 continue
             if _tri_overlap(a, b):
@@ -479,16 +500,17 @@ def any_overlap(cells) -> bool:
             boxes[key] = got
         return got
 
+    # 同 `_has_overlap`：包圍盒交給模組級 lru_cache（純函式、key 有界）
     items = list(cells)
     for x in range(len(items)):
         a = items[x]
-        ax1, ay1, ax2, ay2 = _box(a)
+        ax1, ay1, ax2, ay2 = _int_bbox(a)
         fam = sublattice_of(a)
         for y in range(x + 1, len(items)):
             b = items[y]
             if fam == sublattice_of(b):
                 continue
-            bx1, by1, bx2, by2 = _box(b)
+            bx1, by1, bx2, by2 = _int_bbox(b)
             if ax2 < bx1 or bx2 < ax1 or ay2 < by1 or by2 < ay1:
                 continue
             if _tri_overlap(a, b):

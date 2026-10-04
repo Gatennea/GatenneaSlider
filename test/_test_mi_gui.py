@@ -6,7 +6,8 @@
       相機（米字格包圍盒是矩形但世界座標無 gap 間距）、draw_board 米字分支
       真的畫出了東西、M2 的兩次觸控（第一下選縫、第二下按住滑塊拖動才提交；
       只按不拖 = 選組，方向留給虛擬鍵盤）、
-      打亂、縫隙/滑塊命中、拖拽起點記錄與無縫不跟隨、自動求解被攔並提示、
+      打亂、縫隙/滑塊命中、拖拽起點記錄與無縫不跟隨、
+      自動求解自動切 mi_gather 並提示（M3 起已放行）、
       物理鍵盤只提示、虛擬鍵盤八向、4-bit 快照往返
       （save_snapshot → restore_snapshot）、v2 存檔 type=mi 往返。
 """
@@ -463,9 +464,16 @@ fire(pygame.event.Event(pygame.MOUSEBUTTONUP,
 check("不進跟隨也不滑動（單擊只選組）",
       set(gui.game.positions()) == before_no_gap
       and gui.step_count == step_no_gap)
+# **M3 起 mi 求解放行**（原断言是「自動求解被攔」，属 M2 时代的事实）。
+# 意图仍然有效且更重要：**mi 绝不能走方形求解器**（方形算法在斜坐标上会
+# 静默走错）。所以改成验「自动切到 mi_gather 并有提示」。
 gui.macro_notify_msg = ''
+gui.solver_algorithm = 'gather'          # 故意设成方形算法
 gui._start_auto_solve()
-check("自動求解被攔", '米字格' in (gui.macro_notify_msg or ''), gui.macro_notify_msg or '')
+check("mi 下自动求解器已切成 mi_gather（不走方形）",
+      gui.solver_algorithm == 'mi_gather', gui.solver_algorithm)
+check("切換算法有明確提示（不是靜默）",
+      '米字格' in (gui.macro_notify_msg or ''), gui.macro_notify_msg or '')
 
 # —— 物理鍵盤：只提示，不動棋盤 ——
 gui.new_mi_puzzle(6, 6, 2)
