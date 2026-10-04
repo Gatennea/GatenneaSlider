@@ -324,6 +324,13 @@ class FileOpsMixin:
                         if isinstance(_mp.get('pos'), list) and len(_mp['pos']) == 2:
                             self.mp_pos = [int(_mp['pos'][0]), int(_mp['pos'][1])]
 
+                # S0-2：从存档恢复面板坐标后，立即拉回可视范围
+                # （非全屏/缩放后不再越界；依赖 screen/menu/status 高度已初始化）
+                if all(hasattr(self, a) for a in ('screen_width', 'menu_bar_height', 'status_bar_height')):
+                    if hasattr(self, '_vk_clamp_position'): self._vk_clamp_position()
+                    if hasattr(self, '_mp_clamp_position'): self._mp_clamp_position()
+                    if hasattr(self, '_rp_clamp_position'): self._rp_clamp_position()
+
                 last_path = config.get('last_file_path')
 
                 # 恢复教程进度（闯关模式）——无论棋盘状态如何都需还原

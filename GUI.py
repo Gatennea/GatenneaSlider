@@ -3459,6 +3459,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 更新动画
                 self.update_animation()
 
+                # S0-1：复原弹窗动画计时器——此前全项目从未递增，弹窗恒停第 0 帧
+                # （缩放 0.7 / 透明 / 光晕 0 且 6 秒自动关闭永不触发）。每帧自增使其真正生效。
+                if getattr(self, '_solved_popup_active', False):
+                    self._solved_popup_t += 1
+
                 # 检查自动求解结果
                 self._check_auto_solve_result()
 

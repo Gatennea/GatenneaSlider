@@ -67,6 +67,10 @@ class EventsMixin:
                         (self.screen_width, self.screen_height),
                         pygame.RESIZABLE
                     )
+                    # S0-2/S0-3：窗口尺寸变化后，立即把浮动面板拉回可视范围
+                    if hasattr(self, '_vk_clamp_position'): self._vk_clamp_position()
+                    if hasattr(self, '_mp_clamp_position'): self._mp_clamp_position()
+                    if hasattr(self, '_rp_clamp_position'): self._rp_clamp_position()
                     continue
                 
                 # 新手教程：首次启动弹窗（模态，点击按钮消费事件）

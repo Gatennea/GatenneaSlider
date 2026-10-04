@@ -163,6 +163,8 @@ class RecordsPanelMixin:
         """绘制成绩记录面板。"""
         if not getattr(self, 'show_records_panel', False):
             return
+        # S0-2：绘制前先确保面板坐标在可视范围内
+        self._rp_clamp_position()
 
         x, y = self.rp_pos
         w, h = self._rp_panel_size()

@@ -189,6 +189,8 @@ class VirtualKeyboardMixin:
         """绘制虚拟键盘面板"""
         if not getattr(self, 'show_virtual_keyboard', False):
             return
+        # S0-2：绘制前先确保面板坐标在可视范围内
+        self._vk_clamp_position()
 
         x, y = self.vk_pos
         width, height = self._vk_panel_size()

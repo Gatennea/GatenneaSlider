@@ -2222,13 +2222,18 @@ class RendererMixin:
         cx = (self.screen_width - self.right_panel_width) // 2
         cy = self.screen_height // 2
 
-        # 弹入动画：前 12 帧缩放回弹，随后轻微呼吸
-        p = min(1.0, t / 12.0)
+        # 弹入动画：前若干帧缩放回弹，随后轻微呼吸
+        # S0-1：增强模式放大幅度（弹入更久更明显、呼吸更明显），朴素模式保持原设计口径
+        _enh = getattr(self, 'ui_mode', 'enhanced') == 'enhanced'
+        _in_frames = 18 if _enh else 12   # 增强≈300ms，朴素≈200ms
+        _in_start = 0.85 if _enh else 0.70
+        _breathe = 0.03 if _enh else 0.012
+        p = min(1.0, t / _in_frames)
         ease = 1 - (1 - p) ** 3
         if p < 1:
-            scale = 0.7 + 0.3 * ease
+            scale = _in_start + (1.0 - _in_start) * ease
         else:
-            scale = 1.0 + 0.012 * math.sin(t / 9.0)
+            scale = 1.0 + _breathe * math.sin(t / 9.0)
         alpha = int(240 * min(1.0, t / 6.0))
 
         # 超过 360 帧（约 6 秒）自动淡出关闭
@@ -2263,7 +2268,10 @@ class RendererMixin:
 
         # 外圈呼吸光晕（对话框边框同色，微弱）
         ring = pygame.Surface((w + 14, h + 14), pygame.SRCALPHA)
-        glow_alpha = int(alpha * (0.25 + 0.10 * math.sin(t / 7.0)))
+        # 增强模式光晕更明显（朴素模式保持原 0.25±0.10）
+        _glow_base = 0.45 if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 0.25
+        _glow_amp = 0.18 if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 0.10
+        glow_alpha = int(alpha * (_glow_base + _glow_amp * math.sin(t / 7.0)))
         pygame.draw.rect(ring, (130, 130, 140, max(0, glow_alpha)), ring.get_rect(), 2, border_radius=15)
         self.screen.blit(ring, (x - 7, y - 7))
 

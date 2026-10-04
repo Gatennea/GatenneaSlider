@@ -758,6 +758,9 @@ class MetricsPanelMixin:
         """绘制聚拢度指标面板。"""
         if not getattr(self, 'show_metrics_panel', False):
             return
+        # S0-2：绘制前先确保面板坐标在可视范围内
+        # （修复：非全屏/缩放后记住的偏移坐标越界，面板「开了却看不见」）
+        self._mp_clamp_position()
 
         x, y = self.mp_pos
         # **先算 rows 再定尺寸**：mi 有 7 行（多一行 mod 约束），高度写死
