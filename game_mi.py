@@ -150,6 +150,19 @@ _CROSS_NEIGHBORS = {
 }
 
 
+# 兩張表在本模組裡恆為常數，拼一次就夠（原先每次呼叫都做一次
+# `same + cross` 的 list 拼接，是純浪費）。
+_ALL_NEIGHBOR_OFFSETS = {q: _SAME_NEIGHBORS[q] + _CROSS_NEIGHBORS[q]
+                         for q in _SAME_NEIGHBORS}
+
+
+# 純函數 + key 空間有界（一局踩得到的 (r,c,q) 是數千級），所以直接全表記憶化。
+# 為什麼值得：`neighbors` 是 mi 的**第一熱點** —— cProfile 實測它在一輪
+# 82 候選的同步裡被呼叫 10 萬次、佔總時間近三成，因為
+# `is_single_connected`（全盤 DFS）和 `opt`（同側選組 DFS）
+# **每一步、每一個候選**都要從零展開鄰居關係，
+# 而同一個 key 的鄰居在整局裡從不改變。緩存它，兩個 DFS 同時受益。
+@lru_cache(maxsize=200_000)
 def neighbors(key: tuple) -> tuple:
     """單位塊的 5 個邊相鄰單位塊（共享一條單位邊）。
 
@@ -157,11 +170,10 @@ def neighbors(key: tuple) -> tuple:
     ±½ 的偏移把 B 晶格鄰映回整數座標。
     """
     r, c, q = key
-    if q not in _SAME_NEIGHBORS:
+    offsets = _ALL_NEIGHBOR_OFFSETS.get(q)
+    if offsets is None:
         raise ValueError(f"unknown quarter: {q}")
-    same = _SAME_NEIGHBORS[q]
-    cross = _CROSS_NEIGHBORS[q]
-    return tuple((r + dr, c + dc, dq) for dr, dc, dq in same + cross)
+    return tuple((r + dr, c + dc, dq) for dr, dc, dq in offsets)
 
 
 def gap_rank(gap_type: str, key: tuple) -> float:
@@ -344,6 +356,9 @@ def lattice_of(key: tuple) -> int:
     return _par2(key[0])
 
 
+# 純函數 + key 空間有界，同 neighbors 的理由：重疊判定每個候選都要對盤上
+# 每塊重算一次族別，而族別只依賴那一塊本身。
+@lru_cache(maxsize=200_000)
 def sublattice_of(key: tuple) -> tuple:
     """ sub-lattice 類 = (2r 的奇偶, 2c 的奇偶)，對非法座標也定義良好。
 
@@ -453,7 +468,7 @@ def _has_overlap(moved: set, non_selected: set) -> bool:
     # 無關**，純屬重複計算。profile 顯示它佔整個聚拢步過半時間
     # （141420 次 `_int_verts`、26 萬次 `sublattice_of`、58 萬次 `_par2`）。
     # 現在把 `non_selected` 的族先算成 dict、內層只查 dict；包圍盒交給
-    # 模組級 lru_cache。實測每步 72.8ms → 54.9ms（省 25%）。
+    # 模組級 lru_cache。實測每步 72.8ms → 45.1ms（省 38%）。
     ns_fam = {b: sublattice_of(b) for b in non_selected}
 
     for a in moved:
