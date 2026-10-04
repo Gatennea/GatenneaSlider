@@ -458,17 +458,30 @@ class MetricsPanelMixin:
                          line_w)
         return best
 
-    def _mi_mark_center(self, r, c):
-        """mi 記號錨點：格心 → 屏幕座標。
+    def _mi_mark_center(self, r, c, q):
+        """mi 記號錨點：**每一片自己的內心** → 屏幕座標。
 
-        **記號畫在格級、不是片級**：mi 一格有 4 片，一格可能只缺 1 片，
-        若按片畫記號，4 片的洞會疊 4 個圈糊成一团。所以 `detect_mi_holes`
-        額外給出 `cells_geo`（去重後的 (floor r, floor c)），這裡對格心畫
-        一次。格心不是任何一片的內心，但記號語義本來就是「這格缺了」，
-        不需要落在片上 —— 與選洞命中判定用同一個點（見 `_get_mi_hole_at_pos`）。
+        ⚠️ **這裡踩過一個坑（2026-10-04 用戶驗收指出）**：第一版畫在
+        **格心** `(r+0.5, c+0.5)`，結果 mi 一格有 N/E/S/W 四片，四片的記號
+        全疊在同一點上。我當時**沒有去改錨點，而是把精度降級**——改成
+        「按格畫一次、一格一個記號」，理由寫的是「記號語義本來就是『這格
+        缺了』，不需要落在片上」。
+
+        這個理由站不住：**四片的內心本來就不重疊**。實測（cell_size=100）：
+
+            朝向   格心(舊)        內心(新)
+              N   (0.50, 0.50)   (0.50, 0.21)   上
+              E   (0.50, 0.50)   (0.79, 0.50)   右
+              S   (0.50, 0.50)   (0.50, 0.79)   下
+              W   (0.50, 0.50)   (0.21, 0.50)   左
+
+        四個內心兩兩相距 0.414 格，完全分得開。「缺 4 片」就該畫 4 個記號，
+        分別落在格的四方 —— 那反而更準確地表達了「整格空」。
+
+        所以正確做法是**恢復片級精度**：記號數 = 缺失片數，位置 = 該片內心。
         """
         view = self._mi_view()
-        return self.world_to_screen(*view.to_world(c + 0.5, r + 0.5))
+        return self.world_to_screen(*view.piece_center(r, c, q))
 
     def _draw_mi_marks(self):
         """米字格：洞（圓圈）/ 缺口（三角形）/ 凸起（菱形）標記。
@@ -476,9 +489,9 @@ class MetricsPanelMixin:
         與方形 `_draw_debug_holes`、三角 `_draw_tri_marks` 的記號語義一致
         （計劃 §4 說「異形版語義在實現時定」→ 定為沿用，便於對照驗收）。
 
-        記號位置吃 `cells_geo`（格級去重）而非 `cells`（片級）—— 理由見
-        `_mi_mark_center`。凸起是**片級**列表（每片一块真方塊），按格去重
-        後再畫，否則一個凸起格會畫 4 个菱形。
+        記號畫在**片級 `cells`（帶 q）**上，錨點是每一片自己的內心 ——
+        一格缺 4 片就畫 4 個記號、各自落在格的上/右/下/左。見
+        `_mi_mark_center` 裡關於「別用格心」的說明。
         """
         from solver.ml.mi_holes import detect_mi_holes, hole_color
         game = getattr(self, 'game', None)
@@ -504,8 +517,8 @@ class MetricsPanelMixin:
             is_selected = (self.selected_hole is not None
                            and set(h['cells']) == set(
                                self.selected_hole.get('cells', [])))
-            for (r, c) in h['cells_geo']:
-                cx, cy = self._mi_mark_center(r, c)
+            for (r, c, q) in h['cells']:
+                cx, cy = self._mi_mark_center(r, c, q)
                 if h['type'] == 'hole':
                     pygame.draw.circle(self.screen, color, (int(cx), int(cy)),
                                        radius, line_w)
@@ -520,10 +533,10 @@ class MetricsPanelMixin:
                                        (int(cx), int(cy)),
                                        max(2, radius // 2), 0)
 
-        # 凸起按格去重（輸入是片級 `(r, c, q)`）
-        for (r, c) in sorted({(int(p[0] // 1), int(p[1] // 1))
-                              for p in protrusions}):
-            cx, cy = self._mi_mark_center(r, c)
+        # 凸起同樣按片畫（輸入是片級 `(r, c, q)`）：一格多出來 4 片就是
+        # 4 個菱形、各自在自己那片的內心。舊版按格去重，4 個菱形也疊成一個。
+        for (r, c, q) in sorted(set(protrusions)):
+            cx, cy = self._mi_mark_center(r, c, q)
             d = radius
             pygame.draw.polygon(
                 self.screen, (255, 210, 60),
@@ -556,11 +569,11 @@ class MetricsPanelMixin:
         # 在 zoom≠1 時會整體偏鬆/偏緊（zoom=2 時等於半徑大了一倍）。
         reach = view.cell_size * 0.55 * self.zoom
         for h in holes:
-            for (r, c) in h['cells_geo']:
+            for (r, c, q) in h['cells']:
                 # 走 world_to_screen 而不是手写 `w·zoom + cam`：命中判定与
                 # 畫記號必須是**同一个变换函数**，手抄一遍公式等于給將來
                 # zoom 語義變化留一個走樣點（三角那次就栽在多乘一次 zoom）。
-                sx, sy = self._mi_mark_center(r, c)
+                sx, sy = self._mi_mark_center(r, c, q)
                 if (screen_x - sx) ** 2 + (screen_y - sy) ** 2 <= reach * reach:
                     return h
         return None

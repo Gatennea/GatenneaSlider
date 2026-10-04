@@ -18,6 +18,7 @@
 """
 import json
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -163,8 +164,17 @@ holes, _ = detect_mi_holes(MA.mi_coords(g), gui._target_region.cells, 2)
 check("P4d 抽一整格 → 1 個洞且 type=hole",
       len(holes) == 1 and holes[0]['type'] == 'hole',
       f"{[(h['type'], h['size'], len(h['cells'])) for h in holes]}")
-check("P4e 洞帶格級 cells_geo（畫記號用格心，不疊 4 個圈）",
-      len(holes[0]['cells_geo']) == 1, str(holes[0]['cells_geo']))
+# **鎖住一個用戶驗收發現的 bug（2026-10-04）**：記號曾畫在**格心**，
+# 而 mi 一格有 N/E/S/W 四片 —— 四片的記號全疊在同一點。正確錨點是
+# 每一片自己的**內心**（實測四個內心兩兩相距 0.414 格，分得開）。
+# 這裡直接驗「四片記號的屏幕坐標兩兩不重合」，讓這個 bug 無法悄悄回來。
+check("P4e 洞帶片級 cells（缺 4 片 = 4 個記號，不是 1 個）",
+      len(holes[0]['cells']) == 4, str(sorted(holes[0]['cells'])))
+_pts = [gui._mi_mark_center(r, c, q) for (r, c, q) in holes[0]['cells']]
+_mind = min(((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+            for i, a in enumerate(_pts) for b in _pts[i + 1:])
+check("P4e2 四片記號的屏幕坐标兩兩分開（不是疊在一點）", _mind > 8,
+      f"最小間距 {_mind:.1f}px（舊版格心方案 = 0）")
 gui.screen.fill((0, 0, 0))
 b4 = screen_signature(gui)
 gui._draw_mi_marks()
@@ -219,28 +229,29 @@ for b in list(g.blocks):
         g.blocks.remove(b)
 g.update_matrix()
 gui._compute_target_region()
-# 直接用 _mi_mark_center 取屏幕点（這正是「能點到的洞 = 畫出的標記」的錨點）
-cx, cy = gui._mi_mark_center(2, 2)
+# 直接用 _mi_mark_center 取屏幕点（這正是「能點到的洞 = 畫出的標記」的錨點）。
+# 錨點是**每一片自己的內心**，所以要給 q。
+cx, cy = gui._mi_mark_center(2, 2, 'N')
 hit = gui.get_hole_at_pos(int(cx), int(cy))
-check("P5a 點在 (2,2) 格心 → 命中那個洞", hit is not None,
+check("P5a 點在 (2,2) 的 N 片內心 → 命中那個洞", hit is not None,
       f"{hit['type'] if hit else None}")
-check("P5b 命中的洞含 (2,2) 格",
-      hit is not None and (2, 2) in [tuple(x) for x in hit['cells_geo']],
-      str(hit['cells_geo']) if hit else 'None')
+check("P5b 命中的洞含 (2,2,'N') 這一片",
+      hit is not None and (2, 2, 'N') in [tuple(x) for x in hit['cells']],
+      str(hit['cells']) if hit else 'None')
 # 点在远离棋盘处 → 不命中
 check("P5c 點空白處不命中",
       gui.get_hole_at_pos(2, 2) is None)
 
 # 缩放一致性：命中半径随 zoom（修 bug 的回归锁）
 gui.zoom = 1.0
-c1 = gui._mi_mark_center(2, 2)
+c1 = gui._mi_mark_center(2, 2, 'N')
 gui.zoom = 2.0
-c2 = gui._mi_mark_center(2, 2)
+c2 = gui._mi_mark_center(2, 2, 'N')
 check("P5d 錨點隨 zoom 縮放（坐標不是死的）", c1 != c2,
       f"{c1} vs {c2}")
-# zoom=2 时，格心的点仍应命中（半径同比例放大）
+# zoom=2 时，同一片内心的点仍应命中（半径同比例放大）
 hit_z2 = gui.get_hole_at_pos(int(c2[0]), int(c2[1]))
-check("P5e zoom=2 時格心仍命中（半徑與錨點同量綱）", hit_z2 is not None)
+check("P5e zoom=2 時該片內心仍命中（半徑與錨點同量綱）", hit_z2 is not None)
 gui.zoom = 1.0
 
 # ================================================================ P6 選洞樣本
@@ -332,7 +343,13 @@ print("\n--- P9 棋盘绘制路径真的会调起面板（2026-10-04 修的真�
 # 而 P4 那些断言是**直接调** `_draw_mi_target_frame()`，绕过了这条路径，
 # 所以照样全绿 —— 「被调用的方法对」≠「调用点存在」。
 # 这几条断言只认**从 draw_mi_board 进去**的结果。
+# **必须固定随机种子**：P9c 要看红/蓝/黄三类记号都在，而「这局有没有缺口」
+# 取决于 shuffle 结果。不设种子时它跟着整条测试链的 random 状态漂 ——
+# 我这次就撞上「这局只有洞和凸起、恰好没有缺口」，P9c 假红。
+# seed 2 是挑过的：该局面三类记号都齐全（2 个小缺口[蓝] + 1 个大缺口[红]
+# + 28 片凸起[黄]）。随便挑 seed 会出现「这局恰好没有红/蓝」的假红。
 gui.new_mi_puzzle(4, 4, 2)
+random.seed(2)
 gui.game.shuffle(40, 2)
 gui.show_metrics_panel = True
 gui.screen.fill((0, 0, 0))
