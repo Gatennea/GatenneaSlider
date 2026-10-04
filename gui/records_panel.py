@@ -500,8 +500,12 @@ class RecordsPanelMixin:
             if numbered:
                 for i, block in enumerate(sorted(game.blocks, key=lambda b: (b.location[0], b.location[1]))):
                     block.number = i + 1
+            # 同上（gui/events.py）：mi 的 restore 走懒更新，`.matrix` 可能
+            # 是 None。get_matrix() 會順帶刷新 matrix_bounds，下面取 bounds
+            # 才是當前局面的值。
+            mat = game.get_matrix()
             snap = {
-                'matrix': [r[:] for r in game.matrix],
+                'matrix': [r[:] for r in mat],
                 'bounds': dict(game.matrix_bounds),
                 'move_info': None,
             }
@@ -511,7 +515,7 @@ class RecordsPanelMixin:
                 snap['numbers'] = [
                     [num_map.get((bounds['min_row'] + ri, bounds['min_col'] + ci), 0) if v else 0
                      for ci, v in enumerate(row)]
-                    for ri, row in enumerate(game.matrix)
+                    for ri, row in enumerate(mat)
                 ]
             data = {
                 'version': 2 if (numbered or triangle) else 1,

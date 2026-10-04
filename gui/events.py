@@ -1121,7 +1121,10 @@ class EventsMixin:
                                  triangle_side=self.game.k if tri else None),
             "step_count": self.step_count,
             "solved": self.is_solved(),
-            "matrix": self.game.matrix,
+            # `get_matrix()` 而不是 `.matrix`：mi 的 `restore` 会把 matrix
+            # 置 None 走懒更新（見 solver/ml/mi_adapter.py），直接取属性可能
+            # 拿到 None。get_matrix() 在 None 时才重建，语义等价且更安全。
+            "matrix": self.game.get_matrix(),
             "selected_gap": list(self.selected_gap) if self.selected_gap else None,
             "selected_block": self.selected_block.location if self.selected_block else None,
             "animating": self.animating,
