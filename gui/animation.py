@@ -80,6 +80,11 @@ class AnimationMixin:
             self._sel_anim_timer -= 1
             if self._sel_anim_timer == 0:
                 self._clear_sel_anim()
+        # S1-3：越界回弹抖动倒计时
+        if getattr(self, '_shake_t', 0) > 0:
+            self._shake_t -= 1
+            if self._shake_t == 0:
+                self._shake_blocks = set()
         if not self.animating:
             return
         elapsed = pygame.time.get_ticks() - self.anim_start_time

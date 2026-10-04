@@ -3607,6 +3607,27 @@ class EventsMixin:
         
         return False
 
+    def _update_cursor(self):
+        """S1-5：鼠标指针形态——增强模式按状态切换光标，朴素模式一律箭头。
+
+        - 拖拽中：可走→ SIZEALL（握住「移动」光标）；越界→ NO（禁止符）
+        - 悬停棋盘且已选中切片：HAND（张开的手，表「可拖」）
+        - 其它：ARROW
+        """
+        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+            return
+        if getattr(self, 'drag_following', False):
+            cur = (pygame.SYSTEM_CURSOR_NO if getattr(self, 'drag_follow_invalid', False)
+                   else pygame.SYSTEM_CURSOR_SIZEALL)
+        else:
+            selected = getattr(self, 'selected_gap', None) is not None and any(
+                b.be_opted for b in self.game.blocks)
+            mx, my = pygame.mouse.get_pos()
+            over_board = my >= self.menu_bar_height and mx < self.screen_width - self.right_panel_width
+            cur = pygame.SYSTEM_CURSOR_HAND if (selected and over_board) else pygame.SYSTEM_CURSOR_ARROW
+        pygame.mouse.set_cursor(cur)
+
 
 # ---------------------------------------------------------------------------
 # 三形态共用的回放原语（模块级工具）

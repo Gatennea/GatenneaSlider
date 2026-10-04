@@ -568,6 +568,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.drag_follow_step = 0
         self.drag_follow_invalid = False
 
+        # S1-3：越界松手的撞墙回弹。_shake_blocks 记录被选中切片；_shake_dr/_shake_dc
+        # 为抖动轴方向（取松手偏移符号）；_shake_t 为剩余帧数（>0 时渲染层抖动+橙边）
+        self._shake_blocks = set()
+        self._shake_dr = 0
+        self._shake_dc = 0
+        self._shake_t = 0
+
         # 右侧面板控件
         self.slider_dragging = False
         self.slider_rect = None
@@ -2037,10 +2044,34 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 break
             step -= step_size
 
+        # S1-3：越界松手 → 撞墙回弹（仅增强模式）。记录被选中切片，沿越界方向抖一下。
+        # 注意：此刻 drag_follow_invalid 仍为 True（clear_drag_follow 会清掉），be_opted 切片仍在。
+        if (not moved and self.drag_follow_invalid
+                and getattr(self, 'ui_mode', 'enhanced') == 'enhanced'):
+            chosen = [b for b in self.game.blocks if b.be_opted]
+            if chosen:
+                self._shake_blocks = set(id(b) for b in chosen)
+                self._shake_dr = 1 if dr > 0 else (-1 if dr < 0 else 0)
+                self._shake_dc = 1 if dc > 0 else (-1 if dc < 0 else 0)
+                self._shake_t = 12  # 约 200ms（帧）
+
         # 清除跟随状态（含 single-touch auto-deselect）
         self.clear_drag_follow()
         # 未移动（或关了动画）时上面的 origin 没人消费，清掉避免污染下一次动画
         self._drag_anim_origin = None
+
+    def _shake_offset(self):
+        """S1-3：越界回弹的瞬时像素位移（屏幕坐标）。_shake_t 倒计时归零后返回 (0,0)。"""
+        t = getattr(self, '_shake_t', 0)
+        if t <= 0:
+            return (0.0, 0.0)
+        dr, dc = getattr(self, '_shake_dr', 0), getattr(self, '_shake_dc', 0)
+        if dr == 0 and dc == 0:
+            return (0.0, 0.0)
+        # 衰减包络：先正向冲一下再弹回（|sin| × 线性衰减）
+        phase = t / 12.0  # 1 → 0
+        amp = 6.0 * self.zoom * phase * abs(math.sin(phase * 3.14159))
+        return (dr * amp, dc * amp)
 
     def _move_merge_key(self):
         """当前移动所属「选中会话」标识；None = 不合并。
@@ -3453,6 +3484,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         while self.running:
             try:
+                # S1-1：输入优先——先处理事件、再更新状态与绘制，消除恒定 1 帧输入延迟
+                self.handle_events()
+                self._ann_poll()
+                self._update_cursor()
+
                 # 处理终端指令
                 self.process_commands()
 
@@ -3591,9 +3627,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 左键单击反馈（盖在所有界面之上，含模态对话框）
                 self.draw_click_feedback()
 
-                self.handle_events()
-                # 标注模式：捕捉录制提交 / 处理存档打开结果
-                self._ann_poll()
                 pygame.display.flip()
                 dt_ms = clock.tick(60)
 

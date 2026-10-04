@@ -423,6 +423,12 @@ class RendererMixin:
                 pygame.draw.line(self.screen, self.colors['line'],
                                (screen_gap_x, 0), (screen_gap_x, self.screen_height), 3)
 
+        # S1-4：选中缝两端方向标注（仅增强模式）。整片高亮（be_opted 填充）保留不动。
+        if getattr(self, 'ui_mode', 'enhanced') == 'enhanced':
+            self._draw_gap_direction_annotation(
+                scaled_cell + scaled_gap, board_x, board_y,
+                min_row, max_row, min_col, max_col)
+
         # 绘制未选中的横向缝隙
         for i in range(min_row, max_row + 2):
             gap_y = board_y + i * (scaled_cell + scaled_gap) - scaled_gap // 2
@@ -498,14 +504,34 @@ class RendererMixin:
             if screen_y < -scaled_cell or screen_y > self.screen_height + scaled_cell:
                 continue
 
+            # S1-3：越界回弹——本块属于被选中切片时整体抖动偏移（仅增强模式）
+            if getattr(self, '_shake_t', 0) > 0 and id(block) in getattr(self, '_shake_blocks', set()):
+                _sox, _soy = self._shake_offset()
+                screen_x += _sox
+                screen_y += _soy
+                _is_shaking = True
+            else:
+                _is_shaking = False
+
             # 分组着色：只在滑块边界描边，中心保持原画风（淡蓝/选中淡绿）
             if block.be_opted:
-                fill = self.colors['block_selected']
+                if (getattr(self, 'ui_mode', 'enhanced') == 'enhanced'
+                        and getattr(self, '_sel_anim_timer', 0) > 0
+                        and getattr(self, '_sel_anim_is_undo', None) is not None):
+                    # S1-2：撤销走冷色（蓝）/ 重做走暖色（橙），与「选中缝」纯红、普通选区分色
+                    fill = (90, 150, 235) if self._sel_anim_is_undo else (240, 150, 60)
+                else:
+                    fill = self.colors['block_selected']
             else:
                 fill = self.colors['block']
             # 拖拽跟随无效（碰撞/断开）时：变暗滑块 + 橙色边框提示不可移动
             if (self.drag_following and self.drag_follow_invalid
                     and id(block) in follow_map):
+                fill = tuple(int(ch * 0.45) for ch in fill[:3])
+                border_color = (220, 80, 40)
+                border_w = max(1, int(3 * self.zoom))
+            elif _is_shaking:
+                # S1-3：越界回弹——抖动期间同样给「撞墙」橙色反馈（闪一次）
                 fill = tuple(int(ch * 0.45) for ch in fill[:3])
                 border_color = (220, 80, 40)
                 border_w = max(1, int(3 * self.zoom))
@@ -569,6 +595,95 @@ class RendererMixin:
         if getattr(self, 'show_metrics_panel', False):
             self._draw_target_window()
             self._draw_debug_holes()
+
+    # ---------- S1-4：选中缝两端的方向标注 ----------
+    def _get_gap_direction_annotation(self):
+        """返回选中缝两端能推的方向与最大格数：{direction: max_step}。
+        max_step=0 表示该方向走不了（画灰叉）。仅在缝/切片变化时重算（按选中块签名缓存）。"""
+        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            return None
+        gap = getattr(self, 'selected_gap', None)
+        if gap is None:
+            self._gap_annot = None
+            return None
+        chosen = [b for b in self.game.blocks if b.be_opted]
+        if not chosen:
+            self._gap_annot = None
+            return None
+        sig = (gap, tuple(b.location for b in chosen))
+        if getattr(self, '_gap_annot_sig', None) == sig:
+            return getattr(self, '_gap_annot', None)
+        gtype = gap[0]
+        dirs = ['a', 'd'] if gtype == 'h' else ['w', 's']
+        result = {}
+        for d in dirs:
+            max_step = 0
+            for s in range(1, 80):
+                positions, _ = self.game.try_move_ex(d, s)
+                if positions:
+                    max_step = s
+                else:
+                    break
+            result[d] = max_step
+        self._gap_annot_sig = sig
+        self._gap_annot = result
+        return result
+
+    def _draw_gap_direction_annotation(self, step, board_x, board_y,
+                                       min_row, max_row, min_col, max_col):
+        """在选中缝两端画方向标记：能走→箭头+格数；不能走→灰叉。仅增强模式。"""
+        gap = getattr(self, 'selected_gap', None)
+        if gap is None:
+            return
+        annot = self._get_gap_direction_annotation()
+        if not annot:
+            return
+        gtype, line = gap
+        if gtype == 'h':
+            gy = board_y + (line + 1) * step - step // 2 + self.camera_y
+            lx = max(40, board_x + min_col * step + self.camera_x)
+            rx = min(self.screen_width - 40, board_x + (max_col + 1) * step + self.camera_x)
+            self._draw_gap_end_marker(lx, gy, 'a', annot.get('a', 0), step)
+            self._draw_gap_end_marker(rx, gy, 'd', annot.get('d', 0), step)
+        else:
+            gx = board_x + (line + 1) * step - step // 2 + self.camera_x
+            ty = max(40, board_y + min_row * step + self.camera_y)
+            by = min(self.screen_height - 40, board_y + (max_row + 1) * step + self.camera_y)
+            self._draw_gap_end_marker(gx, ty, 'w', annot.get('w', 0), step)
+            self._draw_gap_end_marker(gx, by, 's', annot.get('s', 0), step)
+
+    def _draw_gap_end_marker(self, cx, cy, direction_char, max_step, step):
+        """缝端标记：可走画绿底箭头+格数，不可走画灰底灰叉。"""
+        r = max(9, int(0.16 * step))
+        movable = max_step > 0
+        bg = (70, 170, 110) if movable else (118, 120, 126)
+        pygame.draw.circle(self.screen, bg, (int(cx), int(cy)), r)
+        pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)), r, max(1, r // 6))
+        if movable:
+            arr = r * 0.55
+            pts = self._gap_arrow_points(cx, cy, direction_char, arr)
+            pygame.draw.polygon(self.screen, (255, 255, 255), pts)
+            if not hasattr(self, '_gap_num_font'):
+                from GUI import _gui_safe_font
+                self._gap_num_font = _gui_safe_font('SimHei', max(12, int(r * 0.95)))
+            t = self._gap_num_font.render(str(max_step), True, (255, 255, 255))
+            self.screen.blit(t, (int(cx + r * 0.5), int(cy - r * 0.9)))
+        else:
+            c = (255, 255, 255)
+            d = r * 0.5
+            w = max(2, r // 5)
+            pygame.draw.line(self.screen, c, (int(cx - d), int(cy - d)), (int(cx + d), int(cy + d)), w)
+            pygame.draw.line(self.screen, c, (int(cx - d), int(cy + d)), (int(cx + d), int(cy - d)), w)
+
+    @staticmethod
+    def _gap_arrow_points(cx, cy, direction_char, arr):
+        if direction_char == 'a':    # 左
+            return [(cx - arr, cy), (cx + arr * 0.6, cy - arr * 0.7), (cx + arr * 0.6, cy + arr * 0.7)]
+        if direction_char == 'd':    # 右
+            return [(cx + arr, cy), (cx - arr * 0.6, cy - arr * 0.7), (cx - arr * 0.6, cy + arr * 0.7)]
+        if direction_char == 'w':    # 上
+            return [(cx, cy - arr), (cx - arr * 0.7, cy + arr * 0.6), (cx + arr * 0.7, cy + arr * 0.6)]
+        return [(cx, cy + arr), (cx - arr * 0.7, cy - arr * 0.6), (cx + arr * 0.7, cy - arr * 0.6)]  # 下
 
     def draw_menu_bar(self):
         """绘制顶部菜单栏"""
