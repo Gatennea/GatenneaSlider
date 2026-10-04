@@ -157,6 +157,7 @@ class FileOpsMixin:
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'op_log_enabled': getattr(self, 'op_log_enabled', False),
+            'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
             # 教程进度（闯关模式）
@@ -296,6 +297,8 @@ class FileOpsMixin:
 
                 if 'animation_speed' in config:
                     self.animation_duration = config['animation_speed']
+                if 'ui_mode' in config and config['ui_mode'] in ('plain', 'enhanced'):
+                    self.ui_mode = config['ui_mode']
                 if 'zoom' in config:
                     self.zoom = config['zoom']
 

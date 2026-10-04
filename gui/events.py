@@ -2658,6 +2658,15 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 动画 Tab：界面模式总开关（朴素 / 增强）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_ui_mode_rect'):
+                if self._settings_ui_mode_rect.collidepoint(mx, my):
+                    self.ui_mode = 'plain' if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 'enhanced'
+                    status = '增强' if self.ui_mode == 'enhanced' else '朴素'
+                    self.macro_notify_msg = f"界面模式：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 动画 Tab：分组着色器开关
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_coloring_toggle_rect'):
                 if self._settings_coloring_toggle_rect.collidepoint(mx, my):

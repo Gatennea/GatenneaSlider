@@ -1505,17 +1505,18 @@ class RendererMixin:
                     (occ if (r, c) in occupied else empty).add((r, c))
         return occ, empty, (hr, hc)
 
-    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28):
+    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28, on_text='ON', off_text='OFF'):
         """统一排版的开关行：左栏标签(x+15) + 右栏开关(x+220) + 可选说明。
-        返回 (开关rect, 下一行y)。所有设置页开关共用，保证对齐。"""
+        返回 (开关rect, 下一行y)。所有设置页开关共用，保证对齐。
+        on_text/off_text 允许自定义开关文字（如界面模式的 增强/朴素）。"""
         label_s = self.dialog_font.render(label, True, self.colors['dialog_text'])
         self.screen.blit(label_s, (x + 15, y + 6))
 
         rect = pygame.Rect(x + 220, y + 2, btn_w, btn_h)
         if on:
-            bg, txt, tc = self.colors['button_bg'], "ON", (255, 255, 255)
+            bg, txt, tc = self.colors['button_bg'], on_text, (255, 255, 255)
         else:
-            bg, txt, tc = self.colors['input_bg'], "OFF", (150, 150, 150)
+            bg, txt, tc = self.colors['input_bg'], off_text, (150, 150, 150)
         pygame.draw.rect(self.screen, bg, rect, border_radius=4)
         ts = self.status_font.render(txt, True, tc)
         self.screen.blit(ts, ts.get_rect(center=rect.center))
@@ -1529,9 +1530,15 @@ class RendererMixin:
 
     def _draw_settings_animation(self, x, y, width, height):
         """绘制动画速度设置内容（统一排版：标签左栏 x+15、控件右栏 x+220）"""
+        # 界面模式总开关（朴素 / 增强）—— S0-0 新增
+        self._settings_ui_mode_rect, ny = self._draw_switch_row(
+            x, y, "界面模式：", self.ui_mode == 'enhanced',
+            "增强=新版动效与视觉优化；朴素=旧版界面（等同未启用本计划）",
+            on_text='增强', off_text='朴素')
+
         # 滑动动画开关
         self._settings_anim_toggle_rect, ny = self._draw_switch_row(
-            x, y, "滑动动画：", self.animation_enabled,
+            x, ny, "滑动动画：", self.animation_enabled,
             "滑块移动时的补间动画过渡")
 
         # 选中动画开关（撤销/重做时高亮该步缝隙与滑块组）
