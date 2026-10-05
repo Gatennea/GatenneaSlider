@@ -42,7 +42,7 @@ DIRS = {            # 屏幕方向（y 向下）：e 右 / n 上 ...
 STYLE_SPEC = {
     #            线宽系数   翼展    杆尾     头底     外框
     'A': dict(w=0.26, wing=0.52, tail=-0.78, base=0.15, frame=None),
-    'B': dict(w=0.28, wing=0.56, tail=-0.75, base=0.15, frame='box', v=True),
+    'B': dict(w=0.28, half=0.55, frame='box', v=True),
     'C': dict(w=0.26, wing=0.52, tail=-0.78, base=0.15, frame='box'),
     'D': dict(w=0.36, wing=0.62, tail=-0.70, base=0.10, frame='box'),
 }
@@ -85,16 +85,20 @@ def render_tex(style, with_frame=True):
     if with_frame and sp['frame'] == 'box':
         surf.blit(render_frame(), (0, 0))
 
-    # 以下全部沿 +x 绘制：杆水平、头三角底边竖直、V 两翼关于 x 轴对称
-    tip = (cx + R * 0.95, cy)
-    base_x = cx + R * sp['base']
-    wing = R * sp['wing']
+    # 以下全部沿 +x 绘制：杆水平、头三角底边竖直
     if sp.get('v'):
-        # 纯 V 双翼：两条粗翼线交于 tip，无中杆（中杆会与翼线挤成一团）
+        # 纯 V 双翼：两条粗翼线交于 tip，无中杆（中杆会与翼线挤成一团）。
+        # **包围盒以贴图中心对称**（前后各 half、顶角 90°）：尖端不顶框边，
+        # 视觉重心居中，旋转后也稳。旧版 tip 顶到 0.95R 导致整体偏右。
+        half = R * sp['half']
+        tip = (cx + half, cy)
         for sgn in (1, -1):
-            end = (tip[0] - R * 0.78, cy + wing * sgn)
+            end = (cx - half, cy + half * sgn)
             pygame.draw.line(surf, col, tip, end, w)
     else:
+        tip = (cx + R * 0.95, cy)
+        base_x = cx + R * sp['base']
+        wing = R * sp['wing']
         tail = (cx + R * sp['tail'], cy)
         pygame.draw.line(surf, col, tail, (base_x, cy), w)
         pygame.draw.circle(surf, col, (int(tail[0]), int(tail[1])), w // 2)
