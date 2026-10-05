@@ -1340,6 +1340,53 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 新手教程：状态提交后推进教学进度（移动/撤销/重做/过关）
         self._tut_on_state_commit(via_redo=via_redo, suppress=suppress)
 
+    def _arrow_move_allowed(self, direction: str, step: int = None) -> bool:
+        """S1-4：干跑一次「点这个箭头」，看会不会被拒绝。
+
+        为什么要干跑、而不是照旧拿 try_move_ex(d, 1) 去猜：点击按键走的
+        move_selected_blocks 与箭头自己算的判定是两套东西 ——
+          ① 步数档用的是 current_step（点一下走 current_step 格，不一定是 1）；
+          ② 米字/三角走各自的 _mi_prepare_move / _triangle_prepare_move；
+          ③ 还有一串前置拦截（只读存档、创造模式、计时模式就绪态、
+             整体平移禁止…）。
+        只算「能不能走一格」就会得到用户报的那个症状：明明能走却没箭头，
+        或箭头点了被拒绝。这里逐条复用**同一条路径**，结论与点击一致。
+
+        副作用：prepare 会重写 be_opted、会写提示浮窗；干跑一律原样还原。
+        """
+        move_step = step if step is not None else self.current_step
+        # ---- move_selected_blocks 头部的前置拦截，逐条对齐
+        if self._tut_board_locked():
+            return False
+        if self._readonly_blocked():
+            return False
+        if self.create_mode:
+            return False
+        if self.annotation_mode and getattr(self, '_ann_view', None) == 'build':
+            return False
+        if self.game_mode == 'timed' and self.timer_state == 'ready':
+            return False
+
+        snap_opt = [(b, b.be_opted) for b in self.game.blocks]
+        snap_msg = self.macro_notify_msg
+        snap_timer = self.macro_notify_timer
+        try:
+            if getattr(self, 'mi_mode', False):
+                return self._mi_prepare_move(direction, move_step) is not None
+            if getattr(self, 'triangle_mode', False):
+                return self._triangle_prepare_move(direction, move_step) is not None
+            selected = [b for b in self.game.blocks if b.be_opted]
+            if not selected:
+                return False
+            if len(selected) == len(self.game.blocks):
+                return False       # 整体平移：禁止（与真实路径同款拦截）
+            return bool(self.game.try_move_ex(direction, move_step)[0])
+        finally:
+            for b, was in snap_opt:
+                b.be_opted = was   # 还原选中态（prepare 会重 opt）
+            self.macro_notify_msg = snap_msg
+            self.macro_notify_timer = snap_timer
+
     def move_selected_blocks(self, direction: str, step: int = None):
         """
         移动所有选中的滑块，逐步验证（每次1格，共step次），

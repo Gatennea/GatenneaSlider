@@ -862,22 +862,18 @@ class RendererMixin:
             lo_pt = (base[0] - ux * off, base[1] - uy * off)
             use_pad = False
 
-        # 可走格数：逐步试算，成本只在签名变化的那一帧
-        sig = (gap, tuple(tuple(b.location) for b in chosen))
-        if getattr(self, '_gap_maxstep_sig', None) != sig:
-            maxstep = {}
-            for d in dirs:
-                n = 0
-                for s in range(1, 80):
-                    positions, _reason = self.game.try_move_ex(d, s)
-                    if positions:
-                        n = s
-                    else:
-                        break
-                maxstep[d] = n
-            self._gap_maxstep_sig = sig
-            self._gap_maxstep = maxstep
-        maxstep = self._gap_maxstep
+        # 「点下去会不会被拒绝」：干跑与点击**同一条判定路径**（见
+        # _arrow_move_allowed）。别再自己逐格试算 try_move_ex —— 那与
+        # move_selected_blocks 的步数档/形态专属判定是两套，会出现
+        # 「能走却没箭头 / 有箭头点了却被拒」。
+        # 成本只在签名变化的那一帧：缝 + 切片 + 步数档 + 参考块都算进去。
+        sig = (gap, tuple(tuple(b.location) for b in chosen),
+               getattr(self, 'current_step', 1),
+               id(getattr(self, 'selected_block', None)))
+        if getattr(self, '_gap_allowed_sig', None) != sig:
+            self._gap_allowed = {d: self._arrow_move_allowed(d) for d in dirs}
+            self._gap_allowed_sig = sig
+        allowed = self._gap_allowed
 
         m = size / 2.0 + 6
         if use_pad:
@@ -910,7 +906,7 @@ class RendererMixin:
             # 锚点跑出画面时夹回视区：「看得见」比「准而看不见」有用
             ax = min(max(ax, m), self.screen_width - m)
             ay = min(max(ay, m), self.screen_height - m)
-            movable = maxstep.get(d, 0) > 0
+            movable = bool(allowed.get(d, False))
             buttons.append((d, (ax, ay), math.degrees(math.atan2(-vy, vx)), movable))
             if not movable:
                 continue        # 禁用态不画 → 也不该被点中（画与命中同一套几何）

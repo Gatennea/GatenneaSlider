@@ -149,14 +149,15 @@ gui.selected_gap = ('h', 2)
 gui.selected_block = anchor
 bt = centres(gui)
 d0, d1 = bt[0][0], bt[1][0]
-gui._gap_maxstep = {d0: 0, d1: 0}          # 两端都走不动
+gui._gap_allowed = {d0: False, d1: False}      # 两端都会被拒绝
 bt2 = centres(gui)
-check(all(not mv for _d, _c, _a, mv in bt2), 'maxstep=0 → 两端判为禁用')
+check(all(not mv for _d, _c, _a, mv in bt2), '干跑判否 → 两端判为禁用')
 check(not gui._arrow_buttons, '禁用端不生成命中矩形（画与命中同源）')
-gui._gap_maxstep = {d0: 3, d1: 0}          # 只一端可走
+gui._gap_allowed = {d0: True, d1: False}       # 只一端通过
 bt3 = centres(gui)
 check([d for d, _r in gui._arrow_buttons] == [d0],
       f'只有可走端 {d0} 有命中矩形（另一端 {d1} 禁用）')
+gui._gap_allowed_sig = None                    # 交回真实判定
 
 # ------------------------------------------------------------------ 三角 / 米字
 print('\n===== 三角 =====')
@@ -205,6 +206,64 @@ gui.drag_following = False
 gui.drag_follow_offset = (0.0, 0.0)
 check(all(abs(m1[d][0] - m0[d][0]) + abs(m1[d][1] - m0[d][1]) > 1 for d in m0),
       '米字：拖拽跟随时按键跟着走')
+
+# ---- 一致性（用户报的 bug）：有没有箭头 == 点下去会不会被拒绝
+print('\n===== 一致性：箭头有无 == 点击是否被拒绝 =====')
+
+
+def setup_square(g):
+    g.new_puzzle(5, 5, 1)
+    b = g.game.blocks[0]
+    g.game.opt('h', 2, b)
+    g.selected_gap = ('h', 2)
+    g.selected_block = b
+    g._gap_anchor_world = None
+
+
+def setup_tri(g):
+    g.new_triangle_puzzle(3, 1)
+    if hasattr(g, '_fit_triangle_zoom'):
+        g._fit_triangle_zoom()
+    g._center_triangle()
+    rng = gap_index_range('n', g.game.positions())
+    line = rng[len(rng) // 2]
+    b = g.game.blocks[len(g.game.blocks) // 2]
+    g.game.opt('n', line, b)
+    g.selected_gap = ('n', line)
+    g.selected_block = b
+    g._gap_anchor_world = None
+
+
+def setup_mi(g):
+    g.new_mi_puzzle(3, 3, 1)
+    g._fit_mi_zoom()
+    g._center_mi()
+    b = g.game.blocks[len(g.game.blocks) // 2]
+    g.game.opt('d1', 0, b)
+    g.selected_gap = ('d1', 0)
+    g.selected_block = b
+    g._gap_anchor_world = None
+
+
+for form, setup in (('方形', setup_square), ('三角', setup_tri), ('米字', setup_mi)):
+    for step in (1, 2, 3):
+        setup(gui)
+        gui.current_step = step
+        btns_c = centres(gui)
+        if not btns_c:
+            check(False, f'{form} step={step} 没算出按键')
+            continue
+        for d, _c, _a, mv in btns_c:
+            allowed = gui._arrow_move_allowed(d)
+            check(allowed == mv,
+                  f'{form} step={step} {d}: 箭头显示={mv} 干跑={allowed} 一致')
+            ret = gui.move_selected_blocks(d)      # 真的点一下
+            check(bool(ret) == allowed,
+                  f'{form} step={step} {d}: 干跑={allowed} 实际点击={bool(ret)}')
+            if ret:
+                gui.undo()
+                setup(gui)
+                gui.current_step = step
 
 # ---- 朴素模式不画
 print('\n===== 朴素模式 =====')
