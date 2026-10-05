@@ -74,11 +74,15 @@ def _to_ops(actions, step):
 # ---------------------------------------------------------------------------
 def m1_registry():
     print('\n--- M1 注册表里有三角算法且签名对齐 ---')
-    check('M1a tri_gather 已注册', 'tri_gather' in SOLVER_ALGORITHMS,
+    check('M1a 统一入口 gather 已注册', 'gather' in SOLVER_ALGORITHMS,
           f'共 {len(SOLVER_ALGORITHMS)} 个算法')
-    if 'tri_gather' not in SOLVER_ALGORITHMS:
+    check('M1a2 形态专用入口已移除（三形态共用同一个入口）',
+          'tri_gather' not in SOLVER_ALGORITHMS
+          and 'mi_gather' not in SOLVER_ALGORITHMS,
+          list(SOLVER_ALGORITHMS))
+    if 'gather' not in SOLVER_ALGORITHMS:
         return
-    label, fn = SOLVER_ALGORITHMS['tri_gather']
+    label, fn = SOLVER_ALGORITHMS['gather']
     check('M1b 有中文标签', bool(label.strip()), label.strip())
     import inspect
     params = set(inspect.signature(fn).parameters)
@@ -106,7 +110,7 @@ def _solve_cancelled():
     random.seed(3)
     g = TriangleSliderMatrix(4)
     g.shuffle(120, 2)
-    fn = SOLVER_ALGORITHMS['tri_gather'][1]
+    fn = SOLVER_ALGORITHMS['gather'][1]
     res = fn(g, step=2, cancel_check=lambda: True, max_wait_time=20)
     return res
 
@@ -114,21 +118,21 @@ def _solve_cancelled():
 def m2_switch_algorithm():
     print('\n--- M2 切三角自动换求解器 ---')
     g = _gui_tri(shuffle=0)
-    check('M2a 切三角后 solver_algorithm = tri_gather',
-          g.solver_algorithm == 'tri_gather', g.solver_algorithm)
-    # 显式设成方形算法后再开求解：应自动切回 tri_gather 并明确提示
-    # （不静默走错算法，也不硬拦——拦会让按钮路径与快捷键路径不一致）
+    check('M2a 切三角后 solver_algorithm = gather（统一入口）',
+          g.solver_algorithm == 'gather', g.solver_algorithm)
+    # 显式设成三角不支持的方形算法：应**明确拒绝**并告知没有该功能，
+    # 而不是像旧版那样静默自动换成 tri_gather。
     g.solver_algorithm = 'ida_star'
     g._auto_solve_running = False
     g.macro_executing = False
     g.macro_notify_msg = ''
     g._start_auto_solve()
-    check('M2b 方形算法在三角下被自动换成 tri_gather',
-          g.solver_algorithm == 'tri_gather', g.solver_algorithm)
-    check('M2c 换算法时有明确提示（不是静默）',
-          '聚拢' in g.macro_notify_msg, f'msg={g.macro_notify_msg!r}')
-    g._auto_solve_cancel = True   # 别让后台线程真跑起来
-    check('M2d 拦下时没有启动后台线程', g._auto_solve_running is False)
+    check('M2b 不再静默改算法（保留用户选择）',
+          g.solver_algorithm == 'ida_star', g.solver_algorithm)
+    check('M2c 明确提示「没有该功能」并点出形态',
+          '没有' in g.macro_notify_msg and '三角形' in g.macro_notify_msg,
+          f'msg={g.macro_notify_msg!r}')
+    check('M2d 拒绝时没有启动后台线程', g._auto_solve_running is False)
 
 
 def m3_ops_and_replay():
@@ -136,7 +140,7 @@ def m3_ops_and_replay():
     for k, step, shuf, seed in ((4, 2, 120, 3), (3, 1, 80, 1), (5, 2, 200, 5)):
         g = _gui_tri(k=k, step=step, shuffle=shuf, seed=seed)
         init = [list(b.location) for b in g.game.blocks]
-        fn = SOLVER_ALGORITHMS['tri_gather'][1]
+        fn = SOLVER_ALGORITHMS['gather'][1]
         res = fn(g.game, step=step, max_wait_time=25)
         if not res['actions']:
             check(f'M3a k={k} 有动作可播', False, f'reason={res["reason"]}')
@@ -174,7 +178,7 @@ def m3_ops_and_replay():
 
 def m4_replay_all_actions():
     print('\n--- M4 随机多盘：ops 回放全成功（真盘重放终裁）---')
-    fn = SOLVER_ALGORITHMS['tri_gather'][1]
+    fn = SOLVER_ALGORITHMS['gather'][1]
     tot = 0
     bad = 0
     solved = 0

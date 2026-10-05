@@ -1690,6 +1690,8 @@ class RendererMixin:
         self.screen.blit(title, (x + 15, row_y))
         row_y += row_height + 10
 
+        from solver import solver_supports
+
         self._settings_solver_rects = {}  # algorithm_key -> rect
 
         for algo_key, (algo_name, _) in SOLVER_ALGORITHMS.items():
@@ -1709,9 +1711,19 @@ class RendererMixin:
                 pygame.draw.circle(self.screen, self.colors['button_bg'],
                                  (radio_x + radio_size, radio_y + radio_size), radio_size - 4)
 
-            # 算法名
-            name_surface = self.dialog_font.render(algo_name, True, self.colors['dialog_text'])
+            # 算法名：当前谜题形态不支持的**置灰**并标注。
+            # 仍允许点选（用户可能先选好、之后切回方形），点击时会明确提示
+            # 「当前谜题没有 xxx 求解算法功能」，不会静默换算法。
+            supported = solver_supports(algo_key, self._current_puzzle_form())
+            name_color = (self.colors['dialog_text'] if supported
+                          else (110, 110, 115))
+            name_surface = self.dialog_font.render(algo_name, True, name_color)
             self.screen.blit(name_surface, (option_x, row_y + row_height // 2 - name_surface.get_height() // 2))
+            if not supported:
+                tip = self.status_font.render("（当前谜题不支持）", True,
+                                              (110, 110, 115))
+                self.screen.blit(tip, (option_x + name_surface.get_width() + 8,
+                                       row_y + row_height // 2 - tip.get_height() // 2))
 
             row_y += row_height
 
@@ -1735,7 +1747,7 @@ class RendererMixin:
             #'emd': 'EMD求解：用 EMD 距离贪心搜索，速度快但不保证成功。',
             #'strategy': '策略求解：EMD 贪心 + 循环检测 + 随机扰动，成功率高于纯 EMD。',
             #'distance': '距离求解：用神经网络预测剩余步数做贪心搜索，需先用 solver.ml.train_distance 训练模型。',
-            'gather': '聚拢：提升聚拢度，不保证还原，实时显示进展。',
+            'gather': '聚拢（方形 / 三角形 / 米字格通用入口）：提升聚拢度，不保证还原，实时显示进展。',
             'gather_gradient': '梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢，每阶段播放动画后再续。理论上比上一个更高效。',
             'fill_macro': '填洞宏：死代码规则（无搜索）。单洞单凸整盘还原；多洞无缺口时逐 couple 填洞（成功一次重扫，全败停机）。',
             'hybrid': '混合求解（自动规划）：有表先查表（最优且亚秒级）；无表按空位数路由——空位≤2 先混合流水线（聚拢+填洞+搜索），空位≥3 先补缺宏（couple→贴边setup→带移让位链）；一路落败另一路接力，补缺宏的部分成果可被混合续算；全败返回聚拢度提升最大的断点。',

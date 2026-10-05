@@ -805,9 +805,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.mi_mode = False
         self.numbered = False
 
-        # 切到三角形时把求解器换成三角版：查表/补缺宏/DFS/IDA* 都是方形
+        # 切到三角形时把求解器落到「聚拢」：查表/补缺宏/DFS/IDA* 都是方形
         # 语义（动作 4 元组 + 矩形目标形状），在 tri 上会静默走错。
-        self.solver_algorithm = 'tri_gather'
+        # 注意是落到**统一的 'gather' 入口**，不是某个「三角专用入口」——
+        # 三形态共用同一个菜单项，形态差异由 solver 内部按 game 类型分发
+        # （2026-10-05 用户要求：不同谜题要用相同入口）。
+        self.solver_algorithm = 'gather'
 
         self.game = create_puzzle(k, k, step, kind='triangle', triangle_side=k)
 
@@ -895,10 +898,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 摆在模式切换处而不是每次点击处检查，避免开着单次触控进米字格
         self.control_single_touch = False
 
-        # 切到米字格时把求解器换成 mi 版（M3 落地，計劃 §8 M3）：查表/补缺宏/
-        # DFS/IDA* 都是方形语义（4 元组动作 + 矩形目标形状 + 整数坐标），在 mi
-        # 上会静默走错 —— mi 的 rep 是 (r,c,q) 且坐标可能是半整数。
-        self.solver_algorithm = 'mi_gather'
+        # 切到米字格时把求解器落到「聚拢」：查表/补缺宏/DFS/IDA* 都是方形语义
+        # （4 元组动作 + 矩形目标形状 + 整数坐标），在 mi 上会静默走错 ——
+        # mi 的 rep 是 (r,c,q) 且坐标可能是半整数。
+        # 与三角一样走**统一的 'gather' 入口**，不给 mi 单开一个入口。
+        self.solver_algorithm = 'gather'
 
         self.game = create_puzzle(m, n, step, kind='mi')
 
@@ -2694,6 +2698,23 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return f"{prefix} DNF"
         return ""
 
+    def _current_puzzle_form(self) -> str:
+        """当前谜题形态：'square' | 'triangle' | 'mi'。
+
+        优先用 solver 的 `game_form`（按 game 类名判），GUI 旗标只作兜底 ——
+        两者历史上各错过一次（旗标忘了清 / game 还没换），互为备份更稳。
+        """
+        try:
+            from solver import game_form
+            return game_form(self.game)
+        except Exception:
+            pass
+        if getattr(self, 'mi_mode', False):
+            return 'mi'
+        if getattr(self, 'triangle_mode', False):
+            return 'triangle'
+        return 'square'
+
     def _start_auto_solve(self):
         """启动/停止自动求解"""
         import threading
@@ -2710,31 +2731,20 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self._readonly_blocked():
             return
 
-        # 三角形密铺：M1 已落地（solver/ml/tri_adapter.py + shape_gather.py），
-        # 动作是 5 元组含 rep，回放层 `_find_block_by_cell` 只比前两分量、
-        # 多带的 up 不影响定位，所以 GUI 侧除下面这条闸外零改动。
+        # 当前谜题形态不支持所选算法 → **明确告知并拒绝启动**。
         #
-        # 三角**只能走 tri_gather**（查表/补缺宏/DFS/IDA* 都是方形语义：
-        # 4 元组动作 + 矩形目标形状，套在 tri 上会静默走错）。new_triangle_puzzle
-        # 已自动把 solver_algorithm 切过去；这里再挡一道是为了「用户手动改过
-        # 算法设置」的情况 —— 宁可明确拦下也不要静默走错算法。
-        if getattr(self, 'triangle_mode', False):
-            if self.solver_algorithm != 'tri_gather':
-                self.solver_algorithm = 'tri_gather'
-                self.macro_notify_msg = "三角形密铺只支援聚拢求解器，已自动切换"
-                self.macro_notify_timer = 120
-
-        # 米字格：M3 已落地（solver/ml/mi_adapter.py），与 tri 同构放行。
-        # mi **只能走 mi_gather**，理由同三角：方形算法吃 4 元组动作 + 整数
-        # 坐标 + 矩形目标形状，在 mi 的 5 元组 / 半整数坐标上会静默走错。
-        # （另一半理由是 mi 目标形状有两个 —— m×n 与 n×m 轉置都算還原。）
-        # 这里不再调 `_mi_blocked('自动求解')`：它只在 mi_mode 下生效，而
-        # mi_mode 分支已自己处理完，写成 elif 只是留一条永远走不到的死路。
-        if getattr(self, 'mi_mode', False):
-            if self.solver_algorithm != 'mi_gather':
-                self.solver_algorithm = 'mi_gather'
-                self.macro_notify_msg = "米字格只支援聚拢求解器，已自动切换"
-                self.macro_notify_timer = 120
+        # 旧行为是「静默自动切到 tri_gather / mi_gather」：用户看不到自己选的
+        # 算法被换掉了，而且这等于给异形各留了一个专用入口。现在三形态共用
+        # 'gather'（solver 内部按 game 类型分发），这里只负责把「该形态没有
+        # 这个算法」讲清楚 —— 用户要的预期反馈就是这句
+        # 「当前谜题没有 xxx 求解算法功能」。
+        form = self._current_puzzle_form()
+        from solver import solver_supports, unsupported_solver_msg
+        if not solver_supports(self.solver_algorithm, form):
+            self.macro_notify_msg = unsupported_solver_msg(
+                self.solver_algorithm, form)
+            self.macro_notify_timer = 150
+            return
 
         # 标注录制中：自动回放不是人类示范，禁用
         if getattr(self, '_ann_recording', False):
@@ -2813,9 +2823,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     algorithm, SOLVER_ALGORITHMS['ida_star']
                 )
                 kwargs = {}
-                if algorithm in ('gather', 'tri_gather', 'mi_gather'):
-                    # 禁用的参数传 None（不设限）。异形两个同样吃这套
-                    # —— 设置面板里的参数不该只对方形生效。
+                if algorithm == 'gather':
+                    # 禁用的参数传 None（不设限）。三形态共用这一个入口，
+                    # 参数一样要生效 —— 设置面板里的参数不该只对方形生效。
                     for k, v in self.gather_params.items():
                         kwargs[k] = v if self.gather_enabled.get(k, True) else None                # 填洞/补缺宏：流式播放——每解决一个 couple 即推送段
                 if algorithm in ('fill_macro', 'gap_macro'):

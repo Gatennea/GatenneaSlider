@@ -265,8 +265,11 @@ gui.solver_algorithm = 'ida_star'          # 模拟用户手动设成方形算�
 gui._auto_solve_running = False
 gui.macro_executing = False
 gui._start_auto_solve()
-check(gui.solver_algorithm == 'tri_gather',
-      f"自动求解：方形算法被换成 tri_gather（实际 {gui.solver_algorithm}）")
+check(gui.solver_algorithm == 'ida_star',
+      f"自动求解：不支持的算法被拒绝且保留用户选择（实际 {gui.solver_algorithm}）")
+check('没有' in (gui.macro_notify_msg or '')
+      and '三角形' in (gui.macro_notify_msg or ''),
+      f"拒绝提示明确且点名三角形（实际 {gui.macro_notify_msg!r}）")
 gui._auto_solve_cancel = True             # 别让后台线程真跑
 gui.macro_notify_msg = ''
 gui._timer_enter_ready()

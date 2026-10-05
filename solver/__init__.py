@@ -88,6 +88,87 @@ def hybrid_solve_with_table(game, step, cancel_check=None,
     return hybrid_solve(game, step, cancel_check=cancel_check,
                         progress_callback=progress_callback, **kwargs)
 
+# ---------------------------------------------------------------------------
+# 形态识别 + 统一入口（2026-10-05）
+#
+# 之前的做法是给异形**各加一个注册表入口**（'tri_gather' / 'mi_gather'），
+# GUI 还要在切形态时把 solver_algorithm 静默改成对应 key。用户指出这不对：
+# **不同谜题应该用同一个入口**（菜单里就一个「聚拢」），形态差异是内部实现
+# 细节，不该暴露成两个菜单项、也不该由 GUI 去猜该用哪个。
+# ---------------------------------------------------------------------------
+
+FORM_LABELS = {'square': '方形', 'triangle': '三角形', 'mi': '米字格'}
+_ALL_FORMS = ('square', 'triangle', 'mi')
+
+
+def game_form(game) -> str:
+    """返回谜题形态：'square' | 'triangle' | 'mi'。
+
+    按**类名**判定而不是按 GUI 的 `triangle_mode`/`mi_mode` 旗标 ——
+    求解器不该依赖 GUI 状态：命令行 / HTTP / 测试直接把 game 传进来
+    也要能分对（GUI 旗标只在 GUI 进程里存在）。
+    """
+    name = type(game).__name__
+    if name == 'MiSliderMatrix':
+        return 'mi'
+    if name == 'TriangleSliderMatrix':
+        return 'triangle'
+    return 'square'
+
+
+def form_label(form) -> str:
+    return FORM_LABELS.get(form, form)
+
+
+def gather_solve_unified(game, step: int = None, cancel_check=None,
+                         progress_callback=None, **kwargs):
+    """「聚拢」的**统一入口**：三种谜题形态共用这一个入口，内部按形态分发。
+
+    方形  → `gather_solve`
+    三角形 → `tri_gather_solve`
+    米字格 → `mi_gather_solve`
+
+    三个被分发到的函数签名一致（含 `gather_params` 的 None 透传），
+    所以 GUI 侧不需要为形态做任何特判。
+    """
+    form = game_form(game)
+    if form == 'mi':
+        fn = mi_gather_solve
+    elif form == 'triangle':
+        fn = tri_gather_solve
+    else:
+        fn = gather_solve
+    return fn(game, step=step, cancel_check=cancel_check,
+              progress_callback=progress_callback, **kwargs)
+
+
+# 各算法支持的谜题形态。**缺省 = 只支持方形** —— 方形以外的算法大多是
+# 方形语义（4 元组动作 + 矩形目标形状 + 整数坐标），套到异形上会静默走错，
+# 所以新算法必须**显式声明**自己支持异形，不能靠缺省蒙对。
+SOLVER_FORM_SUPPORT = {
+    'gather': ('square', 'triangle', 'mi'),
+}
+
+
+def solver_supports(algorithm, form) -> bool:
+    """algorithm 在 form 形态上是否可用。"""
+    return form in SOLVER_FORM_SUPPORT.get(algorithm, ('square',))
+
+
+def unsupported_solver_msg(algorithm, form) -> str:
+    """「当前谜题没有 xxx 求解算法功能」的标准文案。
+
+    之前异形遇到不支持的算法是**静默自动切换**到 tri_gather/mi_gather，
+    用户看不到自己选的算法被换掉了。改为明确告知「没有这个功能」并列出
+    该形态目前可用的算法，由用户自己决定。
+    """
+    name = SOLVER_ALGORITHMS.get(algorithm, ('求解器',))[0].strip()
+    ok_keys = [k for k in SOLVER_ALGORITHMS if solver_supports(k, form)]
+    ok_names = '、'.join(SOLVER_ALGORITHMS[k][0].strip() for k in ok_keys)
+    return (f"当前谜题（{form_label(form)}）没有「{name}」求解算法功能"
+            f"（该形态目前仅支持：{ok_names}）")
+
+
 SOLVER_ALGORITHMS = {
     'ida_star': ('  IDA*求解', solve),
     'fast': ('  IDA*快速', solve_fast),
@@ -97,20 +178,20 @@ SOLVER_ALGORITHMS = {
     #'emd': ('  EMD求解', emd_greedy_solve),
     #'strategy': ('  策略求解', strategy_solve),
     #'distance': ('  距离求解', distance_solve),
-    'gather': ('  聚拢', gather_solve),
+    # 三形态共用的统一入口（内部按 game 形态分发，见 gather_solve_unified）
+    'gather': ('  聚拢', gather_solve_unified),
     'gather_gradient': ('  梯度聚拢', gradient_gather),
     #'human_ai': ('  人类模仿', ai_human_solve),
     'fill_macro': ('  填洞宏', solve_fill_macro),
     'gap_macro': ('  补缺宏', solve_gap_macro),
     'hybrid':   ('  混合求解（自动规划）', auto_solve),
-    # 异形（三角形）：M1 落地后放行 GUI 放行（計劃 §8 M4）。三角只能走这个
-    # —— 查表/补缺宏/DFS 都是方形语义，GUI 侧 `_start_auto_solve` 也据此
-    # 拦掉其它算法。
-    'tri_gather': ('  聚拢（三角形）', tri_gather_solve),
-    # 异形（米字格）：M3 落地，與 tri 同構（計劃 §8 M3）。動作同樣是 5 元組
-    # （族, 線, 側, 向, rep=(r,c,q)），回放層同樣零改動。
-    'mi_gather': ('  聚拢（米字格）', mi_gather_solve),
 }
 
+# 注：'tri_gather' / 'mi_gather' 作为**独立入口已移除**（2026-10-05）——
+# 形态不该各占一个菜单项。两个函数仍保留（供统一入口分发与测试直接调用），
+# 但不再出现在注册表里。
+
 __all__ = ['solve', 'solve_fast', 'solve_greedy', 'SOLVER_ALGORITHMS',
-           'apply_action', 'enumerate_valid_actions']
+           'apply_action', 'enumerate_valid_actions',
+           'game_form', 'form_label', 'gather_solve_unified',
+           'SOLVER_FORM_SUPPORT', 'solver_supports', 'unsupported_solver_msg']

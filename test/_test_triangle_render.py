@@ -295,10 +295,13 @@ gui.solver_algorithm = 'ida_star'      # 模拟用户手动设成方形算法
 gui._auto_solve_running = False
 gui.macro_executing = False
 gui._start_auto_solve()
-# M4 之后三角自动求解已放行：不再拦，而是自动切到 tri_gather。
-# （原断言「尚未实现」是 M1 之前的行为）
-check(gui.solver_algorithm == 'tri_gather',
-      f"自动求解已放行（算法换成 tri_gather，实际 {gui.solver_algorithm}）")
+# 2026-10-05 起三形态共用同一个 'gather' 入口，异形不再有专用入口。
+# 三角不支持方形算法 → **明确拒绝**并保留用户选择（旧版是静默换算法）。
+check(gui.solver_algorithm == 'ida_star',
+      f"自动求解：不支持的算法被拒绝且保留用户选择（实际 {gui.solver_algorithm}）")
+check('没有' in (gui.macro_notify_msg or '')
+      and '三角形' in (gui.macro_notify_msg or ''),
+      f"拒绝提示明确且点名三角形（实际 {gui.macro_notify_msg!r}）")
 gui._auto_solve_cancel = True           # 别让后台线程真跑
 gui.macro_notify_msg = ''
 gui._timer_enter_ready()
