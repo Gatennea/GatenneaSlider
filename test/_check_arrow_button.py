@@ -108,6 +108,36 @@ check(moved_blocks == len(before_pos), f'点击后选中切片整体移动（{mo
 check(len(gui.game_history.history) > before_hist,
       f'历史步进 +{len(gui.game_history.history) - before_hist}（与虚拟键盘同为一次移动）')
 
+# ---- 鼠标锚点：按键摆在上一次选中滑块的那一点两侧
+print('\n===== 鼠标锚点（选中滑块那一下的位置）=====')
+import math  # noqa: E402
+gui.new_puzzle(5, 5, 1)
+anchor = gui.game.blocks[0]
+gui.game.opt('h', 2, anchor)
+gui.selected_gap = ('h', 2)
+gui.selected_block = anchor
+mx, my = gui.screen_width // 2, int(gui.screen_height * 0.35)
+gui._gap_anchor_world = gui.screen_to_world(mx, my)
+btns_m = centres(gui)
+(d_a, c_a, _a1, _m1), (d_b, c_b, _a2, _m2) = btns_m
+mid = ((c_a[0] + c_b[0]) / 2, (c_a[1] + c_b[1]) / 2)
+check(abs(mid[0] - mx) < 1.0 and abs(mid[1] - my) < 1.0,
+      f'两按键中点 = 鼠标点 ({mid[0]:.0f},{mid[1]:.0f}) vs ({mx},{my})')
+check(abs(math.dist(c_a, c_b) - 1.6 * gui._arrow_button_size()) < 2.0,
+      f'两键间距 = 1.6×边长（{math.dist(c_a, c_b):.0f}px，不互相吃点击）')
+axis = (c_b[0] - c_a[0], c_b[1] - c_a[1])
+check(abs(axis[1]) < 1.0, '横缝：两键沿水平推行轴分列左右（不是上下）')
+m_before = {d: c for d, c, _a, _m in btns_m}
+gui.camera_y += 40
+btns_p = {d: c for d, c, _a, _m in centres(gui)}
+check(all(abs(btns_p[d][1] - m_before[d][1] - 40) < 0.6 for d in btns_p),
+      'camera_y +40 → 按键随该棋盘位置移动（记的是世界坐标，不是死的屏幕点）')
+gui.camera_y -= 40
+gui._gap_anchor_world = None
+fallback = {d: c for d, c, _a, _m in centres(gui)}
+check(any(abs(fallback[d][1] - m_before[d][1]) > 1 for d in fallback),
+      '清空锚点 → 回退到切片外沿（几何照旧算得出）')
+
 # ---- 禁用端不画、也不给点击
 print('\n===== 禁用态（不画、不可点）=====')
 # 初始盘是满盘（25 块无空位），两端都走得动，造不出天然的禁用端。

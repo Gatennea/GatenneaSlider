@@ -45,7 +45,10 @@ b = gui.game.blocks[len(gui.game.blocks) // 2]
 gui.game.opt('h', 3, b)
 gui.selected_gap = ('h', 3)
 gui.selected_block = b
-shot(gui, 'square', '两端各一个按键')
+# 模拟「选中滑块那一下的鼠标点」：取该块的屏幕位置
+_bx, _by = gui._key_center(tuple(b.location))
+gui._gap_anchor_world = gui.screen_to_world(_bx, _by)
+shot(gui, 'square', '两键摆在选中滑块那一点两侧')
 
 print('三角 k=3：')
 gui.new_triangle_puzzle(3, 1)
@@ -59,6 +62,8 @@ tb = gui.game.blocks[len(gui.game.blocks) // 2]
 gui.game.opt('n', line, tb)
 gui.selected_gap = ('n', line)
 gui.selected_block = tb
+_tx, _ty = gui._key_center(tuple(tb.location))
+gui._gap_anchor_world = gui.screen_to_world(_tx, _ty)
 shot(gui, 'tri', '斜向按键（箭头随屏幕向量旋转）')
 
 print('米字 3×3 对角缝：')
@@ -69,4 +74,6 @@ mb = gui.game.blocks[len(gui.game.blocks) // 2]
 gui.game.opt('d1', 0, mb)
 gui.selected_gap = ('d1', 0)
 gui.selected_block = mb
+_mx, _my = gui._key_center(tuple(mb.location))
+gui._gap_anchor_world = gui.screen_to_world(_mx, _my)
 shot(gui, 'mi', '对角族按键')

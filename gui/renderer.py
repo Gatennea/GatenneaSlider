@@ -833,18 +833,34 @@ class RendererMixin:
             return None
         ux, uy = ux / ulen, uy / ulen
 
-        # 切片投影包围盒的「外沿中点」：只看选中切片，不看整条缝（修 bug-b）。
-        # 用**视觉 key**，拖拽时按键才跟着切片走。
+        size = self._arrow_button_size()
+
+        # 锚点：**上一次选中滑块时的鼠标位置**（用户定）。存的是世界坐标，
+        # 不是屏幕坐标 —— 同一位置换个记法而已，好处是平移/缩放后按键仍
+        # 钉在玩家点过的那个棋盘位置上，不会重演「箭头留在原地」。
+        # 没有任何记录时（例如由键盘/回放选中）回退到切片投影外沿中点。
         px, py = -uy, ux                       # 垂直于推行方向
-        ts, ss = [], []
-        for b in chosen:
-            cx, cy = self._key_center(self._visual_key(b))
-            ts.append(cx * ux + cy * uy)
-            ss.append(cx * px + cy * py)
-        t_lo, t_hi = min(ts), max(ts)
-        s_mid = (min(ss) + max(ss)) / 2.0
-        hi_pt = (ux * t_hi + px * s_mid, uy * t_hi + py * s_mid)
-        lo_pt = (ux * t_lo + px * s_mid, uy * t_lo + py * s_mid)
+        anchor_w = getattr(self, '_gap_anchor_world', None)
+        if anchor_w is None:
+            # 切片投影包围盒的「外沿中点」：只看选中切片，不看整条缝（bug-b）。
+            # 用**视觉 key**，拖拽时按键才跟着切片走。
+            ts, ss = [], []
+            for b in chosen:
+                cx, cy = self._key_center(self._visual_key(b))
+                ts.append(cx * ux + cy * uy)
+                ss.append(cx * px + cy * py)
+            t_lo, t_hi = min(ts), max(ts)
+            s_mid = (min(ss) + max(ss)) / 2.0
+            hi_pt = (ux * t_hi + px * s_mid, uy * t_hi + py * s_mid)
+            lo_pt = (ux * t_lo + px * s_mid, uy * t_lo + py * s_mid)
+            use_pad = True
+        else:
+            # 鼠标点附近：两个按键沿推行轴分居两侧，间距够开避免互相吃点击
+            base = self.world_to_screen(*anchor_w)
+            off = size * 0.80
+            hi_pt = (base[0] + ux * off, base[1] + uy * off)
+            lo_pt = (base[0] - ux * off, base[1] - uy * off)
+            use_pad = False
 
         # 可走格数：逐步试算，成本只在签名变化的那一帧
         sig = (gap, tuple(tuple(b.location) for b in chosen))
@@ -863,26 +879,29 @@ class RendererMixin:
             self._gap_maxstep = maxstep
         maxstep = self._gap_maxstep
 
-        size = self._arrow_button_size()
-        block_r = self._piece_screen_radius()
-        # 让位 = 块半径（贴到切片外沿）+ 半个按键 + 一点呼吸空隙
-        pad = block_r + size / 2.0 + max(4.0, block_r * 0.10)
         m = size / 2.0 + 6
-        # 出屏收缩：斜方向一格很长，标准让位可能把按键推出画面（实测米字
-        # 3×3 对角族右下端 y=880 而屏高 620）。逐步缩短让位，最低贴到
-        # 「切片外沿 + 半个按键」，保证按键可见且仍指向正确的端。
+        if use_pad:
+            block_r = self._piece_screen_radius()
+            # 让位 = 块半径（贴到切片外沿）+ 半个按键 + 一点呼吸空隙
+            pad = block_r + size / 2.0 + max(4.0, block_r * 0.10)
+            # 出屏收缩：斜方向一格很长，标准让位可能把按键推出画面（实测米字
+            # 3×3 对角族右下端 y=880 而屏高 620）。逐步缩短让位，最低贴到
+            # 「切片外沿 + 半个按键」，保证按键可见且仍指向正确的端。
 
-        def _inside(x, y):
-            return m <= x <= self.screen_width - m and m <= y <= self.screen_height - m
+            def _inside(x, y):
+                return (m <= x <= self.screen_width - m
+                        and m <= y <= self.screen_height - m)
 
-        p = pad
-        for _ in range(6):
-            a_hi = (hi_pt[0] + ux * p, hi_pt[1] + uy * p)
-            a_lo = (lo_pt[0] - ux * p, lo_pt[1] - uy * p)
-            if _inside(*a_hi) and _inside(*a_lo):
-                break
-            p *= 0.65
-        pad = max(p, size / 2.0 + 4.0)
+            p = pad
+            for _ in range(6):
+                a_hi = (hi_pt[0] + ux * p, hi_pt[1] + uy * p)
+                a_lo = (lo_pt[0] - ux * p, lo_pt[1] - uy * p)
+                if _inside(*a_hi) and _inside(*a_lo):
+                    break
+                p *= 0.65
+            pad = max(p, size / 2.0 + 4.0)
+        else:
+            pad = 0.0      # 鼠标锚点：按键就摆在点的地方，不再额外让位
 
         ends = [(dirs[0], (hi_pt[0] + ux * pad, hi_pt[1] + uy * pad), (ux, uy)),
                 (dirs[1], (lo_pt[0] - ux * pad, lo_pt[1] - uy * pad), (-ux, -uy))]

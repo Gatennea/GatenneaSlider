@@ -710,6 +710,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """
         # 切换谜题会重置棋盘 → 终止梯度流水线
         self._stop_gradient_pipeline()
+        self._gap_anchor_world = None   # 旧局的「选中滑块那一点」不再有效
         # 切换谜题会重置棋盘 → 打断连续撤销/重做
         self._stop_continuous_undo_redo()
         # 切换谜题 → 清掉上一次的计时成绩
@@ -792,6 +793,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return False
         # 切换谜题会重置棋盘 → 终止梯度流水线 / 连续撤销重做
         self._stop_gradient_pipeline()
+        self._gap_anchor_world = None
         self._stop_continuous_undo_redo()
         self._last_timed_result = None
         self._ann_cancel_session('切换谜题')
@@ -883,6 +885,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return False
         # 切换谜题会重置棋盘 → 终止梯度流水线 / 连续撤销重做
         self._stop_gradient_pipeline()
+        self._gap_anchor_world = None
         self._stop_continuous_undo_redo()
         self._last_timed_result = None
         self._ann_cancel_session('切换谜题')

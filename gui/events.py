@@ -789,6 +789,9 @@ class EventsMixin:
                                     for b in self.game.blocks:
                                         b.be_opted = False
                                     self.selected_block = None
+                                    # 换缝 = 上一次「选中滑块的那一点」作废，
+                                    # 箭头按键回到切片外沿（不再钉在旧鼠标点）
+                                    self._gap_anchor_world = None
                                     # 操作提示：选中缝隙
                                     gap_type, line = gap
                                     msg = f"选中{self._gap_type_name(gap_type)}缝隙"
@@ -816,6 +819,9 @@ class EventsMixin:
                             gap_type, line = self.selected_gap
                             self.game.opt(gap_type, line, block)
                             self.selected_block = block
+                            # S1-4：记住这一次选中的鼠标点（存世界坐标，平移/
+                            # 缩放后仍钉在同一棋盘位置），箭头按键摆在它两侧
+                            self._gap_anchor_world = self.screen_to_world(x, y)
                             n_blocks = len(
                                 [b for b in self.game.blocks if b.be_opted])
                             self.macro_notify_msg = f"选中滑块组 共{n_blocks}个"
@@ -829,6 +835,9 @@ class EventsMixin:
                             direction, line = self.selected_gap
                             self.game.opt(direction, line, block)
                             self.selected_block = block
+                            # S1-4：记住这一次选中的鼠标点（世界坐标），
+                            # 箭头按键摆在它两侧 —— 玩家接着点哪都不用挪手
+                            self._gap_anchor_world = self.screen_to_world(x, y)
                             # 操作提示：选中滑块组
                             n_blocks = len([b for b in self.game.blocks if b.be_opted])
                             self.macro_notify_msg = f"选中滑块组 共{n_blocks}个"
