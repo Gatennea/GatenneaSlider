@@ -20,13 +20,6 @@ import pygame
 # 比例，再收一档到 0.16（约为方形 0.35 的 46%）。
 _TRI_MARK_RADIUS_RATIO = 0.16
 
-# 米字格记号半径沿用三角档（0.16），不另调：mi 单元是四分之一格的直角
-# 三角形，比三角单元还小一档，但记号是画在**格级**位置上的（`cells_geo`
-# 去重到 (floor r, floor c)），实际占位与三角同量级 —— 沿用同一常数是
-# 「三形态视觉一致」的最省事做法，等用户实际看过再调。
-_MI_MARK_RADIUS_RATIO = 0.16
-
-
 class MetricsPanelMixin:
     """调试面板（渲染 + 事件处理）"""
 
@@ -193,7 +186,9 @@ class MetricsPanelMixin:
         if getattr(self, 'triangle_mode', False):
             return self._draw_tri_marks()
         if getattr(self, 'mi_mode', False):
-            return self._draw_mi_marks()
+            # 米字格不画洞/缺口/凸起标记（用户 2026-10-05 决定：标记太乱，
+            # 只保留目标框）。检测逻辑仍供提示面板文字使用，这里只跳过绘制。
+            return None
         from solver.ml.hole_detector import detect_holes
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
@@ -458,126 +453,6 @@ class MetricsPanelMixin:
                          line_w)
         return best
 
-    def _mi_mark_center(self, r, c, q):
-        """mi 記號錨點：**每一片自己的內心** → 屏幕座標。
-
-        ⚠️ **這裡踩過一個坑（2026-10-04 用戶驗收指出）**：第一版畫在
-        **格心** `(r+0.5, c+0.5)`，結果 mi 一格有 N/E/S/W 四片，四片的記號
-        全疊在同一點上。我當時**沒有去改錨點，而是把精度降級**——改成
-        「按格畫一次、一格一個記號」，理由寫的是「記號語義本來就是『這格
-        缺了』，不需要落在片上」。
-
-        這個理由站不住：**四片的內心本來就不重疊**。實測（cell_size=100）：
-
-            朝向   格心(舊)        內心(新)
-              N   (0.50, 0.50)   (0.50, 0.21)   上
-              E   (0.50, 0.50)   (0.79, 0.50)   右
-              S   (0.50, 0.50)   (0.50, 0.79)   下
-              W   (0.50, 0.50)   (0.21, 0.50)   左
-
-        四個內心兩兩相距 0.414 格，完全分得開。「缺 4 片」就該畫 4 個記號，
-        分別落在格的四方 —— 那反而更準確地表達了「整格空」。
-
-        所以正確做法是**恢復片級精度**：記號數 = 缺失片數，位置 = 該片內心。
-        """
-        view = self._mi_view()
-        return self.world_to_screen(*view.piece_center(r, c, q))
-
-    def _draw_mi_marks(self):
-        """米字格：洞（圓圈）/ 缺口（三角形）/ 凸起（菱形）標記。
-
-        與方形 `_draw_debug_holes`、三角 `_draw_tri_marks` 的記號語義一致
-        （計劃 §4 說「異形版語義在實現時定」→ 定為沿用，便於對照驗收）。
-
-        記號畫在**片級 `cells`（帶 q）**上，錨點是每一片自己的內心 ——
-        一格缺 4 片就畫 4 個記號、各自落在格的上/右/下/左。見
-        `_mi_mark_center` 裡關於「別用格心」的說明。
-        """
-        from solver.ml.mi_holes import detect_mi_holes, hole_color
-        game = getattr(self, 'game', None)
-        if game is None or not getattr(game, 'blocks', None):
-            return
-        best = getattr(self, '_target_region', None)
-        if best is None or not hasattr(best, 'cells'):
-            best = self._compute_target_region()
-        if best is None or not hasattr(best, 'cells'):
-            return
-
-        from solver.ml.mi_adapter import mi_coords
-        coords = mi_coords(game)
-        step_len = getattr(self, 'current_step', 1)
-        holes, protrusions = detect_mi_holes(coords, best.cells, step_len)
-
-        scaled_cell = self.cell_size * self.zoom
-        radius = max(2, int(scaled_cell * _MI_MARK_RADIUS_RATIO))
-        line_w = max(1, int(self.zoom * 0.6))
-
-        for h in holes:
-            color = hole_color(h)
-            is_selected = (self.selected_hole is not None
-                           and set(h['cells']) == set(
-                               self.selected_hole.get('cells', [])))
-            for (r, c, q) in h['cells']:
-                cx, cy = self._mi_mark_center(r, c, q)
-                if h['type'] == 'hole':
-                    pygame.draw.circle(self.screen, color, (int(cx), int(cy)),
-                                       radius, line_w)
-                else:  # gap → 三角形
-                    pygame.draw.polygon(
-                        self.screen, color,
-                        [(cx, cy - radius),
-                         (cx - radius, cy + radius),
-                         (cx + radius, cy + radius)], line_w)
-                if is_selected:
-                    pygame.draw.circle(self.screen, (255, 255, 255),
-                                       (int(cx), int(cy)),
-                                       max(2, radius // 2), 0)
-
-        # 凸起同樣按片畫（輸入是片級 `(r, c, q)`）：一格多出來 4 片就是
-        # 4 個菱形、各自在自己那片的內心。舊版按格去重，4 個菱形也疊成一個。
-        for (r, c, q) in sorted(set(protrusions)):
-            cx, cy = self._mi_mark_center(r, c, q)
-            d = radius
-            pygame.draw.polygon(
-                self.screen, (255, 210, 60),
-                [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)],
-                line_w)
-
-    def _get_mi_hole_at_pos(self, screen_x, screen_y):
-        """米字格版「點洞」：命中判定用**格心距離**，與記號錨點同一點。
-
-        與三角同理：方形的矩形盒命中在斜/細分座標上會溢出到鄰格，保證
-        「**能點到的洞 = 畫出的標記**」這條紀律靠「同一個座標函數」達成。
-        """
-        from solver.ml.mi_holes import detect_mi_holes
-        from solver.ml.mi_adapter import mi_coords
-        game = getattr(self, 'game', None)
-        if game is None or not getattr(game, 'blocks', None):
-            return None
-        best = getattr(self, '_target_region', None)
-        if best is None or not hasattr(best, 'cells'):
-            best = self._compute_target_region()
-        if best is None or not hasattr(best, 'cells'):
-            return None
-        coords = mi_coords(game)
-        step_len = getattr(self, 'current_step', 1)
-        holes, _ = detect_mi_holes(coords, best.cells, step_len)
-
-        view = self._mi_view()
-        # reach 與 (sx, sy) 必須同量綱 —— (sx, sy) 是**屏幕**像素，所以
-        # 命中半徑也要乘 zoom。用世界單位的 cell_size·0.55 去比屏幕距離，
-        # 在 zoom≠1 時會整體偏鬆/偏緊（zoom=2 時等於半徑大了一倍）。
-        reach = view.cell_size * 0.55 * self.zoom
-        for h in holes:
-            for (r, c, q) in h['cells']:
-                # 走 world_to_screen 而不是手写 `w·zoom + cam`：命中判定与
-                # 畫記號必須是**同一个变换函数**，手抄一遍公式等于給將來
-                # zoom 語義變化留一個走樣點（三角那次就栽在多乘一次 zoom）。
-                sx, sy = self._mi_mark_center(r, c, q)
-                if (screen_x - sx) ** 2 + (screen_y - sy) ** 2 <= reach * reach:
-                    return h
-        return None
-
     def get_hole_at_pos(self, screen_x, screen_y):
         """返回屏幕坐标处的洞（若点击在洞格子上），否则 None。
 
@@ -601,7 +476,8 @@ class MetricsPanelMixin:
         if kind == 'triangle':
             return self._get_tri_hole_at_pos(screen_x, screen_y)
         if kind == 'mi':
-            return self._get_mi_hole_at_pos(screen_x, screen_y)
+            # mi 不画标记 → 没有可点选的标记，点空白不触发选洞
+            return None
         from solver.ml.hole_detector import detect_holes
         region = getattr(self, '_target_region', None)
         if region is None:
