@@ -11,6 +11,7 @@
 """
 
 import math
+import os
 
 import pygame
 
@@ -716,59 +717,128 @@ class RendererMixin:
             return max(math.hypot(p[0] - cx, p[1] - cy) for p in pts)
         return 0.0
 
-    def _get_gap_direction_annotation(self):
-        """选中缝的方向信息，按「缝 + 选中切片」签名缓存。
+    # ---------------- S1-4 箭头按键（贴图版，三形态共用） ----------------
+    _ARROW_STYLE = 'B'          # 素材样式（assets/ui/arrows/arrow_B.png）
+    _ARROW_BASE_PX = 46         # zoom=1 时的按键边长；大小只跟全局缩放走
+    _ARROW_CACHE_MAX = 96       # 旋转贴图缓存上限（size×角度）
 
-        返回 dict 或 None，字段：
-            ends     : [(方向字母, 锚点(x,y), 可走格数, 该端屏幕单位向量), ...] 共两端
-            vec      : dirs[0] 一格的屏幕单位向量 (ux, uy)
-            marker_r : 标记圆半径。按**块尺寸**缩放，不按格长——斜方向一格
-                       远比一块长，按格长缩放会得到一个大到不合适的圆
+    def _arrow_asset_path(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(root, 'assets', 'ui', 'arrows',
+                            f'arrow_{self._ARROW_STYLE}.png')
+
+    def _arrow_base(self):
+        """基础贴图（朝右 0°）。方向一律靠 rotate 得到，不为每方向单独出图。"""
+        if getattr(self, '_arrow_base_surf', None) is None:
+            try:
+                self._arrow_base_surf = pygame.image.load(
+                    self._arrow_asset_path()).convert_alpha()
+            except Exception:
+                self._arrow_base_surf = False      # 记失败，避免每帧重试 IO
+        return self._arrow_base_surf or None
+
+    def _arrow_button_size(self):
+        """按键边长：只取决于全局缩放值，与方向无关（用户定）。"""
+        return max(18, int(round(self._ARROW_BASE_PX * getattr(self, 'zoom', 1.0))))
+
+    def _arrow_sprite(self, angle_deg):
+        """**先按 size 缩放、后旋转**；旋转结果绝不二次缩放。
+
+        旋转后画布会变成更大的外接矩形，若再把它压回 size，斜方向的箭头
+        就会比正交方向小 —— 那正是「缩放跟着方向走」的坑。
         """
+        size = self._arrow_button_size()
+        cache = getattr(self, '_arrow_sprite_cache', None)
+        if cache is None:
+            cache = self._arrow_sprite_cache = {}
+        key = (size, int(round(angle_deg)) % 360)
+        spr = cache.get(key)
+        if spr is None:
+            base = self._arrow_base()
+            if base is None:
+                return None
+            if len(cache) > self._ARROW_CACHE_MAX:
+                cache.clear()
+            spr = pygame.transform.rotate(
+                pygame.transform.smoothscale(base, (size, size)), key[1])
+            cache[key] = spr
+        return spr
+
+    def _visual_offset(self):
+        """当前视觉偏移（格）：拖拽跟随实时值 / 移动动画插值 / 无。
+
+        拖拽期间 block.location 仍是起点，画面上却已经挪开了 —— 箭头锚点
+        必须吃这个偏移，否则就出现「拖着走、箭头留在原地」（2026-10-05 用户报）。
+        """
+        if getattr(self, 'drag_following', False):
+            return tuple(getattr(self, 'drag_follow_offset', (0.0, 0.0)))
+        if getattr(self, 'animating', False):
+            t = self.ease_out(getattr(self, 'anim_progress', 0.0))
+            return (getattr(self, '_anim_dr', 0.0) * t,
+                    getattr(self, '_anim_dc', 0.0) * t)
+        return (0.0, 0.0)
+
+    def _visual_key(self, block):
+        """块的「视觉」key（含拖拽/动画偏移）。
+
+        三形态 key 长度不同（方形 2 / 三角·米字 3），偏移一律落在前两分量上，
+        与各自 draw_board 里的 follow_map / anim_map 同源。
+        """
+        key = tuple(block.location)
+        dr, dc = self._visual_offset()
+        if abs(dr) < 1e-9 and abs(dc) < 1e-9:
+            return key
+        if len(key) == 2:
+            return (key[0] + dr, key[1] + dc)
+        return (key[0] + dr, key[1] + dc, key[2])
+
+    def _get_gap_direction_annotation(self):
+        """选中缝两端的「箭头按键」几何。**每帧重算**，不缓存几何。
+
+        几何依赖 location + camera + zoom + 拖拽跟随偏移，缓存它就会得到
+        「箭头不跟随」的 bug。只有 maxstep（try_move_ex 逐步试算，1..80）
+        是贵的，单独按「缝 + 切片」签名缓存。
+
+        返回 dict 或 None：
+            buttons : [(方向字母, 中心(x,y), 旋转角度°, 可走 bool), ...] 两端
+            size    : 按键边长
+        副作用：把命中矩形写进 self._arrow_buttons，供点击检测复用同一套几何。
+        """
+        self._arrow_buttons = []
         if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
             return None
         gap = getattr(self, 'selected_gap', None)
-        # 动画播放中 block.location 仍是起点，投影会滞后一整个位移；直接不画
+        # 移动动画播放中按键跟着插值移动会误导点击，直接不画
         if gap is None or getattr(self, 'animating', False):
-            self._gap_annot = None
             return None
         chosen = [b for b in self.game.blocks if b.be_opted]
         if not chosen:
-            self._gap_annot = None
             return None
-        sig = (gap, tuple(tuple(b.location) for b in chosen))
-        if getattr(self, '_gap_annot_sig', None) == sig:
-            return getattr(self, '_gap_annot', None)
 
         deltas, table = self._game_dir_tables()
         dirs = tuple(table.get(gap[0], ()))
         if len(dirs) != 2 or dirs[0] not in deltas or dirs[1] not in deltas:
-            self._gap_annot = None
             return None
-        sample = tuple(chosen[0].location)
+        sample = self._visual_key(chosen[0])
         if len(sample) not in (2, 3):
-            self._gap_annot = None
             return None
 
-        # 位移轴：dirs[0] 一格的屏幕位移。取数字一个小时/一个地铁都不会出错的
-        # 唯一办法——让形态自己的几何去回答，而不是查字母表。
+        # 位移轴：dirs[0] 一格的屏幕位移。让形态自己的几何去回答方向，
+        # 不查「字母 → 屏幕向量」表（'w' 在三角是左上、在米字是正左）。
         c0 = self._key_center(sample)
         c1 = self._key_center(self._advance_key(sample, deltas[dirs[0]]))
         ux, uy = c1[0] - c0[0], c1[1] - c0[1]
         ulen = math.hypot(ux, uy)
         if ulen < 1e-6:
-            self._gap_annot = None
             return None
         ux, uy = ux / ulen, uy / ulen
 
-        # 切片的两个极端位置 —— **只看选中切片，不看整条缝**（修 bug-b）。
-        # 取投影包围盒的「外沿中点」而不是某个极端块的中心：同一投影值上常常
-        # 排着好几个块（例如横缝上同一列的上下两块），取块中心会让锚点在它们
-        # 之间乱跳，取决于遍历顺序。
+        # 切片投影包围盒的「外沿中点」：只看选中切片，不看整条缝（修 bug-b）。
+        # 用**视觉 key**，拖拽时按键才跟着切片走。
         px, py = -uy, ux                       # 垂直于推行方向
         ts, ss = [], []
         for b in chosen:
-            cx, cy = self._key_center(tuple(b.location))
+            cx, cy = self._key_center(self._visual_key(b))
             ts.append(cx * ux + cy * uy)
             ss.append(cx * px + cy * py)
         t_lo, t_hi = min(ts), max(ts)
@@ -776,26 +846,31 @@ class RendererMixin:
         hi_pt = (ux * t_hi + px * s_mid, uy * t_hi + py * s_mid)
         lo_pt = (ux * t_lo + px * s_mid, uy * t_lo + py * s_mid)
 
-        # 可走格数：逐步试算（成本集中在缓存未命中那一帧）
-        maxstep = {}
-        for d in dirs:
-            n = 0
-            for s in range(1, 80):
-                positions, _reason = self.game.try_move_ex(d, s)
-                if positions:
-                    n = s
-                else:
-                    break
-            maxstep[d] = n
+        # 可走格数：逐步试算，成本只在签名变化的那一帧
+        sig = (gap, tuple(tuple(b.location) for b in chosen))
+        if getattr(self, '_gap_maxstep_sig', None) != sig:
+            maxstep = {}
+            for d in dirs:
+                n = 0
+                for s in range(1, 80):
+                    positions, _reason = self.game.try_move_ex(d, s)
+                    if positions:
+                        n = s
+                    else:
+                        break
+                maxstep[d] = n
+            self._gap_maxstep_sig = sig
+            self._gap_maxstep = maxstep
+        maxstep = self._gap_maxstep
 
+        size = self._arrow_button_size()
         block_r = self._piece_screen_radius()
-        marker_r = max(9.0, min(34.0, block_r * 0.30)) if block_r > 0 else 12.0
-        # 让位 = 块半径（贴到切片外沿）+ 标记半径 + 一点呼吸空隙
-        pad = block_r + marker_r + max(4.0, block_r * 0.10)
-        # 出屏收缩：斜方向一格很长，标准让位可能把标记推出画面（实测米字
+        # 让位 = 块半径（贴到切片外沿）+ 半个按键 + 一点呼吸空隙
+        pad = block_r + size / 2.0 + max(4.0, block_r * 0.10)
+        m = size / 2.0 + 6
+        # 出屏收缩：斜方向一格很长，标准让位可能把按键推出画面（实测米字
         # 3×3 对角族右下端 y=880 而屏高 620）。逐步缩短让位，最低贴到
-        # 「切片外沿 + 标记半径」，保证标记可见且仍指向正确的端。
-        m = marker_r + 6
+        # 「切片外沿 + 半个按键」，保证按键可见且仍指向正确的端。
 
         def _inside(x, y):
             return m <= x <= self.screen_width - m and m <= y <= self.screen_height - m
@@ -807,67 +882,51 @@ class RendererMixin:
             if _inside(*a_hi) and _inside(*a_lo):
                 break
             p *= 0.65
-        pad = max(p, marker_r + 4.0)
-        ends = [(dirs[0], (hi_pt[0] + ux * pad, hi_pt[1] + uy * pad),
-                 maxstep[dirs[0]], (ux, uy)),
-                (dirs[1], (lo_pt[0] - ux * pad, lo_pt[1] - uy * pad),
-                 maxstep[dirs[1]], (-ux, -uy))]
-        self._gap_annot_sig = sig
-        self._gap_annot = {'ends': ends, 'vec': (ux, uy), 'marker_r': marker_r}
-        return self._gap_annot
+        pad = max(p, size / 2.0 + 4.0)
+
+        ends = [(dirs[0], (hi_pt[0] + ux * pad, hi_pt[1] + uy * pad), (ux, uy)),
+                (dirs[1], (lo_pt[0] - ux * pad, lo_pt[1] - uy * pad), (-ux, -uy))]
+        buttons = []
+        for d, (ax, ay), (vx, vy) in ends:
+            # 锚点跑出画面时夹回视区：「看得见」比「准而看不见」有用
+            ax = min(max(ax, m), self.screen_width - m)
+            ay = min(max(ay, m), self.screen_height - m)
+            movable = maxstep.get(d, 0) > 0
+            buttons.append((d, (ax, ay), math.degrees(math.atan2(-vy, vx)), movable))
+            if not movable:
+                continue        # 禁用态不画 → 也不该被点中（画与命中同一套几何）
+            # 命中区取按键自身的正方形，不用旋转后的外接矩形 —— 后者更大，
+            # 会让相邻方向的按键互相吃掉点击
+            self._arrow_buttons.append(
+                (d, pygame.Rect(int(ax - size / 2), int(ay - size / 2), size, size)))
+        return {'buttons': buttons, 'size': size}
 
     def _draw_gap_direction_annotation(self):
-        """S1-4：切片两端的方向标记。**必须在滑块绘制之后调用**（图层在上）。"""
+        """S1-4：切片两端各画一个可点的箭头按键。**在滑块绘制之后**调用。
+
+        禁用态（该方向走不动）按约定**直接不画**：不留灰叉、不留禁用贴图。
+        """
         annot = self._get_gap_direction_annotation()
         if not annot:
             return
-        for _d, (ax, ay), max_step, unit_vec in annot['ends']:
-            self._draw_gap_end_marker(ax, ay, unit_vec, max_step,
-                                      annot['marker_r'])
+        for _d, (cx, cy), ang, movable in annot['buttons']:
+            if not movable:
+                continue
+            spr = self._arrow_sprite(ang)
+            if spr is None:
+                continue
+            self.screen.blit(spr, spr.get_rect(center=(int(cx), int(cy))))
 
-    def _draw_gap_end_marker(self, cx, cy, unit_vec, max_step, r):
-        """缝端标记：可走→绿底箭头+格数；不可走→灰底灰叉。"""
-        r = int(r)
-        # 锚点完全跑出画面时（盘面没居中、或该族的屏幕位移很长）夹回视区内：
-        # 标记不再严格对准切片轴线的延长点，但「看得见」比「准而看不见」有用
-        cx = min(max(cx, r + 4), self.screen_width - r - 4)
-        cy = min(max(cy, r + 4), self.screen_height - r - 4)
-        movable = max_step > 0
-        bg = (70, 170, 110) if movable else (118, 120, 126)
-        pygame.draw.circle(self.screen, bg, (int(cx), int(cy)), r)
-        pygame.draw.circle(self.screen, (255, 255, 255), (int(cx), int(cy)), r,
-                           max(1, r // 6))
-        if movable:
-            pts = self._gap_arrow_points(cx, cy, unit_vec, r * 0.55)
-            pygame.draw.polygon(self.screen, (255, 255, 255), pts)
-            if not hasattr(self, '_gap_num_font'):
-                from GUI import _gui_safe_font
-                self._gap_num_font = _gui_safe_font('SimHei', max(12, int(r * 0.95)))
-            t = self._gap_num_font.render(str(max_step), True, (255, 255, 255))
-            self.screen.blit(t, (int(cx + r * 0.5), int(cy - r * 0.9)))
-        else:
-            c = (255, 255, 255)
-            d = r * 0.5
-            w = max(2, r // 5)
-            pygame.draw.line(self.screen, c, (int(cx - d), int(cy - d)),
-                             (int(cx + d), int(cy + d)), w)
-            pygame.draw.line(self.screen, c, (int(cx - d), int(cy + d)),
-                             (int(cx + d), int(cy - d)), w)
+    def _arrow_button_hit(self, x, y):
+        """点在某端的箭头按键上？返回该端方向字母，否则 None。
 
-    @staticmethod
-    def _gap_arrow_points(cx, cy, unit_vec, arr):
-        """按**屏幕单位向量**画箭头，不再按方向字母查表。
-
-        同名字幕在三角与米字里朝向不同（'w' 在三角是左上、在米字是正左），
-        所以这里只认向量：unit_vec 是已经由形态几何算出来的屏幕朝向。
+        命中优先于选缝（events 里先问它），否则按键会被「点空白起拖」吃掉。
+        矩形来自上一帧绘制，一帧延迟在 60fps 下不可感知。
         """
-        ax, ay = unit_vec
-        px, py = -ay, ax          # 垂直分量
-        return [(cx + ax * arr, cy + ay * arr),
-                (cx - ax * arr * 0.6 + px * arr * 0.7,
-                 cy - ay * arr * 0.6 + py * arr * 0.7),
-                (cx - ax * arr * 0.6 - px * arr * 0.7,
-                 cy - ay * arr * 0.6 - py * arr * 0.7)]
+        for d, rect in getattr(self, '_arrow_buttons', ()):
+            if rect.collidepoint(x, y):
+                return d
+        return None
 
     def draw_menu_bar(self):
         """绘制顶部菜单栏"""

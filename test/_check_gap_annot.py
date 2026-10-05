@@ -18,22 +18,18 @@ from GUI import SliderGUI  # noqa: E402
 
 
 def probe(gui, tag):
-    """打印当前 selected_gap + 选中切片算出来的两端标注。"""
+    """打印当前 selected_gap + 选中切片算出来的两端按键几何。"""
     annot = gui._get_gap_direction_annotation()
     chosen = [b for b in gui.game.blocks if b.be_opted]
     print(f'\n[{tag}] gap={gui.selected_gap} 选中切片 {len(chosen)} 块')
     if not annot:
         print('   → 无标注（None）')
         return False
-    ux, uy = annot['vec']
-    print(f'   单位位移向量 ({ux:+.3f}, {uy:+.3f}) '
-          f' cell*zoom={gui.cell_size * gui.zoom:.1f}px '
-          f' 标记半径={annot["marker_r"]:.0f}px')
-    for i, (d, (ax, ay), ms, uv) in enumerate(annot['ends']):
+    print(f'   按键边长={annot["size"]}px  cell*zoom={gui.cell_size * gui.zoom:.1f}px')
+    for i, (d, (ax, ay), ang, movable) in enumerate(annot['buttons']):
         inside = 0 <= ax <= gui.screen_width and 0 <= ay <= gui.screen_height
-        print(f'   端{i}: 方向 {d}  可走 {ms} 格  锚点 ({ax:.0f}, {ay:.0f})  '
-              f'箭头向量 ({uv[0]:+.2f}, {uv[1]:+.2f})  '
-              f'在屏内={inside}')
+        print(f'   端{i}: 方向 {d}  {"可走" if movable else "禁用(不画)"}  '
+              f'中心 ({ax:.0f}, {ay:.0f})  旋转 {ang:.1f}°  在屏内={inside}')
     return True
 
 
@@ -97,7 +93,7 @@ for anchor in (gui.game.blocks[0], gui.game.blocks[-1]):
     if not annot:
         print('   无标注')
         continue
-    ends = {d: (round(ax), round(ay)) for d, (ax, ay), _ms, _uv in annot['ends']}
+    ends = {d: (round(ax), round(ay)) for d, (ax, ay), _ang, _mv in annot['buttons']}
     print(f'   锚点块 @{anchor.location} → 带走 {len(chosen)} 块 '
           f'行{rows[0]}..{rows[-1]} 列{cols[0]}..{cols[-1]} → 端点 {ends}')
     seen.append(tuple(sorted(ends.items())))

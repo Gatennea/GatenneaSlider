@@ -732,6 +732,19 @@ class EventsMixin:
                                              bool(getattr(self, 'control_mouse_kb', True))])
                         # 教程解法播放中：锁定棋盘操作（点选缝隙/滑块、拖拽滑动）
                         op_locked = self._tut_board_locked()
+
+                        # S1-4 箭头按键：**命中优先于选缝与起拖**。按键画在菜单
+                        # 栏下、滑块之上的游戏区里，不先判命中的话点击会被
+                        # 「点缝选中 / 点空白起拖」吃掉。效果与虚拟键盘同方向
+                        # 按钮完全一致（走 1 格），共用 move_selected_blocks。
+                        arrow_dir = (None if op_locked
+                                     else self._arrow_button_hit(x, y))
+                        if arrow_dir:
+                            op_log.log('arrow_button', d=arrow_dir, sx=x, sy=y,
+                                       form=op_form)
+                            self._arrow_button_click(arrow_dir)
+                            continue
+
                         if op_locked:
                             gap = block = None
                         elif getattr(self, 'mi_mode', False):
@@ -3607,10 +3620,34 @@ class EventsMixin:
         
         return False
 
+    def _arrow_button_click(self, direction):
+        """S1-4：点箭头按键 —— 与虚拟键盘同方向的按钮**完全同效果**（走 1 格）。
+
+        复用虚拟键盘的同一条路径 move_selected_blocks，不另写一套移动逻辑：
+        撤销栈、动画、米字「只选了缝」的退回处理全部一致。
+        """
+        if self._tut_board_locked():
+            return
+        if getattr(self, 'animating', False):
+            self.macro_notify_msg = "动画播放中，无法移动"
+            self.macro_notify_timer = 90
+            return
+        if not self.selected_gap:
+            self.macro_notify_msg = "请先选中缝隙和滑块"
+            self.macro_notify_timer = 90
+            return
+        mi = getattr(self, 'mi_mode', False)
+        if not mi and not self.selected_block:
+            self.macro_notify_msg = "请先选中缝隙和滑块"
+            self.macro_notify_timer = 90
+            return
+        self.move_selected_blocks(direction)
+
     def _update_cursor(self):
         """S1-5：鼠标指针形态——增强模式按状态切换光标，朴素模式一律箭头。
 
         - 拖拽中：可走→ SIZEALL（握住「移动」光标）；越界→ NO（禁止符）
+        - 悬停箭头按键：HAND（与虚拟键盘按钮同一手感：可点）
         - 悬停棋盘且已选中切片：HAND（张开的手，表「可拖」）
         - 其它：ARROW
         """
@@ -3621,11 +3658,14 @@ class EventsMixin:
             cur = (pygame.SYSTEM_CURSOR_NO if getattr(self, 'drag_follow_invalid', False)
                    else pygame.SYSTEM_CURSOR_SIZEALL)
         else:
-            selected = getattr(self, 'selected_gap', None) is not None and any(
-                b.be_opted for b in self.game.blocks)
             mx, my = pygame.mouse.get_pos()
             over_board = my >= self.menu_bar_height and mx < self.screen_width - self.right_panel_width
-            cur = pygame.SYSTEM_CURSOR_HAND if (selected and over_board) else pygame.SYSTEM_CURSOR_ARROW
+            if over_board and self._arrow_button_hit(mx, my):
+                cur = pygame.SYSTEM_CURSOR_HAND
+            else:
+                selected = getattr(self, 'selected_gap', None) is not None and any(
+                    b.be_opted for b in self.game.blocks)
+                cur = pygame.SYSTEM_CURSOR_HAND if (selected and over_board) else pygame.SYSTEM_CURSOR_ARROW
         pygame.mouse.set_cursor(cur)
 
 
