@@ -9,10 +9,10 @@
      `find_best_window`），還原態 score=1.0、overlap=4mn；
   P3 `_compute_target_region` 返回 `MiPlacement`，且**畫框與記號吃同一個
      對象**（計劃 §4 铁律：面板與求解器同源）；
-  P4 `_draw_mi_target_frame` / `_draw_mi_marks` 真畫出東西（不拋異常、
-     屏幕像素有變化），且錯位態下框仍在屏內（半格偏移不讓框飛出去）；
-  P5 `get_hole_at_pos` 命中判定與 `_draw_mi_marks` 錨點是**同一個點**
-     （紀律：能點到的洞 = 畫出的標記）；
+  P4 `_draw_mi_target_frame` 真畫出框（不拋異常、屏幕像素有變化），且錯位態
+     下框仍在屏內（半格偏移不讓框飛出去）；**mi 不畫洞/缺口/凸起記號**
+     （用戶 2026-10-05 決定：標記太亂，只留目標框），鎖死「無紅藍黃記號像素」；
+  P5 `get_hole_at_pos` 對 mi **恆返回 None**（不從點擊選洞，因為沒標記）；
   P6 選洞樣本落盤（`samples_mi.jsonl`）含片級 + 格級兩套坐標；
   P7 方形/三角形兩條老路徑未改坏（回歸）。
 """
@@ -129,7 +129,7 @@ check("P3e 打乱後仍是 MiPlacement 且 score < 1.0",
       f"score={region2.score:.3f}")
 
 # ================================================================ P4 真画
-print("\n--- P4 真畫出東西（目標框 + 記號）---")
+print("\n--- P4 真畫出目標框（mi 不畫洞/缺口/凸起記號）---")
 gui.new_mi_puzzle(4, 4, 2)
 gui.show_metrics_panel = True
 gui._compute_target_region()
@@ -139,17 +139,9 @@ after_frame = screen_signature(gui)
 check("P4a _draw_mi_target_frame 真的改了屏幕像素（框畫出來了）",
       before != after_frame)
 
-gui.screen.fill((0, 0, 0))
-before2 = screen_signature(gui)
-gui._draw_mi_marks()
-after_marks = screen_signature(gui)
-# 还原态**本来就该一个记号都不画**（无洞、无缺口、无凸起）——「像素无变化」
-# 才是正确行为，这条要反过来当断言用：先确认还原态确实干净。
-check("P4b 還原態無洞無凸起 → 一個記號都不畫（像素不變）",
-      before2 == after_marks)
-
 # 有洞的局面：抽掉正中一格 (1,1) 的**全部四片** → 該格成洞
 # （mi 還原態的塊坐標是整數格 + NESW 四片，半整數只在錯位態出現）
+# 檢測邏輯仍要正確——文字面板靠它顯示洞/凸起數量。
 gui.new_mi_puzzle(4, 4, 2)
 g = gui.game
 removed = [b for b in list(g.blocks)
@@ -161,24 +153,33 @@ for b in removed:
 g.update_matrix()
 gui._compute_target_region()
 holes, _ = detect_mi_holes(MA.mi_coords(g), gui._target_region.cells, 2)
-check("P4d 抽一整格 → 1 個洞且 type=hole",
+check("P4d 抽一整格 → 1 個洞且 type=hole（檢測仍正確，供文字面板用）",
       len(holes) == 1 and holes[0]['type'] == 'hole',
       f"{[(h['type'], h['size'], len(h['cells'])) for h in holes]}")
-# **鎖住一個用戶驗收發現的 bug（2026-10-04）**：記號曾畫在**格心**，
-# 而 mi 一格有 N/E/S/W 四片 —— 四片的記號全疊在同一點。正確錨點是
-# 每一片自己的**內心**（實測四個內心兩兩相距 0.414 格，分得開）。
-# 這裡直接驗「四片記號的屏幕坐標兩兩不重合」，讓這個 bug 無法悄悄回來。
-check("P4e 洞帶片級 cells（缺 4 片 = 4 個記號，不是 1 個）",
+check("P4d2 洞帶片級 cells（缺 4 片 = 4 個單元）",
       len(holes[0]['cells']) == 4, str(sorted(holes[0]['cells'])))
-_pts = [gui._mi_mark_center(r, c, q) for (r, c, q) in holes[0]['cells']]
-_mind = min(((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-            for i, a in enumerate(_pts) for b in _pts[i + 1:])
-check("P4e2 四片記號的屏幕坐标兩兩分開（不是疊在一點）", _mind > 8,
-      f"最小間距 {_mind:.1f}px（舊版格心方案 = 0）")
+
+# **用戶 2026-10-05 決定：mi 不畫標記，只留目標框**。從 draw_mi_board 進去，
+# 確認目標框（綠）有畫出，但洞/缺口/凸起記號（紅藍黃）一個都沒有。
+gui.new_mi_puzzle(4, 4, 2)
+gui.show_metrics_panel = True
+gui._fit_mi_zoom()
+gui._center_mi()
 gui.screen.fill((0, 0, 0))
-b4 = screen_signature(gui)
-gui._draw_mi_marks()
-check("P4f 有洞時記號畫出來了", b4 != screen_signature(gui))
+gui.draw_mi_board()
+green = sum(1
+            for yy in range(0, gui.screen_height, 2)
+            for xx in range(0, gui.screen_width, 2)
+            if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
+check("P4e 目標框（綠）確實畫出來了", green > 0, f'{green} 個采樣點')
+marks = {'紅': (255, 80, 80), '藍': (80, 160, 255), '黃': (255, 210, 60)}
+counts = {name: sum(1
+                    for yy in range(0, gui.screen_height, 4)
+                    for xx in range(0, gui.screen_width, 4)
+                    if gui.screen.get_at((xx, yy))[:3] == rgb)
+          for name, rgb in marks.items()}
+check("P4e2 mi 不畫洞/缺口/凸起記號（紅藍黃像素 = 0）",
+      all(v == 0 for v in counts.values()), str(counts))
 
 # 錯位態：半格偏移下框不能飛出屏
 print("\n--- P4' 錯位態：半格偏移不讓框飛出屏 ---")
@@ -218,8 +219,8 @@ check("P4j 錯位態框的外接矩形完全在屏內", in_screen,
       f"y=[{min(y0,y1):.0f},{max(y0,y1):.0f}] "
       f"屏={gui.screen_width}×{gui.screen_height}")
 
-# ================================================================ P5 命中=繪製
-print("\n--- P5 命中判定與繪製錨點同一點 ---")
+# ================================================================ P5 mi 不從點擊選洞
+print("\n--- P5 mi 不從點擊選洞（標記已移除，只留目標框）---")
 gui.new_mi_puzzle(4, 4, 2)
 gui.current_step = 2
 g = gui.game
@@ -229,33 +230,20 @@ for b in list(g.blocks):
         g.blocks.remove(b)
 g.update_matrix()
 gui._compute_target_region()
-# 直接用 _mi_mark_center 取屏幕点（這正是「能點到的洞 = 畫出的標記」的錨點）。
-# 錨點是**每一片自己的內心**，所以要給 q。
-cx, cy = gui._mi_mark_center(2, 2, 'N')
-hit = gui.get_hole_at_pos(int(cx), int(cy))
-check("P5a 點在 (2,2) 的 N 片內心 → 命中那個洞", hit is not None,
-      f"{hit['type'] if hit else None}")
-check("P5b 命中的洞含 (2,2,'N') 這一片",
-      hit is not None and (2, 2, 'N') in [tuple(x) for x in hit['cells']],
-      str(hit['cells']) if hit else 'None')
-# 点在远离棋盘处 → 不命中
-check("P5c 點空白處不命中",
-      gui.get_hole_at_pos(2, 2) is None)
-
-# 缩放一致性：命中半径随 zoom（修 bug 的回归锁）
-gui.zoom = 1.0
-c1 = gui._mi_mark_center(2, 2, 'N')
-gui.zoom = 2.0
-c2 = gui._mi_mark_center(2, 2, 'N')
-check("P5d 錨點隨 zoom 縮放（坐標不是死的）", c1 != c2,
-      f"{c1} vs {c2}")
-# zoom=2 时，同一片内心的点仍应命中（半径同比例放大）
-hit_z2 = gui.get_hole_at_pos(int(c2[0]), int(c2[1]))
-check("P5e zoom=2 時該片內心仍命中（半徑與錨點同量綱）", hit_z2 is not None)
-gui.zoom = 1.0
+# mi 不画标记 → 即使點在洞所在格的中心，get_hole_at_pos 也應返回 None
+view = gui._mi_view()
+wx, wy = view.to_world(2.5, 2.5)
+sx, sy = gui.world_to_screen(wx, wy)
+hit = gui.get_hole_at_pos(int(sx), int(sy))
+check("P5a mi 下 get_hole_at_pos 恆 None（不從點擊選洞）", hit is None)
+# 點遠離棋盤處也 None
+check("P5b 點空白處不命中", gui.get_hole_at_pos(2, 2) is None)
 
 # ================================================================ P6 選洞樣本
 print("\n--- P6 選洞樣本落盤（片級 + 格級）---")
+# mi 不從點擊選洞，但選洞樣本記錄功能本身仍可用：直接從檢測結果取一個洞。
+holes6, _ = detect_mi_holes(MA.mi_coords(g), gui._target_region.cells, 2)
+hit = holes6[0] if holes6 else None
 sample_dir = os.path.join('save', '选洞样本')
 sample_path = os.path.join(sample_dir, 'samples_mi.jsonl')
 existed = os.path.exists(sample_path)
@@ -343,11 +331,9 @@ print("\n--- P9 棋盘绘制路径真的会调起面板（2026-10-04 修的真�
 # 而 P4 那些断言是**直接调** `_draw_mi_target_frame()`，绕过了这条路径，
 # 所以照样全绿 —— 「被调用的方法对」≠「调用点存在」。
 # 这几条断言只认**从 draw_mi_board 进去**的结果。
-# **必须固定随机种子**：P9c 要看红/蓝/黄三类记号都在，而「这局有没有缺口」
-# 取决于 shuffle 结果。不设种子时它跟着整条测试链的 random 状态漂 ——
-# 我这次就撞上「这局只有洞和凸起、恰好没有缺口」，P9c 假红。
-# seed 2 是挑过的：该局面三类记号都齐全（2 个小缺口[蓝] + 1 个大缺口[红]
-# + 28 片凸起[黄]）。随便挑 seed 会出现「这局恰好没有红/蓝」的假红。
+# **必须固定随机种子**：这局要有足够多的洞/凸起（让目标框画得明显），
+# 而「这局碎片分布」取决于 shuffle 结果。不设种子会跟着整条测试链漂。
+# seed 2 是挑过的：该局面有较多凸起/缺口，目标框画得清楚。
 gui.new_mi_puzzle(4, 4, 2)
 random.seed(2)
 gui.game.shuffle(40, 2)
@@ -366,14 +352,16 @@ green = sum(1
             for xx in range(0, gui.screen_width, 2)
             if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
 check('P9b 目标框真的画在屏幕上了（绿像素 > 0）', green > 0, f'{green} 个采样点')
-# 记号颜色（红=大洞 蓝=小洞/缺口 黄=凸起）也要有
+# **用戶 2026-10-05 决定：mi 不画标记，只留目标框** —— 所以这里反过来：
+# 红/蓝/黄记号像素必须全为 0（洞/缺口/凸起都不画），但绿框（P9b）仍在。
 marks = {'红': (255, 80, 80), '蓝': (80, 160, 255), '黄': (255, 210, 60)}
 counts = {name: sum(1
                      for yy in range(0, gui.screen_height, 2)
                      for xx in range(0, gui.screen_width, 2)
                      if gui.screen.get_at((xx, yy))[:3] == rgb)
           for name, rgb in marks.items()}
-check('P9c 洞/缺口/凸起记号都画出来了', all(v > 0 for v in counts.values()),
+check('P9c mi 不画洞/缺口/凸起记号（红蓝黄像素 = 0）',
+      all(v == 0 for v in counts.values()),
       str(counts))
 # 关掉面板后不该再有这些记号（闸门是 show_metrics_panel 本身）
 gui.show_metrics_panel = False
