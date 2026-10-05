@@ -106,24 +106,21 @@ def render_tex(style, with_frame=True):
     return surf
 
 
-def sprite(style, ux, uy, size=None, rot_frame=True):
-    """运行时取某个方向的贴图：同一张基础图旋转 + 缩放。
+def sprite(style, ux, uy, size=None):
+    """运行时取某个方向的贴图：**先缩放、后旋转，旋转之后绝不再缩放**。
 
-    rot_frame=True  框跟着转（45° 方向呈菱形）
-    rot_frame=False 框恒正（按键外壳感），只箭头旋转
+    用户定两条规则：
+      ① 不同方向只旋转；
+      ② 箭头大小只取决于全局缩放值 size，与方向无关。
+
+    size 由调用方按全局 zoom 给出（例如 base * zoom），同一批按键统一传入。
+    旋转会让画布变成外接矩形（对角线更大）——**不要**把它再压回 size：
+    那种「按方向缩回去」正是斜方向箭头变小的原因。blit 时按中心对齐即可。
     """
-    if rot_frame or STYLE_SPEC[style]['frame'] is None:
-        tex = render_tex(style)
-        if size and size != SIZE:
-            tex = pygame.transform.smoothscale(tex, (size, size))
-        return pygame.transform.rotate(tex, angle_for(ux, uy))
-    s = size or SIZE
-    out = pygame.Surface((s, s), pygame.SRCALPHA)
-    out.blit(pygame.transform.smoothscale(render_frame(), (s, s)), (0, 0))
-    head = pygame.transform.smoothscale(render_tex(style, with_frame=False), (s, s))
-    head = pygame.transform.rotate(head, angle_for(ux, uy))
-    out.blit(head, head.get_rect(center=(s / 2, s / 2)))
-    return out
+    tex = render_tex(style)
+    if size and size != SIZE:
+        tex = pygame.transform.smoothscale(tex, (size, size))
+    return pygame.transform.rotate(tex, angle_for(ux, uy))
 
 
 def angle_for(ux, uy):
@@ -135,9 +132,9 @@ def angle_for(ux, uy):
     return math.degrees(math.atan2(-uy, ux))
 
 
-def overlay(base, angle, size=None, rot_frame=True):
-    """某个方向的预览图（预览与游戏使用同一条路径）。"""
-    return sprite(base, *DIRS[angle], size, rot_frame=rot_frame)
+def overlay(base, angle, size=None):
+    """某个方向的预览图（预览与游戏使用同一条路径：先缩放后旋转）。"""
+    return sprite(base, *DIRS[angle], size)
 
 
 def load_cjk(size):
@@ -168,40 +165,20 @@ def preview_all():
     for si, style in enumerate(STYLE_SPEC):
         surf.blit(flab.render(STYLE_DESC[style], True, (185, 185, 185)),
                   (14, pad_y + si * cell + cell // 2 - 9))
+        bw = cell - 8
         for di, name in enumerate(DIRS):
-            tex = pygame.transform.smoothscale(overlay(style, name),
-                                               (cell - 8, cell - 8))
-            surf.blit(tex, (pad_x + di * cell + 4, pad_y + si * cell + 4))
+            # size 直接传进去（先缩放后旋转）；旋转后再套 smoothscale 会让
+            # 斜方向内容变小 —— 那条路已经踩过，不要再绕回去。
+            tex = overlay(style, name, bw)
+            surf.blit(tex, tex.get_rect(
+                center=(pad_x + di * cell + 4 + bw / 2, pad_y + si * cell + 4 + bw / 2)))
     note = load_cjk(13)
     surf.blit(note.render('素材为透明底 PNG（256×256，R=96）；方向由运行时 rotate 得到。'
-                          '禁用态按约定不画箭头，故无 *_disabled.png；'
-                          '此图「框跟随旋转」，45° 方向呈菱形，另见 arrow_preview_frame.png',
+                          '禁用态按约定不画箭头，故无 *_disabled.png；框跟随旋转，'
+                          '先按全局缩放定尺寸再旋转（旋转后不再缩放）',
                           True, (140, 140, 140)), (14, H - 26))
     return surf
 
-
-def preview_frame():
-    """方框两种处理方式的对比：跟随旋转（菱形） vs 框恒正（按键外壳）。"""
-    cell = 148
-    pad_x, pad_y = 150, 84
-    W = 8 * cell + pad_x + 20
-    H = 2 * cell + pad_y + 60
-    surf = pygame.display.set_mode((W, H))
-    surf.fill((24, 24, 26))
-    surf.blit(load_cjk(17).render('方框处理方式对比（B 样式）', True, (235, 235, 235)), (16, 10))
-    names = ['右 e', '右上 ne', '上 n', '左上 nw', '左 w', '左下 sw', '下 s', '右下 se']
-    for di, dn in enumerate(names):
-        surf.blit(load_cjk(15).render(dn, True, (185, 185, 185)),
-                  (pad_x + di * cell + cell // 2 - 24, 46))
-    row = ['上排：框跟随旋转 → 45° 方向是菱形（一张图整体转，最省事）',
-           '下排：框恒正、只箭头转 → 八个方向都是正方形按键外壳']
-    for ri, desc in enumerate(row):
-        surf.blit(load_cjk(15).render(desc, True, (185, 185, 185)), (14, pad_y + ri * cell + 6))
-        for di, name in enumerate(DIRS):
-            tex = pygame.transform.smoothscale(overlay('B', name, rot_frame=(ri == 0)),
-                                               (cell - 8, cell - 8))
-            surf.blit(tex, (pad_x + di * cell + 4, pad_y + ri * cell + 26))
-    return surf
 
 
 def preview_onboard():
@@ -222,9 +199,9 @@ def preview_onboard():
     xs = [gui._key_center(tuple(b.location))[0] for b in chosen]
     cy = (min(ys) + max(ys)) / 2
     ax = max(xs) + step_px * 0.9
+    btn = int(step_px * 1.1)      # 按键边长只看棋盘缩放，与方向无关
     for i, d in enumerate(('e', 'w')):
-        scaled = pygame.transform.smoothscale(
-            overlay('B', d), (int(step_px * 1.1),) * 2)
+        scaled = overlay('B', d, btn)
         surf.blit(scaled, scaled.get_rect(
             center=(int(ax - i * step_px * 1.5), int(cy))))
     surf.blit(load_cjk(16).render('真实棋盘叠放预览（B 样式）：左端/右端两个按键',
@@ -243,11 +220,10 @@ def main():
             os.remove(os.path.join(out, fn))
     for style in STYLE_SPEC:
         pygame.image.save(render_tex(style), os.path.join(out, f'arrow_{style}.png'))
-        if STYLE_SPEC[style]['frame'] == 'box':
-            pygame.image.save(render_tex(style, with_frame=False),
-                              os.path.join(out, f'arrow_{style}_head.png'))
-    n = len(os.listdir(out))
-    print('SAVED', n, 'textures ->', out)
+    print('SAVED', len(STYLE_SPEC), 'base textures ->', out)
+
+    # 自检 ②：同一 size 下 8 个方向的「内容量」必须一致 —— 面积是最稳的方向不变量
+    # （外框转 45° 会变菱形，包围盒必然变大，那不是缩放差异，别拿它当指标）
 
     # 一致性自检：①90° 旋转像素精确；②8 方向的内容量（面积/包围盒）应当一致
     base = render_tex('B')
@@ -257,25 +233,17 @@ def main():
     d = pygame.surfarray.array_alpha(q).astype(int) - \
         pygame.surfarray.array_alpha(base).astype(int)
     print('ROTATE-4x90 identical =', bool(abs(d).max() == 0))
-    areas, boxes = [], []
+    areas = []
     for name, (ux, uy) in DIRS.items():
-        s = overlay('B', name)
-        a = pygame.surfarray.array_alpha(s)
-        areas.append(int((a > 8).sum()))
-        ys, xs = (a > 8).nonzero()
-        boxes.append((int(xs.max() - xs.min()), int(ys.max() - ys.min())))
+        a = pygame.surfarray.array_alpha(overlay('B', name)) > 8
+        areas.append(int(a.sum()))
     print('AREAS  ', areas, 'spread =', (max(areas) - min(areas)) / max(areas))
-    print('BOXES  ', boxes)
 
     os.makedirs(os.path.join(root, 'experiments', 'out'), exist_ok=True)
     prev = preview_all()
     pygame.image.save(prev, os.path.join(root, 'experiments', 'out',
                                          'arrow_preview_all.png'))
     print('SAVED experiments/out/arrow_preview_all.png', prev.get_size())
-    pf = preview_frame()
-    pygame.image.save(pf, os.path.join(root, 'experiments', 'out',
-                                       'arrow_preview_frame.png'))
-    print('SAVED experiments/out/arrow_preview_frame.png', pf.get_size())
     try:
         pob = preview_onboard()
         pygame.image.save(pob, os.path.join(root, 'experiments', 'out',
