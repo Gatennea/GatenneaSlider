@@ -2819,9 +2819,22 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         def solve_thread():
             try:
                 from solver import SOLVER_ALGORITHMS
-                alg_name, solver_func = SOLVER_ALGORITHMS.get(
-                    algorithm, SOLVER_ALGORITHMS['ida_star']
-                )
+                entry = SOLVER_ALGORITHMS.get(algorithm)
+                if entry is None:
+                    # ⚠️ 旧版这里写的是 `.get(algorithm, SOLVER_ALGORITHMS['ida_star'])`
+                    # —— 未知/失效的 key 会**静默兜底成 IDA***：用户以为在跑自己
+                    # 选的算法，实际跑的是 IDA*；而 IDA* 是纯方形语义（h/v 缝隙 +
+                    # 整数坐标），落到异形 game 上直接抛异常。
+                    # 2026-10-06 用户报的「list index out of range」正是这条链：
+                    # config 里残留了已删除的旧 key 'mi_gather'。
+                    # config 读取侧已有迁移（file_ops._migrate_solver_algorithm），
+                    # 这里是兜底——宁可明确告知，也不要偷偷换个算法跑。
+                    self._auto_solve_result = False
+                    self.macro_notify_msg = (
+                        f"求解算法「{algorithm}」不存在，请在设置里重新选择")
+                    self.macro_notify_timer = 150
+                    return
+                alg_name, solver_func = entry
                 kwargs = {}
                 if algorithm == 'gather':
                     # 禁用的参数传 None（不设限）。三形态共用这一个入口，
@@ -2851,7 +2864,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 else:
                     self._auto_solve_result = solution
             except Exception as e:
-                print(f"[自动求解] 出错: {e}")
+                # ⚠️ 旧版只 `print(f"[自动求解] 出错: {e}")` —— 没有 traceback，
+                # 用户只能看到一句「list index out of range」而完全无法定位
+                # （2026-10-06 就是这样浪费了一轮排查）。异常类型 + 堆栈都要留。
+                import traceback
+                print(f"[自动求解] 出错: {type(e).__name__}: {e}")
+                traceback.print_exc()
                 self._auto_solve_result = False
             finally:
                 if self._auto_solve_cancel:

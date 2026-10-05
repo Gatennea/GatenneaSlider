@@ -151,7 +151,17 @@ SOLVER_FORM_SUPPORT = {
 
 
 def solver_supports(algorithm, form) -> bool:
-    """algorithm 在 form 形态上是否可用。"""
+    """algorithm 在 form 形态上是否可用。
+
+    两个**不能靠缺省蒙对**的点：
+      · **未登记的算法（含失效的旧 key）** → 一律 False。旧写法会把它们落到
+        缺省 `('square',)`，于是一个被删掉的 key 在方形上被判成「支持」，
+        接着被 silently 兜底成 IDA* —— 2026-10-06 用户报的崩溃就是这条链。
+      · **登记了但没写支持异形** → 只支持方形（缺省语义保留，但只对**已知**
+        算法生效）。
+    """
+    if algorithm not in SOLVER_ALGORITHMS:
+        return False
     return form in SOLVER_FORM_SUPPORT.get(algorithm, ('square',))
 
 
@@ -163,6 +173,10 @@ def unsupported_solver_msg(algorithm, form) -> str:
     该形态目前可用的算法，由用户自己决定。
     """
     name = SOLVER_ALGORITHMS.get(algorithm, ('求解器',))[0].strip()
+    if algorithm not in SOLVER_ALGORITHMS:
+        # 失效的旧 key（如已删除的 'mi_gather'）：算法本身没了，谈「形态不支持」
+        # 没意义，直接让用户重选。
+        return f"求解算法「{algorithm}」不存在，请在设置里重新选择"
     ok_keys = [k for k in SOLVER_ALGORITHMS if solver_supports(k, form)]
     ok_names = '、'.join(SOLVER_ALGORITHMS[k][0].strip() for k in ok_keys)
     return (f"当前谜题（{form_label(form)}）没有「{name}」求解算法功能"

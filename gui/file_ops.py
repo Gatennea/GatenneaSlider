@@ -24,6 +24,23 @@ def _compute_checksum(data: dict) -> str:
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+# 已从注册表移除的**形态专用入口** → 现行统一入口。
+# 2026-10-05 起三形态共用 `'gather'`，`tri_gather` / `mi_gather` 两个 key 已删除；
+# 但老 config.json 里仍写着这些值（用户机器上实测就是 `'mi_gather'`）。
+# 不迁移的话 solve_thread 会拿到一个**不存在的 key** —— 旧行为是静默兜底成
+# IDA*，而 IDA* 是纯方形语义，落到异形 game 上直接抛异常（2026-10-06 用户
+# 报的「list index out of range」就是这条链）。
+_LEGACY_SOLVER_ALGORITHM = {
+    'tri_gather': 'gather',
+    'mi_gather': 'gather',
+}
+
+
+def _migrate_solver_algorithm(value):
+    """把失效的旧算法 key 迁到现行 key；认不出的原样返回（由后续校验拦下）。"""
+    return _LEGACY_SOLVER_ALGORITHM.get(value, value)
+
+
 # Windows 文件名禁止字符（含这些字符写盘必抛 OSError，此前只 print 用户看不到）
 ILLEGAL_FILENAME_CHARS = '<>:"/\\|?*'
 
@@ -368,7 +385,10 @@ class FileOpsMixin:
                         self.center_map()
                     # 恢复求解算法选择
                     if 'solver_algorithm' in config:
-                        self.solver_algorithm = config['solver_algorithm']
+                        # 迁移失效的旧形态专用 key（'tri_gather'/'mi_gather'
+                        # → 'gather'）；不迁移会让求解拿到不存在的算法 key。
+                        self.solver_algorithm = _migrate_solver_algorithm(
+                            config['solver_algorithm'])
                     # 着色器开关
                     if 'coloring_enabled' in config:
                         self.coloring_enabled = bool(config['coloring_enabled'])
