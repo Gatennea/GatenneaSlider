@@ -1457,8 +1457,16 @@ def save_failure_archive(coords, m, n, step, wall5, tag, fname=None):
 # ---------------------------------------------------------------------------
 # GUI 求解器入口（与 SOLVER_ALGORITHMS 统一签名）
 # ---------------------------------------------------------------------------
+# 补缺宏 GUI 入口的**墙钟总预算**（秒）。与填洞宏 `_FILL_GUI_TIME_BUDGET`
+# 同源同理由（2026-10-06）：这条链原本只有次数上限、没有墙钟上限，大散盘上
+# 会连续烧几分钟，求解线程 CPU 满载 → 主线程被 GIL 饿死 → 界面完全卡住。
+# 详见 fill_macro.py 里 `_FILL_GUI_TIME_BUDGET` 的由来注释。
+_GAP_GUI_TIME_BUDGET = 30.0
+
+
 def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
-                    stop_on_fail=False, segment_cb=None, **kwargs):
+                    stop_on_fail=False, segment_cb=None,
+                    time_budget=_GAP_GUI_TIME_BUDGET, **kwargs):
     """补缺宏（GUI 入口）：单边缺口 → 封壳+内部共轭+拆壳；其余交填洞宏。
 
     segment_cb：流式播放回调（label, actions5）——多空位贪心每解决一个
@@ -1477,11 +1485,28 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
     g = build_game(coords, m, n)
     if g.is_solved():
         return [], []
+    t0 = time.time()
+    timed_out = [False]
+
+    def _cc():
+        """取消 或 墙钟到点 → True（共用 _Cancelled 出口，仅文案不同）。"""
+        if cancel_check is not None and cancel_check():
+            return True
+        if time_budget and time.time() - t0 >= time_budget:
+            timed_out[0] = True
+            return True
+        return False
+
     try:
         return _solve_gap_macro_inner(game, coords, m, n, step,
-                                      cancel_check, progress_callback,
+                                      _cc, progress_callback,
                                       stop_on_fail, segment_cb)
     except _Cancelled:
+        if timed_out[0]:
+            print('[补缺宏] 时间预算 %gs 到点，尽早停机' % time_budget)
+            return {'type': 'fill_fail',
+                    'reason': '时间预算 %gs 到点（尽早停机）' % time_budget,
+                    'timeout': True}
         print('[补缺宏] 已停止（cancel）')
         return {'type': 'fill_fail', 'reason': '已停止', 'cancelled': True}
 

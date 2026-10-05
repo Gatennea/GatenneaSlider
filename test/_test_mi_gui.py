@@ -464,16 +464,22 @@ fire(pygame.event.Event(pygame.MOUSEBUTTONUP,
 check("不進跟隨也不滑動（單擊只選組）",
       set(gui.game.positions()) == before_no_gap
       and gui.step_count == step_no_gap)
-# **M3 起 mi 求解放行**（原断言是「自動求解被攔」，属 M2 时代的事实）。
-# 意图仍然有效且更重要：**mi 绝不能走方形求解器**（方形算法在斜坐标上会
-# 静默走错）。所以改成验「自动切到 mi_gather 并有提示」。
+# **三形态共用同一个 'gather' 入口**（2026-10-05 起不再有 mi 专用入口）。
+# 意图仍然有效且更重要：**mi 绝不能走方形求解器**（方形算法在 mi 的
+# 5 元组 / 半整数坐标上会静默走错）。所以验的是「设成方形算法时被
+# **明确拒绝**且提示点名米字格」，而不是旧版的「静默自动切换」。
 gui.macro_notify_msg = ''
-gui.solver_algorithm = 'gather'          # 故意设成方形算法
+gui._auto_solve_running = False
+gui.macro_executing = False
+gui.solver_algorithm = 'ida_star'        # 故意设成 mi 不支持的方形算法
 gui._start_auto_solve()
-check("mi 下自动求解器已切成 mi_gather（不走方形）",
-      gui.solver_algorithm == 'mi_gather', gui.solver_algorithm)
-check("切換算法有明確提示（不是靜默）",
-      '米字格' in (gui.macro_notify_msg or ''), gui.macro_notify_msg or '')
+check("mi 下用方形算法被拒绝（不静默换成异形入口）",
+      gui.solver_algorithm == 'ida_star', gui.solver_algorithm)
+check("拒绝提示明确且点名米字格",
+      '没有' in (gui.macro_notify_msg or '')
+      and '米字格' in (gui.macro_notify_msg or ''),
+      gui.macro_notify_msg or '')
+check("拒绝时没有启动后台线程", gui._auto_solve_running is False)
 
 # —— 物理鍵盤：只提示，不動棋盤 ——
 gui.new_mi_puzzle(6, 6, 2)

@@ -234,7 +234,7 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 | key | 顯示名 | 函數 | 特性 |
 | --- | --- | --- | --- |
 | `gather_gradient` | 智能聚攏 | `gather_solver.gradient_gather` | 參數預測 + 多階段 + 路徑優化 |
-| `gather` | 普通聚攏 | `gather_solver.gather_solve` | 貪心聚攏 + patience 停機 |
+| `gather` | 普通聚攏 | `gather_solve_unified`（統一入口） | 貪心聚攏 + patience 停機；**三形態共用這一個入口**，內部按 game 類型分發到 `gather_solve` / `tri_gather_solve` / `mi_gather_solve` |
 | `ida_star` | 最少步 | `solver.solve` | 保證最優，較慢 |
 | `fast` | 最快-1 | `solve_fast` | IDA* 放寬 |
 | `greedy` | 最快-2 | `solve_greedy` | 貪心爬山 + 擾動 |
@@ -244,6 +244,10 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 | `hybrid` | 混合求解（免表·非最優） | `hybrid_solver.hybrid_solve_with_table` | 有表先查表；無表走「聚攏+填洞」交替 + GBFS 收尾 |
 
 > 註：上表與實際註冊表可能再度漂移，**以 `solver/__init__.py` 的 `SOLVER_ALGORITHMS` 為準**；各算法的設計動機與機構詳解見 `求解器設計.md`。
+
+> ⚠️ **形態支援表（2026-10-05 起）**：`SOLVER_FORM_SUPPORT` 決定每個算法在哪些谜题形态上可用，**缺省 = 只支援方形**（多数算法是方形语义：4 元组动作 + 矩形目标形状 + 整数坐标，套到异形会静默走错）。目前只有 `gather` 同时支援方形/三角形/米字格。**异形上选到不支持的算法会被明确拒绝**并提示「当前谜题（米字格）没有「查表求解」求解算法功能（该形态目前仅支持：聚拢）」——**不会**像旧版那样静默把算法换成别的。新增算法若要支援异形，必须显式登记进 `SOLVER_FORM_SUPPORT`，不能靠缺省蒙对。
+>
+> 同理，**不要给某个形态单开一个注册表入口**（历史上曾有 `tri_gather` / `mi_gather`，已移除）：形态差异是内部实现细节，菜单里就该只有一个「聚拢」。
 
 通用函式庫契約：`f(game, step, max_steps, cancel_check=None, progress_callback=None) → list[action] | None`（`gather` 系回報 `progress_callback` 聚攏指標，即使未還原也回傳動作序列）。新增演算法 = 在 `solver/ml/` 新增模組 + 註冊進 `SOLVER_ALGORITHMS` + 加入設定介面的預設清單。
 

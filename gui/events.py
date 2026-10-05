@@ -1359,7 +1359,8 @@ class EventsMixin:
         求解线程可能在主线程「启动后回查标志」前就已完成并把
         _auto_solve_running 置回 False（启动即完成的竞态）。
         """
-        from solver import SOLVER_ALGORITHMS
+        from solver import (SOLVER_ALGORITHMS, solver_supports,
+                            unsupported_solver_msg)
         if algorithm:
             if algorithm not in SOLVER_ALGORITHMS:
                 return False, f"未知算法: {algorithm}（可选: {', '.join(SOLVER_ALGORITHMS)}）"
@@ -1373,12 +1374,18 @@ class EventsMixin:
                 return False, "只读存档无法使用求解器"
             if getattr(self, '_ann_recording', False):
                 return False, "标注录制中无法使用求解器"
-            # 三角形密铺：M1 已落地，只支援 tri_gather。**不在这里拦**——
-            # 算法切换由 _start_auto_solve 负责（自动切到 tri_gather 并提示），
-            # 这里再拦一道会让按钮路径与快捷键路径行为不一致。
-            # 米字格：8 向/4 族缝隙的求解器仍未实现（M3）
-            if self._mi_blocked('自动求解'):
-                return False, self.macro_notify_msg
+            # 当前谜题形态不支持所选算法 → 明确反馈「没有这个功能」。
+            #
+            # 旧代码在 mi 上无条件 `_mi_blocked('自动求解')`（M2 时期遗留，
+            # 那时 mi 求解器还没落地），会把**已实现的聚拢**也一起挡成
+            # 「米字格：自动求解不可用」。现在按形态×算法的支持表判定：
+            # 异形只放行已实现的算法，其余明确告知没有该功能并列出可用的。
+            # 与 _start_auto_solve 用同一条规则，按钮路径与快捷键/HTTP 路径
+            # 行为一致。
+            form = self._current_puzzle_form()
+            if not solver_supports(self.solver_algorithm, form):
+                return False, unsupported_solver_msg(
+                    self.solver_algorithm, form)
         self._start_auto_solve()
         if active:
             return True, "已请求停止求解"
@@ -2771,10 +2778,18 @@ class EventsMixin:
                 for algo_key, rect in self._settings_solver_rects.items():
                     if rect.collidepoint(mx, my):
                         self.solver_algorithm = algo_key
-                        # 操作提示
-                        from solver import SOLVER_ALGORITHMS
+                        # 操作提示：当前谜题形态不支持该算法时，直接把
+                        # 「没有这个功能」讲出来（不然用户点了没反应、
+                        # 或者到求解时才被拦，反馈太晚）。
+                        from solver import (SOLVER_ALGORITHMS, solver_supports,
+                                            unsupported_solver_msg)
                         algo_name = SOLVER_ALGORITHMS.get(algo_key, ('求解器',))[0].strip()
-                        self.macro_notify_msg = f"求解算法：{algo_name}"
+                        form = self._current_puzzle_form()
+                        if solver_supports(algo_key, form):
+                            self.macro_notify_msg = f"求解算法：{algo_name}"
+                        else:
+                            self.macro_notify_msg = unsupported_solver_msg(
+                                algo_key, form)
                         self.macro_notify_timer = 120
                         return
 

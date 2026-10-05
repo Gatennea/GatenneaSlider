@@ -100,18 +100,22 @@ def _replay_via_gui(g, ops, timeout=4000):
 def g1_registry():
     print('\n--- G1 注册表里有 mi 算法且签名对齐 ---')
     import inspect
-    check('G1a mi_gather 已注册', 'mi_gather' in SOLVER_ALGORITHMS,
+    check('G1a 统一入口 gather 已注册', 'gather' in SOLVER_ALGORITHMS,
           f'共 {len(SOLVER_ALGORITHMS)} 个算法')
-    if 'mi_gather' not in SOLVER_ALGORITHMS:
+    check('G1a2 形态专用入口已移除（三形态共用同一个入口）',
+          'mi_gather' not in SOLVER_ALGORITHMS
+          and 'tri_gather' not in SOLVER_ALGORITHMS,
+          list(SOLVER_ALGORITHMS))
+    if 'gather' not in SOLVER_ALGORITHMS:
         return
-    label, fn = SOLVER_ALGORITHMS['mi_gather']
+    label, fn = SOLVER_ALGORITHMS['gather']
     check('G1b 有中文标签', bool(label.strip()), label.strip())
     params = set(inspect.signature(fn).parameters)
     need = {'game', 'step', 'cancel_check', 'progress_callback'}
     check('G1c 签名吃 GUI solve_thread 那套 kwarg', need <= params,
           f'缺 {need - params}')
-    check('G1d 标签是异形专用的（不含方形词）',
-          '米字' in label, label.strip())
+    check('G1d 标签不带形态后缀（三形态共用同一入口）',
+          '米字' not in label and '三角' not in label, label.strip())
     random.seed(3)
     g = MiSliderMatrix(3, 3)
     g.shuffle(60, 2)
@@ -133,25 +137,27 @@ def g1_registry():
 def g2_switch_algorithm():
     print('\n--- G2 切 mi 自动换求解器 ---')
     g = _gui_mi(shuffle=0)
-    check('G2a 切米字格后 solver_algorithm = mi_gather',
-          g.solver_algorithm == 'mi_gather', g.solver_algorithm)
+    check('G2a 切米字格后 solver_algorithm = gather（统一入口）',
+          g.solver_algorithm == 'gather', g.solver_algorithm)
+    # 故意设成 mi 不支持的方形算法：应**明确拒绝**并告知没有该功能，
+    # 而不是像旧版那样静默把算法改成 mi_gather。
     g.solver_algorithm = 'ida_star'
     g._auto_solve_running = False
     g.macro_executing = False
     g.macro_notify_msg = ''
     g._start_auto_solve()
-    check('G2b 方形算法在 mi 下被自动换成 mi_gather',
-          g.solver_algorithm == 'mi_gather', g.solver_algorithm)
-    check('G2c 换算法时有明确提示（不是静默）',
-          '聚拢' in g.macro_notify_msg, f'msg={g.macro_notify_msg!r}')
-    g._auto_solve_cancel = True
-    check('G2d 拦下时没有启动后台线程', g._auto_solve_running is False)
+    check('G2b 不再静默改算法（保留用户选择）',
+          g.solver_algorithm == 'ida_star', g.solver_algorithm)
+    check('G2c 明确提示「没有该功能」并点出形态',
+          '没有' in g.macro_notify_msg and '米字格' in g.macro_notify_msg,
+          f'msg={g.macro_notify_msg!r}')
+    check('G2d 拒绝时没有启动后台线程', g._auto_solve_running is False)
 
 
 def g3_ops_carry_q():
     print('\n--- G3 ops 转换带全三元组 rep（q 是 mi 必需的）---')
     g = _gui_mi(shuffle=40, seed=3)
-    fn = SOLVER_ALGORITHMS['mi_gather'][1]
+    fn = SOLVER_ALGORITHMS['gather'][1]
     res = fn(g.game, step=2, max_wait_time=20)
     if not res['actions']:
         check('G3a 有动作可播', False, f'reason={res["reason"]}')
@@ -188,7 +194,7 @@ def g3_ops_carry_q():
 
 def g4_replay_via_gui_path():
     print('\n--- G4 走 GUI 真回放层（_execute_next_macro_step）---')
-    fn = SOLVER_ALGORITHMS['mi_gather'][1]
+    fn = SOLVER_ALGORITHMS['gather'][1]
     for m, n, step, shuf, seed in ((3, 3, 2, 60, 1), (3, 3, 1, 50, 2),
                                    (4, 4, 2, 100, 3)):
         g = _gui_mi(m=m, n=n, step=step, shuffle=shuf, seed=seed)
@@ -212,7 +218,7 @@ def g4_replay_via_gui_path():
 
 def g5_random_replay_all():
     print('\n--- G5 随机多盘：全部非空动作序列都能播完 ---')
-    fn = SOLVER_ALGORITHMS['mi_gather'][1]
+    fn = SOLVER_ALGORITHMS['gather'][1]
     tot = bad = solved = 0
     for seed in range(6):
         g = _gui_mi(m=3, n=3, step=2, shuffle=60, seed=seed)
