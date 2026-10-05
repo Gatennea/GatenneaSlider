@@ -2633,7 +2633,7 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                  'budget_exhausted': state['exhausted'],
                  'timeout': state['timeout'],
                  'secs': round(time.time() - t0, 3)})
-    why = ('搜索：时间预算 %.0fs 到点，尽早停机（发现就停）'
+    why = ('搜索：时间预算 %gs 到点，尽早停机（发现就停）'
            % time_budget) if state['timeout'] \
         else '搜索：预算内无可行 couple 路径'
     return None, {'reason': why,
@@ -2656,8 +2656,23 @@ def _split_actions(actions):
             [a[4] if len(a) == 5 else None for a in actions])
 
 
+# 填洞宏 GUI 入口的**墙钟总预算**（秒）。
+#
+# 由来（2026-10-06 用户报「填洞宏执行阶段莫名其妙卡住，无法重新选中/滑动/移动视角」）：
+# 离线复现（experiments/_repro_fill_macro_freeze.py，8×8 step2 散盘，棋盘从
+# 5050 现场抓下）跑了 **183.6 秒**才停 —— 根因是这条链只有**次数**上限
+# （solve_multi_void 的 max_attempts=400 / max_rounds=80），**没有任何墙钟上限**，
+# 而大散盘上每次 couple 尝试都很贵。求解线程全程 CPU 满载 → 主线程被 GIL 饿死，
+# 界面表现为完全卡住；取消虽在每轮 _chk 一次，但一轮本身就要几秒。
+#
+# 用户早已拍板「尽早停机」，故这里给一条硬墙钟：超时走与取消**同一条**
+# _Cancelled 出口，保证在「轮 / DFS 节点」粒度上一定停得下来。
+_FILL_GUI_TIME_BUDGET = 30.0
+
+
 def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
-                     segment_cb=None, **kwargs):
+                     segment_cb=None, time_budget=_FILL_GUI_TIME_BUDGET,
+                     **kwargs):
     """填洞宏求解（GUI 入口）。
 
     单洞单凸局面 → 单洞整盘求解（keep_partial 观察断点）；
@@ -2667,6 +2682,10 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
     couple 即回调一次，GUI 边算边播；返回协议变为 fill_stream dict
     （streamed=已实时播的步数，actions=未播剩余部分）。
 
+    time_budget：墙钟总预算（秒，默认 _FILL_GUI_TIME_BUDGET）。到点即按
+    「尽早停机」处理，转 'fill_fail' + timeout=True —— 与用户取消走同一条
+    出口，只是 reason 不同（见 _FILL_GUI_TIME_BUDGET 的由来注释）。
+
     返回 (actions, rep_cells)（actions 为四元组列表）供 GUI 宏播放；
     失败返回 {'type': 'fill_fail', 'reason': str}。
     """
@@ -2675,11 +2694,30 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
     _region, _ov, holes, outside = window_of(coords, m, n, step)
     _emit(progress_callback, '填洞宏', 0,
           '判型：洞%d 凸%d' % (len(holes), len(outside)))
+    t0 = time.time()
+    timed_out = [False]
+
+    def _cc():
+        """取消 或 墙钟到点 → True（两者共用 _Cancelled 出口，只是文案不同）。"""
+        if cancel_check is not None and cancel_check():
+            return True
+        if time_budget and time.time() - t0 >= time_budget:
+            timed_out[0] = True
+            return True
+        return False
+
     try:
         return _solve_fill_macro_inner(coords, m, n, step, holes, outside,
-                                       cancel_check, progress_callback,
+                                       _cc, progress_callback,
                                        segment_cb)
     except _Cancelled:
+        if timed_out[0]:
+            _emit(progress_callback, '填洞宏', 0,
+                  '时间预算 %gs 到点，尽早停机' % time_budget)
+            print('[填洞宏] 时间预算 %gs 到点，尽早停机' % time_budget)
+            return {'type': 'fill_fail',
+                    'reason': '时间预算 %gs 到点（尽早停机）' % time_budget,
+                    'timeout': True}
         print('[填洞宏] 已停止（cancel）')
         return {'type': 'fill_fail', 'reason': '已停止', 'cancelled': True}
 
