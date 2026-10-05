@@ -182,6 +182,9 @@ class RendererMixin:
 
         # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
         _sel_anim = self._sel_anim_border()
+        # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
+        _play_head = self._play_head_border()
+        _play_keys = self._play_head_keys() if _play_head is not None else ()
 
         for group, is_selected in ((normal, False), (selected, True)):
             for block, i, j, up, is_follow in group:
@@ -197,6 +200,9 @@ class RendererMixin:
                 elif _sel_anim is not None and is_selected:
                     # S1-2：撤销冷色/重做暖色——只换边框，填充不动（整片高亮是特色）
                     border_color, border_w = _sel_anim
+                elif _play_head is not None and (i, j, up) in _play_keys:
+                    # S2-1：同上（三角的键带朝向分量 up）
+                    border_color, border_w = _play_head
                 else:
                     # 分组着色：從外側向內一圈的縮環畫法（朝向不參與著色）。
                     # 描邊色不能直接換成組色：pygame 多邊形描邊以邊線為中心
@@ -327,6 +333,9 @@ class RendererMixin:
 
         # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
         _sel_anim = self._sel_anim_border()
+        # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
+        _play_head = self._play_head_border()
+        _play_keys = self._play_head_keys() if _play_head is not None else ()
 
         for gi, group in enumerate((normal, selected)):
             base = (self.colors['block_selected'] if gi
@@ -342,6 +351,9 @@ class RendererMixin:
                 elif _sel_anim is not None and gi:
                     # S1-2：撤销冷色/重做暖色——只换边框，填充不动（整片高亮是特色）
                     border_color, border_w = _sel_anim
+                elif _play_head is not None and (r, c, q) in _play_keys:
+                    # S2-1：同上（米字的键带晶格档 q）
+                    border_color, border_w = _play_head
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 pygame.draw.polygon(self.screen, fill, poly)
@@ -502,6 +514,9 @@ class RendererMixin:
 
         # S1-2：撤销/重做的边框配色，整个高亮窗口内共用一处结果（每帧只算一次）
         _sel_anim = self._sel_anim_border()
+        # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
+        _play_head = self._play_head_border()
+        _play_keys = self._play_head_keys() if _play_head is not None else ()
 
         # 绘制所有滑块
         for block in self.game.blocks:
@@ -553,6 +568,9 @@ class RendererMixin:
                 # S1-2：撤销冷色/重做暖色只换边框，优先级高于分组着色
                 if _sel_anim is not None and block.be_opted:
                     border_color, border_w = _sel_anim
+                elif _play_head is not None and tuple(block.location) in _play_keys:
+                    # S2-1：求解演示正在动的那一组——光边只出现在动画播放期间
+                    border_color, border_w = _play_head
                 elif getattr(self, 'coloring_enabled', False) and self.current_step > 1:
                     border_color = self._group_color(block.location[0], block.location[1])
                     border_w = max(2, int(7 * self.zoom)) #暫定7,不要改
@@ -653,6 +671,49 @@ class RendererMixin:
             return None
         color = self.SEL_ANIM_BORDER_UNDO if undo else self.SEL_ANIM_BORDER_REDO
         return (color, max(2, int(4 * self.zoom)))
+
+    # S2-1：求解演示「当前步」的光边色。**白**——be_opted 提亮填充是绿色，
+    # 青绿描边跟它撞色（实测截图区分度不足）；白不与撤销蓝 / 重做橙 /
+    # 越界橙红 / 选中红线任何语义色相撞，绿底与深底上都最醒目。
+    PLAY_HEAD_BORDER = (252, 252, 248)
+
+    def _play_head_border(self):
+        """S2-1：求解演示中「正在動的那一組」的邊框高亮 → (色, 线宽) 或 None。
+
+        一次性、非常駐——只存在于动画播放的那几十毫秒里，符合计划硬约束 1
+        （棋盘上不加常驻动效）。求解连播 30+ 步时，玩家靠它知道眼睛看哪。
+
+        只在**求解/宏播放**时生效（macro_executing，或梯度聚拢流水线在跑）；
+        手玩时整片 be_opted 提亮已经把「动的是哪组」讲清楚了，再叠一层是噪音。
+
+        亮度与线宽随进度收（起手最亮、落位回落），靠**纯 RGB 插值**而不是
+        alpha —— pygame.draw 对不带 SRCALPHA 的目标面做 alpha 混合不可靠，
+        插值出来的颜色无论底色深浅都稳定可读。
+        """
+        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            return None
+        if not getattr(self, 'animating', False):
+            return None
+        playing = (getattr(self, 'macro_executing', False)
+                   or getattr(self, '_gather_info', None) is not None)
+        if not playing or not getattr(self, 'anim_blocks', None):
+            return None
+        p = max(0.0, min(1.0, getattr(self, 'anim_progress', 0.0)))
+        k = 1.0 - 0.6 * p
+        base = self.colors['border']
+        glow = self.PLAY_HEAD_BORDER
+        col = tuple(int(round(base[i] + (glow[i] - base[i]) * k)) for i in range(3))
+        return (col, max(2, int(round((2 + 2 * k) * self.zoom))))
+
+    def _play_head_keys(self):
+        """正在动画的滑块**位置键**集合。
+
+        三形态循环拿到的键不一样（方形是 block、三角是 (i,j,up)、米字是
+        (r,c,q)），用位置键比对才能三形态通用；判 id 只有方形能接上。
+        动画期间 block.location 仍是起点（终点在 commit 时才写回），所以
+        这里取到的就是起点键，与绘制循环里的键同源。
+        """
+        return {tuple(b.location) for b in (getattr(self, 'anim_blocks', None) or [])}
 
     def _advance_key(self, key, delta):
         """形态中立的「key + 格增量」：朝向分量不参与平移。"""
