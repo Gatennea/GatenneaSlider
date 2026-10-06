@@ -10,7 +10,9 @@
 
 用法：
     D:/python/python.exe build_release.py
-    D:/python/python.exe build_release.py --version v1.0.0
+    D:/python/python.exe build_release.py --version v197-20261006
+
+版本号规则（2026-10-06 用户拍板）：Git 提交数 + 打包日期，不给版本号时自动算。
 
 产出（都在 dist/ 下）：
     GatenneaSlider-Windows.zip          ← 上传到 Release 的那个文件
@@ -51,17 +53,28 @@ def sha256_of(path):
     return h.hexdigest()
 
 
+def git_commit_count():
+    """HEAD 往回数的提交总数。"""
+    out = subprocess.run(['git', 'rev-list', '--count', 'HEAD'],
+                         cwd=ROOT, capture_output=True, text=True)
+    n = out.stdout.strip()
+    if not n.isdigit():
+        raise RuntimeError(f'git rev-list --count HEAD 返回异常：{n!r}')
+    return int(n)
+
+
 def guess_version():
-    """没给 --version 时，用 git 最近的 tag；都没有就给个占位。"""
-    try:
-        out = subprocess.run(['git', 'describe', '--tags', '--abbrev=0'],
-                             cwd=ROOT, capture_output=True, text=True)
-        tag = out.stdout.strip()
-        if tag:
-            return tag
-    except Exception:
-        pass
-    return 'v0.0.0'
+    """没给 --version 时，版本号 = Git 提交数 + 打包日期（用户 2026-10-06 拍板）。
+
+    形如 v197-20261006：197 是 HEAD 的提交数，20261006 是打包当天。
+
+    为什么不继续用 v1.0.0 / v0.1.0 那套语义版本号：这个项目还没有对外承诺兼容性的
+    需求，「算不算 1.0」每次发版都要纠结一次，而纠结出来的数字对用户毫无信息量。
+    提交数 + 日期是客观事实——一眼能看出「这是第几次提交、哪天打的」，两个版本
+    谁新谁旧也不会看错。真到了要对外承诺的那天再换也不迟。
+    """
+    n = git_commit_count()
+    return f'v{n}-{time.strftime("%Y%m%d")}'
 
 
 def main():
