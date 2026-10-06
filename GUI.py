@@ -3716,8 +3716,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     if macro_input:
                         macro_input.update(dt_ms)
             except Exception as e:
-                # 非致命：记进 config/error_log.jsonl 并继续运行，避免单帧小异常导致游戏闪退
-                log_writer.exception('主循环异常', *sys.exc_info())
+                # 非致命：记进 config/error_log.jsonl 并继续运行，避免单帧小异常导致游戏闪退。
+                # 节流：同一个异常（类型 + 消息）每会话只记一条。每帧都抛的话是
+                # 60 条/秒，几秒就把日志写到 4MB 上限触发 rotate，把真正的第一条
+                # （也是唯一有价值的那条）冲掉。控制台仍逐帧打印，方便当场看频率。
+                _seen = getattr(self, '_loop_err_seen', None)
+                if _seen is None:
+                    _seen = self._loop_err_seen = set()
+                _sig = (type(e).__name__, str(e))
+                if _sig not in _seen:
+                    _seen.add(_sig)
+                    log_writer.exception('主循环异常', *sys.exc_info())
                 print(f"Run error (non-fatal): {e}")
                 self._frame_error_streak = getattr(self, '_frame_error_streak', 0) + 1
                 # 连续异常约 2 秒（120 帧）仍无法恢复则终止，避免卡死刷屏

@@ -49,10 +49,14 @@ excludes = [
     'pygame.tests',
     'pygame.typing',
     'pygame.pixelarray',
-    'pygame.sprite',
+    # ⚠️ pygame.sprite / pygame.cursors **不能排除**（2026-10-06 打包白屏事故）：
+    # pygame.mouse.set_cursor 依赖 cursors，排掉后打包版里根本没有这个属性，
+    # 而 _update_cursor 每帧调用它 —— 异常在每帧 try 块开头抛出，把整帧绘制
+    # 连同 display.flip() 一起跳过，窗口永远空白且 windowed 模式下看不到报错。
+    # 'pygame.sprite',
+    # 'pygame.cursors',
+    # 'pygame.mask',      # sprite 的依赖；一并带上，消除 import sprite 的 RuntimeWarning
     'pygame.freetype',
-    'pygame.cursors',
-    'pygame.mask',
     'pygame.controller',
 
     # Python 标准库（确认不需要的才能排除）
@@ -105,7 +109,10 @@ a = Analysis(
            ('gui/操作说明.md', 'gui'),
            # 新手教程资源：文案 JSON + 关卡存档（新增关卡只加 json，无需改 spec）
            ('gui/tutorial_texts.json', 'gui'),
-           ('beginner_archive', 'beginner_archive')],
+           ('beginner_archive', 'beginner_archive'),
+           # S1-4 箭头按键贴图（renderer._arrow_asset_path 按「仓库根/assets/...」
+           # 找，打包后根 = _MEIPASS，故整目录带过去；缺了箭头不显示）
+           ('assets', 'assets')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

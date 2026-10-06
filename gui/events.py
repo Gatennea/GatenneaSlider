@@ -3675,6 +3675,14 @@ class EventsMixin:
         - 悬停棋盘且已选中切片：HAND（张开的手，表「可拖」）
         - 其它：ARROW
         """
+        # 能力检测（必须）：set_cursor 依赖 pygame.cursors 子模块，打包时若被
+        # spec 的 excludes 排掉，这里就 AttributeError。而本函数跑在**每帧
+        # try 块的开头**，一抛异常整帧的绘制与 display.flip() 全被跳过 →
+        # 窗口永远是空白，看起来像「程序没启动」，且 windowed 模式下连报错
+        # 都看不到（2026-10-06 打包版白屏事故）。指针是锦上添花，绝不能有
+        # 拖垮渲染的权力：缺了就永久静默降级，一次都不重试。
+        if not hasattr(pygame.mouse, 'set_cursor'):
+            return
         if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
             pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
             return

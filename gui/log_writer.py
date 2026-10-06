@@ -19,6 +19,7 @@ traceback 按行拆成数组，不塞成一个带 \n 的字符串：转义后在
 """
 import json
 import os
+import sys
 import tempfile
 import time
 import traceback
@@ -28,6 +29,29 @@ BASE_DIR = os.path.dirname(_HERE)
 
 LOG_PATH = os.path.join(BASE_DIR, 'config', 'error_log.jsonl')
 _FALLBACK_PATH = os.path.join(tempfile.gettempdir(), 'gatenneaslider_error_log.jsonl')
+
+
+def log_paths():
+    """按优先级返回候选日志路径（write 逐个试，写进第一个成功的）。
+
+    打包后 ``__file__`` 落在 PyInstaller 的临时解压目录（_MEIxxxx），程序一退
+    出整个目录就被删 —— 日志跟着消失，等于没记。2026-10-06 打包版白屏就是
+    这么变成悬案的：dist/config/ 里永远找不到 error_log.jsonl。
+
+    所以冻结环境下改写到 **exe 同级的 config/**（用户找得到的地方），
+    写不进去再退 %APPDATA%/GatenneaSlider/，最后才退系统 temp。
+    """
+    if getattr(sys, 'frozen', False):
+        paths = [os.path.join(os.path.dirname(sys.executable),
+                              'config', 'error_log.jsonl')]
+        appdata = os.environ.get('APPDATA') or os.environ.get('LOCALAPPDATA')
+        if appdata:
+            paths.append(os.path.join(appdata, 'GatenneaSlider',
+                                      'error_log.jsonl'))
+    else:
+        paths = [LOG_PATH]
+    paths.append(_FALLBACK_PATH)
+    return paths
 
 # 单个备份代：超限就把当前文件整体让位给 .old，从零开张。原来那份三个半月
 # （2026-06-10 ~ 09-23）就攒到 731KB/12049 行没人管，不设上限迟早把磁盘磨
@@ -54,7 +78,7 @@ def write(msg: str, level: str = 'error', trace=None) -> None:
     if trace:
         rec['trace'] = [str(l).rstrip('\n') for l in trace]
     line = json.dumps(rec, ensure_ascii=False, default=str) + '\n'
-    for path in (LOG_PATH, _FALLBACK_PATH):
+    for path in log_paths():
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             _rotate(path)
