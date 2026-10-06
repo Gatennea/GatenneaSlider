@@ -1,7 +1,7 @@
 @echo off
 REM =====================================================
 REM  Gatennea Slider Puzzle - Auto Build Script (PyInstaller)
-REM  Packages main.py into a standalone Windows exe (~24MB).
+REM  Packages main.py into a standalone Windows folder (~81MB, onedir mode).
 REM  Uses optimized Gatenneaslider.spec configuration.
 REM =====================================================
 setlocal
@@ -65,7 +65,7 @@ if exist "%LOCALAPPDATA%\pyinstaller\bincache10py31264bit" rd /s /q "%LOCALAPPDA
 
 REM ---------- Build using optimized spec ----------
 echo.
-echo [INFO] Building with optimized spec (expected ~24MB)...
+echo [INFO] Building with optimized spec (onedir, expected ~81MB)...
 %PY% -m PyInstaller --noconfirm --clean Gatenneaslider.spec
 
 if errorlevel 1 (
@@ -76,7 +76,9 @@ if errorlevel 1 (
 echo.
 echo ================================================
 echo  [DONE] Build succeeded.
-echo  Executable: dist\Gatenneaslider.exe
+echo  Output folder: dist\Gatenneaslider\  (160 files, ~81MB)
+echo  Run:           dist\Gatenneaslider\Gatenneaslider.exe
+echo  To distribute:  zip the whole dist\Gatenneaslider folder (~31MB zipped)
 echo ================================================
 
 endlocal

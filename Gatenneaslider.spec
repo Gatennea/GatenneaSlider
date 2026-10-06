@@ -129,12 +129,15 @@ a.binaries = [b for b in a.binaries if not os.path.basename(b[0]).lower() == 'uc
 
 pyz = PYZ(a.pure)
 
+# onedir（一文件夹模式）：exe 里只装引导器 + pyz，真正的依赖由下面的 COLLECT
+# 摊到 exe 旁边的目录里。好处是**每次运行不再把 31MB 解压到 %TEMP%** —— 实测
+# onefile 解压耗时 2.1s、到窗口出现 3.8s；onedir 没有这一步。
+# 代价：分发的是文件夹不是一个 exe（以后想做安装包就交给 Inno Setup）。
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='Gatenneaslider',
     debug=False,
     bootloader_ignore_signals=False,
@@ -149,4 +152,16 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='picture/cover.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    # strip 关掉：onedir 下依赖文件摊在目录里，strip 省的那点体积远不如
+    # 「别在打包环节引入新的不确定性」重要（上次白屏就是打包侧引入的）。
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='Gatenneaslider',
 )
