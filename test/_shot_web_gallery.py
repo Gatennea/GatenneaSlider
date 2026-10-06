@@ -150,6 +150,19 @@ for name, shape, specs, note in PLANS:
     # 拼图顺序：主图放左边大格，两张还原态放右边上下
     compose([shots[1], shots[0], shots[2]], name, note)
 
+# ======================= 14 等级 step 对照（着色器开，颜色数 = step²）=======================
+# 尺寸相同、只换等级，最能说明「等级决定能互换的范围」。还原态 + 着色器最直观。
+_step_shots = []
+for _st in (1, 2, 3):
+    gui.new_puzzle(6, 6, _st)
+    gui.coloring_enabled = True
+    gui.chain_hint_enabled = False
+    _step_shots.append(board_shot(gui, 'square'))
+    print('    step=%d 还原态，着色器开' % _st)
+gui.coloring_enabled = False
+compose([_step_shots[1], _step_shots[0], _step_shots[2]], '14.等級step.png',
+        '同为 6×6，等级 1 / 2 / 3（着色器开：颜色数 = step²）')
+
 # ======================= 9 着色器 =======================
 setup(gui, 'square', (6, 6, 2), shuffle=True)
 refit(gui, 'square')
