@@ -153,6 +153,10 @@ def play(gui, reverse, every, max_steps):
         ok = gui._start_undo_redo_animation(mv, is_undo=is_undo)
         if not ok:
             return False
+        # 高亮必须在「动画播放前」点亮：此时滑块还在移动前的位置，
+        # _flash_move_selection 才会算到正确的一片；commit 之后它会自动把
+        # 高亮挪到移动后的位置。放错时机 = 把高亮标到空位/别的块上 = 随机涂色。
+        gui._flash_move_selection(mv, is_undo)
         for k in range(1, MOVE_FRAMES + 1):
             gui.anim_progress = k / float(MOVE_FRAMES)
             frames.append(grab(gui))
@@ -177,7 +181,6 @@ def play(gui, reverse, every, max_steps):
             continue
         gui._clear_sel_anim()
         if push_anim(mv, reverse):
-            gui._flash_move_selection(mv, reverse)
             played += 1
             frames += hold(gui)
         else:
@@ -202,6 +205,8 @@ def main():
     ap.add_argument('--quality', type=int, default=QUALITY)
     ap.add_argument('--dur', type=int, default=DUR, help='每帧毫秒')
     ap.add_argument('--no-reverse', action='store_true', help='不做倒放判定，强制按存档顺序播')
+    ap.add_argument('--no-highlight', action='store_true',
+                    help='不点亮「这一步选了哪一片」（背景装饰用；思路参考动图建议保留高亮）')
     args = ap.parse_args()
     OUT_W = args.width
     MOVE_FRAMES = args.frames
@@ -213,7 +218,8 @@ def main():
     gui = SliderGUI(m=4, n=4, step=1)
     gui.animation_enabled = True
     gui.ui_mode = 'enhanced'
-    gui.selection_animation_enabled = True     # 高亮「这一步选了哪一片」
+    # 高亮「这一步选了哪一片」：思路参考动图要开，纯装饰背景关掉更干净
+    gui.selection_animation_enabled = not args.no_highlight
     gui.screen_width, gui.screen_height = W, H
     pygame.display.set_mode((W, H))
     gui.screen = pygame.display.get_surface()
