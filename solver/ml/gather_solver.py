@@ -29,6 +29,7 @@ from solver.actions import enumerate_valid_actions, apply_action
 from solver.state import snapshot, restore
 from solver.table_core import canonicalize
 from solver.ml.strategy_solver import _find_rep_cell
+from solver.ml.invariants import profile_defect
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +345,7 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
 def gather_solve(game, step: int, max_steps=500, patience=150,
                  max_wait_time=20, target_gather_score=1.0, aggressiveness=0.2,
                  cancel_check=None, progress_callback=None,
-                 target_corner=None):
+                 target_corner=None, phi_prescreen_k=8):
     """贪心聚拢：每步选聚拢度（重叠率）最高的动作，连续 patience 步无改进则停机。
 
     参数（传 None 表示「不设限」）：
@@ -355,6 +356,9 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         aggressiveness    : 激进程度 = 允许每步选择的聚拢度比「当前最佳候选」
                             低多少（None = 不设限，任意候选都允许）
         target_corner     : (r0, c0) 预先判定的目标窗口左上角模偏移；None = 自动探测
+        phi_prescreen_k   : 阶段2——先用剖面缺陷 Φ（便宜 ~20x）对全部候选排序，
+                            只对该候选数以内的 top-k 计算聚拢度 σ 终裁；0/None = 关闭（旧行为，
+                            对所有候选算 σ）。k 取较小值即可砍掉绝大部分 σ 计算。
     """
     m, n = game.m, game.n
     total = m * n
@@ -443,7 +447,8 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
             break
 
         snap = snapshot(game)
-        scored = []  # (score, bbox_area, action, result_hash, mod_compliant)
+        # 阶段2：先用剖面缺陷 Φ（便宜 ~20x）对所有候选排序，只取 top-k 算聚拢度 σ 终裁
+        cand = []  # (phi, action, new_coords)
         for act in candidates:
             if not apply_action(game, act, step):
                 restore(game, snap)
@@ -452,11 +457,21 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
             if len(new_coords) != total:
                 restore(game, snap)
                 continue
+            cand.append((profile_defect(new_coords, m, n), act, new_coords))
+            restore(game, snap)
+
+        if phi_prescreen_k and len(cand) > phi_prescreen_k:
+            cand.sort(key=lambda x: x[0])
+            eval_pool = cand[:phi_prescreen_k]
+        else:
+            eval_pool = cand
+
+        scored = []  # (score, bbox_area, action, result_hash, mod_compliant)
+        for _, act, new_coords in eval_pool:
             met = gather_metrics(new_coords, m, n)
             nh = canonicalize(new_coords)
             mod_ok = _mod_compliant is None or _mod_compliant(new_coords, step, _mod_r0, _mod_c0)
             scored.append((met['score'], met['bbox_area'], act, nh, mod_ok))
-            restore(game, snap)
 
         if not scored:
             # 无候选：随机扰动
@@ -575,6 +590,7 @@ def predict_params(game, step: int) -> dict:
         return {
             'max_steps': None, 'patience': None, 'max_wait_time': 30,
             'target_gather_score': 1.0, 'aggressiveness': 0.0,
+            'phi_prescreen_k': 8,
         }
 
     max_steps = max(200, min(3000, int(20 + total * 10)))       # 4x4→200  7x7→510
@@ -585,6 +601,7 @@ def predict_params(game, step: int) -> dict:
         'max_steps': max_steps, 'patience': patience,
         'max_wait_time': max_wait_time,
         'target_gather_score': 1.0, 'aggressiveness': aggressiveness,
+        'phi_prescreen_k': 8,
     }
 
 
