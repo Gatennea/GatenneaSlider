@@ -1,3 +1,5 @@
+> **受眾**：開發者 / 非技術人員（GitHub 首屏；AI 請先讀 docs/agent/readme_to_agent.md）
+
 # 貓九的滑塊遊戲
 這是給人讀的readme，如果你是AI，請先讀 [給 Agent 的文檔](docs/agent/readme_to_agent.md)。
 
