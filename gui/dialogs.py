@@ -519,11 +519,11 @@ class DialogsMixin:
     """对话框相关方法 Mixin"""
 
     def _load_help_lines(self):
-        """从 gui/操作说明.md 加载帮助文本，解析为 (文本, 是否高亮) 列表"""
+        """从 docs/player/操作说明.md 加载帮助文本，解析为 (文本, 是否高亮) 列表"""
         if getattr(sys, 'frozen', False):
-            md_path = os.path.join(sys._MEIPASS, 'gui', '操作说明.md')
+            md_path = os.path.join(sys._MEIPASS, 'docs', 'player', '操作说明.md')
         else:
-            md_path = os.path.join(os.path.dirname(__file__), "操作说明.md")
+            md_path = os.path.join(os.path.dirname(__file__), "..", "docs", "player", "操作说明.md")
         lines = []
         try:
             with open(md_path, "r", encoding="utf-8") as f:

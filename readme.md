@@ -1,5 +1,5 @@
 # 貓九的滑塊遊戲
-這是給人讀的readme，如果你是AI，請先讀 [給 Agent 的文檔](readme_to_agent.md)。
+這是給人讀的readme，如果你是AI，請先讀 [給 Agent 的文檔](docs/agent/readme_to_agent.md)。
 
 > 一個基於 Python + Pygame 的滑塊拼圖遊戲：把打亂的方塊**滑回初始的形狀**就算復原。
 
@@ -144,10 +144,10 @@ save/                   # 使用者存檔
 
 ## 更多文檔
 
-- [玩家指南](玩家指南.md) — 詳細操作說明與小貼士
-- [操作說明](gui/操作說明.md) — 完整功能列表
-- [給 Agent 的文檔](readme_to_agent.md) — 架構說明與 API 參考（供 AI / 開發者使用）
-- [開發該遊戲時必須懂的黑話](術語規定.md) — 解釋遊戲中的術語，方便開發者和AI理解
-- [相關數學問題](math_question/遊戲衍生的數學問題.md)
+- [玩家指南](docs/player/玩家指南.md) — 詳細操作說明與小貼士
+- [操作說明](docs/player/操作說明.md) — 完整功能列表
+- [給 Agent 的文檔](docs/agent/readme_to_agent.md) — 架構說明與 API 參考（供 AI / 開發者使用）
+- [開發該遊戲時必須懂的黑話](docs/spec/術語規定.md) — 解釋遊戲中的術語，方便開發者和AI理解
+- [相關數學問題](docs/math/遊戲衍生的數學問題.md)
 ***
 
