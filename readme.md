@@ -1,13 +1,11 @@
 > **受眾**：開發者 / 非技術人員（GitHub 首屏；AI 請先讀 docs/agent/readme_to_agent.md）
 
-# 貓九的滑塊遊戲
+# 貓九的滑塊遊戲 · Gatennea Slider
 這是給人讀的readme，如果你是AI，請先讀 [給 Agent 的文檔](docs/agent/readme_to_agent.md)。
 
-> 一個基於 Python + Pygame 的滑塊拼圖遊戲：把打亂的方塊**滑回初始的形狀**就算復原。
+一款新穎而困難的滑塊謎題，就像魔方遇上數字華容道：把打亂的滑塊滑回原形即過關，但一次必須滑動整片、且不能斷開——這讓它比看上去難得多。四種形狀（方形 / 三角 / 米字 / 數字）、三種模式（練習 / 創造 / 競速），還連著一個深刻的數學開放問題。
 
-> 目標是「任意位置的完整矩形」，矩形出現在哪裡都行。
->
-> 另有三種變體謎題：**帶序號**（編號也要歸位），**三角形**（正三角形密鋪），**米字格**（方格切成四個直角三角）。
+想直接玩？[官網在線試玩](https://gatennea.github.io/GatenneaSliderWeb/) 或 [下載 exe](https://github.com/Gatennea/GatenneaSlider/releases/latest/download/GatenneaSlider-Windows.zip)。數學愛好者請看 [核心玩法形式化](docs/math/核心玩法形式化.md)。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![Pygame](https://img.shields.io/badge/Pygame-ce-green.svg)](https://github.com/pyga...me/pygame-ce)
