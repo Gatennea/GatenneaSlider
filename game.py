@@ -21,6 +21,9 @@ DIRECTIONS = {
     'd': (0, 1),
 }
 
+# 位棋盘连通性原语（阶段3：替换 set 版 DFS 热点，见根目录 bitboard.py）
+from bitboard import build_occupancy, is_connected, component, grid_side_mask
+
 
 class Block:
     """
@@ -248,36 +251,15 @@ class SliderMatrix:
     @staticmethod
     def is_single_connected(positions: set) -> bool:
         """
-        判断一组位置是否构成单一连通分量（使用DFS）
-        
-        参数：
-            positions: 位置集合，元素为 (row, col) 元组
-        
-        返回：
-            bool - 所有位置连通返回 True，否则返回 False
+        判断一组位置是否构成单一连通分量（位棋盘版，等价原 set-DFS 语义）。
+
+        位置集合元素为 (row, col) 元组；网格宽度由【实际坐标范围】推导
+        （min/max + offset），不依赖 m,n，对任意漂移后的局面都正确。
         """
         if not positions:
             return True
-        
-        # 从任意一个位置开始DFS
-        start = next(iter(positions))
-        visited = set()
-        stack = [start]
-        
-        while stack:
-            current = stack.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            
-            row, col = current
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                neighbor = (row + dr, col + dc)
-                if neighbor in positions and neighbor not in visited:
-                    stack.append(neighbor)
-        
-        # 如果访问到的位置数等于总位置数，则连通
-        return len(visited) == len(positions)
+        mask, W, H, col0, colW, off_r, off_c = build_occupancy(positions)
+        return is_connected(mask, W, col0, colW)
 
     def update_matrix(self):
         """
@@ -322,87 +304,46 @@ class SliderMatrix:
     
     def opt(self, direction: str, line: int, selected_block: 'Block'):
         """
-        分割线选中操作 - 使用DFS算法
-        
-        根据分割线将滑块组划分为连通部分，标记选中方块所在的部分
-        
+        分割线选中操作 - 位棋盘版（连通分量洪泛，等价原 set-DFS 语义）
+
+        选中 selected_block 所在侧、且与该块连通的那一片（缝隙作为墙，
+        不允许跨线连通）。网格宽度由当前坐标实际范围推导，不依赖 m,n。
+
         参数：
             direction: 分割方向 'h'横向 'v'纵向
             line: 分割线位置（行或列索引）
             selected_block: 玩家选中的方块
         """
+        blocks = self.blocks
         # 清除所有选中状态
-        for block in self.blocks:
-            block.be_opted = False
-        
-        # 将滑块位置存入集合以便快速查找
-        block_set = set(tuple(b.location) for b in self.blocks)
-        
-        def is_connected(block1: tuple, block2: tuple, direction: str, line: int) -> bool:
-            """
-            判断两个方块是否连通（不被分割线隔开）
-            
-            参数：
-                block1: 第一个方块的坐标 (row, col)
-                block2: 第二个方块的坐标 (row, col)
-                direction: 分割方向
-                line: 分割线位置
-            
-            返回：
-                bool - 连通返回 True，否则返回 False
-            """
-            if direction == 'h':
-                # 横向分割：检查两个方块是否在分割线同一侧
-                if (block1[0] <= line and block2[0] > line) or \
-                   (block1[0] > line and block2[0] <= line):
-                    return False
-            else:
-                # 纵向分割：检查两个方块是否在分割线同一侧
-                if (block1[1] <= line and block2[1] > line) or \
-                   (block1[1] > line and block2[1] <= line):
-                    return False
-            return True
-        
-        def get_neighbors(pos: tuple) -> list:
-            """
-            获取一个位置的相邻方块位置
-            
-            参数：
-                pos: 当前位置 (row, col)
-            
-            返回：
-                list - 相邻的方块位置列表
-            """
-            row, col = pos
-            neighbors = []
-            # 检查上下左右四个方向
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                new_pos = (row + dr, col + dc)
-                if new_pos in block_set:
-                    neighbors.append(new_pos)
-            return neighbors
-        
-        # 使用DFS遍历连通块
-        start_pos = tuple(selected_block.location)
-        visited = set()
-        stack = [start_pos]
-        
-        while stack:
-            current = stack.pop()
-            if current in visited:
-                continue
-            
-            visited.add(current)
-            
-            # 将连通的邻居加入栈
-            for neighbor in get_neighbors(current):
-                if neighbor not in visited and is_connected(current, neighbor, direction, line):
-                    stack.append(neighbor)
-        
-        # 标记所有连通的方块为选中状态
-        for block in self.blocks:
-            if tuple(block.location) in visited:
-                block.be_opted = True
+        for b in blocks:
+            b.be_opted = False
+        if not blocks:
+            return
+
+        cells = [(b.location[0], b.location[1]) for b in blocks]
+        mask, W, H, col0, colW, off_r, off_c = build_occupancy(cells)
+        if mask == 0:
+            return
+
+        sr = selected_block.location[0]
+        sc = selected_block.location[1]
+        # 选定块所在侧决定 opted 片归属（与原 is_connected 跨线返回 False 等价）
+        if direction == 'h':
+            side = 'above' if sr <= line else 'below'
+        else:
+            side = 'left' if sc <= line else 'right'
+        side_m = grid_side_mask(W, H, off_r, off_c, direction, line, side)
+        opt_mask = mask & side_m
+        start_bit = 1 << ((sr - off_r) * W + (sc - off_c))
+        if not (opt_mask & start_bit):
+            return  # 选定块不在该侧（理论不发生，防御性早退）
+
+        comp = component(opt_mask, start_bit, W, col0, colW)
+        for b in blocks:
+            br, bc = b.location[0], b.location[1]
+            if comp & (1 << ((br - off_r) * W + (bc - off_c))):
+                b.be_opted = True
     
     def opt_simple(self, direction: str, line: int, selected_block: 'Block'):
         """
