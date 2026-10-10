@@ -707,7 +707,8 @@ class MetricsPanelMixin:
         mi 的第 7 行就画到面板外面去了。
         """
         met = self._mp_current_metrics()
-        # 指标行（目标框行顯示與畫框同一窗口的實際位置）
+        # 指标行：聚拢度/重叠/边界盒/填充率/剖面缺陷(Φ)/洞凸起/mod 约束等；
+        # 不再显示「目标框」位置读数（对玩家无意义，棋盘绿框仍由 _draw_target_window 画）。
         game = self.game
         step = getattr(self, 'current_step', 1)
         kind = self._mp_kind()
@@ -740,13 +741,17 @@ class MetricsPanelMixin:
             n_hole = sum(1 for h in holes if h['type'] == 'hole')
             m = getattr(game, 'm', 0) or 0
             n = getattr(game, 'n', 0) or 0
+            from solver.ml.invariants import profile_defect
+            # mi 单元带 q 分量（(r,c,q)），剖面缺陷只看 (r,c) 投影的基格平衡；
+            # 已还原态基格恰成 m×n 矩形 → Φ=0。
+            phi = profile_defect({(r, c) for r, c, _q in coords}, m, n)
             shape_txt = f"{m}×{n}" if m == n else f"{m}×{n}/{n}×{m}"
             rows = [
                 ("聚拢度", f"{met['score'] * 100:.1f}%"),
                 ("重叠", f"{met['overlap']}/{4 * m * n}"),
                 ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
                 ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-                ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) {shape_txt}"),
+                ("剖面缺陷", f"{phi}"),
                 ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
             ]
             # mod 约束：mi 的合法偏移不是「step 倍数」而是「类自同构余数对
@@ -766,27 +771,33 @@ class MetricsPanelMixin:
             holes, protrusions = detect_tri_holes(coords, best.cells, step)
             n_gap = sum(1 for h in holes if h['type'] == 'gap')
             n_hole = sum(1 for h in holes if h['type'] == 'hole')
+            from solver.ml.invariants import profile_defect
+            # 三角理想是三角形（非矩形），profile_defect 以 k×k 矩形为参照，
+            # 故「已还原」不为 0 —— 这里当作行列平衡代理，仅供调试参考。
+            phi = profile_defect(coords, k, k)
             rows = [
                 ("聚拢度", f"{met['score'] * 100:.1f}%"),
                 ("重叠", f"{met['overlap']}/{k * k}"),
                 ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
                 ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-                ("目标框", f"偏移({best.offset[0]},{best.offset[1]}) 边长{k}"),
+                ("剖面缺陷", f"{phi}"),
                 ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
             ]
         else:   # square
             from solver.ml.gather_solver import (
                 detect_target_corner, _game_coords,
             )
+            from solver.ml.invariants import profile_defect
+            coords = frozenset(tuple(b.location) for b in game.blocks)
             tc = detect_target_corner(_game_coords(game), game.m, game.n, step)
+            # 剖面缺陷 Φ：位置无关、已还原态=0（求解器「并列取 Φ 最小」判据同源）。
+            phi = profile_defect(coords, game.m, game.n)
             rows = [
                 ("聚拢度", f"{met['score'] * 100:.1f}%"),
                 ("重叠", f"{met['overlap']}/{game.m * game.n}"),
                 ("边界盒", f"{met['bbox'][0]}×{met['bbox'][1]}"),
                 ("填充率", f"{met['fill_rate'] * 100:.1f}%"),
-                ("目标框",
-                 f"({region[0]},{region[1]}) {region[2][0]}×{region[2][1]}"
-                 if region else "—"),
+                ("剖面缺陷", f"{phi}"),
                 ("mod 状态",
                  "有约束" if tc else ("无约束" if step > 1 else "step=1")),
             ]

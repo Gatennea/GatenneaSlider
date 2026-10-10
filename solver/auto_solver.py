@@ -41,6 +41,7 @@ from solver.ml.fill_macro import (build_game, replay_and_verify,
                                   _replay_apply, window_of)
 from solver.ml.gap_solver import solve_gap_macro
 from solver.hybrid_solver import hybrid_solve
+from solver.ml.invariants import profile_defect  # 平移无关 Φ（复用，非重写）
 
 # 从补缺宏 partial 终态续算混合流水线的时间上限（秒）。续算属于「最后一搏」：
 # 混合流水线的自然解出时间中位在秒级~十几秒，90 秒足够；到点归还部分成果，
@@ -66,9 +67,28 @@ def _end_state(coords0, acts, reps, m, n, step):
     return frozenset(tuple(b.location) for b in g.blocks), True
 
 
+def _phi_of(coords, m, n):
+    """行列剖面 L1 偏差（profile defect Φ）：平移无关，完美矩形（任何位置、含转置）
+    得 0，越偏离合法复原形状越大。
+
+    委托 `solver.ml.invariants.profile_defect`（已验证：位置无关、含转置取优、
+    Φ=0 ⟺ 还原）；此处只做命名统一与「并列 tiebreak」语义注释。仅作**并列 tiebreak**
+    用（聚拢度 score 完全相等时取 Φ 最小者），不单独排序。
+    """
+    return profile_defect(coords, m, n)
+
+
 def auto_solve(game, step, cancel_check=None, progress_callback=None,
-               time_budget=None, **_kwargs):
-    """自动规划入口：查表 → 补缺宏 → 混合流水线，全解即停，全败取最优部分。"""
+               stage_cb=None, time_budget=None, **_kwargs):
+    """自动规划入口：查表 → 补缺宏 → 混合流水线，全解即停，全败取最优部分。
+
+    stage_cb（2026-10-10 新增）：分阶段流式回调。每当一个候选求解器产出可播的
+    动作段，调用 `stage_cb({'label','actions','reps','end','score','phi','solved'})`
+    —— GUI 据此**边算边播**每段动画、并按 `score`（并列取 `phi` 最小）维护历史
+    最优 checkpoint，取消时恢复到该态（多段播放设计哲学：不让人觉得卡死、进度
+    不反悔、打断停在聚拢度最高态）。不传则不流式（保持旧的非流式返回协议，供
+    HTTP/headless 等调用方无感使用）。
+    """
     t0 = time.time()
     m, n = game.m, game.n
     coords0 = frozenset(tuple(b.location) for b in game.blocks)
@@ -82,6 +102,21 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         try:
             progress_callback({'stage': stage, 'nodes': 0,
                                'path_preview': note})
+        except Exception:
+            pass
+
+    def emit_stage(label, actions4, reps, end_coords, score, solved):
+        """每段产出即上报（若无 stage_cb 或终态缺失则静默跳过）。"""
+        if stage_cb is None or end_coords is None:
+            return
+        try:
+            phi = _phi_of(end_coords, m, n)
+            stage_cb({'label': label,
+                      'actions': list(actions4),
+                      'reps': (list(reps) if reps
+                               else [None] * len(actions4)),
+                      'end': end_coords, 'score': score, 'phi': phi,
+                      'solved': bool(solved)})
         except Exception:
             pass
 
@@ -123,6 +158,9 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             tres = None
         if tres is not None and tres is not False:
             # (path, rep_cells)；空表/异常路径已在函数内处理
+            end, ok = _end_state(coords0, tres[0], tres[1], m, n, step)
+            if ok:
+                emit_stage('①查表', tres[0], tres[1], end, 1.0, True)
             return tres[0], tres[1]
         # None=无表 / False=状态不在表中 → 落到下一候选
 
@@ -143,19 +181,33 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         except Exception as e:
             gres = {'type': 'fill_fail', 'reason': '补缺宏异常: %s' % e}
         if isinstance(gres, tuple):
+            end, ok = _end_state(coords0, gres[0], gres[1], m, n, step)
+            if ok:
+                emit_stage('补缺宏', gres[0], gres[1], end, 1.0, True)
             return ('solved', gres[0], gres[1])
         if isinstance(gres, dict):
             if gres.get('type') == 'fill_stream':
                 # 未传 segment_cb 理论上不出现；兜底按成果处理
                 if gres.get('solved'):
+                    end, ok = _end_state(coords0, gres.get('actions', []),
+                                         gres.get('rep_cells', []), m, n, step)
+                    if ok:
+                        emit_stage('补缺宏', gres.get('actions', []),
+                                   gres.get('rep_cells', []), end, 1.0, True)
                     return ('solved', gres.get('actions', []),
                             gres.get('rep_cells', []))
                 keep_partial(gres.get('actions', []),
                              gres.get('rep_cells', []), '补缺宏')
+                if best is not None:
+                    emit_stage('补缺宏·部分', best['actions'], best['reps'],
+                               best['end'], best['score'], False)
                 return ('partial',)
             if gres.get('type') == 'fill_partial':
                 keep_partial(gres.get('actions', []),
                              gres.get('rep_cells', []), '补缺宏')
+                if best is not None:
+                    emit_stage('补缺宏·部分', best['actions'], best['reps'],
+                               best['end'], best['score'], False)
                 return ('partial',)
         return ('fail',)
 
@@ -188,13 +240,24 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         if not isinstance(hres, tuple):
             return ('fail',)
         if seed is coords0:
+            end, ok = _end_state(coords0, hres[0], hres[1], m, n, step)
+            if ok:
+                emit_stage('混合流水线', hres[0], hres[1], end, 1.0, True)
             return ('solved', hres[0], hres[1])
-        # 前缀（部分成果）+ 后缀（混合流水线）：整链重放验证后才采纳
+        # 前缀（部分成果，已在 run_gap 阶段作为「补缺宏·部分」流式播出）+ 后缀
+        # （混合流水线续算）：整链重放验证后才采纳
         acts = list(best['actions']) + list(hres[0])
         reps = list(best['reps']) + list(hres[1] or [])
         a5 = [tuple(a) + ((tuple(r),) if r else (None,))
               for a, r in zip(acts, reps)]
         if replay_and_verify(coords0, m, n, step, a5):
+            # 终态须用「前缀+后缀」整链从 coords0 重放得到（后缀单独从 coords0
+            # 重放无意义，会污染 checkpoint 坐标）；播放时 GUI 已先播前缀再播后缀，
+            # 落点恰为此整链终态。
+            end, ok = _end_state(coords0, acts, reps, m, n, step)
+            if ok:
+                # 只播后缀：前缀已由「补缺宏·部分」播出，避免重复
+                emit_stage('混合流水线·续算', hres[0], hres[1], end, 1.0, True)
             return ('solved', acts, reps)
         return ('fail',)
 

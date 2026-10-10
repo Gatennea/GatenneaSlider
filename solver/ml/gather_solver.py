@@ -285,8 +285,9 @@ def _is_same_op_reverse(a, c):
             and _DIR_INV.get(a[3]) == c[3])
 
 
-def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
-    """路径优化：去环 + 徘徊压缩。
+def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups,
+                   removed_groups=None):
+    """路径优化：去环 + 徘徊压缩 + 远程逆对抵消。
 
     去环：状态重复（canonical hash 相同）的段之间是废步，删除；
          最后一步无条件保留，保证终点状态不变。
@@ -294,7 +295,20 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
               = 来回徘徊（推出去又推回来），两步行等价于没走，删除。
               —— 形状用哈希比较（平移不变），符合「移动部分形状没变」的判据。
               同方向连续推两步形状也不变，但方向相同不是徘徊，不会被误删。
+    远程逆对抵消：上两步只抓「整盘状态重复」与「相邻往返」，抓不到
+              「隔步往返」（中间夹着碰不到这块的其他移动）与「级联往返」
+              （推出去若干步、倒序收回——每个中间状态都是新的）。
+              此步用每步的净变化集合精确判定封闭环：步 j 恰好反转步 i 的
+              净变化（R_j==A_i 且 A_j==R_i），且 i、j 之间没有任何一步的
+              净变化碰到 i 改动过的位置（R_i∪A_i），则删两步后中间各步
+              照样适用、效果相同，后续盘面逐步全等（位置级论证）。
+              ⚠️ 真实引擎重放时会按当前盘面重新推导滑片（连通片），状态在
+              其他位置不同可能让重推导出不同滑片——这一边角由调用方的
+              重放验证兜底（失败回退原路径），本函数不必也不做重放。
+              8×8 实测（experiments/optimize_cancel.py）：124 步安全删 18 步。
     返回优化后的 (actions, rep_cells, trace)。不做规则重放验证（调用方负责）。
+    removed_groups: 每步「净空出」坐标集（before−after），与 moved_groups
+              平行。None（旧调用方）= 跳过远程逆对抵消，保持旧行为。
     """
     if len(actions) < 2:
         return actions, rep_cells, trace
@@ -303,8 +317,11 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
     shapes = [_moved_shape_key(mg) for mg in moved_groups]
 
     # 1. 去环：只保留「首次出现」的状态，跳过回到旧状态的环
+    #    （所有平行列表——含 moved/removed_groups——必须同步过滤，
+    #    否则后面按索引取净集会错位）
     seen = {start_hash}
     new_a, new_r, new_t, new_s = [], [], [], []
+    new_mg, new_rg = [], []
     last = len(actions) - 1
     for i, (act, rep, tr, h) in enumerate(zip(actions, rep_cells, trace, hashes)):
         if h in seen and i < last:
@@ -314,12 +331,20 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
         new_r.append(rep)
         new_t.append(tr)
         new_s.append(shapes[i])
+        if removed_groups is not None:
+            new_mg.append(moved_groups[i])
+            new_rg.append(removed_groups[i])
     actions, rep_cells, trace, shapes = new_a, new_r, new_t, new_s
+    if removed_groups is not None:
+        moved_groups, removed_groups = new_mg, new_rg
 
-    # 2. 徘徊压缩：连续两步互逆 + 移动部分形状相同
+    # 2/3. 外层循环抓级联：远程抵消删掉一对后，原先被隔开的两步可能
+    # 变成相邻徘徊；相邻徘徊删掉后也可能露出新的远程逆对。
     changed = True
     while changed:
         changed = False
+
+        # 2. 徘徊压缩：连续两步互逆 + 移动部分形状相同
         i = 0
         while i < len(actions) - 1:
             if (_is_same_op_reverse(actions[i], actions[i + 1])
@@ -332,9 +357,48 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
                 del trace[i]
                 del shapes[i + 1]
                 del shapes[i]
+                if removed_groups is not None:
+                    del moved_groups[i + 1]
+                    del moved_groups[i]
+                    del removed_groups[i + 1]
+                    del removed_groups[i]
                 changed = True
             else:
                 i += 1
+
+        # 3. 远程逆对抵消：净集精确判定的封闭环（不限相邻、中间可隔
+        #    「碰不到被移动块」的其他步）
+        if removed_groups is not None and len(actions) >= 2:
+            add = [frozenset(g) for g in moved_groups]     # A：落点净集
+            rem = [frozenset(g) for g in removed_groups]   # R：空出净集
+            touch = [a | r for a, r in zip(add, rem)]      # 该步改动过的位置
+            n = len(actions)
+            i = 0
+            while i < n - 1:
+                di = touch[i]
+                cancel_j = -1
+                for j in range(i + 1, n):
+                    if rem[j] == add[i] and add[j] == rem[i]:
+                        # 第一个满足净集反转的 j：若中间有步碰 di，则更大
+                        # 的 j 也必被同一个 k 挡住（k∈(i,j)⊂(i,j')），放弃本 i
+                        if all(touch[k].isdisjoint(di)
+                               for k in range(i + 1, j)):
+                            cancel_j = j
+                        break
+                if cancel_j > 0:
+                    # ⚠️ add/rem/touch 与其余平行列表按索引对齐，必须同步删，
+                    # 否则继续扫描会用到已删步的陈旧净集（历史 bug：删对后
+                    # 未同步，后续配对错位 → 重放验证失败整条回退）。
+                    for lst in (actions, rep_cells, trace, shapes,
+                                moved_groups, removed_groups,
+                                add, rem, touch):
+                        del lst[cancel_j]
+                        del lst[i]
+                    changed = True
+                    n -= 2
+                    # 删后 i 位置已是新的一步，不 i+=1，重扫
+                else:
+                    i += 1
 
     return actions, rep_cells, trace
 
@@ -379,6 +443,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
     trace = []
     hashes = []        # 每步执行后的 canonical hash
     moved_groups = []  # 每步移动的方块组
+    removed_groups = []  # 每步净空出的坐标组（before−after，与 moved_groups 平行）
     visited = set()
     stuck = 0
 
@@ -434,6 +499,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
             trace.append(gather_metrics(after, m, n))
             hashes.append(canonicalize(after))
             moved_groups.append(_moved_group(before, after))
+            removed_groups.append(_moved_group(after, before))
             applied += 1
         return applied > 0
 
@@ -537,6 +603,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
                     trace.append(gather_metrics(after, m, n))
                     hashes.append(canonicalize(after))
                     moved_groups.append(_moved_group(before, after))
+                    removed_groups.append(_moved_group(after, before))
                     break
             else:
                 reason = 'no_candidates'
@@ -573,6 +640,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
                 trace.append(gather_metrics(after, m, n))
                 hashes.append(canonicalize(after))
                 moved_groups.append(_moved_group(before, after))
+                removed_groups.append(_moved_group(after, before))
                 continue
             reason = 'no_candidates'
             break
@@ -588,6 +656,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         trace.append(gather_metrics(after, m, n))
         hashes.append(canonicalize(after))
         moved_groups.append(_moved_group(before, after))
+        removed_groups.append(_moved_group(after, before))
 
     # 若未还原，回退到历史最优状态（丢弃无改进的尾步）
     if not game.is_solved():
@@ -597,6 +666,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         trace = trace[:best_idx]
         hashes = hashes[:best_idx]
         moved_groups = moved_groups[:best_idx]
+        removed_groups = removed_groups[:best_idx]
 
     # 路径优化：去环 + 徘徊压缩（重放验证，失败则保留原路径）
     # 注意：重放起点必须是真正的起点 g0（不是被 restore 后的 best_snap / 已还原态），
@@ -612,7 +682,8 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         snap_opt = g0
         final_coords = _game_coords(game)
         opt_a, opt_r, opt_t = _optimize_path(
-            start_hash, actions, rep_cells, trace, hashes, moved_groups)
+            start_hash, actions, rep_cells, trace, hashes, moved_groups,
+            removed_groups)
         if _verify_replay(snap_opt, step, opt_a, final_coords):
             opt_removed = len(actions) - len(opt_a)
             actions, rep_cells, trace = opt_a, opt_r, opt_t

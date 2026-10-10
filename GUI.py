@@ -403,6 +403,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._stream_queue = None          # 流式求解段队列（fill/gap 宏边算边播）
         self._stream_active = False        # 流式后台是否仍在计算
         self._stream_played = 0            # 流式已实时播放的步数
+        # 自动规划·流式（2026-10-10 多段播放改造）：参照梯度流水线，hybrid 边算边播
+        self._auto_stage_queue = None      # hybrid 分段队列（gen, stage_dict）
+        self._auto_stage_gen = 0           # 失效旧段用
+        self._auto_stage_active = False    # 后台是否仍在计算
+        self._auto_streamed = False        # 本次是否为 hybrid 流式求解
+        self._auto_best = None             # 历史最优 checkpoint {'score','phi','snap'}
         self.solver_algorithm = 'ida_star' # 求解算法选择: 'ida_star', 'fast', 'greedy'
 
         # 聚拢求解器参数（GUI 设置对话框可调，保存到 config.json）
@@ -2852,6 +2858,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self._gradient_gen += 1
                 self.macro_notify_msg = "梯度聚拢已停止"
                 self.macro_notify_timer = 90
+            elif getattr(self, '_auto_streamed', False):
+                # 自动规划·流式：停后台段 + 恢复到历史最优态
+                self._stop_auto_streamed(notify="自动规划已停止")
             return
 
         # 梯度播放中：再次点击 = 停止（终止后续阶段与后台计算）
@@ -2867,6 +2876,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 }
                 self.macro_notify_msg = "梯度聚拢已停止"
                 self.macro_notify_timer = 90
+            elif getattr(self, '_auto_streamed', False):
+                # 自动规划·流式播放中：停后台段 + 恢复到历史最优态
+                self._stop_auto_streamed(
+                    notify="自动规划已停止（恢复到聚拢度最高态）")
             return
 
         self._auto_solve_result = None
@@ -2892,6 +2905,34 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._drain_gradient_queue()
             threading.Thread(target=self._gradient_worker,
                              args=(gen, game_snapshot, base_params, 4),
+                             daemon=True).start()
+            return
+
+        # 自动规划（混合求解）：启动后台流式求解——各候选求解器算完一段即上报，
+        # 主线程立即播放该段动画（同梯度流水线「边算边播」），并按历史最优
+        # checkpoint 维护；取消时恢复到聚拢度最高态（多段播放设计哲学）。
+        if algorithm == 'hybrid':
+            import queue as _q
+            from solver.state import snapshot
+            from solver.ml.gather_solver import gather_metrics
+            from solver.auto_solver import _phi_of
+            coords0 = frozenset(tuple(b.location) for b in self.game.blocks)
+            sc0 = gather_metrics(coords0, self.game.m, self.game.n)['score']
+            phi0 = _phi_of(coords0, self.game.m, self.game.n)
+            self._auto_stage_queue = _q.Queue()
+            self._auto_stage_gen += 1
+            gen = self._auto_stage_gen
+            self._auto_stage_active = True
+            self._auto_streamed = True
+            self._auto_best = {'score': sc0, 'phi': phi0,
+                               'snap': snapshot(self.game)}
+            self._auto_solve_running = True
+            self._auto_solve_cancel = False
+            self._auto_solve_start_time = time.time()
+            self._auto_solve_progress = None
+            self._api_solve_latch = None
+            threading.Thread(target=self._auto_stage_worker,
+                             args=(gen, game_snapshot, self.current_step),
                              daemon=True).start()
             return
 
@@ -3224,6 +3265,151 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 120
         if kicked and self.macro_executing and not self.animating:
             self._execute_next_macro_step()
+
+    # ---- 自动规划·流式（2026-10-10 多段播放改造）----
+    def _auto_stage_worker(self, gen, snap, step):
+        """后台线程：跑 auto_solve 并逐段上报；结束放哨兵 (gen, None)。"""
+        try:
+            from solver.auto_solver import auto_solve
+
+            def cancel_check():
+                return self._auto_solve_cancel or gen != self._auto_stage_gen
+
+            def progress_callback(info):
+                self._auto_solve_progress = info
+
+            auto_solve(snap, step=step, cancel_check=cancel_check,
+                       progress_callback=progress_callback,
+                       stage_cb=lambda s: self._auto_stage_queue.put((gen, s)))
+        except Exception as e:
+            print(f"[自动规划·流式] 出错: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._auto_stage_queue.put((gen, None))  # 结束哨兵
+            self._auto_stage_active = False
+            self._auto_solve_running = False
+
+    def _pump_auto_stages(self):
+        """把后台算好的段接进宏播放管道（边算边播），并维护历史最优 checkpoint。"""
+        q = getattr(self, '_auto_stage_queue', None)
+        if q is None:
+            return
+        gen = self._auto_stage_gen
+        # 仅在空闲（无动画、无宏播放）时推进 / 收尾，避免打断正在播的段
+        if self.macro_executing or self.animating:
+            return
+        active = getattr(self, '_auto_stage_active', False)
+        if not active and q.empty():
+            self._finalize_auto_streamed()
+            return
+        try:
+            item_gen, item = q.get_nowait()
+        except Exception:
+            if not active:
+                self._finalize_auto_streamed()
+            return
+        if item_gen != gen:
+            return  # 过期段（取消/重开）：丢弃
+        if item is None:
+            self._finalize_auto_streamed()
+            return
+        self._play_auto_stage(item)
+
+    def _play_auto_stage(self, item):
+        """播放一段动作并刷新历史最优 checkpoint（聚拢度最高、并列 Φ 最小）。"""
+        label = item['label']
+        actions = item['actions']
+        reps = item.get('reps') or []
+        end = item['end']
+        score = item['score']
+        phi = item.get('phi', 0.0)
+        ops = []
+        for i, a in enumerate(actions):
+            op = {'gap_type': a[0], 'gap_line': a[1], 'side': a[2],
+                  'direction': a[3], 'step': self.current_step}
+            if i < len(reps) and reps[i]:
+                op['rep_cell'] = reps[i]
+            ops.append(op)
+        # 无论是否有动作都刷新 checkpoint（空段仅记录终态）
+        self._update_auto_best(end, score, phi)
+        if not ops:
+            return
+        if self.macro_executing:
+            self.macro_exec_ops.extend(ops)
+        else:
+            self.macro_executing = True
+            self.macro_exec_name = '自动规划·' + label
+            self.macro_exec_ops = ops
+            self.macro_exec_index = 0
+            self.macro_exec_factor = 1
+            self._execute_next_macro_step()
+        self.macro_notify_msg = ('[自动规划] %s（+%d 步，聚拢度 %.3f）'
+                                 % (label, len(ops), score))
+        self.macro_notify_timer = 120
+
+    def _update_auto_best(self, end, score, phi):
+        """历史最优：聚拢度 score 最高；完全并列（1e-9 内）取 Φ 最小。"""
+        best = self._auto_best
+        if best is None or score > best['score'] + 1e-9 or (
+                abs(score - best['score']) <= 1e-9 and phi < best['phi'] - 1e-9):
+            self._auto_best = {
+                'score': score, 'phi': phi,
+                'snap': {'m': self.game.m, 'n': self.game.n,
+                         'blocks': [tuple(c) for c in end]},
+            }
+
+    def _restore_auto_best(self):
+        """把棋盘恢复到历史最优 checkpoint（设计哲学：打断停在聚拢度最高态）。"""
+        if not self._auto_best or not self._auto_best.get('snap'):
+            return
+        from solver.state import restore
+        restore(self.game, self._auto_best['snap'])
+
+    def _stop_auto_streamed(self, notify=None):
+        """停止 hybrid 流式求解：失效后台段、停动画（若在播）、恢复到最优态。"""
+        self._auto_stage_gen += 1          # 使已在队列的段失效
+        self._auto_stage_active = False
+        self._auto_solve_cancel = True
+        if self.macro_executing or self.animating:
+            self.macro_executing = False
+            self.animating = False
+            self.macro_exec_ops = []
+            self.macro_exec_index = 0
+            self.anim_blocks = []
+        self._restore_auto_best()
+        self._auto_streamed = False
+        self._auto_solve_running = False
+        self._auto_stage_queue = None
+        if notify:
+            self.macro_notify_msg = notify
+            self.macro_notify_timer = 180
+
+    def _finalize_auto_streamed(self):
+        """流式收尾：播放完成 / 求解结束，锁存结果并清空状态。"""
+        total = self.macro_exec_index
+        self.macro_executing = False
+        self.macro_exec_ops = []
+        self.macro_exec_index = 0
+        self._auto_streamed = False
+        self._auto_solve_running = False
+        self._auto_stage_queue = None
+        elapsed = (int((time.time() - self._auto_solve_start_time) * 1000)
+                   if getattr(self, '_auto_solve_start_time', 0) else None)
+        best = self._auto_best
+        solved = bool(best and abs(best['score'] - 1.0) < 1e-6)
+        self._api_solve_latch = {
+            'ok': solved, 'steps': total,
+            'reason': 'solved' if solved else 'partial_best',
+            'elapsed_ms': elapsed,
+        }
+        if solved:
+            self.macro_notify_msg = '[自动规划] 已复原：%d 步' % total
+        else:
+            self.macro_notify_msg = ('[自动规划] 完成 %d 步，停在聚拢度最高态 %.3f'
+                                     % (total, best['score'] if best else 0))
+        self.macro_notify_timer = 200
+        self.center_map()
 
     def _check_auto_solve_result(self):
         """检查后台求解结果，如有结果则启动宏执行"""
@@ -3583,6 +3769,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 流式求解：把后台算好的段接进宏播放管道（边算边播）
                 self._pump_stream_segments()
+                # 自动规划·流式：hybrid 边算边播 + 历史最优 checkpoint
+                self._pump_auto_stages()
 
                 # 计时器：刷新实时用时 + 检测复原
                 if self.timer_state == 'running':
