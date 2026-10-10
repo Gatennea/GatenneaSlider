@@ -345,7 +345,8 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
 def gather_solve(game, step: int, max_steps=500, patience=150,
                  max_wait_time=20, target_gather_score=1.0, aggressiveness=0.2,
                  cancel_check=None, progress_callback=None,
-                 target_corner=None, phi_prescreen_k=8):
+                 target_corner=None, phi_prescreen_k=8, optimize_path=True,
+                 stochastic=False, seed=None, max_kicks=3, kick_moves=3):
     """贪心聚拢：每步选聚拢度（重叠率）最高的动作，连续 patience 步无改进则停机。
 
     参数（传 None 表示「不设限」）：
@@ -359,6 +360,16 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         phi_prescreen_k   : 阶段2——先用剖面缺陷 Φ（便宜 ~20x）对全部候选排序，
                             只对该候选数以内的 top-k 计算聚拢度 σ 终裁；0/None = 关闭（旧行为，
                             对所有候选算 σ）。k 取较小值即可砍掉绝大部分 σ 计算。
+        optimize_path     : 阶段3后续——路径优化（去环 + 徘徊压缩）开关。
+                            True = 末尾用重放验证安全地缩短解法/残局路径；
+                            False = 关闭（保留原始路径，用于 A/B 基准对比）。
+        stochastic        : 随机探索开关。False（默认）= 完全确定性（同盘同结果，便于回归）；
+                            True = ② 在 aggressiveness band 内 ε-greedy 随机挑步 + ③ 卡住时随机
+                            踢一脚（iterated local search）跳出局部最优。
+        seed              : 随机种子（仅 stochastic=True 时生效）。None = 随机生成并记录进返回
+                            字典的 'seed' 字段，便于复现某次随机轨迹。
+        max_kicks         : ③ 最多允许踢几脚（防无限扰动）。
+        kick_moves        : ③ 每脚随机扰动几步。
     """
     m, n = game.m, game.n
     total = m * n
@@ -385,9 +396,46 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
     start_metrics = gather_metrics(_game_coords(game), m, n)
     best_score = 0.0
     best_metrics = start_metrics
+    g0 = snapshot(game)            # 真正的起点快照（路径优化的重放起点，不可被 best_snap 覆盖）
     best_snap = snapshot(game)
     best_idx = 0
     no_improve = 0
+
+    # 随机性（stochastic 探索）
+    #   False（默认）→ 完全确定性，同盘同结果，便于回归。
+    #   True         → ② band 内 ε-greedy 随机挑 + ③ 卡住随机踢；seed 用于可复现。
+    if stochastic:
+        if seed is None:
+            seed = random.randrange(1 << 31)
+        rng = random.Random(seed)
+    else:
+        rng = None
+    rchoice = rng.choice if rng is not None else random.choice
+    kick_count = 0
+
+    def _do_kick(k):
+        """随机扰动当前局面 k 步（iterated local search 的「踢」），更新 bookkeeping。"""
+        applied = 0
+        for _ in range(k):
+            cands = enumerate_valid_actions(game, step)
+            if not cands:
+                break
+            a = rchoice(cands)
+            snap_k = snapshot(game)
+            before = _game_coords(game)
+            if not apply_action(game, a, step):
+                break
+            after = _game_coords(game)
+            if len(after) != total:
+                restore(game, snap_k)
+                break
+            actions.append(a)
+            rep_cells.append(_find_rep_cell(game, a))
+            trace.append(gather_metrics(after, m, n))
+            hashes.append(canonicalize(after))
+            moved_groups.append(_moved_group(before, after))
+            applied += 1
+        return applied > 0
 
     reason = 'max_steps'  # 默认：步数上限耗尽（或 None 时仅剩其他停机条件）
     step_iter = range(max_steps) if max_steps is not None else iter(int, 1)
@@ -428,8 +476,12 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
                 'fill_rate': cur['fill_rate'],
             })
 
-        # 停机：连续 patience 步没有改进历史最优
+        # 停机 / 随机踢：连续 patience 步没有改进历史最优
         if patience is not None and no_improve >= patience:
+            if stochastic and kick_count < max_kicks and _do_kick(kick_moves):
+                kick_count += 1
+                no_improve = 0
+                continue
             reason = 'no_improve'
             break
 
@@ -476,7 +528,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         if not scored:
             # 无候选：随机扰动
             for _ in range(3):
-                act = random.choice(candidates)
+                act = rchoice(candidates)
                 before = _game_coords(game)
                 if apply_action(game, act, step):
                     actions.append(act)
@@ -499,14 +551,19 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         else:
             pool = scored
 
-        # 优先未访问，再聚拢度最高，再 mod 分高，再边界盒面积最小
-        pool.sort(key=lambda x: (x[3] in visited, -x[0], -x[4], x[1]))
-        _, _, best_action, _, _ = pool[0]
+        # 选步：默认确定性（排序取最优）；stochastic 时在 band 内 ε-greedy 随机挑（②）
+        if stochastic and rng is not None and len(pool) > 1:
+            unvisited = [s for s in pool if s[3] not in visited]
+            choose_from = unvisited if unvisited else pool
+            _, _, best_action, _, _ = rchoice(choose_from)
+        else:
+            pool.sort(key=lambda x: (x[3] in visited, -x[0], -x[4], x[1]))
+            _, _, best_action, _, _ = pool[0]
 
         restore(game, snap)
         rep = _find_rep_cell(game, best_action)
         if rep is None:
-            act = random.choice(candidates)
+            act = rchoice(candidates)
             before = _game_coords(game)
             if apply_action(game, act, step):
                 rep = _find_rep_cell(game, act) or (0, 0)
@@ -542,13 +599,28 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         moved_groups = moved_groups[:best_idx]
 
     # 路径优化：去环 + 徘徊压缩（重放验证，失败则保留原路径）
-    if not game.is_solved() and len(actions) >= 2:
-        snap_opt = snapshot(game)
+    # 注意：重放起点必须是真正的起点 g0（不是被 restore 后的 best_snap / 已还原态），
+    # 否则 _verify_replay 起点对不上永远返回 False —— 优化等于没接上（历史 bug）。
+    # 闸门只卡 len(actions)>=2：已还原的解法同样要清废步，不单独排除。
+    opt_removed = 0
+    if optimize_path and len(actions) >= 2:
+        # final_snap = 真正的终态快照：已还原态（此时 game 即还原态）或
+        # 已被上方 `restore(game, best_snap)` 回退到历史最优的未还原态。
+        # 必须以此为准 —— 不能 restore 到 best_snap（已还原分支里 best_snap
+        # 不是终态），否则会把还原局面错误回退成求解前状态。
+        final_snap = snapshot(game)
+        snap_opt = g0
         final_coords = _game_coords(game)
         opt_a, opt_r, opt_t = _optimize_path(
             start_hash, actions, rep_cells, trace, hashes, moved_groups)
         if _verify_replay(snap_opt, step, opt_a, final_coords):
+            opt_removed = len(actions) - len(opt_a)
             actions, rep_cells, trace = opt_a, opt_r, opt_t
+        # _verify_replay 会对真实 game 重放，失败时 game 停在中间态（污染）；
+        # 无论验证成功/失败，都必须把 game 归位到正确终态，否则下面
+        # end_metrics / game.is_solved() 读到被污染的棋盘（历史 bug：on 臂
+        # 的 solved 判定因污染而与 off 臂不一致）。
+        restore(game, final_snap)
 
     end_metrics = gather_metrics(_game_coords(game), m, n)
     if game.is_solved():
@@ -565,6 +637,10 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         'end': end_metrics,
         'best': best_metrics,
         'trace': trace,
+        'opt_removed': opt_removed,   # 路径优化（去环+徘徊压缩）删掉的废步数
+        'stochastic': stochastic,     # 是否启用随机探索
+        'seed': seed,                 # 实际使用的随机种子（stochastic=True 时；None=确定性）
+        'kicks': kick_count,          # ③ 实际踢了几脚
     }
 
 
@@ -755,11 +831,13 @@ def main():
             ok = _verify_replay(g0, step, r['actions'], expect)
         else:
             ok = True
-        total_opt += len(r['trace']) - len(r['actions'])
+        total_opt += r['opt_removed']
+        seed_tag = f"seed={r['seed']}" if r['stochastic'] else "det"
         print(f"  测试{t+1:2d}: {len(r['actions']):3d}步 {el:.1f}s  "
               f"聚拢度 {s['score']:.3f}→{e['score']:.3f}  "
               f"边界盒 {s['bbox'][0]}x{s['bbox'][1]}→{e['bbox'][0]}x{e['bbox'][1]}  "
-              f"{mark}  优化删除{max(0, len(r['trace'])-len(r['actions']))}步 重放验证{'OK' if ok else 'FAIL'}")
+              f"{mark}  优化删除{r['opt_removed']}步 重放验证{'OK' if ok else 'FAIL'}  "
+              f"[{seed_tag} 踢{r['kicks']}脚]")
 
     print(f"\n复原率: {solved_cnt}/{total_tests}（聚拢本身不保证还原）")
 
