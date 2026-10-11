@@ -252,6 +252,9 @@ class EventsMixin:
                             self.macro_notify_timer = 90
                         elif self._is_action_triggered(event, 'metrics_panel'):
                             self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                            # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
+                            # 记号本身仍可在右下角或设置里单独开关。
+                            self.board_marks_enabled = self.show_metrics_panel
                             status = '开' if self.show_metrics_panel else '关'
                             self.macro_notify_msg = f"调试面板：{status}"
                             self.macro_notify_timer = 90
@@ -868,7 +871,9 @@ class EventsMixin:
                             self.drag_start = (x, y)
                             self.drag_offset = (self.camera_x, self.camera_y)
                             self._pending_hole_pick = None
-                            if getattr(self, 'show_metrics_panel', False):
+                            # 记号画出来了就该能点选（面板与记号是两个开关）
+                            if (getattr(self, 'show_metrics_panel', False)
+                                    or getattr(self, 'board_marks_enabled', False)):
                                 try:
                                     self._pending_hole_pick = \
                                         self.get_hole_at_pos(x, y)
@@ -1026,6 +1031,9 @@ class EventsMixin:
                     
                     elif self._is_action_triggered(event, 'metrics_panel'):
                         self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                        # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
+                        # 记号本身仍可在右下角或设置里单独开关。
+                        self.board_marks_enabled = self.show_metrics_panel
                         status = '开' if self.show_metrics_panel else '关'
                         self.macro_notify_msg = f"调试面板：{status}"
                         self.macro_notify_timer = 90

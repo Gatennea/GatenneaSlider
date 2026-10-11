@@ -251,12 +251,14 @@ class RendererMixin:
         # **必须在这里调**——方形的同名调用在 draw_board 末尾，三角走的是
         # draw_triangle_board，不调就永远画不出来（2026-10-03 修：面板数字
         # 正常显示但棋盘上没有任何标记，就是漏了这一处）。
-        if getattr(self, 'show_metrics_panel', False):
-            # region 是面板数字与棋盘记号的共同基准：面板开着就得先算出来，
-            # 否则关掉记号后面板会一直读上一次的陈旧值。
+        # 记号与调试面板本体是两个独立开关：记号属于视觉强化，面板属于数据
+        # 读数，可以只开记号不看面板，也可以只开面板不画记号。
+        # 任一开着都要先算 region（两者共用同一基准），记号只在记号开关开时画。
+        _panel_on = getattr(self, 'show_metrics_panel', False)
+        _marks_on = getattr(self, 'board_marks_enabled', False)
+        if _panel_on or _marks_on:
             self._compute_target_region()
-            # 棋盘记号归「视觉强化」开关管，可以只关记号、留着面板看数字。
-            if getattr(self, 'board_marks_enabled', True):
+            if _marks_on:
                 self._draw_target_window()
                 self._draw_debug_holes()
 
@@ -395,12 +397,14 @@ class RendererMixin:
         # 什么都不画」。截图脚本 `test/_shot_mi_panel.py` 靠这一帧抓出来
         # （自动化测试抓不到：那一版直接调 `_draw_mi_target_frame()`，
         # 绕过了这条调用路径 → 像素有变化，但整段从没被执行）。
-        if getattr(self, 'show_metrics_panel', False):
-            # region 是面板数字与棋盘记号的共同基准：面板开着就得先算出来，
-            # 否则关掉记号后面板会一直读上一次的陈旧值。
+        # 记号与调试面板本体是两个独立开关：记号属于视觉强化，面板属于数据
+        # 读数，可以只开记号不看面板，也可以只开面板不画记号。
+        # 任一开着都要先算 region（两者共用同一基准），记号只在记号开关开时画。
+        _panel_on = getattr(self, 'show_metrics_panel', False)
+        _marks_on = getattr(self, 'board_marks_enabled', False)
+        if _panel_on or _marks_on:
             self._compute_target_region()
-            # 棋盘记号归「视觉强化」开关管，可以只关记号、留着面板看数字。
-            if getattr(self, 'board_marks_enabled', True):
+            if _marks_on:
                 self._draw_target_window()
                 self._draw_debug_holes()
 
@@ -637,12 +641,14 @@ class RendererMixin:
 
         # 调试面板打开时：先画目标窗口框（并把同一 region 存到 self），
         # 再以该 region 为基准画洞/缺口/凸起标记，两者严格一致。
-        if getattr(self, 'show_metrics_panel', False):
-            # region 是面板数字与棋盘记号的共同基准：面板开着就得先算出来，
-            # 否则关掉记号后面板会一直读上一次的陈旧值。
+        # 记号与调试面板本体是两个独立开关：记号属于视觉强化，面板属于数据
+        # 读数，可以只开记号不看面板，也可以只开面板不画记号。
+        # 任一开着都要先算 region（两者共用同一基准），记号只在记号开关开时画。
+        _panel_on = getattr(self, 'show_metrics_panel', False)
+        _marks_on = getattr(self, 'board_marks_enabled', False)
+        if _panel_on or _marks_on:
             self._compute_target_region()
-            # 棋盘记号归「视觉强化」开关管，可以只关记号、留着面板看数字。
-            if getattr(self, 'board_marks_enabled', True):
+            if _marks_on:
                 self._draw_target_window()
                 self._draw_debug_holes()
 
@@ -2058,8 +2064,8 @@ class RendererMixin:
         # 它们是视觉强化而非调试数据，故与面板本体拆成两个开关：可以只关
         # 画面上的记号、留着面板看数字，也可以整块面板一起关掉。
         self._settings_marks_toggle_rect, ny = self._draw_switch_row(
-            x, ny, "棋盘标记：", getattr(self, 'board_marks_enabled', True),
-            "调试面板画在棋盘上的记号（F2 亦可开关）；嫌晃眼可只关记号")
+            x, ny, "棋盘标记：", getattr(self, 'board_marks_enabled', False),
+            "棋盘上的目标框 / 洞位记号，可脱离调试面板单独开（F2 亦可开关）")
 
         # 调试面板本体：让 F2 的功能也有纯鼠标入口（面板自身的关闭按钮
         # 只能关、不能开）

@@ -445,7 +445,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 棋盘标记：调试面板画在棋盘上的那些记号（目标框、洞位等）。
         # 它们是「视觉强化」而非调试数据，所以要能脱离调试面板本体单独关
         # ——只关记号、留着面板看数字，或反过来。两者是独立的两个开关。
-        self.board_marks_enabled = True
+        # 默认关闭：与解耦前「面板默认关 → 棋盘上没有记号」的观感保持一致，
+        # 免得一进游戏就满屏记号。F2 会连带把它打开（见 events 的 F2 分支）。
+        self.board_marks_enabled = False
         # 箭头按键：选中缝隙后在切片两端画出的可点方向箭头。
         # 原本只跟着界面模式（enhanced）走、没有自己的开关，这里解耦出来，
         # 作为宣传中的五种操作方式之一独立可控。
