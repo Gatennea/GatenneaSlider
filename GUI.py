@@ -2972,6 +2972,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     self._stream_queue = _q.Queue()
                     self._stream_active = True
                     self._stream_played = 0
+                    # ⚠️ 必须置位：停止求解按钮按 `_auto_streamed` 分流，之前只有
+                    # hybrid 置它，导致填洞/补缺宏流式播放中点「停止求解」毫无反应。
+                    self._auto_streamed = True
 
                     def segment_cb(label, acts5):
                         seg_q = self._stream_queue
@@ -3219,7 +3222,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if seg_q is None:
             return
         active = getattr(self, '_stream_active', False)
-        if not active and seg_q.empty():
+        # 兜底：正常收尾靠线程 finally 把 _stream_active 置 False；只要这一步
+        # 因异常/时序没生效，收尾就被永久跳过 → macro_executing 一直 True
+        # （蓝色「执行宏」提示不消失，并锁住相机与停止按钮）。_auto_solve_done
+        # 是线程结束的**独立证据**，与 active 取「或」，避免单点依赖。
+        done = getattr(self, '_auto_solve_done', False)
+        if (not active or done) and seg_q.empty():
             # 后台结束且无残留段：若处于流式等待态则收尾
             if self.macro_executing and not self.animating \
                     and self.macro_exec_index >= len(self.macro_exec_ops):
@@ -3227,6 +3235,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.macro_executing = False
                 self.macro_exec_ops = []
                 self.macro_exec_index = 0
+                # 与启动时置位配对：填洞/补缺宏也用了 _auto_streamed，收尾要清掉，
+                # 否则残留会让「停止求解」分流到已结束的流式态。
+                self._auto_streamed = False
                 self.macro_notify_msg = ('[%s] 流水播放完成：%d 步'
                                          % (self.macro_exec_name, total))
                 # 带序号模式：求解器只复原形状，数字乱序是预期行为，提醒玩家自行调整
@@ -3367,17 +3378,33 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         restore(self.game, self._auto_best['snap'])
 
     def _stop_auto_streamed(self, notify=None):
-        """停止 hybrid 流式求解：失效后台段、停动画（若在播）、恢复到最优态。"""
+        """停止流式求解：失效后台段、停动画（若在播）、恢复到最优态。
+
+        hybrid 与填洞/补缺宏共用本函数，但两者用**不同的队列**，必须都清：
+          · hybrid：_auto_stage_queue / _auto_stage_active
+          · 填洞/补缺宏：_stream_queue / _stream_active
+        旧版只清了 hybrid 那一套，填洞/补缺宏播放中点「停止求解」因此毫无
+        反应（段照旧播、macro_executing 一直 True、相机也拖不动）。
+        """
         self._auto_stage_gen += 1          # 使已在队列的段失效
         self._auto_stage_active = False
         self._auto_solve_cancel = True
+        # 填洞/补缺宏：丢弃未播的残留段（设为 None 后 pump 直接 return）
+        self._stream_queue = None
+        self._stream_active = False
         if self.macro_executing or self.animating:
             self.macro_executing = False
             self.animating = False
             self.macro_exec_ops = []
             self.macro_exec_index = 0
             self.anim_blocks = []
-        self._restore_auto_best()
+        # ⚠️「历史最优 checkpoint」是 **hybrid 独有**的语义：只有 hybrid 会维护
+        # _auto_best。填洞/补缺宏不维护它，若这里无条件恢复，就会把棋盘改写成
+        # **上一次 hybrid 残留的旧 checkpoint**（_finalize_auto_streamed 并不清
+        # 除它），表现为「点了停止，棋盘莫名其妙回到某个旧局面」。
+        if getattr(self, 'solver_algorithm', None) == 'hybrid':
+            self._restore_auto_best()
+        self._auto_best = None
         self._auto_streamed = False
         self._auto_solve_running = False
         self._auto_stage_queue = None
@@ -3409,6 +3436,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_msg = ('[自动规划] 完成 %d 步，停在聚拢度最高态 %.3f'
                                      % (total, best['score'] if best else 0))
         self.macro_notify_timer = 200
+        # 清掉历史最优：不清的话它会残留到下一次求解，被停止逻辑误恢复
+        self._auto_best = None
         self.center_map()
 
     def _check_auto_solve_result(self):
@@ -3778,7 +3807,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self._timer_check_solved()
 
                 # 求解中显示计时和进度（宏动画播放阶段保留逐步行进提示）
-                if self._auto_solve_running and not self.macro_executing:
+                # ⚠️ 旧条件带 `and not self.macro_executing`：流式（填洞/补缺宏）
+                # 一开始播放首段就把 macro_executing 置 True，于是「后台还在算、
+                # 新段还没到」这段窗口里计时/进度**不再被刷新**，通知 3 秒后淡出
+                # ——表现为「右下角没了、以为卡死，其实在算」。后台没结束就该一直
+                # 显示用时，故去掉该条件。
+                if self._auto_solve_running:
                     elapsed = time.time() - self._auto_solve_start_time
                     progress = self._auto_solve_progress
                     if progress:
@@ -3804,7 +3838,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                             bound = progress.get('bound', 0)
                             nodes = progress.get('nodes', 0)
                             path_preview = progress.get('path_preview', '')
-                            self.macro_notify_msg = f"[{stage}] 深度{bound} 节点{nodes} {path_preview} | {elapsed:.1f}s"
+                            # 「深度/节点」是 IDA*/BFS 一类搜索的标记：只有真在搜索
+                            # （bound/nodes 非 0）才有意义。不加判断会把「深度0
+                            # 节点0」这种空壳字样写进通知里。
+                            if nodes or bound:
+                                detail = f"深度{bound} 节点{nodes} {path_preview}"
+                            else:
+                                detail = path_preview
+                            head = f"[{stage}] " if stage else ''
+                            self.macro_notify_msg = (
+                                f"{head}{detail} | {elapsed:.1f}s")
                     else:
                         self.macro_notify_msg = f"求解中... {elapsed:.1f}s"
                     self.macro_notify_timer = 180

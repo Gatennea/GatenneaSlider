@@ -3194,7 +3194,12 @@ class EventsMixin:
 
             if self.macro_exec_index >= len(self.macro_exec_ops):
                 # 流式求解：后台可能还有未播段，暂缓收尾（pump 续段/收尾）
-                if getattr(self, '_stream_active', False) or (
+                # 兜底：_stream_active 若因异常/时序没被线程 finally 清掉，这里
+                # 会无限期暂缓 → macro_executing 永不复位。线程结束标志
+                # _auto_solve_done 为 True 时不再暂缓，直接走收尾。
+                _still_working = (getattr(self, '_stream_active', False)
+                                  and not getattr(self, '_auto_solve_done', False))
+                if _still_working or (
                         getattr(self, '_stream_queue', None) is not None
                         and not self._stream_queue.empty()):
                     return
