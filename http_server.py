@@ -22,6 +22,8 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
     # settings 白名单（须与 gui/events.py EventsMixin._SETTINGS_* 保持一致）
     _SETTINGS_BOOL_KEYS = (
         'coloring_enabled', 'chain_hint_enabled', 'show_metrics_panel',
+        'board_marks_enabled', 'arrows_enabled',
+        'show_virtual_keyboard', 'show_records_panel',
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',

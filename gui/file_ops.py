@@ -171,6 +171,8 @@ class FileOpsMixin:
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
+            'board_marks_enabled': getattr(self, 'board_marks_enabled', True),
+            'arrows_enabled': getattr(self, 'arrows_enabled', True),
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'op_log_enabled': getattr(self, 'op_log_enabled', False),
@@ -277,6 +279,11 @@ class FileOpsMixin:
             f"打乱 {self._format_menu_shortcut('shuffle')}",
             f"重置 {self._format_menu_shortcut('reset')}",
             '---',
+            # 单段求解：原先只有 Ctrl+G 能触发，这里补上菜单入口
+            # （控制设计原则：只用鼠标也要能完成一切游戏内操作）
+            f"单段求解 {self._format_menu_shortcut('solve_segment')}",
+            # 自动求解必须留在最后一项：主循环按 edit_menu_items[-1]
+            # 把它改成「停止求解」
             f"自动求解 {self._format_menu_shortcut('auto_solve')}",
         ]
 
@@ -405,6 +412,12 @@ class FileOpsMixin:
                     # 悬停连锁提示开关
                     if 'chain_hint_enabled' in config:
                         self.chain_hint_enabled = bool(config['chain_hint_enabled'])
+                    # 棋盘标记开关（视觉强化，独立于调试面板本体；缺省开）
+                    if 'board_marks_enabled' in config:
+                        self.board_marks_enabled = bool(config['board_marks_enabled'])
+                    # 箭头按键开关（缺省开）
+                    if 'arrows_enabled' in config:
+                        self.arrows_enabled = bool(config['arrows_enabled'])
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])

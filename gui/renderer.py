@@ -252,8 +252,13 @@ class RendererMixin:
         # draw_triangle_board，不调就永远画不出来（2026-10-03 修：面板数字
         # 正常显示但棋盘上没有任何标记，就是漏了这一处）。
         if getattr(self, 'show_metrics_panel', False):
-            self._draw_target_window()
-            self._draw_debug_holes()
+            # region 是面板数字与棋盘记号的共同基准：面板开着就得先算出来，
+            # 否则关掉记号后面板会一直读上一次的陈旧值。
+            self._compute_target_region()
+            # 棋盘记号归「视觉强化」开关管，可以只关记号、留着面板看数字。
+            if getattr(self, 'board_marks_enabled', True):
+                self._draw_target_window()
+                self._draw_debug_holes()
 
         # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
         self._draw_gap_direction_annotation()
@@ -391,8 +396,13 @@ class RendererMixin:
         # （自动化测试抓不到：那一版直接调 `_draw_mi_target_frame()`，
         # 绕过了这条调用路径 → 像素有变化，但整段从没被执行）。
         if getattr(self, 'show_metrics_panel', False):
-            self._draw_target_window()
-            self._draw_debug_holes()
+            # region 是面板数字与棋盘记号的共同基准：面板开着就得先算出来，
+            # 否则关掉记号后面板会一直读上一次的陈旧值。
+            self._compute_target_region()
+            # 棋盘记号归「视觉强化」开关管，可以只关记号、留着面板看数字。
+            if getattr(self, 'board_marks_enabled', True):
+                self._draw_target_window()
+                self._draw_debug_holes()
 
         # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
         self._draw_gap_direction_annotation()
@@ -628,8 +638,13 @@ class RendererMixin:
         # 调试面板打开时：先画目标窗口框（并把同一 region 存到 self），
         # 再以该 region 为基准画洞/缺口/凸起标记，两者严格一致。
         if getattr(self, 'show_metrics_panel', False):
-            self._draw_target_window()
-            self._draw_debug_holes()
+            # region 是面板数字与棋盘记号的共同基准：面板开着就得先算出来，
+            # 否则关掉记号后面板会一直读上一次的陈旧值。
+            self._compute_target_region()
+            # 棋盘记号归「视觉强化」开关管，可以只关记号、留着面板看数字。
+            if getattr(self, 'board_marks_enabled', True):
+                self._draw_target_window()
+                self._draw_debug_holes()
 
         # S1-4：方向标注必须画在**滑块之后**（最上层）。放在缝隙绘制阶段会被
         # 后画的滑块盖掉一半——圆的一半陷在块底下，看着像画崩了。
@@ -867,6 +882,10 @@ class RendererMixin:
         """
         self._arrow_buttons = []
         if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            return None
+        # 箭头按键是宣传中的五种操作方式之一，有自己的开关（默认开）：
+        # 不想看见箭头时不必为此把整个界面退回朴素模式。
+        if not getattr(self, 'arrows_enabled', True):
             return None
         gap = getattr(self, 'selected_gap', None)
         # 移动动画播放中按键跟着插值移动会误导点击，直接不画
@@ -1368,6 +1387,18 @@ class RendererMixin:
         timer_surface = self.status_font.render(timer_text, True, timer_color)
         timer_x = step_x + step_surface.get_width() + 30
         self.screen.blit(timer_surface, (timer_x, text_y))
+
+        # 计时区可点：竞速模式下「开始计时 / 放弃(DNF)」原本只有空格能按，
+        # 这里补一个纯鼠标入口（画细框提示这里能点）。控制设计原则：只用
+        # 鼠标也要能完成一切游戏内操作。
+        self._timer_bar_rect = None
+        if self.game_mode == 'timed' and self.timer_state in ('ready', 'running'):
+            _pad = 6
+            self._timer_bar_rect = pygame.Rect(timer_x - _pad, status_y + 3,
+                                               timer_surface.get_width() + _pad * 2,
+                                               self.status_bar_height - 6)
+            pygame.draw.rect(self.screen, (110, 110, 110), self._timer_bar_rect,
+                             1, border_radius=3)
 
         # 中间：当前谜题信息（带形态后缀：带序号 #num / 三角形 tri{k} / 米字格 mi{m}*{n}）
         puzzle_text = f"谜题：{self._current_puzzle_key()}"
@@ -2023,10 +2054,23 @@ class RendererMixin:
             x, ny, "悬停连锁提示：", getattr(self, 'chain_hint_enabled', False),
             "悬停滑块时，边界盒内同组位置（含空格）提亮提示，帮助找缺口")
 
+        # 棋盘标记：调试面板画在棋盘上的那些记号（目标框 / 洞位等）。
+        # 它们是视觉强化而非调试数据，故与面板本体拆成两个开关：可以只关
+        # 画面上的记号、留着面板看数字，也可以整块面板一起关掉。
+        self._settings_marks_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "棋盘标记：", getattr(self, 'board_marks_enabled', True),
+            "调试面板画在棋盘上的记号（F2 亦可开关）；嫌晃眼可只关记号")
+
+        # 调试面板本体：让 F2 的功能也有纯鼠标入口（面板自身的关闭按钮
+        # 只能关、不能开）
+        self._settings_metrics_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "调试面板：", getattr(self, 'show_metrics_panel', False),
+            "右下角的数据面板（聚拢度 / 剖面缺陷等），F2 亦可开关")
+
     def _draw_settings_control(self, x, y, width, height):
-        """绘制控制模式设置内容（三种模式独立开关，可任意组合）"""
+        """绘制控制模式设置内容（五种操作方式独立开关，可任意组合）"""
         hint = self.status_font.render(
-            "三种模式可任意组合（甚至全关）；全关时只能平移/缩放", True, (200, 200, 120))
+            "五种操作方式可任意组合（甚至全关）；全关时只能平移/缩放", True, (200, 200, 120))
         self.screen.blit(hint, (x + 15, y + 6))
 
         ny = y + 34
@@ -2039,6 +2083,19 @@ class RendererMixin:
         self._settings_ctrl_kb_rect, ny = self._draw_switch_row(
             x, ny, "鼠标键盘：", getattr(self, 'control_mouse_kb', True),
             "方向键 / W/A/S/D 移动滑块（撤销/重做等快捷键不受影响）")
+        # 虚拟键盘：F1 唤出的屏上键盘，这里给它一个纯鼠标的开关入口
+        # （宣传里的五种操作方式，此前只有热键能开关它）
+        self._settings_ctrl_vk_rect, ny = self._draw_switch_row(
+            x, ny, "虚拟键盘：", getattr(self, 'show_virtual_keyboard', False),
+            "屏幕上的方向键盘（F1 亦可开关）；米字格靠它定方向，默认开着")
+        # 箭头按键：选中缝隙后两端的可点方向箭头，原先只跟界面模式走
+        self._settings_ctrl_arrow_rect, ny = self._draw_switch_row(
+            x, ny, "箭头按键：", getattr(self, 'arrows_enabled', True),
+            "选中缝隙后在切片两端显示可点的方向箭头（需增强界面）")
+        # 逆序播放宏：不常用，故从右下角常用区撤回设置（右下角留给常用开关）
+        self._settings_ctrl_revmacro_rect, ny = self._draw_switch_row(
+            x, ny, "逆序播放宏：", getattr(self, 'macro_reverse_mode', False),
+            "宏指令倒着播一遍（本人用不上，故不放右下角常用区）")
 
     def _draw_settings_gather(self, x, y, width, height):
         """绘制聚拢参数设置内容（与谜题-自定义一致的输入框样式）"""
@@ -2765,10 +2822,10 @@ class RendererMixin:
         pygame.draw.line(self.screen, self.colors['border'],
                         (panel_x, 0), (panel_x, self.screen_height))
 
-        # ---- 底部：6 个快捷开关（垂直排列）----
+        # ---- 底部：7 个快捷开关（垂直排列）----
         sw_h = 24
         sw_gap = 4
-        sw_count = 6
+        sw_count = 7
         switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
         switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
         sw_x = panel_x + 6
@@ -2803,12 +2860,19 @@ class RendererMixin:
             self.right_panel_switch_rects[key] = rect
             sw_top += sw_h + sw_gap
 
+        # 摆放原则（用户定）：右下角只放**游玩中需要经常切换**的开关；
+        # 不常改的一律收回设置对话框。逆序宏因此从这里撤回设置。
         _sw_btn('animation_enabled', '滑动动画', lambda: self.animation_enabled)
         _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
         _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
         _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
+        # 棋盘标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼不想看、
+        # 后期要数格子又想看），故放常用区
+        _sw_btn('board_marks_enabled', '标记', lambda: self.board_marks_enabled)
         _sw_btn('game_mode', '模式', lambda: None)
-        _sw_btn('macro_reverse_mode', '逆序宏', lambda: self.macro_reverse_mode)
+        # 成绩面板：F3 的功能原先只有键盘能唤出，这里补一个纯鼠标入口，
+        # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
+        _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
 
         # ---- 上方：垂直滑条（左=缩放，右=速度）----
         track_top = self.menu_bar_height + 35

@@ -532,6 +532,9 @@ class EventsMixin:
                                     elif i == 3:
                                         self.reset_puzzle()
                                     elif i == 5:
+                                        # 单段求解（Ctrl+G 的鼠标入口）
+                                        self._solve_single_segment()
+                                    elif i == 6:
                                         self._start_auto_solve()
                                     edit_clicked = True
                                     break
@@ -708,6 +711,10 @@ class EventsMixin:
                         
                         # 状态栏区域
                         if y > self.screen_height - self.status_bar_height:
+                            # 计时区：竞速模式下等同空格（就绪→开始，计时中→放弃/DNF）
+                            _trect = getattr(self, '_timer_bar_rect', None)
+                            if _trect is not None and _trect.collidepoint(x, y):
+                                self._timer_on_space()
                             continue
                         
                         # 游戏区域点击
@@ -1272,6 +1279,8 @@ class EventsMixin:
     # settings 白名单：布尔键 + 动画速度（映射 self.animation_duration）
     _SETTINGS_BOOL_KEYS = (
         'coloring_enabled', 'chain_hint_enabled', 'show_metrics_panel',
+        'board_marks_enabled', 'arrows_enabled',
+        'show_virtual_keyboard', 'show_records_panel',
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
@@ -2501,6 +2510,58 @@ class EventsMixin:
 
         return (has_ctrl == need_ctrl) and (has_alt == need_alt) and (has_shift == need_shift)
 
+    def _settings_bottom_button_hit(self, mx, my):
+        """设置对话框底部三个按钮（确定 / 取消 / 恢复默认）命中即处理。
+
+        返回 True 表示这次点击已被消费（调用方应立即 return）。
+
+        为什么要单独成方法：底部按钮必须**先于**各 Tab 的选项行判定。
+        选项行是横贯对话框整宽的大矩形，列表滚到底时会盖到按钮区；若先
+        判选项行，点「确定」会被选项行截获 —— 算法被改、对话框关不掉。
+        """
+        # 确定
+        ok_btn = getattr(self, '_settings_ok_btn', None)
+        if ok_btn is not None and ok_btn.collidepoint(mx, my):
+            self._apply_settings()
+            return True
+
+        # 取消
+        cancel_btn = getattr(self, '_settings_cancel_btn', None)
+        if cancel_btn is not None and cancel_btn.collidepoint(mx, my):
+            self.keybindings = dict(self._settings_backup_keybindings)
+            self.gather_params = dict(getattr(self, '_settings_backup_gather', self.gather_params))
+            self.gather_enabled = dict(getattr(self, '_settings_backup_gather_enabled', self.gather_enabled))
+            self.settings_editing_value = None
+            self.show_settings_dialog = False
+            self.settings_editing_action = None
+            return True
+
+        # 恢复默认
+        reset_btn = getattr(self, '_settings_reset_btn', None)
+        if reset_btn is not None and reset_btn.collidepoint(mx, my):
+            from gui.file_ops import DEFAULT_KEYBINDINGS
+            self.keybindings = dict(DEFAULT_KEYBINDINGS)
+            self.settings_editing_action = None
+            self.settings_editing_value = None
+            self._update_menu_shortcut_texts()
+            # 恢复聚拢参数默认值
+            if hasattr(self, '_gather_param_specs'):
+                for k, (_label, vdef, _vmin, _vmax, _vstep, _desc) in self._gather_param_specs:
+                    self.gather_params[k] = vdef
+                    self.gather_enabled[k] = True
+                self.macro_notify_msg = "已恢复默认参数"
+                self.macro_notify_timer = 90
+            # 恢复控制模式默认值（三种模式全开；米字格仍禁单次触控）
+            self.control_single_touch = not getattr(self, 'mi_mode', False)
+            self.control_two_touch = True
+            self.control_mouse_kb = True
+            if getattr(self, 'mi_mode', False):
+                self.macro_notify_msg = "已恢复默认参数（米字格保持关闭单次触控）"
+                self.macro_notify_timer = 120
+            return True
+
+        return False
+
     def _handle_settings_dialog_event(self, event):
         """处理设置对话框中的事件"""
         # 聚拢参数值手动输入：只处理键盘输入（鼠标事件放行，由下方逻辑处理）
@@ -2718,6 +2779,24 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 动画 Tab：棋盘标记开关（视觉强化，与调试面板本体分开）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_marks_toggle_rect'):
+                if self._settings_marks_toggle_rect.collidepoint(mx, my):
+                    self.board_marks_enabled = not getattr(self, 'board_marks_enabled', True)
+                    status = '开' if self.board_marks_enabled else '关'
+                    self.macro_notify_msg = f"棋盘标记：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 动画 Tab：调试面板本体开关（F2 的纯鼠标入口）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_metrics_toggle_rect'):
+                if self._settings_metrics_toggle_rect.collidepoint(mx, my):
+                    self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                    status = '开' if self.show_metrics_panel else '关'
+                    self.macro_notify_msg = f"调试面板：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 控制 Tab：三种模式开关（独立布尔，可任意组合）
             if self.settings_active_tab == 'control':
                 if hasattr(self, '_settings_ctrl_single_rect') and self._settings_ctrl_single_rect.collidepoint(mx, my):
@@ -2741,6 +2820,35 @@ class EventsMixin:
                     self.control_mouse_kb = not self.control_mouse_kb
                     status = '开' if self.control_mouse_kb else '关'
                     self.macro_notify_msg = f"鼠标键盘：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                # 虚拟键盘（F1 的纯鼠标入口）
+                if hasattr(self, '_settings_ctrl_vk_rect') and self._settings_ctrl_vk_rect.collidepoint(mx, my):
+                    if getattr(self, 'mi_mode', False) and getattr(self, 'show_virtual_keyboard', False):
+                        # 米字格定方向全靠它：关掉等于没法玩，直接说明原因
+                        self.macro_notify_msg = "米字格需要虚拟键盘定方向（不能关闭）"
+                        self.macro_notify_timer = 120
+                        return
+                    self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
+                    status = '开' if self.show_virtual_keyboard else '关'
+                    self.macro_notify_msg = f"虚拟键盘：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                # 箭头按键（原先只跟界面模式走，这里给独立开关）
+                if hasattr(self, '_settings_ctrl_arrow_rect') and self._settings_ctrl_arrow_rect.collidepoint(mx, my):
+                    self.arrows_enabled = not getattr(self, 'arrows_enabled', True)
+                    status = '开' if self.arrows_enabled else '关'
+                    if self.arrows_enabled and getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+                        self.macro_notify_msg = "箭头按键：开（但朴素界面下不显示）"
+                    else:
+                        self.macro_notify_msg = f"箭头按键：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                # 逆序播放宏（从右下角常用区撤回设置）
+                if hasattr(self, '_settings_ctrl_revmacro_rect') and self._settings_ctrl_revmacro_rect.collidepoint(mx, my):
+                    self.macro_reverse_mode = not self.macro_reverse_mode
+                    status = '开' if self.macro_reverse_mode else '关'
+                    self.macro_notify_msg = f"逆序播放宏指令：{status}"
                     self.macro_notify_timer = 90
                     return
 
@@ -2771,6 +2879,15 @@ class EventsMixin:
                     ratio = (my - track.y) / track.height
                     max_scroll = getattr(self, '_settings_max_scroll', 0)
                     self._settings_scroll = max(0, min(max_scroll, int(ratio * max_scroll)))
+                return
+
+            # ——底部按钮最优先（确定 / 取消 / 恢复默认）——
+            # 各 Tab 里的选项行（算法行等）是横贯对话框整宽的大矩形，列表
+            # 滚到底时这些矩形会盖到底部按钮区。若先判选项行，点「确定」
+            # 会被选项行截获：算法被悄悄改掉、对话框还关不掉 —— 这就是
+            # 「选 A 算法却切到 B」的成因（重叠区只有约 32px，命中哪一条
+            # 取决于点按钮的上半还是下半，故表现像随机）。按钮一律先判。
+            if self._settings_bottom_button_hit(mx, my):
                 return
 
             # 求解器 Tab：点击算法选择
@@ -2846,42 +2963,10 @@ class EventsMixin:
                         self.macro_notify_timer = 90
                         return
 
-            # 确定按钮
-            if hasattr(self, '_settings_ok_btn') and self._settings_ok_btn.collidepoint(mx, my):
-                self._apply_settings()
-                return
-
-            # 取消按钮
-            if hasattr(self, '_settings_cancel_btn') and self._settings_cancel_btn.collidepoint(mx, my):
-                self.keybindings = dict(self._settings_backup_keybindings)
-                self.gather_params = dict(getattr(self, '_settings_backup_gather', self.gather_params))
-                self.gather_enabled = dict(getattr(self, '_settings_backup_gather_enabled', self.gather_enabled))
-                self.settings_editing_value = None
-                self.show_settings_dialog = False
-                self.settings_editing_action = None
-                return
-
-            # 恢复默认按钮
-            if hasattr(self, '_settings_reset_btn') and self._settings_reset_btn.collidepoint(mx, my):
-                from gui.file_ops import DEFAULT_KEYBINDINGS
-                self.keybindings = dict(DEFAULT_KEYBINDINGS)
-                self.settings_editing_action = None
-                self.settings_editing_value = None
-                self._update_menu_shortcut_texts()
-                # 恢复聚拢参数默认值
-                if hasattr(self, '_gather_param_specs'):
-                    for k, (_label, vdef, _vmin, _vmax, _vstep, _desc) in self._gather_param_specs:
-                        self.gather_params[k] = vdef
-                        self.gather_enabled[k] = True
-                    self.macro_notify_msg = "已恢复默认参数"
-                    self.macro_notify_timer = 90
-                # 恢复控制模式默认值（三种模式全开；米字格仍禁单次触控）
-                self.control_single_touch = not getattr(self, 'mi_mode', False)
-                self.control_two_touch = True
-                self.control_mouse_kb = True
-                if getattr(self, 'mi_mode', False):
-                    self.macro_notify_msg = "已恢复默认参数（米字格保持关闭单次触控）"
-                    self.macro_notify_timer = 120
+            # 底部按钮（确定 / 取消 / 恢复默认）：实现统一在
+            # _settings_bottom_button_hit —— 上方已按「按钮优先」判过一次，
+            # 这里再判一次只为兜住按钮 rect 晚于本段生成的情形，两者同源。
+            if self._settings_bottom_button_hit(mx, my):
                 return
 
         # 鼠标释放
@@ -2977,6 +3062,16 @@ class EventsMixin:
             self.chain_hint_enabled = not self.chain_hint_enabled
             status = '开' if self.chain_hint_enabled else '关'
             self.macro_notify_msg = f"悬停连锁提示：{status}"
+        elif key == 'board_marks_enabled':
+            self.board_marks_enabled = not getattr(self, 'board_marks_enabled', True)
+            status = '开' if self.board_marks_enabled else '关'
+            self.macro_notify_msg = f"棋盘标记：{status}"
+        elif key == 'show_records_panel':
+            # 成绩面板（F3 的纯鼠标入口）：与 F3 走同一套收尾（清删除确认态）
+            self.show_records_panel = not getattr(self, 'show_records_panel', False)
+            self.rp_confirm_delete_id = None
+            status = '开' if self.show_records_panel else '关'
+            self.macro_notify_msg = f"成绩面板：{status}"
         elif key == 'game_mode':
             self.toggle_game_mode()
             return  # toggle_game_mode 已设置提示

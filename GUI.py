@@ -327,7 +327,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 编辑菜单状态
         self.show_edit_menu = False
-        self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S', '重置 Ctrl+R', '---', '自动求解 Ctrl+Alt+S']
+        # 末项必须是自动求解：主循环按 edit_menu_items[-1] 改写为「停止求解」
+        self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S', '重置 Ctrl+R',
+                                '---', '单段求解 Ctrl+G', '自动求解 Ctrl+Alt+S']
         self.edit_menu_rects = []
         self.edit_menu_hovered = -1
 
@@ -440,6 +442,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
         self.chain_hint_enabled = False
         self.hover_cell = None
+        # 棋盘标记：调试面板画在棋盘上的那些记号（目标框、洞位等）。
+        # 它们是「视觉强化」而非调试数据，所以要能脱离调试面板本体单独关
+        # ——只关记号、留着面板看数字，或反过来。两者是独立的两个开关。
+        self.board_marks_enabled = True
+        # 箭头按键：选中缝隙后在切片两端画出的可点方向箭头。
+        # 原本只跟着界面模式（enhanced）走、没有自己的开关，这里解耦出来，
+        # 作为宣传中的五种操作方式之一独立可控。
+        self.arrows_enabled = True
         # 控制模式开关（独立布尔，非互斥；对应 web 版 touch-gesture.md 的三种模式）：
         #  single_touch：直接拖拽滑塊即滑動（移动后清空选中）
         #  two_touch   ：点缝隙→点滑块→再拖拽/键盘（原版两次触控习惯）
