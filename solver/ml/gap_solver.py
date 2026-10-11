@@ -1632,9 +1632,31 @@ def _vacancy_couple_hook(gap_only, cancel_check=None):
     return hook
 
 
+def solve_pick_fill(game, step, cancel_check=None, progress_callback=None,
+                    p=None, h=None, **kwargs):
+    """选块填空（求解器注册表入口）：只推进玩家指定的那一段。
+
+    与 solve_single_segment 走同一条求解链，差别只在「谁来定目标」：本入口
+    由玩家点选好一对（凸起 p、空位 h）之后调用；两者都有就用指定配对，
+    缺哪个就由下层自动挑最近的。但如果连目标方块都没指定，就没有可推的
+    对象——这时直接返回失败，而不是替玩家猜一个算。
+
+    包装成这个入口是为了让它能像其他算法一样出现在求解器列表里，由界面
+    统一分派（选算法 → 按键执行），不必为它单开一条专用调用路径。
+    """
+    if p is None:
+        return {'type': 'fill_fail',
+                'reason': '选块填空需要先点选一个方块',
+                'solver_name': '选块填空'}
+    return solve_single_segment(game, step=step, p=p, h=h,
+                                cancel_check=cancel_check,
+                                progress_callback=progress_callback,
+                                **kwargs)
+
+
 def solve_single_segment(game, step, p, cancel_check=None,
                          progress_callback=None, h=None, **kwargs):
-    """手动单段求解（GUI 入口，Ctrl+G）：只处理用户指定的凸起 p。
+    """选块填空的下层实现：只处理指定的凸起 p（上层入口见 solve_pick_fill）。
 
     配洞规则：用户在调试面板点选了空位（h 给定）→ 按指定配对（2026-10-02
     用户需求：单独选中一組凸起+空位）；否则取与 p 同 mod 空位中曼哈顿
@@ -1716,14 +1738,14 @@ def solve_single_segment(game, step, p, cancel_check=None,
         why = stats.get('reason', stats.get('error', '失败')) \
             if isinstance(stats, dict) else '失败'
         return {'type': 'fill_fail',
-                'reason': '单段求解失败（补缺链+粘上接走均未成）：%s' % why,
-                'solver_name': '单段求解'}
+                'reason': '选块填空失败（补缺链+粘上接走均未成）：%s' % why,
+                'solver_name': '选块填空'}
     except _Cancelled:
-        print('[单段求解] 已停止（cancel）')
+        print('[选块填空] 已停止（cancel）')
         return {'type': 'fill_fail', 'reason': '已停止', 'cancelled': True}
     except Exception as e:
-        return {'type': 'fill_fail', 'reason': f'单段求解异常：{e}',
-                'solver_name': '单段求解'}
+        return {'type': 'fill_fail', 'reason': f'选块填空异常：{e}',
+                'solver_name': '选块填空'}
 
 
 def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,

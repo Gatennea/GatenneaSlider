@@ -328,8 +328,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 编辑菜单状态
         self.show_edit_menu = False
         # 末项必须是自动求解：主循环按 edit_menu_items[-1] 改写为「停止求解」
-        self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S', '重置 Ctrl+R',
-                                '---', '单段求解 Ctrl+G', '自动求解 Ctrl+Alt+S']
+        # 注：下面这一列改动时，记得同步 events.py 里按**序号**分派的那一处
+        # （它是硬编码索引，加/删一项就会点错）
+        self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S',
+                                '重置 Ctrl+R', '---', '自动求解 Ctrl+Alt+S']
         self.edit_menu_rects = []
         self.edit_menu_hovered = -1
 
@@ -442,6 +444,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
         self.chain_hint_enabled = False
         self.hover_cell = None
+        # 选块填空（求解器列表里唯一要先点选才能算的算法）：
+        # None = 没在选取；否则是 {'block': 坐标|None, 'hole': 洞|None}，
+        # 两项都齐了才开算。**顺序不限**——先点凸起还是先点空位都行。
+        # 单独设这个状态而不是借用 selected_block：后者是两次触控流程的
+        # 中间态，滑块一动就被清空，留不住玩家点选的目标。
+        self._pick_fill = None
         # 棋盘标记：调试面板画在棋盘上的那些记号（目标框、洞位等）。
         # 它们是「视觉强化」而非调试数据，所以要能脱离调试面板本体单独关
         # ——只关记号、留着面板看数字，或反过来。两者是独立的两个开关。
@@ -2855,6 +2863,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 90
             return
 
+        # 选块填空：列表里唯一要先收集玩家点选才能算的算法，因此在这里就转走
+        # ——它有一段「等玩家点两下」的前置阶段，不该先把自己标记成「正在求解」。
+        if self.solver_algorithm == 'pick_fill':
+            self._pick_fill_toggle()
+            return
+
         # 如果正在求解，則取消
         if self._auto_solve_running:
             self._auto_solve_cancel = True
@@ -3101,42 +3115,20 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._gradient_gen += 1
         self._drain_gradient_queue()
 
-    def _solve_single_segment(self):
-        """手动单段求解（Ctrl+G）：只处理用户点选的凸起。
+    # ---- 选块填空（原「单段求解」）：2026-10-12 从专用快捷键 Ctrl+G 收编进
+    #      求解器列表，统一由 Ctrl+A 触发。它是列表里唯一需要先收集玩家点选
+    #      的算法，所以开头多一段选取态。----
+    _PICK_FILL_TIP = ("选块填空：请点选一个凸起方块和一个空位"
+                      "（顺序不限；点空白处不算，会再提示一次）")
 
-        用户先点选一个窗外凸起方块，按 Ctrl+G：求解器为它配最近的同
-        mod 空位，走补缺链/填洞宏/粘上接走，产出动作立即播放。
+    def _pick_fill_toggle(self):
+        """选块填空按 Ctrl+A 的统一入口：进选取 / 齐了就开算 / 没齐就再按退出。
+
+        按一次的语义取决于当前处在哪一步：
+          · 没在选取 ── 进入选取态，提示要点的东西（右下角）；
+          · 已在选取、但还缺点东西 ── 等同按了「停止求解」，退出；
+          · 凸起与空位都点齐了 ── 开算。
         """
-        import threading
-        import time
-        from copy import deepcopy
-
-        # 前置检查（与自动求解同口径）
-        if self._triangle_blocked('单段求解'):
-            return
-        if self._timer_blocked():
-            self.macro_notify_msg = "计时中无法使用求解器"
-            self.macro_notify_timer = 90
-            return
-        if self._readonly_blocked():
-            return
-        # 带序号模式仍封锁：单段求解按用户点选的凸起逐块处理，其回放定位
-        # 逻辑虽与 number 无关，但本轮不放开（缩小改动面）——待后续统一放开。
-        if getattr(self, 'numbered', False):
-            self.macro_notify_msg = "带序号模式暂不支援单段求解"
-            self.macro_notify_timer = 90
-            return
-        if getattr(self, 'triangle_mode', False):
-            self.macro_notify_msg = "三角形密铺暂不支援单段求解"
-            self.macro_notify_timer = 90
-            return
-        if self._mi_blocked('单段求解', '求解器后续阶段开发中'):
-            return
-        if getattr(self, '_ann_recording', False):
-            self.macro_notify_msg = "标注录制中无法使用单段求解"
-            self.macro_notify_timer = 90
-            return
-        # 正在求解 → 视作停止请求（与自动求解一致）
         if self._auto_solve_running:
             self._auto_solve_cancel = True
             return
@@ -3145,22 +3137,107 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 90
             return
 
-        blk = self.selected_block
-        if blk is None:
-            self.macro_notify_msg = ("单段求解：请先点选一个凸起方块"
-                                     "（可先在调试面板点选目标空位，"
-                                     "将按「凸起+空位」指定配对）")
+        pf = self._pick_fill
+        if pf is None:
+            self._pick_fill = {'block': None, 'hole': None}
+            self.macro_notify_msg = self._PICK_FILL_TIP
+            self.macro_notify_timer = 200
+            return
+        if pf['block'] is None or pf['hole'] is None:
+            # 没点齐就再按一次 Ctrl+A = 停止（与求解中按同一手感）
+            self._pick_fill = None
+            self.macro_notify_msg = "已退出选块填空"
             self.macro_notify_timer = 120
             return
-        p = tuple(blk.location)
+        self._pick_fill_run(pf['block'], pf['hole'])
 
-        # 用户指定的空位（2026-10-02：单独选中一組凸起+空位）。复用调试
-        # 面板的选洞机制：面板开着时点空位 → selected_hole（簇 cells）。
-        # 簇里取与 p 同 mod 的格（多格簇跨 mod 时可能没有）；局面已变、
-        # 选中的簇不再属于当前空位 → 视为过期，自动降级为最近配对。
+    def _pick_fill_missing_tip(self):
+        """当前还缺哪一半——点错位置时照着这句话重提一次。"""
+        pf = self._pick_fill
+        if pf is None:
+            return
+        if pf['block'] is None and pf['hole'] is None:
+            msg = self._PICK_FILL_TIP
+        elif pf['block'] is None:
+            msg = self._PICK_FILL_TIP + "（已选空位，还差点凸起方块）"
+        else:
+            msg = self._PICK_FILL_TIP + "（已选凸起，还差点一个空位）"
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = 200
+
+    def _pick_fill_click(self, x, y, block=None, gap=None):
+        """选取态下的一次点击：只登记点选目标，绝不触发滑动 / 选缝 / 拖动。
+
+        点方块 → 记下这一块；点空位 → 记下那个坑。点空白处**或点到缝隙**都
+        算点错，重提一句还缺点什么，继续等 —— 缝隙说的是「从哪切开」，不是
+        「填到哪去」，混进来会让这一步的意思含糊。
+        """
+        pf = self._pick_fill
+        if pf is None:
+            return
+        if block is not None:
+            loc = tuple(block.location)
+            pf['block'] = loc
+            # 坐标按玩家数数习惯：从 1 数第几行第几列
+            self.macro_notify_msg = ("选块填空：已选方块（第%d行第%d列）"
+                                     % (loc[0] + 1, loc[1] + 1))
+            self.macro_notify_timer = 150
+        elif gap is not None:
+            self._pick_fill_missing_tip()
+            return
+        else:
+            try:
+                hole = self.get_hole_at_pos(x, y)
+            except Exception:
+                # 选空洞所用实现只覆盖方形；异常绝不许影响这次点击本身
+                hole = None
+            if hole:
+                pf['hole'] = hole
+                self.macro_notify_msg = (
+                    "选块填空：已选空位（%s %d格）"
+                    % (hole.get('type', ''), len(hole.get('cells', []))))
+                self.macro_notify_timer = 150
+            else:
+                self._pick_fill_missing_tip()
+                return
+        if pf['block'] is not None and pf['hole'] is not None:
+            self.macro_notify_msg = ("选块填空：已选好一对，按 Ctrl+A 开始"
+                                     "（重按一次退出）")
+            self.macro_notify_timer = 200
+
+    def _pick_fill_run(self, p, hole):
+        """开算一段：把玩家点选的凸起 p 送进点选的空位 hole。
+
+        成功标准与其他算法不同 —— 只要求「这个空位被填上」，不要求整盘还原。
+        推进权在玩家手里：反复「点一对 → Ctrl+A」才是它的正常节奏。
+        """
+        import threading
+        import time
+        from copy import deepcopy
+
+        # 带序号 / 三角形 / 米字格沿用单段求解时期的封锁口径：这几类谜题
+        # 要么没有「逐个凸起推进」的语义，要么对应通路还没接上。
+        if self._triangle_blocked('选块填空'):
+            self._pick_fill = None
+            return
+        if getattr(self, 'numbered', False):
+            self.macro_notify_msg = "带序号模式暂不支援选块填空"
+            self.macro_notify_timer = 90
+            self._pick_fill = None
+            return
+        if getattr(self, 'triangle_mode', False):
+            self.macro_notify_msg = "三角形密铺暂不支援选块填空"
+            self.macro_notify_timer = 90
+            self._pick_fill = None
+            return
+        if self._mi_blocked('选块填空', '求解器后续阶段开发中'):
+            self._pick_fill = None
+            return
+
+        # 局面可能已经变过（点选过程中玩家另行操作）：被指定为空位的那一簇
+        # 若已不在当前空位列表里，就作废改由下层自动挑，别拿着过期坐标去算。
         vh = None
-        sel_hole = getattr(self, 'selected_hole', None)
-        if sel_hole:
+        if hole:
             from solver.ml.hole_detector import detect_holes
             _coords = frozenset((b.location[0], b.location[1])
                                 for b in self.game.blocks)
@@ -3174,20 +3251,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 _holes = []
             _alive = next((q for q in _holes
                            if set(q.get('cells', []))
-                           == set(sel_hole.get('cells', []))), None)
+                           == set(hole.get('cells', []))), None)
             if _alive is None:
-                self.selected_hole = None
-                self.macro_notify_msg = "之前选中的空位已不在局面里，改按最近自动配对"
-                self.macro_notify_timer = 120
+                self.macro_notify_msg = "刚才选的空位已不在局面里，改按最近自动配对"
+                self.macro_notify_timer = 150
             else:
                 _same = [c for c in _alive['cells']
                          if (c[0] - p[0]) % self.current_step == 0
                          and (c[1] - p[1]) % self.current_step == 0]
                 vh = tuple(_same[0]) if _same else tuple(_alive['cells'][0])
-                self.macro_notify_msg = ("单段求解：凸%s → 指定空位%s"
-                                         % (p, vh))
-                self.macro_notify_timer = 120
 
+        self._pick_fill = None
         self._auto_solve_result = None
         self._auto_solve_done = False
         self._auto_solve_running = True
@@ -3214,10 +3288,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     progress_callback=progress_callback)
                 self._auto_solve_result = solution
             except Exception as e:
-                print(f"[单段求解] 出错: {e}")
+                print(f"[选块填空] 出错: {e}")
                 self._auto_solve_result = {
-                    'type': 'fill_fail', 'reason': f'单段求解异常：{e}',
-                    'solver_name': '单段求解'}
+                    'type': 'fill_fail', 'reason': f'选块填空异常：{e}',
+                    'solver_name': '选块填空'}
             finally:
                 self._auto_solve_running = False
                 self._auto_solve_done = True

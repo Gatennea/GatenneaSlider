@@ -33,6 +33,9 @@ def _compute_checksum(data: dict) -> str:
 _LEGACY_SOLVER_ALGORITHM = {
     'tri_gather': 'gather',
     'mi_gather': 'gather',
+    # 填洞宏已并入补缺宏（菜单改叫「填洞补缺」）：老配置里选了它的迁移过去，
+    # 否则界面会显示一个已经不存在的算法 key。
+    'fill_macro': 'gap_macro',
 }
 
 
@@ -137,7 +140,6 @@ DEFAULT_KEYBINDINGS = {
     'tri_down_left': {'key': 'z', 'modifiers': []},
     'tri_down_right': {'key': 'x', 'modifiers': []},
     'auto_solve': {'key': 'a', 'modifiers': ['ctrl']},
-    'solve_segment': {'key': 'g', 'modifiers': ['ctrl']},
     'macro_record': {'key': 'm', 'modifiers': ['ctrl']},
     'virtual_keyboard': {'key': 'f1', 'modifiers': []},
     'metrics_panel': {'key': 'f2', 'modifiers': []},
@@ -279,9 +281,8 @@ class FileOpsMixin:
             f"打乱 {self._format_menu_shortcut('shuffle')}",
             f"重置 {self._format_menu_shortcut('reset')}",
             '---',
-            # 单段求解：原先只有 Ctrl+G 能触发，这里补上菜单入口
-            # （控制设计原则：只用鼠标也要能完成一切游戏内操作）
-            f"单段求解 {self._format_menu_shortcut('solve_segment')}",
+            # 单段求解已改称「选块填空」并入求解算法列表，统一由 Ctrl+A 触发，
+            # 因此不再占用这里的独立菜单项（也不再有专属快捷键 Ctrl+G）。
             # 自动求解必须留在最后一项：主循环按 edit_menu_items[-1]
             # 把它改成「停止求解」
             f"自动求解 {self._format_menu_shortcut('auto_solve')}",

@@ -61,7 +61,7 @@ from solver.ml.gather_solver import gather_solve
 from solver.ml.gather_solver import gradient_gather
 from solver.ml.human_solver import ai_human_solve
 from solver.ml.fill_macro import solve_fill_macro
-from solver.ml.gap_solver import solve_gap_macro
+from solver.ml.gap_solver import solve_gap_macro, solve_pick_fill
 from solver.hybrid_solver import hybrid_solve
 from solver.auto_solver import auto_solve
 
@@ -196,8 +196,15 @@ SOLVER_ALGORITHMS = {
     'gather': ('  聚拢', gather_solve_unified),
     'gather_gradient': ('  梯度聚拢', gradient_gather),
     #'human_ai': ('  人类模仿', ai_human_solve),
-    'fill_macro': ('  填洞宏', solve_fill_macro),
-    'gap_macro': ('  补缺宏', solve_gap_macro),
+    # ➜ 填洞已并入下面「填洞补缺」，菜单不再单列（2026-10-12 合并）：
+    #   补缺宏内部遇到多空位/非边缘缺口本来就是转去跑填洞那一支，两者是
+    #   包含关系而非并列；而反过来单独跑填洞，遇到边缘缺口会全线失败——
+    #   留着它等于在菜单上摆一个看着能用、真用会翻车的坑。
+    #'fill_macro': ('  填洞宏', solve_fill_macro),
+    'gap_macro': ('  填洞补缺', solve_gap_macro),
+    # 选块填空：与上面几条的差别是「目标由玩家点选」，因此它需要一段先
+    # 搜集点击的交互（见 GUI._pick_fill_toggle），但入口仍旧统一走列表。
+    'pick_fill': ('  选块填空', solve_pick_fill),
     'hybrid':   ('  混合求解（自动规划）', auto_solve),
 }
 

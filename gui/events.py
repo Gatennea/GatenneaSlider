@@ -534,10 +534,10 @@ class EventsMixin:
                                         self.shuffle_puzzle()
                                     elif i == 3:
                                         self.reset_puzzle()
+                                    # 5 = 自动求解（原先还有一项「单段求解」占了
+                                    # 5 号位；它已改称「选块填空」并收进求解器
+                                    # 列表，由 Ctrl+A 统一触发，这里不再单列）
                                     elif i == 5:
-                                        # 单段求解（Ctrl+G 的鼠标入口）
-                                        self._solve_single_segment()
-                                    elif i == 6:
                                         self._start_auto_solve()
                                     edit_clicked = True
                                     break
@@ -774,6 +774,13 @@ class EventsMixin:
                         mouse_kb_on = getattr(self, 'control_mouse_kb', True)
                         # 可选中：鼠标键盘模式也需要通过点击选中缝隙/滑块组，否则方向键无物可移
                         selectable = two_touch_on or mouse_kb_on
+
+                        # 选块填空选取态：这两下点的是「我要处理哪一块、填进哪
+                        # 个坑」，不是操作滑块。必须在下面任何选中/拖拽/选缝逻辑
+                        # 之前截住——否则第一下就被当成拖滑块，永远选不齐一对。
+                        if getattr(self, '_pick_fill', None) is not None:
+                            self._pick_fill_click(x, y, block, gap)
+                            continue
 
                         # 拖拽滑动：记录起点（按下滑块时记录；最终由 MOUSEBUTTONUP 判定点击/拖拽）
                         # 单次/两次触控都关闭时拖拽无意义，不记录起点，避免残留中间态
@@ -1013,9 +1020,6 @@ class EventsMixin:
                     
                     elif self._is_action_triggered(event, 'auto_solve') and not self._tut_board_locked():
                         self._start_auto_solve()
-
-                    elif self._is_action_triggered(event, 'solve_segment') and not self._tut_board_locked():
-                        self._solve_single_segment()
                     
                     elif self._is_action_triggered(event, 'macro_record'):
                         if self.macro_recording:

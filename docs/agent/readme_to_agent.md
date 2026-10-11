@@ -254,7 +254,13 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 3. 標註模式選空位（`_ann_void0`）
 4. ~~除錯面板「標記」的選洞（`selected_hole`）~~ —— **已決定刪除**，由 3 取代
 
-**單段求解（Ctrl+G）長期不可用的根因**：它要求先「點選一個凸起方塊」+（可選）「點選一個空位」，但普通模式**沒有穩定的選中單塊交互**（`selected_block` 是兩次觸控流程的中間態，移動後即清空），所以它只能接到上面的既有介面。重構方向：以 1/3 為準，刪除 4，再評估 1 與 2 是否合併成統一的「點選格」介面。
+**「選塊填空」已取代舊的單段求解並能用**（2026-10-12）：舊版 Ctrl+G 單段求解長期不可用，根因是它要求先點選凸起方塊，但普通模式**沒有穩定的選中單塊交互**（`selected_block` 是兩次觸控流程的中間態，移動後即清空）。現狀：
+
+- 改名**選塊填空**（neta「選詞填空」），從專用快捷鍵 Ctrl+G **收編進求解器列表**，統一由 Ctrl+A 觸發（定位上與「單次聚攏 : 梯度聚攏」同構：玩家點名 vs 機器自己規劃）。
+- 它是列表裡唯一有前置交互的算法：按一次進選取態，點「一個方塊 + 一個空位」（**順序不限**），點齊再按即開算；沒點齊再按=退出；點空白或縫隙只重提提示。
+- 選取態由 `GUI._pick_fill`（專用狀態）承載，**不借用 selected_block**（會被清空），也不走標註模式（那是內部工具，見上）。
+- 第 4 項（除錯面板選洞）的清理已完成大半：舊的 `selected_hole` 不再被求解器
+  讀取，剩下的面板高亮顯示待與 3 統一後再刪。
 
 ---
 
@@ -272,8 +278,9 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 | `fast` | 最快-1 | `solve_fast` | IDA* 放寬 |
 | `greedy` | 最快-2 | `solve_greedy` | 貪心爬山 + 擾動 |
 | `table` | 查表求解 | `table_solver.table_solve` | 需先 `solver.data` 建表 |
-| `fill_macro` | 填洞宏 | `fill_macro.solve_fill_macro` | 單洞 A-B-A' 共軛子宏；多洞無缺口貪心逐 couple（§5.4） |
-| `gap_macro` | 補缺宏 | `gap_solver.solve_gap_macro` | **現役主入口**：判型分發（單缺口雙層共軛／多空位統一驅動／單洞填洞） |
+| ~~`fill_macro`~~ | ~~填洞宏~~ | **已併入 `gap_macro`**（2026-10-12） | 菜單上不再單列：補缺宏遇到多空位/非邊緣缺口本來就轉去跑填洞那一支（兩者是包含關係），而反過來單獨跑填洞對邊緣缺口會全線失敗——留著它等於擺一個會翻車的坑。舊配置 key 由 `file_ops._migrate_solver_algorithm` 遷到 `gap_macro` |
+| `gap_macro` | 填洞補缺 | `gap_solver.solve_gap_macro` | **現役主入口**：判型分發（單缺口雙層共軛／多空位統一驅動／單洞填洞）；函數本身仍是補缺那一支，名字改是因為它現在獨佔菜單 |
+| `pick_fill` | 選塊填空 | `gap_solver.solve_pick_fill`（包 `solve_single_segment`） | **唯一有前置交互**：先由 `GUI._pick_fill` 收集玩家點選的一對方塊+空位，再由 Ctrl+A 開算；只要求指定空位被填上，不要求整盤還原 |
 | `hybrid` | 混合求解（免表·非最優） | `hybrid_solver.hybrid_solve_with_table` | 有表先查表；無表走「聚攏+填洞」交替 + GBFS 收尾 |
 
 > 註：上表與實際註冊表可能再度漂移，**以 `solver/__init__.py` 的 `SOLVER_ALGORITHMS` 為準**；各算法的設計動機與機構詳解見 `docs/solver/求解器設計.md`。
