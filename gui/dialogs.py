@@ -395,13 +395,15 @@ class PygameFileDialog:
         title_surface = self.title_font.render(self.title, True, self.colors['dialog_title'])
         self.screen.blit(title_surface, (dx + 15, dy + 10))
         
-        # 当前目录
-        dir_text = self.small_font.render(self.current_dir, True, (150, 150, 150))
+        # 当前目录（截断只作用于渲染副本——曾直接改 self.current_dir，
+        # 导致长/含中文路径被啃坏，选文件后 join 出非法路径报「未找到文件」）
+        dir_text_str = self.current_dir
+        dir_text = self.small_font.render(dir_text_str, True, (150, 150, 150))
         # 截断过长路径
         max_dir_w = self.up_btn.left - dx - 20
-        while dir_text.get_width() > max_dir_w and len(self.current_dir) > 10:
-            self.current_dir = '...' + self.current_dir[4:]
-            dir_text = self.small_font.render(self.current_dir, True, (150, 150, 150))
+        while dir_text.get_width() > max_dir_w and len(dir_text_str) > 10:
+            dir_text_str = '...' + dir_text_str[4:]
+            dir_text = self.small_font.render(dir_text_str, True, (150, 150, 150))
         self.screen.blit(dir_text, (dx + 15, dy + 32))
         
         # 上级目录按钮
