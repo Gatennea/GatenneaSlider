@@ -12,11 +12,12 @@
   P4 `_draw_mi_target_frame` 真畫出框（不拋異常、屏幕像素有變化），且錯位態
      下框仍在屏內（半格偏移不讓框飛出去）；**mi 不畫洞/缺口/凸起記號**
      （用戶 2026-10-05 決定：標記太亂，只留目標框），鎖死「無紅藍黃記號像素」；
-  P5 `get_hole_at_pos` 對 mi **恆返回 None**（不從點擊選洞，因為沒標記）；
-  P6 選洞樣本落盤（`samples_mi.jsonl`）含片級 + 格級兩套坐標；
+     **目標框跟隨「棋盤標記」開關**（2026-10-12 與面板解耦，只開面板不畫框）；
+  P5 `get_hole_at_pos` 對 mi **恆返回 None**（純幾何查詢、方形專用）；
+  P6 選洞能力已徹底刪除（2026-10-12 用戶決定，由標註選空位取代）——
+     選中態 / 待選態 / 樣本記錄入口都不在，幾何查詢保留給選塊填空；
   P7 方形/三角形兩條老路徑未改坏（回歸）。
 """
-import json
 import os
 import random
 import sys
@@ -161,8 +162,11 @@ check("P4d2 洞帶片級 cells（缺 4 片 = 4 個單元）",
 
 # **用戶 2026-10-05 決定：mi 不畫標記，只留目標框**。從 draw_mi_board 進去，
 # 確認目標框（綠）有畫出，但洞/缺口/凸起記號（紅藍黃）一個都沒有。
+# **目標框跟隨「棋盤標記」開關**（2026-10-12 解耦）：只開面板不再畫框，
+# 必須連標記一起開才會畫——F2 是老手感（兩者連動），設置裡可只開其一。
 gui.new_mi_puzzle(4, 4, 2)
 gui.show_metrics_panel = True
+gui.board_marks_enabled = True
 gui._fit_mi_zoom()
 gui._center_mi()
 gui.screen.fill((0, 0, 0))
@@ -219,8 +223,8 @@ check("P4j 錯位態框的外接矩形完全在屏內", in_screen,
       f"y=[{min(y0,y1):.0f},{max(y0,y1):.0f}] "
       f"屏={gui.screen_width}×{gui.screen_height}")
 
-# ================================================================ P5 mi 不從點擊選洞
-print("\n--- P5 mi 不從點擊選洞（標記已移除，只留目標框）---")
+# ================================================================ P5 純幾何查詢
+print("\n--- P5 get_hole_at_pos 是純幾何查詢、對 mi 恆 None（方形專用）---")
 gui.new_mi_puzzle(4, 4, 2)
 gui.current_step = 2
 g = gui.game
@@ -235,40 +239,28 @@ view = gui._mi_view()
 wx, wy = view.to_world(2.5, 2.5)
 sx, sy = gui.world_to_screen(wx, wy)
 hit = gui.get_hole_at_pos(int(sx), int(sy))
-check("P5a mi 下 get_hole_at_pos 恆 None（不從點擊選洞）", hit is None)
+check("P5a mi 下 get_hole_at_pos 恆 None（方形專用，不靜默套公式）", hit is None)
 # 點遠離棋盤處也 None
 check("P5b 點空白處不命中", gui.get_hole_at_pos(2, 2) is None)
 
-# ================================================================ P6 選洞樣本
-print("\n--- P6 選洞樣本落盤（片級 + 格級）---")
-# mi 不從點擊選洞，但選洞樣本記錄功能本身仍可用：直接從檢測結果取一個洞。
+# ================================================================ P6 選洞已刪除
+print("\n--- P6 选洞能力已彻底删除（2026-10-12 用户决定）---")
+# 调试面板原带的「点洞选中 + Enter 记录样本」整体删除（AI 求解器训练方向
+# 早已放弃；选中能力由标注模式选空位③取代）。这里锁死删除干净，同时
+# 几何查询仍为「选块填空」所用——两件事互不牵连。
+check("P6a selected_hole 选中态已删除", not hasattr(gui, 'selected_hole'))
+check("P6b _pending_hole_pick 待选态已删除",
+      not hasattr(gui, '_pending_hole_pick'))
+check("P6c 选洞样本记录入口已删除",
+      not hasattr(gui, '_record_hole_selection')
+      and not hasattr(gui, '_record_mi_hole_selection'))
+check("P6d 三角版点洞命中（重心距离）已删除",
+      not hasattr(gui, '_get_tri_hole_at_pos'))
+# 洞的**检测**逻辑不受删除影响（面板文字与选块填空都要用）
 holes6, _ = detect_mi_holes(MA.mi_coords(g), gui._target_region.cells, 2)
-hit = holes6[0] if holes6 else None
-sample_dir = os.path.join('save', '选洞样本')
-sample_path = os.path.join(sample_dir, 'samples_mi.jsonl')
-existed = os.path.exists(sample_path)
-before_lines = 0
-if existed:
-    with open(sample_path, encoding='utf-8') as f:
-        before_lines = sum(1 for _ in f)
-gui.selected_hole = hit
-gui._record_hole_selection()
-check("P6a 樣本檔存在", os.path.exists(sample_path))
-with open(sample_path, encoding='utf-8') as f:
-    lines = [ln for ln in f.read().splitlines() if ln.strip()]
-check("P6b 新增了一行", len(lines) == before_lines + 1,
-      f"{before_lines} → {len(lines)}")
-rec = json.loads(lines[-1])
-check("P6c 記了 form=mi", rec.get('form') == 'mi')
-check("P6d 有 offset/shape/lattice/mod_match",
-      all(k in rec for k in ('offset', 'shape', 'lattice', 'mod_match')))
-check("P6e 洞同時有片級 cells 與格級 cells_geo",
-      rec['holes'] and all('cells' in h and 'cells_geo' in h
-                           for h in rec['holes']))
-check("P6f 選中洞索引非 -1（選中的洞在列表裡）",
-      rec['selected_hole_index'] >= 0, str(rec['selected_hole_index']))
-check("P6g 片級坐標是三元組（含 q）",
-      all(len(c) == 3 for h in rec['holes'] for c in h['cells']))
+check("P6e 洞检测仍可用（删的是选中/记录，不是检测）",
+      len(holes6) == 1 and holes6[0]['type'] == 'hole',
+      f"{[(h['type'], len(h['cells'])) for h in holes6]}")
 
 # ================================================================ P7 老路徑回歸
 print("\n--- P7 方形 / 三角形面板未改坏 ---")
@@ -338,6 +330,9 @@ gui.new_mi_puzzle(4, 4, 2)
 random.seed(2)
 gui.game.shuffle(40, 2)
 gui.show_metrics_panel = True
+# 目标框跟随「棋盘标记」开关（2026-10-12 与面板解耦）：必须把标记也打开，
+# 画面才会出现绿框——这一行就是解耦后的新接线，别改回只开面板。
+gui.board_marks_enabled = True
 gui.screen.fill((0, 0, 0))
 gui._fit_mi_zoom()
 gui._center_mi()
@@ -363,15 +358,18 @@ counts = {name: sum(1
 check('P9c mi 不画洞/缺口/凸起记号（红蓝黄像素 = 0）',
       all(v == 0 for v in counts.values()),
       str(counts))
-# 关掉面板后不该再有这些记号（闸门是 show_metrics_panel 本身）
-gui.show_metrics_panel = False
+# 解耦语义锁死：关掉**标记**（哪怕面板还开着）就不该再有框——
+# 2026-10-12 起绿框跟标记走，不跟面板走。
+gui.show_metrics_panel = True
+gui.board_marks_enabled = False
 gui.screen.fill((0, 0, 0))
 gui.draw_mi_board()
 green_off = sum(1
                 for yy in range(0, gui.screen_height, 2)
                 for xx in range(0, gui.screen_width, 2)
                 if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
-check('P9d 关掉面板后不再画框', green_off == 0, f'{green_off} 个采样点')
+check('P9d 只开面板不开标记 → 不画框（解耦语义）', green_off == 0,
+      f'{green_off} 个采样点')
 
 # ================================================================ P10 行数与高度
 print("\n--- P10 面板高度按行数算（第 7 行不再被截断）---")

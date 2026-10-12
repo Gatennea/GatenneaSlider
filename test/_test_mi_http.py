@@ -269,14 +269,26 @@ if moved_gap:
     check("  選半整數座標的塊也成功", code == 200 and r.get('ok'),
           r.get('message', ''))
 
-print("=== 米字格下的進階功能一律攔截 ===")
+print("=== 米字格下的進階功能一律攔截（求解器例外：gather 三形態通用）===")
 for ep in ('/analysis/window', '/analysis/holes', '/analysis/actions'):
     code, r = api('GET', ep)
     check(f"GET {ep} 在米字格下回 400",
           code == 400 and not r.get('ok') and r.get('reason') == 'unsupported',
           r.get('message', ''))
-code, r = api('POST', '/solve', {})
-check("POST /solve 在米字格下失敗", not r.get('ok'), r.get('message', ''))
+# 2026-10-12 更新：`gather`（預設演算法）自 2026-10-05 起是三形態統一入口，
+# 米字格下 /solve 用預設演算法**不再被攔**——舊斷言「一律失敗」從那時起
+# 就已經是假紅。真正要攔的是**方形專屬演算法**（明確拒絕 + 說明，不靜默）。
+# **先驗拒絕再啟預設**：/solve 在求解運行中會被當成「取消」，順序反了會
+# 把第二次呼叫吃掉（ race：小盤可能剛好算完，時而紅時而綠 ）。
+code, r = api('POST', '/solve', {'algorithm': 'ida_star'})
+check("POST /solve 方形專屬演算法在米字格下被明確拒絕",
+      not r.get('ok') and '米字' in r.get('message', ''),
+      r.get('message', ''))
+# 正向檢查**顯式傳 gather**：/solve 帶 algorithm 會順手改寫 GUI 當前演算法
+# 設置（與菜單裡點選一個算法同語義），不顯式傳就會繼承上一步的 ida_star。
+code, r = api('POST', '/solve', {'algorithm': 'gather'})
+check("POST /solve 聚攏(gather)在米字格下可用",
+      r.get('ok'), r.get('message', ''))
 code, r = api('POST', '/macro/record/start', {})
 check("POST /macro/record/start 在米字格下失敗", not r.get('ok'), r.get('message', ''))
 check("  錄製旗標沒有被打開", gui.macro_recording is False)

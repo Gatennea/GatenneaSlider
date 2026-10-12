@@ -865,28 +865,13 @@ class EventsMixin:
                             # 跟随中点击空白 → 清除跟随，允许平移地图
                             if self.drag_following:
                                 self.clear_drag_follow()
-                            # 拖动优先起手（2026-10-03 修）：原实现在这里
-                            # 调 get_hole_at_pos 并在命中时 `continue`，
-                            # ① 那个函数是方形专用，三角下抛 TypeError
-                            #    （点空白报 non-fatal 且**拖动起不来**，
-                            #     因为异常发生在下面 is_dragging=True 之前）；
-                            # ② 即使不崩，命中洞就 continue 也等于「点上洞的
-                            #    地方不能拖动」，与「点任意空白拖动」冲突。
-                            # 现在：按下就起拖 + 记下待选洞，松开时若确实
-                            # 没拖动过才做选洞动作。
+                            # 点空白一律只起拖（2026-10-03 修：这一带的异常
+                            # 曾打断拖动起手）。调试面板「点洞选中 + 记录样本」
+                            # 能力已于 2026-10-12 按用户决定整体删除（由标注
+                            # 模式选空位取代），空白点击不再背负选中语义。
                             self.is_dragging = True
                             self.drag_start = (x, y)
                             self.drag_offset = (self.camera_x, self.camera_y)
-                            self._pending_hole_pick = None
-                            # 记号画出来了就该能点选（面板与记号是两个开关）
-                            if (getattr(self, 'show_metrics_panel', False)
-                                    or getattr(self, 'board_marks_enabled', False)):
-                                try:
-                                    self._pending_hole_pick = \
-                                        self.get_hole_at_pos(x, y)
-                                except Exception:
-                                    # 选洞是附属功能，绝不能影响拖动
-                                    self._pending_hole_pick = None
                             continue
 
                         # 操作日志：这一下的裁定与反馈。提示原文照抄（与玩家描述
@@ -939,32 +924,6 @@ class EventsMixin:
                         self.slider_dragging = False
                         self.zoom_slider_dragging = False
 
-                        # 点洞选洞（标记学习）：只在「按下→松开之间没真正
-                        # 拖动」时才做，避免与拖动视图抢同一个手势。
-                        # 判据用 camera 是否变过——比比较坐标更可靠（缩放/
-                        # 跟随模式也会动 camera，但那些不是本路径）。
-                        pending = getattr(self, '_pending_hole_pick', None)
-                        self._pending_hole_pick = None
-                        if (pending is not None
-                                and abs(self.camera_x
-                                        - getattr(self, 'drag_offset',
-                                                   self.camera_x)[0]) < 1.0
-                                and abs(self.camera_y
-                                        - getattr(self, 'drag_offset',
-                                                   self.camera_y)[1]) < 1.0):
-                            if (self.selected_hole is not None
-                                    and set(pending['cells'])
-                                    == set(self.selected_hole.get('cells', []))):
-                                # 再点一次已选中的洞 = 取消选中
-                                self.selected_hole = None
-                                self.macro_notify_msg = "已取消选中洞"
-                            else:
-                                self.selected_hole = pending
-                                self.macro_notify_msg = (
-                                    f"选中洞：{pending['type']} {pending['size']}"
-                                    f"（{len(pending['cells'])}格）")
-                            self.macro_notify_timer = 120
-                
                 # 鼠标滚轮
                 elif event.type == pygame.MOUSEWHEEL:
                     if pygame.key.get_mods() & pygame.KMOD_CTRL:
@@ -992,9 +951,7 @@ class EventsMixin:
                         # 空格作为计时器开始/DNF 键
                         self._timer_on_space()
                         continue
-                    if event.key == pygame.K_RETURN and getattr(self, 'show_metrics_panel', False):
-                        self._record_hole_selection()
-                    elif self._is_action_triggered(event, 'save'):
+                    if self._is_action_triggered(event, 'save'):
                         self.save_to_file()
                     
                     elif self._is_action_triggered(event, 'load'):

@@ -792,6 +792,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 重置历史记录
         self.game_history.reset()
         self._mp_reset_target_region()
+        # 选块填空选取态跨建局必须作废（点选的方块/空位坐标属于旧局）
+        self._pick_fill = None
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
@@ -865,6 +867,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         self.game_history.reset()
         self._mp_reset_target_region()
+        # 选块填空选取态跨建局必须作废（点选的方块/空位坐标属于旧局）
+        self._pick_fill = None
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
@@ -958,6 +962,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         self.game_history.reset()
         self._mp_reset_target_region()
+        # 选块填空选取态跨建局必须作废（点选的方块/空位坐标属于旧局）
+        self._pick_fill = None
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
@@ -3121,6 +3127,26 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
     _PICK_FILL_TIP = ("选块填空：请点选一个凸起方块和一个空位"
                       "（顺序不限；点空白处不算，会再提示一次）")
 
+    def _pick_fill_form_blocked(self) -> bool:
+        """选块填空的形态闸门：只有方形可用。
+
+        点空位那条路（洞的命中判定）只覆盖方形；带序号 / 三角 / 米字进去了
+        也只可能永远点不齐。所以**进选取态之前就明确拒绝**，别让玩家对着一个
+        点不齐的选取态反复按 Ctrl+A。开算前再判一次是双保险（局面可能在
+        选取途中被切换，届时建局收尾会清掉选取态，这里是兜底）。
+        """
+        if getattr(self, 'numbered', False):
+            self.macro_notify_msg = "带序号模式暂不支援选块填空"
+            self.macro_notify_timer = 90
+            return True
+        if getattr(self, 'triangle_mode', False):
+            self.macro_notify_msg = "三角形密铺暂不支援选块填空"
+            self.macro_notify_timer = 90
+            return True
+        if self._mi_blocked('选块填空', '求解器后续阶段开发中'):
+            return True
+        return False
+
     def _pick_fill_toggle(self):
         """选块填空按 Ctrl+A 的统一入口：进选取 / 齐了就开算 / 没齐就再按退出。
 
@@ -3135,6 +3161,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self.macro_executing or self.animating:
             self.macro_notify_msg = "宏播放中，稍后再试"
             self.macro_notify_timer = 90
+            return
+        if self._pick_fill_form_blocked():
             return
 
         pf = self._pick_fill
@@ -3217,20 +3245,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 带序号 / 三角形 / 米字格沿用单段求解时期的封锁口径：这几类谜题
         # 要么没有「逐个凸起推进」的语义，要么对应通路还没接上。
-        if self._triangle_blocked('选块填空'):
-            self._pick_fill = None
-            return
-        if getattr(self, 'numbered', False):
-            self.macro_notify_msg = "带序号模式暂不支援选块填空"
-            self.macro_notify_timer = 90
-            self._pick_fill = None
-            return
-        if getattr(self, 'triangle_mode', False):
-            self.macro_notify_msg = "三角形密铺暂不支援选块填空"
-            self.macro_notify_timer = 90
-            self._pick_fill = None
-            return
-        if self._mi_blocked('选块填空', '求解器后续阶段开发中'):
+        # （进选取态时已判过一次，这里是选取途中的兜底。）
+        if self._pick_fill_form_blocked():
             self._pick_fill = None
             return
 

@@ -26,7 +26,7 @@ from game_triangle import TriangleSliderMatrix
 from gui.cell_class import cell_class
 
 __all__ = ['TriPlacement', 'best_placement', 'goal_shape',
-           'overlap_at', 'placement_offset_ok']
+           'overlap_at', 'placement_offset_ok', 'tri_profile_defect']
 
 
 class TriPlacement:
@@ -88,6 +88,39 @@ def placement_offset_ok(offset, step):
     if step <= 1:
         return True
     return offset[0] % step == 0 and offset[1] % step == 0
+
+
+def tri_profile_defect(coords, k):
+    """三角版行列剖面缺陷 Φ：越小越接近還原（0 = 已還原），平移無關。
+
+    與方形 `solver.ml.invariants.profile_defect` 同構，但參照形狀從
+    「k×k 矩形」換成「邊長 k 的大三角形」：還原態第 i 行有 2(k-i)-1 個
+    單元、第 j 列有 2(k-j)-1 個（`game_triangle.TriangleSliderMatrix
+    .positions()` 直接可證），行列剖面都是奇數階梯
+    [2k-1, 2k-3, ..., 1]。把實際行列計數排序降序後與該階梯算 L1 偏差
+    （缺的行列按「該有而沒有」計入，多出來的全額計入），所以平移與
+    翻轉都不影響讀數。
+
+    **為什麼不直接套方形那套**：三角坐標是 (i, j, up) 三元組，且理想
+    形狀不是矩形 —— 面板「剖面缺陷」行原先拿三元組去餵方形公式，直接
+    ValueError（2026-10-12 修）；即便先把 (i, j) 投影掉 up，矩形參照
+    也讓還原態不為 0，讀數失去「=0 ⟺ 還原」的判據價值。
+    """
+    rows = {}
+    cols = {}
+    for i, j, _up in coords:
+        rows[i] = rows.get(i, 0) + 1
+        cols[j] = cols.get(j, 0) + 1
+    stair = [2 * (k - t) - 1 for t in range(max(k, 0))]  # 降序奇數階梯
+
+    def defect(vals):
+        v = sorted(vals, reverse=True)
+        d = sum(abs(v[t] - stair[t]) for t in range(min(len(v), len(stair))))
+        d += sum(v[len(stair):])        # 超出階梯長度的行列：全額計入
+        d += sum(stair[len(v):])        # 階梯有而實際沒有的行列：按缺口計入
+        return d
+
+    return defect(list(rows.values())) + defect(list(cols.values()))
 
 
 def overlap_at(coords, shape):

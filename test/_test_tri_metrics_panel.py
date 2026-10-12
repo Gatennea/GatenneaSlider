@@ -51,6 +51,9 @@ def _gui(k=4, step=2, shuffle=0, mi=False):
     g.animation_enabled = False
     g._mp_init_state()
     g.show_metrics_panel = True
+    # 棋盘记号（目标框/洞凸起）跟随「标记」开关，与面板解耦（2026-10-12）；
+    # 要验画到屏幕上的像素，就得把标记也开上（F2 是老手感：两者连动）。
+    g.board_marks_enabled = True
     g._mp_build_layout()
     g.center_map()
     return g
@@ -93,6 +96,39 @@ def h2_metrics_match_solver():
               f"{met['overlap']} vs {best.overlap}")
         check(f'H2c k={k} step={step} fill_rate = overlap/k²',
               abs(met['fill_rate'] - best.score) < 1e-12)
+
+
+def h2b_tri_profile_defect():
+    """面板「剖面缺陷」行走三角专属口径：还原=0、平移无关、打乱>0。
+
+    2026-10-12 修：原先直接拿 (i,j,up) 三元组去喂方形 profile_defect，
+    一画面板就 ValueError（too many values to unpack）。现在三角口径参照
+    大三角形的奇数阶梯剖面（第 i 行 2(k-i)-1 个单元），与方形同构：
+    Φ=0 ⟺ 已还原、平移无关。
+    """
+    print('\n--- H2b 三角剖面缺陷 Φ（还原=0 / 平移无关 / 打乱>0）---')
+    from game_triangle import TriangleSliderMatrix
+    from solver.ml.tri_placement import tri_profile_defect
+    solved = TriangleSliderMatrix(4).positions()
+    check('H2b-1 函数级：还原态 Φ=0', tri_profile_defect(solved, 4) == 0,
+          str(tri_profile_defect(solved, 4)))
+    shifted = frozenset((i + 3, j + 5, up) for (i, j, up) in solved)
+    check('H2b-2 函数级：平移后 Φ 仍为 0（平移无关）',
+          tri_profile_defect(shifted, 4) == 0,
+          str(tri_profile_defect(shifted, 4)))
+    # 面板级：接线正确（行里出现「剖面缺陷」且还原态为 0）
+    g = _gui(k=4, step=2, shuffle=0)
+    rows, _ = g._mp_rows()
+    got = dict(rows).get('剖面缺陷')
+    check('H2b-3 面板还原态 Φ=0（接线正确）', got == '0', str(got))
+    # 打乱态 >0（小盘可能洗回还原态，那种局面跳过）
+    g3 = _gui(k=5, step=2, shuffle=20)
+    if not g3.game.is_solved():
+        rows3, _ = g3._mp_rows()
+        v = dict(rows3).get('剖面缺陷')
+        check('H2b-4 面板打乱态 Φ>0', v is not None and float(v) > 0, str(v))
+    else:
+        check('H2b-4 面板打乱态 Φ>0（本局面恰好还原，跳过）', True)
 
 
 def h3_hole_detection():
@@ -225,17 +261,26 @@ def h5b_really_paints():
             # 还原态不该有记号，但也可能有面板像素误判 → 只要求不崩
             check(f'H5b-3 {label} 还原态正常绘制', True,
                   f'黄 {yellow} / 红 {red}')
-    # 关键：draw_triangle_board 之后画面必须与「不调画框」不同
-    g1 = _gui(k=5, step=2, shuffle=15)
-    g1.draw_triangle_board()
-    with_panel = pygame.image.tostring(g1.screen, 'RGB')
-    g2 = _gui(k=5, step=2, shuffle=15)
-    g2.show_metrics_panel = False
-    g2.draw_triangle_board()
-    without = pygame.image.tostring(g2.screen, 'RGB')
-    check('H5b-4 面板开关真的改变画面（证明绘制被接上）',
-          with_panel != without,
-          f'{"有差异" if with_panel != without else "无差异——没接上"}')
+    # 关键：记号绘制必须真的接在「标记」开关上（2026-10-12 解耦后，
+    # 目标框/记号跟随 board_marks_enabled，不再跟随面板开关）。
+    # **必须在同一个实例上反复画**：换实例会换成另一个随机局，画面差异
+    # 就被「棋局不同」淹没了——旧版 H5b-4 正是这么蒙混通过的（两个实例
+    # 的 shuffle 结果本就不同，断言恒真）。
+    g = _gui(k=5, step=2, shuffle=15)          # 面板开 + 标记开
+    g.draw_triangle_board()
+    with_marks = pygame.image.tostring(g.screen, 'RGB')
+    g.board_marks_enabled = False               # 只开面板、关标记
+    g.draw_triangle_board()
+    panel_only = pygame.image.tostring(g.screen, 'RGB')
+    g.show_metrics_panel = False                # 全关
+    g.draw_triangle_board()
+    all_off = pygame.image.tostring(g.screen, 'RGB')
+    check('H5b-4 标记开关真的改变画面（记号绘制接在标记上）',
+          with_marks != panel_only,
+          f'{"有差异" if with_marks != panel_only else "无差异——没接上"}')
+    check('H5b-5 只开面板不画记号、与全关一致（解耦语义锁死）',
+          panel_only == all_off,
+          f'{"一致" if panel_only == all_off else "不一致——面板仍在画记号"}')
 
 
 def h6_palette():
@@ -391,9 +436,15 @@ def h9_unsupported_kind_not_silent():
     check('H9e mi 记号走自己的分支（调得动、不抛）', True)
     rows_m, _ = g._mp_rows()
     labels_m = [r[0] for r in rows_m]
-    check('H9f mi 行标出形态名与指标', '聚拢度' in labels_m and '目标框' in labels_m,
+    # 「目标框」位置读数行早已从面板移除（对玩家无意义，棋盘绿框仍由
+    # _draw_target_window 画）——断言随现行行集更新：聚拢度 + mi 特有的
+    # 「mod 约束」行（报 S(step) 大小，不是「有无约束」）。
+    check('H9f mi 行标出形态名与指标',
+          '聚拢度' in labels_m and 'mod 约束' in labels_m,
           f'{labels_m}')
-    # mi 的目标框是真画出来的（绿像素 > 0）—— 走的是 mi 分支才画得出来
+    # mi 的目标框是真画出来的（绿像素 > 0）—— 走的是 mi 分支才画得出来。
+    # 目标框跟随「棋盘标记」开关（2026-10-12 与面板解耦），标记得一起开。
+    g.board_marks_enabled = True
     g.draw_mi_board()
     g.draw_metrics_panel()
     w, h = g.screen.get_size()
@@ -428,29 +479,19 @@ def h9_unsupported_kind_not_silent():
           f'kind={g2._mp_kind()}')
 
 
-def h10_pick_hole_and_drag():
-    """点洞选洞 + 点空白拖动（真实缺陷回归，2026-10-03 用户报）。
+def h10_blank_click_drags():
+    """点空白只起拖、不选洞（选洞能力已于 2026-10-12 删除）。
 
-    用户症状：「点击空白处无法拖动视图」，控制台一堆 non-fatal：
-        File "gui/events.py", line 827, in handle_events
-          hole = self.get_hole_at_pos(x, y)
-        File "gui/metrics_panel.py", line 366, in get_hole_at_pos
-          holes, _, _ = detect_holes(...)
-        TypeError: cannot unpack non-iterable TriPlacement object
-
-    两层根因：
-      ① `get_hole_at_pos` 是方形专用 —— 把 `_target_region` 当
-         `(r0, c0, (rh, cw))` 解包，而三角下它是 `TriPlacement` 对象。
-      ② **异常抛在 `is_dragging = True` 之前**，所以拖动起不来。
-         而且即使不崩，原来「命中洞就 continue」也等于「点上洞的地方
-         不能拖动」——与「点任意空白拖动」冲突。
-
-    所以要验三件事：① 三角点洞能选中（不是只求不崩）；② 点空白能拖动；
-    ③ 在洞上按下后拖动 → 拖动优先、不选洞。
+    历史背景（2026-10-03 用户报「点空白处无法拖动视图」）：那时的点空白
+    分支会调 get_hole_at_pos 选洞，异常抛在 is_dragging=True 之前 →
+    拖动起不来。现在选洞能力整体删除（由标注模式选空位取代），点空白
+    回归纯粹的「起拖视图」语义。这条回归锁死两件事：
+      ① 点空白仍能拖动（原崩溃点不许复活）；
+      ② 删除干净——选中态 / 待选态 / 样本记录入口都不在了，
+         而几何查询 get_hole_at_pos 保留（选块填空点空位用）。
     """
     import pygame
     from GUI import SliderGUI
-    from solver.ml.tri_holes import detect_tri_holes
     g = SliderGUI(m=6, n=6, step=2)
     g.new_triangle_puzzle(4, 2)
     random.seed(3)
@@ -462,10 +503,6 @@ def h10_pick_hole_and_drag():
     best = g._compute_target_region()
     check('H10a 三角 region 是 TriPlacement（非三元组）',
           hasattr(best, 'cells'), type(best).__name__)
-
-    holes, _ = detect_tri_holes(
-        frozenset(tuple(b.location) for b in g.game.blocks), best.cells, 2)
-    view = g._tri_view()
     w, h = g.screen.get_size()
 
     def send(t, pos, button=1):
@@ -488,43 +525,26 @@ def h10_pick_hole_and_drag():
     check('H10c 拖动后 camera 真的动了',
           abs(g.camera_x - cam0[0]) > 5 or abs(g.camera_y - cam0[1]) > 5,
           f'Δ=({g.camera_x - cam0[0]:.0f},{g.camera_y - cam0[1]:.0f})')
-    check('H10d 拖动没有误选洞', g.selected_hole is None)
-
-    if not holes:
-        print('     （本局面无洞，跳过点洞部分）')
-        return
-    cell = holes[0]['cells'][0]
-    cx, cy = view.piece_center(*cell)
-    sxy = (int(g.world_to_screen(cx, cy)[0]),
-           int(g.world_to_screen(cx, cy)[1]))
-    # ② 点洞（不拖）→ 选中
-    send(D, sxy)
-    send(U, sxy)
-    check('H10e 三角点洞能选中（不是只求不崩）',
-          g.selected_hole is not None
-          and g.selected_hole['cells'] == holes[0]['cells'],
-          None if g.selected_hole is None else g.selected_hole['type'])
-    # ③ 在洞上拖动 → 拖动优先，不选洞
-    g.selected_hole = None
-    cam1 = (g.camera_x, g.camera_y)
-    send(D, sxy)
-    send(M, (sxy[0] + 50, sxy[1] + 30), button=0)
-    send(U, (sxy[0] + 50, sxy[1] + 30))
-    check('H10f 在洞上拖动 → 拖动优先、不选洞',
-          g.selected_hole is None)
-    check('H10g 在洞上拖动 camera 动了',
-          abs(g.camera_x - cam1[0]) > 5 or abs(g.camera_y - cam1[1]) > 5)
-
-    # ④ mi 也不崩（未实装形态返回 None）
+    # ② 删除干净：选中态、待选态、样本记录、三角版点洞命中都不在了
+    check('H10d selected_hole 选中态已删除', not hasattr(g, 'selected_hole'))
+    check('H10e _pending_hole_pick 待选态已删除',
+          not hasattr(g, '_pending_hole_pick'))
+    check('H10f 选洞样本记录已删除',
+          not hasattr(g, '_record_hole_selection')
+          and not hasattr(g, '_record_mi_hole_selection'))
+    check('H10g 三角版点洞命中（重心距离）已删除',
+          not hasattr(g, '_get_tri_hole_at_pos'))
+    # ③ 几何查询保留：纯函数、无选中语义、非方形恆 None
     g2 = SliderGUI(m=4, n=4, step=2)
     g2.new_mi_puzzle(4, 4, 2)
     g2.animation_enabled = False
     g2.show_metrics_panel = True
     try:
-        check('H10h mi 点空白处不崩（未实装形态返回 None）',
+        check('H10h mi 下 get_hole_at_pos 恆 None（方形专用几何查询）',
               g2.get_hole_at_pos(100, 100) is None)
     except Exception as e:
-        check('H10h mi 点空白处不崩', False, f'{type(e).__name__}: {e}')
+        check('H10h mi 下 get_hole_at_pos 恆 None', False,
+              f'{type(e).__name__}: {e}')
 
 
 def main():
@@ -533,6 +553,7 @@ def main():
     print('=' * 68)
     h1_region_type()
     h2_metrics_match_solver()
+    h2b_tri_profile_defect()
     h3_hole_detection()
     h4_same_source()
     h5_render_no_crash()
@@ -541,7 +562,7 @@ def main():
     h7_square_no_regression()
     h8_mi_shifted_no_crash()
     h9_unsupported_kind_not_silent()
-    h10_pick_hole_and_drag()
+    h10_blank_click_drags()
     h9_unsupported_kind_not_silent()
     print('\n' + '=' * 68)
     if _failures:

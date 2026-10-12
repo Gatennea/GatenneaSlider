@@ -262,6 +262,10 @@ class RendererMixin:
                 self._draw_target_window()
                 self._draw_debug_holes()
 
+        # 选块填空选取态的金色高亮：跟随选取态本身，与面板/标记开关无关
+        # （三形态铁律：共用 helper，三个 draw 各接一次）。
+        self._draw_pick_fill_marks()
+
         # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
         self._draw_gap_direction_annotation()
 
@@ -407,6 +411,10 @@ class RendererMixin:
             if _marks_on:
                 self._draw_target_window()
                 self._draw_debug_holes()
+
+        # 选块填空选取态的金色高亮：跟随选取态本身，与面板/标记开关无关
+        # （三形态铁律：共用 helper，三个 draw 各接一次）。
+        self._draw_pick_fill_marks()
 
         # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
         self._draw_gap_direction_annotation()
@@ -652,6 +660,10 @@ class RendererMixin:
                 self._draw_target_window()
                 self._draw_debug_holes()
 
+        # 选块填空选取态的金色高亮：跟随选取态本身，与面板/标记开关无关
+        # （三形态铁律：共用 helper，三个 draw 各接一次）。
+        self._draw_pick_fill_marks()
+
         # S1-4：方向标注必须画在**滑块之后**（最上层）。放在缝隙绘制阶段会被
         # 后画的滑块盖掉一半——圆的一半陷在块底下，看着像画崩了。
         self._draw_gap_direction_annotation()
@@ -735,6 +747,51 @@ class RendererMixin:
         这里取到的就是起点键，与绘制循环里的键同源。
         """
         return {tuple(b.location) for b in (getattr(self, 'anim_blocks', None) or [])}
+
+    # 选块填空选取态的金色——与宏定义基准块的金框同一个色值，不引入新配色
+    # （铁律：不给滑块加新填充色；这里是描边/环，本就走边框通道）。
+    PICK_FILL_GOLD = (255, 200, 50)
+
+    def _draw_pick_fill_marks(self):
+        """选块填空选取态：把玩家已点选的「凸起方块」与「空位」高亮出来。
+
+        选取态由 `GUI._pick_fill` 承载：{'block': (r, c) 或 None,
+        'hole': 洞 dict 或 None}。金色 = 你选的东西——已选方块画金框
+        （与宏定义基准块同款），已选空位把洞的每一格画上金环。
+
+        按三形态铁律从三个 draw_*_board 各自调用；选取态实际只存在于
+        方形（`_pick_fill_form_blocked` 入口闸门 + 建局清空），所以另两个
+        形态走到这里直接返回——留着调用点是给「将来找块填空支援异形」
+        预留的挂载位，也防止形态切换瞬间的陈旧状态画出错位几何。
+        """
+        pf = getattr(self, '_pick_fill', None)
+        if not pf:
+            return
+        if getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False):
+            return
+        gold = self.PICK_FILL_GOLD
+        board_x = getattr(self, '_board_x', 0)
+        board_y = getattr(self, '_board_y', 0)
+        scaled_cell = self.cell_size * self.zoom
+        cell_step = scaled_cell + self.gap_width * self.zoom
+        p = pf.get('block')
+        if p is not None:
+            bx = board_x + p[1] * cell_step + self.camera_x
+            by = board_y + p[0] * cell_step + self.camera_y
+            hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
+            pygame.draw.rect(self.screen, gold, hl_rect,
+                             max(1, int(3 * self.zoom)),
+                             border_radius=int(5 * self.zoom))
+        hole = pf.get('hole')
+        if hole:
+            radius = max(3, int(scaled_cell * 0.35))
+            line_w = max(2, int(2 * self.zoom))
+            half = scaled_cell / 2
+            for r, c in hole.get('cells', []):
+                cx = board_x + c * cell_step + self.camera_x + half
+                cy = board_y + r * cell_step + self.camera_y + half
+                pygame.draw.circle(self.screen, gold, (int(cx), int(cy)),
+                                   radius, line_w)
 
     def _advance_key(self, key, delta):
         """形态中立的「key + 格增量」：朝向分量不参与平移。"""

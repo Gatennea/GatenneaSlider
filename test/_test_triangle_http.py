@@ -6,7 +6,7 @@
 
 覆蓋：/new type=triangle、/status 帶 (i,j,up)、/select_gap 3 族、
       /select_block i j up、/move 6 向、/analysis/* 回 400、
-      /solve 被攔截、方形無迴歸。
+      /solve 預設演算法可用（方形專屬演算法明確拒絕）、方形無迴歸。
 """
 import os, sys, time, json, queue, threading, urllib.request, urllib.error
 
@@ -179,10 +179,21 @@ for ep in ('/analysis/window', '/analysis/holes', '/analysis/actions'):
           code == 400 and not r.get('ok')
           and r.get('reason') == 'unsupported', r.get('message', ''))
 
-print("=== /solve 被攔截 ===")
-code, r = api('POST', '/solve', {})
-check("POST /solve 在三角模式下失敗", not r.get('ok'), r.get('message', ''))
-check("  提示為尚未實現", '尚未实现' in r.get('message', ''))
+print("=== /solve：預設演算法(gather)三形態通用，方形專屬演算法明確拒絕 ===")
+# 2026-10-12 更新：gather 自 2026-10-05 起是三形態統一入口，三角下 /solve
+# 用預設演算法**不再被攔**——舊斷言「被攔截 + 提示尚未實現」從那時起就是
+# 假紅（基線 worktree 對照確認）。真正要攔的是方形專屬演算法。
+# **先驗拒絕再啟預設**：/solve 在求解運行中會被當成「取消」，順序反了會
+# 把第二次呼叫吃掉。
+code, r = api('POST', '/solve', {'algorithm': 'ida_star'})
+check("POST /solve 方形專屬演算法在三角模式下被明確拒絕",
+      not r.get('ok') and '三角' in r.get('message', ''),
+      r.get('message', ''))
+# 正向檢查**顯式傳 gather**：/solve 帶 algorithm 會順手改寫 GUI 當前演算法
+# 設置（與菜單裡點選一個算法同語義），不顯式傳就會繼承上一步的 ida_star。
+code, r = api('POST', '/solve', {'algorithm': 'gather'})
+check("POST /solve 聚攏(gather)在三角模式下可用",
+      r.get('ok'), r.get('message', ''))
 
 print("=== 方形無迴歸 ===")
 code, r = api('POST', '/new', {'m': 4, 'n': 4, 'step': 2})

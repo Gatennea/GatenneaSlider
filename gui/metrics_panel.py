@@ -38,10 +38,6 @@ class MetricsPanelMixin:
         self.mp_panel_rect = None
         self.mp_title_rect = None
         self.mp_close_rect = None
-        self.selected_hole = None  # 标记学习：当前选中的洞
-        # 点空白时记下「按在哪个洞上」，松手且**没真正拖动**才真的选它
-        # （gui/events.py 的点空白分支）。避免选洞与拖动视图抢同一手势。
-        self._pending_hole_pick = None
 
     def _mp_panel_size(self, n_rows=None):
         """计算面板宽高。
@@ -217,8 +213,6 @@ class MetricsPanelMixin:
 
         # 目標窗口內的空位：孔洞→圓圈、缺口→三角形
         for h in holes:
-            is_selected = (self.selected_hole is not None and
-                           set(h['cells']) == set(self.selected_hole.get('cells', [])))
             color = (255, 80, 80) if h['size'] == 'large' else (80, 160, 255)
             for r, c in h['cells']:
                 cx, cy = _cell_center(r, c)
@@ -230,10 +224,6 @@ class MetricsPanelMixin:
                            (cx - radius, cy + radius),
                            (cx + radius, cy + radius)]
                     pygame.draw.polygon(self.screen, color, pts, line_w)
-                if is_selected:
-                    pygame.draw.circle(self.screen, (255, 255, 255),
-                                       (int(cx), int(cy)),
-                                       max(2, radius // 2), 0)
 
         # 目標窗口外的方塊（凸起）→ 斜方形
         for r, c in protrusions:
@@ -381,12 +371,6 @@ class MetricsPanelMixin:
                         [(cx, cy - radius),
                          (cx - radius, cy + radius),
                          (cx + radius, cy + radius)], line_w)
-                if (self.selected_hole is not None
-                        and set(h['cells']) == set(
-                            self.selected_hole.get('cells', []))):
-                    pygame.draw.circle(self.screen, (255, 255, 255),
-                                       (int(cx), int(cy)),
-                                       max(2, radius // 2), 0)
 
         for (i, j, up) in protrusions:
             cx, cy = _center(i, j, up)
@@ -456,27 +440,19 @@ class MetricsPanelMixin:
     def get_hole_at_pos(self, screen_x, screen_y):
         """返回屏幕坐标处的洞（若点击在洞格子上），否则 None。
 
-        與調試面板使用同一個目標窗口，確保可點的洞 = 畫出的標記。
+        **纯几何查询，不承载任何「选中」状态** —— 选块填空（GUI._pick_fill）
+        点选空位的那一步用它；调试面板自带的「点洞选中 + 记录样本」能力已于
+        2026-10-12 按用户决定整体删除（由标注模式选空位取代），这里只保留
+        几何判定本身，避免同一个命中逻辑出现第二套写法。
 
-        **必须按形态分派**（2026-10-03 修崩溃）：原先只有方形一份，直接把
-        `self._target_region` 当 `(r0, c0, (rh, cw))` 解包喂给 `detect_holes`。
-        三角下 `_target_region` 是 `TriPlacement` 对象 →
-        `TypeError: cannot unpack non-iterable TriPlacement object`，
-        而这条路径在「点空白处选洞」里，**异常会打断拖动视口的起手**，
-        症状是「点空白拖不动 + 控制台一堆 non-fatal」。
-
-        未实装形态直接返回 None，与面板的「本形态尚未实装」一致。
+        与调试面板使用同一个目标窗口（`_target_region`），确保可点的洞 =
+        画出的标记。**只覆盖方形**：唯一使用者选块填空按形态闸门就不支持
+        三角/米字/带序号，其它形态直接返回 None，不静默套方形公式。
         """
         game = getattr(self, 'game', None)
         if game is None or not getattr(game, 'blocks', None):
             return None
-        kind = self._mp_kind()
-        if kind not in self._MP_SUPPORTED:
-            return None
-        if kind == 'triangle':
-            return self._get_tri_hole_at_pos(screen_x, screen_y)
-        if kind == 'mi':
-            # mi 不画标记 → 没有可点选的标记，点空白不触发选洞
+        if self._mp_kind() != 'square':
             return None
         from solver.ml.hole_detector import detect_holes
         region = getattr(self, '_target_region', None)
@@ -497,138 +473,6 @@ class MetricsPanelMixin:
                 if bx <= world_x < bx + self.cell_size and by <= world_y < by + self.cell_size:
                     return h
         return None
-
-    def _record_hole_selection(self):
-        """保存一条「选洞」训练样本（当前状态洞列表 + 选中洞）。"""
-        import os
-        import json
-        game = getattr(self, 'game', None)
-        if game is None:
-            return
-        if self.selected_hole is None:
-            self.macro_notify_msg = "未选中洞：先点击棋盘上的一个洞"
-            self.macro_notify_timer = 120
-            return
-
-        kind = self._mp_kind()
-        if kind not in self._MP_SUPPORTED:
-            self.macro_notify_msg = f"{kind} 形态不记样本（面板未实装）"
-            self.macro_notify_timer = 120
-            return
-        if kind == 'mi':
-            self._record_mi_hole_selection()
-            return
-        from solver.ml.hole_detector import detect_holes
-        coords = frozenset((b.location[0], b.location[1]) for b in game.blocks)
-        region = getattr(self, '_target_region', None)
-        if region is None:
-            region = self._compute_target_region()
-        if region is None:
-            return
-        holes, protrusions, region = detect_holes(coords, game.m, game.n,
-                                                  self.current_step, region=region)
-
-        selected_index = -1
-        for i, h in enumerate(holes):
-            if set(h['cells']) == set(self.selected_hole.get('cells', [])):
-                selected_index = i
-                break
-
-        record = {
-            'm': game.m,
-            'n': game.n,
-            'step': self.current_step,
-            'region': list(region[0:2]) + list(region[2]),
-            'holes': [{
-                'type': h['type'],
-                'bbox': list(h['bbox']),
-                'size': h['size'],
-                'n_cells': len(h['cells']),
-                'cells': [list(c) for c in h['cells']],
-            } for h in holes],
-            'protrusions': [list(c) for c in protrusions],
-            'selected_hole_index': selected_index,
-        }
-
-        out_dir = os.path.join('save', '选洞样本')
-        os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, 'samples.jsonl')
-        with open(path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
-
-        self.macro_notify_msg = f"已记录选洞样本（第{selected_index}个洞，共{len(holes)}个洞）"
-        self.macro_notify_timer = 120
-
-    def _record_mi_hole_selection(self):
-        """米字格版「选洞样本」（M3）。
-
-        **样本格式与方形不同构，这是有意的**：mi 的洞是**片级**的
-        `(r, c, q)`，一格缺 1 片与缺 4 片是不同大小的洞、缺的片甚至可能
-        不连通（同格内 N/S 相对的两片不共边）。方形样本的 `cells` 是
-        2 元组、隐含「一格一块」的整格口径，直接套过来会把 q 丢掉、
-        训练时把「缺 1 片」当成「缺整格」。
-
-        所以这里同时落两套坐标：
-            cells     : 片级 (r, c, q) —— 真几何，也是 detect_mi_holes 的原样
-            cells_geo : 格级 (r, c)      —— 面板记号与粗粒度训练用
-        """
-        import os
-        import json
-        from solver.ml.mi_holes import detect_mi_holes
-        from solver.ml.mi_adapter import mi_coords
-        from solver.ml.mi_placement import best_placement_of_game
-        game = getattr(self, 'game', None)
-        if game is None or not getattr(game, 'blocks', None):
-            return
-        best = getattr(self, '_target_region', None)
-        if best is None or not hasattr(best, 'cells'):
-            best = best_placement_of_game(
-                game, m=getattr(game, 'm', None), n=getattr(game, 'n', None),
-                step=self.current_step)
-        if best is None:
-            return
-        coords = mi_coords(game)
-        holes, protrusions = detect_mi_holes(coords, best.cells,
-                                             self.current_step)
-
-        selected_index = -1
-        for i, h in enumerate(holes):
-            if set(h['cells']) == set(self.selected_hole.get('cells', [])):
-                selected_index = i
-                break
-
-        record = {
-            'form': 'mi',
-            'm': getattr(game, 'm', None),
-            'n': getattr(game, 'n', None),
-            'step': self.current_step,
-            # 目标窗口用「偏移 + 形状」表达（mi 的偏移可半整数，矩形三元组
-            # 装不下），与 MiPlacement 的字段一一对应。
-            'offset': list(best.offset),
-            'shape': list(best.shape),
-            'lattice': best.lattice,
-            'mod_match': bool(best.mod_match),
-            'holes': [{
-                'type': h['type'],
-                'size': h['size'],
-                'n_cells': len(h['cells']),
-                'n_cells_geo': len(h['cells_geo']),
-                'cells': [list(c) for c in h['cells']],
-                'cells_geo': [list(c) for c in h['cells_geo']],
-            } for h in holes],
-            'protrusions': [list(p) for p in protrusions],
-            'selected_hole_index': selected_index,
-        }
-
-        out_dir = os.path.join('save', '选洞样本')
-        os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, 'samples_mi.jsonl')
-        with open(path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
-
-        self.macro_notify_msg = (
-            f"已记录 mi 选洞样本（第{selected_index}个洞，共{len(holes)}个洞）")
-        self.macro_notify_timer = 120
 
     def draw_metrics_panel(self):
         """绘制聚拢度指标面板。"""
@@ -762,7 +606,8 @@ class MetricsPanelMixin:
                          f"step={step} S={len(mod_auts(m, n, step))}"))
         elif kind == 'triangle':
             # 三角：目标形状是大三角、单元数 k²、放置 = 1 朝向 × 平移
-            from solver.ml.tri_placement import best_placement_of_game
+            from solver.ml.tri_placement import (
+                best_placement_of_game, tri_profile_defect)
             from solver.ml.tri_holes import detect_tri_holes
             k = getattr(game, 'k', 0) or 0
             best = (region if hasattr(region, 'cells')
@@ -771,10 +616,11 @@ class MetricsPanelMixin:
             holes, protrusions = detect_tri_holes(coords, best.cells, step)
             n_gap = sum(1 for h in holes if h['type'] == 'gap')
             n_hole = sum(1 for h in holes if h['type'] == 'hole')
-            from solver.ml.invariants import profile_defect
-            # 三角理想是三角形（非矩形），profile_defect 以 k×k 矩形为参照，
-            # 故「已还原」不为 0 —— 这里当作行列平衡代理，仅供调试参考。
-            phi = profile_defect(coords, k, k)
+            # 剖面缺陷 Φ 走三角专属口径（参照大三角形的奇数阶梯剖面）——
+            # 三角坐标是 (i,j,up) 三元组、理想形状不是矩形，方形那套
+            # profile_defect 两者都不适用（曾直接 ValueError，2026-10-12 修）。
+            # 与方形同构：Φ=0 ⟺ 已还原（平移无关）。
+            phi = tri_profile_defect(coords, k)
             rows = [
                 ("聚拢度", f"{met['score'] * 100:.1f}%"),
                 ("重叠", f"{met['overlap']}/{k * k}"),
@@ -802,39 +648,6 @@ class MetricsPanelMixin:
                  "有约束" if tc else ("无约束" if step > 1 else "step=1")),
             ]
         return rows, met
-
-    def _get_tri_hole_at_pos(self, screen_x, screen_y):
-        """三角版「点洞」：命中判定用**重心距离**，不用方形的矩形盒。
-
-        方形的洞格是世界坐标里的轴对齐矩形（`bx <= wx < bx+cell`）；三角的
-        单元是斜边三角形，矩形盒会溢出到邻格上——点在两格之间的缝上就可能
-        同时命中两格。改用「世界点到该单元重心的距离 < 外接盒半径」，与
-        `_draw_tri_marks` 画记号时用的 `piece_center` 是同一个点，
-        保证**能点到的洞 = 画出的标记**（同方形分支的纪律）。
-        """
-        from solver.ml.tri_holes import detect_tri_holes
-        game = getattr(self, 'game', None)
-        if game is None or not getattr(game, 'blocks', None):
-            return None
-        best = getattr(self, '_target_region', None)
-        if best is None or not hasattr(best, 'cells'):
-            best = self._compute_target_region()
-        if best is None or not hasattr(best, 'cells'):
-            return None
-        coords = frozenset(tuple(b.location) for b in game.blocks)
-        step_len = getattr(self, 'current_step', 1)
-        holes, _ = detect_tri_holes(coords, best.cells, step_len)
-
-        wx, wy = self.screen_to_world(screen_x, screen_y)
-        view = self._tri_view()
-        # 单元外接盒半宽 = 0.5·cell；取 0.55 留一点容差又不至于选中邻格
-        reach = view.cell_size * 0.55
-        for h in holes:
-            for (i, j, up) in h['cells']:
-                cx, cy = view.piece_center(i, j, up)
-                if (wx - cx) ** 2 + (wy - cy) ** 2 <= reach * reach:
-                    return h
-        return None
 
     def _mp_row_count(self):
         """当前形态的面板行数（不重算指标内容）。
