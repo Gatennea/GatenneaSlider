@@ -152,6 +152,9 @@ def test_load_compressed():
     check("载入压缩档末态一致", gui_final_cells(gui) == src_final)
     check("载入后 history_index 指向末态",
           gui.game_history.history_index == len(gui.game_history.history) - 1)
+    # 回退机制会把校验失败掩盖成"看起来正常"——必须显式断言无告警
+    check("载入无回退告警", not getattr(gui, 'macro_notify_msg', None),
+          f"msg={getattr(gui, 'macro_notify_msg', None)!r}")
 
 
 # ---------------------------------------------------------------- 4. 工具 convert_save_file 磁盘互转
@@ -247,6 +250,8 @@ def test_numbered():
     check("载入后逐快照 numbers 与解压档一致",
           [h.get('numbers') for h in gui2.game_history.history]
           == [s.get('numbers') for s in dec['history']['snapshots']])
+    check("数字载入无回退告警", not getattr(gui2, 'macro_notify_msg', None),
+          f"msg={getattr(gui2, 'macro_notify_msg', None)!r}")
 
 
 if __name__ == '__main__':
