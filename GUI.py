@@ -709,7 +709,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # （kind='square' 是默认值，不覆盖，保持「记住上次关闭时的样子」）
         if kind == 'triangle':
             if not self.new_triangle_puzzle(m, step):
-                raise ValueError(f"无效的三角形参数：k={m}, step={step}（需 k≥2 且 step<k）")
+                raise ValueError(f"无效的三角形参数：k={m}, step={step}"
+                                 f"（需 k≥3 且 step≤k−2，否则一步都动不了）")
         elif kind == 'mi':
             if not self.new_mi_puzzle(m, n, step):
                 raise ValueError(f"无效的米字格参数：m={m}, n={n}, step={step}（需 m,n≥2 且 step<max）")
@@ -812,7 +813,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         参数：
             k: 大三角形边长（单元三角个数，共 k² 个滑块）
-            step: 移动步数（等级），须小于 k
+            step: 移动步数（等级），须满足 k − step ≥ 2
 
         建局即为实心大三角形（還原態），Alt+S 另行打亂。
         求解器/著色等高級功能照計劃禁用。
@@ -826,7 +827,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._last_timed_result = None
         self._ann_cancel_session('切换谜题')
 
-        if k < 2 or step >= k:
+        # 可动性门槛（已验证性质，见 math_question/tri_kstep_property.py）：
+        # 三角形存在任何合法移动 ⟺ k − step ≥ 2。切片沿缝平行滑动，每推一格都
+        # 要求「无碰撞 + 整体仍连通」，而边长 k 的实心三角形同族切口接触面
+        # 最长只有 k−1，滑 step 格需要接触面 ≥ step+1，于是
+        # k−1 ≥ step+1 ⟺ k−step ≥ 2。旧守卫只挡了 step ≥ k，放过了
+        # step = k−1 这类一步都动不了、打乱恒回还原态的死配置。
+        if k < 3 or step < 1 or step > k - 2:
             return False
         if self.timer_state == 'running':
             self.macro_notify_msg = "计时中无法切换谜题"

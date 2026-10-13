@@ -816,11 +816,14 @@ class DialogsMixin:
                         return True
 
                     if getattr(self, 'custom_kind', 'rect') == 'triangle':
-                        if m < 2:
-                            self.custom_error = "边长必须 >= 2"
+                        # 门槛同上：三角形存在任何合法移动 ⟺ k − step ≥ 2。
+                        # 等级贴着边长（step = k−1）时一步都动不了，打乱会
+                        # 恒回还原态，故在建局前就挡掉。
+                        if m < 3:
+                            self.custom_error = "三角形边长必须 >= 3"
                             return True
-                        if step >= m:
-                            self.custom_error = f"等级必须 < {m}"
+                        if step > m - 2:
+                            self.custom_error = f"三角形等级必须 <= {m - 2}"
                             return True
                         self.new_triangle_puzzle(m, step)
                         self.show_custom_dialog = False
