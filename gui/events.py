@@ -557,6 +557,8 @@ class EventsMixin:
                                         self.save_to_file()
                                     elif i == 2:
                                         self.save_as()
+                                    elif i == 3:
+                                        self.convert_save()
                                     file_clicked = True
                                     break
                             self.close_all_menus()
@@ -2732,6 +2734,15 @@ class EventsMixin:
                     self.macro_notify_msg = f"操作日志：{status}"
                     self.macro_notify_timer = 90
                     op_log.log('oplog_toggle', on=self.op_log_enabled)
+                    return
+
+            # 文件 Tab：压缩存档开关（矩形谜题保存为 replay 压缩格式）
+            if self.settings_active_tab == 'file' and hasattr(self, '_settings_compressed_toggle_rect'):
+                if self._settings_compressed_toggle_rect.collidepoint(mx, my):
+                    self.use_compressed_save = not getattr(self, 'use_compressed_save', False)
+                    status = '开' if self.use_compressed_save else '关'
+                    self.macro_notify_msg = f"压缩存档：{status}"
+                    self.macro_notify_timer = 90
                     return
 
             # 快捷键 Tab：点击按键区域进入录制模式

@@ -2381,8 +2381,27 @@ class RendererMixin:
             "写在 config/op_log.jsonl，只用于调试，日常请关闭", True, (150, 150, 150))
         self.screen.blit(hint2, (x + 15, og_y + 54))
 
+        # 压缩存档开关（use_compressed_save：矩形谜题保存为 replay 压缩格式）
+        cy = og_y + 70
+        label4 = self.dialog_font.render("压缩存档：", True, self.colors['dialog_text'])
+        self.screen.blit(label4, (x + 15, cy))
+        self._settings_compressed_toggle_rect = pygame.Rect(toggle_x, cy, btn_w, btn_h)
+        flag4 = getattr(self, 'use_compressed_save', False)
+        btn_color = self.colors['button_bg'] if flag4 else self.colors['input_bg']
+        btn_text = "ON" if flag4 else "OFF"
+        text_color = (255, 255, 255) if flag4 else (150, 150, 150)
+        pygame.draw.rect(self.screen, btn_color, self._settings_compressed_toggle_rect, border_radius=4)
+        ts4 = self.status_font.render(btn_text, True, text_color)
+        self.screen.blit(ts4, ts4.get_rect(center=self._settings_compressed_toggle_rect.center))
+        hint = self.status_font.render(
+            "打开后，矩形谜题存档改为“重放压缩格式”（初始+末态+步骤原语+哈希校验）", True, (150, 150, 150))
+        self.screen.blit(hint, (x + 15, cy + 34))
+        hint2 = self.status_font.render(
+            "体积大幅缩小；异形谜题不受此开关影响，仍存普通格式", True, (150, 150, 150))
+        self.screen.blit(hint2, (x + 15, cy + 54))
+
         # 当前存档路径
-        path_y = og_y + 80
+        path_y = cy + 80
         plabel = self.dialog_font.render("当前存档：", True, self.colors['dialog_text'])
         self.screen.blit(plabel, (x + 15, path_y))
         path = getattr(self, 'current_file_path', None) or '(未保存/自动暂存)'
@@ -2413,7 +2432,7 @@ class RendererMixin:
         elif self.settings_active_tab == 'gather':
             return 12 + 26 + len(self._gather_param_specs) * 52 + 10
         elif self.settings_active_tab == 'file':
-            return 320  # 存档只读 + 防止覆盖 + 操作日志 + 当前存档路径说明
+            return 420  # 存档只读 + 防止覆盖 + 操作日志 + 压缩存档 + 当前存档路径说明
         else:
             # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
             from solver import SOLVER_ALGORITHMS

@@ -15,6 +15,8 @@ import os
 import hashlib
 import pygame
 from puzzle_types import create_puzzle
+from gui.compressed_save import (is_compressed, load_compressed_into_gui,
+                                 compress_from_game, convert_save_file)
 
 
 def _compute_checksum(data: dict) -> str:
@@ -178,6 +180,7 @@ class FileOpsMixin:
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'op_log_enabled': getattr(self, 'op_log_enabled', False),
+            'use_compressed_save': getattr(self, 'use_compressed_save', False),
             'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
@@ -273,7 +276,8 @@ class FileOpsMixin:
         self.file_menu_items = [
             f"打开 {self._format_menu_shortcut('load')}",
             f"保存 {self._format_menu_shortcut('save')}",
-            '另存为...'
+            '另存为...',
+            '存档转换...'
         ]
         self.edit_menu_items = [
             f"撤销 {self._format_menu_shortcut('undo')}",
@@ -428,6 +432,9 @@ class FileOpsMixin:
                     # 操作日志开关（默认关；由 GUI.__init__ 末尾调 set_enabled 生效）
                     if 'op_log_enabled' in config:
                         self.op_log_enabled = bool(config['op_log_enabled'])
+                    # 压缩存档开关（矩形谜题保存为 replay 压缩格式）
+                    if 'use_compressed_save' in config:
+                        self.use_compressed_save = bool(config['use_compressed_save'])
                     # 恢复聚拢参数（缺失的键用默认值）
                     if 'gather_params' in config and isinstance(config['gather_params'], dict):
                         defaults = getattr(self, 'gather_params', {})
@@ -458,6 +465,15 @@ class FileOpsMixin:
     def _build_save_data(self) -> dict:
         """构建当前游戏状态的保存数据"""
         self.game.update_matrix()
+        # 矩形谜题 + 开启压缩：直接生成 replay 压缩格式
+        # （初始+末态+步骤原语+哈希校验点），异形不受此开关影响
+        if getattr(self, 'use_compressed_save', False) and not (
+                getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False)):
+            try:
+                return compress_from_game(self)
+            except Exception as e:
+                # 压缩失败（理论仅当历史不一致）回退普通格式，保证存档不丢
+                print(f"压缩存档生成失败，回退普通格式：{e}")
         history_data = {
             'history_index': self.game_history.history_index,
             'snapshots': []
@@ -507,6 +523,20 @@ class FileOpsMixin:
 
     def _load_save_data(self, save_data: dict):
         """从保存数据恢复游戏状态"""
+        # 压缩存档（replay 格式）：用重放重建历史 + 哈希校验，失败回退末态
+        if is_compressed(save_data):
+            # 载入会整体替换棋盘 → 结束进行中的标注会话（与普通分支一致）
+            self._ann_cancel_session('载入存档')
+            if not save_data.get('checksum') or _compute_checksum(save_data) != save_data.get('checksum'):
+                raise ValueError('存档校验失败：文件可能已损坏或被修改')
+            ok, warn = load_compressed_into_gui(self, save_data)
+            if not ok:
+                # 公式校验未过 → 已按末态加载（棋盘正确），提示用户
+                self.macro_notify_msg = warn
+                self.macro_notify_timer = 180
+                print(f"压缩存档载入：{warn}")
+            self._reset_file_dirty()
+            return
         # 载入会整体替换棋盘 → 结束进行中的标注会话
         self._ann_cancel_session('载入存档')
         # 载入只读标志：带 readonly:true 的存档载入后为只读
@@ -683,6 +713,10 @@ class FileOpsMixin:
                 self._pending_load = False
                 if self.file_dialog.result:
                     self._do_load_from_path(self.file_dialog.result)
+            if getattr(self, '_pending_convert', False):
+                self._pending_convert = False
+                if self.file_dialog.result:
+                    self._do_convert_from_path(self.file_dialog.result)
 
     def _do_load_from_path(self, path: str):
         """从指定路径加载游戏（竞速模式下拒绝，防加载已复原存档判胜）"""
@@ -720,3 +754,44 @@ class FileOpsMixin:
     def import_map(self):
         """兼容旧终端指令：从文件打开"""
         self.load_from_file()
+
+    def convert_save(self):
+        """存档转换：弹文件对话框选一个存档 → 一键转成另一种格式并导出文件。
+
+        用法：选中一个存档，点确定，自动在其同目录生成转换后的文件
+        （普通→压缩：<名>.compressed.json；压缩→普通：<名>.normal.json）。
+        """
+        self.file_dialog.show(
+            mode='open',
+            title='选择要转换的存档',
+            initial_dir=self.save_dir,
+            extensions=['json']
+        )
+        self._pending_convert = True
+
+    def _do_convert_from_path(self, src_path: str):
+        """把 src_path 转成另一种格式写到同目录的派生文件名。"""
+        try:
+            with open(src_path, 'r', encoding='utf-8') as f:
+                src = json.load(f)
+            src_compressed = is_compressed(src)
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            self.macro_notify_msg = f"读取失败（文件可能损坏）：{e}"
+            self.macro_notify_timer = 180
+            print(f"存档转换读取失败: {e}")
+            return
+        except Exception as e:
+            self.macro_notify_msg = f"读取失败：{e}"
+            self.macro_notify_timer = 180
+            return
+        base, _ = os.path.splitext(src_path)
+        dst = (base + '.normal.json') if src_compressed else (base + '.compressed.json')
+        try:
+            kind, msg = convert_save_file(src_path, dst)
+            self.macro_notify_msg = f"已转换（{kind}）：{os.path.basename(dst)}"
+            self.macro_notify_timer = 200
+            print(msg)
+        except Exception as e:
+            self.macro_notify_msg = f"转换失败：{e}"
+            self.macro_notify_timer = 240
+            print(f"存档转换失败: {e}")
