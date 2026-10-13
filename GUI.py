@@ -4044,6 +4044,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 self.draw_board()
                 self.draw_right_panel()
+                self.draw_status_bar()
 
                 # 动态更新编辑菜单的求解按钮文字
                 shortcut = self._format_menu_shortcut('auto_solve')
@@ -4052,15 +4053,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 else:
                     self.edit_menu_items[-1] = f'自动求解 {shortcut}'
 
-                self.draw_menu_bar()
-                self.draw_status_bar()
-
-                # 浮动面板（先画，被模态对话框遮住）
+                # 浮动面板（先画：位于菜单层和模态对话框之下）
                 self.draw_virtual_keyboard()
                 self.draw_metrics_panel()
                 self.draw_records_panel()
                 # 标注模式（工具栏 + 跟踪标记 + 子对话框）
                 self.draw_annotation_mode()
+
+                # 菜单栏 + 下拉菜单：非模态最上层（下拉菜单盖住浮动面板）
+                self.draw_menu_bar()
 
                 # 模态对话框（后画，最上层）
                 if self.show_help:

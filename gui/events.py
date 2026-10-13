@@ -44,6 +44,36 @@ def parse_mi_coord(text: str):
 class EventsMixin:
     """事件处理相关方法"""
     
+    def _dropdown_blocks_click(self, pos):
+        """点击是否落在「菜单层」：顶栏本体，或任一已打开下拉/子菜单的矩形。
+
+        图层约定：菜单栏与下拉菜单盖住浮动面板（绘制在面板之后），点击
+        命中也必须同序——面板事件收到这种点击时让位，交给主分发的菜单
+        分支处理，否则会出现「看着点菜单、实际点到面板」的错位。
+        """
+        x, y = pos
+        if y < self.menu_bar_height:
+            return True
+        checks = (
+            ('show_file_menu', 'file_menu_rects'),
+            ('show_edit_menu', 'edit_menu_rects'),
+            ('show_puzzle_menu', 'puzzle_menu_rects'),
+            ('show_macro_menu', 'macro_menu_rects'),
+            ('show_settings_menu', 'settings_menu_rects'),
+        )
+        for flag, rects_attr in checks:
+            if not getattr(self, flag, False):
+                continue
+            for rect in getattr(self, rects_attr, None) or []:
+                if rect.collidepoint(x, y):
+                    return True
+        # 谜题二级子菜单（谜题菜单展开时同样盖住面板）
+        if getattr(self, 'show_puzzle_menu', False) and getattr(self, 'puzzle_sub_open', ''):
+            for rect in getattr(self, 'puzzle_sub_rects', None) or []:
+                if rect.collidepoint(x, y):
+                    return True
+        return False
+
     def handle_events(self):
         """处理用户输入事件"""
         for event in pygame.event.get():
@@ -261,17 +291,27 @@ class EventsMixin:
                     self._handle_settings_dialog_event(event)
                     continue
 
-                # 虚拟键盘事件（浮动面板：拖动 + 按钮点击）
-                if self.handle_virtual_keyboard_event(event):
-                    continue
+                # 图层约定：菜单栏/下拉菜单盖住浮动面板 → 点击落在菜单层
+                # （顶栏或已打开的下拉矩形）时，面板事件让位给菜单分支；
+                # 同时补上与「点面板外」同款的清理副作用（失焦/取消确认）
+                if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                        and self._dropdown_blocks_click(event.pos)):
+                    self.vk_jump_focus = False
+                    self.rp_confirm_delete_id = None
+                    self.rp_matrix_menu_open = False
+                    self.rp_matrix_menu_rects = []
+                else:
+                    # 虚拟键盘事件（浮动面板：拖动 + 按钮点击）
+                    if self.handle_virtual_keyboard_event(event):
+                        continue
 
-                # 聚拢度指标面板事件（浮动面板：拖动 + 关闭）
-                if self.handle_metrics_panel_event(event):
-                    continue
+                    # 聚拢度指标面板事件（浮动面板：拖动 + 关闭）
+                    if self.handle_metrics_panel_event(event):
+                        continue
 
-                # 成绩记录面板事件（浮动面板：拖动/关闭/删除/滚动）
-                if self.handle_records_panel_event(event):
-                    continue
+                    # 成绩记录面板事件（浮动面板：拖动/关闭/删除/滚动）
+                    if self.handle_records_panel_event(event):
+                        continue
 
                 # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解，及连续播放时的空格打断）
                 if self.animating and event.type == pygame.KEYDOWN:
