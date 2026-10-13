@@ -187,15 +187,20 @@ def test_convert_disk():
 
 # ---------------------------------------------------------------- 5. 数字谜题端到端
 def _drive_moves(gui, count):
-    """无头驱动真实落子管线走 count 步（复刻宏执行的 opt→try_move→commit）。"""
-    DIRS = {'h': ('w', 's'), 'v': ('a', 'd')}
+    """无头驱动真实落子管线走 count 步（复刻宏执行的 opt→try_move→commit）。
+
+    规则对齐真实玩法：滑动方向平行于缝（横缝 h 左右滑 a/d，竖缝 v 上下滑
+    w/s）；内部缝线 0..m-2（m-1 一侧为空 = 整板侧，引擎已拒绝）。
+    """
+    DIRS = {'h': ('a', 'd'), 'v': ('w', 's')}
     made = 0
     for _ in range(count * 40):
         if made >= count:
             break
         moved = False
         for gt in ('h', 'v'):
-            lines = range(1, gui.current_m) if gt == 'h' else range(1, gui.current_n)
+            lines = (range(0, gui.current_m - 1) if gt == 'h'
+                     else range(0, gui.current_n - 1))
             for line in lines:
                 for side in ('above', 'below') if gt == 'h' else ('left', 'right'):
                     blk = gui._find_block_on_side(gt, line, side)
@@ -254,11 +259,34 @@ def test_numbered():
           f"msg={getattr(gui2, 'macro_notify_msg', None)!r}")
 
 
+# ---------------------------------------------------------------- 6. 引擎闸门：拒绝全员搬移
+def test_engine_rejects_whole_board():
+    print("\n=== 6. 引擎闸门：全员搬移（纯平移）必须拒绝 ===")
+    from game import SliderMatrix
+    g = SliderMatrix(4, 4)
+    for b in g.blocks:
+        b.be_opted = True
+    pos, reason = g.try_move_ex('w', 2)
+    check("全员选中 try_move_ex 拒绝", not pos and reason == 'all_selected',
+          f"reason={reason}")
+    check("try_move 同样拒绝", g.try_move('w', 2) == [])
+    # 子块移动不受影响
+    for b in g.blocks:
+        b.be_opted = False
+    g.opt('h', 0, g.blocks[0])          # 行 0（above = 行 ≤ 0）
+    sel = [b for b in g.blocks if b.be_opted]
+    check("子块正常选中（行 0 共 4 块）", len(sel) == 4, f"selected={len(sel)}")
+    pos, reason = g.try_move_ex('a', 2)  # 沿横缝平行方向滑（真实规则）
+    check("子块正常移动放行", bool(pos) and reason == '',
+          f"reason={reason}, pos={bool(pos)}")
+
+
 if __name__ == '__main__':
     test_module_roundtrip()
     test_build_save_data()
     test_load_compressed()
     test_convert_disk()
     test_numbered()
+    test_engine_rejects_whole_board()
     print("\n" + ("全部通过 ✅" if not _failures else f"存在失败 ❌: {_failures}"))
     sys.exit(1 if _failures else 0)

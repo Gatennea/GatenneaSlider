@@ -1654,6 +1654,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.macro_notify_msg = {
                     'disconnected': "滑动失败：移动后滑块会断开",
                     'collision': "滑动失败：移动后滑块会重叠",
+                    'all_selected': "滑动失败：不能移动全部滑块",
                 }.get(reason, "滑动失败")
                 self.macro_notify_timer = 90
                 return None
@@ -1811,6 +1812,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 msg = {
                     'disconnected': "滑动失败：移动后滑块会断开",
                     'collision': "滑动失败：移动后滑块会重叠",
+                    'all_selected': "滑动失败：不能移动全部滑块",
                 }.get(reason, "滑动失败")
                 if gap_type in ('h', 'v') and self._mi_shifted():
                     # 錯位態的半整數橫豎縫容易被另一側卡住：沿斜向把任一半

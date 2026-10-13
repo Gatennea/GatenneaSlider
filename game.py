@@ -445,6 +445,7 @@ class SliderMatrix:
             (positions, reason)
             - positions: 最终位置列表 [(row, col), ...]；失败为空列表
             - reason: '' 成功；'no_selection' 无选中滑块；
+                      'all_selected' 全员选中（纯平移，无意义）；
                       'bad_direction' 方向字母无效；
                       'collision' 移动后与未选中滑块重叠；
                       'disconnected' 移动后整体断开（失去单一连通）
@@ -454,6 +455,12 @@ class SliderMatrix:
 
         if not selected:
             return [], 'no_selection'
+        if not non_selected:
+            # 全员选中 = 整体纯平移：盘面相对构型毫无变化（复原判定平移无关），
+            # 且 GUI 交互做不出这种选法（切缝两侧必有块）。碰撞检查在全员
+            # 选中时形同虚设（无静块可撞），必须在引擎层显式拒绝，
+            # 防脚本/HTTP/重放造出毫无意义的废步。
+            return [], 'all_selected'
 
         non_selected_positions = set(tuple(b.location) for b in non_selected)
         delta_map = DIRECTIONS
