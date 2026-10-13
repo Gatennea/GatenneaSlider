@@ -111,10 +111,11 @@ def _game_from_snapshot(snap, m, n) -> SliderMatrix:
 
 def _state_hash(game) -> str:
     """游戏当前态的稳定哈希（matrix + 编号），用于校验点与末态比对。"""
-    nums = {}
-    for b in game.blocks:
-        if getattr(b, 'number', None) is not None:
-            nums[(b.location[0], b.location[1])] = b.number
+    # 编号必须序列化成 [r, c, 编号] 列表（排序保稳）：dict 用 tuple 当 key
+    # 会让 json.dumps 抛 TypeError——数字谜题此前因此在压缩分支必炸。
+    nums = sorted([b.location[0], b.location[1], b.number]
+                  for b in game.blocks
+                  if getattr(b, 'number', None) is not None)
     payload = json.dumps({'m': game.matrix, 'n': nums}, sort_keys=True,
                          ensure_ascii=False)
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()

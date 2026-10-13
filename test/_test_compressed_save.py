@@ -182,10 +182,78 @@ def test_convert_disk():
         check("异形转换被拒绝", True)
 
 
+# ---------------------------------------------------------------- 5. 数字谜题端到端
+def _drive_moves(gui, count):
+    """无头驱动真实落子管线走 count 步（复刻宏执行的 opt→try_move→commit）。"""
+    DIRS = {'h': ('w', 's'), 'v': ('a', 'd')}
+    made = 0
+    for _ in range(count * 40):
+        if made >= count:
+            break
+        moved = False
+        for gt in ('h', 'v'):
+            lines = range(1, gui.current_m) if gt == 'h' else range(1, gui.current_n)
+            for line in lines:
+                for side in ('above', 'below') if gt == 'h' else ('left', 'right'):
+                    blk = gui._find_block_on_side(gt, line, side)
+                    if blk is None:
+                        continue
+                    gui.game.opt(gt, line, blk)
+                    for d in DIRS[gt]:
+                        final = gui.game.try_move(d, gui.current_step)
+                        if final:
+                            selected = [b for b in gui.game.blocks if b.be_opted]
+                            mi = {'gap_type': gt, 'gap_line': line, 'direction': d,
+                                  'step': gui.current_step,
+                                  'moved_positions': [list(b.location) for b in selected]}
+                            gui.game.commit_move(final)
+                            gui.step_count += 1
+                            gui.game_history.save_snapshot(gui.game, mi,
+                                                           gui._move_merge_key())
+                            made += 1
+                            moved = True
+                            break
+                    if moved:
+                        break
+                if moved:
+                    break
+            if moved:
+                break
+    return made
+
+
+def test_numbered():
+    print("\n=== 5. 数字谜题：压缩→解压→载入 端到端（语料无数字档，唯此覆盖） ===")
+    gui = SliderGUI(m=6, n=6, step=2)
+    gui.animation_enabled = False
+    gui.new_puzzle(6, 6, 2, numbered=True)
+    n = _drive_moves(gui, 12)
+    check("数字局驱动步数达标", n >= 10, f"made={n}")
+
+    gui.use_compressed_save = True
+    comp = gui._build_save_data()
+    check("数字局产出压缩格式", is_compressed(comp), f"format={comp.get('format')}")
+    dec = decompress_to_normal(comp)
+    check("数字档校验和解压后可验", verify_checksum(dec))
+    check("末态 numbers 保留",
+          dec['history']['snapshots'][-1].get('numbers')
+          == gui.game_history.history[-1].get('numbers'))
+
+    gui2 = SliderGUI(m=6, n=6, step=2)
+    gui2.animation_enabled = False
+    gui2._load_save_data(comp)
+    check("载入数字压缩档 numbered 标记", gui2.numbered is True)
+    check("载入后末态一致", gui_final_cells(gui2) == gui_final_cells(gui))
+    check("载入后逐快照 numbers 与解压档一致",
+          [h.get('numbers') for h in gui2.game_history.history]
+          == [s.get('numbers') for s in dec['history']['snapshots']])
+
+
 if __name__ == '__main__':
     test_module_roundtrip()
     test_build_save_data()
     test_load_compressed()
     test_convert_disk()
+    test_numbered()
     print("\n" + ("全部通过 ✅" if not _failures else f"存在失败 ❌: {_failures}"))
     sys.exit(1 if _failures else 0)
