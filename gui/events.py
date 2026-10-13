@@ -580,10 +580,13 @@ class EventsMixin:
                                         self.shuffle_puzzle()
                                     elif i == 3:
                                         self.reset_puzzle()
-                                    # 5 = 自动求解（原先还有一项「单段求解」占了
-                                    # 5 号位；它已改称「选块填空」并收进求解器
-                                    # 列表，由 Ctrl+A 统一触发，这里不再单列）
+                                    # 5 = 居中（视图操作：把滑块组拉回屏幕中央）
+                                    # 6 = 自动求解（保持最后一项；原先 5 号位的
+                                    # 「单段求解」已改称「选块填空」并收进求解器
+                                    # 列表，由 Ctrl+A 统一触发，不再单列）
                                     elif i == 5:
+                                        self.center_map()
+                                    elif i == 6:
                                         self._start_auto_solve()
                                     edit_clicked = True
                                     break

@@ -285,8 +285,8 @@ class FileOpsMixin:
             f"打乱 {self._format_menu_shortcut('shuffle')}",
             f"重置 {self._format_menu_shortcut('reset')}",
             '---',
-            # 单段求解已改称「选块填空」并入求解算法列表，统一由 Ctrl+A 触发，
-            # 因此不再占用这里的独立菜单项（也不再有专属快捷键 Ctrl+G）。
+            # 视图操作：把滑块组拉回屏幕中央（撤销/重做等坐标漂移跑出视口时手动救回）
+            '居中',
             # 自动求解必须留在最后一项：主循环按 edit_menu_items[-1]
             # 把它改成「停止求解」
             f"自动求解 {self._format_menu_shortcut('auto_solve')}",
