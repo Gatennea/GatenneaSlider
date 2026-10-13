@@ -569,22 +569,57 @@ class DialogsMixin:
         pygame.draw.line(self.screen, self.colors['dialog_border'],
                         (dialog_x + 15, line_y), (dialog_x + dialog_width - 15, line_y))
 
+        # 检索框（始终可见；打开帮助时焦点默认在它上面）。
+        # 这是「功能可发现性」的主入口：玩家用口语（「着色」「怎么撤销」）就能
+        # 定位功能，结果会说明当前形态/模式下能不能用，回车直接到位。
+        search_h = 30
+        search_rect = pygame.Rect(dialog_x + 20, dialog_y + 60,
+                                  dialog_width - 40, search_h)
+        self.help_search_rect = search_rect
+        query = str(getattr(self, 'help_query', '') or '')
+        active = bool(getattr(self, 'help_search_active', False))
+        pygame.draw.rect(self.screen,
+                         self.colors['input_active' if active else 'input_bg'],
+                         search_rect, border_radius=4)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'],
+                         search_rect, 1, border_radius=4)
+        if query:
+            text_surf = self.dialog_font.render(query, True, self.colors['input_text'])
+        else:
+            text_surf = self.dialog_font.render(
+                '检索功能（试试「着色」「撤销」「三角」「怎么用」）', True, (140, 140, 140))
+        self.screen.blit(text_surf, (search_rect.x + 8, search_rect.y + 4))
+        if active and (pygame.time.get_ticks() // 500) % 2 == 0:
+            cx = search_rect.x + 8 + text_surf.get_width() + 2
+            pygame.draw.line(self.screen, self.colors['input_text'],
+                             (cx, search_rect.y + 6),
+                             (cx, search_rect.y + search_h - 6), 1)
+
         help_lines = self._load_help_lines()
 
-        # 计算内容总高度（考虑自动换行）
+        # 内容绘制区域（检索框下方到关闭提示上方）
+        content_top = dialog_y + 98
+        content_bottom = dialog_y + dialog_height - 40
+        content_height = content_bottom - content_top
         text_max_width = dialog_width - 65
+
+        # 有检索词 → 渲染检索结果；无 → 渲染操作说明全文（与旧行为一致）。
+        # 检索态滚动归零：结果条数与文档长度不同，沿用旧偏移会看到空白。
+        query = str(getattr(self, 'help_query', '') or '').strip()
+        if query:
+            content_lines = self._help_search_result_lines(
+                query, dialog_x, content_top, dialog_width, text_max_width)
+        else:
+            content_lines = help_lines
+
+        # 计算内容总高度（考虑自动换行）
         total_content_height = 0
-        for line, is_header in help_lines:
+        for line, is_header in content_lines:
             if not line:
                 total_content_height += 8
             else:
                 wrapped = self._wrap_text(line, self.dialog_font, text_max_width)
                 total_content_height += 26 * len(wrapped)
-
-        # 内容绘制区域（标题下方到关闭提示上方）
-        content_top = dialog_y + 58
-        content_bottom = dialog_y + dialog_height - 40
-        content_height = content_bottom - content_top
 
         # 存储高度信息供事件处理使用
         self._help_content_height = content_height
@@ -603,7 +638,7 @@ class DialogsMixin:
         self.screen.set_clip(clip_rect)
 
         y_offset = content_top - scroll_offset
-        for line, is_header in help_lines:
+        for line, is_header in content_lines:
             if not line:
                 y_offset += 8
                 continue
@@ -638,9 +673,66 @@ class DialogsMixin:
             self.help_scrollbar_knob_rect = None
 
         # 底部提示
-        close_text = self.status_font.render("点击外部区域关闭 | 滚轮翻页", True, (150, 150, 150))
+        if query:
+            close_text = self.status_font.render(
+                "↑↓ 选择 · 回车 直接到位 · Esc 清空检索词", True, (150, 150, 150))
+        else:
+            close_text = self.status_font.render(
+                "点击外部区域关闭 | 滚轮翻页", True, (150, 150, 150))
         close_rect = close_text.get_rect(center=(self.screen_width // 2, dialog_y + dialog_height - 20))
         self.screen.blit(close_text, close_rect)
+
+    def _help_search_result_lines(self, query, dialog_x, content_top,
+                                  dialog_width, text_max_width):
+        """把检索结果渲染成 [(文本, 是否标题)]，并登记每项的点击矩形。
+
+        命中范围：功能名 + 玩家别名 + 一句话用法 + 常见困惑 + 所在位置。
+        每条结果依次显示「名称 —— 位置」「怎么用」「常见困惑」，中间空一行。
+        """
+        from gui import feature_index as _fi
+
+        form = self._feature_form()
+        mode = getattr(self, 'game_mode', 'practice')
+        results = _fi.search(query, form=form, mode=mode, limit=25)
+
+        lines = []
+        rects = []
+        if not results:
+            lines.append((f'没有功能匹配「{query}」。', True))
+            lines.append(('换个说法试试：着色 / 撤销 / 打乱 / 求解 / 三角 / 米字 / 等级 / 怎么用',
+                          False))
+            self.help_result_rects = rects
+            self.help_sel = 0
+            return lines
+
+        lines.append((f'找到 {len(results)} 项（↑↓ 选择，回车 直接到位）：', True))
+        lines.append(('', False))
+
+        y = content_top
+        for _line in lines:
+            y += 8 if not _line[0] else 26
+
+        for index, (_score, entry, available) in enumerate(results):
+            top = y
+            head = entry['name']
+            if available:
+                head = f'▶ {head}'
+            else:
+                head = f'✕ {head}（当前不可用：{_fi.unsupported_reason(entry, form, mode)}）'
+            head += f'   ——   {_fi.place_text(entry["place"])}'
+            for piece in (head, entry.get('howto', ''), entry.get('confusion', '')):
+                if not piece:
+                    continue
+                for wline in self._wrap_text(piece, self.dialog_font, text_max_width):
+                    lines.append((wline, index == getattr(self, 'help_sel', 0)))
+                    y += 26
+            lines.append(('', False))
+            y += 8
+            rects.append((pygame.Rect(dialog_x + 10, top, dialog_width - 30,
+                          y - top), entry))
+
+        self.help_result_rects = rects
+        return lines
 
     def draw_custom_puzzle_dialog(self):
         """绘制自定义谜题对话框：先选形态，再填尺寸与等级"""

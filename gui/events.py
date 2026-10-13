@@ -162,6 +162,50 @@ class EventsMixin:
                 
                 # 帮助对话框
                 if self.show_help:
+                    # 检索框交互（见 gui/feature_index.py）：
+                    #   鼠标点检索框 = 聚焦；直接打字也自动聚焦；↑↓ 选结果；回车 = 一键到位。
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        sr = getattr(self, 'help_search_rect', None)
+                        if sr and sr.collidepoint(event.pos):
+                            self.help_search_active = True
+                            continue
+                        hit_entry = None
+                        for _i, (_r, _entry) in enumerate(
+                                getattr(self, 'help_result_rects', None) or ()):
+                            if _r.collidepoint(event.pos):
+                                self.help_sel = _i
+                                hit_entry = _entry
+                                break
+                        if hit_entry is not None:
+                            self._activate_feature(hit_entry)
+                            continue
+                    if event.type == pygame.KEYDOWN:
+                        if event.unicode and event.unicode.isprintable():
+                            self.help_search_active = True
+                            self.help_query = (getattr(self, 'help_query', '') or '') + event.unicode
+                            self.help_sel = 0
+                            continue
+                        if event.key == pygame.K_BACKSPACE:
+                            self.help_query = (getattr(self, 'help_query', '') or '')[:-1]
+                            self.help_sel = 0
+                            continue
+                        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                            self._activate_selected_feature()
+                            continue
+                        if event.key == pygame.K_ESCAPE:
+                            if getattr(self, 'help_query', ''):
+                                self.help_query = ''
+                                self.help_sel = 0
+                            else:
+                                self.show_help = False
+                            continue
+                        if event.key in (pygame.K_UP, pygame.K_DOWN):
+                            _results = getattr(self, 'help_result_rects', None) or []
+                            if getattr(self, 'help_search_active', False) and _results:
+                                _step = -1 if event.key == pygame.K_UP else 1
+                                self.help_sel = max(0, min(len(_results) - 1,
+                                                            self.help_sel + _step))
+                                continue
                     if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                         # 检查滚动条拖动
                         sb_rect = getattr(self, 'help_scrollbar_rect', None)
@@ -3048,7 +3092,126 @@ class EventsMixin:
             self.macro_reverse_mode = not self.macro_reverse_mode
             status = '开' if self.macro_reverse_mode else '关'
             self.macro_notify_msg = f"逆序播放宏指令：{status}"
+        elif key == 'show_virtual_keyboard':
+            # 与 F1 同语义（右下角快捷开关也走这里）
+            self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
+            status = '开' if self.show_virtual_keyboard else '关'
+            self.macro_notify_msg = f"虚拟键盘：{status}"
+        elif key == 'show_metrics_panel':
+            # 与 F2 同语义：连带开关棋盘记号（记号本身仍可单独开关）
+            self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+            self.board_marks_enabled = self.show_metrics_panel
+            status = '开' if self.show_metrics_panel else '关'
+            self.macro_notify_msg = f"调试面板：{status}"
+        else:
+            # 未知开关：明确报出来，别静默吞掉（否则就是「点了没反应」）
+            self.macro_notify_msg = f"未知开关：{key}"
         self.macro_notify_timer = 90
+
+    def _feature_form(self) -> str:
+        """检索用的形态键：比 `solver.game_form` 多区分「数字」。
+
+        求解器口径里数字形态按矩形算（底层是同一个 SliderMatrix 类），但
+        **功能可用性上两者不同**（例如「选块填空」明确拒绝数字形态），所以
+        检索这一层要单独把它识别出来。
+        """
+        if getattr(self, 'numbered', False):
+            return 'numbered'
+        return self._current_puzzle_form()
+
+    def _activate_feature(self, entry):
+        """检索结果「一键到位」：把玩家送到能操作这个功能的地方。
+
+        动作类型（登记在 `gui/feature_index._ACTIONS`）：
+            settings 打开设置对话框并切到指定页签
+            toggle   直接切换开关（复用右下角快捷开关的处理，含米字闸门等副作用）
+            menu     展开对应顶栏菜单
+            puzzle   按预设参数建局
+            mode     切换游戏模式
+            tutorial 开始新手教程
+            website  浏览器打开官网
+            none     纯说明，不跳转（概念条目没有可跳的界面）
+        """
+        act = entry.get('action') or {'type': 'none'}
+        kind = act.get('type')
+
+        if kind == 'settings':
+            self.close_all_menus()
+            self.show_help = False
+            self.show_settings_dialog = True
+            self.settings_active_tab = act['tab']
+            self.settings_editing_action = None
+            self._settings_scroll = 0
+            self._settings_backup_keybindings = dict(self.keybindings)
+            self._settings_backup_gather = dict(getattr(self, 'gather_params', None) or {})
+            self._settings_backup_gather_enabled = dict(
+                getattr(self, 'gather_enabled', None) or {})
+            return
+
+        if kind == 'toggle':
+            self.show_help = False
+            self._handle_right_panel_switch(act['key'])
+            return
+
+        if kind == 'menu':
+            self.close_all_menus()
+            name = act.get('name', '')
+            if name == '编辑':
+                self.show_help = False
+                self.show_edit_menu = True
+            elif name == '文件':
+                self.show_help = False
+                self.show_file_menu = True
+            elif name == '谜题':
+                self.show_help = False
+                self.show_puzzle_menu = True
+            elif name == '宏定义':
+                self.show_help = False
+                self.show_macro_menu = True
+            return
+
+        if kind == 'puzzle':
+            self.close_all_menus()
+            self.show_help = False
+            params = act['params']
+            form = act.get('kind', 'square')
+            if form == 'triangle':
+                self.new_triangle_puzzle(params[0], params[1])
+            elif form == 'mi':
+                self.new_mi_puzzle(params[0], params[1], params[2])
+            else:
+                self.new_puzzle(params[0], params[1], params[2],
+                                numbered=(form == 'numbered'))
+            return
+
+        if kind == 'mode':
+            self.close_all_menus()
+            self.show_help = False
+            self.set_game_mode(act['mode'])
+            return
+
+        if kind == 'tutorial':
+            self.close_all_menus()
+            self.show_help = False
+            self._tut_start()
+            return
+
+        if kind == 'website':
+            import webbrowser
+            webbrowser.open('https://gatennea.github.io/GatenneaSliderWeb/')
+            return
+
+        # 'none'：概念条目，没有可跳的界面，只弹一条说明提示
+        self.macro_notify_msg = entry['name']
+        self.macro_notify_timer = 90
+
+    def _activate_selected_feature(self):
+        """执行当前选中的检索结果；没有结果时忽略。"""
+        rects = getattr(self, 'help_result_rects', None) or []
+        if not rects:
+            return
+        idx = max(0, min(getattr(self, 'help_sel', 0), len(rects) - 1))
+        self._activate_feature(rects[idx][1])
 
     # ==================== 宏功能 ====================
 

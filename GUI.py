@@ -250,6 +250,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 帮助对话框状态
         self.show_help = False
         self.help_scroll_offset = 0
+        # 帮助检索（功能可发现性的主入口）：打开帮助时焦点默认落在检索框，
+        # 输入即过滤；回车 = 直接到位。数据来自 gui/feature_index.py。
+        self.help_query = ''
+        self.help_sel = 0
+        self.help_search_active = False
+        self.help_search_rect = None
+        self.help_result_rects = []
 
         # 宏定义菜单状态
         self.show_macro_menu = False
