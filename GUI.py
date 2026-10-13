@@ -2323,6 +2323,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 return
 
         # 无动画的撤销（直接执行）
+        if self._undo_step_now(move_info):
+            # 连续撤销（无动画路径）：继续下一轮直到边界
+            self._advance_continuous_undo_redo()
+
+    def _undo_step_now(self, move_info):
+        """无动画单步撤销（undo 的执行段 / 连续撤销的循环体）。返回是否成功。"""
         success, _ = self.game_history.undo(self.game)
         if success:
             self.selected_gap = None
@@ -2335,8 +2341,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 15
             self._maybe_show_solved_popup(suppress=True)
             self._mark_file_dirty()
-            # 连续撤销（无动画路径）：继续下一轮直到边界
-            self._advance_continuous_undo_redo()
+        return success
 
     def redo(self):
         """重做操作（Ctrl+X）"""
@@ -2370,6 +2375,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 return
 
         # 无动画的重做（直接执行）
+        if self._redo_step_now(move_info):
+            # 连续重做（无动画路径）：继续下一轮直到边界
+            self._advance_continuous_undo_redo()
+
+    def _redo_step_now(self, move_info):
+        """无动画单步重做（redo 的执行段 / 连续重做的循环体）。返回是否成功。"""
         success, _ = self.game_history.redo(self.game)
         if success:
             self.selected_gap = None
@@ -2381,8 +2392,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 15
             self._maybe_show_solved_popup(via_redo=True)
             self._mark_file_dirty()
-            # 连续重做（无动画路径）：继续下一轮直到边界
-            self._advance_continuous_undo_redo()
+        return success
 
     def jump_to_history_index(self, idx: int):
         """直接跳到历史记录第 idx 步的状态（虚拟键盘“跳到某步”）"""
@@ -2454,17 +2464,49 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def _advance_continuous_undo_redo(self):
         """连续播放推进：在每次撤销/重做提交后，若仍在连续模式且可继续，则播放下一步；
-        到达边界（无路可退/进）则停止并提示。手动打断时由 _stop_continuous_undo_redo 处理。"""
+        到达边界（无路可退/进）则停止并提示。手动打断时由 _stop_continuous_undo_redo 处理。
+
+        推进方式分两路：
+        - 动画开启：每步由动画提交回调再次进入本函数 → self.undo()/redo() 播下一步
+          （事件驱动，调用栈每步弹回，无深递归）。
+        - 动画关闭（含重入兜底）：就地 while 循环推到底。旧实现靠
+          undo() → 本函数 → undo() 互相递归逐步推进，长局会撞 Python
+          递归上限（实测 2450 步的局约 495 步即崩）；异常被主循环事件
+          大 try 吞掉后 restore_snapshot 半途而废 → 滑块残缺、步数卡半途。
+        """
+        animated = self.animation_enabled and self.animation_duration > 0
+        if getattr(self, '_advancing_continuous', False):
+            animated = False  # 重入（动画模式下遇到无动画步）：就地循环，不再叠栈
         if self._continuous_undo:
-            if self.game_history.can_undo():
-                self.undo()
-            else:
+            if not self.game_history.can_undo():
                 self._stop_continuous_undo_redo("已撤销到第一步")
-        elif self._continuous_redo:
-            if self.game_history.can_redo():
-                self.redo()
+            elif animated:
+                self._advancing_continuous = True
+                try:
+                    self.undo()
+                finally:
+                    self._advancing_continuous = False
             else:
+                while self.game_history.can_undo() and self._undo_step_now(
+                        self.game_history.peek_undo()):
+                    pass
+                if not self.game_history.can_undo():
+                    self._stop_continuous_undo_redo("已撤销到第一步")
+        elif self._continuous_redo:
+            if not self.game_history.can_redo():
                 self._stop_continuous_undo_redo("已重做到最后一步")
+            elif animated:
+                self._advancing_continuous = True
+                try:
+                    self.redo()
+                finally:
+                    self._advancing_continuous = False
+            else:
+                while self.game_history.can_redo() and self._redo_step_now(
+                        self.game_history.peek_redo()):
+                    pass
+                if not self.game_history.can_redo():
+                    self._stop_continuous_undo_redo("已重做到最后一步")
 
     def _stop_continuous_undo_redo(self, notify=''):
         """停止连续撤销/重做；清除状态旗标与残留队列。notify 非空时右下角提示。"""
