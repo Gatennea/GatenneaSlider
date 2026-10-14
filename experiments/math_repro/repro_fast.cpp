@@ -32,6 +32,7 @@ typedef unsigned char u8;
 
 static int M_, N_, S_, K_;      // 谜题参数：行、列、步长、格数 = M*N
 static int NCLS;                // 同余类数 = S*S
+static bool g_full_sticky = false;     // R8b：全量逐边验证粘连型（默认抽样 300）
 
 // 枚举窗口：行 r ∈ [0, K-1]；列位 b ∈ [0, 2K-2]，实际列 = b - (K-1)。
 // （列跨宽度证明：每个同余类恰 target 个格子 ⇒ 奇偶列各 ≤ K/2 列 ⇒
@@ -710,17 +711,19 @@ static long long run_R6(long long max_steps, double bias, unsigned seedv) {
 // =====================================================================
 //  4d. R7/R8 附加统计：强连通分量、单步不可逆、粘性检验
 // =====================================================================
-// 判断某个集合 target 在某个棋盘里是否为「某条缝某一侧的完整侧内分量」
-static bool is_selectable_component(const u32* m, const u32* target) {
+// 判断某个集合 target 在某个棋盘里是否为「某条缝某一侧的完整侧内分量」。
+// chk_h / chk_v 控制是否检查水平缝 / 垂直缝；粘连型定理要求「同轴缝」，
+// 故 R8b 按移动方向只检查同轴缝（forward_closure.py 同款做法）。
+static bool is_selectable_component(const u32* m, const u32* target, bool chk_h = true, bool chk_v = true) {
     int rmin = NR, rmax = -1; u32 all = 0;
     for (int i = 0; i < NR; i++) if (m[i]) { if (i < rmin) rmin = i; rmax = i; all |= m[i]; }
     int cmin = __builtin_ctz(all), cmax = 31 - __builtin_clz(all);
-    int nst = 0;
-    for (int i = 0; i < NR; i++) nst |= (m[i] & ~target[i]) ? 0 : 0;
-    (void)nst;
-    for (int t = 0; t < (rmax - rmin) + (cmax - cmin); t++) {
-        bool vert = t >= (rmax - rmin);
-        int idx = vert ? (t - (rmax - rmin)) : t;
+    int nsh = rmax - rmin, nsv = cmax - cmin;
+    for (int t = 0; t < nsh + nsv; t++) {
+        bool vert = t >= nsh;
+        if (vert && !chk_v) continue;
+        if (!vert && !chk_h) continue;
+        int idx = vert ? (t - nsh) : t;
         int L = vert ? (cmin + idx) : (rmin + idx);
         u32 lm = 0, rm = 0;
         if (vert) { lm = (1u << (L + 1)) - 1u; rm = ~lm; }
@@ -825,9 +828,10 @@ static void run_extra_stats(const std::vector<Key>& keys,
 
     // --- R8b：抽样检查不可逆边是否都是「粘性型」 ---
     long long sample = 0, sticky = 0, checked = 0;
-    for (int u = 0; u < N && checked < 300; u++) {
+    long long cap = g_full_sticky ? (long long)2000000000 : 300;
+    for (int u = 0; u < N && checked < cap; u++) {
         if (!inB[u]) continue;
-        for (int e = fstart[u]; e < fstart[u + 1] && checked < 300; e++) {
+        for (int e = fstart[u]; e < fstart[u + 1] && checked < cap; e++) {
             int v = fadj[e];
             if (!inB[v]) continue;
             bool rev = false;
@@ -847,14 +851,15 @@ static void run_extra_stats(const std::vector<Key>& keys,
                 u32 image[NR];
                 for (int i = 0; i < NR; i++) image[i] = recs[j].res[i] & ~m[i];   // 落在别处的「移动前」位置不可用作像
                 // 像 = 移动分量平移后的位置 = res 中不再属于原位的那些格
-                for (int i = 0; i < NR; i++) image[i] = recs[j].res[i] & ~(recs[j].comp[i]);
+                for (int i = 0; i < NR; i++) image[i] = recs[j].res[i] & ~m[i];   // 修正：移动分量落位像 = res 减原态 u（原 ~comp 令 image 退化为整张 res，误判非粘连）
                 checked++; sample++;
-                if (!is_selectable_component(recs[j].res, image)) sticky++;
+                bool coax_h = (recs[j].addr == 0);   // 水平滑动 ⟺ 同轴水平缝；垂直滑动 ⟺ 同轴垂直缝
+                if (!is_selectable_component(recs[j].res, image, coax_h, !coax_h)) sticky++;
                 break;
             }
         }
     }
-    printf("R8: 抽样 %lld 条单步不可逆边，其中移动分量落位后已不可再选中（粘性型）= %lld\n", sample, sticky);
+    printf("R8: %s %lld 条单步不可逆边，其中移动分量落位后已不可再选中（粘性型）= %lld\n", g_full_sticky ? "全量" : "抽样", sample, sticky);
     fflush(stdout);
 }
 
@@ -1035,6 +1040,7 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[a], "-r6") && a + 1 < argc) r6_steps = atoll(argv[++a]);
         if (!strcmp(argv[a], "-bias") && a + 1 < argc) r6_bias = atof(argv[++a]);
         if (!strcmp(argv[a], "-seed") && a + 1 < argc) r6_seed = (unsigned)atoi(argv[++a]);
+        if (!strcmp(argv[a], "-fullsticky")) g_full_sticky = true;
     }
     if (r6_steps > 0) { run_R6(r6_steps, r6_bias, r6_seed); return 0; }
 
