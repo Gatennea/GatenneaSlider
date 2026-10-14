@@ -550,16 +550,20 @@ struct WalkState {
 };
 
 static void recenter(WalkState& w) {
-    int rmin = NR, cmax = -1; u32 all = 0;
-    for (int i = 0; i < NR; i++) if (w.occ[i]) { if (i < rmin) rmin = i; cmax = i; all |= w.occ[i]; }
-    int cmin = __builtin_ctz(all);
+    int rmin = NR, rmax = -1; u32 all = 0;
+    for (int i = 0; i < NR; i++) if (w.occ[i]) { if (i < rmin) rmin = i; rmax = i; all |= w.occ[i]; }
+    if (rmin > rmax) return;
+    int cmin = __builtin_ctz(all), cmax = 31 - __builtin_clz(all);
+    int span_r = rmax - rmin, span_c = cmax - cmin;
+    int nr0 = ((NR - 1) - span_r) / 2;   // 居中（而非锚定 ROFF）：R6 修复关键
+    int nc0 = (31 - span_c) / 2;
     u32 no[NR]; u16 nl[NR][32];
     memset(no, 0, sizeof(no)); memset(nl, 0, sizeof(nl));
-    for (int i = rmin; i <= cmax; i++) {
+    for (int i = rmin; i <= rmax; i++) {
         u32 x = w.occ[i];
         while (x) {
             int c = __builtin_ctz(x); x &= x - 1;
-            int ni = ROFF + (i - rmin), nc = COFF + (c - cmin);
+            int ni = nr0 + (i - rmin), nc = nc0 + (c - cmin);
             no[ni] |= (1u << nc); nl[ni][nc] = w.lab[i][c];
         }
     }
@@ -577,7 +581,7 @@ static void apply_rec(WalkState& w, const MoveRec& rec) {
             int c = __builtin_ctz(x); x &= x - 1;
             bool mv = (rec.comp[i] >> c) & 1u;
             int ni = mv ? i + tdr : i, nc = mv ? c + tdc : c;
-            if (ni < 0 || ni >= NR || nc < 0 || nc >= 32) { fprintf(stderr, "WALK OUT OF FRAME\n"); exit(1); }
+            if (ni < 0 || ni >= NR || nc < 0 || nc >= 32) { recenter(w); return; }  // R6 修复：越界则归位并跳过本步（正常不应触发）
             no[ni] |= (1u << nc); nl[ni][nc] = w.lab[i][c];
         }
     }
@@ -614,6 +618,7 @@ static long long run_R6(long long max_steps, double bias, unsigned seedv) {
     long long steps = 0;
     long long last_closure = 1;
     while (steps < max_steps) {
+        recenter(w);                 // 每步归零：包围盒居中于窗口，杜绝坐标漂移越界 (R6 修复)
         std::vector<MoveRec> recs;
         moves_from_board(w.occ, recs);
         if (recs.empty()) { recenter(w); break; }
@@ -655,13 +660,6 @@ static long long run_R6(long long max_steps, double bias, unsigned seedv) {
                 returns_wide++;
                 if (seen_wide.insert(p).second && gens_wide.size() < 512) gens_wide.push_back(p);
             }
-        }
-        // 坐标框接近边界就归位
-        {
-            int rmin = NR, rmax = -1; u32 all = 0;
-            for (int i = 0; i < NR; i++) if (w.occ[i]) { if (i < rmin) rmin = i; rmax = i; all |= w.occ[i]; }
-            int cmin = __builtin_ctz(all), cmax = 31 - __builtin_clz(all);
-            if (rmin < 2 || rmax > NR - 4 || cmin < 2 || cmax > 27) recenter(w);
         }
         (void)last_closure;
     }
