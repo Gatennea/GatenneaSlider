@@ -53,8 +53,11 @@ PYTHON = os.environ.get('GATENNEA_PY', 'D:/python/python.exe')
 SCRIPT_TIMEOUT = 600
 
 # 环境敏感、不参与自动回归的脚本（收集即 skip）。
-#   _test_full          硬编码旧机器路径 e:/program_project/py/...，import 即炸
-#   _smoke_exe          要打包产物 dist/GatenneaSlider/，只在发版前手动跑
+#   _test_full          sys.path 硬编码项目旧家 'e:/program_project/py/貓九的滑塊遊戲'
+#                       ——该目录在本机真实存在，import 到的是**旧版代码**，
+#                       本机「假绿」、CI 上必红；其覆盖（TextInput 组件）
+#                       与 _test_quick.py 重叠，不修不删，就此搁置。
+#   _smoke_exe          要打包产物 dist/GatenneaSlider/，只在发版前手动跑。
 _SKIP = {
     '_test_full.py',
     '_smoke_exe.py',
