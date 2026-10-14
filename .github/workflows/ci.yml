@@ -10,6 +10,9 @@ jobs:
     # 硬路径（_gui_safe_font 第一层），Linux 无此字体，GUI 渲染测试会
     # 环境性失败。Windows runner 同时复现本机开发环境，减少割裂。
     runs-on: windows-latest
+    # 兜底：求解器全图测试（_test_bfs_explore）最慢约十几分钟，60 分钟
+    # 足够全量跑完；真挂死时烧满 6 小时默认额度没有意义
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
