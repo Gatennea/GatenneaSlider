@@ -21,6 +21,9 @@ DIRECTIONS = {
     'd': (0, 1),
 }
 
+# 位棋盘连通性原语（阶段3：替换 set 版 DFS 热点，见根目录 bitboard.py）
+from bitboard import build_occupancy, is_connected, component, grid_side_mask
+
 
 class Block:
     """
@@ -181,7 +184,44 @@ class SliderMatrix:
         """
         bounds = self.get_boundaries()
         return bounds['min_col'] <= line < bounds['max_col']
-    
+
+    def side_has_blocks(self, gap_type: str, line, side) -> bool:
+        """
+        缝隙的指定侧是否有滑块 —— **三形态共有的回放原语**（与
+        `game_triangle` / `game_mi` 的同名方法同契约）。
+
+        为什么方形也要有这个：GUI 的宏回放层原本直接调
+        `is_valid_h_line` / `is_valid_v_line`，那两个方法**只有方形引擎
+        有**，异形（三角/米字）上会 AttributeError；而且它们的语义是
+        「在边界盒内」，与异形「线两侧都有块」不是一回事。回放层改吃
+        这个方法之后，三形态共用一条路径（gui/events.py 的
+        `_execute_next_macro_step`）。
+
+        方形的 side 用 'above'/'below'/'left'/'right'（历史语义，
+        MacroStep 存的就是这四个词），异形用 0/1（`side_of` 的口徑）。
+        两种都在这里归一，回放层不必分支。
+        """
+        if gap_type == 'h':
+            if not self.is_valid_h_line(line):
+                return False
+            lo, hi = self.get_boundaries()['min_row'], \
+                self.get_boundaries()['max_row']
+        elif gap_type == 'v':
+            if not self.is_valid_v_line(line):
+                return False
+            lo, hi = self.get_boundaries()['min_col'], \
+                self.get_boundaries()['max_col']
+        else:
+            return False
+        for b in self.blocks:
+            v = b.location[0] if gap_type == 'h' else b.location[1]
+            on_lo = v <= line
+            if side in ('above', 'left', 0) and on_lo:
+                return True
+            if side in ('below', 'right', 1) and not on_lo:
+                return True
+        return False
+
     @staticmethod
     def check_move_valid(selected_positions: set, non_selected_positions: set) -> tuple:
         """
@@ -211,36 +251,15 @@ class SliderMatrix:
     @staticmethod
     def is_single_connected(positions: set) -> bool:
         """
-        判断一组位置是否构成单一连通分量（使用DFS）
-        
-        参数：
-            positions: 位置集合，元素为 (row, col) 元组
-        
-        返回：
-            bool - 所有位置连通返回 True，否则返回 False
+        判断一组位置是否构成单一连通分量（位棋盘版，等价原 set-DFS 语义）。
+
+        位置集合元素为 (row, col) 元组；网格宽度由【实际坐标范围】推导
+        （min/max + offset），不依赖 m,n，对任意漂移后的局面都正确。
         """
         if not positions:
             return True
-        
-        # 从任意一个位置开始DFS
-        start = next(iter(positions))
-        visited = set()
-        stack = [start]
-        
-        while stack:
-            current = stack.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            
-            row, col = current
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                neighbor = (row + dr, col + dc)
-                if neighbor in positions and neighbor not in visited:
-                    stack.append(neighbor)
-        
-        # 如果访问到的位置数等于总位置数，则连通
-        return len(visited) == len(positions)
+        mask, W, H, col0, colW, off_r, off_c = build_occupancy(positions)
+        return is_connected(mask, W, col0, colW)
 
     def update_matrix(self):
         """
@@ -285,87 +304,46 @@ class SliderMatrix:
     
     def opt(self, direction: str, line: int, selected_block: 'Block'):
         """
-        分割线选中操作 - 使用DFS算法
-        
-        根据分割线将滑块组划分为连通部分，标记选中方块所在的部分
-        
+        分割线选中操作 - 位棋盘版（连通分量洪泛，等价原 set-DFS 语义）
+
+        选中 selected_block 所在侧、且与该块连通的那一片（缝隙作为墙，
+        不允许跨线连通）。网格宽度由当前坐标实际范围推导，不依赖 m,n。
+
         参数：
             direction: 分割方向 'h'横向 'v'纵向
             line: 分割线位置（行或列索引）
             selected_block: 玩家选中的方块
         """
+        blocks = self.blocks
         # 清除所有选中状态
-        for block in self.blocks:
-            block.be_opted = False
-        
-        # 将滑块位置存入集合以便快速查找
-        block_set = set(tuple(b.location) for b in self.blocks)
-        
-        def is_connected(block1: tuple, block2: tuple, direction: str, line: int) -> bool:
-            """
-            判断两个方块是否连通（不被分割线隔开）
-            
-            参数：
-                block1: 第一个方块的坐标 (row, col)
-                block2: 第二个方块的坐标 (row, col)
-                direction: 分割方向
-                line: 分割线位置
-            
-            返回：
-                bool - 连通返回 True，否则返回 False
-            """
-            if direction == 'h':
-                # 横向分割：检查两个方块是否在分割线同一侧
-                if (block1[0] <= line and block2[0] > line) or \
-                   (block1[0] > line and block2[0] <= line):
-                    return False
-            else:
-                # 纵向分割：检查两个方块是否在分割线同一侧
-                if (block1[1] <= line and block2[1] > line) or \
-                   (block1[1] > line and block2[1] <= line):
-                    return False
-            return True
-        
-        def get_neighbors(pos: tuple) -> list:
-            """
-            获取一个位置的相邻方块位置
-            
-            参数：
-                pos: 当前位置 (row, col)
-            
-            返回：
-                list - 相邻的方块位置列表
-            """
-            row, col = pos
-            neighbors = []
-            # 检查上下左右四个方向
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                new_pos = (row + dr, col + dc)
-                if new_pos in block_set:
-                    neighbors.append(new_pos)
-            return neighbors
-        
-        # 使用DFS遍历连通块
-        start_pos = tuple(selected_block.location)
-        visited = set()
-        stack = [start_pos]
-        
-        while stack:
-            current = stack.pop()
-            if current in visited:
-                continue
-            
-            visited.add(current)
-            
-            # 将连通的邻居加入栈
-            for neighbor in get_neighbors(current):
-                if neighbor not in visited and is_connected(current, neighbor, direction, line):
-                    stack.append(neighbor)
-        
-        # 标记所有连通的方块为选中状态
-        for block in self.blocks:
-            if tuple(block.location) in visited:
-                block.be_opted = True
+        for b in blocks:
+            b.be_opted = False
+        if not blocks:
+            return
+
+        cells = [(b.location[0], b.location[1]) for b in blocks]
+        mask, W, H, col0, colW, off_r, off_c = build_occupancy(cells)
+        if mask == 0:
+            return
+
+        sr = selected_block.location[0]
+        sc = selected_block.location[1]
+        # 选定块所在侧决定 opted 片归属（与原 is_connected 跨线返回 False 等价）
+        if direction == 'h':
+            side = 'above' if sr <= line else 'below'
+        else:
+            side = 'left' if sc <= line else 'right'
+        side_m = grid_side_mask(W, H, off_r, off_c, direction, line, side)
+        opt_mask = mask & side_m
+        start_bit = 1 << ((sr - off_r) * W + (sc - off_c))
+        if not (opt_mask & start_bit):
+            return  # 选定块不在该侧（理论不发生，防御性早退）
+
+        comp = component(opt_mask, start_bit, W, col0, colW)
+        for b in blocks:
+            br, bc = b.location[0], b.location[1]
+            if comp & (1 << ((br - off_r) * W + (bc - off_c))):
+                b.be_opted = True
     
     def opt_simple(self, direction: str, line: int, selected_block: 'Block'):
         """
@@ -467,6 +445,7 @@ class SliderMatrix:
             (positions, reason)
             - positions: 最终位置列表 [(row, col), ...]；失败为空列表
             - reason: '' 成功；'no_selection' 无选中滑块；
+                      'all_selected' 全员选中（纯平移，无意义）；
                       'bad_direction' 方向字母无效；
                       'collision' 移动后与未选中滑块重叠；
                       'disconnected' 移动后整体断开（失去单一连通）
@@ -476,6 +455,12 @@ class SliderMatrix:
 
         if not selected:
             return [], 'no_selection'
+        if not non_selected:
+            # 全员选中 = 整体纯平移：盘面相对构型毫无变化（复原判定平移无关），
+            # 且 GUI 交互做不出这种选法（切缝两侧必有块）。碰撞检查在全员
+            # 选中时形同虚设（无静块可撞），必须在引擎层显式拒绝，
+            # 防脚本/HTTP/重放造出毫无意义的废步。
+            return [], 'all_selected'
 
         non_selected_positions = set(tuple(b.location) for b in non_selected)
         delta_map = DIRECTIONS
@@ -524,7 +509,34 @@ class SliderMatrix:
 
     def shuffle(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75):
         """
-        随机打乱谜题（纯逻辑，不含动画/GUI状态重置）
+        随机打乱谜题（纯逻辑，不含动画/GUI状态重置）—— 对外入口。
+
+        死局黑名单防护：黑名单覆盖的谜题（当前仅方形 4_4_2，见
+        solver/deadend_guard）终态命中死局黑名单时，回到复原态重新打乱，
+        重试上限 100 次（命中概率约万分之 0.16，几乎不可能循环）；超限打印
+        警告并接受最后一次结果。其它谜题只跑一次 _shuffle_once，行为不变。
+        """
+        from solver.deadend_guard import has_deadend_guard, is_deadend
+
+        if not has_deadend_guard(self.m, self.n, step):
+            self._shuffle_once(attempts, step, bias, min_score)
+            return
+
+        for retry in range(100):
+            if retry:
+                # 死局态向前封闭：从死局态出发的任何合法移动仍落在死局集合
+                # 里，不先回复原态就重打，重试永远出不去。
+                for i, b in enumerate(self.blocks):
+                    b.location = [i // self.n, i % self.n]
+            self._shuffle_once(attempts, step, bias, min_score)
+            if not is_deadend(self.m, self.n, step,
+                              {tuple(b.location) for b in self.blocks}):
+                return
+        print('警告: 打乱终态连续 100 次命中死局黑名单，接受最后一次结果')
+
+    def _shuffle_once(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75):
+        """
+        单次随机打乱核心（终态死局防护的包装在 shuffle）。
 
         模拟玩家随机滑动操作，直接更新滑块位置。
 

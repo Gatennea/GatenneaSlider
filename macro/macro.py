@@ -112,9 +112,12 @@ class MacroManager:
         """
         参数:
             macro_dir: 宏文件存放目录路径
+
+        注意：目录**不在此处创建**——首次保存宏（save_macro）时才建，
+        避免玩家从不使用宏时安装目录里也多出一个空 macro/ 文件夹。
+        目录不存在时 load_all 会直接返回（空列表）。
         """
         self.macro_dir = macro_dir
-        os.makedirs(self.macro_dir, exist_ok=True)
         self._macros: dict[str, Macro] = {}  # name -> Macro
         self.load_all()
 
@@ -138,10 +141,13 @@ class MacroManager:
     def save_macro(self, macro: Macro):
         """
         保存一个宏到文件（会覆盖同名宏）
-        
+
         参数:
             macro: 要保存的宏对象
+
+        目录在此处首次创建（exist_ok），即「玩家真正创建宏指令时才建文件夹」。
         """
+        os.makedirs(self.macro_dir, exist_ok=True)
         self._macros[macro.name] = macro
         fname = self._sanitize_filename(macro.name) + '.json'
         fpath = os.path.join(self.macro_dir, fname)

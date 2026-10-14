@@ -10,6 +10,48 @@ import webbrowser
 import pygame
 import queue
 import math
+
+# 终端/CLI 命令索引（CLI `help` 命令渲染；与 HTTP 端点一一对应但语法不同）。
+# 每条 = (显示文本, 说明, [命令名...])；第三列供防腐烂测试核对分派分支，
+# 避免从显示文本里猜命令名（参数里的 w/s/a/d 不是命令）。
+# ⚠️ 增删命令时同步更新本表——test/_test_external_control.py 会断言表内
+# 每个命令名都在 process_commands 的分派链里有对应分支。
+CLI_COMMANDS = [
+    ('help', '本帮助（命令索引）', ['help']),
+    ('status', '当前局面与游戏状态', ['status']),
+    ('map', '棋盘地图与编号', ['map']),
+    ('mode [模式]', '查询/切换模式（practice/creative/speed）', ['mode']),
+    ('settings [k=v ...]', '查询/修改设置项', ['settings']),
+    ('records', '成绩记录', ['records']),
+    ('timer_status / timer_start / timer_stop', '计时查询/开始/停止',
+     ['timer_status', 'timer_start', 'timer_stop']),
+    ('move <方向>', '移动滑块（w/s/a/d；三角另加 e/z/x，米字格另加 q）', ['move']),
+    ('select_gap <行> <列> <h/v>', '选中缝隙', ['select_gap']),
+    ('select_block <行> <列>', '选中方块', ['select_block']),
+    ('deselect', '清空选中', ['deselect']),
+    ('undo / redo', '撤销 / 重做', ['undo', 'redo']),
+    ('shuffle / reset', '打乱 / 复原到初始态', ['shuffle', 'reset']),
+    ('new <m> <n> <step> [tri/num/mi]', '新开谜题', ['new']),
+    ('quit', '退出游戏', ['quit']),
+    ('solve / solve_cancel / solve_status', '求解 / 取消 / 进度',
+     ['solve', 'solve_cancel', 'solve_status']),
+    ('solver_algorithms / solver_status / solver_params', '求解器信息与参数',
+     ['solver_algorithms', 'solver_status', 'solver_params']),
+    ('window / holes / actions', '局面分析：目标窗 / 空位 / 可行动作',
+     ['window', 'holes', 'actions']),
+    ('macro_list / macro_status', '宏列表 / 宏模式状态', ['macro_list', 'macro_status']),
+    ('macro_record_start [名称]', '开始录制宏', ['macro_record_start']),
+    ('macro_set_base <行> <列>', '设置宏基准块', ['macro_set_base']),
+    ('macro_record_stop', '停止录制宏', ['macro_record_stop']),
+    ('macro_execute <名称>', '播放指定宏', ['macro_execute']),
+    ('macro_delete <名称> / macro_rename <名称> [新名]', '删除 / 重命名宏',
+     ['macro_delete', 'macro_rename']),
+    ('load_map <字符串>', '载入地图字符串', ['load_map']),
+    ('save_file <路径> / load_file <路径>', '保存 / 载入进度',
+     ['save_file', 'load_file']),
+    ('screenshot [路径]', '截图（缺省自动命名）', ['screenshot']),
+    ('export <路径> / import <路径>', '导出 / 导入', ['export', 'import']),
+]
 import traceback
 from gui.text_input import TextInput
 from gui import op_log
@@ -44,8 +86,104 @@ def parse_mi_coord(text: str):
 class EventsMixin:
     """事件处理相关方法"""
     
+    def _dropdown_blocks_click(self, pos):
+        """点击是否落在「菜单层」：顶栏本体，或任一已打开下拉/子菜单的矩形。
+
+        图层约定：菜单栏与下拉菜单盖住浮动面板（绘制在面板之后），点击
+        命中也必须同序——面板事件收到这种点击时让位，交给主分发的菜单
+        分支处理，否则会出现「看着点菜单、实际点到面板」的错位。
+        """
+        x, y = pos
+        if y < self.menu_bar_height:
+            return True
+        checks = (
+            ('show_file_menu', 'file_menu_rects'),
+            ('show_edit_menu', 'edit_menu_rects'),
+            ('show_puzzle_menu', 'puzzle_menu_rects'),
+            ('show_macro_menu', 'macro_menu_rects'),
+            ('show_settings_menu', 'settings_menu_rects'),
+        )
+        for flag, rects_attr in checks:
+            if not getattr(self, flag, False):
+                continue
+            for rect in getattr(self, rects_attr, None) or []:
+                if rect.collidepoint(x, y):
+                    return True
+        # 谜题二级子菜单（谜题菜单展开时同样盖住面板）
+        if getattr(self, 'show_puzzle_menu', False) and getattr(self, 'puzzle_sub_open', ''):
+            for rect in getattr(self, 'puzzle_sub_rects', None) or []:
+                if rect.collidepoint(x, y):
+                    return True
+        return False
+
+    def _sync_ime_text_input(self):
+        """IME / SDL 文本输入模式同步（每帧调用一次）。
+
+        任一文本输入上下文激活时开启 SDL 文本输入（start_text_input），关闭时
+        停止（stop_text_input）；开启期间中文输入法的组字结果经 pygame.TEXTINPUT
+        投递（含中文），关闭时退回 KEYDOWN.unicode（ASCII）。两者互斥，避免重复
+        插入。覆盖：帮助检索框、宏命名框、文件对话框文件名框。
+        """
+        help_active = getattr(self, 'show_help', False)
+        macro_active = getattr(self, 'show_macro_name_dialog', False)
+        # 命令面板是最上层输入框：它开着时 IME 候选框必须锚在它上面，
+        # 否则中文输入时组字窗口会飘到别的输入框位置（或干脆不出现）。
+        palette_active = getattr(self, 'palette_active', False)
+        file_active = bool(getattr(self, 'file_dialog', None)
+                           and getattr(self.file_dialog, 'active', False))
+        needed = help_active or macro_active or file_active or palette_active
+
+        if needed == getattr(self, '_ime_text_input_on', False):
+            # 状态未变：仍刷新候选框锚点（窗口可能移动/缩放），避免 IME 窗口错位
+            rect = None
+            if palette_active:
+                rect = getattr(self, 'palette_input_rect', None)
+            elif macro_active:
+                rect = getattr(self, '_macro_name_input_rect', None)
+            elif help_active:
+                rect = getattr(self, 'help_search_rect', None)
+            elif file_active:
+                rect = getattr(self.file_dialog, 'input_rect', None)
+            if rect is not None:
+                try:
+                    pygame.key.set_text_input_rect(rect)
+                except Exception:
+                    pass
+            return
+
+        if needed:
+            try:
+                pygame.key.start_text_input()
+            except Exception:
+                pass
+            TextInput._text_input_mode = True
+            self._ime_text_input_on = True
+            rect = None
+            if palette_active:
+                rect = getattr(self, 'palette_input_rect', None)
+            elif macro_active:
+                rect = getattr(self, '_macro_name_input_rect', None)
+            elif help_active:
+                rect = getattr(self, 'help_search_rect', None)
+            elif file_active:
+                rect = getattr(self.file_dialog, 'input_rect', None)
+            if rect is not None:
+                try:
+                    pygame.key.set_text_input_rect(rect)
+                except Exception:
+                    pass
+        else:
+            try:
+                pygame.key.stop_text_input()
+            except Exception:
+                pass
+            TextInput._text_input_mode = False
+            self._ime_text_input_on = False
+
     def handle_events(self):
         """处理用户输入事件"""
+        # 每帧同步 IME / SDL 文本输入模式（任一文本输入上下文激活时开启）
+        self._sync_ime_text_input()
         for event in pygame.event.get():
             try:
                 # 左键单击反馈：先于所有界面分支记录，保证棋盘/菜单/面板/对话框
@@ -67,6 +205,14 @@ class EventsMixin:
                         (self.screen_width, self.screen_height),
                         pygame.RESIZABLE
                     )
+                    # S0-2/S0-3：窗口尺寸变化后，立即把浮动面板拉回可视范围
+                    if hasattr(self, '_vk_clamp_position'): self._vk_clamp_position()
+                    if hasattr(self, '_mp_clamp_position'): self._mp_clamp_position()
+                    if hasattr(self, '_rp_clamp_position'): self._rp_clamp_position()
+                    continue
+
+                # 更新下载中：吞掉所有鼠标点击，避免误触棋盘（下载完游戏会自行退出重启）
+                if getattr(self, '_update_in_progress', False) and event.type == pygame.MOUSEBUTTONDOWN:
                     continue
                 
                 # 新手教程：首次启动弹窗（模态，点击按钮消费事件）
@@ -80,6 +226,17 @@ class EventsMixin:
                         if self._tut_handle_panel_click(*event.pos):
                             continue
                     if self._tut_handle_panel_scroll(event):
+                        continue
+
+                # 命令面板（Ctrl+K）：全局唤起，任何界面下都可用（它是最高层 UI）。
+                # 放在文件对话框 / 设置框等所有模态之前，否则面板开着时点击会穿透
+                # 到下面的界面，出现「看着面板、操作却落到棋盘」的错位。
+                if (event.type == pygame.KEYDOWN
+                        and self._is_action_triggered(event, 'command_palette')):
+                    self.open_command_palette()
+                    continue
+                if getattr(self, 'palette_active', False):
+                    if self._palette_handle_event(event):
                         continue
 
                 # 标注/创造模式事件（标注模式含 B/Z/M/S 隐藏入口；其余事件快速放行）
@@ -158,54 +315,76 @@ class EventsMixin:
                 
                 # 帮助对话框
                 if self.show_help:
+                    # 检索框交互（见 gui/feature_index.py）：
+                    #   鼠标点检索框 = 聚焦；直接打字也自动聚焦；↑↓ 选结果；回车 = 一键到位。
+                    # 检索框：复用 gui.text_input.TextInput 组件（光标定位 / 删除 /
+                    # 左右移动 / 鼠标点选定位 / IME 全支持），与宏命名框、文件名框同源。
+                    ti = getattr(self, 'help_input', None)
+                    search_rect = getattr(self, 'help_search_rect', None)
+                    if ti is not None:
+                        # help_query 为权威查询串：若与组件不一致（刚打开 / 外部改动）
+                        # 重新载入并把光标置于末尾。
+                        if ti.text != (getattr(self, 'help_query', '') or ''):
+                            ti.set_text(getattr(self, 'help_query', '') or '')
+                        if not getattr(self, 'help_search_active', False):
+                            ti.cursor_pos = len(ti.text)
+                        if ti.handle_event(event, self.dialog_font, search_rect):
+                            self.help_query = ti.text
+                            self.help_search_active = True
+                            self.help_sel = 0
+                            continue
+                    # 结果条目点击（点检索框内由 TextInput 处理光标定位，这里只管结果）
                     if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                        # 检查滚动条拖动
-                        sb_rect = getattr(self, 'help_scrollbar_rect', None)
-                        sb_knob = getattr(self, 'help_scrollbar_knob_rect', None)
-                        if sb_rect and sb_knob and sb_knob.collidepoint(event.pos):
-                            self.help_scrollbar_dragging = True
-                            self.help_scrollbar_drag_start_y = event.pos[1] - sb_knob.top
-                        elif sb_rect and sb_rect.collidepoint(event.pos):
-                            # 点击滚动条空白区域：跳转到对应位置
-                            content_height = getattr(self, '_help_content_height', 1)
-                            total_content = getattr(self, '_help_total_height', 1)
-                            ratio = (event.pos[1] - sb_rect.top) / sb_rect.height
-                            max_scroll = max(0, total_content - content_height)
-                            self.help_scroll_offset = int(ratio * max_scroll)
-                        else:
-                            # 点击对话框外部关闭
-                            dialog_rect = getattr(self, 'help_dialog_rect', None)
-                            if dialog_rect and not dialog_rect.collidepoint(event.pos):
+                        hit_entry = None
+                        for _i, (_r, _entry) in enumerate(
+                                getattr(self, 'help_result_rects', None) or ()):
+                            if _r.collidepoint(event.pos):
+                                self.help_sel = _i
+                                hit_entry = _entry
+                                break
+                        if hit_entry is not None:
+                            self._activate_feature(hit_entry)
+                            continue
+                    if event.type == pygame.KEYDOWN:
+                        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                            self._activate_selected_feature()
+                            continue
+                        if event.key == pygame.K_ESCAPE:
+                            if getattr(self, 'help_query', ''):
+                                self.help_query = ''
+                                if ti is not None:
+                                    ti.set_text('')
+                                self.help_sel = 0
+                            else:
                                 self.show_help = False
-                            elif not dialog_rect:
-                                self.show_help = False
+                            continue
+                        if event.key in (pygame.K_UP, pygame.K_DOWN):
+                            _results = getattr(self, 'help_result_rects', None) or []
+                            if getattr(self, 'help_search_active', False) and _results:
+                                _step = -1 if event.key == pygame.K_UP else 1
+                                self.help_sel = max(0, min(len(_results) - 1,
+                                                            self.help_sel + _step))
+                                continue
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        # 滚动条（与设置框同源）优先：点旋钮/轨道由组件处理
+                        if self.help_scrollbar.on_mouse_down(event.pos):
+                            continue
+                        # 点击对话框外部关闭
+                        dialog_rect = getattr(self, 'help_dialog_rect', None)
+                        if dialog_rect and not dialog_rect.collidepoint(event.pos):
+                            self.show_help = False
+                        elif not dialog_rect:
+                            self.show_help = False
                     elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                        self.help_scrollbar_dragging = False
+                        self.help_scrollbar.on_mouse_up()
                     elif event.type == pygame.MOUSEMOTION:
-                        if getattr(self, 'help_scrollbar_dragging', False):
-                            sb_rect = getattr(self, 'help_scrollbar_rect', None)
-                            if sb_rect:
-                                content_height = getattr(self, '_help_content_height', 1)
-                                total_content = getattr(self, '_help_total_height', 1)
-                                drag_offset = getattr(self, 'help_scrollbar_drag_start_y', 0)
-                                rel_y = event.pos[1] - sb_rect.top - drag_offset
-                                ratio = max(0, min(1, rel_y / (sb_rect.height - 20)))
-                                max_scroll = max(0, total_content - content_height)
-                                self.help_scroll_offset = int(ratio * max_scroll)
+                        self.help_scrollbar.on_mouse_motion(event.pos)
                     elif event.type == pygame.MOUSEWHEEL:
                         # 滚轮滚动帮助内容
-                        self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) - event.y * 30
+                        self.help_scrollbar.on_wheel(event.y)
                     elif event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_ESCAPE:
-                            self.show_help = False
-                        elif event.key == pygame.K_UP:
-                            self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) - 30
-                        elif event.key == pygame.K_DOWN:
-                            self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) + 30
-                        elif event.key == pygame.K_PAGEUP:
-                            self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) - 200
-                        elif event.key == pygame.K_PAGEDOWN:
-                            self.help_scroll_offset = getattr(self, 'help_scroll_offset', 0) + 200
+                        # ↑↓ / PageUp / PageDown 滚动帮助正文（与结果列表选择解耦）
+                        self.help_scrollbar.on_key(event.key)
                     continue
                 
                 # 设置对话框事件
@@ -213,17 +392,27 @@ class EventsMixin:
                     self._handle_settings_dialog_event(event)
                     continue
 
-                # 虚拟键盘事件（浮动面板：拖动 + 按钮点击）
-                if self.handle_virtual_keyboard_event(event):
-                    continue
+                # 图层约定：菜单栏/下拉菜单盖住浮动面板 → 点击落在菜单层
+                # （顶栏或已打开的下拉矩形）时，面板事件让位给菜单分支；
+                # 同时补上与「点面板外」同款的清理副作用（失焦/取消确认）
+                if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                        and self._dropdown_blocks_click(event.pos)):
+                    self.vk_jump_focus = False
+                    self.rp_confirm_delete_id = None
+                    self.rp_matrix_menu_open = False
+                    self.rp_matrix_menu_rects = []
+                else:
+                    # 虚拟键盘事件（浮动面板：拖动 + 按钮点击）
+                    if self.handle_virtual_keyboard_event(event):
+                        continue
 
-                # 聚拢度指标面板事件（浮动面板：拖动 + 关闭）
-                if self.handle_metrics_panel_event(event):
-                    continue
+                    # 聚拢度指标面板事件（浮动面板：拖动 + 关闭）
+                    if self.handle_metrics_panel_event(event):
+                        continue
 
-                # 成绩记录面板事件（浮动面板：拖动/关闭/删除/滚动）
-                if self.handle_records_panel_event(event):
-                    continue
+                    # 成绩记录面板事件（浮动面板：拖动/关闭/删除/滚动）
+                    if self.handle_records_panel_event(event):
+                        continue
 
                 # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解，及连续播放时的空格打断）
                 if self.animating and event.type == pygame.KEYDOWN:
@@ -248,6 +437,9 @@ class EventsMixin:
                             self.macro_notify_timer = 90
                         elif self._is_action_triggered(event, 'metrics_panel'):
                             self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                            # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
+                            # 记号本身仍可在右下角或设置里单独开关。
+                            self.board_marks_enabled = self.show_metrics_panel
                             status = '开' if self.show_metrics_panel else '关'
                             self.macro_notify_msg = f"调试面板：{status}"
                             self.macro_notify_timer = 90
@@ -506,6 +698,8 @@ class EventsMixin:
                                         self.save_to_file()
                                     elif i == 2:
                                         self.save_as()
+                                    elif i == 3:
+                                        self.convert_save()
                                     file_clicked = True
                                     break
                             self.close_all_menus()
@@ -527,7 +721,13 @@ class EventsMixin:
                                         self.shuffle_puzzle()
                                     elif i == 3:
                                         self.reset_puzzle()
+                                    # 5 = 居中（视图操作：把滑块组拉回屏幕中央）
+                                    # 6 = 自动求解（保持最后一项；原先 5 号位的
+                                    # 「单段求解」已改称「选块填空」并收进求解器
+                                    # 列表，由 Ctrl+A 统一触发，不再单列）
                                     elif i == 5:
+                                        self.center_map()
+                                    elif i == 6:
                                         self._start_auto_solve()
                                     edit_clicked = True
                                     break
@@ -616,6 +816,27 @@ class EventsMixin:
                             if puzzle_clicked:
                                 continue
 
+                        # 设置下拉菜单项点击（顶栏「设置」展开）。
+                        # 这一路原本只有绘制没有分派——菜单画得出、点不动，是
+                        # 「找得到却用不了」的典型。补上：前两项跳设置页，第三项
+                        # 开命令面板（鼠标直达入口，不依赖 Ctrl+K）。
+                        if self.show_settings_menu:
+                            settings_clicked = False
+                            for i, rect in enumerate(self.settings_menu_rects):
+                                if rect.collidepoint(x, y):
+                                    item = self.settings_menu_items[i]
+                                    if item == '命令面板':
+                                        self.open_command_palette()
+                                    else:
+                                        tab = ('keybindings' if item == '快捷键设置'
+                                               else 'animation')
+                                        self._open_settings_tab(tab)
+                                    settings_clicked = True
+                                    break
+                            self.close_all_menus()
+                            if settings_clicked:
+                                continue
+
                         # 宏定义菜单项点击
                         if self.show_macro_menu:
                             macro_clicked = False
@@ -635,7 +856,7 @@ class EventsMixin:
                                     if self.menu_items[i] == '帮助':
                                         self.close_all_menus()
                                         self.show_help = True
-                                        self.help_scroll_offset = 0
+                                        self.help_scrollbar.set_scroll(0)
                                     elif self.menu_items[i] == '文件':
                                         self.show_edit_menu = False
                                         self.show_puzzle_menu = False
@@ -665,7 +886,9 @@ class EventsMixin:
                                         self.show_settings_dialog = True
                                         self.settings_active_tab = 'keybindings'
                                         self.settings_editing_action = None
-                                        self._settings_scroll = 0
+                                        self.settings_scrollbar.set_scroll(0)
+                                        self._settings_ext_msg = ''
+                                        self._settings_ext_msg_timer = 0
                                         self._settings_backup_keybindings = dict(self.keybindings)
                                         self._settings_backup_gather = dict(self.gather_params)
                                         self._settings_backup_gather_enabled = dict(self.gather_enabled)
@@ -704,6 +927,16 @@ class EventsMixin:
                         
                         # 状态栏区域
                         if y > self.screen_height - self.status_bar_height:
+                            # 计时区：竞速模式下等同空格（就绪→开始，计时中→放弃/DNF）
+                            _trect = getattr(self, '_timer_bar_rect', None)
+                            if _trect is not None and _trect.collidepoint(x, y):
+                                self._timer_on_space()
+                            continue
+                        
+                        # 更新提示按钮（发现新版本时左上角常驻，点它直接开始更新）
+                        _ubr = getattr(self, '_update_btn_rect', None)
+                        if _ubr is not None and _ubr.collidepoint(x, y):
+                            self._start_update_now()
                             continue
                         
                         # 游戏区域点击
@@ -728,6 +961,19 @@ class EventsMixin:
                                              bool(getattr(self, 'control_mouse_kb', True))])
                         # 教程解法播放中：锁定棋盘操作（点选缝隙/滑块、拖拽滑动）
                         op_locked = self._tut_board_locked()
+
+                        # S1-4 箭头按键：**命中优先于选缝与起拖**。按键画在菜单
+                        # 栏下、滑块之上的游戏区里，不先判命中的话点击会被
+                        # 「点缝选中 / 点空白起拖」吃掉。效果与虚拟键盘同方向
+                        # 按钮完全一致（走 1 格），共用 move_selected_blocks。
+                        arrow_dir = (None if op_locked
+                                     else self._arrow_button_hit(x, y))
+                        if arrow_dir:
+                            op_log.log('arrow_button', d=arrow_dir, sx=x, sy=y,
+                                       form=op_form)
+                            self._arrow_button_click(arrow_dir)
+                            continue
+
                         if op_locked:
                             gap = block = None
                         elif getattr(self, 'mi_mode', False):
@@ -747,6 +993,13 @@ class EventsMixin:
                         mouse_kb_on = getattr(self, 'control_mouse_kb', True)
                         # 可选中：鼠标键盘模式也需要通过点击选中缝隙/滑块组，否则方向键无物可移
                         selectable = two_touch_on or mouse_kb_on
+
+                        # 选块填空选取态：这两下点的是「我要处理哪一块、填进哪
+                        # 个坑」，不是操作滑块。必须在下面任何选中/拖拽/选缝逻辑
+                        # 之前截住——否则第一下就被当成拖滑块，永远选不齐一对。
+                        if getattr(self, '_pick_fill', None) is not None:
+                            self._pick_fill_click(x, y, block, gap)
+                            continue
 
                         # 拖拽滑动：记录起点（按下滑块时记录；最终由 MOUSEBUTTONUP 判定点击/拖拽）
                         # 单次/两次触控都关闭时拖拽无意义，不记录起点，避免残留中间态
@@ -772,6 +1025,9 @@ class EventsMixin:
                                     for b in self.game.blocks:
                                         b.be_opted = False
                                     self.selected_block = None
+                                    # 换缝 = 上一次「选中滑块的那一点」作废，
+                                    # 箭头按键回到切片外沿（不再钉在旧鼠标点）
+                                    self._gap_anchor_world = None
                                     # 操作提示：选中缝隙
                                     gap_type, line = gap
                                     msg = f"选中{self._gap_type_name(gap_type)}缝隙"
@@ -799,6 +1055,9 @@ class EventsMixin:
                             gap_type, line = self.selected_gap
                             self.game.opt(gap_type, line, block)
                             self.selected_block = block
+                            # S1-4：记住这一次选中的鼠标点（存世界坐标，平移/
+                            # 缩放后仍钉在同一棋盘位置），箭头按键摆在它两侧
+                            self._gap_anchor_world = self.screen_to_world(x, y)
                             n_blocks = len(
                                 [b for b in self.game.blocks if b.be_opted])
                             self.macro_notify_msg = f"选中滑块组 共{n_blocks}个"
@@ -812,6 +1071,9 @@ class EventsMixin:
                             direction, line = self.selected_gap
                             self.game.opt(direction, line, block)
                             self.selected_block = block
+                            # S1-4：记住这一次选中的鼠标点（世界坐标），
+                            # 箭头按键摆在它两侧 —— 玩家接着点哪都不用挪手
+                            self._gap_anchor_world = self.screen_to_world(x, y)
                             # 操作提示：选中滑块组
                             n_blocks = len([b for b in self.game.blocks if b.be_opted])
                             self.macro_notify_msg = f"选中滑块组 共{n_blocks}个"
@@ -822,23 +1084,14 @@ class EventsMixin:
                             # 跟随中点击空白 → 清除跟随，允许平移地图
                             if self.drag_following:
                                 self.clear_drag_follow()
-                            # 调试面板打开时，点击洞选中（标记学习）
-                            if getattr(self, 'show_metrics_panel', False):
-                                hole = self.get_hole_at_pos(x, y)
-                                if hole is not None:
-                                    if (self.selected_hole is not None and
-                                            set(hole['cells']) == set(self.selected_hole.get('cells', []))):
-                                        # 再点一次已选中的洞 = 取消选中
-                                        self.selected_hole = None
-                                        self.macro_notify_msg = "已取消选中洞"
-                                    else:
-                                        self.selected_hole = hole
-                                        self.macro_notify_msg = f"选中洞：{hole['type']} {hole['size']}（{len(hole['cells'])}格）"
-                                    self.macro_notify_timer = 120
-                                    continue
+                            # 点空白一律只起拖（2026-10-03 修：这一带的异常
+                            # 曾打断拖动起手）。调试面板「点洞选中 + 记录样本」
+                            # 能力已于 2026-10-12 按用户决定整体删除（由标注
+                            # 模式选空位取代），空白点击不再背负选中语义。
                             self.is_dragging = True
                             self.drag_start = (x, y)
                             self.drag_offset = (self.camera_x, self.camera_y)
+                            continue
 
                         # 操作日志：这一下的裁定与反馈。提示原文照抄（与玩家描述
                         # 对照的唯一凭据），没有新提示就记 null——记旧提示会
@@ -889,7 +1142,7 @@ class EventsMixin:
                         self.is_dragging = False
                         self.slider_dragging = False
                         self.zoom_slider_dragging = False
-                
+
                 # 鼠标滚轮
                 elif event.type == pygame.MOUSEWHEEL:
                     if pygame.key.get_mods() & pygame.KMOD_CTRL:
@@ -917,9 +1170,7 @@ class EventsMixin:
                         # 空格作为计时器开始/DNF 键
                         self._timer_on_space()
                         continue
-                    if event.key == pygame.K_RETURN and getattr(self, 'show_metrics_panel', False):
-                        self._record_hole_selection()
-                    elif self._is_action_triggered(event, 'save'):
+                    if self._is_action_triggered(event, 'save'):
                         self.save_to_file()
                     
                     elif self._is_action_triggered(event, 'load'):
@@ -960,6 +1211,9 @@ class EventsMixin:
                     
                     elif self._is_action_triggered(event, 'metrics_panel'):
                         self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                        # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
+                        # 记号本身仍可在右下角或设置里单独开关。
+                        self.board_marks_enabled = self.show_metrics_panel
                         status = '开' if self.show_metrics_panel else '关'
                         self.macro_notify_msg = f"调试面板：{status}"
                         self.macro_notify_timer = 90
@@ -1088,7 +1342,10 @@ class EventsMixin:
                                  triangle_side=self.game.k if tri else None),
             "step_count": self.step_count,
             "solved": self.is_solved(),
-            "matrix": self.game.matrix,
+            # `get_matrix()` 而不是 `.matrix`：mi 的 `restore` 会把 matrix
+            # 置 None 走懒更新（見 solver/ml/mi_adapter.py），直接取属性可能
+            # 拿到 None。get_matrix() 在 None 时才重建，语义等价且更安全。
+            "matrix": self.game.get_matrix(),
             "selected_gap": list(self.selected_gap) if self.selected_gap else None,
             "selected_block": self.selected_block.location if self.selected_block else None,
             "animating": self.animating,
@@ -1126,7 +1383,7 @@ class EventsMixin:
         exec_name = getattr(self, 'macro_exec_name', '') or ''
         playing = bool(getattr(self, 'macro_executing', False)
                        and not getattr(self, 'macro_recording', False)
-                       and (exec_name in ('自动求解', '聚拢')
+                       and (exec_name in ('自动求解', '聚拢', '单次聚拢')
                             or exec_name.startswith('填洞宏')))
         latch = getattr(self, '_api_solve_latch', None)
 
@@ -1210,6 +1467,8 @@ class EventsMixin:
     # settings 白名单：布尔键 + 动画速度（映射 self.animation_duration）
     _SETTINGS_BOOL_KEYS = (
         'coloring_enabled', 'chain_hint_enabled', 'show_metrics_panel',
+        'board_marks_enabled', 'arrows_enabled',
+        'show_virtual_keyboard', 'show_records_panel',
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
@@ -1297,7 +1556,8 @@ class EventsMixin:
         求解线程可能在主线程「启动后回查标志」前就已完成并把
         _auto_solve_running 置回 False（启动即完成的竞态）。
         """
-        from solver import SOLVER_ALGORITHMS
+        from solver import (SOLVER_ALGORITHMS, solver_supports,
+                            unsupported_solver_msg)
         if algorithm:
             if algorithm not in SOLVER_ALGORITHMS:
                 return False, f"未知算法: {algorithm}（可选: {', '.join(SOLVER_ALGORITHMS)}）"
@@ -1311,13 +1571,18 @@ class EventsMixin:
                 return False, "只读存档无法使用求解器"
             if getattr(self, '_ann_recording', False):
                 return False, "标注录制中无法使用求解器"
-            # 三角形密铺：求解器未实现。必须在 _start_auto_solve() 之前判定，
-            # 否则按钮路径的拦截只落在 macro_notify，这里仍会回「已启动」
-            if self._triangle_blocked('自动求解'):
-                return False, self.macro_notify_msg
-            # 米字格同理：8 向/4 族缝隙的求解器同样未实现
-            if self._mi_blocked('自动求解'):
-                return False, self.macro_notify_msg
+            # 当前谜题形态不支持所选算法 → 明确反馈「没有这个功能」。
+            #
+            # 旧代码在 mi 上无条件 `_mi_blocked('自动求解')`（M2 时期遗留，
+            # 那时 mi 求解器还没落地），会把**已实现的聚拢**也一起挡成
+            # 「米字格：自动求解不可用」。现在按形态×算法的支持表判定：
+            # 异形只放行已实现的算法，其余明确告知没有该功能并列出可用的。
+            # 与 _start_auto_solve 用同一条规则，按钮路径与快捷键/HTTP 路径
+            # 行为一致。
+            form = self._current_puzzle_form()
+            if not solver_supports(self.solver_algorithm, form):
+                return False, unsupported_solver_msg(
+                    self.solver_algorithm, form)
         self._start_auto_solve()
         if active:
             return True, "已请求停止求解"
@@ -1362,6 +1627,38 @@ class EventsMixin:
         if os.path.isfile(path):
             return True, f"已保存到 {path}"
         return False, f"保存失败：无法写入 {path}（路径为目录或无权限）"
+
+    def _do_screenshot(self, target=''):
+        """把当前屏幕画面保存为 PNG。返回 (ok, message, data)。
+
+        target 为空时存到 <base_dir>/screenshots/ 下、文件名带时间戳；
+        给定时作为目标路径（缺 .png 后缀自动补上）。保存的是主循环里
+        最近一次绘制完成的画面（进程在绘制后立即处理命令，最多差一帧）。
+        """
+        try:
+            if target:
+                path = target if target.lower().endswith('.png') else target + '.png'
+            else:
+                import datetime
+                shot_dir = os.path.join(self.base_dir, 'screenshots')
+                os.makedirs(shot_dir, exist_ok=True)
+                stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                path = os.path.join(shot_dir, f'gatsli_{stamp}.png')
+                # 同一秒内连拍不互相覆盖：重名则追加 _1/_2/...
+                n = 1
+                while os.path.exists(path):
+                    path = os.path.join(shot_dir, f'gatsli_{stamp}_{n}.png')
+                    n += 1
+            parent = os.path.dirname(os.path.abspath(path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            pygame.image.save(self.screen, path)
+            data = {'path': os.path.abspath(path),
+                    'width': self.screen.get_width(),
+                    'height': self.screen.get_height()}
+            return True, f"已保存截图 {data['path']}", data
+        except Exception as e:
+            return False, f"截图失败: {e}", None
 
     def _do_load_map(self, map_str, step=None):
         """从地图字符串导入局面（无对话框）。返回 (ok, message)。"""
@@ -1458,6 +1755,9 @@ class EventsMixin:
             elif action == 'save_file':
                 ok, msg = self._do_save_file(payload.get('path', ''))
                 self._cmd_reply(resp_q, ok, msg)
+            elif action == 'screenshot':
+                ok, msg, data = self._do_screenshot(payload.get('path', '') or '')
+                self._cmd_reply(resp_q, ok, msg, data)
             elif action == 'load_file':
                 path = payload.get('path', '')
                 if not path:
@@ -1530,6 +1830,28 @@ class EventsMixin:
                 continue
             
             try:
+                if action == 'help':
+                    # 外部控制可发现性：stdin 通道本身无需令牌（父进程可信），
+                    # 这里同时给出 CLI 索引与 HTTP API 索引，让调用方知道
+                    # 「还有什么可以问」。
+                    from http_server import API_INDEX
+                    if resp_q:
+                        resp_q.put({
+                            'ok': True,
+                            'note': 'stdin 通道无需令牌；HTTP 接口需带令牌（见 /help auth）',
+                            'commands': [{'cmd': c, 'summary': s}
+                                         for c, s, _n in CLI_COMMANDS],
+                            'http_api': [{'path': p, 'method': m, 'summary': s}
+                                         for p, m, s in API_INDEX],
+                        })
+                    else:
+                        print("=== CLI 命令索引（stdin 通道，无需令牌）===")
+                        for c, s, _n in CLI_COMMANDS:
+                            print(f"  {c:<40}{s}")
+                        print("HTTP API 索引：GET /help（需带令牌）；"
+                              "或在游戏「设置-控制」下载外部控制教程")
+                    continue
+
                 if action == 'shuffle':
                     self.shuffle_puzzle()
                     self._cmd_reply(resp_q, True, "已打乱")
@@ -1657,6 +1979,7 @@ class EventsMixin:
                             'collision': ('collision', "滑动失败：移动后滑块会重叠"),
                             'no_selection': ('not_selected', "未选中滑块组"),
                             'bad_direction': ('bad_direction', "无效的移动方向"),
+                            'all_selected': ('all_selected', "滑动失败：不能移动全部滑块"),
                         }
                         r_code, r_msg = reason_map.get(
                             fail_reason, ('disconnected', f"移动不合法（{fail_reason}）"))
@@ -2275,6 +2598,11 @@ class EventsMixin:
                     ok, msg = self._do_save_file(path)
                     self._cmd_reply(resp_q, ok, msg)
 
+                elif action == 'screenshot':
+                    # 用法: screenshot [路径]；缺省存 screenshots/ 下自动命名
+                    ok, msg, data = self._do_screenshot(' '.join(parts[1:]).strip())
+                    self._cmd_reply(resp_q, ok, msg, data)
+
                 elif action == 'load_file':
                     if len(parts) < 2:
                         self._cmd_reply(resp_q, False, "用法: load_file <路径>")
@@ -2355,15 +2683,15 @@ class EventsMixin:
             self.anim_start_time = pygame.time.get_ticks() - int(old_progress * new_duration)
         self.animation_duration = new_duration
 
-    def _update_zoom_slider_from_mouse(self, mouse_y):
-        """根据鼠标Y坐标更新缩放（以窗口中心为锚点）"""
-        zr = getattr(self, 'zoom_slider_rect', None)
-        if not zr or zr.height <= 0:
-            return
-        y = max(zr.top, min(zr.bottom, mouse_y))
-        normalized = (y - zr.top) / zr.height
-        # 倒置：越靠上(滑条顶部)=放大；越靠下=缩小
-        new_zoom = self.min_zoom + (1.0 - normalized) * (self.max_zoom - self.min_zoom)
+    def _apply_zoom_centered(self, new_zoom):
+        """设置缩放并保持窗口中心对应的棋盘位置不变（以窗口中心为锚点）。
+
+        右侧面板滑条与设置-视觉页缩放滑条共用这一套锚点逻辑——两个入口
+        改的是同一个 self.zoom，锚点行为必须一致，否则同一个数值从不同
+        入口设进去，画面会跳到不同地方。（Ctrl+滚轮是另一套：以鼠标所在
+        位置为锚点，见滚轮事件分支。）
+        """
+        new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
         cx = self.screen_width // 2
         cy = self.menu_bar_height + (self.screen_height - self.menu_bar_height - self.status_bar_height) // 2
         wx = (cx - self.camera_x) / self.zoom
@@ -2372,16 +2700,31 @@ class EventsMixin:
         self.camera_x = cx - wx * self.zoom
         self.camera_y = cy - wy * self.zoom
 
-    def _update_settings_scrollbar(self, mx, my):
-        """根据鼠标位置更新设置对话框滚动条"""
-        sb = getattr(self, '_settings_scrollbar_rect', None)
-        if not sb or sb.height <= 0:
+    def _update_zoom_slider_from_mouse(self, mouse_y):
+        """根据鼠标Y坐标更新缩放（右侧面板垂直滑条；委托共享锚点逻辑）"""
+        zr = getattr(self, 'zoom_slider_rect', None)
+        if not zr or zr.height <= 0:
             return
-        max_scroll = getattr(self, '_settings_max_scroll', 0)
-        if max_scroll <= 0:
+        y = max(zr.top, min(zr.bottom, mouse_y))
+        normalized = (y - zr.top) / zr.height
+        # 倒置：越靠上(滑条顶部)=放大；越靠下=缩小
+        new_zoom = self.min_zoom + (1.0 - normalized) * (self.max_zoom - self.min_zoom)
+        self._apply_zoom_centered(new_zoom)
+
+    def _update_settings_zoom_slider(self, mx):
+        """设置-视觉页缩放滑条（水平）：左端=最小缩放，右端=最大缩放。
+
+        与动画时长滑条同一套拖拽逻辑；写人与右侧面板滑条相同的
+        self.zoom（经 _apply_zoom_centered 夹紧+锚点），因此两个滑条
+        天然联动——改任何一个，另一个下一帧就指到同一位置。
+        """
+        track = getattr(self, '_settings_zoom_track_rect', None)
+        if not track or track.width <= 0:
             return
-        ratio = (my - sb.y) / sb.height
-        self._settings_scroll = max(0, min(max_scroll, int(ratio * max_scroll)))
+        x = max(track.x, min(track.x + track.width, mx))
+        normalized = (x - track.x) / track.width
+        new_zoom = self.min_zoom + normalized * (self.max_zoom - self.min_zoom)
+        self._apply_zoom_centered(new_zoom)
 
     def _is_action_triggered(self, event, action_name):
         """
@@ -2432,6 +2775,58 @@ class EventsMixin:
         need_shift = 'shift' in target_mods
 
         return (has_ctrl == need_ctrl) and (has_alt == need_alt) and (has_shift == need_shift)
+
+    def _settings_bottom_button_hit(self, mx, my):
+        """设置对话框底部三个按钮（确定 / 取消 / 恢复默认）命中即处理。
+
+        返回 True 表示这次点击已被消费（调用方应立即 return）。
+
+        为什么要单独成方法：底部按钮必须**先于**各 Tab 的选项行判定。
+        选项行是横贯对话框整宽的大矩形，列表滚到底时会盖到按钮区；若先
+        判选项行，点「确定」会被选项行截获 —— 算法被改、对话框关不掉。
+        """
+        # 确定
+        ok_btn = getattr(self, '_settings_ok_btn', None)
+        if ok_btn is not None and ok_btn.collidepoint(mx, my):
+            self._apply_settings()
+            return True
+
+        # 取消
+        cancel_btn = getattr(self, '_settings_cancel_btn', None)
+        if cancel_btn is not None and cancel_btn.collidepoint(mx, my):
+            self.keybindings = dict(self._settings_backup_keybindings)
+            self.gather_params = dict(getattr(self, '_settings_backup_gather', self.gather_params))
+            self.gather_enabled = dict(getattr(self, '_settings_backup_gather_enabled', self.gather_enabled))
+            self.settings_editing_value = None
+            self.show_settings_dialog = False
+            self.settings_editing_action = None
+            return True
+
+        # 恢复默认
+        reset_btn = getattr(self, '_settings_reset_btn', None)
+        if reset_btn is not None and reset_btn.collidepoint(mx, my):
+            from gui.file_ops import DEFAULT_KEYBINDINGS
+            self.keybindings = dict(DEFAULT_KEYBINDINGS)
+            self.settings_editing_action = None
+            self.settings_editing_value = None
+            self._update_menu_shortcut_texts()
+            # 恢复聚拢参数默认值
+            if hasattr(self, '_gather_param_specs'):
+                for k, (_label, vdef, _vmin, _vmax, _vstep, _desc) in self._gather_param_specs:
+                    self.gather_params[k] = vdef
+                    self.gather_enabled[k] = True
+                self.macro_notify_msg = "已恢复默认参数"
+                self.macro_notify_timer = 90
+            # 恢复控制模式默认值（三种模式全开；米字格仍禁单次触控）
+            self.control_single_touch = not getattr(self, 'mi_mode', False)
+            self.control_two_touch = True
+            self.control_mouse_kb = True
+            if getattr(self, 'mi_mode', False):
+                self.macro_notify_msg = "已恢复默认参数（米字格保持关闭单次触控）"
+                self.macro_notify_timer = 120
+            return True
+
+        return False
 
     def _handle_settings_dialog_event(self, event):
         """处理设置对话框中的事件"""
@@ -2525,42 +2920,49 @@ class EventsMixin:
                 if ebox is None or not ebox.collidepoint(mx, my):
                     self._commit_gather_value(ekey)
 
+            # —— 底部按钮最优先（确定 / 取消 / 恢复默认）——
+            # 任何 Tab 的内容行（尤其是快捷键录制行）命中矩形都可能向下
+            # 延伸到按钮带。若先判内容行，点「确定」上半截会被「录制宏」等
+            # 快捷键行截获而进入改键状态（重叠约 5px）。故按钮一律最先判。
+            if self._settings_bottom_button_hit(mx, my):
+                return
+
             # Tab 切换
             if hasattr(self, '_settings_tab_kb_rect') and self._settings_tab_kb_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'keybindings'
                 self.settings_editing_action = None
                 self.settings_editing_value = None
-                self._settings_scroll = 0
+                self.settings_scrollbar.set_scroll(0)
                 return
             if hasattr(self, '_settings_tab_anim_rect') and self._settings_tab_anim_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'animation'
                 self.settings_editing_action = None
                 self.settings_editing_value = None
-                self._settings_scroll = 0
+                self.settings_scrollbar.set_scroll(0)
                 return
             if hasattr(self, '_settings_tab_solver_rect') and self._settings_tab_solver_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'solver'
                 self.settings_editing_action = None
                 self.settings_editing_value = None
-                self._settings_scroll = 0
+                self.settings_scrollbar.set_scroll(0)
                 return
             if hasattr(self, '_settings_tab_gather_rect') and self._settings_tab_gather_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'gather'
                 self.settings_editing_action = None
                 self.settings_editing_value = None
-                self._settings_scroll = 0
+                self.settings_scrollbar.set_scroll(0)
                 return
             if hasattr(self, '_settings_tab_file_rect') and self._settings_tab_file_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'file'
                 self.settings_editing_action = None
                 self.settings_editing_value = None
-                self._settings_scroll = 0
+                self.settings_scrollbar.set_scroll(0)
                 return
             if hasattr(self, '_settings_tab_control_rect') and self._settings_tab_control_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'control'
                 self.settings_editing_action = None
                 self.settings_editing_value = None
-                self._settings_scroll = 0
+                self.settings_scrollbar.set_scroll(0)
                 return
 
             # 文件 Tab：存档只读开关
@@ -2590,6 +2992,15 @@ class EventsMixin:
                     self.macro_notify_msg = f"操作日志：{status}"
                     self.macro_notify_timer = 90
                     op_log.log('oplog_toggle', on=self.op_log_enabled)
+                    return
+
+            # 文件 Tab：压缩存档开关（矩形谜题保存为 replay 压缩格式）
+            if self.settings_active_tab == 'file' and hasattr(self, '_settings_compressed_toggle_rect'):
+                if self._settings_compressed_toggle_rect.collidepoint(mx, my):
+                    self.use_compressed_save = not getattr(self, 'use_compressed_save', False)
+                    status = '开' if self.use_compressed_save else '关'
+                    self.macro_notify_msg = f"压缩存档：{status}"
+                    self.macro_notify_timer = 90
                     return
 
             # 快捷键 Tab：点击按键区域进入录制模式
@@ -2623,6 +3034,15 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 动画 Tab：界面模式总开关（朴素 / 增强）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_ui_mode_rect'):
+                if self._settings_ui_mode_rect.collidepoint(mx, my):
+                    self.ui_mode = 'plain' if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 'enhanced'
+                    status = '增强' if self.ui_mode == 'enhanced' else '朴素'
+                    self.macro_notify_msg = f"界面模式：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 动画 Tab：分组着色器开关
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_coloring_toggle_rect'):
                 if self._settings_coloring_toggle_rect.collidepoint(mx, my):
@@ -2638,6 +3058,24 @@ class EventsMixin:
                     self.chain_hint_enabled = not self.chain_hint_enabled
                     status = '开' if self.chain_hint_enabled else '关'
                     self.macro_notify_msg = f"悬停连锁提示：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 视觉 Tab：复原提示标记开关（视觉强化，与调试面板本体分开）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_marks_toggle_rect'):
+                if self._settings_marks_toggle_rect.collidepoint(mx, my):
+                    self.board_marks_enabled = not getattr(self, 'board_marks_enabled', True)
+                    status = '开' if self.board_marks_enabled else '关'
+                    self.macro_notify_msg = f"复原提示标记：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 动画 Tab：调试面板本体开关（F2 的纯鼠标入口）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_metrics_toggle_rect'):
+                if self._settings_metrics_toggle_rect.collidepoint(mx, my):
+                    self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                    status = '开' if self.show_metrics_panel else '关'
+                    self.macro_notify_msg = f"调试面板：{status}"
                     self.macro_notify_timer = 90
                     return
 
@@ -2666,6 +3104,69 @@ class EventsMixin:
                     self.macro_notify_msg = f"鼠标键盘：{status}"
                     self.macro_notify_timer = 90
                     return
+                # 虚拟键盘（F1 的纯鼠标入口）
+                if hasattr(self, '_settings_ctrl_vk_rect') and self._settings_ctrl_vk_rect.collidepoint(mx, my):
+                    if getattr(self, 'mi_mode', False) and getattr(self, 'show_virtual_keyboard', False):
+                        # 米字格定方向全靠它：关掉等于没法玩，直接说明原因
+                        self.macro_notify_msg = "米字格需要虚拟键盘定方向（不能关闭）"
+                        self.macro_notify_timer = 120
+                        return
+                    self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
+                    status = '开' if self.show_virtual_keyboard else '关'
+                    self.macro_notify_msg = f"虚拟键盘：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                # 箭头按键（原先只跟界面模式走，这里给独立开关）
+                if hasattr(self, '_settings_ctrl_arrow_rect') and self._settings_ctrl_arrow_rect.collidepoint(mx, my):
+                    self.arrows_enabled = not getattr(self, 'arrows_enabled', True)
+                    status = '开' if self.arrows_enabled else '关'
+                    if self.arrows_enabled and getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+                        self.macro_notify_msg = "箭头按键：开（但朴素界面下不显示）"
+                    else:
+                        self.macro_notify_msg = f"箭头按键：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                # 逆序播放宏（从右下角常用区撤回设置）
+                if hasattr(self, '_settings_ctrl_revmacro_rect') and self._settings_ctrl_revmacro_rect.collidepoint(mx, my):
+                    self.macro_reverse_mode = not self.macro_reverse_mode
+                    status = '开' if self.macro_reverse_mode else '关'
+                    self.macro_notify_msg = f"逆序播放宏指令：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                # —— 外部控制（HTTP API）——
+                if hasattr(self, '_settings_ext_toggle_rect') and self._settings_ext_toggle_rect.collidepoint(mx, my):
+                    self.set_external_control(not self.external_enabled())
+                    status = '开' if self.external_enabled() else '关'
+                    self.macro_notify_msg = f"外部控制：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                if hasattr(self, '_settings_ext_copy_rect') and self._settings_ext_copy_rect.collidepoint(mx, my):
+                    self._copy_external_message()
+                    return
+                if hasattr(self, '_settings_ext_guide_rect') and self._settings_ext_guide_rect.collidepoint(mx, my):
+                    # 保存外部控制教程（自包含 .md，不含令牌）——复用文件对话框
+                    # 先关设置框：文件对话框虽在事件分发里优先，但绘制顺序在
+                    # 设置框之后 → 留着设置框会把文件对话框整个盖住，而事件
+                    # 又被隐形的文件对话框全吞，游戏看起来卡死。
+                    self.show_settings_dialog = False
+                    self.settings_editing_action = None
+                    self.settings_editing_value = None
+                    self.file_dialog.show(
+                        mode='save',
+                        title='保存外部控制教程',
+                        initial_dir=getattr(self, 'save_dir', None),
+                        extensions=['md'],
+                        initial_file='GatenneaSlider_外部控制教程.md')
+                    self._pending_guide_save = True
+                    return
+
+            # 视觉 Tab：缩放滑条（与动画时长滑条同一套拖拽逻辑）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_zoom_knob_rect'):
+                if self._settings_zoom_knob_rect.collidepoint(mx, my) or \
+                   (hasattr(self, '_settings_zoom_track_rect') and self._settings_zoom_track_rect.collidepoint(mx, my)):
+                    self._settings_zoom_dragging = True
+                    self._update_settings_zoom_slider(mx)
+                    return
 
             # 动画 Tab：滑动条
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_slider_knob_rect'):
@@ -2675,25 +3176,9 @@ class EventsMixin:
                     self._update_settings_slider(mx)
                     return
 
-            # 滚动条拖拽开始
-            sb = getattr(self, '_settings_scrollbar_rect', None)
-            kn = getattr(self, '_settings_scrollbar_knob', None)
-            if sb and kn and kn.collidepoint(mx, my):
-                self._settings_scrollbar_dragging = True
-                self._settings_scrollbar_drag_start = (mx, my)
-                self._settings_scrollbar_drag_orig = self._settings_scroll
-                return
-            if sb and sb.collidepoint(mx, my):
-                # 点击滚动条轨道：跳到对应位置
-                self._settings_scrollbar_dragging = True
-                self._settings_scrollbar_drag_start = (mx, my)
-                self._settings_scrollbar_drag_orig = self._settings_scroll
-                # 立即更新
-                track = sb
-                if track.height > 0:
-                    ratio = (my - track.y) / track.height
-                    max_scroll = getattr(self, '_settings_max_scroll', 0)
-                    self._settings_scroll = max(0, min(max_scroll, int(ratio * max_scroll)))
+            # 滚动条（与帮助框同源：共享 Scrollbar 组件）
+            #   旋钮拖拽保留抓取偏移、1:1 跟手；点轨道跳转对应位置
+            if self.settings_scrollbar.on_mouse_down((mx, my)):
                 return
 
             # 求解器 Tab：点击算法选择
@@ -2701,10 +3186,18 @@ class EventsMixin:
                 for algo_key, rect in self._settings_solver_rects.items():
                     if rect.collidepoint(mx, my):
                         self.solver_algorithm = algo_key
-                        # 操作提示
-                        from solver import SOLVER_ALGORITHMS
+                        # 操作提示：当前谜题形态不支持该算法时，直接把
+                        # 「没有这个功能」讲出来（不然用户点了没反应、
+                        # 或者到求解时才被拦，反馈太晚）。
+                        from solver import (SOLVER_ALGORITHMS, solver_supports,
+                                            unsupported_solver_msg)
                         algo_name = SOLVER_ALGORITHMS.get(algo_key, ('求解器',))[0].strip()
-                        self.macro_notify_msg = f"求解算法：{algo_name}"
+                        form = self._current_puzzle_form()
+                        if solver_supports(algo_key, form):
+                            self.macro_notify_msg = f"求解算法：{algo_name}"
+                        else:
+                            self.macro_notify_msg = unsupported_solver_msg(
+                                algo_key, form)
                         self.macro_notify_timer = 120
                         return
 
@@ -2761,65 +3254,27 @@ class EventsMixin:
                         self.macro_notify_timer = 90
                         return
 
-            # 确定按钮
-            if hasattr(self, '_settings_ok_btn') and self._settings_ok_btn.collidepoint(mx, my):
-                self._apply_settings()
-                return
-
-            # 取消按钮
-            if hasattr(self, '_settings_cancel_btn') and self._settings_cancel_btn.collidepoint(mx, my):
-                self.keybindings = dict(self._settings_backup_keybindings)
-                self.gather_params = dict(getattr(self, '_settings_backup_gather', self.gather_params))
-                self.gather_enabled = dict(getattr(self, '_settings_backup_gather_enabled', self.gather_enabled))
-                self.settings_editing_value = None
-                self.show_settings_dialog = False
-                self.settings_editing_action = None
-                return
-
-            # 恢复默认按钮
-            if hasattr(self, '_settings_reset_btn') and self._settings_reset_btn.collidepoint(mx, my):
-                from gui.file_ops import DEFAULT_KEYBINDINGS
-                self.keybindings = dict(DEFAULT_KEYBINDINGS)
-                self.settings_editing_action = None
-                self.settings_editing_value = None
-                self._update_menu_shortcut_texts()
-                # 恢复聚拢参数默认值
-                if hasattr(self, '_gather_param_specs'):
-                    for k, (_label, vdef, _vmin, _vmax, _vstep, _desc) in self._gather_param_specs:
-                        self.gather_params[k] = vdef
-                        self.gather_enabled[k] = True
-                    self.macro_notify_msg = "已恢复默认参数"
-                    self.macro_notify_timer = 90
-                # 恢复控制模式默认值（三种模式全开；米字格仍禁单次触控）
-                self.control_single_touch = not getattr(self, 'mi_mode', False)
-                self.control_two_touch = True
-                self.control_mouse_kb = True
-                if getattr(self, 'mi_mode', False):
-                    self.macro_notify_msg = "已恢复默认参数（米字格保持关闭单次触控）"
-                    self.macro_notify_timer = 120
-                return
+            # 底部按钮已在本处理器最前（tab 切换之前）统一判定，此处不再重复。
 
         # 鼠标释放
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             self._settings_slider_dragging = False
-            self._settings_scrollbar_dragging = False
+            self._settings_zoom_dragging = False
+            self.settings_scrollbar.on_mouse_up()
 
         # 鼠标拖动滑动条 / 滚动条
         if event.type == pygame.MOUSEMOTION:
+            if getattr(self, '_settings_zoom_dragging', False):
+                mx, my = event.pos
+                self._update_settings_zoom_slider(mx)
             if getattr(self, '_settings_slider_dragging', False):
                 mx, my = event.pos
                 self._update_settings_slider(mx)
-            if getattr(self, '_settings_scrollbar_dragging', False):
-                mx, my = event.pos
-                self._update_settings_scrollbar(mx, my)
+            self.settings_scrollbar.on_mouse_motion(event.pos)
 
         # 鼠标滚轮（设置对话框中）
         if event.type == pygame.MOUSEWHEEL:
-            if hasattr(self, '_settings_scrollbar_rect') and self._settings_scrollbar_rect:
-                self._settings_scroll = max(0, min(
-                    getattr(self, '_settings_max_scroll', 0),
-                    self._settings_scroll - event.y * 28
-                ))
+            self.settings_scrollbar.on_wheel(event.y)
 
     def _update_settings_slider(self, mx):
         """根据鼠标X坐标更新设置对话框中的动画速度滑动条"""
@@ -2892,6 +3347,16 @@ class EventsMixin:
             self.chain_hint_enabled = not self.chain_hint_enabled
             status = '开' if self.chain_hint_enabled else '关'
             self.macro_notify_msg = f"悬停连锁提示：{status}"
+        elif key == 'board_marks_enabled':
+            self.board_marks_enabled = not getattr(self, 'board_marks_enabled', True)
+            status = '开' if self.board_marks_enabled else '关'
+            self.macro_notify_msg = f"复原提示标记：{status}"
+        elif key == 'show_records_panel':
+            # 成绩面板（F3 的纯鼠标入口）：与 F3 走同一套收尾（清删除确认态）
+            self.show_records_panel = not getattr(self, 'show_records_panel', False)
+            self.rp_confirm_delete_id = None
+            status = '开' if self.show_records_panel else '关'
+            self.macro_notify_msg = f"成绩面板：{status}"
         elif key == 'game_mode':
             self.toggle_game_mode()
             return  # toggle_game_mode 已设置提示
@@ -2899,7 +3364,149 @@ class EventsMixin:
             self.macro_reverse_mode = not self.macro_reverse_mode
             status = '开' if self.macro_reverse_mode else '关'
             self.macro_notify_msg = f"逆序播放宏指令：{status}"
+        elif key == 'show_virtual_keyboard':
+            # 与 F1 同语义（右下角快捷开关也走这里）
+            self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
+            status = '开' if self.show_virtual_keyboard else '关'
+            self.macro_notify_msg = f"虚拟键盘：{status}"
+        elif key == 'show_metrics_panel':
+            # 与 F2 同语义：连带开关棋盘记号（记号本身仍可单独开关）
+            self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+            self.board_marks_enabled = self.show_metrics_panel
+            status = '开' if self.show_metrics_panel else '关'
+            self.macro_notify_msg = f"调试面板：{status}"
+        else:
+            # 未知开关：明确报出来，别静默吞掉（否则就是「点了没反应」）
+            self.macro_notify_msg = f"未知开关：{key}"
         self.macro_notify_timer = 90
+
+    def _feature_form(self) -> str:
+        """检索用的形态键：比 `solver.game_form` 多区分「数字」。
+
+        求解器口径里数字形态按矩形算（底层是同一个 SliderMatrix 类），但
+        **功能可用性上两者不同**（例如「选块填空」明确拒绝数字形态），所以
+        检索这一层要单独把它识别出来。
+        """
+        if getattr(self, 'numbered', False):
+            return 'numbered'
+        return self._current_puzzle_form()
+
+    def _open_settings_tab(self, tab):
+        """打开设置对话框并切到指定页签。
+
+        这八行初始化在文件里原本散落四处（顶栏设置、菜单点击、帮助检索跳转…），
+        漏一处就会出现「设置框打开了但滚动量/备份没重置」这类幽灵状态。统一到
+        这里；已有的旧调用点逐步收敛过来。
+        """
+        self.close_all_menus()
+        self.show_help = False
+        self.show_settings_dialog = True
+        self.settings_active_tab = tab
+        self.settings_editing_action = None
+        self.settings_scrollbar.set_scroll(0)
+        self._settings_ext_msg = ''
+        self._settings_ext_msg_timer = 0
+        self._settings_backup_keybindings = dict(self.keybindings)
+        self._settings_backup_gather = dict(getattr(self, 'gather_params', None) or {})
+        self._settings_backup_gather_enabled = dict(
+            getattr(self, 'gather_enabled', None) or {})
+
+    def _activate_feature(self, entry):
+        """检索结果「一键到位」：把玩家送到能操作这个功能的地方。
+
+        动作类型（登记在 `gui/feature_index._ACTIONS`）：
+            settings 打开设置对话框并切到指定页签
+            toggle   直接切换开关（复用右下角快捷开关的处理，含米字闸门等副作用）
+            menu     展开对应顶栏菜单
+            puzzle   按预设参数建局
+            mode     切换游戏模式
+            tutorial 开始新手教程
+            website  浏览器打开官网
+            none     纯说明，不跳转（概念条目没有可跳的界面）
+        """
+        act = entry.get('action') or {'type': 'none'}
+        kind = act.get('type')
+
+        if kind == 'settings':
+            self._open_settings_tab(act['tab'])
+            return
+
+        if kind == 'palette':
+            self.open_command_palette()
+            return
+
+        if kind == 'toggle':
+            self.show_help = False
+            self._handle_right_panel_switch(act['key'])
+            return
+
+        if kind == 'menu':
+            self.close_all_menus()
+            name = act.get('name', '')
+            if name == '编辑':
+                self.show_help = False
+                self.show_edit_menu = True
+            elif name == '文件':
+                self.show_help = False
+                self.show_file_menu = True
+            elif name == '谜题':
+                self.show_help = False
+                self.show_puzzle_menu = True
+            elif name == '宏定义':
+                self.show_help = False
+                self.show_macro_menu = True
+            return
+
+        if kind == 'puzzle':
+            self.close_all_menus()
+            self.show_help = False
+            params = act['params']
+            form = act.get('kind', 'square')
+            if form == 'triangle':
+                self.new_triangle_puzzle(params[0], params[1])
+            elif form == 'mi':
+                self.new_mi_puzzle(params[0], params[1], params[2])
+            else:
+                self.new_puzzle(params[0], params[1], params[2],
+                                numbered=(form == 'numbered'))
+            return
+
+        if kind == 'mode':
+            self.close_all_menus()
+            self.show_help = False
+            self.set_game_mode(act['mode'])
+            return
+
+        if kind == 'tutorial':
+            self.close_all_menus()
+            self.show_help = False
+            self._tut_start()
+            return
+
+        if kind == 'website':
+            import webbrowser
+            webbrowser.open('https://gatennea.github.io/GatenneaSliderWeb/')
+            return
+
+        if kind == 'updater_check':
+            self._start_update_check()
+            return
+
+        if kind == 'updater_now':
+            self._start_update_now()
+            return
+
+        # 'none'：概念条目，没有可跳的界面，只弹一条说明提示
+        self.macro_notify_msg = entry['name']
+        self.macro_notify_timer = 90
+
+    def _activate_selected_feature(self):
+        """执行当前选中的检索结果；没有结果时忽略。"""
+        rects = getattr(self, 'help_result_rects', None) or []
+        if not rects:
+            return
+        idx = max(0, min(getattr(self, 'help_sel', 0), len(rects) - 1))
+        self._activate_feature(rects[idx][1])
 
     # ==================== 宏功能 ====================
 
@@ -3108,6 +3715,16 @@ class EventsMixin:
                 self._update_gather_notify()
 
             if self.macro_exec_index >= len(self.macro_exec_ops):
+                # 流式求解：后台可能还有未播段，暂缓收尾（pump 续段/收尾）
+                # 兜底：_stream_active 若因异常/时序没被线程 finally 清掉，这里
+                # 会无限期暂缓 → macro_executing 永不复位。线程结束标志
+                # _auto_solve_done 为 True 时不再暂缓，直接走收尾。
+                _still_working = (getattr(self, '_stream_active', False)
+                                  and not getattr(self, '_auto_solve_done', False))
+                if _still_working or (
+                        getattr(self, '_stream_queue', None) is not None
+                        and not self._stream_queue.empty()):
+                    return
                 if getattr(self, '_gather_info', None) is not None:
                     self._finish_gather()
                 else:
@@ -3116,6 +3733,9 @@ class EventsMixin:
                     macro_name = self.macro_exec_name
                     label = '逆序' if self.macro_exec_reverse else ''
                     self.macro_notify_msg = f'[{macro_name}] {label}执行成功：{total_ops}步'
+                    # 带序号模式：求解器只复原形状，数字乱序是预期行为，提醒玩家自行调整
+                    if getattr(self, 'numbered', False) and self.game.is_solved():
+                        self.macro_notify_msg += '（形状已复原，数字排列未调整，请自行调整）'
                     self.macro_notify_timer = 180  # 3秒 (60fps)
                 # 所有步骤执行完毕
                 # 梯度聚拢：后续阶段由后台流水线推送，无需在此启动
@@ -3133,16 +3753,14 @@ class EventsMixin:
             direction = op['direction']
             step = op['step']
 
-            # 检查缝隙有效性
-            if gap_type == 'h' and not self.game.is_valid_h_line(gap_line):
-                self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 横向缝隙 {gap_line} 无效'
-                self.macro_error_timer = 60 * 3
-                self._set_macro_interrupted_notify()
-                self.macro_executing = False
-                self.macro_exec_ops = []
-                return
-            if gap_type == 'v' and not self.game.is_valid_v_line(gap_line):
-                self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 纵向缝隙 {gap_line} 无效'
+            # 检查缝隙有效性 + 该侧有块 —— 走三形态共有的
+            # `side_has_blocks`，不再直接调方形的 `is_valid_h_line/v_line`。
+            # 那两个方法**只有方形引擎有**，异形上会 AttributeError；而它们
+            # 的语义是「在边界盒内」，与异形「线两侧都有块」不是一回事。
+            if not self.game.side_has_blocks(gap_type, gap_line, side):
+                self.macro_error_msg = (
+                    f'宏在第 {self.macro_exec_index + 1} 步失败: '
+                    f'缝隙 {gap_type}{gap_line} 的第 {side} 侧无效或无方块')
                 self.macro_error_timer = 60 * 3
                 self._set_macro_interrupted_notify()
                 self.macro_executing = False
@@ -3156,13 +3774,24 @@ class EventsMixin:
             self.selected_block = None
 
             # 找到缝隙对应侧的任意一个方块（若有 rep_cell 则精确指定）
-            if 'rep_cell' in op:
-                rr, cc = op['rep_cell']
-                target_block = self._find_block_by_cell(rr, cc)
-                if target_block is None:
-                    target_block = self._find_block_on_side(gap_type, gap_line, side)
-            else:
-                target_block = self._find_block_on_side(gap_type, gap_line, side)
+            #
+            # `target_block` 必须在**两条路径上都赋值**：没有 rep_cell 的 op
+            # （方形的老宏、用户手录的宏）也要能走「在侧上随便找一个」这条路。
+            # 我第一版把 `else: target_block = self._find_block_on_side(...)`
+            # 当重复代码删掉了，结果方形老宏一进这里就
+            # `UnboundLocalError: target_block` —— **方形回放整条路径瘫掉**
+            # （G6 抓到的）。分支合并不等于赋值可以省。
+            target_block = None
+            if op.get('rep_cell') is not None:
+                rep = op['rep_cell']
+                rr, cc = rep[0], rep[1]
+                qq = rep[2] if len(rep) > 2 else None
+                target_block = self._find_block_by_cell(rr, cc, qq)
+            if target_block is None:
+                # rep 沒給、給的座標已失效、或指定的塊已被前面的步驟挪走
+                # —— 三種情況都退回「在側上找任意一個塊」。
+                target_block = self._find_block_on_side(
+                    gap_type, gap_line, side)
             if target_block is None:
                 self.macro_error_msg = f'宏在第 {self.macro_exec_index + 1} 步失败: 缝隙 {gap_type}{gap_line} {side} 侧无方块'
                 self.macro_error_timer = 60 * 3
@@ -3292,19 +3921,30 @@ class EventsMixin:
         self._gradient_gen += 1
         self._drain_gradient_queue()
 
-    def _find_block_on_side(self, gap_type: str, gap_line: int, side: str):
+    def _find_block_on_side(self, gap_type: str, gap_line, side):
         """
         在缝隙的指定侧找到一个方块
-        
+
         参数:
-            gap_type: 'h' 或 'v'
-            gap_line: 缝隙行/列号
-            side: 'above'/'below' (h) 或 'left'/'right' (v)
+            gap_type: 缝隙族（方形 'h'/'v'，三角 'h'/'p'/'n'，米字四族）
+            gap_line: 缝隙线号
+            side: 方形 'above'/'below'/'left'/'right'，异形 0/1
         返回:
             Block 对象或 None
+
+        **异形走 `side_of` 而不是坐标比较**：米字的线号在错位态下是半整数，
+        坐标也可能是半整数，「r <= line」这种比较要么 TypeError 要么判错。
         """
+        if side in (0, 1):
+            # 异形：委托给引擎的 side_of（三形态都有这个函数）
+            for c in self.game.positions():
+                if _side_of_any(self.game, gap_type, gap_line, c) == side:
+                    b = self.game.block_at(c)
+                    if b is not None:
+                        return b
+            return None
         for block in self.game.blocks:
-            r, c = block.location
+            r, c = block.location[0], block.location[1]
             if gap_type == 'h':
                 if side == 'above' and r <= gap_line:
                     return block
@@ -3317,11 +3957,21 @@ class EventsMixin:
                     return block
         return None
 
-    def _find_block_by_cell(self, row: int, col: int):
-        """根据精确坐标查找方块，供查表求解器指定代表方块。"""
+    def _find_block_by_cell(self, row, col, q=None):
+        """根据坐标查找方块，供求解器的 rep 锚定回放使用。
+
+        `q` 是**米字格必需的第三分量**：mi 的位置是 `(r, c, q)`，同一个
+        `(r, c)` 上最多有 8 块（A/B 两个晶格档 × NESW 四个朝向），只比前两
+        分量会定位到错误的块 —— 而 `opt` 是「从指定块起 DFS」，选错块就是
+        整步动作被静默改写成另一步（GUI 里表现为「解法播到一半走歪」）。
+        方形与三角的位置不含朝向分量，`q=None` 时只比前两分量。
+        """
         for block in self.game.blocks:
-            if block.location[0] == row and block.location[1] == col:
-                return block
+            if block.location[0] != row or block.location[1] != col:
+                continue
+            if q is not None and block.location[2] != q:
+                continue
+            return block
         return None
 
     def handle_macro_base_selection_click(self, x: int, y: int) -> bool:
@@ -3520,3 +4170,84 @@ class EventsMixin:
             return True
         
         return False
+
+    def _arrow_button_click(self, direction):
+        """S1-4：点箭头按键 —— 与虚拟键盘同方向的按钮**完全同效果**（走 1 格）。
+
+        复用虚拟键盘的同一条路径 move_selected_blocks，不另写一套移动逻辑：
+        撤销栈、动画、米字「只选了缝」的退回处理全部一致。
+        """
+        if self._tut_board_locked():
+            return
+        if getattr(self, 'animating', False):
+            self.macro_notify_msg = "动画播放中，无法移动"
+            self.macro_notify_timer = 90
+            return
+        if not self.selected_gap:
+            self.macro_notify_msg = "请先选中缝隙和滑块"
+            self.macro_notify_timer = 90
+            return
+        mi = getattr(self, 'mi_mode', False)
+        if not mi and not self.selected_block:
+            self.macro_notify_msg = "请先选中缝隙和滑块"
+            self.macro_notify_timer = 90
+            return
+        self.move_selected_blocks(direction)
+
+    def _update_cursor(self):
+        """S1-5：鼠标指针形态——增强模式按状态切换光标，朴素模式一律箭头。
+
+        - 拖拽中：可走→ SIZEALL（握住「移动」光标）；越界→ NO（禁止符）
+        - 悬停箭头按键：HAND（与虚拟键盘按钮同一手感：可点）
+        - 悬停棋盘且已选中切片：HAND（张开的手，表「可拖」）
+        - 其它：ARROW
+        """
+        # 能力检测（必须）：set_cursor 依赖 pygame.cursors 子模块，打包时若被
+        # spec 的 excludes 排掉，这里就 AttributeError。而本函数跑在**每帧
+        # try 块的开头**，一抛异常整帧的绘制与 display.flip() 全被跳过 →
+        # 窗口永远是空白，看起来像「程序没启动」，且 windowed 模式下连报错
+        # 都看不到（2026-10-06 打包版白屏事故）。指针是锦上添花，绝不能有
+        # 拖垮渲染的权力：缺了就永久静默降级，一次都不重试。
+        if not hasattr(pygame.mouse, 'set_cursor'):
+            return
+        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+            return
+        if getattr(self, 'drag_following', False):
+            cur = (pygame.SYSTEM_CURSOR_NO if getattr(self, 'drag_follow_invalid', False)
+                   else pygame.SYSTEM_CURSOR_SIZEALL)
+        else:
+            mx, my = pygame.mouse.get_pos()
+            over_board = my >= self.menu_bar_height and mx < self.screen_width - self.right_panel_width
+            if over_board and self._arrow_button_hit(mx, my):
+                cur = pygame.SYSTEM_CURSOR_HAND
+            else:
+                selected = getattr(self, 'selected_gap', None) is not None and any(
+                    b.be_opted for b in self.game.blocks)
+                cur = pygame.SYSTEM_CURSOR_HAND if (selected and over_board) else pygame.SYSTEM_CURSOR_ARROW
+        pygame.mouse.set_cursor(cur)
+
+
+# ---------------------------------------------------------------------------
+# 三形态共用的回放原语（模块级工具）
+# ---------------------------------------------------------------------------
+def _side_of_any(game, gap_type, line, key) -> int:
+    """缝隙侧判定 —— 方形以外的两种形态各有一个同名 `side_of`，这里按形态分派。
+
+    为什么不直接 `game.side_of`：`side_of` 是**模块级函数**（`game_triangle` /
+    `game_mi` 各自一份，语义一致：0 = 索引小的一侧、1 = 大的一侧），没有挂
+    在引擎类上。回放层要按当前 game 的形态挑对那一份，写成「引擎类 → 函数」
+    的映射比在调用点写 if/else 干净。
+
+    方形走的是坐标比较（`'above'/'below'/'left'/'right'` 词），不参与这个
+    函数 —— 调用方 `_find_block_on_side` 已经先用 `side in (0, 1)` 把方形
+    分流掉了。
+    """
+    mod = type(game).__module__
+    if mod == 'game_mi':
+        from game_mi import side_of
+    elif mod == 'game_triangle':
+        from game_triangle import side_of
+    else:
+        raise ValueError(f'no side_of for {mod}')
+    return side_of(gap_type, line, key)

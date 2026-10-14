@@ -1,6 +1,31 @@
+> **受眾**：AI（最嚴謹風格；用戶不參與維護）
+
 # 貓九的滑塊遊戲（Gatennea Slider）
 
 這是給 AI Agent 的readme。在讀該文檔前應當先著重理解“開發約定（尤其是通用開發約定）”。
+
+---
+
+## 0. 文檔地圖（先查這裡，再決定讀哪份文檔或直接讀代碼）
+
+**權威原則**：文檔是地圖與設計動機，**代碼是唯一真相**；文檔與代碼衝突時以代碼為準，並順手修正文檔。文檔中出現的函數名/文件名都是檢索錨點，可直接跳代碼核實。
+
+| 要做的事 / 要答的問題 | 讀什麼 | 備註 |
+| --- | --- | --- |
+| 統一詞彙、座標口徑、匯報用語 | `docs/spec/術語規定.md` | 對話用戶/寫文檔前先對齊；洞/缺口/空位/聚攏度等詞勿混用 |
+| 理解玩法規則（玩家視角） | `docs/player/玩家指南.md` | 人讀為主 |
+| 改求解器 / 理解求解算法 | `docs/solver/求解器設計.md` | **求解器主題以它為準**；機構原理、預算常量表、死局教訓、「新增機構怎麼掛怎麼驗收」指引都在那裡，本文 §5 只留註冊表概要 |
+| 做 tri/mi 求解器（異形移植） | `docs/solver/異形求解器計劃.md` | 2026-10-02 拍板：梯度聚拢切入、聚拢度移植、数字谜题不做；實現前先讀它 |
+| 改引擎、HTTP/stdin 介面、GUI Mixin、四形態語義 | 本文檔 | §2 不變量、§3 目錄地圖、§6/§7 介面全集 |
+| GUI 快捷鍵與人工操作 | `docs/player/操作说明.md` | |
+| 玩法數學形式化（狀態空間/動作語義/可逆性） | `docs/math/核心玩法形式化.md` | 自包含；動作 5 元組（rep_cell）修法在此 |
+| 查混合求解器的原始設計報告 | `docs/archive/混合求解器报告.md` | ⚠️ 歷史快照 |
+| 查混合求解器驗收數據（時間剖面等結論出處） | `docs/archive/混合求解器验收.md` | ⚠️ 歷史快照，數據有日期 |
+| 追「早交接」失敗根因 | `docs/archive/早交接失败根因.md` | ⚠️ 歷史快照 |
+| 接手當年遺留任務書 | `docs/archive/交接文档.md` | ⚠️ 歷史快照，其中任務可能已完成 |
+| 數學衍生討論（可逆性猜想等） | `docs/math/遊戲衍生的數學問題.md` | 人讀為主 |
+
+**何時直接讀代碼而不是文檔**：要確認當前實際行為（簽名/默認值/常量取值）、要跑實驗、目標文檔標了「歷史快照」、文檔與實測不符——一律以代碼為準。
 
 ---
 
@@ -202,23 +227,70 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 - **拖拽提交的動畫要「接續」**：跟隨預覽已經把整組畫到近乎落點，松手時若動畫仍從 `b.location` 起算，整組會先跳回原位再滑一遍（玩家看到的「拖完又播一次」）。`_commit_drag_move` 把跟隨位移記進 `_drag_anim_origin`，`animation._apply_drag_origin` 按它在總位移中的佔比 s 把 `anim_start_pos` 前移，動畫只滑剩餘段、時長按同比例縮短（`_anim_duration_base` 記基準，commit/cancel 時還原）。s 夾在 [0,1]：跟隨量超過落點時退化成一幀落位，不會往回滑。**取消動畫要走 `_anim_true_start`（真實起點）**，不能用被前移過的 `anim_start_pos`。
 - 注意：三開關只影響**人工 GUI 操作**；HTTP/stdin 程式化通道（§6/§7）永遠可用。
 
+### 4.2 隱藏功能：標註模式（選中單塊 / 空位的既有介面）
+
+**入口**：同時按住 `B` / `Z` / `M` / `S` 四個字母鍵（「標註」拼音首字母），見 `gui/annotation.py` 的 `_ANN_ENTRY_KEYS`。沒有選單項、沒有快捷鍵提示，屬作者自用功能。
+
+**用途**：人工錄製「填洞 / 收斂空位」的示範步驟，產出標註資料。頂欄會出現專屬工具列，流程為 `home → target → recording`。
+
+**定位與邊界（2026-10-12 用戶明確）**——動它之前先讀這段：
+- 誕生背景：做**公式生成器**與（曾構想過的）AI 求解器訓練時配套做的。
+- **「訓練 AI 求解器」的方向早已放棄**，別再以此為由擴充標註模式。
+- 公式生成器仍有優化空間，但**暫時不做**；標註模式因此不是沒用，只是**現在不是完善它的時候**。
+- 結論：它是**作者自用的內部工具**，不是玩家功能。**不要為了讓別的功能（如單段求解）能用就把它暴露出去或大改**——需要「選中」能力時，去複用/抽取它已有的接口，而不是改造它。
+
+**它提供了遊戲裡幾乎唯一的「選中」能力**（這是它容易被忽略的價值）：
+
+| 選中對象 | 操作 | 落地狀態 |
+| --- | --- | --- |
+| 滑塊（凸起 / 錨） | 在**有滑塊**的格上點擊 | `_ann_anchor0`（格集合，可多格，逐格增刪） |
+| 空位 | 在**空格**上點擊（需在目標窗口內） | `_ann_void0`（格集合，可多格） |
+
+- 「重選」按鈕 `_ann_pick`（`'void'` / `'anchor'`）限定本次只改哪一類。
+- 與創造模式互斥；標註錄製中禁用求解器（`_ann_recording` 門禁）。
+
+**重複實現警告（2026-10-12 盤點）**——同一件事存在多套寫法，勿再新增第四套：
+
+1. 標註模式選滑塊（`_ann_anchor0`）
+2. 巨集定義的「等待玩家點選基準方塊」（錄製/執行巨集前，見 `gui/events.py` `_start_macro_record` / `_start_macro_execute`）——單塊語義
+3. 標註模式選空位（`_ann_void0`）
+4. ~~除錯面板「標記」的選洞（`selected_hole`）~~ —— **已刪除**（2026-10-12 落地）：選中態 / 待選態 / Enter 記樣本 / 樣本落盤（`save/选洞样本/`）/ 選中白點高亮全部移除；AI 求解器訓練方向早已放棄，樣本記錄隨之刪。幾何查詢 `get_hole_at_pos` **保留**（純函數、無選中語義、方形專用），唯一使用者是「選塊填空」點空位那一步——別為此再寫第二套命中判定。
+
+**「選塊填空」已取代舊的單段求解並能用**（2026-10-12）：舊版 Ctrl+G 單段求解長期不可用，根因是它要求先點選凸起方塊，但普通模式**沒有穩定的選中單塊交互**（`selected_block` 是兩次觸控流程的中間態，移動後即清空）。現狀：
+
+- 改名**選塊填空**（neta「選詞填空」），從專用快捷鍵 Ctrl+G **收編進求解器列表**，統一由 Ctrl+A 觸發（定位上與「單次聚攏 : 梯度聚攏」同構：玩家點名 vs 機器自己規劃）。
+- 它是列表裡唯一有前置交互的算法：按一次進選取態，點「一個方塊 + 一個空位」（**順序不限**），點齊再按即開算；沒點齊再按=退出；點空白或縫隙只重提提示。
+- 選取態由 `GUI._pick_fill`（專用狀態）承載，**不借用 selected_block**（會被清空），也不走標註模式（那是內部工具，見上）。
+- **選取態的視覺反饋**（2026-10-12 補）：金色 = 你選的東西——已選方塊畫金框（與巨集基準塊同款 `PICK_FILL_GOLD`）、已選空位把洞的每一格畫金環；一處 shared helper（`renderer._draw_pick_fill_marks`）+ 三個 draw 各接一次（三形態鐵律），選取態實際只存在於方形（入口閘門 `_pick_fill_form_blocked` + 建局清空）。
+- 入口閘門在**進選取態之前**就攔：帶序號 / 三角 / 米字明確拒絕並提示，不讓玩家對著一個永遠點不齊的選取態反覆按 Ctrl+A（開算前再判一次是雙保險）。
+- 第 4 項（除錯面板選洞）的清理已落地（同上）；「選塊填空」點空位改走保留的幾何查詢 `get_hole_at_pos`。
+
 ---
 
 ## 5. 求解器子系統
 
 ### 5.1 演算法註冊表
 
-`solver/__init__.py` 的 `SOLVER_ALGORITHMS: dict[key, (顯示名, callable)]` 是 GUI「自動求解」唯一來源：
+`solver/__init__.py` 的 `SOLVER_ALGORITHMS: dict[key, (顯示名, callable)]` 是 GUI「自動求解」唯一來源。**字典順序 = 設置-求解器頁展示順序**（2026-10-13 用户定：好用的置頂，低效的沉底備查）：
 
 | key | 顯示名 | 函數 | 特性 |
 | --- | --- | --- | --- |
-| `gather_gradient` | 智能聚攏 | `gather_solver.gradient_gather` | 參數預測 + 多階段 + 路徑優化 |
-| `gather` | 普通聚攏 | `gather_solver.gather_solve` | 貪心聚攏 + patience 停機 |
-| `ida_star` | 最少步 | `solver.solve` | 保證最優，較慢 |
-| `fast` | 最快-1 | `solve_fast` | IDA* 放寬 |
-| `greedy` | 最快-2 | `solve_greedy` | 貪心爬山 + 擾動 |
+| `hybrid` | 混合求解（自動規劃） | `auto_solver.auto_solve` | **現役首選**：查表 → 補缺宏 → 混合流水線，全解即停；無表按空位數路由（≤2 混合流水線／≥3 先補缺宏），兩路互接力 + 流式多段播放 |
+| `gather_gradient` | 梯度聚攏 | `gather_solver.gradient_gather` | 參數預測 + 多階段 + 路徑優化 |
+| `gap_macro` | 填洞補缺 | `gap_solver.solve_gap_macro` | 判型分發（單缺口雙層共軛／多空位統一驅動／單洞填洞）；遇到多空位/非邊緣缺口轉去跑填洞那一支 |
+| `gather` | 單次聚攏 | `gather_solve_unified`（統一入口） | 貪心聚攏 + patience 停機，只跑一輪；**三形態共用這一個入口**，內部按 game 類型分發到 `gather_solve` / `tri_gather_solve` / `mi_gather_solve`。2026-10-13 由「聚攏」改名，與「梯度聚攏」區分 |
+| `pick_fill` | 選塊填空 | `gap_solver.solve_pick_fill`（包 `solve_single_segment`） | **唯一有前置交互**：先由 `GUI._pick_fill` 收集玩家點選的一對方塊+空位，再由 Ctrl+A 開算；只要求指定空位被填上，不要求整盤還原 |
 | `table` | 查表求解 | `table_solver.table_solve` | 需先 `solver.data` 建表 |
-| `fill_macro` | 填洞宏 | `fill_macro.solve_fill_macro` | 單洞 A-B-A' 共軛子宏；多洞無缺口貪心逐 couple（§5.4） |
+| `ida_star` | IDA*求解 | `solver.solve` | 保證最優，較慢；**舊搜索類，沉底僅備查** |
+| `fast` | IDA*快速 | `solve_fast` | IDA* 放寬；**舊搜索類，沉底僅備查** |
+| `greedy` | 貪心爬山 | `solve_greedy` | 貪心爬山 + 擾動；**舊搜索類，沉底僅備查** |
+| ~~`fill_macro`~~ | ~~填洞宏~~ | **已併入 `gap_macro`**（2026-10-12） | 菜單上不再單列：補缺宏遇到多空位/非邊緣缺口本來就轉去跑填洞那一支（兩者是包含關係），而反過來單獨跑填洞對邊緣缺口會全線失敗——留著它等於擺一個會翻車的坑。舊配置 key 由 `file_ops._migrate_solver_algorithm` 遷到 `gap_macro` |
+
+> 註：上表與實際註冊表可能再度漂移，**以 `solver/__init__.py` 的 `SOLVER_ALGORITHMS` 為準**；各算法的設計動機與機構詳解見 `docs/solver/求解器設計.md`。
+
+> ⚠️ **形態支援表（2026-10-05 起）**：`SOLVER_FORM_SUPPORT` 決定每個算法在哪些谜题形态上可用，**缺省 = 只支援方形**（多数算法是方形语义：4 元组动作 + 矩形目标形状 + 整数坐标，套到异形会静默走错）。目前只有 `gather` 同时支援方形/三角形/米字格。**异形上选到不支持的算法会被明确拒绝**并提示「当前谜题（米字格）没有「查表求解」求解算法功能（该形态目前仅支持：单次聚拢）」——**不会**像旧版那样静默把算法换成别的。新增算法若要支援异形，必须显式登记进 `SOLVER_FORM_SUPPORT`，不能靠缺省蒙对。
+>
+> 同理，**不要给某个形态单开一个注册表入口**（历史上曾有 `tri_gather` / `mi_gather`，已移除）：形态差异是内部实现细节，菜单里就该只有一个「单次聚拢」。
 
 通用函式庫契約：`f(game, step, max_steps, cancel_check=None, progress_callback=None) → list[action] | None`（`gather` 系回報 `progress_callback` 聚攏指標，即使未還原也回傳動作序列）。新增演算法 = 在 `solver/ml/` 新增模組 + 註冊進 `SOLVER_ALGORITHMS` + 加入設定介面的預設清單。
 
@@ -257,7 +329,7 @@ python -m solver.visualize_table 4 4 2
 
 **B. 人類模仿管線（`human_ai` 已在代碼中註解掉，暫未接入求解菜單；管線本身仍在 `solver.ml.human_solver`）**
 ```bash
-# 1. 從 save/*.json（人類還原記錄）導出正/負樣本，JSONL 可檢視
+# 1. 從 save/*.json 與 archives/*.json（人類還原記錄；export_human_data 目前只掃 save/）導出正/負樣本，JSONL 可檢視
 python -m solver.ml.export_human_data
 # 2. 訓練評分模型：score(狀態, 動作)，輸出 data/human/model_ranker.pkl
 python -m solver.ml.train_human_ranker
@@ -275,16 +347,37 @@ python -m solver.ml.human_solver
 
 伺服器綁定 `127.0.0.1:5050`；`GameHTTPHandler` 把每個請求轉成指令投到命令佇列，GUI 主執行緒於 `process_commands()` 執行後同步回 JSON。所有回應皆為信封 `{"ok":bool,"message":?...,"...":...}`；參數缺漏/型別/白名单/越界錯誤回 HTTP **400**（solver 參數數值越界為 `ok:false` 且不套用任何值，見 `/solver/params`），未知路徑回 **404**；`OPTIONS` 已開 CORS。
 
-**端點一覽**（舊端點全部保留，舊腳本無需修改）：
+### 6.0 外部控制鑑權（2026-10-13 起，所有業務端點強制）
+
+**威脅模型**：伺服器只綁 `127.0.0.1`，令牌防的是**本機上的其他程序與網頁**（CORS 全開，任意網頁都能探測這個端口）。stdin 管道通道**不設防**——能寫 stdin 的只有啟動遊戲的父進程，天然可信。
+
+- **令牌**：進程級隨機（`secrets.token_urlsafe(24)`），只存內存、不落盤。取得方式：
+  - **AI 啟動**：遊戲往 stdout 打印一行 `GATSLI_TOKEN=<令牌>`（subprocess 管道天然讀到）；
+  - **人類啟動**：遊戲「設置-控制」頁「複製連接話術」按鈕（含令牌 + 端口 + 三步引導的一段話，直接發給外部程序即可——AI 助手是其中最常見的一種）。
+- **傳遞**（二選一）：請求頭 `Authorization: Bearer <令牌>`（推薦）；或 URL 查詢參數 `?token=<令牌>`。
+- **狀態碼**：開關關閉（遊戲「設置-控制」→「允許外部控制」）→ **403** 一切拒絕；令牌缺失 → **401**；令牌不匹配 → **401**。默認開啟。
+- **生命週期**：遊戲重啟即換新令牌；關閉開關會立即作廢當前令牌，重開生成新令牌（關閉期間複製出去的話術隨之失效）。
+- **`GET /help`**：API 索引（端點列表 + 第一條命令引導），永遠與代碼同步；索引與遊戲內「下載控制教程」按鈕導出的自包含 Markdown **同源生成**（教程文件不含令牌——它可能被分享/上傳官網）。**`GET /help/<端點>`**：單個端點的完整用法（說明 + body 字段表 + 返回字段 + curl 示例），如 `GET /help/move`；未知端點回 404 並指回 `/help`。
+
+```bash
+# 標準寫法（推薦 header）
+curl -H "Authorization: Bearer <令牌>" http://127.0.0.1:5050/status
+# 不方便加頭時用 query
+curl "http://127.0.0.1:5050/status?token=<令牌>"
+```
+
+**端點一覽**（舊端點全部保留，舊腳本無需修改；**全部端點都需要令牌**，含 `/help`）：
 
 | Method | Path | Body / 說明 |
 | --- | --- | --- |
+| GET | `/help` | API 索引 `{ok,message,auth,first_step,detail,endpoints:[{path,method,summary}]}`；需要令牌（與全部端點一致） |
+| GET | `/help/<端點>` | 單個端點詳情 `{ok,path,method,summary,description,params:[{name,type,required,desc}],returns,example}`；未知端點回 404。如 `/help/move` |
 | GET | `/status` | 完整狀態（§下方 schema，含求解器/宏/開關資訊） |
 | GET | `/map` | `{"ok":true,"map":"##__\n##__..."}`（按方塊包圍盒裁剪空邊）。**三角形**回 `#^v_` 四字符（菱形胞 2-bit）；方形/序號仍為 `#_` |
 | GET | `/analysis/window` | 目標聚攏視窗 `{ok,window:{r0,c0,rh,cw,overlap},m,n,step}`；**三角形形態不支援，回 HTTP 400** |
 | GET | `/analysis/holes` | 洞/缺口/凸起 `{ok,window,holes:[{type:"hole"|"dent",size,cells}],protrusions:[[r,c],...]}`；**三角形回 400** |
 | GET | `/analysis/actions` | 合法動作列舉 `{ok,actions:[{gap_type,gap_line,side,move_dir}]}`；**三角形回 400** |
-| GET | `/solver/algorithms` | `{ok,current,algorithms:[{key,name}]}`（7 種算法） |
+| GET | `/solver/algorithms` | `{ok,current,algorithms:[{key,name}]}`（9 種算法） |
 | GET | `/solver/status` | 結構化求解狀態 `{ok,state,algorithm,progress,gradient,result_steps,elapsed_ms}`；state=`idle/running/solved/failed/cancelled` |
 | GET | `/solver/params` | gather 參數 `{ok,params:{<key>:{value,enabled}}}` |
 | GET | `/macro/list` | `{"ok":true,"macros":[{name,description,steps,recorded_step,base_point}]}` |
@@ -293,7 +386,9 @@ python -m solver.ml.human_solver
 | GET | `/settings` | `{ok,settings:{<鍵>:<值>}}`（13 個 GUI 開關 + 動畫時長） |
 | GET | `/records` | 目前謎題成績摘要 |
 | GET | `/timer/status` | `{"ok":true,...}` + `state`/`elapsed_ms` |
+| GET | `/screenshot` | 保存當前畫面為 PNG：`?path=<目標>` 指定路徑（缺 .png 後綴自動補）；缺省存遊戲目錄 `screenshots/` 下按時間戳命名（同秒連拍自動加 `_1/_2` 不覆蓋）。回 `{ok,path,width,height}`；保存的是最近一次繪製完成的畫面 |
 | POST | `/command` | `{"cmd":"<任意 CLI 指令>"}`（§7 全集） |
+| POST | `/screenshot` | 同 `GET /screenshot`；body 可帶 `{"path":"<目標路徑>"}`，缺省自動命名 |
 | POST | `/move` | `{"direction":"w|s|a|d"}`（方形/序號）或 `{"direction":"w|e|a|d|z|x"}`（三角形，平行於縫隙）；失敗帶 `reason`（§下方列舉） |
 | POST | `/undo` `/redo` `/shuffle` `/reset` `/deselect` `/quit` | — |
 | POST | `/new` | `{"m","n","step","numbered"?:bool}`；`numbered=true` 建帶序號謎題（行主序賦 1..m·n）。`type` 可選 `square`（默認）/`numbered`/`triangle`；`triangle` 以 `m` 作大三角邊長 k（`n` 仍須給） |
@@ -378,10 +473,13 @@ curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d '
 
 GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列項目：純字串（stdin）、`(cmd, resp_q)`（HTTP 傳統指令）、`(cmd, resp_q, payload)`（HTTP 富 JSON body：多行地圖/設置等，動作名與 CLI 同名）。指令以空白分隔，第一個 token 為動作。
 
-**完整動作清單**（= `http_server.py` 對映來源，兩介面 1:1）：
+**stdin 通道不設防**（能寫 stdin 的只有啟動遊戲的父進程，天然可信）——與 HTTP 的令牌鑑權（§6.0）是兩套信任模型：HTTP 面向「本機任意程序/網頁」，stdin 面向「啟動方」。
+
+**完整動作清單**（= `http_server.py` 對映來源，兩介面 1:1；`help` 可即時查這份清單 + HTTP API 索引）：
 
 | 動作 | 參數 | 說明 |
 | --- | --- | --- |
+| `help` | — | 打印 CLI 命令索引 + HTTP API 索引（resp_q 通道回 JSON） |
 | `status` | — | 狀態（含 matrix、blocks、solver、macro 等完整 schema） |
 | `map` | — | `#`/`_` 文本地圖（三角形為 `#^v_`） |
 | `move` | `w\|s\|a\|d`（方形）或 `w\|e\|a\|d\|z\|x`（三角形） | 移動（需先選縫隙+滑塊；方形 `v`→w/s、`h`→a/d；三角形 `h`→a/d、`p`→e/z、`n`→w/x，**可省略 select_gap**）；失敗附 reason：not_selected/wrong_direction/disconnected/collision/timer_blocked |
@@ -392,13 +490,14 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `select_gap` | `h\|v line`（方形）／`h\|p\|n line`（三角形） | 例 `select_gap v 1`；三角形 3 族，線號合法性由遊戲側判定 |
 | `select_block` | `row col` | 例 `select_block 0 0` |
 | `deselect` | — | 清選中 |
+| `screenshot` | `[路徑]` | 保存當前畫面為 PNG（缺省存 `screenshots/` 自動命名）；HTTP 同名端點 `GET/POST /screenshot` |
 | `export` / `import` | （沿用舊終端介面） | 地圖字串進出 |
 | `window` | — | 目標聚攏視窗（find_best_window，除錯面板綠框同源） |
 | `holes` | — | 洞/缺口/凸起（detect_holes，region 取視窗） |
 | `actions` | — | 合法動作列舉（enumerate_valid_actions） |
 | `solve` | `[algorithm]` | 啟動自動求解；給算法名則先切換（非法名回錯誤）；**執行中再呼叫 = 取消** |
 | `solve_cancel` | — | 顯式取消（未在求解回 ok:false） |
-| `solver_algorithms` | — | 列出 7 種算法與目前算法 |
+| `solver_algorithms` | — | 列出 9 種算法與目前算法 |
 | `solver_status` | — | 結構化狀態：idle/running/solved/failed/cancelled（含 progress/gradient/result_steps/elapsed_ms） |
 | `solve_status` | — | 舊版純文字 `idle/running/solved(N步)/failed`（保留相容） |
 | `solver_params` | 無參 或 `key=value ...` | 查詢或部分設置 gather 參數；啟用標誌用 `key_enabled=0|1`；越界整批拒絕 |
@@ -444,7 +543,8 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `config/keyboard_shortcut.json` | 快捷鍵（動作→key+modifiers），如 undo=`ctrl+z`、panels=`f1/f2/f3` | 設定介面可錄製 |
 | `config/records.dat` | 成績記錄（pickle 以固定 XOR `0x5A` 混淆檔頭，非加密） | 關閉遊戲時統一寫入 |
 | `config/temp_history.json` | 退出時自動快照，下次啟動還原進度 | |
-| `save/*.json` | 使用者存檔（含 puzzle 參數、map、步數、歷史） | 自動補 `.json` 後綴 |
+| `save/*.json` | 使用者存檔（含 puzzle 參數、map、步數、歷史） | 自動補 `.json` 後綴；**不入庫** |
+| `archives/*.json` | 重要研究/教學存檔（失敗01~09 死局樣本、教學實例 1/2/推測題、回歸案例），**已入 git** | 2026-10-02 自 save/ 遷入，玩家日常存檔仍寫 save/ |
 | `macro/*.json` | 宏定義 | |
 | `config/error_log.jsonl` | 執行期錯誤（含子執行緒）+ 啟動痕跡，一行一條 JSON，traceback 按行拆成數組 | 常開，超 4MB 輪轉成 `.old`；寫不進去退回系統 temp |
 | `config/op_log.jsonl` | 操作日誌（點擊坐標/命中/提示），調試用 | 默認關，設定→文件→操作日誌 打開 |
@@ -473,6 +573,8 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 
 ```bash
 python test\_test_http_api.py           # HTTP REST 端到端（狀態/分析/求解/宏/存取/模式/開關，含真實求解與取消）
+python test\_test_external_control.py  # 外部控制：令牌鑑權（401/403/兩種傳法）/help 索引/話術/教程/開關換 token/索引防腐爛斷言
+python test\_test_screenshot_api.py    # 截圖端點（GET/POST/自動命名/連拍不覆蓋/CLI 通道）
 python test\_test_mod_constraint.py     # mod 約束/detect_target_corner
 python test\_test_gradient_pipeline.py  # 智能聚攏並行管線收尾
 python test\_test_full.py               # 綜合
@@ -538,7 +640,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 ## 12. 已知限制 / 長期目標
 
-- 帶序號模式（`numbered`）：求解器/建表/ML 管線**暫不支援**（狀態需身份感知，動作語義也不同），入口直接拒絕並提示；其餘功能（撤銷重做/動畫/競速/存讀檔/地圖導入）全部可用。
+- 帶序號模式（`numbered`）：**Ctrl+A 自動求解已放行**（2026-10-02：求解器只看形狀，先復原矩形、數字亂序為預期行為，播放收尾提示自行調整數字；Ctrl+G 單段求解仍不支援）。建表/ML 管線仍不支援；其餘功能（撤銷重做/動畫/競速/存讀檔/地圖導入）全部可用。
 - 三角形密鋪（`triangle`）：已實作核心五步 + P2 體驗（六向鍵盤/虛擬鍵盤/連鎖提示/分組著色/拖拽 6 向投影/競速成績/地圖導入）。**暫不支援**：求解器/建表/ML（需新動作語義與對稱群）、`/analysis/*`（回 400 降級）、宏、隨機生成（創造模式只能手動構造）、調試面板的三角版（P3，未做）；`solved` 只接受「尖朝上/120°/240°」三種朝向，鏡像（顛倒）不可達。
 - 米字格（`mi`）：已實作斜向一格的引擎（`game_mi.py`，含錯位態兩晶格、8-bit 快照與 `mi8` 地圖）、兩次觸控（第二下按住滑塊拖動才定向提交，只按不拖則選組等虛擬鍵盤）+ 拖拽跟隨預覽 + 虛擬鍵盤 + 八向動畫 + 分組著色與懸停連鎖 + 競速/存讀檔/打亂/撤銷重做。**暫不支援**：求解器/建表/ML、`/analysis/*`（回 400）、宏錄製執行、隨機生成（創造模式只能手動構造）、調試面板、單次觸控（凍結決策：八向誤觸面太大）。已知注意點：等級語義漂移（等級 1 斜距 = √2/2，等級 2 = 舊版等級 1）；錯位態橫豎縫會整條穿過塊內部而選不動（提示按剩餘條數說，沿斜向再走一格即復活）；`/status` 的 `blocks[]` 沒有 `mod`，改帶 `q` 與 `lat`。 origin/main
 - 存量缺陷（**方形同樣存在**，非新形態引入）：多步（批量）移動時 `step_count` 由 `move_selected_blocks` 累加 `move_step`，而 `history.save_snapshot` 每步只記 `steps = 1`，導致存檔重載（`_load_save_data` 以 `current_step_total()` 重算）與 undo/redo 後的步數比實際少。

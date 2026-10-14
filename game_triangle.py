@@ -362,6 +362,21 @@ class TriangleSliderMatrix:
                     out.append((gap_type, line))
         return out
 
+    def side_has_blocks(self, gap_type: str, line: int, side: int) -> bool:
+        """縫隙的指定側是否有滑塊（side 0/1，`side_of` 的口徑）。
+
+        GUI 的宏回放層用這個接口而不是方形的 `is_valid_h_line` ——
+        三角的線號是斜座標的族內序號，「在邊界盒內」那種範圍比較
+        完全不適用，而且 `SliderMatrix` 根本沒有這兩個方法。
+        這是三形態共有的回放原語（與 `game_mi` 的同名方法同契約）。
+        """
+        if gap_type not in GAP_DIRECTIONS:
+            return False
+        cells = self.positions()
+        if not cells or not self.is_valid_gap(gap_type, line):
+            return False
+        return any(side_of(gap_type, line, c) == side for c in cells)
+
     # ---------- 選組（B2）----------
     def opt(self, gap_type: str, line: int, selected_block) -> None:
         """按縫隙切分連通組，標記 selected_block 所在的那一側。

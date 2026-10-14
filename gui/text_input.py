@@ -57,6 +57,12 @@ class TextInput:
     # 鼠标拖拽状态
     _mouse_dragging = False
 
+    # IME / SDL 文本输入模式标志：由 GUI 在每帧同步。为 True 时，组字结果走
+    # TEXTINPUT 事件（含中文），KEYDOWN.unicode 不再用于插入，避免重复插入。
+    # 为 False 时退回 KEYDOWN.unicode（ASCII），保证未被纳入 IME 上下文的输入框
+    # 不受影响、不回归。
+    _text_input_mode = False
+
     def __init__(self, initial_text=''):
         self.text = initial_text
         self.cursor_pos = len(initial_text)
@@ -147,6 +153,13 @@ class TextInput:
                 self.cursor_pos = new_pos
                 self._reset_blink()
                 return True
+
+        elif event.type == pygame.TEXTINPUT:
+            # IME 组字结果（含中文）或 SDL 文本输入投递的成串字符。
+            # 文本输入模式开启时才走这里；关闭时退回 KEYDOWN.unicode。
+            self.insert_text(event.text)
+            self._reset_blink()
+            return True
 
         return False
 
@@ -292,7 +305,9 @@ class TextInput:
             return True
 
         # --- 可打印字符（插入或替换选中）---
-        elif unicode_char and unicode_char.isprintable():
+        # 文本输入模式开启时（IME 上下文），组字结果由 TEXTINPUT 事件投递，
+        # 这里不再用 KEYDOWN.unicode 插入，避免与 TEXTINPUT 重复。
+        elif unicode_char and unicode_char.isprintable() and not TextInput._text_input_mode:
             if self.has_selection():
                 # 替换选中内容
                 s, e = self.get_selection_range()
@@ -390,6 +405,20 @@ class TextInput:
         self._selection_start = 0
         self._selection_end = 0
         self._reset_blink()
+
+    def insert_text(self, text: str):
+        """插入一段文本（IME 组字结果 / 粘贴等），替换当前选中内容。"""
+        if not text:
+            return
+        if self.has_selection():
+            s, e = self.get_selection_range()
+            self.text = self.text[:s] + text + self.text[e:]
+            self.cursor_pos = s + len(text)
+        else:
+            self.text = self.text[:self.cursor_pos] + text + self.text[self.cursor_pos:]
+            self.cursor_pos += len(text)
+        self._selection_start = self.cursor_pos
+        self._selection_end = self.cursor_pos
 
     def _pixel_to_index(self, font, pixel_x: int) -> int:
         """将像素位置转换为字符索引（考虑 _display_start）"""

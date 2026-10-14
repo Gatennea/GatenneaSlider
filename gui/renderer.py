@@ -11,11 +11,17 @@
 """
 
 import math
+import os
 
 import pygame
 
+from game import DIRECTIONS as SQ_DIRECTIONS
 from game_mi import mi_key, mi_vertices
+from game_mi import DIRECTIONS as MI_DIRECTIONS
+from game_mi import GAP_DIRECTIONS as MI_GAP_DIRECTIONS
 from game_triangle import tri_key
+from game_triangle import DIRECTIONS as TRI_DIRECTIONS
+from game_triangle import GAP_DIRECTIONS as TRI_GAP_DIRECTIONS
 from gui.cell_class import cell_class, class_index
 from gui.mi_view import MiBoardView
 from gui.triangle_view import TriangleBoardView
@@ -174,6 +180,12 @@ class RendererMixin:
         # 悬停连锁提示：同類（含朝向）的塊提亮、空位實心提亮（悬停键更亮）
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+        # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
+        _sel_anim = self._sel_anim_border()
+        # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
+        _play_head = self._play_head_border()
+        _play_keys = self._play_head_keys() if _play_head is not None else ()
+
         for group, is_selected in ((normal, False), (selected, True)):
             for block, i, j, up, is_follow in group:
                 fill = self.colors['block_selected'] if is_selected else self.colors['block']
@@ -185,6 +197,12 @@ class RendererMixin:
                     fill = tuple(int(ch * 0.45) for ch in fill[:3])
                     border_color = (220, 80, 40)
                     border_w = max(1, int(3 * self.zoom))
+                elif _sel_anim is not None and is_selected:
+                    # S1-2：撤销冷色/重做暖色——只换边框，填充不动（整片高亮是特色）
+                    border_color, border_w = _sel_anim
+                elif _play_head is not None and (i, j, up) in _play_keys:
+                    # S2-1：同上（三角的键带朝向分量 up）
+                    border_color, border_w = _play_head
                 else:
                     # 分组着色：從外側向內一圈的縮環畫法（朝向不參與著色）。
                     # 描邊色不能直接換成組色：pygame 多邊形描邊以邊線為中心
@@ -227,6 +245,29 @@ class RendererMixin:
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
                 self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
+
+        # 调试面板打开时：先画目标框（并把同一结果存到 self._target_region），
+        # 再以该结果为基准画洞/缺口/凸起标记，两者严格一致。
+        # **必须在这里调**——方形的同名调用在 draw_board 末尾，三角走的是
+        # draw_triangle_board，不调就永远画不出来（2026-10-03 修：面板数字
+        # 正常显示但棋盘上没有任何标记，就是漏了这一处）。
+        # 记号与调试面板本体是两个独立开关：记号属于视觉强化，面板属于数据
+        # 读数，可以只开记号不看面板，也可以只开面板不画记号。
+        # 任一开着都要先算 region（两者共用同一基准），记号只在记号开关开时画。
+        _panel_on = getattr(self, 'show_metrics_panel', False)
+        _marks_on = getattr(self, 'board_marks_enabled', False)
+        if _panel_on or _marks_on:
+            self._compute_target_region()
+            if _marks_on:
+                self._draw_target_window()
+                self._draw_debug_holes()
+
+        # 选块填空选取态的金色高亮：跟随选取态本身，与面板/标记开关无关
+        # （三形态铁律：共用 helper，三个 draw 各接一次）。
+        self._draw_pick_fill_marks()
+
+        # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
+        self._draw_gap_direction_annotation()
 
     def draw_mi_board(self):
         """繪製米字格棋盤（两次触控 + 虚拟键盘，方向由第二下的拖动给出）。
@@ -301,6 +342,12 @@ class RendererMixin:
         # 悬停连锁提示：同類（含朝向 q）的塊提亮、空位實心提亮
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+        # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
+        _sel_anim = self._sel_anim_border()
+        # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
+        _play_head = self._play_head_border()
+        _play_keys = self._play_head_keys() if _play_head is not None else ()
+
         for gi, group in enumerate((normal, selected)):
             base = (self.colors['block_selected'] if gi
                     else self.colors['block'])
@@ -312,6 +359,12 @@ class RendererMixin:
                     fill = tuple(int(ch * 0.45) for ch in base[:3])
                     border_color = (220, 80, 40)
                     border_w = max(1, int(3 * self.zoom))
+                elif _sel_anim is not None and gi:
+                    # S1-2：撤销冷色/重做暖色——只换边框，填充不动（整片高亮是特色）
+                    border_color, border_w = _sel_anim
+                elif _play_head is not None and (r, c, q) in _play_keys:
+                    # S2-1：同上（米字的键带晶格档 q）
+                    border_color, border_w = _play_head
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 pygame.draw.polygon(self.screen, fill, poly)
@@ -323,7 +376,7 @@ class RendererMixin:
                 # 分组着色：縮環從外側向內一圈（位置類不含朝向 q，半整數
                 # 座標在 cell_class 內部整數化），線寬沿用方形慣例。pygame
                 # 多邊形描邊向外也擴半個線寬，直接描會漫進縫隙蓋住選中紅線
-                if (not warn
+                if (not warn and not (_sel_anim is not None and gi)
                         and getattr(self, 'coloring_enabled', False)
                         and self.current_step > 1):
                     ring_w = max(2, int(4 * self.zoom))
@@ -337,6 +390,34 @@ class RendererMixin:
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
+
+        # 调试面板打开时：先画目标框（同一结果存进 self._target_region），
+        # 再以该结果为基准画洞/缺口/凸起标记，两者严格一致（同方形纪律）。
+        #
+        # **这一段原先是漏的**（2026-10-04 修）：`show_metrics_panel` 分支只加在
+        # 了 `draw_board`（方形）与三角的绘制路径里，**没加在 `draw_mi_board`**。
+        # 后果是 mi 下调试面板能显示数字（面板本体走 `draw_metrics_panel`），
+        # 但棋盘上**永远不出现目标框与洞/凸起记号** —— 看起来「面板开着但
+        # 什么都不画」。截图脚本 `test/_shot_mi_panel.py` 靠这一帧抓出来
+        # （自动化测试抓不到：那一版直接调 `_draw_mi_target_frame()`，
+        # 绕过了这条调用路径 → 像素有变化，但整段从没被执行）。
+        # 记号与调试面板本体是两个独立开关：记号属于视觉强化，面板属于数据
+        # 读数，可以只开记号不看面板，也可以只开面板不画记号。
+        # 任一开着都要先算 region（两者共用同一基准），记号只在记号开关开时画。
+        _panel_on = getattr(self, 'show_metrics_panel', False)
+        _marks_on = getattr(self, 'board_marks_enabled', False)
+        if _panel_on or _marks_on:
+            self._compute_target_region()
+            if _marks_on:
+                self._draw_target_window()
+                self._draw_debug_holes()
+
+        # 选块填空选取态的金色高亮：跟随选取态本身，与面板/标记开关无关
+        # （三形态铁律：共用 helper，三个 draw 各接一次）。
+        self._draw_pick_fill_marks()
+
+        # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
+        self._draw_gap_direction_annotation()
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一），只畫在棋形範圍內。
@@ -453,6 +534,12 @@ class RendererMixin:
         # 悬停连锁提示：预计算高亮格集合（含空格），块循环中叠半透明白
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+        # S1-2：撤销/重做的边框配色，整个高亮窗口内共用一处结果（每帧只算一次）
+        _sel_anim = self._sel_anim_border()
+        # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
+        _play_head = self._play_head_border()
+        _play_keys = self._play_head_keys() if _play_head is not None else ()
+
         # 绘制所有滑块
         for block in self.game.blocks:
             if id(block) in follow_map:
@@ -475,19 +562,38 @@ class RendererMixin:
             if screen_y < -scaled_cell or screen_y > self.screen_height + scaled_cell:
                 continue
 
-            # 分组着色：只在滑块边界描边，中心保持原画风（淡蓝/选中淡绿）
-            if block.be_opted:
-                fill = self.colors['block_selected']
+            # S1-3：越界回弹——本块属于被选中切片时整体抖动偏移（仅增强模式）
+            if getattr(self, '_shake_t', 0) > 0 and id(block) in getattr(self, '_shake_blocks', set()):
+                _sox, _soy = self._shake_offset()
+                screen_x += _sox
+                screen_y += _soy
+                _is_shaking = True
             else:
-                fill = self.colors['block']
+                _is_shaking = False
+
+            # 分组着色：只在滑块边界描边，中心保持原画风（淡蓝/选中淡绿）。
+            # S1-2 的撤销/重做**不碰填充**——整片 be_opted 提亮是原始设计特色，
+            # 冷/暖语义改由边框承担（见下方 _sel_anim 分支）。
+            fill = self.colors['block_selected'] if block.be_opted else self.colors['block']
             # 拖拽跟随无效（碰撞/断开）时：变暗滑块 + 橙色边框提示不可移动
             if (self.drag_following and self.drag_follow_invalid
                     and id(block) in follow_map):
                 fill = tuple(int(ch * 0.45) for ch in fill[:3])
                 border_color = (220, 80, 40)
                 border_w = max(1, int(3 * self.zoom))
+            elif _is_shaking:
+                # S1-3：越界回弹——抖动期间同样给「撞墙」橙色反馈（闪一次）
+                fill = tuple(int(ch * 0.45) for ch in fill[:3])
+                border_color = (220, 80, 40)
+                border_w = max(1, int(3 * self.zoom))
             else:
-                if getattr(self, 'coloring_enabled', False) and self.current_step > 1:
+                # S1-2：撤销冷色/重做暖色只换边框，优先级高于分组着色
+                if _sel_anim is not None and block.be_opted:
+                    border_color, border_w = _sel_anim
+                elif _play_head is not None and tuple(block.location) in _play_keys:
+                    # S2-1：求解演示正在动的那一组——光边只出现在动画播放期间
+                    border_color, border_w = _play_head
+                elif getattr(self, 'coloring_enabled', False) and self.current_step > 1:
                     border_color = self._group_color(block.location[0], block.location[1])
                     border_w = max(2, int(7 * self.zoom)) #暫定7,不要改
                 else:
@@ -543,9 +649,442 @@ class RendererMixin:
 
         # 调试面板打开时：先画目标窗口框（并把同一 region 存到 self），
         # 再以该 region 为基准画洞/缺口/凸起标记，两者严格一致。
-        if getattr(self, 'show_metrics_panel', False):
-            self._draw_target_window()
-            self._draw_debug_holes()
+        # 记号与调试面板本体是两个独立开关：记号属于视觉强化，面板属于数据
+        # 读数，可以只开记号不看面板，也可以只开面板不画记号。
+        # 任一开着都要先算 region（两者共用同一基准），记号只在记号开关开时画。
+        _panel_on = getattr(self, 'show_metrics_panel', False)
+        _marks_on = getattr(self, 'board_marks_enabled', False)
+        if _panel_on or _marks_on:
+            self._compute_target_region()
+            if _marks_on:
+                self._draw_target_window()
+                self._draw_debug_holes()
+
+        # 选块填空选取态的金色高亮：跟随选取态本身，与面板/标记开关无关
+        # （三形态铁律：共用 helper，三个 draw 各接一次）。
+        self._draw_pick_fill_marks()
+
+        # S1-4：方向标注必须画在**滑块之后**（最上层）。放在缝隙绘制阶段会被
+        # 后画的滑块盖掉一半——圆的一半陷在块底下，看着像画崩了。
+        self._draw_gap_direction_annotation()
+
+    # ---------- S1-2 / S1-4：三形态共用的语义反馈原语 ----------
+    #
+    # **这一段是三形态唯一的样式来源**。任何只写进单一 draw_*_board 的效果
+    # 都会在另外两种谜题里缺席（2026-10-05 用户指出：一处有效、另两种没有）。
+    # 新增任何「发生了什么」的视觉反馈，一律在此处定义、三处各自调用。
+    #
+    # S1-4 曾犯的两个错，改前务必先读：
+    #  (a) 图层：标注必须画在**滑块之后**。原先塞在缝隙绘制之前，滑块一盖只剩
+    #      上半个圆看得见。
+    #  (b) 锚点：必须按 **be_opted 选中切片的实际范围** 定位，不能按整条缝/棋盘
+    #      边界算。缝是刀，同一条缝点不同的块带走的东西不同，端点跟着切片走才对。
+    #
+    # 几何一律由 `game.DIRECTIONS` 的格增量 + 形态自己的 view 反算屏幕位移，
+    # 不维护「方向字母 → 屏幕向量」表：三角的 'w' 与米字的 'w' 屏幕朝向完全
+    # 不同，任何硬编码必然错其一。
+
+    # 撤销=冷色 / 重做=暖色。只换**边框**，不动填充——整片 be_opted 提亮是
+    # 原始设计特色（用户 2026-10-05 明确要求保色）。
+    SEL_ANIM_BORDER_UNDO = (70, 150, 255)
+    SEL_ANIM_BORDER_REDO = (255, 150, 50)
+
+    def _sel_anim_border(self):
+        """S1-2：撤销/重做高亮窗口内的边框配色 → (色, 线宽)，其余时段回 None。
+
+        三形态共用同一处定义。调用方按优先级套用：
+        拖拽越界 / 撞墙抖动 > 本反馈 > 分组着色。
+        """
+        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            return None
+        if getattr(self, '_sel_anim_timer', 0) <= 0:
+            return None
+        undo = getattr(self, '_sel_anim_is_undo', None)
+        if undo is None:
+            return None
+        color = self.SEL_ANIM_BORDER_UNDO if undo else self.SEL_ANIM_BORDER_REDO
+        return (color, max(2, int(4 * self.zoom)))
+
+    # S2-1：求解演示「当前步」的光边色。**白**——be_opted 提亮填充是绿色，
+    # 青绿描边跟它撞色（实测截图区分度不足）；白不与撤销蓝 / 重做橙 /
+    # 越界橙红 / 选中红线任何语义色相撞，绿底与深底上都最醒目。
+    PLAY_HEAD_BORDER = (252, 252, 248)
+
+    def _play_head_border(self):
+        """S2-1：求解演示中「正在動的那一組」的邊框高亮 → (色, 线宽) 或 None。
+
+        一次性、非常駐——只存在于动画播放的那几十毫秒里，符合计划硬约束 1
+        （棋盘上不加常驻动效）。求解连播 30+ 步时，玩家靠它知道眼睛看哪。
+
+        只在**求解/宏播放**时生效（macro_executing，或梯度聚拢流水线在跑）；
+        手玩时整片 be_opted 提亮已经把「动的是哪组」讲清楚了，再叠一层是噪音。
+
+        亮度与线宽随进度收（起手最亮、落位回落），靠**纯 RGB 插值**而不是
+        alpha —— pygame.draw 对不带 SRCALPHA 的目标面做 alpha 混合不可靠，
+        插值出来的颜色无论底色深浅都稳定可读。
+        """
+        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            return None
+        if not getattr(self, 'animating', False):
+            return None
+        playing = (getattr(self, 'macro_executing', False)
+                   or getattr(self, '_gather_info', None) is not None)
+        if not playing or not getattr(self, 'anim_blocks', None):
+            return None
+        p = max(0.0, min(1.0, getattr(self, 'anim_progress', 0.0)))
+        k = 1.0 - 0.6 * p
+        base = self.colors['border']
+        glow = self.PLAY_HEAD_BORDER
+        col = tuple(int(round(base[i] + (glow[i] - base[i]) * k)) for i in range(3))
+        return (col, max(2, int(round((2 + 2 * k) * self.zoom))))
+
+    def _play_head_keys(self):
+        """正在动画的滑块**位置键**集合。
+
+        三形态循环拿到的键不一样（方形是 block、三角是 (i,j,up)、米字是
+        (r,c,q)），用位置键比对才能三形态通用；判 id 只有方形能接上。
+        动画期间 block.location 仍是起点（终点在 commit 时才写回），所以
+        这里取到的就是起点键，与绘制循环里的键同源。
+        """
+        return {tuple(b.location) for b in (getattr(self, 'anim_blocks', None) or [])}
+
+    # 选块填空选取态的金色——与宏定义基准块的金框同一个色值，不引入新配色
+    # （铁律：不给滑块加新填充色；这里是描边/环，本就走边框通道）。
+    PICK_FILL_GOLD = (255, 200, 50)
+
+    def _draw_pick_fill_marks(self):
+        """选块填空选取态：把玩家已点选的「凸起方块」与「空位」高亮出来。
+
+        选取态由 `GUI._pick_fill` 承载：{'block': (r, c) 或 None,
+        'hole': 洞 dict 或 None}。金色 = 你选的东西——已选方块画金框
+        （与宏定义基准块同款），已选空位把洞的每一格画上金环。
+
+        按三形态铁律从三个 draw_*_board 各自调用；选取态实际只存在于
+        方形（`_pick_fill_form_blocked` 入口闸门 + 建局清空），所以另两个
+        形态走到这里直接返回——留着调用点是给「将来找块填空支援异形」
+        预留的挂载位，也防止形态切换瞬间的陈旧状态画出错位几何。
+        """
+        pf = getattr(self, '_pick_fill', None)
+        if not pf:
+            return
+        if getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False):
+            return
+        gold = self.PICK_FILL_GOLD
+        board_x = getattr(self, '_board_x', 0)
+        board_y = getattr(self, '_board_y', 0)
+        scaled_cell = self.cell_size * self.zoom
+        cell_step = scaled_cell + self.gap_width * self.zoom
+        p = pf.get('block')
+        if p is not None:
+            bx = board_x + p[1] * cell_step + self.camera_x
+            by = board_y + p[0] * cell_step + self.camera_y
+            hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
+            pygame.draw.rect(self.screen, gold, hl_rect,
+                             max(1, int(3 * self.zoom)),
+                             border_radius=int(5 * self.zoom))
+        hole = pf.get('hole')
+        if hole:
+            radius = max(3, int(scaled_cell * 0.35))
+            line_w = max(2, int(2 * self.zoom))
+            half = scaled_cell / 2
+            for r, c in hole.get('cells', []):
+                cx = board_x + c * cell_step + self.camera_x + half
+                cy = board_y + r * cell_step + self.camera_y + half
+                pygame.draw.circle(self.screen, gold, (int(cx), int(cy)),
+                                   radius, line_w)
+
+    def _advance_key(self, key, delta):
+        """形态中立的「key + 格增量」：朝向分量不参与平移。"""
+        if len(key) == 2:
+            return (key[0] + delta[0], key[1] + delta[1])
+        return (key[0] + delta[0], key[1] + delta[1], key[2])
+
+    def _key_center(self, key):
+        """形态中立的 key → 屏幕中心。"""
+        if getattr(self, 'triangle_mode', False):
+            view = self._tri_view()
+            return self.world_to_screen(
+                *view.piece_center(key[0], key[1], bool(key[2])))
+        if getattr(self, 'mi_mode', False):
+            view = self._mi_view()
+            return self.world_to_screen(
+                *view.piece_center(key[0], key[1], key[2]))
+        step_px = self.cell_size * self.zoom + self.gap_width * self.zoom
+        return (key[1] * step_px + step_px / 2.0 + self.camera_x,
+                key[0] * step_px + step_px / 2.0 + self.camera_y)
+
+    def _game_dir_tables(self):
+        """该形态的 (DIRECTIONS, GAP_DIRECTIONS)。
+
+        **两张表都是模块级常量，不是 game 实例的属性** —— 用
+        `getattr(self.game, 'DIRECTIONS')` 取到的是空 dict，标注会静默
+        退化成「什么都不画」（2026-10-05 踩：三形态全返回 None）。
+        方形没有模块级 GAP_DIRECTIONS，缝族只有 h/v，这里内置兜底。
+        """
+        if getattr(self, 'triangle_mode', False):
+            return TRI_DIRECTIONS, TRI_GAP_DIRECTIONS
+        if getattr(self, 'mi_mode', False):
+            return MI_DIRECTIONS, MI_GAP_DIRECTIONS
+        return SQ_DIRECTIONS, {'h': ('a', 'd'), 'v': ('w', 's')}
+
+    def _piece_screen_radius(self):
+        """选中切片里代表性那块的**屏幕外接半径**（中心到最远顶点）。
+
+        标记尺寸与让位距离都以此为准，不用「一格的屏幕长度」：三角/米字在
+        斜方向上一格比块本身长得多（实测三角 k=3 未配好 zoom 时 ulen=235px
+        而盘整个超出屏幕），按格长让位会把标记推到画面外。
+        """
+        for b in self.game.blocks:
+            if not b.be_opted:
+                continue
+            key = tuple(b.location)
+            cx, cy = self._key_center(key)
+            if getattr(self, 'triangle_mode', False):
+                view = self._tri_view()
+                pts = [self.world_to_screen(*p)
+                       for p in view.piece_polygon(
+                           key[0], key[1], bool(key[2]))]
+            elif getattr(self, 'mi_mode', False):
+                view = self._mi_view()
+                pts = [self.world_to_screen(*p)
+                       for p in view.piece_polygon(key[0], key[1], key[2])]
+            else:
+                step_px = self.cell_size * self.zoom + self.gap_width * self.zoom
+                half = step_px / 2.0
+                pts = [(cx - half, cy - half), (cx + half, cy - half),
+                       (cx + half, cy + half), (cx - half, cy + half)]
+            return max(math.hypot(p[0] - cx, p[1] - cy) for p in pts)
+        return 0.0
+
+    # ---------------- S1-4 箭头按键（贴图版，三形态共用） ----------------
+    _ARROW_STYLE = 'B'          # 素材样式（assets/ui/arrows/arrow_B.png）
+    _ARROW_BASE_PX = 46         # zoom=1 时的按键边长；大小只跟全局缩放走
+    _ARROW_CACHE_MAX = 96       # 旋转贴图缓存上限（size×角度）
+
+    def _arrow_asset_path(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(root, 'assets', 'ui', 'arrows',
+                            f'arrow_{self._ARROW_STYLE}.png')
+
+    def _arrow_base(self):
+        """基础贴图（朝右 0°）。方向一律靠 rotate 得到，不为每方向单独出图。"""
+        if getattr(self, '_arrow_base_surf', None) is None:
+            try:
+                self._arrow_base_surf = pygame.image.load(
+                    self._arrow_asset_path()).convert_alpha()
+            except Exception:
+                self._arrow_base_surf = False      # 记失败，避免每帧重试 IO
+        return self._arrow_base_surf or None
+
+    def _arrow_button_size(self):
+        """按键边长：只取决于全局缩放值，与方向无关（用户定）。"""
+        return max(18, int(round(self._ARROW_BASE_PX * getattr(self, 'zoom', 1.0))))
+
+    def _arrow_sprite(self, angle_deg):
+        """**先按 size 缩放、后旋转**；旋转结果绝不二次缩放。
+
+        旋转后画布会变成更大的外接矩形，若再把它压回 size，斜方向的箭头
+        就会比正交方向小 —— 那正是「缩放跟着方向走」的坑。
+        """
+        size = self._arrow_button_size()
+        cache = getattr(self, '_arrow_sprite_cache', None)
+        if cache is None:
+            cache = self._arrow_sprite_cache = {}
+        key = (size, int(round(angle_deg)) % 360)
+        spr = cache.get(key)
+        if spr is None:
+            base = self._arrow_base()
+            if base is None:
+                return None
+            if len(cache) > self._ARROW_CACHE_MAX:
+                cache.clear()
+            spr = pygame.transform.rotate(
+                pygame.transform.smoothscale(base, (size, size)), key[1])
+            cache[key] = spr
+        return spr
+
+    def _visual_offset(self):
+        """当前视觉偏移（格）：拖拽跟随实时值 / 移动动画插值 / 无。
+
+        拖拽期间 block.location 仍是起点，画面上却已经挪开了 —— 箭头锚点
+        必须吃这个偏移，否则就出现「拖着走、箭头留在原地」（2026-10-05 用户报）。
+        """
+        if getattr(self, 'drag_following', False):
+            return tuple(getattr(self, 'drag_follow_offset', (0.0, 0.0)))
+        if getattr(self, 'animating', False):
+            t = self.ease_out(getattr(self, 'anim_progress', 0.0))
+            return (getattr(self, '_anim_dr', 0.0) * t,
+                    getattr(self, '_anim_dc', 0.0) * t)
+        return (0.0, 0.0)
+
+    def _visual_key(self, block):
+        """块的「视觉」key（含拖拽/动画偏移）。
+
+        三形态 key 长度不同（方形 2 / 三角·米字 3），偏移一律落在前两分量上，
+        与各自 draw_board 里的 follow_map / anim_map 同源。
+        """
+        key = tuple(block.location)
+        dr, dc = self._visual_offset()
+        if abs(dr) < 1e-9 and abs(dc) < 1e-9:
+            return key
+        if len(key) == 2:
+            return (key[0] + dr, key[1] + dc)
+        return (key[0] + dr, key[1] + dc, key[2])
+
+    def _get_gap_direction_annotation(self):
+        """选中缝两端的「箭头按键」几何。**每帧重算**，不缓存几何。
+
+        几何依赖 location + camera + zoom + 拖拽跟随偏移，缓存它就会得到
+        「箭头不跟随」的 bug。只有 maxstep（try_move_ex 逐步试算，1..80）
+        是贵的，单独按「缝 + 切片」签名缓存。
+
+        返回 dict 或 None：
+            buttons : [(方向字母, 中心(x,y), 旋转角度°, 可走 bool), ...] 两端
+            size    : 按键边长
+        副作用：把命中矩形写进 self._arrow_buttons，供点击检测复用同一套几何。
+        """
+        self._arrow_buttons = []
+        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
+            return None
+        # 箭头按键是宣传中的五种操作方式之一，有自己的开关（默认开）：
+        # 不想看见箭头时不必为此把整个界面退回朴素模式。
+        if not getattr(self, 'arrows_enabled', True):
+            return None
+        gap = getattr(self, 'selected_gap', None)
+        # 移动动画播放中按键跟着插值移动会误导点击，直接不画
+        if gap is None or getattr(self, 'animating', False):
+            return None
+        chosen = [b for b in self.game.blocks if b.be_opted]
+        if not chosen:
+            return None
+
+        deltas, table = self._game_dir_tables()
+        dirs = tuple(table.get(gap[0], ()))
+        if len(dirs) != 2 or dirs[0] not in deltas or dirs[1] not in deltas:
+            return None
+        sample = self._visual_key(chosen[0])
+        if len(sample) not in (2, 3):
+            return None
+
+        # 位移轴：dirs[0] 一格的屏幕位移。让形态自己的几何去回答方向，
+        # 不查「字母 → 屏幕向量」表（'w' 在三角是左上、在米字是正左）。
+        c0 = self._key_center(sample)
+        c1 = self._key_center(self._advance_key(sample, deltas[dirs[0]]))
+        ux, uy = c1[0] - c0[0], c1[1] - c0[1]
+        ulen = math.hypot(ux, uy)
+        if ulen < 1e-6:
+            return None
+        ux, uy = ux / ulen, uy / ulen
+
+        size = self._arrow_button_size()
+
+        # 锚点：**上一次选中滑块时的鼠标位置**（用户定）。存的是世界坐标，
+        # 不是屏幕坐标 —— 同一位置换个记法而已，好处是平移/缩放后按键仍
+        # 钉在玩家点过的那个棋盘位置上，不会重演「箭头留在原地」。
+        # 没有任何记录时（例如由键盘/回放选中）回退到切片投影外沿中点。
+        px, py = -uy, ux                       # 垂直于推行方向
+        anchor_w = getattr(self, '_gap_anchor_world', None)
+        if anchor_w is None:
+            # 切片投影包围盒的「外沿中点」：只看选中切片，不看整条缝（bug-b）。
+            # 用**视觉 key**，拖拽时按键才跟着切片走。
+            ts, ss = [], []
+            for b in chosen:
+                cx, cy = self._key_center(self._visual_key(b))
+                ts.append(cx * ux + cy * uy)
+                ss.append(cx * px + cy * py)
+            t_lo, t_hi = min(ts), max(ts)
+            s_mid = (min(ss) + max(ss)) / 2.0
+            hi_pt = (ux * t_hi + px * s_mid, uy * t_hi + py * s_mid)
+            lo_pt = (ux * t_lo + px * s_mid, uy * t_lo + py * s_mid)
+            use_pad = True
+        else:
+            # 鼠标点附近：两个按键沿推行轴分居两侧，间距够开避免互相吃点击
+            base = self.world_to_screen(*anchor_w)
+            off = size * 0.80
+            hi_pt = (base[0] + ux * off, base[1] + uy * off)
+            lo_pt = (base[0] - ux * off, base[1] - uy * off)
+            use_pad = False
+
+        # 「点下去会不会被拒绝」：干跑与点击**同一条判定路径**（见
+        # _arrow_move_allowed）。别再自己逐格试算 try_move_ex —— 那与
+        # move_selected_blocks 的步数档/形态专属判定是两套，会出现
+        # 「能走却没箭头 / 有箭头点了却被拒」。
+        # 成本只在签名变化的那一帧：缝 + 切片 + 步数档 + 参考块都算进去。
+        sig = (gap, tuple(tuple(b.location) for b in chosen),
+               getattr(self, 'current_step', 1),
+               id(getattr(self, 'selected_block', None)))
+        if getattr(self, '_gap_allowed_sig', None) != sig:
+            self._gap_allowed = {d: self._arrow_move_allowed(d) for d in dirs}
+            self._gap_allowed_sig = sig
+        allowed = self._gap_allowed
+
+        m = size / 2.0 + 6
+        if use_pad:
+            block_r = self._piece_screen_radius()
+            # 让位 = 块半径（贴到切片外沿）+ 半个按键 + 一点呼吸空隙
+            pad = block_r + size / 2.0 + max(4.0, block_r * 0.10)
+            # 出屏收缩：斜方向一格很长，标准让位可能把按键推出画面（实测米字
+            # 3×3 对角族右下端 y=880 而屏高 620）。逐步缩短让位，最低贴到
+            # 「切片外沿 + 半个按键」，保证按键可见且仍指向正确的端。
+
+            def _inside(x, y):
+                return (m <= x <= self.screen_width - m
+                        and m <= y <= self.screen_height - m)
+
+            p = pad
+            for _ in range(6):
+                a_hi = (hi_pt[0] + ux * p, hi_pt[1] + uy * p)
+                a_lo = (lo_pt[0] - ux * p, lo_pt[1] - uy * p)
+                if _inside(*a_hi) and _inside(*a_lo):
+                    break
+                p *= 0.65
+            pad = max(p, size / 2.0 + 4.0)
+        else:
+            pad = 0.0      # 鼠标锚点：按键就摆在点的地方，不再额外让位
+
+        ends = [(dirs[0], (hi_pt[0] + ux * pad, hi_pt[1] + uy * pad), (ux, uy)),
+                (dirs[1], (lo_pt[0] - ux * pad, lo_pt[1] - uy * pad), (-ux, -uy))]
+        buttons = []
+        for d, (ax, ay), (vx, vy) in ends:
+            # 锚点跑出画面时夹回视区：「看得见」比「准而看不见」有用
+            ax = min(max(ax, m), self.screen_width - m)
+            ay = min(max(ay, m), self.screen_height - m)
+            movable = bool(allowed.get(d, False))
+            buttons.append((d, (ax, ay), math.degrees(math.atan2(-vy, vx)), movable))
+            if not movable:
+                continue        # 禁用态不画 → 也不该被点中（画与命中同一套几何）
+            # 命中区取按键自身的正方形，不用旋转后的外接矩形 —— 后者更大，
+            # 会让相邻方向的按键互相吃掉点击
+            self._arrow_buttons.append(
+                (d, pygame.Rect(int(ax - size / 2), int(ay - size / 2), size, size)))
+        return {'buttons': buttons, 'size': size}
+
+    def _draw_gap_direction_annotation(self):
+        """S1-4：切片两端各画一个可点的箭头按键。**在滑块绘制之后**调用。
+
+        禁用态（该方向走不动）按约定**直接不画**：不留灰叉、不留禁用贴图。
+        """
+        annot = self._get_gap_direction_annotation()
+        if not annot:
+            return
+        for _d, (cx, cy), ang, movable in annot['buttons']:
+            if not movable:
+                continue
+            spr = self._arrow_sprite(ang)
+            if spr is None:
+                continue
+            self.screen.blit(spr, spr.get_rect(center=(int(cx), int(cy))))
+
+    def _arrow_button_hit(self, x, y):
+        """点在某端的箭头按键上？返回该端方向字母，否则 None。
+
+        命中优先于选缝（events 里先问它），否则按键会被「点空白起拖」吃掉。
+        矩形来自上一帧绘制，一帧延迟在 60fps 下不可感知。
+        """
+        for d, rect in getattr(self, '_arrow_buttons', ()):
+            if rect.collidepoint(x, y):
+                return d
+        return None
 
     def draw_menu_bar(self):
         """绘制顶部菜单栏"""
@@ -912,6 +1451,18 @@ class RendererMixin:
         timer_x = step_x + step_surface.get_width() + 30
         self.screen.blit(timer_surface, (timer_x, text_y))
 
+        # 计时区可点：竞速模式下「开始计时 / 放弃(DNF)」原本只有空格能按，
+        # 这里补一个纯鼠标入口（画细框提示这里能点）。控制设计原则：只用
+        # 鼠标也要能完成一切游戏内操作。
+        self._timer_bar_rect = None
+        if self.game_mode == 'timed' and self.timer_state in ('ready', 'running'):
+            _pad = 6
+            self._timer_bar_rect = pygame.Rect(timer_x - _pad, status_y + 3,
+                                               timer_surface.get_width() + _pad * 2,
+                                               self.status_bar_height - 6)
+            pygame.draw.rect(self.screen, (110, 110, 110), self._timer_bar_rect,
+                             1, border_radius=3)
+
         # 中间：当前谜题信息（带形态后缀：带序号 #num / 三角形 tri{k} / 米字格 mi{m}*{n}）
         puzzle_text = f"谜题：{self._current_puzzle_key()}"
         puzzle_surface = self.status_font.render(puzzle_text, True, self.colors['status_text'])
@@ -1009,18 +1560,20 @@ class RendererMixin:
         tab_kb_text_rect = tab_kb_text.get_rect(center=tab_kb_rect.center)
         self.screen.blit(tab_kb_text, tab_kb_text_rect)
 
-        # 动画速度 Tab
-        tab_anim_rect = pygame.Rect(dialog_x + 15 + tab_width + 5, tab_y, tab_width, tab_height)
+        # 视觉 Tab（新顺序第 3 位：动效 + 缩放 + 各类视觉提示）
+        # 2026-10-13 由「动画速度」改名：本页早已不只是动画速度——缩放、
+        # 着色、连锁提示、复原提示标记、调试面板都归它管。
+        tab_anim_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 2, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'animation':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_anim_rect, border_radius=4)
         else:
             pygame.draw.rect(self.screen, self.colors['input_bg'], tab_anim_rect, border_radius=4)
-        tab_anim_text = self.status_font.render("动画速度", True, self.colors['input_text'])
+        tab_anim_text = self.status_font.render("视觉", True, self.colors['input_text'])
         tab_anim_text_rect = tab_anim_text.get_rect(center=tab_anim_rect.center)
         self.screen.blit(tab_anim_text, tab_anim_text_rect)
 
-        # 求解器 Tab
-        tab_solver_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 2, tab_y, tab_width, tab_height)
+        # 求解器 Tab（新顺序第 3 位，与「聚拢参数」相邻）
+        tab_solver_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 3, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'solver':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_solver_rect, border_radius=4)
         else:
@@ -1029,8 +1582,8 @@ class RendererMixin:
         tab_solver_text_rect = tab_solver_text.get_rect(center=tab_solver_rect.center)
         self.screen.blit(tab_solver_text, tab_solver_text_rect)
 
-        # 聚拢参数 Tab
-        tab_gather_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 3, tab_y, tab_width, tab_height)
+        # 聚拢参数 Tab（新顺序第 4 位，紧随「求解器」）
+        tab_gather_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 4, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'gather':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_gather_rect, border_radius=4)
         else:
@@ -1039,8 +1592,8 @@ class RendererMixin:
         tab_gather_text_rect = tab_gather_text.get_rect(center=tab_gather_rect.center)
         self.screen.blit(tab_gather_text, tab_gather_text_rect)
 
-        # 文件/存档 Tab
-        tab_file_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 4, tab_y, tab_width, tab_height)
+        # 文件/存档 Tab（新顺序第 5 位，置末）
+        tab_file_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 5, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'file':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_file_rect, border_radius=4)
         else:
@@ -1049,8 +1602,8 @@ class RendererMixin:
         tab_file_text_rect = tab_file_text.get_rect(center=tab_file_rect.center)
         self.screen.blit(tab_file_text, tab_file_text_rect)
 
-        # 控制 Tab
-        tab_control_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 5, tab_y, tab_width, tab_height)
+        # 控制 Tab（新顺序第 1 位，紧随「快捷键」，同属操作类）
+        tab_control_rect = pygame.Rect(dialog_x + 15 + tab_width + 5, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'control':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_control_rect, border_radius=4)
         else:
@@ -1069,22 +1622,27 @@ class RendererMixin:
 
         # 内容区域
         content_y = tab_y + tab_height + 10
-        content_height = dialog_height - (content_y - dialog_y) - 55
+        content_height = dialog_height - (content_y - dialog_y) - 64
 
         # 计算总内容高度以决定是否需要滚动条
         total_content_height = self._calc_settings_content_height(content_height)
-        max_scroll = max(0, total_content_height - content_height)
-        self._settings_max_scroll = max_scroll
-        scroll = getattr(self, '_settings_scroll', 0)
-        scroll = max(0, min(max_scroll, scroll))
-        self._settings_scroll = scroll
+        # 滚动条（与帮助框同源）：每帧依内容高度重算
+        sb = self.settings_scrollbar
+        sb.layout(dialog_x + dialog_width - 18, content_y, content_height,
+                  total_content_height, content_height)
+        # 控制页刚弹出内联反馈（复制结果等）→ 自动滚到底：反馈行是新长出来
+        # 的内容，不pin底就会落在裁剪区外，玩家依旧「看不到反应」
+        if getattr(self, '_settings_ext_pin_bottom', False):
+            self._settings_ext_pin_bottom = False
+            sb.set_scroll(10**9)  # set_scroll 内部夹紧到最大滚动量
+        scroll = sb.scroll
 
         # 内容区域裁剪
         content_rect = pygame.Rect(dialog_x + 5, content_y, dialog_width - 20, content_height)
         self.screen.set_clip(content_rect)
         try:
             if self.settings_active_tab == 'keybindings':
-                self._draw_settings_keybindings(dialog_x, content_y - scroll, dialog_width - 30, total_content_height if max_scroll > 0 else content_height)
+                self._draw_settings_keybindings(dialog_x, content_y - scroll, dialog_width - 30, total_content_height if sb.need_scroll() else content_height)
             elif self.settings_active_tab == 'animation':
                 self._draw_settings_animation(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             elif self.settings_active_tab == 'gather':
@@ -1098,9 +1656,15 @@ class RendererMixin:
         finally:
             self.screen.set_clip(None)
 
-        # 绘制滚动条
-        if max_scroll > 0:
-            self._draw_settings_scrollbar(dialog_x + dialog_width - 18, content_y, content_height, scroll, max_scroll)
+        # 绘制滚动条（仅当内容超出可见区域）
+        if sb.need_scroll():
+            sb.draw(self.screen)
+
+        # 底部按钮带分隔线（明确把内容与按钮区分开，避免视觉/命中重叠）
+        divider_y = dialog_y + dialog_height - 48 - 14
+        pygame.draw.line(self.screen, self.colors['dialog_border'],
+                         (dialog_x + 15, divider_y),
+                         (dialog_x + dialog_width - 15, divider_y))
 
         # 底部按钮
         btn_width = 80
@@ -1482,17 +2046,18 @@ class RendererMixin:
                     (occ if (r, c) in occupied else empty).add((r, c))
         return occ, empty, (hr, hc)
 
-    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28):
+    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28, on_text='ON', off_text='OFF'):
         """统一排版的开关行：左栏标签(x+15) + 右栏开关(x+220) + 可选说明。
-        返回 (开关rect, 下一行y)。所有设置页开关共用，保证对齐。"""
+        返回 (开关rect, 下一行y)。所有设置页开关共用，保证对齐。
+        on_text/off_text 允许自定义开关文字（如界面模式的 增强/朴素）。"""
         label_s = self.dialog_font.render(label, True, self.colors['dialog_text'])
         self.screen.blit(label_s, (x + 15, y + 6))
 
         rect = pygame.Rect(x + 220, y + 2, btn_w, btn_h)
         if on:
-            bg, txt, tc = self.colors['button_bg'], "ON", (255, 255, 255)
+            bg, txt, tc = self.colors['button_bg'], on_text, (255, 255, 255)
         else:
-            bg, txt, tc = self.colors['input_bg'], "OFF", (150, 150, 150)
+            bg, txt, tc = self.colors['input_bg'], off_text, (150, 150, 150)
         pygame.draw.rect(self.screen, bg, rect, border_radius=4)
         ts = self.status_font.render(txt, True, tc)
         self.screen.blit(ts, ts.get_rect(center=rect.center))
@@ -1506,9 +2071,15 @@ class RendererMixin:
 
     def _draw_settings_animation(self, x, y, width, height):
         """绘制动画速度设置内容（统一排版：标签左栏 x+15、控件右栏 x+220）"""
+        # 界面模式总开关（朴素 / 增强）—— S0-0 新增
+        self._settings_ui_mode_rect, ny = self._draw_switch_row(
+            x, y, "界面模式：", self.ui_mode == 'enhanced',
+            "增强=新版动效与视觉优化；朴素=旧版界面（等同未启用本计划）",
+            on_text='增强', off_text='朴素')
+
         # 滑动动画开关
         self._settings_anim_toggle_rect, ny = self._draw_switch_row(
-            x, y, "滑动动画：", self.animation_enabled,
+            x, ny, "滑动动画：", self.animation_enabled,
             "滑块移动时的补间动画过渡")
 
         # 选中动画开关（撤销/重做时高亮该步缝隙与滑块组）
@@ -1549,6 +2120,41 @@ class RendererMixin:
         self.screen.blit(max_label, (track_x + track_width - max_label.get_width(), track_y + 12))
         ny = speed_y + 72
 
+        # 缩放滑动条（与右侧面板的垂直缩放滑条同源：两者读写同一个
+        # self.zoom，改任意一个另一个下一帧就跟着动）。排版与上面的动画
+        # 时长一致：左栏标签、右栏轨道，左端=最小缩放、右端=最大缩放。
+        zoom_y = ny
+        zoom_label = self.dialog_font.render("缩放：", True, self.colors['dialog_text'])
+        self.screen.blit(zoom_label, (x + 15, zoom_y + 6))
+
+        ztrack_x = x + 220
+        ztrack_width = 190
+        zoom_pct = f"{int(round(self.zoom * 100))}%"
+        zvalue_surface = self.input_font.render(zoom_pct, True, self.colors['input_text'])
+        self.screen.blit(zvalue_surface,
+                         (ztrack_x + ztrack_width - zvalue_surface.get_width(), zoom_y + 6))
+
+        # 滑动条轨道
+        ztrack_y = zoom_y + 26
+        self._settings_zoom_track_rect = pygame.Rect(ztrack_x, ztrack_y, ztrack_width, 4)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'], self._settings_zoom_track_rect)
+
+        # 滑动条位置（线性：min_zoom→0，max_zoom→1）
+        znorm = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+        znorm = max(0.0, min(1.0, znorm))
+        zknob_x = int(ztrack_x + znorm * ztrack_width)
+        self._settings_zoom_knob_rect = pygame.Rect(zknob_x - 8, ztrack_y - 6, 16, 16)
+
+        zknob_color = self.colors['button_hover'] if getattr(self, '_settings_zoom_dragging', False) else self.colors['button_bg']
+        pygame.draw.rect(self.screen, zknob_color, self._settings_zoom_knob_rect, border_radius=8)
+
+        # 刻度标签（两端对齐轨道）
+        zmin_label = self.status_font.render(f"{int(round(self.min_zoom * 100))}%", True, (150, 150, 150))
+        zmax_label = self.status_font.render(f"{int(round(self.max_zoom * 100))}%", True, (150, 150, 150))
+        self.screen.blit(zmin_label, (ztrack_x, ztrack_y + 12))
+        self.screen.blit(zmax_label, (ztrack_x + ztrack_width - zmax_label.get_width(), ztrack_y + 12))
+        ny = zoom_y + 72
+
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
@@ -1559,10 +2165,41 @@ class RendererMixin:
             x, ny, "悬停连锁提示：", getattr(self, 'chain_hint_enabled', False),
             "悬停滑块时，边界盒内同组位置（含空格）提亮提示，帮助找缺口")
 
+        # 复原提示标记：调试面板画在棋盘上的那些记号（目标框 / 洞位等）。
+        # 它们是视觉强化而非调试数据，故与面板本体拆成两个开关：可以只关
+        # 画面上的记号、留着面板看数字，也可以整块面板一起关掉。
+        # 2026-10-13 由「棋盘标记」改名「复原提示标记」——它提示的是
+        # 「往哪走能复原」，不是泛泛的棋盘装饰。
+        self._settings_marks_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "复原提示标记：", getattr(self, 'board_marks_enabled', False),
+            "棋盘上提示复原方向的记号（目标框 / 洞位），可脱离调试面板单独开（F2 亦可开关）")
+
+        # 调试面板本体：让 F2 的功能也有纯鼠标入口（面板自身的关闭按钮
+        # 只能关、不能开）
+        self._settings_metrics_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "调试面板：", getattr(self, 'show_metrics_panel', False),
+            "右下角的数据面板（聚拢度 / 剖面缺陷等），F2 亦可开关")
+
+        # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
+        # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
+        # 的说明与下面的开关行整块落在裁剪区外，玩家根本看不到（2026-10-13
+        # 用户实机反馈）。这里每帧记录真实高度，高度计算与绘制永不漂移。
+        self._settings_anim_height = ny - y + 10
+
+    def _ext_feedback_lines(self, width: int) -> int:
+        """控制页内联反馈当前占几行（高度计算与绘制共用同一算法，避免漂移）。"""
+        msg = getattr(self, '_settings_ext_msg', '')
+        if not msg or getattr(self, '_settings_ext_msg_timer', 0) <= 0:
+            return 0
+        n = 0
+        for seg in msg.split('\n'):
+            n += len(self._wrap_text(seg, self.status_font, width - 30) or [''])
+        return min(n, 4)
+
     def _draw_settings_control(self, x, y, width, height):
-        """绘制控制模式设置内容（三种模式独立开关，可任意组合）"""
+        """绘制控制模式设置内容（五种操作方式独立开关，可任意组合）"""
         hint = self.status_font.render(
-            "三种模式可任意组合（甚至全关）；全关时只能平移/缩放", True, (200, 200, 120))
+            "五种操作方式可任意组合（甚至全关）；全关时只能平移/缩放", True, (200, 200, 120))
         self.screen.blit(hint, (x + 15, y + 6))
 
         ny = y + 34
@@ -1575,13 +2212,77 @@ class RendererMixin:
         self._settings_ctrl_kb_rect, ny = self._draw_switch_row(
             x, ny, "鼠标键盘：", getattr(self, 'control_mouse_kb', True),
             "方向键 / W/A/S/D 移动滑块（撤销/重做等快捷键不受影响）")
+        # 虚拟键盘：F1 唤出的屏上键盘，这里给它一个纯鼠标的开关入口
+        # （宣传里的五种操作方式，此前只有热键能开关它）
+        self._settings_ctrl_vk_rect, ny = self._draw_switch_row(
+            x, ny, "虚拟键盘：", getattr(self, 'show_virtual_keyboard', False),
+            "屏幕上的方向键盘（F1 亦可开关）；米字格靠它定方向，默认开着")
+        # 箭头按键：选中缝隙后两端的可点方向箭头，原先只跟界面模式走
+        self._settings_ctrl_arrow_rect, ny = self._draw_switch_row(
+            x, ny, "箭头按键：", getattr(self, 'arrows_enabled', True),
+            "选中缝隙后在切片两端显示可点的方向箭头（需增强界面）")
+        # 逆序播放宏：不常用，故从右下角常用区撤回设置（右下角留给常用开关）
+        self._settings_ctrl_revmacro_rect, ny = self._draw_switch_row(
+            x, ny, "逆序播放宏：", getattr(self, 'macro_reverse_mode', False),
+            "宏指令倒着播一遍（本人用不上，故不放右下角常用区）")
+
+        # —— 外部控制（本机 HTTP API）——
+        # 与五种操作方式分区：那是「人怎么玩」，这是「外部程序怎么接」。
+        ny += 8
+        pygame.draw.line(self.screen, (90, 90, 95),
+                         (x + 15, ny - 4), (x + width - 15, ny - 4))
+        self._settings_ext_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "允许外部控制：", self.external_enabled(),
+            "开启后本机 HTTP 接口可用；外部程序须带令牌请求（令牌只存内存）")
+        note = self.status_font.render(
+            "令牌进程级随机：游戏重启即失效；关闭立即作废，重开换新", True, (150, 150, 150))
+        self.screen.blit(note, (x + 15, ny))
+        ny += 22
+        # 复制连接话术 / 下载控制教程（并排两按钮）
+        # 悬停高亮与底部按钮同源（button_hover）：没有悬停反馈的按钮像死的
+        btn_h = 32
+        copy_r = pygame.Rect(x + 15, ny, 150, btn_h)
+        guide_r = pygame.Rect(x + 175, ny, 170, btn_h)
+        mouse_pos = pygame.mouse.get_pos()
+        for r, label in ((copy_r, "复制连接话术"), (guide_r, "下载控制教程")):
+            hover = r.collidepoint(mouse_pos)
+            bg = self.colors['button_hover'] if hover else self.colors['button_bg']
+            pygame.draw.rect(self.screen, bg, r, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], r, 1, border_radius=4)
+            ls = self.dialog_font.render(label, True, (255, 255, 255))
+            self.screen.blit(ls, ls.get_rect(center=r.center))
+        self._settings_ext_copy_rect = copy_r
+        self._settings_ext_guide_rect = guide_r
+        ny += btn_h + 6
+
+        # —— 内联反馈（复制结果等）——
+        # 为什么在对话框内自报：宏通知浮层画在模态之下，设置框开着时toast
+        # 不可见——玩家点了没反应，按钮就像死的。反馈必须落在内容区里。
+        msg = getattr(self, '_settings_ext_msg', '')
+        n_lines = self._ext_feedback_lines(width)
+        if msg and n_lines:
+            color = (140, 230, 140) if getattr(self, '_settings_ext_msg_ok', True) \
+                else (255, 150, 150)
+            wrapped = []
+            for seg in msg.split('\n'):
+                wrapped.extend(self._wrap_text(seg, self.status_font, width - 30) or [''])
+            for ln in wrapped[:n_lines]:
+                self.screen.blit(self.status_font.render(ln, True, color), (x + 15, ny))
+                ny += 18
+        self._settings_ext_msg_lines = n_lines
 
     def _draw_settings_gather(self, x, y, width, height):
         """绘制聚拢参数设置内容（与谜题-自定义一致的输入框样式）"""
         # 顶部警告：不了解参数含义请勿调整
         warn = self.status_font.render("※ 参数含义若不理解请勿调整，以免求解效果变差", True, (220, 200, 80))
         self.screen.blit(warn, (x + 15, y + 8))
-        row_y = y + 32
+        # 适用范围（2026-10-13 用户要求标明）：这些参数是聚拢求解器的专用
+        # 参数，只对设置-求解器页的「单次聚拢」生效；梯度聚拢自动预测参数，
+        # 混合求解 / 填洞补缺 / 选块填空 / 查表等算法不读它们。
+        scope = self.status_font.render(
+            "这些参数只给「单次聚拢」用：梯度聚拢自动定参，其余算法不读它们", True, (150, 200, 150))
+        self.screen.blit(scope, (x + 15, y + 26))
+        row_y = y + 48
         self._settings_gather_rects = {}
         editing = getattr(self, 'settings_editing_value', None)
         specs = getattr(self, '_gather_param_specs', [])
@@ -1667,6 +2368,8 @@ class RendererMixin:
         self.screen.blit(title, (x + 15, row_y))
         row_y += row_height + 10
 
+        from solver import solver_supports
+
         self._settings_solver_rects = {}  # algorithm_key -> rect
 
         for algo_key, (algo_name, _) in SOLVER_ALGORITHMS.items():
@@ -1686,9 +2389,19 @@ class RendererMixin:
                 pygame.draw.circle(self.screen, self.colors['button_bg'],
                                  (radio_x + radio_size, radio_y + radio_size), radio_size - 4)
 
-            # 算法名
-            name_surface = self.dialog_font.render(algo_name, True, self.colors['dialog_text'])
+            # 算法名：当前谜题形态不支持的**置灰**并标注。
+            # 仍允许点选（用户可能先选好、之后切回方形），点击时会明确提示
+            # 「当前谜题没有 xxx 求解算法功能」，不会静默换算法。
+            supported = solver_supports(algo_key, self._current_puzzle_form())
+            name_color = (self.colors['dialog_text'] if supported
+                          else (110, 110, 115))
+            name_surface = self.dialog_font.render(algo_name, True, name_color)
             self.screen.blit(name_surface, (option_x, row_y + row_height // 2 - name_surface.get_height() // 2))
+            if not supported:
+                tip = self.status_font.render("（当前谜题不支持）", True,
+                                              (110, 110, 115))
+                self.screen.blit(tip, (option_x + name_surface.get_width() + 8,
+                                       row_y + row_height // 2 - tip.get_height() // 2))
 
             row_y += row_height
 
@@ -1704,17 +2417,23 @@ class RendererMixin:
     def _solver_description(self, algo_key: str) -> str:
         """当前求解算法的说明文字"""
         descriptions = {
-            'ida_star': '使用 IDA* 迭代加深搜索，尽量找到最少步数解。速度非常慢。',
-            'fast': 'IDA* 优化模式：加大搜索步进，放宽节点/时间限制，优先聚拢，速度中等。不能保证求解成功。',
-            'greedy': '贪心爬山法：每步选当前最佳动作，速度中等但不保证最优。不能保证求解成功。',
+            'ida_star': '使用 IDA* 迭代加深搜索，尽量找到最少步数解。速度非常慢。※ 旧搜索类算法，相对现有宏级流水线已低效，沉底仅备查。',
+            'fast': 'IDA* 优化模式：加大搜索步进，放宽节点/时间限制，优先聚拢，速度中等。不能保证求解成功。※ 旧搜索类算法，沉底仅备查。',
+            'greedy': '贪心爬山法：每步选当前最佳动作，速度中等但不保证最优。不能保证求解成功。※ 旧搜索类算法，沉底仅备查。',
             'table':'根据数据库的数据快速找到最优算法（一般1s内），只对已有数据库的谜题有效。',
             #'intelligence': 'AI求解：基于预训练评分模型，每步自动选最佳动作。需先用 solver.ml.train_ranker 训练模型。',
             #'emd': 'EMD求解：用 EMD 距离贪心搜索，速度快但不保证成功。',
             #'strategy': '策略求解：EMD 贪心 + 循环检测 + 随机扰动，成功率高于纯 EMD。',
             #'distance': '距离求解：用神经网络预测剩余步数做贪心搜索，需先用 solver.ml.train_distance 训练模型。',
-            'gather': '聚拢：提升聚拢度，不保证还原，实时显示进展。',
-            'gather_gradient': '梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢，每阶段播放动画后再续。理论上比上一个更高效。',
-            'fill_macro': '填洞宏：死代码规则（无搜索）。单洞单凸整盘还原；多洞无缺口时逐 couple 填洞（成功一次重扫，全败停机）。',
+            'gather': '单次聚拢（方形 / 三角形 / 米字格通用入口）：只跑一轮聚拢，提升聚拢度，不保证还原，实时显示进展。',
+            'gather_gradient': '梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢，每阶段播放动画后再续。理论上比单次聚拢更高效。',
+            # ➜ 填洞宏已并入本项（2026-10-12）：单独跑填洞遇到边缘缺口会全线
+            #   失败，而它本来就是这一支遇到多空位时会转去跑的那条路。
+            'gap_macro': '填洞补缺：多空位宏级机构（带移让位 + 粘上接走链）。单边缺口走「封壳 + 内部共轭 + 拆壳」；遇到多个空位或封闭孔洞则转去逐个 couple 填洞；最后一律带兜底救援。',
+            # 选块填空要先收集玩家点选，所以它多一步交互 —— 说明写在这里，
+            # 设置里就能看懂为什么它需要你先点两下。
+            'pick_fill': '选块填空：你点一个方块和一个空位（顺序不限），它只把这一块送进那个坑。按一次进入选取态，点齐后按 Ctrl+A 开始，没点齐时再按一次退出。只保证这个空位被填上，不保证整盘还原。',
+            'hybrid': '混合求解（自动规划）：有表先查表（最优且亚秒级）；无表按空位数路由——空位≤2 先混合流水线（聚拢+填洞+搜索），空位≥3 先补缺宏（couple→贴边setup→带移让位链）；一路落败另一路接力，补缺宏的部分成果可被混合续算；全败返回聚拢度提升最大的断点。',
         }
         return descriptions.get(algo_key, '')
 
@@ -1779,8 +2498,27 @@ class RendererMixin:
             "写在 config/op_log.jsonl，只用于调试，日常请关闭", True, (150, 150, 150))
         self.screen.blit(hint2, (x + 15, og_y + 54))
 
+        # 压缩存档开关（use_compressed_save：矩形谜题保存为 replay 压缩格式）
+        cy = og_y + 70
+        label4 = self.dialog_font.render("压缩存档：", True, self.colors['dialog_text'])
+        self.screen.blit(label4, (x + 15, cy))
+        self._settings_compressed_toggle_rect = pygame.Rect(toggle_x, cy, btn_w, btn_h)
+        flag4 = getattr(self, 'use_compressed_save', False)
+        btn_color = self.colors['button_bg'] if flag4 else self.colors['input_bg']
+        btn_text = "ON" if flag4 else "OFF"
+        text_color = (255, 255, 255) if flag4 else (150, 150, 150)
+        pygame.draw.rect(self.screen, btn_color, self._settings_compressed_toggle_rect, border_radius=4)
+        ts4 = self.status_font.render(btn_text, True, text_color)
+        self.screen.blit(ts4, ts4.get_rect(center=self._settings_compressed_toggle_rect.center))
+        hint = self.status_font.render(
+            "打开后，矩形谜题存档改为“重放压缩格式”（初始+末态+步骤原语+哈希校验）", True, (150, 150, 150))
+        self.screen.blit(hint, (x + 15, cy + 34))
+        hint2 = self.status_font.render(
+            "体积大幅缩小；异形谜题不受此开关影响，仍存普通格式", True, (150, 150, 150))
+        self.screen.blit(hint2, (x + 15, cy + 54))
+
         # 当前存档路径
-        path_y = og_y + 80
+        path_y = cy + 80
         plabel = self.dialog_font.render("当前存档：", True, self.colors['dialog_text'])
         self.screen.blit(plabel, (x + 15, path_y))
         path = getattr(self, 'current_file_path', None) or '(未保存/自动暂存)'
@@ -1807,11 +2545,25 @@ class RendererMixin:
                 total += 5  # group spacing
             return total + 25  # extra for hint text
         elif self.settings_active_tab == 'animation':
-            return 340  # 滑动动画 + 选中动画 + 时长滑动条 + 着色器 + 连锁提示
+            # 视觉页：真实绘制高度由 _draw_settings_animation 每帧记录
+            # （self._settings_anim_height）——曾因写死 340 把底下好几行
+            # 裁死在可见区外。首帧尚未绘制时用同一结构估算兜底：
+            # 界面模式/滑动/选中 3 行开关(60) + 速度滑条(72) + 缩放滑条(72)
+            # + 着色/连锁/标记/面板 4 行开关(60) + 余量。
+            return getattr(self, '_settings_anim_height', 3 * 60 + 72 + 72 + 4 * 60 + 10)
         elif self.settings_active_tab == 'gather':
-            return 12 + 26 + len(self._gather_param_specs) * 52 + 10
+            # 警告行 + 适用范围行 + 每个参数一行(52) + 余量
+            return 26 + 22 + len(self._gather_param_specs) * 52 + 10
         elif self.settings_active_tab == 'file':
-            return 320  # 存档只读 + 防止覆盖 + 操作日志 + 当前存档路径说明
+            return 420  # 存档只读 + 防止覆盖 + 操作日志 + 压缩存档 + 当前存档路径说明
+        elif self.settings_active_tab == 'control':
+            # 提示 34 + 六行开关（每行 60）+ 外部控制区（分隔 8 + 开关 60
+            # + 说明 22 + 按钮 32 + 内联反馈行（每行 18，无反馈为 0）+ 余量 10）
+            # 反馈行数必须**当场按当前消息**算：等下一帧回填会把新行落在裁剪
+            # 区外（内容长高但滚动量没跟上），玩家仍看不到反馈。
+            # 宽度与 _draw_settings_control 收到的实参一致（对话框定宽 660-30）
+            return 34 + 6 * 60 + 8 + 60 + 22 + 32 + 10 \
+                + 18 * self._ext_feedback_lines(660 - 30)
         else:
             # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
             from solver import SOLVER_ALGORITHMS
@@ -1821,25 +2573,6 @@ class RendererMixin:
             desc_w = 500 - 30 - 20  # 内容宽 470 再减边距
             desc_h = len(self._wrap_text(desc, self.status_font, desc_w)) * 18 + 12
             return title_h + options_h + desc_h
-
-    def _draw_settings_scrollbar(self, x, y, height, scroll, max_scroll):
-        """绘制设置对话框滚动条"""
-        # 轨道
-        track_w = 8
-        track_rect = pygame.Rect(x, y, track_w, height)
-        pygame.draw.rect(self.screen, (60, 60, 65), track_rect, border_radius=4)
-        self._settings_scrollbar_rect = track_rect
-
-        # 滑块
-        if max_scroll > 0:
-            ratio = scroll / max_scroll
-            knob_h = max(20, int(height * height / (height + max_scroll)))
-            knob_y = y + int((height - knob_h) * ratio)
-            knob_rect = pygame.Rect(x, knob_y, track_w, knob_h)
-            self._settings_scrollbar_knob = knob_rect
-            pygame.draw.rect(self.screen, (120, 130, 140), knob_rect, border_radius=4)
-        else:
-            self._settings_scrollbar_knob = None
 
     def _wrap_text(self, text: str, font, max_width: int) -> list[str]:
         """自动换行：按给定宽度将文本拆分为多行"""
@@ -2191,13 +2924,18 @@ class RendererMixin:
         cx = (self.screen_width - self.right_panel_width) // 2
         cy = self.screen_height // 2
 
-        # 弹入动画：前 12 帧缩放回弹，随后轻微呼吸
-        p = min(1.0, t / 12.0)
+        # 弹入动画：前若干帧缩放回弹，随后轻微呼吸
+        # S0-1：增强模式放大幅度（弹入更久更明显、呼吸更明显），朴素模式保持原设计口径
+        _enh = getattr(self, 'ui_mode', 'enhanced') == 'enhanced'
+        _in_frames = 18 if _enh else 12   # 增强≈300ms，朴素≈200ms
+        _in_start = 0.85 if _enh else 0.70
+        _breathe = 0.03 if _enh else 0.012
+        p = min(1.0, t / _in_frames)
         ease = 1 - (1 - p) ** 3
         if p < 1:
-            scale = 0.7 + 0.3 * ease
+            scale = _in_start + (1.0 - _in_start) * ease
         else:
-            scale = 1.0 + 0.012 * math.sin(t / 9.0)
+            scale = 1.0 + _breathe * math.sin(t / 9.0)
         alpha = int(240 * min(1.0, t / 6.0))
 
         # 超过 360 帧（约 6 秒）自动淡出关闭
@@ -2232,7 +2970,10 @@ class RendererMixin:
 
         # 外圈呼吸光晕（对话框边框同色，微弱）
         ring = pygame.Surface((w + 14, h + 14), pygame.SRCALPHA)
-        glow_alpha = int(alpha * (0.25 + 0.10 * math.sin(t / 7.0)))
+        # 增强模式光晕更明显（朴素模式保持原 0.25±0.10）
+        _glow_base = 0.45 if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 0.25
+        _glow_amp = 0.18 if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 0.10
+        glow_alpha = int(alpha * (_glow_base + _glow_amp * math.sin(t / 7.0)))
         pygame.draw.rect(ring, (130, 130, 140, max(0, glow_alpha)), ring.get_rect(), 2, border_radius=15)
         self.screen.blit(ring, (x - 7, y - 7))
 
@@ -2280,10 +3021,10 @@ class RendererMixin:
         pygame.draw.line(self.screen, self.colors['border'],
                         (panel_x, 0), (panel_x, self.screen_height))
 
-        # ---- 底部：6 个快捷开关（垂直排列）----
+        # ---- 底部：7 个快捷开关（垂直排列）----
         sw_h = 24
         sw_gap = 4
-        sw_count = 6
+        sw_count = 7
         switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
         switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
         sw_x = panel_x + 6
@@ -2318,12 +3059,20 @@ class RendererMixin:
             self.right_panel_switch_rects[key] = rect
             sw_top += sw_h + sw_gap
 
+        # 摆放原则（用户定）：右下角只放**游玩中需要经常切换**的开关；
+        # 不常改的一律收回设置对话框。逆序宏因此从这里撤回设置。
         _sw_btn('animation_enabled', '滑动动画', lambda: self.animation_enabled)
         _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
         _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
         _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
+        # 复原提示标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼
+        # 不想看、后期要数格子又想看），故放常用区（设置页全名为
+        # 「复原提示标记」，2026-10-13 由「棋盘标记」改名）
+        _sw_btn('board_marks_enabled', '复原标记', lambda: self.board_marks_enabled)
         _sw_btn('game_mode', '模式', lambda: None)
-        _sw_btn('macro_reverse_mode', '逆序宏', lambda: self.macro_reverse_mode)
+        # 成绩面板：F3 的功能原先只有键盘能唤出，这里补一个纯鼠标入口，
+        # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
+        _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
 
         # ---- 上方：垂直滑条（左=缩放，右=速度）----
         track_top = self.menu_bar_height + 35

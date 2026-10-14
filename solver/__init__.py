@@ -34,6 +34,8 @@ from solver.ida_star import ida_star_solve as solve
 from solver.ida_star import ida_star_solve as _ida_star_solve
 from solver.greedy import greedy_hill_climbing_solve
 from solver.actions import apply_action, enumerate_valid_actions
+from solver.ml.tri_adapter import tri_gather_solve
+from solver.ml.mi_adapter import mi_gather_solve
 
 
 def solve_fast(game, step: int, max_depth: int = 80,
@@ -59,21 +61,170 @@ from solver.ml.gather_solver import gather_solve
 from solver.ml.gather_solver import gradient_gather
 from solver.ml.human_solver import ai_human_solve
 from solver.ml.fill_macro import solve_fill_macro
+from solver.ml.gap_solver import solve_gap_macro, solve_pick_fill
+from solver.hybrid_solver import hybrid_solve
+from solver.auto_solver import auto_solve
 
+
+def hybrid_solve_with_table(game, step, cancel_check=None,
+                            progress_callback=None, **kwargs):
+    """「混合求解」的入口包装：**有表先用表，無表才走混合**。
+
+    依據 2026-09-30 驗收（`experiments/ACCEPTANCE_混合求解器验收.md`）：
+    hybrid 的定位是「免表兜底、非最優」——4×4 step2 上解長中位是最優的 17.2 倍
+    （最差 136.8），單局耗時中位 12.2s；而查表是亞秒級且**保證最優**。
+    故在已有距離表的尺寸上必須優先查表，避免「12 秒換一個 17 倍長的解」。
+
+    注意：這裡只在**入口層**分流，`hybrid_solve` 本身保持純算法，
+    `experiments/` 裡直接 import hybrid_solve 的基線不受影響。
+    """
+    try:
+        res = table_solve(game, step, cancel_check=cancel_check,
+                          progress_callback=progress_callback)
+    except Exception:
+        res = None
+    if res is not None and res is not False:
+        return res  # 查表成功（元組或空列表 = 已在目標態）
+    return hybrid_solve(game, step, cancel_check=cancel_check,
+                        progress_callback=progress_callback, **kwargs)
+
+# ---------------------------------------------------------------------------
+# 形态识别 + 统一入口（2026-10-05）
+#
+# 之前的做法是给异形**各加一个注册表入口**（'tri_gather' / 'mi_gather'），
+# GUI 还要在切形态时把 solver_algorithm 静默改成对应 key。用户指出这不对：
+# **不同谜题应该用同一个入口**（菜单里就一个「单次聚拢」），形态差异是内部
+# 实现细节，不该暴露成两个菜单项、也不该由 GUI 去猜该用哪个。
+# ---------------------------------------------------------------------------
+
+FORM_LABELS = {'square': '方形', 'triangle': '三角形', 'mi': '米字格'}
+_ALL_FORMS = ('square', 'triangle', 'mi')
+
+
+def game_form(game) -> str:
+    """返回谜题形态：'square' | 'triangle' | 'mi'。
+
+    按**类名**判定而不是按 GUI 的 `triangle_mode`/`mi_mode` 旗标 ——
+    求解器不该依赖 GUI 状态：命令行 / HTTP / 测试直接把 game 传进来
+    也要能分对（GUI 旗标只在 GUI 进程里存在）。
+    """
+    name = type(game).__name__
+    if name == 'MiSliderMatrix':
+        return 'mi'
+    if name == 'TriangleSliderMatrix':
+        return 'triangle'
+    return 'square'
+
+
+def form_label(form) -> str:
+    return FORM_LABELS.get(form, form)
+
+
+def gather_solve_unified(game, step: int = None, cancel_check=None,
+                         progress_callback=None, **kwargs):
+    """「单次聚拢」的**统一入口**：三种谜题形态共用这一个入口，内部按形态分发。
+
+    方形  → `gather_solve`
+    三角形 → `tri_gather_solve`
+    米字格 → `mi_gather_solve`
+
+    三个被分发到的函数签名一致（含 `gather_params` 的 None 透传），
+    所以 GUI 侧不需要为形态做任何特判。
+    """
+    form = game_form(game)
+    if form == 'mi':
+        fn = mi_gather_solve
+    elif form == 'triangle':
+        fn = tri_gather_solve
+    else:
+        fn = gather_solve
+    return fn(game, step=step, cancel_check=cancel_check,
+              progress_callback=progress_callback, **kwargs)
+
+
+# 各算法支持的谜题形态。**缺省 = 只支持方形** —— 方形以外的算法大多是
+# 方形语义（4 元组动作 + 矩形目标形状 + 整数坐标），套到异形上会静默走错，
+# 所以新算法必须**显式声明**自己支持异形，不能靠缺省蒙对。
+SOLVER_FORM_SUPPORT = {
+    'gather': ('square', 'triangle', 'mi'),
+}
+
+
+def solver_supports(algorithm, form) -> bool:
+    """algorithm 在 form 形态上是否可用。
+
+    两个**不能靠缺省蒙对**的点：
+      · **未登记的算法（含失效的旧 key）** → 一律 False。旧写法会把它们落到
+        缺省 `('square',)`，于是一个被删掉的 key 在方形上被判成「支持」，
+        接着被 silently 兜底成 IDA* —— 2026-10-06 用户报的崩溃就是这条链。
+      · **登记了但没写支持异形** → 只支持方形（缺省语义保留，但只对**已知**
+        算法生效）。
+    """
+    if algorithm not in SOLVER_ALGORITHMS:
+        return False
+    return form in SOLVER_FORM_SUPPORT.get(algorithm, ('square',))
+
+
+def unsupported_solver_msg(algorithm, form) -> str:
+    """「当前谜题没有 xxx 求解算法功能」的标准文案。
+
+    之前异形遇到不支持的算法是**静默自动切换**到 tri_gather/mi_gather，
+    用户看不到自己选的算法被换掉了。改为明确告知「没有这个功能」并列出
+    该形态目前可用的算法，由用户自己决定。
+    """
+    name = SOLVER_ALGORITHMS.get(algorithm, ('求解器',))[0].strip()
+    if algorithm not in SOLVER_ALGORITHMS:
+        # 失效的旧 key（如已删除的 'mi_gather'）：算法本身没了，谈「形态不支持」
+        # 没意义，直接让用户重选。
+        return f"求解算法「{algorithm}」不存在，请在设置里重新选择"
+    ok_keys = [k for k in SOLVER_ALGORITHMS if solver_supports(k, form)]
+    ok_names = '、'.join(SOLVER_ALGORITHMS[k][0].strip() for k in ok_keys)
+    return (f"当前谜题（{form_label(form)}）没有「{name}」求解算法功能"
+            f"（该形态目前仅支持：{ok_names}）")
+
+
+# 求解算法注册表。**字典顺序 = 设置-求解器页的展示顺序**（2026-10-13
+# 用户定重排）：好用的置顶，低效的沉底备查。
+#   混合 > 梯度聚拢 > 填洞补缺 > 单次聚拢 > 选块填空 > 查表求解 > 旧三项
+# 旧三项（IDA* / IDA*快速 / 贪心爬山）是早期搜索类算法，相对现有宏级
+# 流水线已非常低效，保留只为备查与老配置兼容，不再往前提。
 SOLVER_ALGORITHMS = {
-    'ida_star': ('  IDA*求解', solve),
-    'fast': ('  IDA*快速', solve_fast),
-    'greedy': ('  贪心爬山', solve_greedy),
+    # 1. 混合求解（自动规划）：有表先查表；无表按空位数路由，两路互接力
+    'hybrid':   ('  混合求解（自动规划）', auto_solve),
+    # 2. 梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢
+    'gather_gradient': ('  梯度聚拢', gradient_gather),
+    # ➜ 填洞已并入下面「填洞补缺」，菜单不再单列（2026-10-12 合并）：
+    #   补缺宏内部遇到多空位/非边缘缺口本来就是转去跑填洞那一支，两者是
+    #   包含关系而非并列；而反过来单独跑填洞，遇到边缘缺口会全线失败——
+    #   留着它等于在菜单上摆一个看着能用、真用会翻车的坑。
+    #'fill_macro': ('  填洞宏', solve_fill_macro),
+    # 3. 填洞补缺：多空位宏级机构（带移让位 + 粘上接走链）
+    'gap_macro': ('  填洞补缺', solve_gap_macro),
+    # 4. 单次聚拢（2026-10-13 由「聚拢」改名，与「梯度聚拢」区分）：
+    #    三形态共用的统一入口（内部按 game 形态分发，见 gather_solve_unified），
+    #    只跑一轮聚拢，不保证还原
+    'gather': ('  单次聚拢', gather_solve_unified),
+    # 5. 选块填空：与上面几条的差别是「目标由玩家点选」，因此它需要一段先
+    #    搜集点击的交互（见 GUI._pick_fill_toggle），但入口仍旧统一走列表。
+    'pick_fill': ('  选块填空', solve_pick_fill),
+    # 6. 查表求解：只对已有数据库的谜题有效
     'table':  ('  查表求解', table_solve),
     #'intelligence': ('  AI求解', ai_solve),
     #'emd': ('  EMD求解', emd_greedy_solve),
-    #'strategy': ('  策略求解', strategy_solve),
+    #'strategy': ('  策略求解', strategy_greedy_solve),
     #'distance': ('  距离求解', distance_solve),
-    'gather': ('  聚拢', gather_solve),
-    'gather_gradient': ('  梯度聚拢', gradient_gather),
     #'human_ai': ('  人类模仿', ai_human_solve),
-    'fill_macro': ('  填洞宏', solve_fill_macro),
+    # 7~9. 旧搜索三项（低效，沉底备查；老 config 里的取值仍要能识别）
+    'ida_star': ('  IDA*求解', solve),
+    'fast': ('  IDA*快速', solve_fast),
+    'greedy': ('  贪心爬山', solve_greedy),
 }
 
+# 注：'tri_gather' / 'mi_gather' 作为**独立入口已移除**（2026-10-05）——
+# 形态不该各占一个菜单项。两个函数仍保留（供统一入口分发与测试直接调用），
+# 但不再出现在注册表里。
+
 __all__ = ['solve', 'solve_fast', 'solve_greedy', 'SOLVER_ALGORITHMS',
-           'apply_action', 'enumerate_valid_actions']
+           'apply_action', 'enumerate_valid_actions',
+           'game_form', 'form_label', 'gather_solve_unified',
+           'SOLVER_FORM_SUPPORT', 'solver_supports', 'unsupported_solver_msg']

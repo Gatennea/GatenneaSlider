@@ -29,6 +29,7 @@ from solver.actions import enumerate_valid_actions, apply_action
 from solver.state import snapshot, restore
 from solver.table_core import canonicalize
 from solver.ml.strategy_solver import _find_rep_cell
+from solver.ml.invariants import profile_defect
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,15 @@ def find_best_window(coords, m, n, step):
         r0, c0   : 窗口左上角實際座標
         (rh, cw) : 窗口朝向（(m,n) 或 (n,m)）
         overlap  : 窗口內方塊數
+
+    **米字相容**（2026-10-03修 fatal error）：米字滑塊是 ¼ 格，錯位態
+    （B 晶格）下座標是半整數。舊版 `range(min_r - rh + 1, max_r + 1)` 拿到
+    float 端點會直接 TypeError：
+        TypeError: 'float' object cannot be interpreted as an integer
+    這是 mi 調試面板打不開的直接原因（GUI.run → draw_metrics_panel →
+    _compute_target_region → 本函數）。改用整數內部計數 + ½ 步進的乘法，
+    對整數座標（方形/三角）與半整數座標（米字）都成立，輸出型別與舊版
+    一致（整數輸入 → 整數輸出）。
     """
     if not coords:
         return 0, 0, (m, n), 0
@@ -123,12 +133,24 @@ def find_best_window(coords, m, n, step):
     r_mod = tc[0] if (tc is not None and m % step != 0) else None
     c_mod = tc[1] if (tc is not None and n % step != 0) else None
 
-    best = (min_r, min_c, (m, n), 0)
+    # 半整數相容：以 2× 座標做整數枚舉（米字錯位態的最小步進是 ½）
+    integral = all(float(v).is_integer() for v in rs + cs)
+    scale = 1 if integral else 2
+    lo_r, hi_r = int(round(min_r * scale)), int(round(max_r * scale))
+    lo_c, hi_c = int(round(min_c * scale)), int(round(max_c * scale))
+
+    def _out(v):
+        """把 2× 整數還原成原座標，並在整數局面下回傳 int（保持舊行為）。"""
+        return v // scale if scale == 1 else v / 2.0
+
+    best = (_out(lo_r), _out(lo_c), (m, n), 0)
     for rh, cw in ((m, n), (n, m)):
-        for r0 in range(min_r - rh + 1, max_r + 1):
+        for i_r in range(lo_r - rh * scale + scale, hi_r + scale, scale):
+            r0 = _out(i_r)
             if r_mod is not None and r0 % step != r_mod:
                 continue
-            for c0 in range(min_c - cw + 1, max_c + 1):
+            for i_c in range(lo_c - cw * scale + scale, hi_c + scale, scale):
+                c0 = _out(i_c)
                 if c_mod is not None and c0 % step != c_mod:
                     continue
                 cnt = _overlap_at(coords, rh, cw, r0, c0)
@@ -263,8 +285,9 @@ def _is_same_op_reverse(a, c):
             and _DIR_INV.get(a[3]) == c[3])
 
 
-def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
-    """路径优化：去环 + 徘徊压缩。
+def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups,
+                   removed_groups=None):
+    """路径优化：去环 + 徘徊压缩 + 远程逆对抵消。
 
     去环：状态重复（canonical hash 相同）的段之间是废步，删除；
          最后一步无条件保留，保证终点状态不变。
@@ -272,7 +295,20 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
               = 来回徘徊（推出去又推回来），两步行等价于没走，删除。
               —— 形状用哈希比较（平移不变），符合「移动部分形状没变」的判据。
               同方向连续推两步形状也不变，但方向相同不是徘徊，不会被误删。
+    远程逆对抵消：上两步只抓「整盘状态重复」与「相邻往返」，抓不到
+              「隔步往返」（中间夹着碰不到这块的其他移动）与「级联往返」
+              （推出去若干步、倒序收回——每个中间状态都是新的）。
+              此步用每步的净变化集合精确判定封闭环：步 j 恰好反转步 i 的
+              净变化（R_j==A_i 且 A_j==R_i），且 i、j 之间没有任何一步的
+              净变化碰到 i 改动过的位置（R_i∪A_i），则删两步后中间各步
+              照样适用、效果相同，后续盘面逐步全等（位置级论证）。
+              ⚠️ 真实引擎重放时会按当前盘面重新推导滑片（连通片），状态在
+              其他位置不同可能让重推导出不同滑片——这一边角由调用方的
+              重放验证兜底（失败回退原路径），本函数不必也不做重放。
+              8×8 实测（experiments/optimize_cancel.py）：124 步安全删 18 步。
     返回优化后的 (actions, rep_cells, trace)。不做规则重放验证（调用方负责）。
+    removed_groups: 每步「净空出」坐标集（before−after），与 moved_groups
+              平行。None（旧调用方）= 跳过远程逆对抵消，保持旧行为。
     """
     if len(actions) < 2:
         return actions, rep_cells, trace
@@ -281,8 +317,11 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
     shapes = [_moved_shape_key(mg) for mg in moved_groups]
 
     # 1. 去环：只保留「首次出现」的状态，跳过回到旧状态的环
+    #    （所有平行列表——含 moved/removed_groups——必须同步过滤，
+    #    否则后面按索引取净集会错位）
     seen = {start_hash}
     new_a, new_r, new_t, new_s = [], [], [], []
+    new_mg, new_rg = [], []
     last = len(actions) - 1
     for i, (act, rep, tr, h) in enumerate(zip(actions, rep_cells, trace, hashes)):
         if h in seen and i < last:
@@ -292,12 +331,20 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
         new_r.append(rep)
         new_t.append(tr)
         new_s.append(shapes[i])
+        if removed_groups is not None:
+            new_mg.append(moved_groups[i])
+            new_rg.append(removed_groups[i])
     actions, rep_cells, trace, shapes = new_a, new_r, new_t, new_s
+    if removed_groups is not None:
+        moved_groups, removed_groups = new_mg, new_rg
 
-    # 2. 徘徊压缩：连续两步互逆 + 移动部分形状相同
+    # 2/3. 外层循环抓级联：远程抵消删掉一对后，原先被隔开的两步可能
+    # 变成相邻徘徊；相邻徘徊删掉后也可能露出新的远程逆对。
     changed = True
     while changed:
         changed = False
+
+        # 2. 徘徊压缩：连续两步互逆 + 移动部分形状相同
         i = 0
         while i < len(actions) - 1:
             if (_is_same_op_reverse(actions[i], actions[i + 1])
@@ -310,9 +357,48 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
                 del trace[i]
                 del shapes[i + 1]
                 del shapes[i]
+                if removed_groups is not None:
+                    del moved_groups[i + 1]
+                    del moved_groups[i]
+                    del removed_groups[i + 1]
+                    del removed_groups[i]
                 changed = True
             else:
                 i += 1
+
+        # 3. 远程逆对抵消：净集精确判定的封闭环（不限相邻、中间可隔
+        #    「碰不到被移动块」的其他步）
+        if removed_groups is not None and len(actions) >= 2:
+            add = [frozenset(g) for g in moved_groups]     # A：落点净集
+            rem = [frozenset(g) for g in removed_groups]   # R：空出净集
+            touch = [a | r for a, r in zip(add, rem)]      # 该步改动过的位置
+            n = len(actions)
+            i = 0
+            while i < n - 1:
+                di = touch[i]
+                cancel_j = -1
+                for j in range(i + 1, n):
+                    if rem[j] == add[i] and add[j] == rem[i]:
+                        # 第一个满足净集反转的 j：若中间有步碰 di，则更大
+                        # 的 j 也必被同一个 k 挡住（k∈(i,j)⊂(i,j')），放弃本 i
+                        if all(touch[k].isdisjoint(di)
+                               for k in range(i + 1, j)):
+                            cancel_j = j
+                        break
+                if cancel_j > 0:
+                    # ⚠️ add/rem/touch 与其余平行列表按索引对齐，必须同步删，
+                    # 否则继续扫描会用到已删步的陈旧净集（历史 bug：删对后
+                    # 未同步，后续配对错位 → 重放验证失败整条回退）。
+                    for lst in (actions, rep_cells, trace, shapes,
+                                moved_groups, removed_groups,
+                                add, rem, touch):
+                        del lst[cancel_j]
+                        del lst[i]
+                    changed = True
+                    n -= 2
+                    # 删后 i 位置已是新的一步，不 i+=1，重扫
+                else:
+                    i += 1
 
     return actions, rep_cells, trace
 
@@ -323,7 +409,8 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups):
 def gather_solve(game, step: int, max_steps=500, patience=150,
                  max_wait_time=20, target_gather_score=1.0, aggressiveness=0.2,
                  cancel_check=None, progress_callback=None,
-                 target_corner=None):
+                 target_corner=None, phi_prescreen_k=8, optimize_path=True,
+                 stochastic=False, seed=None, max_kicks=3, kick_moves=3):
     """贪心聚拢：每步选聚拢度（重叠率）最高的动作，连续 patience 步无改进则停机。
 
     参数（传 None 表示「不设限」）：
@@ -334,6 +421,19 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         aggressiveness    : 激进程度 = 允许每步选择的聚拢度比「当前最佳候选」
                             低多少（None = 不设限，任意候选都允许）
         target_corner     : (r0, c0) 预先判定的目标窗口左上角模偏移；None = 自动探测
+        phi_prescreen_k   : 阶段2——先用剖面缺陷 Φ（便宜 ~20x）对全部候选排序，
+                            只对该候选数以内的 top-k 计算聚拢度 σ 终裁；0/None = 关闭（旧行为，
+                            对所有候选算 σ）。k 取较小值即可砍掉绝大部分 σ 计算。
+        optimize_path     : 阶段3后续——路径优化（去环 + 徘徊压缩）开关。
+                            True = 末尾用重放验证安全地缩短解法/残局路径；
+                            False = 关闭（保留原始路径，用于 A/B 基准对比）。
+        stochastic        : 随机探索开关。False（默认）= 完全确定性（同盘同结果，便于回归）；
+                            True = ② 在 aggressiveness band 内 ε-greedy 随机挑步 + ③ 卡住时随机
+                            踢一脚（iterated local search）跳出局部最优。
+        seed              : 随机种子（仅 stochastic=True 时生效）。None = 随机生成并记录进返回
+                            字典的 'seed' 字段，便于复现某次随机轨迹。
+        max_kicks         : ③ 最多允许踢几脚（防无限扰动）。
+        kick_moves        : ③ 每脚随机扰动几步。
     """
     m, n = game.m, game.n
     total = m * n
@@ -343,6 +443,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
     trace = []
     hashes = []        # 每步执行后的 canonical hash
     moved_groups = []  # 每步移动的方块组
+    removed_groups = []  # 每步净空出的坐标组（before−after，与 moved_groups 平行）
     visited = set()
     stuck = 0
 
@@ -360,9 +461,47 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
     start_metrics = gather_metrics(_game_coords(game), m, n)
     best_score = 0.0
     best_metrics = start_metrics
+    g0 = snapshot(game)            # 真正的起点快照（路径优化的重放起点，不可被 best_snap 覆盖）
     best_snap = snapshot(game)
     best_idx = 0
     no_improve = 0
+
+    # 随机性（stochastic 探索）
+    #   False（默认）→ 完全确定性，同盘同结果，便于回归。
+    #   True         → ② band 内 ε-greedy 随机挑 + ③ 卡住随机踢；seed 用于可复现。
+    if stochastic:
+        if seed is None:
+            seed = random.randrange(1 << 31)
+        rng = random.Random(seed)
+    else:
+        rng = None
+    rchoice = rng.choice if rng is not None else random.choice
+    kick_count = 0
+
+    def _do_kick(k):
+        """随机扰动当前局面 k 步（iterated local search 的「踢」），更新 bookkeeping。"""
+        applied = 0
+        for _ in range(k):
+            cands = enumerate_valid_actions(game, step)
+            if not cands:
+                break
+            a = rchoice(cands)
+            snap_k = snapshot(game)
+            before = _game_coords(game)
+            if not apply_action(game, a, step):
+                break
+            after = _game_coords(game)
+            if len(after) != total:
+                restore(game, snap_k)
+                break
+            actions.append(a)
+            rep_cells.append(_find_rep_cell(game, a))
+            trace.append(gather_metrics(after, m, n))
+            hashes.append(canonicalize(after))
+            moved_groups.append(_moved_group(before, after))
+            removed_groups.append(_moved_group(after, before))
+            applied += 1
+        return applied > 0
 
     reason = 'max_steps'  # 默认：步数上限耗尽（或 None 时仅剩其他停机条件）
     step_iter = range(max_steps) if max_steps is not None else iter(int, 1)
@@ -403,8 +542,12 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
                 'fill_rate': cur['fill_rate'],
             })
 
-        # 停机：连续 patience 步没有改进历史最优
+        # 停机 / 随机踢：连续 patience 步没有改进历史最优
         if patience is not None and no_improve >= patience:
+            if stochastic and kick_count < max_kicks and _do_kick(kick_moves):
+                kick_count += 1
+                no_improve = 0
+                continue
             reason = 'no_improve'
             break
 
@@ -422,7 +565,8 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
             break
 
         snap = snapshot(game)
-        scored = []  # (score, bbox_area, action, result_hash, mod_compliant)
+        # 阶段2：先用剖面缺陷 Φ（便宜 ~20x）对所有候选排序，只取 top-k 算聚拢度 σ 终裁
+        cand = []  # (phi, action, new_coords)
         for act in candidates:
             if not apply_action(game, act, step):
                 restore(game, snap)
@@ -431,16 +575,26 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
             if len(new_coords) != total:
                 restore(game, snap)
                 continue
+            cand.append((profile_defect(new_coords, m, n), act, new_coords))
+            restore(game, snap)
+
+        if phi_prescreen_k and len(cand) > phi_prescreen_k:
+            cand.sort(key=lambda x: x[0])
+            eval_pool = cand[:phi_prescreen_k]
+        else:
+            eval_pool = cand
+
+        scored = []  # (score, bbox_area, action, result_hash, mod_compliant)
+        for _, act, new_coords in eval_pool:
             met = gather_metrics(new_coords, m, n)
             nh = canonicalize(new_coords)
             mod_ok = _mod_compliant is None or _mod_compliant(new_coords, step, _mod_r0, _mod_c0)
             scored.append((met['score'], met['bbox_area'], act, nh, mod_ok))
-            restore(game, snap)
 
         if not scored:
             # 无候选：随机扰动
             for _ in range(3):
-                act = random.choice(candidates)
+                act = rchoice(candidates)
                 before = _game_coords(game)
                 if apply_action(game, act, step):
                     actions.append(act)
@@ -449,6 +603,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
                     trace.append(gather_metrics(after, m, n))
                     hashes.append(canonicalize(after))
                     moved_groups.append(_moved_group(before, after))
+                    removed_groups.append(_moved_group(after, before))
                     break
             else:
                 reason = 'no_candidates'
@@ -463,14 +618,19 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         else:
             pool = scored
 
-        # 优先未访问，再聚拢度最高，再 mod 分高，再边界盒面积最小
-        pool.sort(key=lambda x: (x[3] in visited, -x[0], -x[4], x[1]))
-        _, _, best_action, _, _ = pool[0]
+        # 选步：默认确定性（排序取最优）；stochastic 时在 band 内 ε-greedy 随机挑（②）
+        if stochastic and rng is not None and len(pool) > 1:
+            unvisited = [s for s in pool if s[3] not in visited]
+            choose_from = unvisited if unvisited else pool
+            _, _, best_action, _, _ = rchoice(choose_from)
+        else:
+            pool.sort(key=lambda x: (x[3] in visited, -x[0], -x[4], x[1]))
+            _, _, best_action, _, _ = pool[0]
 
         restore(game, snap)
         rep = _find_rep_cell(game, best_action)
         if rep is None:
-            act = random.choice(candidates)
+            act = rchoice(candidates)
             before = _game_coords(game)
             if apply_action(game, act, step):
                 rep = _find_rep_cell(game, act) or (0, 0)
@@ -480,6 +640,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
                 trace.append(gather_metrics(after, m, n))
                 hashes.append(canonicalize(after))
                 moved_groups.append(_moved_group(before, after))
+                removed_groups.append(_moved_group(after, before))
                 continue
             reason = 'no_candidates'
             break
@@ -495,6 +656,7 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         trace.append(gather_metrics(after, m, n))
         hashes.append(canonicalize(after))
         moved_groups.append(_moved_group(before, after))
+        removed_groups.append(_moved_group(after, before))
 
     # 若未还原，回退到历史最优状态（丢弃无改进的尾步）
     if not game.is_solved():
@@ -504,15 +666,32 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         trace = trace[:best_idx]
         hashes = hashes[:best_idx]
         moved_groups = moved_groups[:best_idx]
+        removed_groups = removed_groups[:best_idx]
 
     # 路径优化：去环 + 徘徊压缩（重放验证，失败则保留原路径）
-    if not game.is_solved() and len(actions) >= 2:
-        snap_opt = snapshot(game)
+    # 注意：重放起点必须是真正的起点 g0（不是被 restore 后的 best_snap / 已还原态），
+    # 否则 _verify_replay 起点对不上永远返回 False —— 优化等于没接上（历史 bug）。
+    # 闸门只卡 len(actions)>=2：已还原的解法同样要清废步，不单独排除。
+    opt_removed = 0
+    if optimize_path and len(actions) >= 2:
+        # final_snap = 真正的终态快照：已还原态（此时 game 即还原态）或
+        # 已被上方 `restore(game, best_snap)` 回退到历史最优的未还原态。
+        # 必须以此为准 —— 不能 restore 到 best_snap（已还原分支里 best_snap
+        # 不是终态），否则会把还原局面错误回退成求解前状态。
+        final_snap = snapshot(game)
+        snap_opt = g0
         final_coords = _game_coords(game)
         opt_a, opt_r, opt_t = _optimize_path(
-            start_hash, actions, rep_cells, trace, hashes, moved_groups)
+            start_hash, actions, rep_cells, trace, hashes, moved_groups,
+            removed_groups)
         if _verify_replay(snap_opt, step, opt_a, final_coords):
+            opt_removed = len(actions) - len(opt_a)
             actions, rep_cells, trace = opt_a, opt_r, opt_t
+        # _verify_replay 会对真实 game 重放，失败时 game 停在中间态（污染）；
+        # 无论验证成功/失败，都必须把 game 归位到正确终态，否则下面
+        # end_metrics / game.is_solved() 读到被污染的棋盘（历史 bug：on 臂
+        # 的 solved 判定因污染而与 off 臂不一致）。
+        restore(game, final_snap)
 
     end_metrics = gather_metrics(_game_coords(game), m, n)
     if game.is_solved():
@@ -529,6 +708,10 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
         'end': end_metrics,
         'best': best_metrics,
         'trace': trace,
+        'opt_removed': opt_removed,   # 路径优化（去环+徘徊压缩）删掉的废步数
+        'stochastic': stochastic,     # 是否启用随机探索
+        'seed': seed,                 # 实际使用的随机种子（stochastic=True 时；None=确定性）
+        'kicks': kick_count,          # ③ 实际踢了几脚
     }
 
 
@@ -554,6 +737,7 @@ def predict_params(game, step: int) -> dict:
         return {
             'max_steps': None, 'patience': None, 'max_wait_time': 30,
             'target_gather_score': 1.0, 'aggressiveness': 0.0,
+            'phi_prescreen_k': 8,
         }
 
     max_steps = max(200, min(3000, int(20 + total * 10)))       # 4x4→200  7x7→510
@@ -564,6 +748,7 @@ def predict_params(game, step: int) -> dict:
         'max_steps': max_steps, 'patience': patience,
         'max_wait_time': max_wait_time,
         'target_gather_score': 1.0, 'aggressiveness': aggressiveness,
+        'phi_prescreen_k': 8,
     }
 
 
@@ -717,11 +902,13 @@ def main():
             ok = _verify_replay(g0, step, r['actions'], expect)
         else:
             ok = True
-        total_opt += len(r['trace']) - len(r['actions'])
+        total_opt += r['opt_removed']
+        seed_tag = f"seed={r['seed']}" if r['stochastic'] else "det"
         print(f"  测试{t+1:2d}: {len(r['actions']):3d}步 {el:.1f}s  "
               f"聚拢度 {s['score']:.3f}→{e['score']:.3f}  "
               f"边界盒 {s['bbox'][0]}x{s['bbox'][1]}→{e['bbox'][0]}x{e['bbox'][1]}  "
-              f"{mark}  优化删除{max(0, len(r['trace'])-len(r['actions']))}步 重放验证{'OK' if ok else 'FAIL'}")
+              f"{mark}  优化删除{r['opt_removed']}步 重放验证{'OK' if ok else 'FAIL'}  "
+              f"[{seed_tag} 踢{r['kicks']}脚]")
 
     print(f"\n复原率: {solved_cnt}/{total_tests}（聚拢本身不保证还原）")
 

@@ -822,7 +822,7 @@ class TutorialMixin:
                     self._tut_skip()
                 elif action == 'help':
                     self.show_help = True
-                    self.help_scroll_offset = 0
+                    self.help_scrollbar.set_scroll(0)
                 elif action == 'reset':
                     self._tut_reset_level()
                 elif action == 'level_select':
@@ -911,6 +911,21 @@ class TutorialMixin:
             else:
                 out.extend(self._wrap_text(paragraph, font, max_width))
         return out
+
+    def _tut_clip_text(self, text: str, font, max_w: int) -> str:
+        """把文本截断到 max_w 像素以内（放不下加省略号）。
+
+        用于同行左右分栏的防重叠：关卡列表里小关标题（左）与最高分（右）
+        宽度都不可控，得分改用小一号字体后，标题仍可能超宽——按本函数
+        裁到剩余空间内，保证任何长度的标题都不会与得分字重叠。
+        """
+        if max_w <= 0 or font.size(text)[0] <= max_w:
+            return text
+        ell = '…'
+        clipped = text
+        while clipped and font.size(clipped + ell)[0] > max_w:
+            clipped = clipped[:-1]
+        return clipped + ell if clipped else ell
 
     def _tut_current_step_text(self) -> str:
         """当前应显示的正文（按 关卡/步骤/子题 选择）；文案缺失时回退占位符。"""
@@ -1069,18 +1084,34 @@ class TutorialMixin:
                               'level': row['level'], 'sublevel': sid,
                               'locked': not unlocked})
             label = _sublevel_title(sid)
-            if sid in self._tut_completed_sublevels(row['level']):
+            completed = sid in self._tut_completed_sublevels(row['level'])
+            # 最高分（右端）：用小一号字体——与标题同字号同行渲染时，
+            # 长标题（如「2.3 内部洞 + 底部大缺口」）会与得分字重叠。
+            score_surf = None
+            if unlocked:
+                best = self._tut_best_score(sid)   # 已过关小关显示最高分
+                if best is not None:
+                    score_surf = self.status_font.render(
+                        _tut_best_text(best), True, _TUT_BEST_CLR)
+            if completed:
                 label = f"{mark} {label}"
+            # 同行防重叠：先扣掉右端占用（得分或锁形图标），标题超宽再截断
+            if score_surf is not None:
+                reserve = score_surf.get_width() + 10
+            elif not unlocked:
+                reserve = 28                       # 右侧锁形图标
+            else:
+                reserve = 0
+            label = self._tut_clip_text(
+                label, self.dialog_font, max(40, r.width - 20 - reserve))
             st = self.dialog_font.render(
                 label, True, _TUT_BTN_TXT if unlocked else _TUT_LOCKED_TXT)
             self.screen.blit(st, st.get_rect(midleft=(r.left + 10, r.centery)))
             if not unlocked:
                 self._tut_draw_lock_icon(r.right - 18, r.centery)
-            else:
-                best = self._tut_best_score(sid)   # 已过关小关显示最高分
-                if best is not None:
-                    bs = self.dialog_font.render(_tut_best_text(best), True, _TUT_BEST_CLR)
-                    self.screen.blit(bs, bs.get_rect(midright=(r.right - 10, r.centery)))
+            elif score_surf is not None:
+                self.screen.blit(score_surf, score_surf.get_rect(
+                    midright=(r.right - 10, r.centery)))
         self.screen.set_clip(None)
 
         # 滚动条

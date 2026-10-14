@@ -5,7 +5,7 @@
 這裡只有 SquareBoardView；三角形密鋪的幾何在 gui/triangle_view.py
 （TriangleBoardView）。兩個類各自獨立、沒有共同介面，上層按 triangle_mode
 分支選擇用哪一個——目前只有命中/查格這條路是委派過來的，繪製仍是兩套
-獨立實現。要加第三種形態時，先收斂出共同介面再動手（見 readme_to_agent.md）。
+獨立實現。要加第三種形態時，先收斂出共同介面再動手（見 docs/agent/readme_to_agent.md）。
 """
 
 from __future__ import annotations

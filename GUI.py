@@ -19,6 +19,8 @@ import time
 import traceback
 import queue
 import math
+import secrets
+import threading
 from game import SliderMatrix, Block
 from history import GameHistory
 from records import Records, format_time
@@ -31,12 +33,16 @@ from gui.animation import AnimationMixin
 from gui.file_ops import FileOpsMixin, DEFAULT_KEYBINDINGS
 from gui.events import EventsMixin
 from gui import op_log
+from gui import updater as updater_module
 from gui.virtual_keyboard import VirtualKeyboardMixin
 from gui.metrics_panel import MetricsPanelMixin
 from gui.records_panel import RecordsPanelMixin
 from gui.annotation import AnnotationMixin
 from gui.tutorial import TutorialMixin
+from gui.palette import PaletteMixin
 from gui.board_view import SquareBoardView
+from gui.text_input import TextInput
+from gui.scrollbar import Scrollbar
 from gui import log_writer
 
 
@@ -86,13 +92,13 @@ def _gui_get_resource_path(relative_path):
     return os.path.join(base, relative_path)
 
 
-class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, TutorialMixin):
+class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, TutorialMixin, PaletteMixin):
     """
     滑块游戏图形界面类
     """
 
     def __init__(self, m: int = 6, n: int = 6, step: int = 1, cmd_queue: queue.Queue = None,
-                 kind: str = 'square'):
+                 kind: str = 'square', ext_state: dict = None):
         """
         初始化游戏界面
 
@@ -103,8 +109,24 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             cmd_queue: 命令队列（用于接收终端指令），默认为None
             kind: 开局形态 'square' / 'numbered' / 'triangle' / 'mi'
                 （三角形时 m 作边长 k；米字格 m/n 为行数/列数）
+            ext_state: 外部控制共享状态 {'enabled': bool, 'token': str|None}
+                （与 HTTP 服务器同一个 dict；None 时自建，默认开启+新令牌，
+                 方便直接运行 GUI / 测试）
         """
         _gui_log_error(f'GUI初始化开始: m={m}, n={n}, step={step}', level='info')
+        # 中文输入法（IME）：SDL/pygame 默认不显示输入法候选框界面，导致 Windows
+        # 上中文输入法无法弹出候选框、无法键入汉字。必须显式开启，且须在
+        # pygame.init()（视频子系统初始化）之前设置，否则无效。
+        os.environ['SDL_IME_SHOW_UI'] = '1'
+
+        # 外部控制共享状态（与 HTTP 服务器同一个 dict 对象）：
+        #   {'enabled': bool, 'token': str|None, 'port': int}
+        # 默认开启 + 进程级随机令牌；HTTP 请求必须带令牌。开关关闭时清空
+        # 令牌（重开必换新，关闭期间复制出去的话术随之作废）。
+        # main.py 会传入共享对象；直接运行 GUI / 测试时在此自建。
+        self.ext_state = ext_state if ext_state is not None else {
+            'enabled': True, 'token': secrets.token_urlsafe(24), 'port': 5050}
+
         try:
             pygame.init()
         except Exception:
@@ -249,7 +271,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 帮助对话框状态
         self.show_help = False
-        self.help_scroll_offset = 0
+        # 帮助检索（功能可发现性的主入口）：打开帮助时焦点默认落在检索框，
+        # 输入即过滤；回车 = 直接到位。数据来自 gui/feature_index.py。
+        self.help_query = ''
+        # 帮助检索框复用 gui.text_input.TextInput 组件（与宏命名框、文件对话框
+        # 文件名框同源）：光标/删除/左右移动/鼠标定位/IME 一并支持。
+        self.help_input = TextInput('')
+        self.help_sel = 0
+        self.help_search_active = False
+        self.help_search_rect = None
+        # 帮助对话框滚动条：与设置框共用 gui.scrollbar.Scrollbar（同一套交互）。
+        self.help_scrollbar = Scrollbar()
+        self.help_result_rects = []
 
         # 宏定义菜单状态
         self.show_macro_menu = False
@@ -289,6 +322,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.macro_notify_persistent = False  # 是否持久显示（不走淡出）
         self._gather_info = None            # 聚拢求解结果（用于播放时实时刷新）
 
+        # 增量更新器状态（仅冻结/安装版生效；开发版全程不激活）
+        self.update_available = False          # 是否已发现新版本
+        self._update_manifest = None           # 最新版本清单（含 url/sha256）
+        self._update_check_in_progress = False # 后台查更新是否进行中
+        self._update_in_progress = False       # 后台下载/替换是否进行中
+        self._last_update_check_ts = 0.0       # 上次自动轮询时间戳（节流用）
+        self.update_progress = 0.0             # 下载进度 0..1
+        self.update_status_msg = ''            # 更新状态文案
+        self._update_btn_rect = None           # 左上角「更新」按钮矩形（每帧重算）
+
         # 宏管理对话框状态
         self.show_macro_manager_dialog = False
         self._macro_mgr_scroll = 0
@@ -327,7 +370,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 编辑菜单状态
         self.show_edit_menu = False
-        self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S', '重置 Ctrl+R', '---', '自动求解 Ctrl+Alt+S']
+        # 末项必须是自动求解：主循环按 edit_menu_items[-1] 改写为「停止求解」
+        # 注：下面这一列改动时，记得同步 events.py 里按**序号**分派的那一处
+        # （它是硬编码索引，加/删一项就会点错）
+        self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S',
+                                '重置 Ctrl+R', '---', '自动求解 Ctrl+Alt+S']
         self.edit_menu_rects = []
         self.edit_menu_hovered = -1
 
@@ -400,6 +447,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._auto_solve_start_time = 0    # 求解开始时间戳
         self._auto_solve_cancel = False    # 是否请求取消
         self._auto_solve_progress = None   # 求解进度信息 dict
+        self._stream_queue = None          # 流式求解段队列（fill/gap 宏边算边播）
+        self._stream_active = False        # 流式后台是否仍在计算
+        self._stream_played = 0            # 流式已实时播放的步数
+        # 自动规划·流式（2026-10-10 多段播放改造）：参照梯度流水线，hybrid 边算边播
+        self._auto_stage_queue = None      # hybrid 分段队列（gen, stage_dict）
+        self._auto_stage_gen = 0           # 失效旧段用
+        self._auto_stage_active = False    # 后台是否仍在计算
+        self._auto_streamed = False        # 本次是否为 hybrid 流式求解
+        self._auto_best = None             # 历史最优 checkpoint {'score','phi','snap'}
         self.solver_algorithm = 'ida_star' # 求解算法选择: 'ida_star', 'fast', 'greedy'
 
         # 聚拢求解器参数（GUI 设置对话框可调，保存到 config.json）
@@ -431,6 +487,23 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
         self.chain_hint_enabled = False
         self.hover_cell = None
+        # 选块填空（求解器列表里唯一要先点选才能算的算法）：
+        # None = 没在选取；否则是 {'block': 坐标|None, 'hole': 洞|None}，
+        # 两项都齐了才开算。**顺序不限**——先点凸起还是先点空位都行。
+        # 单独设这个状态而不是借用 selected_block：后者是两次触控流程的
+        # 中间态，滑块一动就被清空，留不住玩家点选的目标。
+        self._pick_fill = None
+        # 复原提示标记（设置页名，2026-10-13 由「棋盘标记」改名）：调试
+        # 面板画在棋盘上的那些记号（目标框、洞位等）。它们是「视觉强化」
+        # 而非调试数据，所以要能脱离调试面板本体单独关——只关记号、留着
+        # 面板看数字，或反过来。两者是独立的两个开关。
+        # 默认关闭：与解耦前「面板默认关 → 棋盘上没有记号」的观感保持一致，
+        # 免得一进游戏就满屏记号。F2 会连带把它打开（见 events 的 F2 分支）。
+        self.board_marks_enabled = False
+        # 箭头按键：选中缝隙后在切片两端画出的可点方向箭头。
+        # 原本只跟着界面模式（enhanced）走、没有自己的开关，这里解耦出来，
+        # 作为宣传中的五种操作方式之一独立可控。
+        self.arrows_enabled = True
         # 控制模式开关（独立布尔，非互斥；对应 web 版 touch-gesture.md 的三种模式）：
         #  single_touch：直接拖拽滑塊即滑動（移动后清空选中）
         #  two_touch   ：点缝隙→点滑块→再拖拽/键盘（原版两次触控习惯）
@@ -527,6 +600,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.animation_duration = 300  # 毫秒
         self.animation_enabled = True          # 滑动动画（滑块移动/撤销重做滑动）
         self.selection_animation_enabled = True  # 选中动画（撤销/重做时高亮该步缝隙与滑块组）
+        # GUI 模式总开关：plain=旧版朴素界面（等同未启用本计划的动效优化）；
+        # enhanced=新版动效与视觉优化。各增强效果在 S1–S7 中按此开关分流。
+        # 默认 enhanced（若用户想默认朴素，改此处的 'enhanced' 即可）。
+        self.ui_mode = 'enhanced'
         # 拖拽接续：本次动画的起点偏移（跟随位移，格）与被缩短前的时长基准
         self._drag_anim_origin = None
         self._anim_duration_base = None
@@ -561,6 +638,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.drag_follow_step = 0
         self.drag_follow_invalid = False
 
+        # S1-3：越界松手的撞墙回弹。_shake_blocks 记录被选中切片；_shake_dr/_shake_dc
+        # 为抖动轴方向（取松手偏移符号）；_shake_t 为剩余帧数（>0 时渲染层抖动+橙边）
+        self._shake_blocks = set()
+        self._shake_dr = 0
+        self._shake_dc = 0
+        self._shake_t = 0
+
         # 右侧面板控件
         self.slider_dragging = False
         self.slider_rect = None
@@ -587,7 +671,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 设置菜单状态
         self.show_settings_menu = False
-        self.settings_menu_items = ['快捷键设置', '动画速度']
+        self.settings_menu_items = ['快捷键设置', '视觉', '命令面板']
         self.settings_menu_rects = []
         self.settings_menu_hovered = -1
 
@@ -597,10 +681,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.settings_editing_action = None  # 当前正在编辑快捷键的动作名
         self.settings_editing_key = None  # 临时存储正在录制的按键
         self._settings_slider_dragging = False
+        self._settings_zoom_dragging = False   # 视觉页缩放滑条拖拽中
         self._settings_backup_keybindings = {}
         self._settings_ok_btn = None
         self._settings_cancel_btn = None
         self._settings_reset_btn = None
+        # 设置对话框滚动条：与帮助框共用 gui.scrollbar.Scrollbar（同一套交互）。
+        self.settings_scrollbar = Scrollbar()
         self._settings_key_rects = {}
         self._settings_tab_kb_rect = None
         self._settings_tab_anim_rect = None
@@ -634,14 +721,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         }
 
         # 快捷键动作分组（用于设置对话框显示）
+        # 重新分组：原「游戏操作」10 项混了移动/三角移动/面板，拆成「移动方块」
+        # 与「显示面板」；原两个单元素分组「求解器」「宏操作」合并为「求解与宏」。
         self.keybinding_groups = [
-            ('文件操作', ['save', 'load']),
-            ('编辑操作', ['undo', 'redo', 'shuffle', 'reset']),
-            ('求解器', ['auto_solve']),
-            ('宏操作', ['macro_record']),
-            ('游戏操作', ['move_up', 'move_down', 'move_left', 'move_right',
-                          'tri_up_right', 'tri_down_left', 'tri_down_right',
-                          'virtual_keyboard', 'metrics_panel', 'records_panel']),
+            ('文件', ['save', 'load']),
+            ('编辑', ['undo', 'redo', 'shuffle', 'reset']),
+            ('求解与宏', ['auto_solve', 'macro_record']),
+            ('移动方块', ['move_up', 'move_down', 'move_left', 'move_right',
+                          'tri_up_right', 'tri_down_left', 'tri_down_right']),
+            ('显示面板', ['virtual_keyboard', 'metrics_panel', 'records_panel']),
+            # 命令面板单独一组：它不属于任何一块，是「找功能」的入口
+            ('搜索', ['command_palette']),
         ]
 
         # 虚拟键盘状态
@@ -659,6 +749,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 教程模式状态
         self._tut_init_state()
 
+        # 命令面板状态（Ctrl+K，功能可发现性主入口，见 gui/palette.py）
+        self._pal_init_state()
+
         # 加载上次状态
         self.load_last_state()
 
@@ -669,7 +762,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # （kind='square' 是默认值，不覆盖，保持「记住上次关闭时的样子」）
         if kind == 'triangle':
             if not self.new_triangle_puzzle(m, step):
-                raise ValueError(f"无效的三角形参数：k={m}, step={step}（需 k≥2 且 step<k）")
+                raise ValueError(f"无效的三角形参数：k={m}, step={step}"
+                                 f"（需 k≥3 且 step≤k−2，否则一步都动不了）")
         elif kind == 'mi':
             if not self.new_mi_puzzle(m, n, step):
                 raise ValueError(f"无效的米字格参数：m={m}, n={n}, step={step}（需 m,n≥2 且 step<max）")
@@ -696,6 +790,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """
         # 切换谜题会重置棋盘 → 终止梯度流水线
         self._stop_gradient_pipeline()
+        self._gap_anchor_world = None   # 旧局的「选中滑块那一点」不再有效
         # 切换谜题会重置棋盘 → 打断连续撤销/重做
         self._stop_continuous_undo_redo()
         # 切换谜题 → 清掉上一次的计时成绩
@@ -750,6 +845,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 重置历史记录
         self.game_history.reset()
+        self._mp_reset_target_region()
+        # 选块填空选取态跨建局必须作废（点选的方块/空位坐标属于旧局）
+        self._pick_fill = None
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
@@ -768,7 +866,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         参数：
             k: 大三角形边长（单元三角个数，共 k² 个滑块）
-            step: 移动步数（等级），须小于 k
+            step: 移动步数（等级），须满足 k − step ≥ 2
 
         建局即为实心大三角形（還原態），Alt+S 另行打亂。
         求解器/著色等高級功能照計劃禁用。
@@ -777,11 +875,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return False
         # 切换谜题会重置棋盘 → 终止梯度流水线 / 连续撤销重做
         self._stop_gradient_pipeline()
+        self._gap_anchor_world = None
         self._stop_continuous_undo_redo()
         self._last_timed_result = None
         self._ann_cancel_session('切换谜题')
 
-        if k < 2 or step >= k:
+        # 可动性门槛（已验证性质，见 experiments/math_repro/tri_kstep_property.py）：
+        # 三角形存在任何合法移动 ⟺ k − step ≥ 2。切片沿缝平行滑动，每推一格都
+        # 要求「无碰撞 + 整体仍连通」，而边长 k 的实心三角形同族切口接触面
+        # 最长只有 k−1，滑 step 格需要接触面 ≥ step+1，于是
+        # k−1 ≥ step+1 ⟺ k−step ≥ 2。旧守卫只挡了 step ≥ k，放过了
+        # step = k−1 这类一步都动不了、打乱恒回还原态的死配置。
+        if k < 3 or step < 1 or step > k - 2:
             return False
         if self.timer_state == 'running':
             self.macro_notify_msg = "计时中无法切换谜题"
@@ -801,6 +906,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.mi_mode = False
         self.numbered = False
 
+        # 切到三角形时把求解器落到「聚拢」：查表/补缺宏/DFS/IDA* 都是方形
+        # 语义（动作 4 元组 + 矩形目标形状），在 tri 上会静默走错。
+        # 注意是落到**统一的 'gather' 入口**，不是某个「三角专用入口」——
+        # 三形态共用同一个菜单项，形态差异由 solver 内部按 game 类型分发
+        # （2026-10-05 用户要求：不同谜题要用相同入口）。
+        self.solver_algorithm = 'gather'
+
         self.game = create_puzzle(k, k, step, kind='triangle', triangle_side=k)
 
         # 重置状态
@@ -814,6 +926,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             block.number = None
 
         self.game_history.reset()
+        self._mp_reset_target_region()
+        # 选块填空选取态跨建局必须作废（点选的方块/空位坐标属于旧局）
+        self._pick_fill = None
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
@@ -863,6 +978,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return False
         # 切换谜题会重置棋盘 → 终止梯度流水线 / 连续撤销重做
         self._stop_gradient_pipeline()
+        self._gap_anchor_world = None
         self._stop_continuous_undo_redo()
         self._last_timed_result = None
         self._ann_cancel_session('切换谜题')
@@ -886,6 +1002,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 摆在模式切换处而不是每次点击处检查，避免开着单次触控进米字格
         self.control_single_touch = False
 
+        # 切到米字格时把求解器落到「聚拢」：查表/补缺宏/DFS/IDA* 都是方形语义
+        # （4 元组动作 + 矩形目标形状 + 整数坐标），在 mi 上会静默走错 ——
+        # mi 的 rep 是 (r,c,q) 且坐标可能是半整数。
+        # 与三角一样走**统一的 'gather' 入口**，不给 mi 单开一个入口。
+        self.solver_algorithm = 'gather'
+
         self.game = create_puzzle(m, n, step, kind='mi')
 
         # 重置状态
@@ -899,6 +1021,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             block.number = None
 
         self.game_history.reset()
+        self._mp_reset_target_region()
+        # 选块填空选取态跨建局必须作废（点选的方块/空位坐标属于旧局）
+        self._pick_fill = None
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
@@ -1122,6 +1247,179 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.camera_x = (self.screen_width - self.right_panel_width) / 2 - map_center_x
         self.camera_y = game_center_y - map_center_y
 
+    # —— 外部控制（HTTP API 令牌 / 话术 / 教程）——
+    # 威胁模型：HTTP 绑 127.0.0.1，令牌防的是本机上的其他进程与网页；
+    # stdin 管道通道只有启动方父进程能写，天然可信，不设防。
+
+    def external_enabled(self) -> bool:
+        """外部控制开关是否开启（有有效令牌才算真开）。"""
+        ext = getattr(self, 'ext_state', None) or {}
+        return bool(ext.get('enabled')) and bool(ext.get('token'))
+
+    def set_external_control(self, enabled: bool):
+        """开/关外部控制。
+
+        关：清空令牌——重开必换新 token，关闭期间复制出去的话术随之作废。
+        开：没有令牌就现场生成一个，并往 stdout 打印一行（subprocess
+            启动方与人类控制台都能再读到新令牌）。
+        """
+        ext = self.ext_state
+        ext['enabled'] = bool(enabled)
+        if enabled:
+            if not ext.get('token'):
+                ext['token'] = secrets.token_urlsafe(24)
+            print(f"GATSLI_TOKEN={ext['token']}")
+        else:
+            ext['token'] = None
+
+    def external_control_message(self) -> str:
+        """生成复制给外部程序的连接话术（含当前令牌与端口；关闭时令牌为空）。"""
+        from http_server import TOKEN_MESSAGE_TEMPLATE
+        ext = self.ext_state
+        return TOKEN_MESSAGE_TEMPLATE.format(
+            token=ext.get('token') or '', port=ext.get('port') or 5050)
+
+    def _set_ext_feedback(self, ok: bool, text: str, timer: int = 300):
+        """控制页内联反馈（替代宏通知）。
+
+        为什么不用 macro_notify：通知浮层画在模态对话框**之下**，设置框
+        开着时玩家根本看不到 toast——按钮就像死的一样。对话框内的操作反
+        馈必须在对话框内自报。
+        """
+        self._settings_ext_msg = text
+        self._settings_ext_msg_ok = bool(ok)
+        self._settings_ext_msg_timer = int(timer)
+        # 反馈行是内容区新长出来的：请求下次绘制时把设置框滚到底，
+        # 否则新行落在裁剪区外，玩家看不到任何反应（按钮像死的）
+        self._settings_ext_pin_bottom = True
+
+    @staticmethod
+    def _clipboard_roundtrip_ok(got, msg: str) -> bool:
+        """读回校验：容忍换行风格差异（Windows 剪贴板常把 \\n 变 \\r\\n），
+        并接受「关键信息在」这一较松判据——宁可少报错，不可诬告失败。
+        """
+        if got is None:
+            return False
+        if isinstance(got, bytes):
+            try:
+                got = got.decode('utf-8')
+            except UnicodeDecodeError:
+                return False
+        norm = got.replace('\r\n', '\n').replace('\r', '\n')
+        return norm == msg or ('Authorization: Bearer' in norm and '令牌：' in norm)
+
+    def _copy_external_message(self):
+        """「复制连接话术」按钮：把含令牌的话术写进系统剪贴板。
+
+        剪贴板稳健化：pygame-ce 的 scrap 在部分显示驱动下未自动初始化
+        （dummy 驱动直接报 "scrap system not initialized"），故依次尝试
+        put_text → init+put，并在写入后读回校验；全失败时给出内联反馈，
+        把令牌/端口直接显示出来，玩家可手动抄送（其余步骤见教程文件）。
+        """
+        if not self.external_enabled():
+            self._set_ext_feedback(False, "外部控制已关闭：先打开上方开关，再复制话术")
+            return
+        msg = self.external_control_message()
+        err = None
+        ok_msg = "已复制到剪贴板：把这段话发给能在本机发送 HTTP 请求的外部程序即可"
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            # 路线 1：非弃用的 put_text
+            try:
+                pygame.scrap.put_text(msg)
+                if self._clipboard_roundtrip_ok(pygame.scrap.get_text(), msg):
+                    self._set_ext_feedback(True, ok_msg)
+                    return
+                err = '读回校验不一致'
+            except Exception as e:
+                err = str(e)
+            # 路线 2：旧 API + 显式 init（部分平台 scrap 未随 display 初始化）
+            try:
+                pygame.scrap.init()
+                pygame.scrap.put(pygame.SCRAP_TEXT, msg.encode('utf-8'))
+                if self._clipboard_roundtrip_ok(pygame.scrap.get(pygame.SCRAP_TEXT), msg):
+                    self._set_ext_feedback(True, ok_msg)
+                    return
+            except Exception as e:
+                err = f"{err} / {e}"
+        # 两条路都失败：不装作成功——把关键信息显示出来让人工抄送
+        ext = self.ext_state
+        self._set_ext_feedback(
+            False,
+            f"复制失败（剪贴板不可用：{err}）。请手动抄送：令牌 {ext.get('token')}，"
+            f"端口 {ext.get('port')}；用法见「下载控制教程」",
+            timer=600)
+
+    def write_external_control_guide(self, path: str):
+        """生成外部控制教程文件（自包含 Markdown，供外部程序使用者阅读）。
+
+        内容与 GET /help 索引同源；**不含令牌**——令牌只走「复制连接话术」
+        那条路，本文件可能被分享/上传官网，职责分离。
+        返回 (ok, message)。
+        """
+        from http_server import API_INDEX
+        try:
+            ext = self.ext_state
+            port = ext.get('port') or 5050
+            lines = [
+                '# 《貓九的滑塊遊戲》外部控制教程',
+                '',
+                '> 本文件面向外部程序（AI 助手是其中一种）：读完本文件 + 一个有效',
+                '> 令牌，即可通过本机 HTTP 接口控制游戏进程。令牌不在本文件内——',
+                '> 在游戏「设置-控制」页点「复制连接话术」获取（那段话含令牌与',
+                '> 三步引导）。',
+                '',
+                '## 1. 连接方式',
+                '',
+                f'- 基址：`http://127.0.0.1:{port}`',
+                '- 鉴权：每个请求带请求头 `Authorization: Bearer <令牌>`，',
+                '  或在 URL 上加 `?token=<令牌>`',
+                '- 示例：',
+                '',
+                '  ```',
+                '  curl -H "Authorization: Bearer <令牌>" '
+                f'http://127.0.0.1:{port}/status',
+                '  ```',
+                '',
+                '## 2. 第一条命令',
+                '',
+                '- `GET /help` —— 获取最新 API 索引（以索引为准，本文件可能过期）',
+                '- `GET /help/<端点>` —— 单个端点的参数/返回/curl 示例，',
+                '  如 `GET /help/move`（下表每个端点都适用）',
+                '- `GET /status` —— 当前局面与游戏状态',
+                '',
+                '## 3. API 索引',
+                '',
+                '| 方法 | 端点 | 说明 |',
+                '| --- | --- | --- |',
+            ]
+            for p, m, s in API_INDEX:
+                lines.append(f'| {m} | `{p}` | {s} |')
+            lines += [
+                '',
+                '## 4. 通用约定',
+                '',
+                '- 所有响应为 JSON，含 `ok`（是否成功）与 `message`（说明）',
+                '- 行列坐标从 1 数起（第几行第几列）',
+                '- 移动方向：w=上 s=下 a=左 d=右（须平行于选中缝隙）；',
+                '  三角另加 e/z/x，米字格另加 q',
+                '- 通用命令通道：`POST /command`，body `{"cmd": "<CLI 指令>"}`，',
+                '  CLI 指令与 stdin 通道同语法（如 `move w` / `status` / `help`）',
+                '- stdin 子进程管道通道不设防（只有启动游戏的父进程能写）',
+                '',
+                '## 5. 边界',
+                '',
+                '- 只能控制本机上的这个游戏进程；游戏重启后令牌失效，需重新复制',
+                '- 三角形/米字格形态的部分分析接口不支持（返回 reason=unsupported）',
+                '',
+            ]
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+            return True, f'已保存到 {path}'
+        except Exception as e:
+            return False, f'保存失败：{e}'
+
     def _is_camera_valid(self) -> bool:
         """检查当前 camera 位置是否能让滑塊在视口内可见"""
         if not self.game.blocks:
@@ -1310,6 +1608,53 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._solved_popup_t = 0
         # 新手教程：状态提交后推进教学进度（移动/撤销/重做/过关）
         self._tut_on_state_commit(via_redo=via_redo, suppress=suppress)
+
+    def _arrow_move_allowed(self, direction: str, step: int = None) -> bool:
+        """S1-4：干跑一次「点这个箭头」，看会不会被拒绝。
+
+        为什么要干跑、而不是照旧拿 try_move_ex(d, 1) 去猜：点击按键走的
+        move_selected_blocks 与箭头自己算的判定是两套东西 ——
+          ① 步数档用的是 current_step（点一下走 current_step 格，不一定是 1）；
+          ② 米字/三角走各自的 _mi_prepare_move / _triangle_prepare_move；
+          ③ 还有一串前置拦截（只读存档、创造模式、计时模式就绪态、
+             整体平移禁止…）。
+        只算「能不能走一格」就会得到用户报的那个症状：明明能走却没箭头，
+        或箭头点了被拒绝。这里逐条复用**同一条路径**，结论与点击一致。
+
+        副作用：prepare 会重写 be_opted、会写提示浮窗；干跑一律原样还原。
+        """
+        move_step = step if step is not None else self.current_step
+        # ---- move_selected_blocks 头部的前置拦截，逐条对齐
+        if self._tut_board_locked():
+            return False
+        if self._readonly_blocked():
+            return False
+        if self.create_mode:
+            return False
+        if self.annotation_mode and getattr(self, '_ann_view', None) == 'build':
+            return False
+        if self.game_mode == 'timed' and self.timer_state == 'ready':
+            return False
+
+        snap_opt = [(b, b.be_opted) for b in self.game.blocks]
+        snap_msg = self.macro_notify_msg
+        snap_timer = self.macro_notify_timer
+        try:
+            if getattr(self, 'mi_mode', False):
+                return self._mi_prepare_move(direction, move_step) is not None
+            if getattr(self, 'triangle_mode', False):
+                return self._triangle_prepare_move(direction, move_step) is not None
+            selected = [b for b in self.game.blocks if b.be_opted]
+            if not selected:
+                return False
+            if len(selected) == len(self.game.blocks):
+                return False       # 整体平移：禁止（与真实路径同款拦截）
+            return bool(self.game.try_move_ex(direction, move_step)[0])
+        finally:
+            for b, was in snap_opt:
+                b.be_opted = was   # 还原选中态（prepare 会重 opt）
+            self.macro_notify_msg = snap_msg
+            self.macro_notify_timer = snap_timer
 
     def move_selected_blocks(self, direction: str, step: int = None):
         """
@@ -1528,6 +1873,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.macro_notify_msg = {
                     'disconnected': "滑动失败：移动后滑块会断开",
                     'collision': "滑动失败：移动后滑块会重叠",
+                    'all_selected': "滑动失败：不能移动全部滑块",
                 }.get(reason, "滑动失败")
                 self.macro_notify_timer = 90
                 return None
@@ -1685,6 +2031,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 msg = {
                     'disconnected': "滑动失败：移动后滑块会断开",
                     'collision': "滑动失败：移动后滑块会重叠",
+                    'all_selected': "滑动失败：不能移动全部滑块",
                 }.get(reason, "滑动失败")
                 if gap_type in ('h', 'v') and self._mi_shifted():
                     # 錯位態的半整數橫豎縫容易被另一側卡住：沿斜向把任一半
@@ -2018,10 +2365,34 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 break
             step -= step_size
 
+        # S1-3：越界松手 → 撞墙回弹（仅增强模式）。记录被选中切片，沿越界方向抖一下。
+        # 注意：此刻 drag_follow_invalid 仍为 True（clear_drag_follow 会清掉），be_opted 切片仍在。
+        if (not moved and self.drag_follow_invalid
+                and getattr(self, 'ui_mode', 'enhanced') == 'enhanced'):
+            chosen = [b for b in self.game.blocks if b.be_opted]
+            if chosen:
+                self._shake_blocks = set(id(b) for b in chosen)
+                self._shake_dr = 1 if dr > 0 else (-1 if dr < 0 else 0)
+                self._shake_dc = 1 if dc > 0 else (-1 if dc < 0 else 0)
+                self._shake_t = 12  # 约 200ms（帧）
+
         # 清除跟随状态（含 single-touch auto-deselect）
         self.clear_drag_follow()
         # 未移动（或关了动画）时上面的 origin 没人消费，清掉避免污染下一次动画
         self._drag_anim_origin = None
+
+    def _shake_offset(self):
+        """S1-3：越界回弹的瞬时像素位移（屏幕坐标）。_shake_t 倒计时归零后返回 (0,0)。"""
+        t = getattr(self, '_shake_t', 0)
+        if t <= 0:
+            return (0.0, 0.0)
+        dr, dc = getattr(self, '_shake_dr', 0), getattr(self, '_shake_dc', 0)
+        if dr == 0 and dc == 0:
+            return (0.0, 0.0)
+        # 衰减包络：先正向冲一下再弹回（|sin| × 线性衰减）
+        phase = t / 12.0  # 1 → 0
+        amp = 6.0 * self.zoom * phase * abs(math.sin(phase * 3.14159))
+        return (dr * amp, dc * amp)
 
     def _move_merge_key(self):
         """当前移动所属「选中会话」标识；None = 不合并。
@@ -2171,6 +2542,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 return
 
         # 无动画的撤销（直接执行）
+        if self._undo_step_now(move_info):
+            # 连续撤销（无动画路径）：继续下一轮直到边界
+            self._advance_continuous_undo_redo()
+
+    def _undo_step_now(self, move_info):
+        """无动画单步撤销（undo 的执行段 / 连续撤销的循环体）。返回是否成功。"""
         success, _ = self.game_history.undo(self.game)
         if success:
             self.selected_gap = None
@@ -2183,8 +2560,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 15
             self._maybe_show_solved_popup(suppress=True)
             self._mark_file_dirty()
-            # 连续撤销（无动画路径）：继续下一轮直到边界
-            self._advance_continuous_undo_redo()
+        return success
 
     def redo(self):
         """重做操作（Ctrl+X）"""
@@ -2218,6 +2594,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 return
 
         # 无动画的重做（直接执行）
+        if self._redo_step_now(move_info):
+            # 连续重做（无动画路径）：继续下一轮直到边界
+            self._advance_continuous_undo_redo()
+
+    def _redo_step_now(self, move_info):
+        """无动画单步重做（redo 的执行段 / 连续重做的循环体）。返回是否成功。"""
         success, _ = self.game_history.redo(self.game)
         if success:
             self.selected_gap = None
@@ -2229,8 +2611,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self.macro_notify_timer = 15
             self._maybe_show_solved_popup(via_redo=True)
             self._mark_file_dirty()
-            # 连续重做（无动画路径）：继续下一轮直到边界
-            self._advance_continuous_undo_redo()
+        return success
 
     def jump_to_history_index(self, idx: int):
         """直接跳到历史记录第 idx 步的状态（虚拟键盘“跳到某步”）"""
@@ -2302,17 +2683,49 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def _advance_continuous_undo_redo(self):
         """连续播放推进：在每次撤销/重做提交后，若仍在连续模式且可继续，则播放下一步；
-        到达边界（无路可退/进）则停止并提示。手动打断时由 _stop_continuous_undo_redo 处理。"""
+        到达边界（无路可退/进）则停止并提示。手动打断时由 _stop_continuous_undo_redo 处理。
+
+        推进方式分两路：
+        - 动画开启：每步由动画提交回调再次进入本函数 → self.undo()/redo() 播下一步
+          （事件驱动，调用栈每步弹回，无深递归）。
+        - 动画关闭（含重入兜底）：就地 while 循环推到底。旧实现靠
+          undo() → 本函数 → undo() 互相递归逐步推进，长局会撞 Python
+          递归上限（实测 2450 步的局约 495 步即崩）；异常被主循环事件
+          大 try 吞掉后 restore_snapshot 半途而废 → 滑块残缺、步数卡半途。
+        """
+        animated = self.animation_enabled and self.animation_duration > 0
+        if getattr(self, '_advancing_continuous', False):
+            animated = False  # 重入（动画模式下遇到无动画步）：就地循环，不再叠栈
         if self._continuous_undo:
-            if self.game_history.can_undo():
-                self.undo()
-            else:
+            if not self.game_history.can_undo():
                 self._stop_continuous_undo_redo("已撤销到第一步")
-        elif self._continuous_redo:
-            if self.game_history.can_redo():
-                self.redo()
+            elif animated:
+                self._advancing_continuous = True
+                try:
+                    self.undo()
+                finally:
+                    self._advancing_continuous = False
             else:
+                while self.game_history.can_undo() and self._undo_step_now(
+                        self.game_history.peek_undo()):
+                    pass
+                if not self.game_history.can_undo():
+                    self._stop_continuous_undo_redo("已撤销到第一步")
+        elif self._continuous_redo:
+            if not self.game_history.can_redo():
                 self._stop_continuous_undo_redo("已重做到最后一步")
+            elif animated:
+                self._advancing_continuous = True
+                try:
+                    self.redo()
+                finally:
+                    self._advancing_continuous = False
+            else:
+                while self.game_history.can_redo() and self._redo_step_now(
+                        self.game_history.peek_redo()):
+                    pass
+                if not self.game_history.can_redo():
+                    self._stop_continuous_undo_redo("已重做到最后一步")
 
     def _stop_continuous_undo_redo(self, notify=''):
         """停止连续撤销/重做；清除状态旗标与残留队列。notify 非空时右下角提示。"""
@@ -2327,6 +2740,148 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
     def _macro_notify(self, msg):
         self.macro_notify_msg = msg
         self.macro_notify_timer = 90
+
+    # ==================================================================
+    # 增量更新器（就地更新，保留玩家数据；仅安装版生效）
+    # ==================================================================
+    def _start_update_check(self):
+        """后台查一次 GitHub 有没有新版本。开发版 / 已在进行 / 已发现则直接返回。"""
+        if not updater_module.is_frozen():
+            self.macro_notify_msg = '当前为开发模式，更新仅对安装版（exe）生效'
+            self.macro_notify_timer = 120
+            return
+        if self._update_check_in_progress or self.update_available:
+            return
+        self._update_check_in_progress = True
+        def _cb(newer, manifest, err):
+            self._update_check_in_progress = False
+            if err is not None:
+                # 网络 / 解析错误：静默忽略（下次轮询再试），不弹错误打扰玩家
+                _gui_log_error('update check failed: {}'.format(err))
+                return
+            if newer and manifest:
+                self.update_available = True
+                self._update_manifest = manifest
+                self._announce_update_available()
+        updater_module.check_for_update(_cb)
+        self.macro_notify_msg = '正在检查更新...'
+        self.macro_notify_timer = 90
+
+    def _announce_update_available(self):
+        """发现新版本：给一条短提示（常驻提示靠左上角「更新」按钮）。"""
+        ver = (self._update_manifest or {}).get('version', '')
+        self.macro_notify_msg = '发现新版本 {}：点左上角「更新」按钮一键升级'.format(ver)
+        self.macro_notify_timer = 300  # 5 秒
+
+    def _auto_update_poll(self):
+        """每 24 小时自动轮询一次（节流在内部）。启动时（_last_update_check_ts=0）
+        立即查一次，满足「每次打开自动轮询」；之后隔一天再查。"""
+        if not updater_module.is_frozen():
+            return
+        if self._update_check_in_progress or self.update_available:
+            return
+        now = time.time()
+        if now - self._last_update_check_ts < 86400:
+            return
+        self._last_update_check_ts = now
+        self._start_update_check()
+
+    def _update_progress_cb(self, got, total):
+        """下载进度回调（在后台线程被调用，主线程读这两个字段绘制进度条）。"""
+        if total:
+            self.update_progress = got / total
+        kb = got // 1024
+        self.update_status_msg = ('下载中 {}KB / {}KB'.format(kb, total // 1024)
+                                  if total else '下载中 {}KB'.format(kb))
+
+    def _start_update_now(self):
+        """立即更新：先确认有可用版本，再起后台线程下载→替换→退出游戏。"""
+        if not updater_module.is_frozen():
+            self.macro_notify_msg = '当前为开发模式，更新仅对安装版（exe）生效'
+            self.macro_notify_timer = 120
+            return
+        if self._update_in_progress:
+            return
+        if not self.update_available or not self._update_manifest:
+            # 还没查过 / 没发现：先查，查到后玩家再点一次即可
+            self._start_update_check()
+            self.macro_notify_msg = '先检查一下有没有更新...'
+            self.macro_notify_timer = 90
+            return
+        self._update_in_progress = True
+        self.update_progress = 0.0
+        self.update_status_msg = '准备下载...'
+        def _run():
+            try:
+                # perform_update 成功会写 .cmd 并 os._exit(0) 杀掉本进程；
+                # 失败则抛异常，这里捕获后仅提示，不退出游戏。
+                updater_module.perform_update(self._update_manifest,
+                                              self._update_progress_cb)
+            except Exception as e:  # pragma: no cover - 网络/解压失败路径
+                self._update_in_progress = False
+                self.update_status_msg = '更新失败：{}'.format(e)
+                self.macro_notify_msg = '更新失败：{}'.format(e)
+                self.macro_notify_timer = 240
+                _gui_log_error('update failed: {}'.format(e), level='error')
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+    def draw_update_banner(self):
+        """发现新版本时在左上角画一个常驻「更新」按钮（点它走 _start_update_now）。"""
+        if not self.update_available:
+            self._update_btn_rect = None
+            return
+        ver = (self._update_manifest or {}).get('version', '')
+        label = '● 新版本 {} 点此更新'.format(ver) if ver else '● 有新版本 点此更新'
+        font = getattr(self, 'status_font', None)
+        if font is None:
+            self._update_btn_rect = None
+            return
+        ts = font.render(label, True, (255, 255, 255))
+        pad_x, pad_y = 10, 5
+        bw = ts.get_width() + pad_x * 2
+        bh = ts.get_height() + pad_y * 2
+        bx = 10
+        by = getattr(self, 'menu_bar_height', 28) + 6
+        rect = pygame.Rect(bx, by, bw, bh)
+        self._update_btn_rect = rect
+        bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        bg.fill((60, 140, 60, 235))
+        pygame.draw.rect(bg, (120, 220, 120, 235), bg.get_rect(), 1, border_radius=6)
+        self.screen.blit(bg, (bx, by))
+        self.screen.blit(ts, (bx + pad_x, by + pad_y))
+
+    def draw_update_progress(self):
+        """更新下载中画一个居中进度框（模态层之上；下载完游戏会自行退出重启）。"""
+        if not self._update_in_progress:
+            return
+        sw, sh = self.screen_width, self.screen_height
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        self.screen.blit(overlay, (0, 0))
+        bw, bh = 420, 130
+        bx, by = (sw - bw) // 2, (sh - bh) // 2
+        box = pygame.Rect(bx, by, bw, bh)
+        pygame.draw.rect(self.screen, (40, 40, 40), box, border_radius=10)
+        pygame.draw.rect(self.screen, (120, 120, 120), box, 1, border_radius=10)
+        font = getattr(self, 'status_font', None)
+        if font is None:
+            return
+        title = font.render('正在更新 Gatennea Slider...', True, (255, 255, 255))
+        self.screen.blit(title, title.get_rect(centerx=bx + bw // 2, top=by + 16))
+        pct = int(self.update_progress * 100)
+        status = '{}  ({}%)'.format(self.update_status_msg, pct)
+        st_surf = font.render(status, True, (210, 210, 210))
+        self.screen.blit(st_surf, st_surf.get_rect(centerx=bx + bw // 2, top=by + 44))
+        # 进度条
+        bar_x, bar_y, bar_w, bar_h = bx + 30, by + 78, bw - 60, 18
+        pygame.draw.rect(self.screen, (70, 70, 70),
+                         pygame.Rect(bar_x, bar_y, bar_w, bar_h), border_radius=4)
+        fill_w = max(0, min(bar_w, int(bar_w * self.update_progress)))
+        pygame.draw.rect(self.screen, (90, 200, 120),
+                         pygame.Rect(bar_x, bar_y, fill_w, bar_h), border_radius=4)
+        hint = font.render('完成后游戏会自动重启，请勿手动关闭', True, (160, 160, 160))
+        self.screen.blit(hint, hint.get_rect(centerx=bx + bw // 2, top=by + 100))
 
     def _space_interrupts_continuous(self) -> bool:
         """空格打斷：仅在连续播放进行中拦截空格，返回 True 表示本次空格已被消费。"""
@@ -2679,15 +3234,28 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return f"{prefix} DNF"
         return ""
 
+    def _current_puzzle_form(self) -> str:
+        """当前谜题形态：'square' | 'triangle' | 'mi'。
+
+        优先用 solver 的 `game_form`（按 game 类名判），GUI 旗标只作兜底 ——
+        两者历史上各错过一次（旗标忘了清 / game 还没换），互为备份更稳。
+        """
+        try:
+            from solver import game_form
+            return game_form(self.game)
+        except Exception:
+            pass
+        if getattr(self, 'mi_mode', False):
+            return 'mi'
+        if getattr(self, 'triangle_mode', False):
+            return 'triangle'
+        return 'square'
+
     def _start_auto_solve(self):
         """启动/停止自动求解"""
         import threading
         import time
         from copy import deepcopy
-
-        # 三角形密铺：求解器需要新的动作语义（三族缝隙 + 六向），B2 不开放
-        if self._triangle_blocked('自动求解'):
-            return
 
         # 计时中禁止使用求解器
         if self._timer_blocked():
@@ -2699,26 +3267,31 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if self._readonly_blocked():
             return
 
-        # 带序号模式：求解器暂不支援（需额外处理编号顺序）
-        if getattr(self, 'numbered', False):
-            self.macro_notify_msg = "带序号模式暂不支援自动求解"
-            self.macro_notify_timer = 90
-            return
-
-        # 三角形密铺：动作语义不同（6 向/3 族缝隙），求解器在 D 阶段再评估
-        if getattr(self, 'triangle_mode', False):
-            self.macro_notify_msg = "三角形密铺暂不支援自动求解"
-            self.macro_notify_timer = 90
-            return
-
-        # 米字格：8 向/4 族缝隙，求解器同样留到后续阶段
-        if self._mi_blocked('自动求解', '求解器后续阶段开发中'):
+        # 当前谜题形态不支持所选算法 → **明确告知并拒绝启动**。
+        #
+        # 旧行为是「静默自动切到 tri_gather / mi_gather」：用户看不到自己选的
+        # 算法被换掉了，而且这等于给异形各留了一个专用入口。现在三形态共用
+        # 'gather'（solver 内部按 game 类型分发），这里只负责把「该形态没有
+        # 这个算法」讲清楚 —— 用户要的预期反馈就是这句
+        # 「当前谜题没有 xxx 求解算法功能」。
+        form = self._current_puzzle_form()
+        from solver import solver_supports, unsupported_solver_msg
+        if not solver_supports(self.solver_algorithm, form):
+            self.macro_notify_msg = unsupported_solver_msg(
+                self.solver_algorithm, form)
+            self.macro_notify_timer = 150
             return
 
         # 标注录制中：自动回放不是人类示范，禁用
         if getattr(self, '_ann_recording', False):
             self.macro_notify_msg = "标注录制中无法使用自动求解"
             self.macro_notify_timer = 90
+            return
+
+        # 选块填空：列表里唯一要先收集玩家点选才能算的算法，因此在这里就转走
+        # ——它有一段「等玩家点两下」的前置阶段，不该先把自己标记成「正在求解」。
+        if self.solver_algorithm == 'pick_fill':
+            self._pick_fill_toggle()
             return
 
         # 如果正在求解，則取消
@@ -2736,6 +3309,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self._gradient_gen += 1
                 self.macro_notify_msg = "梯度聚拢已停止"
                 self.macro_notify_timer = 90
+            elif getattr(self, '_auto_streamed', False):
+                # 自动规划·流式：停后台段 + 恢复到历史最优态
+                self._stop_auto_streamed(notify="自动规划已停止")
             return
 
         # 梯度播放中：再次点击 = 停止（终止后续阶段与后台计算）
@@ -2751,6 +3327,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 }
                 self.macro_notify_msg = "梯度聚拢已停止"
                 self.macro_notify_timer = 90
+            elif getattr(self, '_auto_streamed', False):
+                # 自动规划·流式播放中：停后台段 + 恢复到历史最优态
+                self._stop_auto_streamed(
+                    notify="自动规划已停止（恢复到聚拢度最高态）")
             return
 
         self._auto_solve_result = None
@@ -2779,6 +3359,34 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                              daemon=True).start()
             return
 
+        # 自动规划（混合求解）：启动后台流式求解——各候选求解器算完一段即上报，
+        # 主线程立即播放该段动画（同梯度流水线「边算边播」），并按历史最优
+        # checkpoint 维护；取消时恢复到聚拢度最高态（多段播放设计哲学）。
+        if algorithm == 'hybrid':
+            import queue as _q
+            from solver.state import snapshot
+            from solver.ml.gather_solver import gather_metrics
+            from solver.auto_solver import _phi_of
+            coords0 = frozenset(tuple(b.location) for b in self.game.blocks)
+            sc0 = gather_metrics(coords0, self.game.m, self.game.n)['score']
+            phi0 = _phi_of(coords0, self.game.m, self.game.n)
+            self._auto_stage_queue = _q.Queue()
+            self._auto_stage_gen += 1
+            gen = self._auto_stage_gen
+            self._auto_stage_active = True
+            self._auto_streamed = True
+            self._auto_best = {'score': sc0, 'phi': phi0,
+                               'snap': snapshot(self.game)}
+            self._auto_solve_running = True
+            self._auto_solve_cancel = False
+            self._auto_solve_start_time = time.time()
+            self._auto_solve_progress = None
+            self._api_solve_latch = None
+            threading.Thread(target=self._auto_stage_worker,
+                             args=(gen, game_snapshot, self.current_step),
+                             daemon=True).start()
+            return
+
         def cancel_check():
             return self._auto_solve_cancel
 
@@ -2788,14 +3396,43 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         def solve_thread():
             try:
                 from solver import SOLVER_ALGORITHMS
-                alg_name, solver_func = SOLVER_ALGORITHMS.get(
-                    algorithm, SOLVER_ALGORITHMS['ida_star']
-                )
+                entry = SOLVER_ALGORITHMS.get(algorithm)
+                if entry is None:
+                    # ⚠️ 旧版这里写的是 `.get(algorithm, SOLVER_ALGORITHMS['ida_star'])`
+                    # —— 未知/失效的 key 会**静默兜底成 IDA***：用户以为在跑自己
+                    # 选的算法，实际跑的是 IDA*；而 IDA* 是纯方形语义（h/v 缝隙 +
+                    # 整数坐标），落到异形 game 上直接抛异常。
+                    # 2026-10-06 用户报的「list index out of range」正是这条链：
+                    # config 里残留了已删除的旧 key 'mi_gather'。
+                    # config 读取侧已有迁移（file_ops._migrate_solver_algorithm），
+                    # 这里是兜底——宁可明确告知，也不要偷偷换个算法跑。
+                    self._auto_solve_result = False
+                    self.macro_notify_msg = (
+                        f"求解算法「{algorithm}」不存在，请在设置里重新选择")
+                    self.macro_notify_timer = 150
+                    return
+                alg_name, solver_func = entry
                 kwargs = {}
                 if algorithm == 'gather':
-                    # 禁用的参数传 None（不设限）
+                    # 禁用的参数传 None（不设限）。三形态共用这一个入口，
+                    # 参数一样要生效 —— 设置面板里的参数不该只对方形生效。
                     for k, v in self.gather_params.items():
-                        kwargs[k] = v if self.gather_enabled.get(k, True) else None
+                        kwargs[k] = v if self.gather_enabled.get(k, True) else None                # 填洞/补缺宏：流式播放——每解决一个 couple 即推送段
+                if algorithm in ('fill_macro', 'gap_macro'):
+                    import queue as _q
+                    self._stream_queue = _q.Queue()
+                    self._stream_active = True
+                    self._stream_played = 0
+                    # ⚠️ 必须置位：停止求解按钮按 `_auto_streamed` 分流，之前只有
+                    # hybrid 置它，导致填洞/补缺宏流式播放中点「停止求解」毫无反应。
+                    self._auto_streamed = True
+
+                    def segment_cb(label, acts5):
+                        seg_q = self._stream_queue
+                        if seg_q is not None:
+                            seg_q.put((label,
+                                       [tuple(a) for a in acts5]))
+                    kwargs['segment_cb'] = segment_cb
                 solution = solver_func(
                     game_snapshot, step=self.current_step,
                     cancel_check=cancel_check,
@@ -2807,9 +3444,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 else:
                     self._auto_solve_result = solution
             except Exception as e:
-                print(f"[自动求解] 出错: {e}")
+                # ⚠️ 旧版只 `print(f"[自动求解] 出错: {e}")` —— 没有 traceback，
+                # 用户只能看到一句「list index out of range」而完全无法定位
+                # （2026-10-06 就是这样浪费了一轮排查）。异常类型 + 堆栈都要留。
+                import traceback
+                print(f"[自动求解] 出错: {type(e).__name__}: {e}")
+                traceback.print_exc()
                 self._auto_solve_result = False
             finally:
+                if self._auto_solve_cancel:
+                    # 取消/切盘：丢弃未播的残留段（旧盘面的段不能播到新盘面）
+                    self._stream_queue = None
+                self._stream_active = False   # 流式后台结束（pump 负责收尾）
                 self._auto_solve_running = False
                 self._auto_solve_done = True
 
@@ -2894,6 +3540,427 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._gradient_gen += 1
         self._drain_gradient_queue()
 
+    # ---- 选块填空（原「单段求解」）：2026-10-12 从专用快捷键 Ctrl+G 收编进
+    #      求解器列表，统一由 Ctrl+A 触发。它是列表里唯一需要先收集玩家点选
+    #      的算法，所以开头多一段选取态。----
+    _PICK_FILL_TIP = ("选块填空：请点选一个凸起方块和一个空位"
+                      "（顺序不限；点空白处不算，会再提示一次）")
+
+    def _pick_fill_form_blocked(self) -> bool:
+        """选块填空的形态闸门：只有方形可用。
+
+        点空位那条路（洞的命中判定）只覆盖方形；带序号 / 三角 / 米字进去了
+        也只可能永远点不齐。所以**进选取态之前就明确拒绝**，别让玩家对着一个
+        点不齐的选取态反复按 Ctrl+A。开算前再判一次是双保险（局面可能在
+        选取途中被切换，届时建局收尾会清掉选取态，这里是兜底）。
+        """
+        if getattr(self, 'numbered', False):
+            self.macro_notify_msg = "带序号模式暂不支援选块填空"
+            self.macro_notify_timer = 90
+            return True
+        if getattr(self, 'triangle_mode', False):
+            self.macro_notify_msg = "三角形密铺暂不支援选块填空"
+            self.macro_notify_timer = 90
+            return True
+        if self._mi_blocked('选块填空', '求解器后续阶段开发中'):
+            return True
+        return False
+
+    def _pick_fill_toggle(self):
+        """选块填空按 Ctrl+A 的统一入口：进选取 / 齐了就开算 / 没齐就再按退出。
+
+        按一次的语义取决于当前处在哪一步：
+          · 没在选取 ── 进入选取态，提示要点的东西（右下角）；
+          · 已在选取、但还缺点东西 ── 等同按了「停止求解」，退出；
+          · 凸起与空位都点齐了 ── 开算。
+        """
+        if self._auto_solve_running:
+            self._auto_solve_cancel = True
+            return
+        if self.macro_executing or self.animating:
+            self.macro_notify_msg = "宏播放中，稍后再试"
+            self.macro_notify_timer = 90
+            return
+        if self._pick_fill_form_blocked():
+            return
+
+        pf = self._pick_fill
+        if pf is None:
+            self._pick_fill = {'block': None, 'hole': None}
+            self.macro_notify_msg = self._PICK_FILL_TIP
+            self.macro_notify_timer = 200
+            return
+        if pf['block'] is None or pf['hole'] is None:
+            # 没点齐就再按一次 Ctrl+A = 停止（与求解中按同一手感）
+            self._pick_fill = None
+            self.macro_notify_msg = "已退出选块填空"
+            self.macro_notify_timer = 120
+            return
+        self._pick_fill_run(pf['block'], pf['hole'])
+
+    def _pick_fill_missing_tip(self):
+        """当前还缺哪一半——点错位置时照着这句话重提一次。"""
+        pf = self._pick_fill
+        if pf is None:
+            return
+        if pf['block'] is None and pf['hole'] is None:
+            msg = self._PICK_FILL_TIP
+        elif pf['block'] is None:
+            msg = self._PICK_FILL_TIP + "（已选空位，还差点凸起方块）"
+        else:
+            msg = self._PICK_FILL_TIP + "（已选凸起，还差点一个空位）"
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = 200
+
+    def _pick_fill_click(self, x, y, block=None, gap=None):
+        """选取态下的一次点击：只登记点选目标，绝不触发滑动 / 选缝 / 拖动。
+
+        点方块 → 记下这一块；点空位 → 记下那个坑。点空白处**或点到缝隙**都
+        算点错，重提一句还缺点什么，继续等 —— 缝隙说的是「从哪切开」，不是
+        「填到哪去」，混进来会让这一步的意思含糊。
+        """
+        pf = self._pick_fill
+        if pf is None:
+            return
+        if block is not None:
+            loc = tuple(block.location)
+            pf['block'] = loc
+            # 坐标按玩家数数习惯：从 1 数第几行第几列
+            self.macro_notify_msg = ("选块填空：已选方块（第%d行第%d列）"
+                                     % (loc[0] + 1, loc[1] + 1))
+            self.macro_notify_timer = 150
+        elif gap is not None:
+            self._pick_fill_missing_tip()
+            return
+        else:
+            try:
+                hole = self.get_hole_at_pos(x, y)
+            except Exception:
+                # 选空洞所用实现只覆盖方形；异常绝不许影响这次点击本身
+                hole = None
+            if hole:
+                pf['hole'] = hole
+                self.macro_notify_msg = (
+                    "选块填空：已选空位（%s %d格）"
+                    % (hole.get('type', ''), len(hole.get('cells', []))))
+                self.macro_notify_timer = 150
+            else:
+                self._pick_fill_missing_tip()
+                return
+        if pf['block'] is not None and pf['hole'] is not None:
+            self.macro_notify_msg = ("选块填空：已选好一对，按 Ctrl+A 开始"
+                                     "（重按一次退出）")
+            self.macro_notify_timer = 200
+
+    def _pick_fill_run(self, p, hole):
+        """开算一段：把玩家点选的凸起 p 送进点选的空位 hole。
+
+        成功标准与其他算法不同 —— 只要求「这个空位被填上」，不要求整盘还原。
+        推进权在玩家手里：反复「点一对 → Ctrl+A」才是它的正常节奏。
+        """
+        import threading
+        import time
+        from copy import deepcopy
+
+        # 带序号 / 三角形 / 米字格沿用单段求解时期的封锁口径：这几类谜题
+        # 要么没有「逐个凸起推进」的语义，要么对应通路还没接上。
+        # （进选取态时已判过一次，这里是选取途中的兜底。）
+        if self._pick_fill_form_blocked():
+            self._pick_fill = None
+            return
+
+        # 局面可能已经变过（点选过程中玩家另行操作）：被指定为空位的那一簇
+        # 若已不在当前空位列表里，就作废改由下层自动挑，别拿着过期坐标去算。
+        vh = None
+        if hole:
+            from solver.ml.hole_detector import detect_holes
+            _coords = frozenset((b.location[0], b.location[1])
+                                for b in self.game.blocks)
+            _region = getattr(self, '_target_region', None)
+            if _region is None:
+                _region = self._compute_target_region()
+            try:
+                _holes, _, _ = detect_holes(_coords, self.game.m, self.game.n,
+                                            self.current_step, region=_region)
+            except Exception:
+                _holes = []
+            _alive = next((q for q in _holes
+                           if set(q.get('cells', []))
+                           == set(hole.get('cells', []))), None)
+            if _alive is None:
+                self.macro_notify_msg = "刚才选的空位已不在局面里，改按最近自动配对"
+                self.macro_notify_timer = 150
+            else:
+                _same = [c for c in _alive['cells']
+                         if (c[0] - p[0]) % self.current_step == 0
+                         and (c[1] - p[1]) % self.current_step == 0]
+                vh = tuple(_same[0]) if _same else tuple(_alive['cells'][0])
+
+        self._pick_fill = None
+        self._auto_solve_result = None
+        self._auto_solve_done = False
+        self._auto_solve_running = True
+        self._auto_solve_cancel = False
+        self._auto_solve_start_time = time.time()
+        self._auto_solve_progress = None
+        self._api_solve_latch = None
+
+        game_snapshot = deepcopy(self.game)
+        step = self.current_step
+
+        def cancel_check():
+            return self._auto_solve_cancel
+
+        def progress_callback(info):
+            self._auto_solve_progress = info
+
+        def solve_thread():
+            try:
+                from solver.ml.gap_solver import solve_single_segment
+                solution = solve_single_segment(
+                    game_snapshot, step=step, p=p, h=vh,
+                    cancel_check=cancel_check,
+                    progress_callback=progress_callback)
+                self._auto_solve_result = solution
+            except Exception as e:
+                print(f"[选块填空] 出错: {e}")
+                self._auto_solve_result = {
+                    'type': 'fill_fail', 'reason': f'选块填空异常：{e}',
+                    'solver_name': '选块填空'}
+            finally:
+                self._auto_solve_running = False
+                self._auto_solve_done = True
+
+        threading.Thread(target=solve_thread, daemon=True).start()
+
+    def _pump_stream_segments(self):
+        """流式求解（填洞/补缺宏）：把后台算好的段接进宏播放管道。
+
+        后台线程在私有副本上继续算下一段，主线程把已就绪段追加到
+        macro_exec_ops 播放——与梯度流水线同构（边算边播）。
+        """
+        seg_q = getattr(self, '_stream_queue', None)
+        if seg_q is None:
+            return
+        active = getattr(self, '_stream_active', False)
+        # 兜底：正常收尾靠线程 finally 把 _stream_active 置 False；只要这一步
+        # 因异常/时序没生效，收尾就被永久跳过 → macro_executing 一直 True
+        # （蓝色「执行宏」提示不消失，并锁住相机与停止按钮）。_auto_solve_done
+        # 是线程结束的**独立证据**，与 active 取「或」，避免单点依赖。
+        done = getattr(self, '_auto_solve_done', False)
+        if (not active or done) and seg_q.empty():
+            # 后台结束且无残留段：若处于流式等待态则收尾
+            if self.macro_executing and not self.animating \
+                    and self.macro_exec_index >= len(self.macro_exec_ops):
+                total = self.macro_exec_index
+                self.macro_executing = False
+                self.macro_exec_ops = []
+                self.macro_exec_index = 0
+                # 与启动时置位配对：填洞/补缺宏也用了 _auto_streamed，收尾要清掉，
+                # 否则残留会让「停止求解」分流到已结束的流式态。
+                self._auto_streamed = False
+                self.macro_notify_msg = ('[%s] 流水播放完成：%d 步'
+                                         % (self.macro_exec_name, total))
+                # 带序号模式：求解器只复原形状，数字乱序是预期行为，提醒玩家自行调整
+                if getattr(self, 'numbered', False) and self.game.is_solved():
+                    self.macro_notify_msg += '（形状已复原，数字排列未调整，请自行调整）'
+                self.macro_notify_timer = 180
+                self.center_map()
+            return
+        kicked = False
+        while True:
+            try:
+                label, acts5 = seg_q.get_nowait()
+            except Exception:
+                break
+            ops = []
+            for a in acts5:
+                op = {'gap_type': a[0], 'gap_line': a[1], 'side': a[2],
+                      'direction': a[3], 'step': self.current_step}
+                if len(a) > 4 and a[4]:
+                    op['rep_cell'] = a[4]
+                ops.append(op)
+            if not ops:
+                continue
+            if self.macro_executing:
+                self.macro_exec_ops.extend(ops)
+                kicked = True
+            else:
+                self.macro_executing = True
+                self.macro_exec_name = '填洞宏·流水'
+                self.macro_exec_ops = ops
+                self.macro_exec_index = 0
+                self.macro_exec_factor = 1
+                self._execute_next_macro_step()
+            self._stream_played += len(ops)
+            self.macro_notify_msg = '[流水] %s（+%d 步）' % (label, len(ops))
+            self.macro_notify_timer = 120
+        if kicked and self.macro_executing and not self.animating:
+            self._execute_next_macro_step()
+
+    # ---- 自动规划·流式（2026-10-10 多段播放改造）----
+    def _auto_stage_worker(self, gen, snap, step):
+        """后台线程：跑 auto_solve 并逐段上报；结束放哨兵 (gen, None)。"""
+        try:
+            from solver.auto_solver import auto_solve
+
+            def cancel_check():
+                return self._auto_solve_cancel or gen != self._auto_stage_gen
+
+            def progress_callback(info):
+                self._auto_solve_progress = info
+
+            auto_solve(snap, step=step, cancel_check=cancel_check,
+                       progress_callback=progress_callback,
+                       stage_cb=lambda s: self._auto_stage_queue.put((gen, s)))
+        except Exception as e:
+            print(f"[自动规划·流式] 出错: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._auto_stage_queue.put((gen, None))  # 结束哨兵
+            self._auto_stage_active = False
+            self._auto_solve_running = False
+
+    def _pump_auto_stages(self):
+        """把后台算好的段接进宏播放管道（边算边播），并维护历史最优 checkpoint。"""
+        q = getattr(self, '_auto_stage_queue', None)
+        if q is None:
+            return
+        gen = self._auto_stage_gen
+        # 仅在空闲（无动画、无宏播放）时推进 / 收尾，避免打断正在播的段
+        if self.macro_executing or self.animating:
+            return
+        active = getattr(self, '_auto_stage_active', False)
+        if not active and q.empty():
+            self._finalize_auto_streamed()
+            return
+        try:
+            item_gen, item = q.get_nowait()
+        except Exception:
+            if not active:
+                self._finalize_auto_streamed()
+            return
+        if item_gen != gen:
+            return  # 过期段（取消/重开）：丢弃
+        if item is None:
+            self._finalize_auto_streamed()
+            return
+        self._play_auto_stage(item)
+
+    def _play_auto_stage(self, item):
+        """播放一段动作并刷新历史最优 checkpoint（聚拢度最高、并列 Φ 最小）。"""
+        label = item['label']
+        actions = item['actions']
+        reps = item.get('reps') or []
+        end = item['end']
+        score = item['score']
+        phi = item.get('phi', 0.0)
+        ops = []
+        for i, a in enumerate(actions):
+            op = {'gap_type': a[0], 'gap_line': a[1], 'side': a[2],
+                  'direction': a[3], 'step': self.current_step}
+            if i < len(reps) and reps[i]:
+                op['rep_cell'] = reps[i]
+            ops.append(op)
+        # 无论是否有动作都刷新 checkpoint（空段仅记录终态）
+        self._update_auto_best(end, score, phi)
+        if not ops:
+            return
+        if self.macro_executing:
+            self.macro_exec_ops.extend(ops)
+        else:
+            self.macro_executing = True
+            self.macro_exec_name = '自动规划·' + label
+            self.macro_exec_ops = ops
+            self.macro_exec_index = 0
+            self.macro_exec_factor = 1
+            self._execute_next_macro_step()
+        self.macro_notify_msg = ('[自动规划] %s（+%d 步，聚拢度 %.3f）'
+                                 % (label, len(ops), score))
+        self.macro_notify_timer = 120
+
+    def _update_auto_best(self, end, score, phi):
+        """历史最优：聚拢度 score 最高；完全并列（1e-9 内）取 Φ 最小。"""
+        best = self._auto_best
+        if best is None or score > best['score'] + 1e-9 or (
+                abs(score - best['score']) <= 1e-9 and phi < best['phi'] - 1e-9):
+            self._auto_best = {
+                'score': score, 'phi': phi,
+                'snap': {'m': self.game.m, 'n': self.game.n,
+                         'blocks': [tuple(c) for c in end]},
+            }
+
+    def _restore_auto_best(self):
+        """把棋盘恢复到历史最优 checkpoint（设计哲学：打断停在聚拢度最高态）。"""
+        if not self._auto_best or not self._auto_best.get('snap'):
+            return
+        from solver.state import restore
+        restore(self.game, self._auto_best['snap'])
+
+    def _stop_auto_streamed(self, notify=None):
+        """停止流式求解：失效后台段、停动画（若在播）、恢复到最优态。
+
+        hybrid 与填洞/补缺宏共用本函数，但两者用**不同的队列**，必须都清：
+          · hybrid：_auto_stage_queue / _auto_stage_active
+          · 填洞/补缺宏：_stream_queue / _stream_active
+        旧版只清了 hybrid 那一套，填洞/补缺宏播放中点「停止求解」因此毫无
+        反应（段照旧播、macro_executing 一直 True、相机也拖不动）。
+        """
+        self._auto_stage_gen += 1          # 使已在队列的段失效
+        self._auto_stage_active = False
+        self._auto_solve_cancel = True
+        # 填洞/补缺宏：丢弃未播的残留段（设为 None 后 pump 直接 return）
+        self._stream_queue = None
+        self._stream_active = False
+        if self.macro_executing or self.animating:
+            self.macro_executing = False
+            self.animating = False
+            self.macro_exec_ops = []
+            self.macro_exec_index = 0
+            self.anim_blocks = []
+        # ⚠️「历史最优 checkpoint」是 **hybrid 独有**的语义：只有 hybrid 会维护
+        # _auto_best。填洞/补缺宏不维护它，若这里无条件恢复，就会把棋盘改写成
+        # **上一次 hybrid 残留的旧 checkpoint**（_finalize_auto_streamed 并不清
+        # 除它），表现为「点了停止，棋盘莫名其妙回到某个旧局面」。
+        if getattr(self, 'solver_algorithm', None) == 'hybrid':
+            self._restore_auto_best()
+        self._auto_best = None
+        self._auto_streamed = False
+        self._auto_solve_running = False
+        self._auto_stage_queue = None
+        if notify:
+            self.macro_notify_msg = notify
+            self.macro_notify_timer = 180
+
+    def _finalize_auto_streamed(self):
+        """流式收尾：播放完成 / 求解结束，锁存结果并清空状态。"""
+        total = self.macro_exec_index
+        self.macro_executing = False
+        self.macro_exec_ops = []
+        self.macro_exec_index = 0
+        self._auto_streamed = False
+        self._auto_solve_running = False
+        self._auto_stage_queue = None
+        elapsed = (int((time.time() - self._auto_solve_start_time) * 1000)
+                   if getattr(self, '_auto_solve_start_time', 0) else None)
+        best = self._auto_best
+        solved = bool(best and abs(best['score'] - 1.0) < 1e-6)
+        self._api_solve_latch = {
+            'ok': solved, 'steps': total,
+            'reason': 'solved' if solved else 'partial_best',
+            'elapsed_ms': elapsed,
+        }
+        if solved:
+            self.macro_notify_msg = '[自动规划] 已复原：%d 步' % total
+        else:
+            self.macro_notify_msg = ('[自动规划] 完成 %d 步，停在聚拢度最高态 %.3f'
+                                     % (total, best['score'] if best else 0))
+        self.macro_notify_timer = 200
+        # 清掉历史最优：不清的话它会残留到下一次求解，被停止逻辑误恢复
+        self._auto_best = None
+        self.center_map()
+
     def _check_auto_solve_result(self):
         """检查后台求解结果，如有结果则启动宏执行"""
         # 梯度流水线：后台连续计算，这里按序播放已就绪的阶段动画
@@ -2952,8 +4019,51 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._handle_gather_result(result)
             return
 
+        if isinstance(result, dict) and result.get('type') == 'fill_stream':
+            # 流式求解收尾：贪心段已实时播过，这里只接「未播剩余」
+            # （DFS 兜底 / 紧凑救援段）
+            import time as _time
+            _elapsed = int((_time.time() - self._auto_solve_start_time) * 1000) \
+                if getattr(self, '_auto_solve_start_time', 0) else None
+            streamed = int(result.get('streamed', 0))
+            actions = result.get('actions', []) or []
+            reps = result.get('rep_cells', []) or []
+            solved = bool(result.get('solved'))
+            self._api_solve_latch = {
+                'ok': solved, 'steps': streamed + len(actions),
+                'reason': 'solved' if solved
+                else result.get('reason', 'streamed'),
+                'elapsed_ms': _elapsed,
+            }
+            if actions:
+                ops = []
+                for i, action in enumerate(actions):
+                    gap_dir, gap_line, side, move_dir = action
+                    op = {'gap_type': gap_dir, 'gap_line': gap_line,
+                          'side': side, 'direction': move_dir,
+                          'step': self.current_step}
+                    if i < len(reps) and reps[i]:
+                        op['rep_cell'] = reps[i]
+                    ops.append(op)
+                if self.macro_executing:
+                    self.macro_exec_ops.extend(ops)
+                else:
+                    self.macro_executing = True
+                    self.macro_exec_name = '填洞宏·流水(续)'
+                    self.macro_exec_ops = ops
+                    self.macro_exec_index = 0
+                    self.macro_exec_factor = 1
+                    self._execute_next_macro_step()
+            elif not solved and not self.macro_executing:
+                reason = result.get('reason', '未全解')
+                self.macro_notify_msg = ('流水播放 %d 步后停机：%s'
+                                         % (streamed, reason))
+                self.macro_notify_timer = 220
+            return
+
         if isinstance(result, dict) and result.get('type') == 'fill_fail':
-            self.macro_notify_msg = '填洞宏：' + str(result.get('reason', '失败'))
+            self.macro_notify_msg = str(result.get('solver_name', '填洞宏')) \
+                + '：' + str(result.get('reason', '失败'))
             self.macro_notify_timer = 220
             return
 
@@ -2989,7 +4099,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         if result is False:
             self._gradient_state = None
-            self.macro_notify_msg = "自动求解：未找到解法"
+            if self._auto_solve_cancel:
+                played = getattr(self, '_stream_played', 0)
+                self.macro_notify_msg = ('已停止（流水已播 %d 步）' % played) \
+                    if played else '已停止'
+            else:
+                self.macro_notify_msg = "自动求解：未找到解法"
             self.macro_notify_timer = 180
             return
 
@@ -3081,11 +4196,22 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         sh, sw = s.get('bbox', (0, 0))
         eh, ew = e.get('bbox', (0, 0))
         gstage = result.get('gradient_stage')
+        # 异形（tri）求解器返回的键名与方形不同：score 走 'score' /
+        # 'best_score'，没有 start/end 两段指标。文案必须分形态写，
+        # 否则会显示「聚拢度 0.0%→0.0%」这种假数字（同 11b 的教训：
+        # 宁可少说，不要说错）。
+        is_shape = 'start' not in result and 'score' in result
         if gstage:
             gtotal = result.get('gradient_total', 4)
             self.macro_notify_msg = (
                 f"梯度聚拢 第{gstage}/{gtotal}阶段完成（{reason_text}）· {len(actions)}步 · "
                 f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
+            )
+        elif is_shape:
+            # 异形：只报能确定的量 —— 步数、终聚拢度、是否还原
+            self.macro_notify_msg = (
+                f"聚拢完成（{reason_text}）· 共{len(actions)}步 · "
+                f"聚拢度 {result.get('score', 0)*100:.1f}%"
             )
         else:
             stages_info = ''
@@ -3107,7 +4233,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         ops = []
         for i, action in enumerate(actions):
-            gap_dir, gap_line, side, move_dir = action
+            # 三角形是 5 元组（族, 线, 侧, 向, rep_key），方形是 4 元组。
+            # rep 直接从动作里取，不再依赖 result['rep_cells'] 旁挂数组
+            # （tri 求解器天然把 rep 固化进动作，計劃 §3 的要求）。
+            if len(action) >= 5:
+                gap_dir, gap_line, side, move_dir, rep = action[:5]
+            else:
+                gap_dir, gap_line, side, move_dir = action[:4]
+                rep = None
             op = {
                 'gap_type': gap_dir,
                 'gap_line': gap_line,
@@ -3115,8 +4248,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 'direction': move_dir,
                 'step': self.current_step,
             }
-            if rep_cells and i < len(rep_cells):
-                op['rep_cell'] = rep_cells[i]
+            if rep is None and rep_cells and i < len(rep_cells):
+                rep = rep_cells[i]
+            if rep is not None:
+                # rep 的第三分量是**米字格必需的**（q 朝向）：mi 的位置是
+                # (r, c, q)，同一个 (r, c) 上最多 8 块，只带前两分量会定位到
+                # 错的块 → opt 从错块起 DFS → 整步动作被静默改写。方形与三角
+                # 的位置不含朝向分量（三角第三位是 up，同格 ▲/▼ 各一块，
+                # 前两分量已足够），所以按形态裁长度。
+                loc = list(rep)
+                op['rep_cell'] = loc[:3] if self.mi_mode else loc[:2]
             ops.append(op)
 
         self._gather_info = {
@@ -3128,7 +4269,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'gradient_total': result.get('gradient_total'),
         }
         self.macro_executing = True
-        self.macro_exec_name = "聚拢"
+        self.macro_exec_name = "单次聚拢"  # 与设置-求解器页的算法名一致（2026-10-13 改名）
         self.macro_exec_ops = ops
         self.macro_exec_index = 0
         self.macro_exec_factor = 1
@@ -3157,14 +4298,30 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         while self.running:
             try:
+                # S1-1：输入优先——先处理事件、再更新状态与绘制，消除恒定 1 帧输入延迟
+                self.handle_events()
+                self._ann_poll()
+                self._auto_update_poll()
+                self._update_cursor()
+
                 # 处理终端指令
                 self.process_commands()
 
                 # 更新动画
                 self.update_animation()
 
+                # S0-1：复原弹窗动画计时器——此前全项目从未递增，弹窗恒停第 0 帧
+                # （缩放 0.7 / 透明 / 光晕 0 且 6 秒自动关闭永不触发）。每帧自增使其真正生效。
+                if getattr(self, '_solved_popup_active', False):
+                    self._solved_popup_t += 1
+
                 # 检查自动求解结果
                 self._check_auto_solve_result()
+
+                # 流式求解：把后台算好的段接进宏播放管道（边算边播）
+                self._pump_stream_segments()
+                # 自动规划·流式：hybrid 边算边播 + 历史最优 checkpoint
+                self._pump_auto_stages()
 
                 # 计时器：刷新实时用时 + 检测复原
                 if self.timer_state == 'running':
@@ -3172,7 +4329,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self._timer_check_solved()
 
                 # 求解中显示计时和进度（宏动画播放阶段保留逐步行进提示）
-                if self._auto_solve_running and not self.macro_executing:
+                # ⚠️ 旧条件带 `and not self.macro_executing`：流式（填洞/补缺宏）
+                # 一开始播放首段就把 macro_executing 置 True，于是「后台还在算、
+                # 新段还没到」这段窗口里计时/进度**不再被刷新**，通知 3 秒后淡出
+                # ——表现为「右下角没了、以为卡死，其实在算」。后台没结束就该一直
+                # 显示用时，故去掉该条件。
+                if self._auto_solve_running:
                     elapsed = time.time() - self._auto_solve_start_time
                     progress = self._auto_solve_progress
                     if progress:
@@ -3198,7 +4360,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                             bound = progress.get('bound', 0)
                             nodes = progress.get('nodes', 0)
                             path_preview = progress.get('path_preview', '')
-                            self.macro_notify_msg = f"[{stage}] 深度{bound} 节点{nodes} {path_preview} | {elapsed:.1f}s"
+                            # 「深度/节点」是 IDA*/BFS 一类搜索的标记：只有真在搜索
+                            # （bound/nodes 非 0）才有意义。不加判断会把「深度0
+                            # 节点0」这种空壳字样写进通知里。
+                            if nodes or bound:
+                                detail = f"深度{bound} 节点{nodes} {path_preview}"
+                            else:
+                                detail = path_preview
+                            head = f"[{stage}] " if stage else ''
+                            self.macro_notify_msg = (
+                                f"{head}{detail} | {elapsed:.1f}s")
                     else:
                         self.macro_notify_msg = f"求解中... {elapsed:.1f}s"
                     self.macro_notify_timer = 180
@@ -3209,6 +4380,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 更新宏通知计时器（持玖模式不递减）
                 if self.macro_notify_timer > 0 and not self.macro_notify_persistent:
                     self.macro_notify_timer -= 1
+
+                # 设置-控制页内联反馈计时器（对话框内操作反馈，见 _set_ext_feedback）
+                if getattr(self, '_settings_ext_msg_timer', 0) > 0:
+                    self._settings_ext_msg_timer -= 1
 
                 # 处理文件对话框结果
                 self.handle_file_dialog_result()
@@ -3235,6 +4410,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 self.draw_board()
                 self.draw_right_panel()
+                self.draw_status_bar()
 
                 # 动态更新编辑菜单的求解按钮文字
                 shortcut = self._format_menu_shortcut('auto_solve')
@@ -3243,17 +4419,27 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 else:
                     self.edit_menu_items[-1] = f'自动求解 {shortcut}'
 
-                self.draw_menu_bar()
-                self.draw_status_bar()
-
-                # 浮动面板（先画，被模态对话框遮住）
+                # 浮动面板（先画：位于菜单层和模态对话框之下）
                 self.draw_virtual_keyboard()
                 self.draw_metrics_panel()
                 self.draw_records_panel()
                 # 标注模式（工具栏 + 跟踪标记 + 子对话框）
                 self.draw_annotation_mode()
 
-                # 模态对话框（后画，最上层）
+                # 菜单栏 + 下拉菜单：非模态最上层（下拉菜单盖住浮动面板）
+                self.draw_menu_bar()
+
+                # 非模态浮层（通知 / 复原弹窗 / 教程引导）：盖在菜单与浮动面板之上，
+                # 但必须落在模态对话框之下——模态是交互上的最高优先级层，事件分发里
+                # 模态最先消费点击；若这里反过来画在模态之上，会出现「模态已吃掉点
+                # 击、浮层却浮在模态表面」的视觉错位（求解进行中按设置键即触发）。
+                self.draw_macro_notify()
+                self.draw_solved_popup()
+                self.draw_tutorial_prompt()
+                self.draw_tutorial_panel()
+                self.draw_update_banner()
+
+                # 模态对话框（后画，真正最上层；盖住上述所有浮层）
                 if self.show_help:
                     self.draw_help_dialog()
                 if self.show_custom_dialog:
@@ -3266,6 +4452,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     self.draw_macro_manager_dialog()
                 if getattr(self, 'show_macro_name_dialog', False):
                     self.draw_macro_name_dialog()
+                # 命令面板：画在所有模态之上（事件分发里同样最先消费，两者必须一致）
+                if getattr(self, 'palette_active', False):
+                    self.draw_command_palette()
+                self.draw_update_progress()
 
                 '''# 虚拟键盘（浮动面板）
                 self.draw_virtual_keyboard()
@@ -3276,20 +4466,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 成绩记录面板（浮动面板）
                 self.draw_records_panel()'''
 
-                # 宏执行结果通知（最顶层绘制）
-                self.draw_macro_notify()
-                # 复原成功悬浮窗（最顶层）
-                self.draw_solved_popup()
-                # 新手教程：引导面板 / 首次启动弹窗（最顶层）
-                self.draw_tutorial_prompt()
-                self.draw_tutorial_panel()
-
                 # 左键单击反馈（盖在所有界面之上，含模态对话框）
                 self.draw_click_feedback()
 
-                self.handle_events()
-                # 标注模式：捕捉录制提交 / 处理存档打开结果
-                self._ann_poll()
                 pygame.display.flip()
                 dt_ms = clock.tick(60)
 
@@ -3301,8 +4480,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     if macro_input:
                         macro_input.update(dt_ms)
             except Exception as e:
-                # 非致命：记进 config/error_log.jsonl 并继续运行，避免单帧小异常导致游戏闪退
-                log_writer.exception('主循环异常', *sys.exc_info())
+                # 非致命：记进 config/error_log.jsonl 并继续运行，避免单帧小异常导致游戏闪退。
+                # 节流：同一个异常（类型 + 消息）每会话只记一条。每帧都抛的话是
+                # 60 条/秒，几秒就把日志写到 4MB 上限触发 rotate，把真正的第一条
+                # （也是唯一有价值的那条）冲掉。控制台仍逐帧打印，方便当场看频率。
+                _seen = getattr(self, '_loop_err_seen', None)
+                if _seen is None:
+                    _seen = self._loop_err_seen = set()
+                _sig = (type(e).__name__, str(e))
+                if _sig not in _seen:
+                    _seen.add(_sig)
+                    log_writer.exception('主循环异常', *sys.exc_info())
                 print(f"Run error (non-fatal): {e}")
                 self._frame_error_streak = getattr(self, '_frame_error_streak', 0) + 1
                 # 连续异常约 2 秒（120 帧）仍无法恢复则终止，避免卡死刷屏

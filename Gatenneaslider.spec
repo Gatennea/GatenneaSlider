@@ -49,10 +49,14 @@ excludes = [
     'pygame.tests',
     'pygame.typing',
     'pygame.pixelarray',
-    'pygame.sprite',
+    # ⚠️ pygame.sprite / pygame.cursors **不能排除**（2026-10-06 打包白屏事故）：
+    # pygame.mouse.set_cursor 依赖 cursors，排掉后打包版里根本没有这个属性，
+    # 而 _update_cursor 每帧调用它 —— 异常在每帧 try 块开头抛出，把整帧绘制
+    # 连同 display.flip() 一起跳过，窗口永远空白且 windowed 模式下看不到报错。
+    # 'pygame.sprite',
+    # 'pygame.cursors',
+    # 'pygame.mask',      # sprite 的依赖；一并带上，消除 import sprite 的 RuntimeWarning
     'pygame.freetype',
-    'pygame.cursors',
-    'pygame.mask',
     'pygame.controller',
 
     # Python 标准库（确认不需要的才能排除）
@@ -102,10 +106,15 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('picture/cover.png', 'picture'),
-           ('gui/操作说明.md', 'gui'),
+           ('docs/player/操作说明.md', 'docs/player'),
            # 新手教程资源：文案 JSON + 关卡存档（新增关卡只加 json，无需改 spec）
            ('gui/tutorial_texts.json', 'gui'),
-           ('beginner_archive', 'beginner_archive')],
+           # 打乱死局黑名单（solver.deadend_guard 运行时按 solver 包路径找它）
+           ('solver/deadend_blacklist.json', 'solver'),
+           ('beginner_archive', 'beginner_archive'),
+           # S1-4 箭头按键贴图（renderer._arrow_asset_path 按「仓库根/assets/...」
+           # 找，打包后根 = _MEIPASS，故整目录带过去；缺了箭头不显示）
+           ('assets', 'assets')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -122,12 +131,15 @@ a.binaries = [b for b in a.binaries if not os.path.basename(b[0]).lower() == 'uc
 
 pyz = PYZ(a.pure)
 
+# onedir（一文件夹模式）：exe 里只装引导器 + pyz，真正的依赖由下面的 COLLECT
+# 摊到 exe 旁边的目录里。好处是**每次运行不再把 31MB 解压到 %TEMP%** —— 实测
+# onefile 解压耗时 2.1s、到窗口出现 3.8s；onedir 没有这一步。
+# 代价：分发的是文件夹不是一个 exe（以后想做安装包就交给 Inno Setup）。
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='Gatenneaslider',
     debug=False,
     bootloader_ignore_signals=False,
@@ -142,4 +154,16 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='picture/cover.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    # strip 关掉：onedir 下依赖文件摊在目录里，strip 省的那点体积远不如
+    # 「别在打包环节引入新的不确定性」重要（上次白屏就是打包侧引入的）。
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='Gatenneaslider',
 )

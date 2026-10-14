@@ -157,6 +157,10 @@ def test_invalid_paths():
         conn = (SliderMatrix.is_single_connected if kind == 'square'
                 else TriangleSliderMatrix.is_single_connected
                 if kind == 'triangle' else MiSliderMatrix.is_single_connected)
+        # 米字有A/B 双层晶格：挪到异类邻位时可能落到 B 晶格，而跨晶格的两块
+        # 可以正面重叠 → 会先被「重疊」閘門拦下、報文就不是「類計數」了。
+        # 本用例要專测类计数路径，所以只允许挪到**同晶格**的异类邻位
+        # （单测 test/_test_create_dual_lattice.py 专门覆盖重叠闸门）。
         bad = None
         for x in sorted(cells):
             rest = cells - {x}
@@ -165,6 +169,8 @@ def test_invalid_paths():
             cx = cell_class(x, step, kind)
             for y in _neighbor_spots(kind, x):
                 if y in cells:
+                    continue
+                if (kind == 'mi' and float(y[0]) != int(y[0])):
                     continue
                 if cell_class(y, step, kind) == cx:
                     continue

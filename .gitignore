@@ -25,6 +25,7 @@ debug.log
 
 # ===== 存档 / 录像 / 分析产物（用户数据）=====
 save/
+screenshots/
 视频/
 
 # ===== 求解器表 / 训练模型 / 标注数据导出（可由脚本重新生成）=====
@@ -38,6 +39,11 @@ macro/*.json
 # ===== 测试临时输出（测试脚本生成的存档等）=====
 test/_tmp_save/
 測試/_tmp_save/
+
+# ===== 求解器基准：本地盘面存档 + 画廊 + 结果（由 disk_plan 种子计划重建）=====
+experiments/disks/
+experiments/disks_gallery.html
+experiments/bench_results_*.json
 
 # ===== 人工核对用截图（由 test/_shot_triangle.py 重新生成）=====
 test/_shot_triangle.png

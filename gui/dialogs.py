@@ -13,6 +13,7 @@ import pygame
 import os
 import sys
 from gui.text_input import TextInput
+from gui.file_ops import _find_illegal_filename_chars
 
 
 class PygameFileDialog:
@@ -53,6 +54,7 @@ class PygameFileDialog:
         self.result = None
         self.extensions = ['*']
         self.initial_file = ''
+        self.error_msg = ''  # 确定按钮校验失败的提示（如文件名含非法字符）
         
         # UI 布局
         self.dialog_rect = None
@@ -97,6 +99,7 @@ class PygameFileDialog:
         self.result = None
         self.input_active = True
         self.scrollbar_dragging = False
+        self.error_msg = ''
         
         self._refresh_file_list()
         self._calculate_layout()
@@ -349,6 +352,12 @@ class PygameFileDialog:
 
             if self.filename_input:
                 final_name = _ensure_json(self.filename_input)
+                # Windows 非法字符校验：写盘必抛异常，这里提前拦下并留在对话框内提示
+                illegal = _find_illegal_filename_chars(final_name)
+                if illegal:
+                    self.error_msg = f"文件名含非法字符 {' '.join(illegal)}，请修改"
+                    return
+                self.error_msg = ''
                 self.result = os.path.join(self.current_dir, final_name)
             elif self.selected_index >= 0 and self.selected_index < len(self.file_list):
                 name, is_dir = self.file_list[self.selected_index]
@@ -386,13 +395,15 @@ class PygameFileDialog:
         title_surface = self.title_font.render(self.title, True, self.colors['dialog_title'])
         self.screen.blit(title_surface, (dx + 15, dy + 10))
         
-        # 当前目录
-        dir_text = self.small_font.render(self.current_dir, True, (150, 150, 150))
+        # 当前目录（截断只作用于渲染副本——曾直接改 self.current_dir，
+        # 导致长/含中文路径被啃坏，选文件后 join 出非法路径报「未找到文件」）
+        dir_text_str = self.current_dir
+        dir_text = self.small_font.render(dir_text_str, True, (150, 150, 150))
         # 截断过长路径
         max_dir_w = self.up_btn.left - dx - 20
-        while dir_text.get_width() > max_dir_w and len(self.current_dir) > 10:
-            self.current_dir = '...' + self.current_dir[4:]
-            dir_text = self.small_font.render(self.current_dir, True, (150, 150, 150))
+        while dir_text.get_width() > max_dir_w and len(dir_text_str) > 10:
+            dir_text_str = '...' + dir_text_str[4:]
+            dir_text = self.small_font.render(dir_text_str, True, (150, 150, 150))
         self.screen.blit(dir_text, (dx + 15, dy + 32))
         
         # 上级目录按钮
@@ -447,6 +458,11 @@ class PygameFileDialog:
         # 文件名输入框
         input_label = self.small_font.render("文件名:", True, self.colors['dialog_text'])
         self.screen.blit(input_label, (self.input_rect.left, self.input_rect.top - 16))
+
+        # 校验错误提示（文件名含非法字符等）：显示在「文件名:」标签右侧
+        if self.error_msg:
+            err_surface = self.small_font.render(self.error_msg, True, (255, 100, 100))
+            self.screen.blit(err_surface, (self.input_rect.left + 60, self.input_rect.top - 16))
         
         bg_color = self.colors['input_active'] if self.input_active else self.colors['input_bg']
         pygame.draw.rect(self.screen, bg_color, self.input_rect, border_radius=4)
@@ -505,11 +521,11 @@ class DialogsMixin:
     """对话框相关方法 Mixin"""
 
     def _load_help_lines(self):
-        """从 gui/操作说明.md 加载帮助文本，解析为 (文本, 是否高亮) 列表"""
+        """从 docs/player/操作说明.md 加载帮助文本，解析为 (文本, 是否高亮) 列表"""
         if getattr(sys, 'frozen', False):
-            md_path = os.path.join(sys._MEIPASS, 'gui', '操作说明.md')
+            md_path = os.path.join(sys._MEIPASS, 'docs', 'player', '操作说明.md')
         else:
-            md_path = os.path.join(os.path.dirname(__file__), "操作说明.md")
+            md_path = os.path.join(os.path.dirname(__file__), "..", "docs", "player", "操作说明.md")
         lines = []
         try:
             with open(md_path, "r", encoding="utf-8") as f:
@@ -553,41 +569,81 @@ class DialogsMixin:
         pygame.draw.line(self.screen, self.colors['dialog_border'],
                         (dialog_x + 15, line_y), (dialog_x + dialog_width - 15, line_y))
 
+        # 检索框（始终可见；打开帮助时焦点默认在它上面）。
+        # 这是「功能可发现性」的主入口：玩家用口语（「着色」「怎么撤销」）就能
+        # 定位功能，结果会说明当前形态/模式下能不能用，回车直接到位。
+        search_h = 30
+        search_rect = pygame.Rect(dialog_x + 20, dialog_y + 60,
+                                  dialog_width - 40, search_h)
+        self.help_search_rect = search_rect
+        query = str(getattr(self, 'help_query', '') or '')
+        active = bool(getattr(self, 'help_search_active', False))
+        # 与事件层一致：以 help_query 为权威串，组件内容与之同步（光标置于末尾）；
+        # 这样打开帮助若有残留查询，光标也会落在末尾而非错位。
+        ti = getattr(self, 'help_input', None)
+        if ti is not None and ti.text != query:
+            ti.set_text(query)
+        cursor_pos = ti.cursor_pos if ti is not None else len(query)
+        pygame.draw.rect(self.screen,
+                         self.colors['input_active' if active else 'input_bg'],
+                         search_rect, border_radius=4)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'],
+                         search_rect, 1, border_radius=4)
+        if query:
+            text_surf = self.dialog_font.render(query, True, self.colors['input_text'])
+        else:
+            text_surf = self.dialog_font.render(
+                '检索功能（试试「着色」「撤销」「三角」「怎么用」）', True, (140, 140, 140))
+        self.screen.blit(text_surf, (search_rect.x + 8, search_rect.y + 4))
+        if active and (pygame.time.get_ticks() // 500) % 2 == 0:
+            if query:
+                prefix = query[:cursor_pos]
+                cx = search_rect.x + 8 + self.dialog_font.size(prefix)[0] + 1
+            else:
+                cx = search_rect.x + 8 + 1
+            pygame.draw.line(self.screen, self.colors['input_text'],
+                             (cx, search_rect.y + 6),
+                             (cx, search_rect.y + search_h - 6), 1)
+
         help_lines = self._load_help_lines()
 
-        # 计算内容总高度（考虑自动换行）
+        # 内容绘制区域（检索框下方到关闭提示上方）
+        content_top = dialog_y + 98
+        content_bottom = dialog_y + dialog_height - 40
+        content_height = content_bottom - content_top
         text_max_width = dialog_width - 65
+
+        # 有检索词 → 渲染检索结果；无 → 渲染操作说明全文（与旧行为一致）。
+        # 检索态滚动归零：结果条数与文档长度不同，沿用旧偏移会看到空白。
+        query = str(getattr(self, 'help_query', '') or '').strip()
+        if query:
+            content_lines = self._help_search_result_lines(
+                query, dialog_x, content_top, dialog_width, text_max_width)
+        else:
+            content_lines = help_lines
+
+        # 计算内容总高度（考虑自动换行）
         total_content_height = 0
-        for line, is_header in help_lines:
+        for line, is_header in content_lines:
             if not line:
                 total_content_height += 8
             else:
                 wrapped = self._wrap_text(line, self.dialog_font, text_max_width)
                 total_content_height += 26 * len(wrapped)
 
-        # 内容绘制区域（标题下方到关闭提示上方）
-        content_top = dialog_y + 58
-        content_bottom = dialog_y + dialog_height - 40
-        content_height = content_bottom - content_top
-
-        # 存储高度信息供事件处理使用
-        self._help_content_height = content_height
-        self._help_total_height = total_content_height
-
-        # 滚动偏移量
-        scroll_offset = getattr(self, 'help_scroll_offset', 0)
-
-        # 限制滚动范围
-        max_scroll = max(0, total_content_height - content_height)
-        scroll_offset = max(0, min(scroll_offset, max_scroll))
-        self.help_scroll_offset = scroll_offset
+        # 滚动条（与设置框共用 Scrollbar）：每帧依内容高度重算，
+        # 检索态/全文态切换时几何仍正确。
+        sb = self.help_scrollbar
+        sb.layout(dialog_x + dialog_width - 20, content_top, content_height,
+                  total_content_height, content_height)
+        scroll_offset = sb.scroll
 
         # 绘制内容（带裁剪）
         clip_rect = pygame.Rect(dialog_x + 10, content_top, dialog_width - 30, content_height)
         self.screen.set_clip(clip_rect)
 
         y_offset = content_top - scroll_offset
-        for line, is_header in help_lines:
+        for line, is_header in content_lines:
             if not line:
                 y_offset += 8
                 continue
@@ -603,28 +659,71 @@ class DialogsMixin:
 
         self.screen.set_clip(None)
 
-        # 绘制滚动条（如果内容超出可见区域）
-        if max_scroll > 0:
-            scrollbar_x = dialog_x + dialog_width - 20
-            scrollbar_top = content_top
-            scrollbar_height = content_height
-            self.help_scrollbar_rect = pygame.Rect(scrollbar_x, scrollbar_top, 8, scrollbar_height)
-            pygame.draw.rect(self.screen, (60, 60, 60), self.help_scrollbar_rect, border_radius=3)
-
-            # 滚动条滑块
-            knob_height = max(20, int(scrollbar_height * content_height / total_content_height))
-            knob_y = scrollbar_top + int((scrollbar_height - knob_height) * scroll_offset / max_scroll)
-            knob_color = self.colors['button_hover'] if getattr(self, 'help_scrollbar_dragging', False) else self.colors['button_bg']
-            self.help_scrollbar_knob_rect = pygame.Rect(scrollbar_x, knob_y, 8, knob_height)
-            pygame.draw.rect(self.screen, knob_color, self.help_scrollbar_knob_rect, border_radius=3)
-        else:
-            self.help_scrollbar_rect = None
-            self.help_scrollbar_knob_rect = None
+        # 绘制滚动条（仅当内容超出可见区域）
+        if sb.need_scroll():
+            sb.draw(self.screen)
 
         # 底部提示
-        close_text = self.status_font.render("点击外部区域关闭 | 滚轮翻页", True, (150, 150, 150))
+        if query:
+            close_text = self.status_font.render(
+                "↑↓ 选择 · 回车 直接到位 · Esc 清空检索词", True, (150, 150, 150))
+        else:
+            close_text = self.status_font.render(
+                "点击外部区域关闭 | 滚轮翻页", True, (150, 150, 150))
         close_rect = close_text.get_rect(center=(self.screen_width // 2, dialog_y + dialog_height - 20))
         self.screen.blit(close_text, close_rect)
+
+    def _help_search_result_lines(self, query, dialog_x, content_top,
+                                  dialog_width, text_max_width):
+        """把检索结果渲染成 [(文本, 是否标题)]，并登记每项的点击矩形。
+
+        命中范围：功能名 + 玩家别名 + 一句话用法 + 常见困惑 + 所在位置。
+        每条结果依次显示「名称 —— 位置」「怎么用」「常见困惑」，中间空一行。
+        """
+        from gui import feature_index as _fi
+
+        form = self._feature_form()
+        mode = getattr(self, 'game_mode', 'practice')
+        results = _fi.search(query, form=form, mode=mode, limit=25)
+
+        lines = []
+        rects = []
+        if not results:
+            lines.append((f'没有功能匹配「{query}」。', True))
+            lines.append(('换个说法试试：着色 / 撤销 / 打乱 / 求解 / 三角 / 米字 / 等级 / 怎么用',
+                          False))
+            self.help_result_rects = rects
+            self.help_sel = 0
+            return lines
+
+        lines.append((f'找到 {len(results)} 项（↑↓ 选择，回车 直接到位）：', True))
+        lines.append(('', False))
+
+        y = content_top
+        for _line in lines:
+            y += 8 if not _line[0] else 26
+
+        for index, (_score, entry, available) in enumerate(results):
+            top = y
+            head = entry['name']
+            if available:
+                head = f'▶ {head}'
+            else:
+                head = f'✕ {head}（当前不可用：{_fi.unsupported_reason(entry, form, mode)}）'
+            head += f'   ——   {_fi.place_text(entry["place"])}'
+            for piece in (head, entry.get('howto', ''), entry.get('confusion', '')):
+                if not piece:
+                    continue
+                for wline in self._wrap_text(piece, self.dialog_font, text_max_width):
+                    lines.append((wline, index == getattr(self, 'help_sel', 0)))
+                    y += 26
+            lines.append(('', False))
+            y += 8
+            rects.append((pygame.Rect(dialog_x + 10, top, dialog_width - 30,
+                          y - top), entry))
+
+        self.help_result_rects = rects
+        return lines
 
     def draw_custom_puzzle_dialog(self):
         """绘制自定义谜题对话框：先选形态，再填尺寸与等级"""
@@ -800,11 +899,14 @@ class DialogsMixin:
                         return True
 
                     if getattr(self, 'custom_kind', 'rect') == 'triangle':
-                        if m < 2:
-                            self.custom_error = "边长必须 >= 2"
+                        # 门槛同上：三角形存在任何合法移动 ⟺ k − step ≥ 2。
+                        # 等级贴着边长（step = k−1）时一步都动不了，打乱会
+                        # 恒回还原态，故在建局前就挡掉。
+                        if m < 3:
+                            self.custom_error = "三角形边长必须 >= 3"
                             return True
-                        if step >= m:
-                            self.custom_error = f"等级必须 < {m}"
+                        if step > m - 2:
+                            self.custom_error = f"三角形等级必须 <= {m - 2}"
                             return True
                         self.new_triangle_puzzle(m, step)
                         self.show_custom_dialog = False

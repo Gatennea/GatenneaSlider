@@ -45,9 +45,17 @@ def find_target_region(coords, m, n):
     min_c, max_c = min(cs), max(cs)
 
     best = (min_r, min_c, (m, n), 0)
+    # 端点取整（2026-10-03 修）：错位态下坐标是半整数（米字 B 晶格），
+    # `range(min_r - rh + 1, ...)` 会抛 TypeError。这是与 gather_solver
+    # .find_best_window 同一根因的**第二处**——那条路径已改成「坐標 ×2 做
+    # 整數枚舉」，本函數是方形自己的窗口枚舉（不經 gather_solver），所以要
+    # 單獨修。取整 = 把錯位態的半格四捨五入到最近格，語義是「錯位態下按最近
+    # 的整格窗口統計重疊」——正式判定走形態版聚拢度，本函數只服務調試面板。
+    lo_r, hi_r = int(round(min_r)), int(round(max_r))
+    lo_c, hi_c = int(round(min_c)), int(round(max_c))
     for rh, cw in ((m, n), (n, m)):
-        for r0 in range(min_r - rh + 1, max_r + 1):
-            for c0 in range(min_c - cw + 1, max_c + 1):
+        for r0 in range(lo_r - rh + 1, hi_r + 1):
+            for c0 in range(lo_c - cw + 1, hi_c + 1):
                 cnt = 0
                 for r, c in coords:
                     if r0 <= r < r0 + rh and c0 <= c < c0 + cw:
@@ -84,11 +92,23 @@ def detect_holes(coords, m, n, step, region=None):
         r0, c0, (rh, cw), _ = find_target_region(coords, m, n)
 
     # 目标矩形网格：1=有方块，0=空
+    #
+    # 下标必须取整（2026-10-03 修）：错位态下坐标是**半整数**（米字 B 晶格，
+    # 见 game_mi.lattice_of），`grid[r - r0]` 会抛
+    #   TypeError: list indices must be integers or slices, not float
+    # 错位态的格子在几何上是「兩層各錯開半格」，本函數的矩形窗口模型無法
+    # 表達（這是 M3 米字聚拢度要另做的地方）。此處取整 = 把半格四捨五入到
+    # 最近格，讓調試面板在錯位態**不崩**（記號位置略有偏差，但面板本來就
+    # 只作調試用；正式判定走 solver 的形態版聚拢度）。
     grid = [[0] * cw for _ in range(rh)]
     protrusions = []
     for r, c in coords:
-        if r0 <= r < r0 + rh and c0 <= c < c0 + cw:
-            grid[r - r0][c - c0] = 1
+        ri, ci = int(round(r)), int(round(c))
+        # 範圍判斷與下標必須用**同一套取整後的值**（2026-10-03 修）：只把
+        # 下標取整、範圍仍用原始半整數，邊界格會通過範圍判斷卻算出越界下標
+        # → IndexError: list assignment index out of range。
+        if r0 <= ri < r0 + rh and c0 <= ci < c0 + cw:
+            grid[ri - r0][ci - c0] = 1
         else:
             protrusions.append((r, c))
 

@@ -117,40 +117,73 @@ class MiBoardView:
 
     # ---------- 命中 ----------
     def _hit_cells(self, wx: float, wy: float) -> list:
-        """點擊位置附近要檢查的格子 (r, c) 清單（整數格在前，次序穩定）。
+        """點擊位置附近要檢查的格子 (r, c) 清單（含半整數格，次序穩定）。
 
         對齊態：四塊鋪滿一格，落點所在格就夠；點壓在格線上時還要算上/左
         那一格，落在格線下方/右方不到一個容差時（例如棋形外沿往下 2px）
         也要算下/右那一格，所以取所在格的 3×3 整數格。
 
-        錯位態（斜向一格之後）：B 晶格的塊 key 是半整數，而它橫跨整數格邊
-        ——半整數格 (r0±½, c0±½) 的盒子正好蓋住落點，它們的上下沿/左右沿
-        就是半整數層級的格邊。不追加這四個半偏移格的話，錯位那一半的塊在
-        hit-test 裡全程不存在：點它的內心也返回 None，gap_at 也看不到它的邊。
+        錯位態（斜向一格之後）：B 晶格的塊 key 是半整數，盒子橫跨整數格邊
+        ——半整數格 (r0±½, c0±½) 正好蓋住落點，不追加它們的話錯位那一半的
+        塊在 hit-test 裡全程不存在。
+
+        **兩層都要列出，且次序有意義**（2026-10-03 修）：A/B 兩層的塊在幾何
+        上互相重疊（B 層 (0.5,0.5) 的盒蓋在 A 層 (0,0) 的半格處），所以單靠
+        「按次序取第一個命中者」不可能同時命中兩層——舊版整數格優先 → 點B
+        層塊永遠返回 A 層 key（實測 B 層 0/100）；改成半格優先 → A 層
+        0/64。兩層都是錯的。真正的解法是 world_to_cell 裡的「就近取用」，
+        這裡的次序只影響同距離時的穩定性。
         """
         gx, gy = self.from_world(wx, wy)
         r0, c0 = math.floor(gy), math.floor(gx)
         return [(r, c)
-                for r in (r0 - 1, r0, r0 + 1, r0 - 0.5, r0 + 0.5)
-                for c in (c0 - 1, c0, c0 + 1, c0 - 0.5, c0 + 0.5)]
+                for r in (r0 - 0.5, r0 + 0.5, r0 - 1, r0, r0 + 1)
+                for c in (c0 - 0.5, c0 + 0.5, c0 - 1, c0, c0 + 1)]
+
+    @staticmethod
+    def _dist_to_tri(px: float, py: float, pts) -> float:
+        """點到三角形邊界距離的平方（內部為 0）。用於「就近取用」裁決。"""
+        best = None
+        n = len(pts)
+        for t in range(n):
+            ax, ay = pts[t]
+            bx, by = pts[(t + 1) % n]
+            ex, ey = bx - ax, by - ay
+            wx_, wy_ = px - ax, py - ay
+            L2 = ex * ex + ey * ey
+            if L2 <= 1e-12:
+                d = math.hypot(wx_, wy_)
+            else:
+                u = max(0.0, min(1.0, (wx_ * ex + wy_ * ey) / L2))
+                d = math.hypot(wx_ - u * ex, wy_ - u * ey)
+            best = d if best is None else min(best, d)
+        return best * best
 
     def world_to_cell(self, wx: float, wy: float, cells=None) \
             -> Optional[Tuple[float, float, str]]:
         """世界座標 → 單位塊 (r, c, q)；空白（或不在 cells 內）回傳 None。
 
-        四塊剛好鋪滿一格，故只須檢查落點附近那幾格的四個三角形；邊界上的點
-        同時屬於兩塊，依清單次序 + N/E/S/W 取先命中者（穩定、可預期）。
-        r/c 可以是半整數（錯位態的 B 晶格塊）。整數格排在半偏移格之前，
-        所以對齊態的裁定與只看整數格時完全一致。
+        **就近取用**（2026-10-03 修）：A/B 兩層晶格的塊幾何重疊，光靠
+        「按清單次序取第一個命中者」會讓某一層永遠搶不到（實測舊版 B 層塊
+        中心點返回整數格 key，創造模式因此擺不出錯位態）。現在收集所有命中
+        三角形，取**內心距離最近**的那塊；距離相同則依清單次序（N/E/S/W
+        先命中者）保證穩定可預期。
+
+        cells 不為None 時只在其中挑選——兩層同時存在也各歸各位。
         """
+        best = None
+        best_d = None
         for r, c in self._hit_cells(wx, wy):
             for q in ('N', 'E', 'S', 'W'):
                 if cells is not None and (r, c, q) not in cells:
                     continue
-                if _point_in_tri(wx, wy, self.piece_polygon(r, c, q,
-                                                           inset=False)):
-                    return (r, c, q)
-        return None
+                pts = self.piece_polygon(r, c, q, inset=False)
+                if not _point_in_tri(wx, wy, pts):
+                    continue
+                d = self._dist_to_tri(wx, wy, [self.incenter(r, c, q)])
+                if best_d is None or d < best_d - 1e-9:
+                    best, best_d = (r, c, q), d
+        return best
 
     def gap_line_distance(self, gap_type: str, line: float,
                           wx: float, wy: float) -> float:

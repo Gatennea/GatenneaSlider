@@ -30,9 +30,11 @@ def check(name, cond, extra=''):
         _failures.append(name)
 
 # ---------------------------------------------------------------- 基础设施
+# 外部控制鉴权（2026-10-13 起）：测试与游戏共享同一 ext_state，请求带令牌。
+ext_state = {'enabled': True, 'token': 'HTTPTOKEN123456', 'port': PORT}
 cmd_queue = queue.Queue()
-server = start_http_server(cmd_queue, PORT)
-gui = SliderGUI(m=3, n=3, step=1, cmd_queue=cmd_queue)
+server = start_http_server(cmd_queue, PORT, ext_state)
+gui = SliderGUI(m=3, n=3, step=1, cmd_queue=cmd_queue, ext_state=ext_state)
 gui.game_mode = 'practice'
 gui.animation_duration = 30  # 播放快一点
 
@@ -42,6 +44,7 @@ def _raw_request(method, path, body=None):
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         req.add_header('Content-Type', 'application/json')
+    req.add_header('Authorization', 'Bearer HTTPTOKEN123456')
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode('utf-8'))
@@ -300,9 +303,10 @@ check("GET /settings", code == 200 and r.get('ok')
       and 'animation_duration_ms' in r.get('settings', {}), str(r)[:80])
 s = r['settings']
 # 布尔键个数是「白名单有没有悄悄漂移」的守门数：新增一个开关就得改这里
-# （当前第 12 个是 op_log_enabled，操作日志）
-check("  含 12 个布尔键",
-      sum(1 for k, v in s.items() if isinstance(v, bool)) == 12,
+# （当前 16 个：新增 board_marks_enabled / arrows_enabled /
+#   show_virtual_keyboard / show_records_panel 四个开关）
+check("  含 16 个布尔键",
+      sum(1 for k, v in s.items() if isinstance(v, bool)) == 16,
       str(sorted(s)))
 code, r = api('POST', '/settings', {'animation_duration_ms': 200})
 check("设置动画速度 ok", code == 200 and r.get('ok'), r.get('message', ''))

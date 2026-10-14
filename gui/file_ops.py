@@ -15,6 +15,8 @@ import os
 import hashlib
 import pygame
 from puzzle_types import create_puzzle
+from gui.compressed_save import (is_compressed, load_compressed_into_gui,
+                                 compress_from_game, convert_save_file)
 
 
 def _compute_checksum(data: dict) -> str:
@@ -22,6 +24,39 @@ def _compute_checksum(data: dict) -> str:
     payload = {k: v for k, v in data.items() if k != 'checksum'}
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+# 已从注册表移除的**形态专用入口** → 现行统一入口。
+# 2026-10-05 起三形态共用 `'gather'`，`tri_gather` / `mi_gather` 两个 key 已删除；
+# 但老 config.json 里仍写着这些值（用户机器上实测就是 `'mi_gather'`）。
+# 不迁移的话 solve_thread 会拿到一个**不存在的 key** —— 旧行为是静默兜底成
+# IDA*，而 IDA* 是纯方形语义，落到异形 game 上直接抛异常（2026-10-06 用户
+# 报的「list index out of range」就是这条链）。
+_LEGACY_SOLVER_ALGORITHM = {
+    'tri_gather': 'gather',
+    'mi_gather': 'gather',
+    # 填洞宏已并入补缺宏（菜单改叫「填洞补缺」）：老配置里选了它的迁移过去，
+    # 否则界面会显示一个已经不存在的算法 key。
+    'fill_macro': 'gap_macro',
+}
+
+
+def _migrate_solver_algorithm(value):
+    """把失效的旧算法 key 迁到现行 key；认不出的原样返回（由后续校验拦下）。"""
+    return _LEGACY_SOLVER_ALGORITHM.get(value, value)
+
+
+# Windows 文件名禁止字符（含这些字符写盘必抛 OSError，此前只 print 用户看不到）
+ILLEGAL_FILENAME_CHARS = '<>:"/\\|?*'
+
+
+def _find_illegal_filename_chars(name: str) -> list:
+    """返回文件名中出现的 Windows 非法字符（去重保序），合法名返回空列表"""
+    seen = []
+    for ch in name:
+        if ch in ILLEGAL_FILENAME_CHARS and ch not in seen:
+            seen.append(ch)
+    return seen
 
 
 def _compact_json_dumps(data, indent=2, max_line_width=200):
@@ -111,6 +146,8 @@ DEFAULT_KEYBINDINGS = {
     'virtual_keyboard': {'key': 'f1', 'modifiers': []},
     'metrics_panel': {'key': 'f2', 'modifiers': []},
     'records_panel': {'key': 'f3', 'modifiers': []},
+    # 命令面板：功能可发现性主入口（Ctrl+K 是命令面板的通用键位，别挪作他用）
+    'command_palette': {'key': 'k', 'modifiers': ['ctrl']},
 }
 
 
@@ -140,9 +177,13 @@ class FileOpsMixin:
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
+            'board_marks_enabled': getattr(self, 'board_marks_enabled', True),
+            'arrows_enabled': getattr(self, 'arrows_enabled', True),
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'op_log_enabled': getattr(self, 'op_log_enabled', False),
+            'use_compressed_save': getattr(self, 'use_compressed_save', False),
+            'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
             # 教程进度（闯关模式）
@@ -237,7 +278,8 @@ class FileOpsMixin:
         self.file_menu_items = [
             f"打开 {self._format_menu_shortcut('load')}",
             f"保存 {self._format_menu_shortcut('save')}",
-            '另存为...'
+            '另存为...',
+            '存档转换...'
         ]
         self.edit_menu_items = [
             f"撤销 {self._format_menu_shortcut('undo')}",
@@ -245,6 +287,10 @@ class FileOpsMixin:
             f"打乱 {self._format_menu_shortcut('shuffle')}",
             f"重置 {self._format_menu_shortcut('reset')}",
             '---',
+            # 视图操作：把滑块组拉回屏幕中央（撤销/重做等坐标漂移跑出视口时手动救回）
+            '居中',
+            # 自动求解必须留在最后一项：主循环按 edit_menu_items[-1]
+            # 把它改成「停止求解」
             f"自动求解 {self._format_menu_shortcut('auto_solve')}",
         ]
 
@@ -282,6 +328,8 @@ class FileOpsMixin:
 
                 if 'animation_speed' in config:
                     self.animation_duration = config['animation_speed']
+                if 'ui_mode' in config and config['ui_mode'] in ('plain', 'enhanced'):
+                    self.ui_mode = config['ui_mode']
                 if 'zoom' in config:
                     self.zoom = config['zoom']
 
@@ -306,6 +354,13 @@ class FileOpsMixin:
                             self.show_metrics_panel = bool(_mp['visible'])
                         if isinstance(_mp.get('pos'), list) and len(_mp['pos']) == 2:
                             self.mp_pos = [int(_mp['pos'][0]), int(_mp['pos'][1])]
+
+                # S0-2：从存档恢复面板坐标后，立即拉回可视范围
+                # （非全屏/缩放后不再越界；依赖 screen/menu/status 高度已初始化）
+                if all(hasattr(self, a) for a in ('screen_width', 'menu_bar_height', 'status_bar_height')):
+                    if hasattr(self, '_vk_clamp_position'): self._vk_clamp_position()
+                    if hasattr(self, '_mp_clamp_position'): self._mp_clamp_position()
+                    if hasattr(self, '_rp_clamp_position'): self._rp_clamp_position()
 
                 last_path = config.get('last_file_path')
 
@@ -354,13 +409,22 @@ class FileOpsMixin:
                         self.center_map()
                     # 恢复求解算法选择
                     if 'solver_algorithm' in config:
-                        self.solver_algorithm = config['solver_algorithm']
+                        # 迁移失效的旧形态专用 key（'tri_gather'/'mi_gather'
+                        # → 'gather'）；不迁移会让求解拿到不存在的算法 key。
+                        self.solver_algorithm = _migrate_solver_algorithm(
+                            config['solver_algorithm'])
                     # 着色器开关
                     if 'coloring_enabled' in config:
                         self.coloring_enabled = bool(config['coloring_enabled'])
                     # 悬停连锁提示开关
                     if 'chain_hint_enabled' in config:
                         self.chain_hint_enabled = bool(config['chain_hint_enabled'])
+                    # 棋盘标记开关（视觉强化，独立于调试面板本体；缺省开）
+                    if 'board_marks_enabled' in config:
+                        self.board_marks_enabled = bool(config['board_marks_enabled'])
+                    # 箭头按键开关（缺省开）
+                    if 'arrows_enabled' in config:
+                        self.arrows_enabled = bool(config['arrows_enabled'])
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])
@@ -370,6 +434,9 @@ class FileOpsMixin:
                     # 操作日志开关（默认关；由 GUI.__init__ 末尾调 set_enabled 生效）
                     if 'op_log_enabled' in config:
                         self.op_log_enabled = bool(config['op_log_enabled'])
+                    # 压缩存档开关（矩形谜题保存为 replay 压缩格式）
+                    if 'use_compressed_save' in config:
+                        self.use_compressed_save = bool(config['use_compressed_save'])
                     # 恢复聚拢参数（缺失的键用默认值）
                     if 'gather_params' in config and isinstance(config['gather_params'], dict):
                         defaults = getattr(self, 'gather_params', {})
@@ -400,6 +467,15 @@ class FileOpsMixin:
     def _build_save_data(self) -> dict:
         """构建当前游戏状态的保存数据"""
         self.game.update_matrix()
+        # 矩形谜题 + 开启压缩：直接生成 replay 压缩格式
+        # （初始+末态+步骤原语+哈希校验点），异形不受此开关影响
+        if getattr(self, 'use_compressed_save', False) and not (
+                getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False)):
+            try:
+                return compress_from_game(self)
+            except Exception as e:
+                # 压缩失败（理论仅当历史不一致）回退普通格式，保证存档不丢
+                print(f"压缩存档生成失败，回退普通格式：{e}")
         history_data = {
             'history_index': self.game_history.history_index,
             'snapshots': []
@@ -449,6 +525,20 @@ class FileOpsMixin:
 
     def _load_save_data(self, save_data: dict):
         """从保存数据恢复游戏状态"""
+        # 压缩存档（replay 格式）：用重放重建历史 + 哈希校验，失败回退末态
+        if is_compressed(save_data):
+            # 载入会整体替换棋盘 → 结束进行中的标注会话（与普通分支一致）
+            self._ann_cancel_session('载入存档')
+            if not save_data.get('checksum') or _compute_checksum(save_data) != save_data.get('checksum'):
+                raise ValueError('存档校验失败：文件可能已损坏或被修改')
+            ok, warn = load_compressed_into_gui(self, save_data)
+            if not ok:
+                # 公式校验未过 → 已按末态加载（棋盘正确），提示用户
+                self.macro_notify_msg = warn
+                self.macro_notify_timer = 180
+                print(f"压缩存档载入：{warn}")
+            self._reset_file_dirty()
+            return
         # 载入会整体替换棋盘 → 结束进行中的标注会话
         self._ann_cancel_session('载入存档')
         # 载入只读标志：带 readonly:true 的存档载入后为只读
@@ -574,6 +664,13 @@ class FileOpsMixin:
 
     def _save_to_path(self, path: str):
         """将当前状态保存到指定路径"""
+        # 文件名校验：Windows 非法字符（如 * ? : 等）写盘必抛异常，先拦截并明确提示
+        illegal = _find_illegal_filename_chars(os.path.basename(path))
+        if illegal:
+            self.macro_notify_msg = f"文件名含非法字符 {' '.join(illegal)}，保存取消"
+            self.macro_notify_timer = 240
+            print(f"保存失败: 文件名含非法字符 {' '.join(illegal)}: {path}")
+            return
         save_data = self._build_save_data()
         try:
             os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
@@ -586,6 +683,9 @@ class FileOpsMixin:
             self.macro_notify_timer = 120
             print(f"游戏已保存到 {path}")
         except Exception as e:
+            # 兜底：权限/磁盘/路径等任何异常都要转成用户可见提示，绝不静默
+            self.macro_notify_msg = f"保存失败：{e}"
+            self.macro_notify_timer = 240
             print(f"保存失败: {e}")
 
     def load_from_file(self):
@@ -615,6 +715,16 @@ class FileOpsMixin:
                 self._pending_load = False
                 if self.file_dialog.result:
                     self._do_load_from_path(self.file_dialog.result)
+            if getattr(self, '_pending_convert', False):
+                self._pending_convert = False
+                if self.file_dialog.result:
+                    self._do_convert_from_path(self.file_dialog.result)
+            if getattr(self, '_pending_guide_save', False):
+                self._pending_guide_save = False
+                if self.file_dialog.result:
+                    ok, msg = self.write_external_control_guide(self.file_dialog.result)
+                    self.macro_notify_msg = msg
+                    self.macro_notify_timer = 150
 
     def _do_load_from_path(self, path: str):
         """从指定路径加载游戏（竞速模式下拒绝，防加载已复原存档判胜）"""
@@ -652,3 +762,44 @@ class FileOpsMixin:
     def import_map(self):
         """兼容旧终端指令：从文件打开"""
         self.load_from_file()
+
+    def convert_save(self):
+        """存档转换：弹文件对话框选一个存档 → 一键转成另一种格式并导出文件。
+
+        用法：选中一个存档，点确定，自动在其同目录生成转换后的文件
+        （普通→压缩：<名>.compressed.json；压缩→普通：<名>.normal.json）。
+        """
+        self.file_dialog.show(
+            mode='open',
+            title='选择要转换的存档',
+            initial_dir=self.save_dir,
+            extensions=['json']
+        )
+        self._pending_convert = True
+
+    def _do_convert_from_path(self, src_path: str):
+        """把 src_path 转成另一种格式写到同目录的派生文件名。"""
+        try:
+            with open(src_path, 'r', encoding='utf-8') as f:
+                src = json.load(f)
+            src_compressed = is_compressed(src)
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            self.macro_notify_msg = f"读取失败（文件可能损坏）：{e}"
+            self.macro_notify_timer = 180
+            print(f"存档转换读取失败: {e}")
+            return
+        except Exception as e:
+            self.macro_notify_msg = f"读取失败：{e}"
+            self.macro_notify_timer = 180
+            return
+        base, _ = os.path.splitext(src_path)
+        dst = (base + '.normal.json') if src_compressed else (base + '.compressed.json')
+        try:
+            kind, msg = convert_save_file(src_path, dst)
+            self.macro_notify_msg = f"已转换（{kind}）：{os.path.basename(dst)}"
+            self.macro_notify_timer = 200
+            print(msg)
+        except Exception as e:
+            self.macro_notify_msg = f"转换失败：{e}"
+            self.macro_notify_timer = 240
+            print(f"存档转换失败: {e}")

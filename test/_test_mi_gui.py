@@ -6,7 +6,8 @@
       相機（米字格包圍盒是矩形但世界座標無 gap 間距）、draw_board 米字分支
       真的畫出了東西、M2 的兩次觸控（第一下選縫、第二下按住滑塊拖動才提交；
       只按不拖 = 選組，方向留給虛擬鍵盤）、
-      打亂、縫隙/滑塊命中、拖拽起點記錄與無縫不跟隨、自動求解被攔並提示、
+      打亂、縫隙/滑塊命中、拖拽起點記錄與無縫不跟隨、
+      自動求解自動切 mi_gather 並提示（M3 起已放行）、
       物理鍵盤只提示、虛擬鍵盤八向、4-bit 快照往返
       （save_snapshot → restore_snapshot）、v2 存檔 type=mi 往返。
 """
@@ -463,9 +464,22 @@ fire(pygame.event.Event(pygame.MOUSEBUTTONUP,
 check("不進跟隨也不滑動（單擊只選組）",
       set(gui.game.positions()) == before_no_gap
       and gui.step_count == step_no_gap)
+# **三形态共用同一个 'gather' 入口**（2026-10-05 起不再有 mi 专用入口）。
+# 意图仍然有效且更重要：**mi 绝不能走方形求解器**（方形算法在 mi 的
+# 5 元组 / 半整数坐标上会静默走错）。所以验的是「设成方形算法时被
+# **明确拒绝**且提示点名米字格」，而不是旧版的「静默自动切换」。
 gui.macro_notify_msg = ''
+gui._auto_solve_running = False
+gui.macro_executing = False
+gui.solver_algorithm = 'ida_star'        # 故意设成 mi 不支持的方形算法
 gui._start_auto_solve()
-check("自動求解被攔", '米字格' in (gui.macro_notify_msg or ''), gui.macro_notify_msg or '')
+check("mi 下用方形算法被拒绝（不静默换成异形入口）",
+      gui.solver_algorithm == 'ida_star', gui.solver_algorithm)
+check("拒绝提示明确且点名米字格",
+      '没有' in (gui.macro_notify_msg or '')
+      and '米字格' in (gui.macro_notify_msg or ''),
+      gui.macro_notify_msg or '')
+check("拒绝时没有启动后台线程", gui._auto_solve_running is False)
 
 # —— 物理鍵盤：只提示，不動棋盤 ——
 gui.new_mi_puzzle(6, 6, 2)

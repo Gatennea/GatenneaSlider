@@ -131,6 +131,13 @@ def _seam_point(gap_type, line):
 
 
 # ---- 1. 选中的缝隙画红线，且线落在「被它分开的两侧相邻块」的公共边上 ----
+# 显式关掉调试面板（2026-10-03）：面板的「洞/缺口」记号是**红色三角**、
+# 目标框是绿色，都画在棋盘上，会污染这里对纯红 (255,0,0) 的像素判读。
+# 三角调试面板在 8:0x 接上了 draw_triangle_board（此前只有方形 draw_board
+# 调画框），所以这个前提以前不成立、现在必须写明。面板可见性来自
+# gui/file_ops 从设置文件恢复（config/settings.json 的 visible 字段），
+# **不是代码默认值**，所以不能指望它默认是关的。
+gui.show_metrics_panel = False
 seam_ok = True
 for gap_type, line in gui.game.all_gaps():
     gui.selected_gap = (gap_type, line)
@@ -284,8 +291,18 @@ before = set(gui.game.positions())
 gui.shuffle_puzzle()
 check(set(gui.game.positions()) != before, "打乱已开放（局面改变）")
 gui.macro_notify_msg = ''
+gui.solver_algorithm = 'ida_star'      # 模拟用户手动设成方形算法
+gui._auto_solve_running = False
+gui.macro_executing = False
 gui._start_auto_solve()
-check('尚未实现' in gui.macro_notify_msg, f"自动求解仍被攔截：{gui.macro_notify_msg}")
+# 2026-10-05 起三形态共用同一个 'gather' 入口，异形不再有专用入口。
+# 三角不支持方形算法 → **明确拒绝**并保留用户选择（旧版是静默换算法）。
+check(gui.solver_algorithm == 'ida_star',
+      f"自动求解：不支持的算法被拒绝且保留用户选择（实际 {gui.solver_algorithm}）")
+check('没有' in (gui.macro_notify_msg or '')
+      and '三角形' in (gui.macro_notify_msg or ''),
+      f"拒绝提示明确且点名三角形（实际 {gui.macro_notify_msg!r}）")
+gui._auto_solve_cancel = True           # 别让后台线程真跑
 gui.macro_notify_msg = ''
 gui._timer_enter_ready()
 check(gui.timer_state == 'ready', "競速就緒態已開放（B5）")
