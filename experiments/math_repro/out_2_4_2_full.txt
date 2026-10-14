@@ -1,0 +1,27 @@
+=== (2,4,2) K=8 ===
+enumeration: nodes=793 emits=300 |A|=47
+goal id = 4
+building edges ...
+edges total = 121
+|A|      = 47
+|cone|   = 2
+|B|      = 3
+god      = 1
+dead(cone-B) = 0
+(A-cone)-B  = 44
+--- dead states ---
+weak components outside goal = 3, total states = 44
+component sizes (top 20): 40 3 1
+goal component size = 3
+--- R7: dead state bounding boxes ---
+R7: A 中包围盒短边=3 的状态共 27 个（短边≤3 共 34 个），其中死局 0 个
+R-结构: |B\cone| = 1  (文档声称 1227)
+R-结构: |B ∩ cone| = 2  (文档声称 558277)
+R8: 边(u,v) 两端在 B 内 = 4, 其中单步不可逆 = 2 (50.00%)
+R8: 抽样 2 条单步不可逆边，其中移动分量落位后已不可再选中（粘性型）= 2
+SCC: n_components = 7, goal component size = 2
+SCC: |B∩cone| = 2, goal SCC = 2 ⇒ 一致（goal SCC = B ∩ cone）
+R8(强不可逆): 全 A 边 121 / 不可逆 4 (3.31%)
+R8(强不可逆): cone 内边 2 / 不可逆 0 (0.00%)
+R8(强不可逆): B 内边 4 / 不可逆 2 (50.00%)
+DONE

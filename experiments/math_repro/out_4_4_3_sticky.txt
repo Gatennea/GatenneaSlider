@@ -1,0 +1,89 @@
+=== (4,4,3) K=16 ===
+enumeration: nodes=1937884 emits=195994 |A|=24605
+goal id = 1971
+building edges ...
+edges total = 94274
+|A|      = 24605
+|cone|   = 21761
+|B|      = 23163
+god      = 29
+dead(cone-B) = 6
+(A-cone)-B  = 1436
+--- dead states ---
+dead#1 id=2620 outdeg=1 succ_in_B=0 succ_in_dead=1
+.#....
+##.#.#
+#..###
+#.##..
+####..
+  succ(dead): 11491
+dead#2 id=11491 outdeg=1 succ_in_B=0 succ_in_dead=1
+.#....
+##....
+#.....
+#.#...
+####.#
+...###
+...#..
+...#..
+  succ(dead): 2620
+dead#3 id=15813 outdeg=1 succ_in_B=0 succ_in_dead=1
+##..
+#...
+##..
+.#..
+.#..
+.#..
+.###
+.##.
+..#.
+.##.
+  succ(dead): 18444
+dead#4 id=18310 outdeg=0 succ_in_B=0 succ_in_dead=0
+#...
+#...
+#...
+###.
+##..
+.#..
+####
+..#.
+..##
+  succ(dead):
+dead#5 id=18444 outdeg=1 succ_in_B=0 succ_in_dead=1
+.........#
+......####
+#.######.#
+###.......
+  succ(dead): 15813
+dead#6 id=22325 outdeg=0 succ_in_B=0 succ_in_dead=0
+#...
+#...
+#.##
+###.
+##..
+.#..
+####
+..#.
+  succ(dead):
+weak components outside goal = 637, total states = 1434
+component sizes (top 20): 36 23 20 19 18 17 11 11 11 10 10 9 9 8 8 8 8 8 8 7
+goal component size = 23171
+--- R7: dead state bounding boxes ---
+  dead#1 bbox=5x6 cells=16 indegree(from cone)=2
+  dead#2 bbox=8x6 cells=16 indegree(from cone)=1
+  dead#3 bbox=10x4 cells=16 indegree(from cone)=2
+  dead#4 bbox=9x4 cells=16 indegree(from cone)=1
+  dead#5 bbox=4x10 cells=16 indegree(from cone)=1
+  dead#6 bbox=8x4 cells=16 indegree(from cone)=1
+R7: A 中包围盒短边=3 的状态共 188 个（短边≤3 共 188 个），其中死局 0 个
+R-结构: |B\cone| = 1408  (文档声称 1227)
+R-结构: |B ∩ cone| = 21755  (文档声称 558277)
+R8: 边(u,v) 两端在 B 内 = 92385, 其中单步不可逆 = 12926 (13.99%)
+R8: 全量 12926 条单步不可逆边，其中移动分量落位后已不可再选中（粘性型）= 12926
+SCC: n_components = 1209, goal component size = 21755
+SCC: |B∩cone| = 21755, goal SCC = 21755 ⇒ 一致（goal SCC = B ∩ cone）
+R8(强不可逆): 全 A 边 94274 / 不可逆 2243 (2.38%)
+R8(强不可逆): cone 内边 88129 / 不可逆 4 (0.00%)
+R8(强不可逆): B 内边 92385 / 不可逆 2146 (2.32%)
+DONE
