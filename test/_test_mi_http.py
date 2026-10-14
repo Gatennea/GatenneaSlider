@@ -36,8 +36,10 @@ def check(name, cond, extra=''):
 
 
 cmd_queue = queue.Queue()
-server = start_http_server(cmd_queue, PORT)
-gui = SliderGUI(m=3, n=3, step=1, cmd_queue=cmd_queue)
+# 外部控制鉴权（2026-10-13 起）：测试与游戏共享同一 ext_state，请求带令牌。
+ext_state = {'enabled': True, 'token': 'HTTPTOKEN123456', 'port': PORT}
+server = start_http_server(cmd_queue, PORT, ext_state)
+gui = SliderGUI(m=3, n=3, step=1, cmd_queue=cmd_queue, ext_state=ext_state)
 gui.save_readonly_flag = False
 gui.game_mode = 'practice'
 gui.animation_enabled = False  # 移動立即生效，便於斷言
@@ -49,6 +51,8 @@ def _raw_request(method, path, body=None):
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         req.add_header('Content-Type', 'application/json')
+    # 令牌头必须在 if 外：GET 无 body 也要带，否则 401
+    req.add_header('Authorization', f"Bearer {ext_state['token']}")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode('utf-8'))
