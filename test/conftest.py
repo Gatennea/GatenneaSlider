@@ -80,11 +80,21 @@ def _has_native_tests(path):
 
 
 def pytest_collect_file(file_path, parent):
-    """test/ 下的 .py：有原生 test_ 函数走默认，否则按脚本收集。"""
+    """test/ 直属的 _test_*.py：有原生 test_ 函数走默认，否则按脚本收集。
+
+    只接管 ``_test_`` 前缀（仓库约定 = 回归测试）。其余前缀不碰：
+      _check_/_mi_/_dbg_/_draw_  一次性核查 / 调试
+      _gen_                      资源生成（跑了会写文件，绝不进 CI）
+      _shot_                     截图工具（产出图片，非断言）
+      _smoke_exe                 打包产物冒烟（进 _SKIP，手动跑）
+    test/test/ 子目录由 pytest 默认机制管（那 4 个是 pytest 原生）。
+    """
     if file_path.suffix != '.py':
         return None
     if file_path.parent != parent.path:
-        return None  # 只收 test/ 直属（test/test/ 子目录由默认机制管）
+        return None
+    if not file_path.name.startswith('_test_'):
+        return None
     if _has_native_tests(file_path):
         return None
     return ScriptTestFile.from_parent(parent, path=file_path)
