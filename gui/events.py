@@ -2698,7 +2698,14 @@ class EventsMixin:
                         # 宁可报错也不返回错地图
                         self._cmd_reply(resp_q, False, "预演失败（副本执行异常）")
                         continue
-                    after = sorted(list(b.location) for b in shadow.blocks)
+                    # blocks_after 与 blocks_before 同口径 = 「被移动的滑块
+                    # 平移后」（真实执行一步移动 current_step 格，与
+                    # move_selected_blocks 一致；不是全盘坐标）。
+                    dr, dc = {'w': (-1, 0), 's': (1, 0),
+                              'a': (0, -1), 'd': (0, 1)}[md]
+                    dist = max(1, self.current_step)
+                    after = sorted([r + dr * dist, c + dc * dist]
+                                   for r, c in info['blocks'])
                     self._cmd_reply(resp_q, True, "预览（未执行）", {
                         'blocks_before': info['blocks'],
                         'blocks_after': after,

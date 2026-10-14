@@ -188,7 +188,9 @@ HELP_DETAILS = {
                    ('side', 'string', True, 'h 缝：above/below；v 缝：left/right'),
                    ('move_dir', 'string', True, 'h 缝：a/d；v 缝：w/s（须平行于缝）')],
         'returns': 'JSON：{ok, message, blocks_before, blocks_after, max_cells, '
-                   'map_after}；动不了或参数不合法时 {ok:false, message}',
+                   'map_after}；动不了或参数不合法时 {ok:false, message}。'
+                   'blocks_before/after 同口径（被移动的滑块，平移前后），'
+                   'map_after 是移动 current_step 格后的全盘地图',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
                    '-H "Content-Type: application/json" '
                    '-d \'{"gap_type":"h","line":2,"side":"above","move_dir":"a"}\' '

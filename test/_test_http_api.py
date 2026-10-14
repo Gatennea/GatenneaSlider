@@ -351,6 +351,17 @@ check("启用标志切换 ok", code == 200 and r.get('ok')
 # （外部 AI 实机反馈整改：错误带原因/线号范围公开/动作预览/mode 零副作用澄清）
 print("=== 信息层：动作预览与语义透明 ===")
 fresh_puzzle(3, 3, 1, 6)
+
+def _shift(before, after):
+    """before/after 是否同一刚性平移（返回 delta 或 None）。
+
+    预览口径锁：blocks_after = blocks_before 整体平移 current_step 格。
+    """
+    if len(before) != len(after):
+        return None
+    deltas = {(b[0] - a[0], b[1] - a[1]) for a, b in zip(before, after)}
+    return deltas.pop() if len(deltas) == 1 else None
+
 code, r = api('GET', '/analysis/actions')
 check("IL1 actions 每项带预览字段",
       code == 200 and r.get('ok') and r.get('actions')
@@ -368,8 +379,15 @@ if _pick:
           code == 200 and pv.get('ok')
           and {'blocks_before', 'blocks_after', 'max_cells', 'map_after'} <= set(pv),
           str(pv)[:80])
-    check("IL4 preview 的 after ≠ before（确实预演了移动）",
-          pv.get('blocks_before') != pv.get('blocks_after'))
+    check("IL4 preview 的 after 与 before 同口径（等长且为整体平移）",
+          pv.get('blocks_before') and pv.get('blocks_after')
+          and len(pv['blocks_before']) == len(pv['blocks_after'])
+          and _shift(pv['blocks_before'], pv['blocks_after']) is not None,
+          str(pv)[:100])
+    _d = _shift(pv['blocks_before'], pv['blocks_after'])
+    _exp = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}[_pick['move_dir']]
+    check("IL4b 平移量 = 方向 × current_step（1 格）",
+          _d == _exp, f"{_d} vs {_exp}")
     check("IL5 dry-run 不碰真实局面（/map 与 preview 前一致）",
           api('GET', '/map')[1].get('map') == _map_before)
     check("IL6 preview 的 max_cells 与 actions 口径一致",
