@@ -1,0 +1,32 @@
+=== (5,3,2) K=15 ===
+enumeration: nodes=5806184 emits=2003416 |A|=250620
+goal id = 13463
+building edges ...
+  50000 / 250620 (edges 370071)
+  100000 / 250620 (edges 723972)
+  150000 / 250620 (edges 1065780)
+  200000 / 250620 (edges 1410668)
+  250000 / 250620 (edges 1769290)
+edges total = 1772759
+|A|      = 250620
+|cone|   = 249928
+|B|      = 250433
+god      = 17
+dead(cone-B) = 0
+(A-cone)-B  = 187
+--- dead states ---
+weak components outside goal = 71, total states = 187
+component sizes (top 20): 12 8 8 8 7 6 6 6 6 6 4 4 4 4 4 4 4 4 4 3
+goal component size = 250433
+--- R7: dead state bounding boxes ---
+R7: A 中包围盒短边=3 的状态共 6983 个（短边≤3 共 7049 个），其中死局 0 个
+R-结构: |B\cone| = 505  (文档声称 1227)
+R-结构: |B ∩ cone| = 249928  (文档声称 558277)
+R8: 边(u,v) 两端在 B 内 = 1772472, 其中单步不可逆 = 249113 (14.05%)
+R8: 抽样 300 条单步不可逆边，其中移动分量落位后已不可再选中（粘性型）= 300
+SCC: n_components = 254, goal component size = 249928
+SCC: |B∩cone| = 249928, goal SCC = 249928 ⇒ 一致（goal SCC = B ∩ cone）
+R8(强不可逆): 全 A 边 1772759 / 不可逆 1228 (0.07%)
+R8(强不可逆): cone 内边 1770144 / 不可逆 0 (0.00%)
+R8(强不可逆): B 内边 1772472 / 不可逆 1204 (0.07%)
+DONE

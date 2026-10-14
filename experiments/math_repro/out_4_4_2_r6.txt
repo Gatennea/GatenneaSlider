@@ -1,0 +1,5 @@
+R6: closure with 1 generators = 12
+R6: trivial upper bound (labels stay in own class) = 331776
+R6: closure over ALL generators = 331776, among them same-phase = 165888
+R6: STRICT group order = 165888  (下界)
+R6: group order = 12  (下界；未与上界闭合)

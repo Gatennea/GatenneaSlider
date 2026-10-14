@@ -1,0 +1,4 @@
+R6: closure with 20 generators = 192
+R6: trivial upper bound (labels stay in own class) = 384
+R6: group order = 192  (下界；未与上界闭合)
+RC=0 END Wed Oct 14 14:53:00     2026

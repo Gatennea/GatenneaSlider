@@ -1,0 +1,3 @@
+R6: closure with 7 generators = 207360
+R6: trivial upper bound (labels stay in own class) = 207360
+R6: group order = 207360  (= upper bound ⇒ 精确阶)
