@@ -30,9 +30,11 @@ def check(name, cond, extra=''):
         _failures.append(name)
 
 # ---------------------------------------------------------------- 基础设施
+# 外部控制鉴权（2026-10-13 起）：测试与游戏共享同一 ext_state，请求带令牌。
+ext_state = {'enabled': True, 'token': 'HTTPTOKEN123456', 'port': PORT}
 cmd_queue = queue.Queue()
-server = start_http_server(cmd_queue, PORT)
-gui = SliderGUI(m=3, n=3, step=1, cmd_queue=cmd_queue)
+server = start_http_server(cmd_queue, PORT, ext_state)
+gui = SliderGUI(m=3, n=3, step=1, cmd_queue=cmd_queue, ext_state=ext_state)
 gui.game_mode = 'practice'
 gui.animation_duration = 30  # 播放快一点
 
@@ -42,6 +44,7 @@ def _raw_request(method, path, body=None):
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         req.add_header('Content-Type', 'application/json')
+    req.add_header('Authorization', 'Bearer HTTPTOKEN123456')
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode('utf-8'))

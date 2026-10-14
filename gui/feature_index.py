@@ -60,7 +60,7 @@ def place_text(place):
     if head == 'settings':
         _TAB = {
             'keybindings': '快捷键',
-            'animation': '动画速度',
+            'animation': '视觉',
             'solver': '求解器',
             'gather': '聚拢参数',
             'file': '文件',
@@ -98,6 +98,18 @@ FEATURES = (
          howto='顶栏「文件」→「另存为...」，换文件名存一份新档。',
          confusion=''),
 
+    # ---------------- 找功能（元功能：找不到别的入口时先来这里） ----------------
+    # 排在清单最前：它是「不知道有没有 / 不知道在哪」时的兜底入口，检索时
+    # 「命令面板」四个字若能命中自己，玩家就能从帮助框里也把它翻出来。
+    dict(id='command_palette', name='命令面板（搜索功能）',
+         aliases=('命令面板', '搜索功能', '查找功能', '功能检索', '找不到',
+                  '有没有', '在哪', 'palette', 'ctrl k', '搜索'),
+         kind='action', place=('menu_item', '设置', '命令面板'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='按 Ctrl+K；或顶栏「设置」→「命令面板」。输关键词后 ↑↓ 选择、回车直接到位。',
+         confusion='**不确定某个功能有没有、在哪、当前能不能用，先来这里搜。** '
+                   '结果会写明位置、怎么用，以及当前形态/模式下是否可用（不可用会标 ✕ 并说明原因）。'),
+
     # ---------------- 编辑 ----------------
     dict(id='undo', name='撤销', aliases=('撤销', '退回', '上一步', '反悔', 'undo'),
          kind='action', place=('menu_item', '编辑', '撤销'),
@@ -131,12 +143,12 @@ FEATURES = (
          confusion='竞速计时中、只读存档、标注录制中都禁止求解。'),
 
     # ---------------- 求解算法 ----------------
-    dict(id='algo_gather', name='聚拢（求解算法）',
-         aliases=('聚拢', '聚拢求解', 'gather', '梯度'),
+    dict(id='algo_gather', name='单次聚拢（求解算法）',
+         aliases=('聚拢', '单次聚拢', '聚拢求解', 'gather', '梯度'),
          kind='setting', place=('settings', 'solver'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 求解器页，选「聚拢」，按确定后 Ctrl+A 开跑。',
-         confusion='**唯一支持三角形 / 米字格的算法**；其余算法在异形下会明确拒绝。'),
+         howto='设置 → 求解器页，选「单次聚拢」，按确定后 Ctrl+A 开跑。',
+         confusion='**唯一支持三角形 / 米字格的算法**；其余算法在异形下会明确拒绝。它只跑一轮聚拢，多轮自动放宽参数请用「梯度聚拢」。'),
     dict(id='algo_others', name='方形专用求解算法',
          aliases=('IDA*', '快速', '贪心', '查表', '填洞补缺', '混合求解'),
          kind='setting', place=('settings', 'solver'),
@@ -158,8 +170,8 @@ FEATURES = (
     dict(id='metrics_panel', name='调试面板', aliases=('调试面板', '指标面板', '聚拢度面板', '调试'),
          kind='panel', place=('key', 'metrics_panel'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='按 F2；或设置 → 动画速度页的「调试面板」开关。',
-         confusion='三种形态都支持。面板显示数据，棋盘上的记号和框由「棋盘标记」单独控制。'),
+         howto='按 F2；或设置 → 视觉页的「调试面板」开关。',
+         confusion='三种形态都支持。面板显示数据，棋盘上的记号和框由「复原提示标记」单独控制。'),
     dict(id='records_panel', name='成绩面板', aliases=('成绩', '记录', '计时记录', '最好成绩', 'ao5'),
          kind='panel', place=('right_panel', 'show_records_panel'),
          forms=ALL_FORMS, modes=ALL_MODES,
@@ -171,31 +183,31 @@ FEATURES = (
          aliases=('着色', '染色', '分色', '上色', '颜色分组', '分组'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 动画速度页「分组着色」；或右下角「着色」开关。',
+         howto='设置 → 视觉页「分组着色」；或右下角「着色」开关。',
          confusion='**等级 1 时看不到任何效果**——等级 1 时分组退化成一组，所有滑块同色。这是设计使然，不是开关坏了。'),
     dict(id='chain_hint_enabled', name='悬停连锁提示',
          aliases=('连锁', '连锁提示', '悬停提示', '联动提示'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 动画速度页「悬停连锁提示」；或右下角「连锁」开关。',
+         howto='设置 → 视觉页「悬停连锁提示」；或右下角「连锁」开关。',
          confusion='鼠标悬停在滑块上时，高亮与它同组、可能互换位置的其他滑块。'),
-    dict(id='board_marks_enabled', name='棋盘标记',
-         aliases=('标记', '记号', '目标框', '洞标记', '凸起标记'),
+    dict(id='board_marks_enabled', name='复原提示标记',
+         aliases=('标记', '复原标记', '记号', '目标框', '洞标记', '凸起标记'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 动画速度页「棋盘标记」；或右下角「标记」开关；F2 会连带切换它。',
+         howto='设置 → 视觉页「复原提示标记」；或右下角「复原标记」开关；F2 会连带切换它。',
          confusion='这是**独立于调试面板**的开关：只想要棋盘上的记号和框、不想要数据面板时，单独开它即可。'),
     dict(id='animation_enabled', name='滑动动画',
          aliases=('滑动动画', '动画', '移动动画', '过渡'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 动画速度页「滑动动画」；或右下角「滑动动画」开关。',
+         howto='设置 → 视觉页「滑动动画」；或右下角「滑动动画」开关。',
          confusion='关掉后移动是瞬时的，不是卡住了。'),
     dict(id='selection_animation_enabled', name='选中动画',
          aliases=('选中动画', '选中提示', '选组动画'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 动画速度页「选中动画」；或右下角「选中动画」开关。',
+         howto='设置 → 视觉页「选中动画」；或右下角「选中动画」开关。',
          confusion=''),
     dict(id='arrows_enabled', name='箭头按键',
          aliases=('箭头', '箭头按钮', '方向按钮', '两端按键'),
@@ -207,14 +219,20 @@ FEATURES = (
          aliases=('界面模式', '增强模式', '朴素模式', '特效', 'ui'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 动画速度页「界面模式」。',
+         howto='设置 → 视觉页「界面模式」。',
          confusion='朴素模式下不播放增强动效，其余功能完全一致。'),
     dict(id='animation_duration', name='动画时长',
          aliases=('动画时长', '速度', '动画速度', '毫秒'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 动画速度页拖「动画时长」滑条（100~1000ms）；右下角速度滑条可到 50ms。',
+         howto='设置 → 视觉页拖「动画时长」滑条（100~1000ms）；右下角速度滑条可到 50ms。',
          confusion='对话框滑条最低 100ms，接口与右下角滑条可到 50ms——两者下限不一致，属已知差异。'),
+    dict(id='zoom', name='缩放',
+         aliases=('缩放', '放大', '缩小', 'zoom', '视图大小'),
+         kind='setting', place=('settings', 'animation'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 视觉页拖「缩放」滑条（10%~400%）；右下角缩放滑条、Ctrl+滚轮同样可调，三者实时联动。',
+         confusion='缩放只改视图、不动棋盘；换异形谜题时会按棋盘大小自动适配一次。'),
 
     # ---------------- 控制方式 ----------------
     dict(id='control_single_touch', name='单次触控',
@@ -314,6 +332,20 @@ FEATURES = (
          howto='顶栏「官网」，用默认浏览器打开网页版。',
          confusion='网页版只有矩形一种形态，且不做求解器 / 宏 / 调试面板。'),
 
+    # ---------------- 更新（增量更新器） ----------------
+    dict(id='check_update', name='检查更新',
+         aliases=('检查更新', '查更新', '有没有新版本', '版本', 'update', '新版'),
+         kind='action', place=('menu', '帮助'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='在命令面板（Ctrl+K）搜「检查更新」，或顶栏「帮助」。仅安装版（exe）生效，开发版不检查。',
+         confusion='自动更新**只覆盖程序文件**，你的存档 / 配置 / 宏目录都原样保留，不会动。'),
+    dict(id='update_now', name='立即更新',
+         aliases=('更新', '立即更新', '升级', '升到最新', 'update now'),
+         kind='action', place=('menu', '帮助'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='先「检查更新」发现新版本后，在命令面板搜「立即更新」，或点游戏内左上角的「更新」按钮。',
+         confusion='点击后会**关闭游戏 → 下载新版本 → 自动重启**；更新过程中不要手动关进程。'),
+
     # ---------------- 概念 ----------------
     dict(id='concept_step', name='等级（= 步长）',
          aliases=('等级', '步长', '难度', 'step'),
@@ -345,6 +377,8 @@ FEATURES = (
 # ---------------------------------------------------------------- 一键到位目标
 # 检索结果被回车 / 点击时执行。类型语义见 `gui/events.py::_activate_feature`。
 _ACTIONS = {
+    # 找功能：打开命令面板（自指条目——面板里搜到它也能打开面板）
+    'command_palette': {'type': 'palette'},
     # 文件
     'load': {'type': 'menu', 'name': '文件'},
     'save': {'type': 'menu', 'name': '文件'},
@@ -355,6 +389,7 @@ _ACTIONS = {
     'shuffle': {'type': 'menu', 'name': '编辑'},
     'reset': {'type': 'menu', 'name': '编辑'},
     'auto_solve': {'type': 'menu', 'name': '编辑'},
+    'center_view': {'type': 'menu', 'name': '编辑'},
     # 求解器
     'algo_gather': {'type': 'settings', 'tab': 'solver'},
     'algo_others': {'type': 'settings', 'tab': 'solver'},
@@ -372,6 +407,7 @@ _ACTIONS = {
     'arrows_enabled': {'type': 'settings', 'tab': 'control'},
     'ui_mode': {'type': 'settings', 'tab': 'animation'},
     'animation_duration': {'type': 'settings', 'tab': 'animation'},
+    'zoom': {'type': 'settings', 'tab': 'animation'},
     'control_single_touch': {'type': 'settings', 'tab': 'control'},
     'control_two_touch': {'type': 'settings', 'tab': 'control'},
     'control_mouse_kb': {'type': 'settings', 'tab': 'control'},
@@ -393,6 +429,9 @@ _ACTIONS = {
     'help': {'type': 'none'},
     'tutorial': {'type': 'tutorial'},
     'website': {'type': 'website'},
+    # 增量更新器
+    'check_update': {'type': 'updater_check'},
+    'update_now': {'type': 'updater_now'},
     'concept_step': {'type': 'none'},
     'concept_gap': {'type': 'none'},
     'concept_hole': {'type': 'none'},

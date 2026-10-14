@@ -93,8 +93,8 @@ def hybrid_solve_with_table(game, step, cancel_check=None,
 #
 # 之前的做法是给异形**各加一个注册表入口**（'tri_gather' / 'mi_gather'），
 # GUI 还要在切形态时把 solver_algorithm 静默改成对应 key。用户指出这不对：
-# **不同谜题应该用同一个入口**（菜单里就一个「聚拢」），形态差异是内部实现
-# 细节，不该暴露成两个菜单项、也不该由 GUI 去猜该用哪个。
+# **不同谜题应该用同一个入口**（菜单里就一个「单次聚拢」），形态差异是内部
+# 实现细节，不该暴露成两个菜单项、也不该由 GUI 去猜该用哪个。
 # ---------------------------------------------------------------------------
 
 FORM_LABELS = {'square': '方形', 'triangle': '三角形', 'mi': '米字格'}
@@ -122,7 +122,7 @@ def form_label(form) -> str:
 
 def gather_solve_unified(game, step: int = None, cancel_check=None,
                          progress_callback=None, **kwargs):
-    """「聚拢」的**统一入口**：三种谜题形态共用这一个入口，内部按形态分发。
+    """「单次聚拢」的**统一入口**：三种谜题形态共用这一个入口，内部按形态分发。
 
     方形  → `gather_solve`
     三角形 → `tri_gather_solve`
@@ -183,29 +183,41 @@ def unsupported_solver_msg(algorithm, form) -> str:
             f"（该形态目前仅支持：{ok_names}）")
 
 
+# 求解算法注册表。**字典顺序 = 设置-求解器页的展示顺序**（2026-10-13
+# 用户定重排）：好用的置顶，低效的沉底备查。
+#   混合 > 梯度聚拢 > 填洞补缺 > 单次聚拢 > 选块填空 > 查表求解 > 旧三项
+# 旧三项（IDA* / IDA*快速 / 贪心爬山）是早期搜索类算法，相对现有宏级
+# 流水线已非常低效，保留只为备查与老配置兼容，不再往前提。
 SOLVER_ALGORITHMS = {
-    'ida_star': ('  IDA*求解', solve),
-    'fast': ('  IDA*快速', solve_fast),
-    'greedy': ('  贪心爬山', solve_greedy),
-    'table':  ('  查表求解', table_solve),
-    #'intelligence': ('  AI求解', ai_solve),
-    #'emd': ('  EMD求解', emd_greedy_solve),
-    #'strategy': ('  策略求解', strategy_solve),
-    #'distance': ('  距离求解', distance_solve),
-    # 三形态共用的统一入口（内部按 game 形态分发，见 gather_solve_unified）
-    'gather': ('  聚拢', gather_solve_unified),
+    # 1. 混合求解（自动规划）：有表先查表；无表按空位数路由，两路互接力
+    'hybrid':   ('  混合求解（自动规划）', auto_solve),
+    # 2. 梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢
     'gather_gradient': ('  梯度聚拢', gradient_gather),
-    #'human_ai': ('  人类模仿', ai_human_solve),
     # ➜ 填洞已并入下面「填洞补缺」，菜单不再单列（2026-10-12 合并）：
     #   补缺宏内部遇到多空位/非边缘缺口本来就是转去跑填洞那一支，两者是
     #   包含关系而非并列；而反过来单独跑填洞，遇到边缘缺口会全线失败——
     #   留着它等于在菜单上摆一个看着能用、真用会翻车的坑。
     #'fill_macro': ('  填洞宏', solve_fill_macro),
+    # 3. 填洞补缺：多空位宏级机构（带移让位 + 粘上接走链）
     'gap_macro': ('  填洞补缺', solve_gap_macro),
-    # 选块填空：与上面几条的差别是「目标由玩家点选」，因此它需要一段先
-    # 搜集点击的交互（见 GUI._pick_fill_toggle），但入口仍旧统一走列表。
+    # 4. 单次聚拢（2026-10-13 由「聚拢」改名，与「梯度聚拢」区分）：
+    #    三形态共用的统一入口（内部按 game 形态分发，见 gather_solve_unified），
+    #    只跑一轮聚拢，不保证还原
+    'gather': ('  单次聚拢', gather_solve_unified),
+    # 5. 选块填空：与上面几条的差别是「目标由玩家点选」，因此它需要一段先
+    #    搜集点击的交互（见 GUI._pick_fill_toggle），但入口仍旧统一走列表。
     'pick_fill': ('  选块填空', solve_pick_fill),
-    'hybrid':   ('  混合求解（自动规划）', auto_solve),
+    # 6. 查表求解：只对已有数据库的谜题有效
+    'table':  ('  查表求解', table_solve),
+    #'intelligence': ('  AI求解', ai_solve),
+    #'emd': ('  EMD求解', emd_greedy_solve),
+    #'strategy': ('  策略求解', strategy_greedy_solve),
+    #'distance': ('  距离求解', distance_solve),
+    #'human_ai': ('  人类模仿', ai_human_solve),
+    # 7~9. 旧搜索三项（低效，沉底备查；老 config 里的取值仍要能识别）
+    'ida_star': ('  IDA*求解', solve),
+    'fast': ('  IDA*快速', solve_fast),
+    'greedy': ('  贪心爬山', solve_greedy),
 }
 
 # 注：'tri_gather' / 'mi_gather' 作为**独立入口已移除**（2026-10-05）——

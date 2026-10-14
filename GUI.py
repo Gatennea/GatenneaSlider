@@ -19,6 +19,8 @@ import time
 import traceback
 import queue
 import math
+import secrets
+import threading
 from game import SliderMatrix, Block
 from history import GameHistory
 from records import Records, format_time
@@ -31,12 +33,16 @@ from gui.animation import AnimationMixin
 from gui.file_ops import FileOpsMixin, DEFAULT_KEYBINDINGS
 from gui.events import EventsMixin
 from gui import op_log
+from gui import updater as updater_module
 from gui.virtual_keyboard import VirtualKeyboardMixin
 from gui.metrics_panel import MetricsPanelMixin
 from gui.records_panel import RecordsPanelMixin
 from gui.annotation import AnnotationMixin
 from gui.tutorial import TutorialMixin
+from gui.palette import PaletteMixin
 from gui.board_view import SquareBoardView
+from gui.text_input import TextInput
+from gui.scrollbar import Scrollbar
 from gui import log_writer
 
 
@@ -86,13 +92,13 @@ def _gui_get_resource_path(relative_path):
     return os.path.join(base, relative_path)
 
 
-class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, TutorialMixin):
+class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, TutorialMixin, PaletteMixin):
     """
     滑块游戏图形界面类
     """
 
     def __init__(self, m: int = 6, n: int = 6, step: int = 1, cmd_queue: queue.Queue = None,
-                 kind: str = 'square'):
+                 kind: str = 'square', ext_state: dict = None):
         """
         初始化游戏界面
 
@@ -103,8 +109,24 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             cmd_queue: 命令队列（用于接收终端指令），默认为None
             kind: 开局形态 'square' / 'numbered' / 'triangle' / 'mi'
                 （三角形时 m 作边长 k；米字格 m/n 为行数/列数）
+            ext_state: 外部控制共享状态 {'enabled': bool, 'token': str|None}
+                （与 HTTP 服务器同一个 dict；None 时自建，默认开启+新令牌，
+                 方便直接运行 GUI / 测试）
         """
         _gui_log_error(f'GUI初始化开始: m={m}, n={n}, step={step}', level='info')
+        # 中文输入法（IME）：SDL/pygame 默认不显示输入法候选框界面，导致 Windows
+        # 上中文输入法无法弹出候选框、无法键入汉字。必须显式开启，且须在
+        # pygame.init()（视频子系统初始化）之前设置，否则无效。
+        os.environ['SDL_IME_SHOW_UI'] = '1'
+
+        # 外部控制共享状态（与 HTTP 服务器同一个 dict 对象）：
+        #   {'enabled': bool, 'token': str|None, 'port': int}
+        # 默认开启 + 进程级随机令牌；HTTP 请求必须带令牌。开关关闭时清空
+        # 令牌（重开必换新，关闭期间复制出去的话术随之作废）。
+        # main.py 会传入共享对象；直接运行 GUI / 测试时在此自建。
+        self.ext_state = ext_state if ext_state is not None else {
+            'enabled': True, 'token': secrets.token_urlsafe(24), 'port': 5050}
+
         try:
             pygame.init()
         except Exception:
@@ -249,13 +271,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 帮助对话框状态
         self.show_help = False
-        self.help_scroll_offset = 0
         # 帮助检索（功能可发现性的主入口）：打开帮助时焦点默认落在检索框，
         # 输入即过滤；回车 = 直接到位。数据来自 gui/feature_index.py。
         self.help_query = ''
+        # 帮助检索框复用 gui.text_input.TextInput 组件（与宏命名框、文件对话框
+        # 文件名框同源）：光标/删除/左右移动/鼠标定位/IME 一并支持。
+        self.help_input = TextInput('')
         self.help_sel = 0
         self.help_search_active = False
         self.help_search_rect = None
+        # 帮助对话框滚动条：与设置框共用 gui.scrollbar.Scrollbar（同一套交互）。
+        self.help_scrollbar = Scrollbar()
         self.help_result_rects = []
 
         # 宏定义菜单状态
@@ -295,6 +321,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.macro_notify_timer = 0         # 通知显示计时器（帧数，60fps）
         self.macro_notify_persistent = False  # 是否持久显示（不走淡出）
         self._gather_info = None            # 聚拢求解结果（用于播放时实时刷新）
+
+        # 增量更新器状态（仅冻结/安装版生效；开发版全程不激活）
+        self.update_available = False          # 是否已发现新版本
+        self._update_manifest = None           # 最新版本清单（含 url/sha256）
+        self._update_check_in_progress = False # 后台查更新是否进行中
+        self._update_in_progress = False       # 后台下载/替换是否进行中
+        self._last_update_check_ts = 0.0       # 上次自动轮询时间戳（节流用）
+        self.update_progress = 0.0             # 下载进度 0..1
+        self.update_status_msg = ''            # 更新状态文案
+        self._update_btn_rect = None           # 左上角「更新」按钮矩形（每帧重算）
 
         # 宏管理对话框状态
         self.show_macro_manager_dialog = False
@@ -457,9 +493,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 单独设这个状态而不是借用 selected_block：后者是两次触控流程的
         # 中间态，滑块一动就被清空，留不住玩家点选的目标。
         self._pick_fill = None
-        # 棋盘标记：调试面板画在棋盘上的那些记号（目标框、洞位等）。
-        # 它们是「视觉强化」而非调试数据，所以要能脱离调试面板本体单独关
-        # ——只关记号、留着面板看数字，或反过来。两者是独立的两个开关。
+        # 复原提示标记（设置页名，2026-10-13 由「棋盘标记」改名）：调试
+        # 面板画在棋盘上的那些记号（目标框、洞位等）。它们是「视觉强化」
+        # 而非调试数据，所以要能脱离调试面板本体单独关——只关记号、留着
+        # 面板看数字，或反过来。两者是独立的两个开关。
         # 默认关闭：与解耦前「面板默认关 → 棋盘上没有记号」的观感保持一致，
         # 免得一进游戏就满屏记号。F2 会连带把它打开（见 events 的 F2 分支）。
         self.board_marks_enabled = False
@@ -634,7 +671,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 设置菜单状态
         self.show_settings_menu = False
-        self.settings_menu_items = ['快捷键设置', '动画速度']
+        self.settings_menu_items = ['快捷键设置', '视觉', '命令面板']
         self.settings_menu_rects = []
         self.settings_menu_hovered = -1
 
@@ -644,10 +681,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.settings_editing_action = None  # 当前正在编辑快捷键的动作名
         self.settings_editing_key = None  # 临时存储正在录制的按键
         self._settings_slider_dragging = False
+        self._settings_zoom_dragging = False   # 视觉页缩放滑条拖拽中
         self._settings_backup_keybindings = {}
         self._settings_ok_btn = None
         self._settings_cancel_btn = None
         self._settings_reset_btn = None
+        # 设置对话框滚动条：与帮助框共用 gui.scrollbar.Scrollbar（同一套交互）。
+        self.settings_scrollbar = Scrollbar()
         self._settings_key_rects = {}
         self._settings_tab_kb_rect = None
         self._settings_tab_anim_rect = None
@@ -681,14 +721,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         }
 
         # 快捷键动作分组（用于设置对话框显示）
+        # 重新分组：原「游戏操作」10 项混了移动/三角移动/面板，拆成「移动方块」
+        # 与「显示面板」；原两个单元素分组「求解器」「宏操作」合并为「求解与宏」。
         self.keybinding_groups = [
-            ('文件操作', ['save', 'load']),
-            ('编辑操作', ['undo', 'redo', 'shuffle', 'reset']),
-            ('求解器', ['auto_solve']),
-            ('宏操作', ['macro_record']),
-            ('游戏操作', ['move_up', 'move_down', 'move_left', 'move_right',
-                          'tri_up_right', 'tri_down_left', 'tri_down_right',
-                          'virtual_keyboard', 'metrics_panel', 'records_panel']),
+            ('文件', ['save', 'load']),
+            ('编辑', ['undo', 'redo', 'shuffle', 'reset']),
+            ('求解与宏', ['auto_solve', 'macro_record']),
+            ('移动方块', ['move_up', 'move_down', 'move_left', 'move_right',
+                          'tri_up_right', 'tri_down_left', 'tri_down_right']),
+            ('显示面板', ['virtual_keyboard', 'metrics_panel', 'records_panel']),
+            # 命令面板单独一组：它不属于任何一块，是「找功能」的入口
+            ('搜索', ['command_palette']),
         ]
 
         # 虚拟键盘状态
@@ -705,6 +748,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 教程模式状态
         self._tut_init_state()
+
+        # 命令面板状态（Ctrl+K，功能可发现性主入口，见 gui/palette.py）
+        self._pal_init_state()
 
         # 加载上次状态
         self.load_last_state()
@@ -834,7 +880,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._last_timed_result = None
         self._ann_cancel_session('切换谜题')
 
-        # 可动性门槛（已验证性质，见 math_question/tri_kstep_property.py）：
+        # 可动性门槛（已验证性质，见 experiments/math_repro/tri_kstep_property.py）：
         # 三角形存在任何合法移动 ⟺ k − step ≥ 2。切片沿缝平行滑动，每推一格都
         # 要求「无碰撞 + 整体仍连通」，而边长 k 的实心三角形同族切口接触面
         # 最长只有 k−1，滑 step 格需要接触面 ≥ step+1，于是
@@ -1200,6 +1246,179 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         self.camera_x = (self.screen_width - self.right_panel_width) / 2 - map_center_x
         self.camera_y = game_center_y - map_center_y
+
+    # —— 外部控制（HTTP API 令牌 / 话术 / 教程）——
+    # 威胁模型：HTTP 绑 127.0.0.1，令牌防的是本机上的其他进程与网页；
+    # stdin 管道通道只有启动方父进程能写，天然可信，不设防。
+
+    def external_enabled(self) -> bool:
+        """外部控制开关是否开启（有有效令牌才算真开）。"""
+        ext = getattr(self, 'ext_state', None) or {}
+        return bool(ext.get('enabled')) and bool(ext.get('token'))
+
+    def set_external_control(self, enabled: bool):
+        """开/关外部控制。
+
+        关：清空令牌——重开必换新 token，关闭期间复制出去的话术随之作废。
+        开：没有令牌就现场生成一个，并往 stdout 打印一行（subprocess
+            启动方与人类控制台都能再读到新令牌）。
+        """
+        ext = self.ext_state
+        ext['enabled'] = bool(enabled)
+        if enabled:
+            if not ext.get('token'):
+                ext['token'] = secrets.token_urlsafe(24)
+            print(f"GATSLI_TOKEN={ext['token']}")
+        else:
+            ext['token'] = None
+
+    def external_control_message(self) -> str:
+        """生成复制给外部程序的连接话术（含当前令牌与端口；关闭时令牌为空）。"""
+        from http_server import TOKEN_MESSAGE_TEMPLATE
+        ext = self.ext_state
+        return TOKEN_MESSAGE_TEMPLATE.format(
+            token=ext.get('token') or '', port=ext.get('port') or 5050)
+
+    def _set_ext_feedback(self, ok: bool, text: str, timer: int = 300):
+        """控制页内联反馈（替代宏通知）。
+
+        为什么不用 macro_notify：通知浮层画在模态对话框**之下**，设置框
+        开着时玩家根本看不到 toast——按钮就像死的一样。对话框内的操作反
+        馈必须在对话框内自报。
+        """
+        self._settings_ext_msg = text
+        self._settings_ext_msg_ok = bool(ok)
+        self._settings_ext_msg_timer = int(timer)
+        # 反馈行是内容区新长出来的：请求下次绘制时把设置框滚到底，
+        # 否则新行落在裁剪区外，玩家看不到任何反应（按钮像死的）
+        self._settings_ext_pin_bottom = True
+
+    @staticmethod
+    def _clipboard_roundtrip_ok(got, msg: str) -> bool:
+        """读回校验：容忍换行风格差异（Windows 剪贴板常把 \\n 变 \\r\\n），
+        并接受「关键信息在」这一较松判据——宁可少报错，不可诬告失败。
+        """
+        if got is None:
+            return False
+        if isinstance(got, bytes):
+            try:
+                got = got.decode('utf-8')
+            except UnicodeDecodeError:
+                return False
+        norm = got.replace('\r\n', '\n').replace('\r', '\n')
+        return norm == msg or ('Authorization: Bearer' in norm and '令牌：' in norm)
+
+    def _copy_external_message(self):
+        """「复制连接话术」按钮：把含令牌的话术写进系统剪贴板。
+
+        剪贴板稳健化：pygame-ce 的 scrap 在部分显示驱动下未自动初始化
+        （dummy 驱动直接报 "scrap system not initialized"），故依次尝试
+        put_text → init+put，并在写入后读回校验；全失败时给出内联反馈，
+        把令牌/端口直接显示出来，玩家可手动抄送（其余步骤见教程文件）。
+        """
+        if not self.external_enabled():
+            self._set_ext_feedback(False, "外部控制已关闭：先打开上方开关，再复制话术")
+            return
+        msg = self.external_control_message()
+        err = None
+        ok_msg = "已复制到剪贴板：把这段话发给能在本机发送 HTTP 请求的外部程序即可"
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            # 路线 1：非弃用的 put_text
+            try:
+                pygame.scrap.put_text(msg)
+                if self._clipboard_roundtrip_ok(pygame.scrap.get_text(), msg):
+                    self._set_ext_feedback(True, ok_msg)
+                    return
+                err = '读回校验不一致'
+            except Exception as e:
+                err = str(e)
+            # 路线 2：旧 API + 显式 init（部分平台 scrap 未随 display 初始化）
+            try:
+                pygame.scrap.init()
+                pygame.scrap.put(pygame.SCRAP_TEXT, msg.encode('utf-8'))
+                if self._clipboard_roundtrip_ok(pygame.scrap.get(pygame.SCRAP_TEXT), msg):
+                    self._set_ext_feedback(True, ok_msg)
+                    return
+            except Exception as e:
+                err = f"{err} / {e}"
+        # 两条路都失败：不装作成功——把关键信息显示出来让人工抄送
+        ext = self.ext_state
+        self._set_ext_feedback(
+            False,
+            f"复制失败（剪贴板不可用：{err}）。请手动抄送：令牌 {ext.get('token')}，"
+            f"端口 {ext.get('port')}；用法见「下载控制教程」",
+            timer=600)
+
+    def write_external_control_guide(self, path: str):
+        """生成外部控制教程文件（自包含 Markdown，供外部程序使用者阅读）。
+
+        内容与 GET /help 索引同源；**不含令牌**——令牌只走「复制连接话术」
+        那条路，本文件可能被分享/上传官网，职责分离。
+        返回 (ok, message)。
+        """
+        from http_server import API_INDEX
+        try:
+            ext = self.ext_state
+            port = ext.get('port') or 5050
+            lines = [
+                '# 《貓九的滑塊遊戲》外部控制教程',
+                '',
+                '> 本文件面向外部程序（AI 助手是其中一种）：读完本文件 + 一个有效',
+                '> 令牌，即可通过本机 HTTP 接口控制游戏进程。令牌不在本文件内——',
+                '> 在游戏「设置-控制」页点「复制连接话术」获取（那段话含令牌与',
+                '> 三步引导）。',
+                '',
+                '## 1. 连接方式',
+                '',
+                f'- 基址：`http://127.0.0.1:{port}`',
+                '- 鉴权：每个请求带请求头 `Authorization: Bearer <令牌>`，',
+                '  或在 URL 上加 `?token=<令牌>`',
+                '- 示例：',
+                '',
+                '  ```',
+                '  curl -H "Authorization: Bearer <令牌>" '
+                f'http://127.0.0.1:{port}/status',
+                '  ```',
+                '',
+                '## 2. 第一条命令',
+                '',
+                '- `GET /help` —— 获取最新 API 索引（以索引为准，本文件可能过期）',
+                '- `GET /help/<端点>` —— 单个端点的参数/返回/curl 示例，',
+                '  如 `GET /help/move`（下表每个端点都适用）',
+                '- `GET /status` —— 当前局面与游戏状态',
+                '',
+                '## 3. API 索引',
+                '',
+                '| 方法 | 端点 | 说明 |',
+                '| --- | --- | --- |',
+            ]
+            for p, m, s in API_INDEX:
+                lines.append(f'| {m} | `{p}` | {s} |')
+            lines += [
+                '',
+                '## 4. 通用约定',
+                '',
+                '- 所有响应为 JSON，含 `ok`（是否成功）与 `message`（说明）',
+                '- 行列坐标从 1 数起（第几行第几列）',
+                '- 移动方向：w=上 s=下 a=左 d=右（须平行于选中缝隙）；',
+                '  三角另加 e/z/x，米字格另加 q',
+                '- 通用命令通道：`POST /command`，body `{"cmd": "<CLI 指令>"}`，',
+                '  CLI 指令与 stdin 通道同语法（如 `move w` / `status` / `help`）',
+                '- stdin 子进程管道通道不设防（只有启动游戏的父进程能写）',
+                '',
+                '## 5. 边界',
+                '',
+                '- 只能控制本机上的这个游戏进程；游戏重启后令牌失效，需重新复制',
+                '- 三角形/米字格形态的部分分析接口不支持（返回 reason=unsupported）',
+                '',
+            ]
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+            return True, f'已保存到 {path}'
+        except Exception as e:
+            return False, f'保存失败：{e}'
 
     def _is_camera_valid(self) -> bool:
         """检查当前 camera 位置是否能让滑塊在视口内可见"""
@@ -2521,6 +2740,148 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
     def _macro_notify(self, msg):
         self.macro_notify_msg = msg
         self.macro_notify_timer = 90
+
+    # ==================================================================
+    # 增量更新器（就地更新，保留玩家数据；仅安装版生效）
+    # ==================================================================
+    def _start_update_check(self):
+        """后台查一次 GitHub 有没有新版本。开发版 / 已在进行 / 已发现则直接返回。"""
+        if not updater_module.is_frozen():
+            self.macro_notify_msg = '当前为开发模式，更新仅对安装版（exe）生效'
+            self.macro_notify_timer = 120
+            return
+        if self._update_check_in_progress or self.update_available:
+            return
+        self._update_check_in_progress = True
+        def _cb(newer, manifest, err):
+            self._update_check_in_progress = False
+            if err is not None:
+                # 网络 / 解析错误：静默忽略（下次轮询再试），不弹错误打扰玩家
+                _gui_log_error('update check failed: {}'.format(err))
+                return
+            if newer and manifest:
+                self.update_available = True
+                self._update_manifest = manifest
+                self._announce_update_available()
+        updater_module.check_for_update(_cb)
+        self.macro_notify_msg = '正在检查更新...'
+        self.macro_notify_timer = 90
+
+    def _announce_update_available(self):
+        """发现新版本：给一条短提示（常驻提示靠左上角「更新」按钮）。"""
+        ver = (self._update_manifest or {}).get('version', '')
+        self.macro_notify_msg = '发现新版本 {}：点左上角「更新」按钮一键升级'.format(ver)
+        self.macro_notify_timer = 300  # 5 秒
+
+    def _auto_update_poll(self):
+        """每 24 小时自动轮询一次（节流在内部）。启动时（_last_update_check_ts=0）
+        立即查一次，满足「每次打开自动轮询」；之后隔一天再查。"""
+        if not updater_module.is_frozen():
+            return
+        if self._update_check_in_progress or self.update_available:
+            return
+        now = time.time()
+        if now - self._last_update_check_ts < 86400:
+            return
+        self._last_update_check_ts = now
+        self._start_update_check()
+
+    def _update_progress_cb(self, got, total):
+        """下载进度回调（在后台线程被调用，主线程读这两个字段绘制进度条）。"""
+        if total:
+            self.update_progress = got / total
+        kb = got // 1024
+        self.update_status_msg = ('下载中 {}KB / {}KB'.format(kb, total // 1024)
+                                  if total else '下载中 {}KB'.format(kb))
+
+    def _start_update_now(self):
+        """立即更新：先确认有可用版本，再起后台线程下载→替换→退出游戏。"""
+        if not updater_module.is_frozen():
+            self.macro_notify_msg = '当前为开发模式，更新仅对安装版（exe）生效'
+            self.macro_notify_timer = 120
+            return
+        if self._update_in_progress:
+            return
+        if not self.update_available or not self._update_manifest:
+            # 还没查过 / 没发现：先查，查到后玩家再点一次即可
+            self._start_update_check()
+            self.macro_notify_msg = '先检查一下有没有更新...'
+            self.macro_notify_timer = 90
+            return
+        self._update_in_progress = True
+        self.update_progress = 0.0
+        self.update_status_msg = '准备下载...'
+        def _run():
+            try:
+                # perform_update 成功会写 .cmd 并 os._exit(0) 杀掉本进程；
+                # 失败则抛异常，这里捕获后仅提示，不退出游戏。
+                updater_module.perform_update(self._update_manifest,
+                                              self._update_progress_cb)
+            except Exception as e:  # pragma: no cover - 网络/解压失败路径
+                self._update_in_progress = False
+                self.update_status_msg = '更新失败：{}'.format(e)
+                self.macro_notify_msg = '更新失败：{}'.format(e)
+                self.macro_notify_timer = 240
+                _gui_log_error('update failed: {}'.format(e), level='error')
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+    def draw_update_banner(self):
+        """发现新版本时在左上角画一个常驻「更新」按钮（点它走 _start_update_now）。"""
+        if not self.update_available:
+            self._update_btn_rect = None
+            return
+        ver = (self._update_manifest or {}).get('version', '')
+        label = '● 新版本 {} 点此更新'.format(ver) if ver else '● 有新版本 点此更新'
+        font = getattr(self, 'status_font', None)
+        if font is None:
+            self._update_btn_rect = None
+            return
+        ts = font.render(label, True, (255, 255, 255))
+        pad_x, pad_y = 10, 5
+        bw = ts.get_width() + pad_x * 2
+        bh = ts.get_height() + pad_y * 2
+        bx = 10
+        by = getattr(self, 'menu_bar_height', 28) + 6
+        rect = pygame.Rect(bx, by, bw, bh)
+        self._update_btn_rect = rect
+        bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        bg.fill((60, 140, 60, 235))
+        pygame.draw.rect(bg, (120, 220, 120, 235), bg.get_rect(), 1, border_radius=6)
+        self.screen.blit(bg, (bx, by))
+        self.screen.blit(ts, (bx + pad_x, by + pad_y))
+
+    def draw_update_progress(self):
+        """更新下载中画一个居中进度框（模态层之上；下载完游戏会自行退出重启）。"""
+        if not self._update_in_progress:
+            return
+        sw, sh = self.screen_width, self.screen_height
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        self.screen.blit(overlay, (0, 0))
+        bw, bh = 420, 130
+        bx, by = (sw - bw) // 2, (sh - bh) // 2
+        box = pygame.Rect(bx, by, bw, bh)
+        pygame.draw.rect(self.screen, (40, 40, 40), box, border_radius=10)
+        pygame.draw.rect(self.screen, (120, 120, 120), box, 1, border_radius=10)
+        font = getattr(self, 'status_font', None)
+        if font is None:
+            return
+        title = font.render('正在更新 Gatennea Slider...', True, (255, 255, 255))
+        self.screen.blit(title, title.get_rect(centerx=bx + bw // 2, top=by + 16))
+        pct = int(self.update_progress * 100)
+        status = '{}  ({}%)'.format(self.update_status_msg, pct)
+        st_surf = font.render(status, True, (210, 210, 210))
+        self.screen.blit(st_surf, st_surf.get_rect(centerx=bx + bw // 2, top=by + 44))
+        # 进度条
+        bar_x, bar_y, bar_w, bar_h = bx + 30, by + 78, bw - 60, 18
+        pygame.draw.rect(self.screen, (70, 70, 70),
+                         pygame.Rect(bar_x, bar_y, bar_w, bar_h), border_radius=4)
+        fill_w = max(0, min(bar_w, int(bar_w * self.update_progress)))
+        pygame.draw.rect(self.screen, (90, 200, 120),
+                         pygame.Rect(bar_x, bar_y, fill_w, bar_h), border_radius=4)
+        hint = font.render('完成后游戏会自动重启，请勿手动关闭', True, (160, 160, 160))
+        self.screen.blit(hint, hint.get_rect(centerx=bx + bw // 2, top=by + 100))
 
     def _space_interrupts_continuous(self) -> bool:
         """空格打斷：仅在连续播放进行中拦截空格，返回 True 表示本次空格已被消费。"""
@@ -3908,7 +4269,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'gradient_total': result.get('gradient_total'),
         }
         self.macro_executing = True
-        self.macro_exec_name = "聚拢"
+        self.macro_exec_name = "单次聚拢"  # 与设置-求解器页的算法名一致（2026-10-13 改名）
         self.macro_exec_ops = ops
         self.macro_exec_index = 0
         self.macro_exec_factor = 1
@@ -3940,6 +4301,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # S1-1：输入优先——先处理事件、再更新状态与绘制，消除恒定 1 帧输入延迟
                 self.handle_events()
                 self._ann_poll()
+                self._auto_update_poll()
                 self._update_cursor()
 
                 # 处理终端指令
@@ -4019,6 +4381,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 if self.macro_notify_timer > 0 and not self.macro_notify_persistent:
                     self.macro_notify_timer -= 1
 
+                # 设置-控制页内联反馈计时器（对话框内操作反馈，见 _set_ext_feedback）
+                if getattr(self, '_settings_ext_msg_timer', 0) > 0:
+                    self._settings_ext_msg_timer -= 1
+
                 # 处理文件对话框结果
                 self.handle_file_dialog_result()
 
@@ -4063,7 +4429,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 菜单栏 + 下拉菜单：非模态最上层（下拉菜单盖住浮动面板）
                 self.draw_menu_bar()
 
-                # 模态对话框（后画，最上层）
+                # 非模态浮层（通知 / 复原弹窗 / 教程引导）：盖在菜单与浮动面板之上，
+                # 但必须落在模态对话框之下——模态是交互上的最高优先级层，事件分发里
+                # 模态最先消费点击；若这里反过来画在模态之上，会出现「模态已吃掉点
+                # 击、浮层却浮在模态表面」的视觉错位（求解进行中按设置键即触发）。
+                self.draw_macro_notify()
+                self.draw_solved_popup()
+                self.draw_tutorial_prompt()
+                self.draw_tutorial_panel()
+                self.draw_update_banner()
+
+                # 模态对话框（后画，真正最上层；盖住上述所有浮层）
                 if self.show_help:
                     self.draw_help_dialog()
                 if self.show_custom_dialog:
@@ -4076,6 +4452,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     self.draw_macro_manager_dialog()
                 if getattr(self, 'show_macro_name_dialog', False):
                     self.draw_macro_name_dialog()
+                # 命令面板：画在所有模态之上（事件分发里同样最先消费，两者必须一致）
+                if getattr(self, 'palette_active', False):
+                    self.draw_command_palette()
+                self.draw_update_progress()
 
                 '''# 虚拟键盘（浮动面板）
                 self.draw_virtual_keyboard()
@@ -4085,14 +4465,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 成绩记录面板（浮动面板）
                 self.draw_records_panel()'''
-
-                # 宏执行结果通知（最顶层绘制）
-                self.draw_macro_notify()
-                # 复原成功悬浮窗（最顶层）
-                self.draw_solved_popup()
-                # 新手教程：引导面板 / 首次启动弹窗（最顶层）
-                self.draw_tutorial_prompt()
-                self.draw_tutorial_panel()
 
                 # 左键单击反馈（盖在所有界面之上，含模态对话框）
                 self.draw_click_feedback()

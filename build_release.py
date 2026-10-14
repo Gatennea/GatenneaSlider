@@ -38,11 +38,15 @@ REPO = 'Gatennea/GatenneaSlider'
 # 附件名必须与这里一致 —— 改了就等于换了个下载链接，网站和自动更新器都会失效
 ASSET_NAME = ZIP_NAME
 LATEST_URL = f'https://github.com/{REPO}/releases/latest/download/{ASSET_NAME}'
+# 自动更新器拉「最新版本清单」用的固定地址（version.json 也作为 Release 附件发布）
+MANIFEST_URL = f'https://github.com/{REPO}/releases/latest/download/version.json'
 
-# 运行时才会生成的目录，打包时排除：
+# 运行时才会生成 / 属于玩家数据的目录，打包时排除（更新器只覆盖 zip 内的程序文件，
+# 绝不删除这些目录）：
 #   config/ 本机调试跑出来的窗口位置、快捷键、历史记录（会把你的窗口坐标带给用户）
-#   macro/  用户自己的宏存档目录（空目录，程序启动会自己建）
-EXCLUDE_DIRS = {'config', 'macro'}
+#   macro/  用户自己的宏存档目录（首次保存宏时才由 MacroManager.save_macro 创建）
+#   save/   玩家的谜题存档 + 录像/记录（绝不进 zip，更新时原样保留）
+EXCLUDE_DIRS = {'config', 'macro', 'save'}
 
 
 def sha256_of(path):
@@ -90,6 +94,19 @@ def main():
     version = args.version or guess_version()
     zip_path = os.path.join(OUT_DIR, ZIP_NAME)
 
+    # 把「最小 version.json」嵌进应用目录（随 zip 发出去，游戏运行时读它判断当前版本）。
+    # 注意：此处只包含 version/asset/url/manifest_url，**不含 sha256/size**——
+    # 否则会陷入「sha 要算 zip、zip 又含 version.json」的循环。sha/size 只写在下面
+    # 那份作为 Release 附件发布的完整 version.json 里（它不在 zip 内）。
+    embedded = {
+        'version': version,
+        'asset': ASSET_NAME,
+        'url': LATEST_URL,
+        'manifest_url': MANIFEST_URL,
+    }
+    with open(os.path.join(SRC_DIR, 'version.json'), 'w', encoding='utf-8') as f:
+        json.dump(embedded, f, ensure_ascii=False, indent=2)
+
     n_files = 0
     t0 = time.time()
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
@@ -108,13 +125,16 @@ def main():
     with open(zip_path + '.sha256', 'w', encoding='utf-8') as f:
         f.write(f'{digest}  {ZIP_NAME}\n')
 
+    # 完整 manifest：随 Release 一起作为独立附件发布；自动更新器拉的就是它。
     manifest = {
         'version': version,
         'asset': ASSET_NAME,
         'url': LATEST_URL,
+        'manifest_url': MANIFEST_URL,
         'sha256': digest,
         'size': size,
-        'notes': '把本文件随 Release 一起发布；自动更新器读的就是它。',
+        'notes': '本文件须与 zip 一起作为 Release 附件上传（更新器通过 manifest_url 拉取）；'
+                 'zip 内含的是只带 version 的最小 version.json，不影响此处的 sha。',
     }
     with open(os.path.join(OUT_DIR, 'version.json'), 'w', encoding='utf-8') as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)

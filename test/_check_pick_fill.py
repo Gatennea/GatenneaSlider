@@ -82,7 +82,11 @@ items = gui.edit_menu_items
 check('编辑菜单不含单段求解',
       not any('单段' in str(t) for t in items), str(items))
 check('自动求解仍在末项', '自动求解' in str(items[-1]), str(items))
-check('自动求解索引为 5', items.index(items[-1]) == 5, str(list(enumerate(items))))
+# 索引必须与 events.py 编辑菜单点击分发的硬编码序号一致：
+# 5 = 居中（视图操作），6 = 自动求解。加/删菜单项时两处都要改。
+check('自动求解索引为 6（5 = 居中）', items.index(items[-1]) == 6,
+      str(list(enumerate(items))))
+check('第 5 项是居中', '居中' in str(items[5]), str(items[5]))
 
 print('\n=== %s ===' % ('全部通过' if ok_all else '存在失败'))
 sys.exit(0 if ok_all else 1)

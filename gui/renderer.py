@@ -1560,18 +1560,20 @@ class RendererMixin:
         tab_kb_text_rect = tab_kb_text.get_rect(center=tab_kb_rect.center)
         self.screen.blit(tab_kb_text, tab_kb_text_rect)
 
-        # 动画速度 Tab
-        tab_anim_rect = pygame.Rect(dialog_x + 15 + tab_width + 5, tab_y, tab_width, tab_height)
+        # 视觉 Tab（新顺序第 3 位：动效 + 缩放 + 各类视觉提示）
+        # 2026-10-13 由「动画速度」改名：本页早已不只是动画速度——缩放、
+        # 着色、连锁提示、复原提示标记、调试面板都归它管。
+        tab_anim_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 2, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'animation':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_anim_rect, border_radius=4)
         else:
             pygame.draw.rect(self.screen, self.colors['input_bg'], tab_anim_rect, border_radius=4)
-        tab_anim_text = self.status_font.render("动画速度", True, self.colors['input_text'])
+        tab_anim_text = self.status_font.render("视觉", True, self.colors['input_text'])
         tab_anim_text_rect = tab_anim_text.get_rect(center=tab_anim_rect.center)
         self.screen.blit(tab_anim_text, tab_anim_text_rect)
 
-        # 求解器 Tab
-        tab_solver_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 2, tab_y, tab_width, tab_height)
+        # 求解器 Tab（新顺序第 3 位，与「聚拢参数」相邻）
+        tab_solver_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 3, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'solver':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_solver_rect, border_radius=4)
         else:
@@ -1580,8 +1582,8 @@ class RendererMixin:
         tab_solver_text_rect = tab_solver_text.get_rect(center=tab_solver_rect.center)
         self.screen.blit(tab_solver_text, tab_solver_text_rect)
 
-        # 聚拢参数 Tab
-        tab_gather_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 3, tab_y, tab_width, tab_height)
+        # 聚拢参数 Tab（新顺序第 4 位，紧随「求解器」）
+        tab_gather_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 4, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'gather':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_gather_rect, border_radius=4)
         else:
@@ -1590,8 +1592,8 @@ class RendererMixin:
         tab_gather_text_rect = tab_gather_text.get_rect(center=tab_gather_rect.center)
         self.screen.blit(tab_gather_text, tab_gather_text_rect)
 
-        # 文件/存档 Tab
-        tab_file_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 4, tab_y, tab_width, tab_height)
+        # 文件/存档 Tab（新顺序第 5 位，置末）
+        tab_file_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 5, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'file':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_file_rect, border_radius=4)
         else:
@@ -1600,8 +1602,8 @@ class RendererMixin:
         tab_file_text_rect = tab_file_text.get_rect(center=tab_file_rect.center)
         self.screen.blit(tab_file_text, tab_file_text_rect)
 
-        # 控制 Tab
-        tab_control_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 5, tab_y, tab_width, tab_height)
+        # 控制 Tab（新顺序第 1 位，紧随「快捷键」，同属操作类）
+        tab_control_rect = pygame.Rect(dialog_x + 15 + tab_width + 5, tab_y, tab_width, tab_height)
         if self.settings_active_tab == 'control':
             pygame.draw.rect(self.screen, self.colors['button_bg'], tab_control_rect, border_radius=4)
         else:
@@ -1620,22 +1622,27 @@ class RendererMixin:
 
         # 内容区域
         content_y = tab_y + tab_height + 10
-        content_height = dialog_height - (content_y - dialog_y) - 55
+        content_height = dialog_height - (content_y - dialog_y) - 64
 
         # 计算总内容高度以决定是否需要滚动条
         total_content_height = self._calc_settings_content_height(content_height)
-        max_scroll = max(0, total_content_height - content_height)
-        self._settings_max_scroll = max_scroll
-        scroll = getattr(self, '_settings_scroll', 0)
-        scroll = max(0, min(max_scroll, scroll))
-        self._settings_scroll = scroll
+        # 滚动条（与帮助框同源）：每帧依内容高度重算
+        sb = self.settings_scrollbar
+        sb.layout(dialog_x + dialog_width - 18, content_y, content_height,
+                  total_content_height, content_height)
+        # 控制页刚弹出内联反馈（复制结果等）→ 自动滚到底：反馈行是新长出来
+        # 的内容，不pin底就会落在裁剪区外，玩家依旧「看不到反应」
+        if getattr(self, '_settings_ext_pin_bottom', False):
+            self._settings_ext_pin_bottom = False
+            sb.set_scroll(10**9)  # set_scroll 内部夹紧到最大滚动量
+        scroll = sb.scroll
 
         # 内容区域裁剪
         content_rect = pygame.Rect(dialog_x + 5, content_y, dialog_width - 20, content_height)
         self.screen.set_clip(content_rect)
         try:
             if self.settings_active_tab == 'keybindings':
-                self._draw_settings_keybindings(dialog_x, content_y - scroll, dialog_width - 30, total_content_height if max_scroll > 0 else content_height)
+                self._draw_settings_keybindings(dialog_x, content_y - scroll, dialog_width - 30, total_content_height if sb.need_scroll() else content_height)
             elif self.settings_active_tab == 'animation':
                 self._draw_settings_animation(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             elif self.settings_active_tab == 'gather':
@@ -1649,9 +1656,15 @@ class RendererMixin:
         finally:
             self.screen.set_clip(None)
 
-        # 绘制滚动条
-        if max_scroll > 0:
-            self._draw_settings_scrollbar(dialog_x + dialog_width - 18, content_y, content_height, scroll, max_scroll)
+        # 绘制滚动条（仅当内容超出可见区域）
+        if sb.need_scroll():
+            sb.draw(self.screen)
+
+        # 底部按钮带分隔线（明确把内容与按钮区分开，避免视觉/命中重叠）
+        divider_y = dialog_y + dialog_height - 48 - 14
+        pygame.draw.line(self.screen, self.colors['dialog_border'],
+                         (dialog_x + 15, divider_y),
+                         (dialog_x + dialog_width - 15, divider_y))
 
         # 底部按钮
         btn_width = 80
@@ -2107,6 +2120,41 @@ class RendererMixin:
         self.screen.blit(max_label, (track_x + track_width - max_label.get_width(), track_y + 12))
         ny = speed_y + 72
 
+        # 缩放滑动条（与右侧面板的垂直缩放滑条同源：两者读写同一个
+        # self.zoom，改任意一个另一个下一帧就跟着动）。排版与上面的动画
+        # 时长一致：左栏标签、右栏轨道，左端=最小缩放、右端=最大缩放。
+        zoom_y = ny
+        zoom_label = self.dialog_font.render("缩放：", True, self.colors['dialog_text'])
+        self.screen.blit(zoom_label, (x + 15, zoom_y + 6))
+
+        ztrack_x = x + 220
+        ztrack_width = 190
+        zoom_pct = f"{int(round(self.zoom * 100))}%"
+        zvalue_surface = self.input_font.render(zoom_pct, True, self.colors['input_text'])
+        self.screen.blit(zvalue_surface,
+                         (ztrack_x + ztrack_width - zvalue_surface.get_width(), zoom_y + 6))
+
+        # 滑动条轨道
+        ztrack_y = zoom_y + 26
+        self._settings_zoom_track_rect = pygame.Rect(ztrack_x, ztrack_y, ztrack_width, 4)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'], self._settings_zoom_track_rect)
+
+        # 滑动条位置（线性：min_zoom→0，max_zoom→1）
+        znorm = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+        znorm = max(0.0, min(1.0, znorm))
+        zknob_x = int(ztrack_x + znorm * ztrack_width)
+        self._settings_zoom_knob_rect = pygame.Rect(zknob_x - 8, ztrack_y - 6, 16, 16)
+
+        zknob_color = self.colors['button_hover'] if getattr(self, '_settings_zoom_dragging', False) else self.colors['button_bg']
+        pygame.draw.rect(self.screen, zknob_color, self._settings_zoom_knob_rect, border_radius=8)
+
+        # 刻度标签（两端对齐轨道）
+        zmin_label = self.status_font.render(f"{int(round(self.min_zoom * 100))}%", True, (150, 150, 150))
+        zmax_label = self.status_font.render(f"{int(round(self.max_zoom * 100))}%", True, (150, 150, 150))
+        self.screen.blit(zmin_label, (ztrack_x, ztrack_y + 12))
+        self.screen.blit(zmax_label, (ztrack_x + ztrack_width - zmax_label.get_width(), ztrack_y + 12))
+        ny = zoom_y + 72
+
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
@@ -2117,18 +2165,36 @@ class RendererMixin:
             x, ny, "悬停连锁提示：", getattr(self, 'chain_hint_enabled', False),
             "悬停滑块时，边界盒内同组位置（含空格）提亮提示，帮助找缺口")
 
-        # 棋盘标记：调试面板画在棋盘上的那些记号（目标框 / 洞位等）。
+        # 复原提示标记：调试面板画在棋盘上的那些记号（目标框 / 洞位等）。
         # 它们是视觉强化而非调试数据，故与面板本体拆成两个开关：可以只关
         # 画面上的记号、留着面板看数字，也可以整块面板一起关掉。
+        # 2026-10-13 由「棋盘标记」改名「复原提示标记」——它提示的是
+        # 「往哪走能复原」，不是泛泛的棋盘装饰。
         self._settings_marks_toggle_rect, ny = self._draw_switch_row(
-            x, ny, "棋盘标记：", getattr(self, 'board_marks_enabled', False),
-            "棋盘上的目标框 / 洞位记号，可脱离调试面板单独开（F2 亦可开关）")
+            x, ny, "复原提示标记：", getattr(self, 'board_marks_enabled', False),
+            "棋盘上提示复原方向的记号（目标框 / 洞位），可脱离调试面板单独开（F2 亦可开关）")
 
         # 调试面板本体：让 F2 的功能也有纯鼠标入口（面板自身的关闭按钮
         # 只能关、不能开）
         self._settings_metrics_toggle_rect, ny = self._draw_switch_row(
             x, ny, "调试面板：", getattr(self, 'show_metrics_panel', False),
             "右下角的数据面板（聚拢度 / 剖面缺陷等），F2 亦可开关")
+
+        # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
+        # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
+        # 的说明与下面的开关行整块落在裁剪区外，玩家根本看不到（2026-10-13
+        # 用户实机反馈）。这里每帧记录真实高度，高度计算与绘制永不漂移。
+        self._settings_anim_height = ny - y + 10
+
+    def _ext_feedback_lines(self, width: int) -> int:
+        """控制页内联反馈当前占几行（高度计算与绘制共用同一算法，避免漂移）。"""
+        msg = getattr(self, '_settings_ext_msg', '')
+        if not msg or getattr(self, '_settings_ext_msg_timer', 0) <= 0:
+            return 0
+        n = 0
+        for seg in msg.split('\n'):
+            n += len(self._wrap_text(seg, self.status_font, width - 30) or [''])
+        return min(n, 4)
 
     def _draw_settings_control(self, x, y, width, height):
         """绘制控制模式设置内容（五种操作方式独立开关，可任意组合）"""
@@ -2160,12 +2226,63 @@ class RendererMixin:
             x, ny, "逆序播放宏：", getattr(self, 'macro_reverse_mode', False),
             "宏指令倒着播一遍（本人用不上，故不放右下角常用区）")
 
+        # —— 外部控制（本机 HTTP API）——
+        # 与五种操作方式分区：那是「人怎么玩」，这是「外部程序怎么接」。
+        ny += 8
+        pygame.draw.line(self.screen, (90, 90, 95),
+                         (x + 15, ny - 4), (x + width - 15, ny - 4))
+        self._settings_ext_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "允许外部控制：", self.external_enabled(),
+            "开启后本机 HTTP 接口可用；外部程序须带令牌请求（令牌只存内存）")
+        note = self.status_font.render(
+            "令牌进程级随机：游戏重启即失效；关闭立即作废，重开换新", True, (150, 150, 150))
+        self.screen.blit(note, (x + 15, ny))
+        ny += 22
+        # 复制连接话术 / 下载控制教程（并排两按钮）
+        # 悬停高亮与底部按钮同源（button_hover）：没有悬停反馈的按钮像死的
+        btn_h = 32
+        copy_r = pygame.Rect(x + 15, ny, 150, btn_h)
+        guide_r = pygame.Rect(x + 175, ny, 170, btn_h)
+        mouse_pos = pygame.mouse.get_pos()
+        for r, label in ((copy_r, "复制连接话术"), (guide_r, "下载控制教程")):
+            hover = r.collidepoint(mouse_pos)
+            bg = self.colors['button_hover'] if hover else self.colors['button_bg']
+            pygame.draw.rect(self.screen, bg, r, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], r, 1, border_radius=4)
+            ls = self.dialog_font.render(label, True, (255, 255, 255))
+            self.screen.blit(ls, ls.get_rect(center=r.center))
+        self._settings_ext_copy_rect = copy_r
+        self._settings_ext_guide_rect = guide_r
+        ny += btn_h + 6
+
+        # —— 内联反馈（复制结果等）——
+        # 为什么在对话框内自报：宏通知浮层画在模态之下，设置框开着时toast
+        # 不可见——玩家点了没反应，按钮就像死的。反馈必须落在内容区里。
+        msg = getattr(self, '_settings_ext_msg', '')
+        n_lines = self._ext_feedback_lines(width)
+        if msg and n_lines:
+            color = (140, 230, 140) if getattr(self, '_settings_ext_msg_ok', True) \
+                else (255, 150, 150)
+            wrapped = []
+            for seg in msg.split('\n'):
+                wrapped.extend(self._wrap_text(seg, self.status_font, width - 30) or [''])
+            for ln in wrapped[:n_lines]:
+                self.screen.blit(self.status_font.render(ln, True, color), (x + 15, ny))
+                ny += 18
+        self._settings_ext_msg_lines = n_lines
+
     def _draw_settings_gather(self, x, y, width, height):
         """绘制聚拢参数设置内容（与谜题-自定义一致的输入框样式）"""
         # 顶部警告：不了解参数含义请勿调整
         warn = self.status_font.render("※ 参数含义若不理解请勿调整，以免求解效果变差", True, (220, 200, 80))
         self.screen.blit(warn, (x + 15, y + 8))
-        row_y = y + 32
+        # 适用范围（2026-10-13 用户要求标明）：这些参数是聚拢求解器的专用
+        # 参数，只对设置-求解器页的「单次聚拢」生效；梯度聚拢自动预测参数，
+        # 混合求解 / 填洞补缺 / 选块填空 / 查表等算法不读它们。
+        scope = self.status_font.render(
+            "这些参数只给「单次聚拢」用：梯度聚拢自动定参，其余算法不读它们", True, (150, 200, 150))
+        self.screen.blit(scope, (x + 15, y + 26))
+        row_y = y + 48
         self._settings_gather_rects = {}
         editing = getattr(self, 'settings_editing_value', None)
         specs = getattr(self, '_gather_param_specs', [])
@@ -2300,16 +2417,16 @@ class RendererMixin:
     def _solver_description(self, algo_key: str) -> str:
         """当前求解算法的说明文字"""
         descriptions = {
-            'ida_star': '使用 IDA* 迭代加深搜索，尽量找到最少步数解。速度非常慢。',
-            'fast': 'IDA* 优化模式：加大搜索步进，放宽节点/时间限制，优先聚拢，速度中等。不能保证求解成功。',
-            'greedy': '贪心爬山法：每步选当前最佳动作，速度中等但不保证最优。不能保证求解成功。',
+            'ida_star': '使用 IDA* 迭代加深搜索，尽量找到最少步数解。速度非常慢。※ 旧搜索类算法，相对现有宏级流水线已低效，沉底仅备查。',
+            'fast': 'IDA* 优化模式：加大搜索步进，放宽节点/时间限制，优先聚拢，速度中等。不能保证求解成功。※ 旧搜索类算法，沉底仅备查。',
+            'greedy': '贪心爬山法：每步选当前最佳动作，速度中等但不保证最优。不能保证求解成功。※ 旧搜索类算法，沉底仅备查。',
             'table':'根据数据库的数据快速找到最优算法（一般1s内），只对已有数据库的谜题有效。',
             #'intelligence': 'AI求解：基于预训练评分模型，每步自动选最佳动作。需先用 solver.ml.train_ranker 训练模型。',
             #'emd': 'EMD求解：用 EMD 距离贪心搜索，速度快但不保证成功。',
             #'strategy': '策略求解：EMD 贪心 + 循环检测 + 随机扰动，成功率高于纯 EMD。',
             #'distance': '距离求解：用神经网络预测剩余步数做贪心搜索，需先用 solver.ml.train_distance 训练模型。',
-            'gather': '聚拢（方形 / 三角形 / 米字格通用入口）：提升聚拢度，不保证还原，实时显示进展。',
-            'gather_gradient': '梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢，每阶段播放动画后再续。理论上比上一个更高效。',
+            'gather': '单次聚拢（方形 / 三角形 / 米字格通用入口）：只跑一轮聚拢，提升聚拢度，不保证还原，实时显示进展。',
+            'gather_gradient': '梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢，每阶段播放动画后再续。理论上比单次聚拢更高效。',
             # ➜ 填洞宏已并入本项（2026-10-12）：单独跑填洞遇到边缘缺口会全线
             #   失败，而它本来就是这一支遇到多空位时会转去跑的那条路。
             'gap_macro': '填洞补缺：多空位宏级机构（带移让位 + 粘上接走链）。单边缺口走「封壳 + 内部共轭 + 拆壳」；遇到多个空位或封闭孔洞则转去逐个 couple 填洞；最后一律带兜底救援。',
@@ -2428,11 +2545,25 @@ class RendererMixin:
                 total += 5  # group spacing
             return total + 25  # extra for hint text
         elif self.settings_active_tab == 'animation':
-            return 340  # 滑动动画 + 选中动画 + 时长滑动条 + 着色器 + 连锁提示
+            # 视觉页：真实绘制高度由 _draw_settings_animation 每帧记录
+            # （self._settings_anim_height）——曾因写死 340 把底下好几行
+            # 裁死在可见区外。首帧尚未绘制时用同一结构估算兜底：
+            # 界面模式/滑动/选中 3 行开关(60) + 速度滑条(72) + 缩放滑条(72)
+            # + 着色/连锁/标记/面板 4 行开关(60) + 余量。
+            return getattr(self, '_settings_anim_height', 3 * 60 + 72 + 72 + 4 * 60 + 10)
         elif self.settings_active_tab == 'gather':
-            return 12 + 26 + len(self._gather_param_specs) * 52 + 10
+            # 警告行 + 适用范围行 + 每个参数一行(52) + 余量
+            return 26 + 22 + len(self._gather_param_specs) * 52 + 10
         elif self.settings_active_tab == 'file':
             return 420  # 存档只读 + 防止覆盖 + 操作日志 + 压缩存档 + 当前存档路径说明
+        elif self.settings_active_tab == 'control':
+            # 提示 34 + 六行开关（每行 60）+ 外部控制区（分隔 8 + 开关 60
+            # + 说明 22 + 按钮 32 + 内联反馈行（每行 18，无反馈为 0）+ 余量 10）
+            # 反馈行数必须**当场按当前消息**算：等下一帧回填会把新行落在裁剪
+            # 区外（内容长高但滚动量没跟上），玩家仍看不到反馈。
+            # 宽度与 _draw_settings_control 收到的实参一致（对话框定宽 660-30）
+            return 34 + 6 * 60 + 8 + 60 + 22 + 32 + 10 \
+                + 18 * self._ext_feedback_lines(660 - 30)
         else:
             # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
             from solver import SOLVER_ALGORITHMS
@@ -2442,25 +2573,6 @@ class RendererMixin:
             desc_w = 500 - 30 - 20  # 内容宽 470 再减边距
             desc_h = len(self._wrap_text(desc, self.status_font, desc_w)) * 18 + 12
             return title_h + options_h + desc_h
-
-    def _draw_settings_scrollbar(self, x, y, height, scroll, max_scroll):
-        """绘制设置对话框滚动条"""
-        # 轨道
-        track_w = 8
-        track_rect = pygame.Rect(x, y, track_w, height)
-        pygame.draw.rect(self.screen, (60, 60, 65), track_rect, border_radius=4)
-        self._settings_scrollbar_rect = track_rect
-
-        # 滑块
-        if max_scroll > 0:
-            ratio = scroll / max_scroll
-            knob_h = max(20, int(height * height / (height + max_scroll)))
-            knob_y = y + int((height - knob_h) * ratio)
-            knob_rect = pygame.Rect(x, knob_y, track_w, knob_h)
-            self._settings_scrollbar_knob = knob_rect
-            pygame.draw.rect(self.screen, (120, 130, 140), knob_rect, border_radius=4)
-        else:
-            self._settings_scrollbar_knob = None
 
     def _wrap_text(self, text: str, font, max_width: int) -> list[str]:
         """自动换行：按给定宽度将文本拆分为多行"""
@@ -2953,9 +3065,10 @@ class RendererMixin:
         _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
         _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
         _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
-        # 棋盘标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼不想看、
-        # 后期要数格子又想看），故放常用区
-        _sw_btn('board_marks_enabled', '标记', lambda: self.board_marks_enabled)
+        # 复原提示标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼
+        # 不想看、后期要数格子又想看），故放常用区（设置页全名为
+        # 「复原提示标记」，2026-10-13 由「棋盘标记」改名）
+        _sw_btn('board_marks_enabled', '复原标记', lambda: self.board_marks_enabled)
         _sw_btn('game_mode', '模式', lambda: None)
         # 成绩面板：F3 的功能原先只有键盘能唤出，这里补一个纯鼠标入口，
         # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关

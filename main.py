@@ -13,6 +13,7 @@
 """
 
 import sys
+import secrets
 
 
 # ======== 日志系统（必须在任何可能失败的 import 之前安装）========
@@ -85,7 +86,7 @@ def parse_args():
 
     kind: 'square' | 'numbered' | 'triangle' | 'mi'（第 4 个参数为 tri/num/mi 时生效）
     """
-    m, n, step = 4, 4, 2
+    m, n, step = 6, 6, 2
     http_port = 5050
     enable_http = True
     kind = 'square'
@@ -156,12 +157,25 @@ if __name__ == '__main__':
         # 启动 stdin 读取线程
         threading.Thread(target=stdin_reader, args=(cmd_queue,), daemon=True).start()
 
+        # 外部控制令牌：进程级随机 token，HTTP 请求必须携带。
+        # 交付两条路——stdout 打印一行（subprocess 启动方天然读到，
+        # 人类在控制台也能看到）；游戏内「设置-控制」页有复制按钮。
+        # stdin 管道通道不设防（能写它的只有启动方父进程，天然可信）。
+        ext_state = {
+            'enabled': True,
+            'token': secrets.token_urlsafe(24),
+            'port': http_port,
+        }
+        print(f"GATSLI_TOKEN={ext_state['token']}")
+        print("[HTTP] 外部控制已启用；令牌见上一行 GATSLI_TOKEN 或游戏「设置-控制」页")
+
         # 启动 HTTP 服务
         http_server = None
         if enable_http:
-            http_server = start_http_server(cmd_queue, http_port)
+            http_server = start_http_server(cmd_queue, http_port, ext_state)
 
-        gui = SliderGUI(m=m, n=n, step=step, cmd_queue=cmd_queue, kind=kind)
+        gui = SliderGUI(m=m, n=n, step=step, cmd_queue=cmd_queue, kind=kind,
+                        ext_state=ext_state)
         gui.run()
     except Exception:
         _write_exception('启动失败', *sys.exc_info())

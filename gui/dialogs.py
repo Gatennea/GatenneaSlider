@@ -578,6 +578,12 @@ class DialogsMixin:
         self.help_search_rect = search_rect
         query = str(getattr(self, 'help_query', '') or '')
         active = bool(getattr(self, 'help_search_active', False))
+        # 与事件层一致：以 help_query 为权威串，组件内容与之同步（光标置于末尾）；
+        # 这样打开帮助若有残留查询，光标也会落在末尾而非错位。
+        ti = getattr(self, 'help_input', None)
+        if ti is not None and ti.text != query:
+            ti.set_text(query)
+        cursor_pos = ti.cursor_pos if ti is not None else len(query)
         pygame.draw.rect(self.screen,
                          self.colors['input_active' if active else 'input_bg'],
                          search_rect, border_radius=4)
@@ -590,7 +596,11 @@ class DialogsMixin:
                 '检索功能（试试「着色」「撤销」「三角」「怎么用」）', True, (140, 140, 140))
         self.screen.blit(text_surf, (search_rect.x + 8, search_rect.y + 4))
         if active and (pygame.time.get_ticks() // 500) % 2 == 0:
-            cx = search_rect.x + 8 + text_surf.get_width() + 2
+            if query:
+                prefix = query[:cursor_pos]
+                cx = search_rect.x + 8 + self.dialog_font.size(prefix)[0] + 1
+            else:
+                cx = search_rect.x + 8 + 1
             pygame.draw.line(self.screen, self.colors['input_text'],
                              (cx, search_rect.y + 6),
                              (cx, search_rect.y + search_h - 6), 1)
@@ -621,17 +631,12 @@ class DialogsMixin:
                 wrapped = self._wrap_text(line, self.dialog_font, text_max_width)
                 total_content_height += 26 * len(wrapped)
 
-        # 存储高度信息供事件处理使用
-        self._help_content_height = content_height
-        self._help_total_height = total_content_height
-
-        # 滚动偏移量
-        scroll_offset = getattr(self, 'help_scroll_offset', 0)
-
-        # 限制滚动范围
-        max_scroll = max(0, total_content_height - content_height)
-        scroll_offset = max(0, min(scroll_offset, max_scroll))
-        self.help_scroll_offset = scroll_offset
+        # 滚动条（与设置框共用 Scrollbar）：每帧依内容高度重算，
+        # 检索态/全文态切换时几何仍正确。
+        sb = self.help_scrollbar
+        sb.layout(dialog_x + dialog_width - 20, content_top, content_height,
+                  total_content_height, content_height)
+        scroll_offset = sb.scroll
 
         # 绘制内容（带裁剪）
         clip_rect = pygame.Rect(dialog_x + 10, content_top, dialog_width - 30, content_height)
@@ -654,23 +659,9 @@ class DialogsMixin:
 
         self.screen.set_clip(None)
 
-        # 绘制滚动条（如果内容超出可见区域）
-        if max_scroll > 0:
-            scrollbar_x = dialog_x + dialog_width - 20
-            scrollbar_top = content_top
-            scrollbar_height = content_height
-            self.help_scrollbar_rect = pygame.Rect(scrollbar_x, scrollbar_top, 8, scrollbar_height)
-            pygame.draw.rect(self.screen, (60, 60, 60), self.help_scrollbar_rect, border_radius=3)
-
-            # 滚动条滑块
-            knob_height = max(20, int(scrollbar_height * content_height / total_content_height))
-            knob_y = scrollbar_top + int((scrollbar_height - knob_height) * scroll_offset / max_scroll)
-            knob_color = self.colors['button_hover'] if getattr(self, 'help_scrollbar_dragging', False) else self.colors['button_bg']
-            self.help_scrollbar_knob_rect = pygame.Rect(scrollbar_x, knob_y, 8, knob_height)
-            pygame.draw.rect(self.screen, knob_color, self.help_scrollbar_knob_rect, border_radius=3)
-        else:
-            self.help_scrollbar_rect = None
-            self.help_scrollbar_knob_rect = None
+        # 绘制滚动条（仅当内容超出可见区域）
+        if sb.need_scroll():
+            sb.draw(self.screen)
 
         # 底部提示
         if query:

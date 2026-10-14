@@ -141,7 +141,7 @@ import pygame  # noqa: E402
 
 gui.show_help = True
 gui.help_query = '着色'
-gui.help_scroll_offset = 0
+gui.help_scrollbar.set_scroll(0)
 pygame.display.set_mode((1000, 700))
 try:
     gui.screen.fill((0, 0, 0))

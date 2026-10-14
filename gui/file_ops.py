@@ -146,6 +146,8 @@ DEFAULT_KEYBINDINGS = {
     'virtual_keyboard': {'key': 'f1', 'modifiers': []},
     'metrics_panel': {'key': 'f2', 'modifiers': []},
     'records_panel': {'key': 'f3', 'modifiers': []},
+    # 命令面板：功能可发现性主入口（Ctrl+K 是命令面板的通用键位，别挪作他用）
+    'command_palette': {'key': 'k', 'modifiers': ['ctrl']},
 }
 
 
@@ -717,6 +719,12 @@ class FileOpsMixin:
                 self._pending_convert = False
                 if self.file_dialog.result:
                     self._do_convert_from_path(self.file_dialog.result)
+            if getattr(self, '_pending_guide_save', False):
+                self._pending_guide_save = False
+                if self.file_dialog.result:
+                    ok, msg = self.write_external_control_guide(self.file_dialog.result)
+                    self.macro_notify_msg = msg
+                    self.macro_notify_timer = 150
 
     def _do_load_from_path(self, path: str):
         """从指定路径加载游戏（竞速模式下拒绝，防加载已复原存档判胜）"""

@@ -108,9 +108,11 @@ def run_trial(alg, shuffle_attempts, timeout=90.0):
     return gui.game.is_solved()
 
 
-# ---- 场景 1：gap_macro / fill_macro 交替，换局重试 ----
+# ---- 场景 1：gap_macro 换局重试（fill_macro 已于 2026-10-12 并入
+# gap_macro，旧 key 不再注册；未知 key 走明确拒绝分支、不建流式队列，
+# 本管道的 pump_idle 会永远等不到它）----
 solved = False
-algs = ('fill_macro', 'gap_macro', 'fill_macro', 'gap_macro')
+algs = ('gap_macro', 'gap_macro', 'gap_macro', 'hybrid')
 for i, alg in enumerate(algs):
     solved = run_trial(alg, shuffle_attempts=6)
     print(f"    第{i + 1}轮 [{alg}] 形状复原: {solved}", flush=True)

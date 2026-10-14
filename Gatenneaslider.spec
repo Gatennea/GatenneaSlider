@@ -109,6 +109,8 @@ a = Analysis(
            ('docs/player/操作说明.md', 'docs/player'),
            # 新手教程资源：文案 JSON + 关卡存档（新增关卡只加 json，无需改 spec）
            ('gui/tutorial_texts.json', 'gui'),
+           # 打乱死局黑名单（solver.deadend_guard 运行时按 solver 包路径找它）
+           ('solver/deadend_blacklist.json', 'solver'),
            ('beginner_archive', 'beginner_archive'),
            # S1-4 箭头按键贴图（renderer._arrow_asset_path 按「仓库根/assets/...」
            # 找，打包后根 = _MEIPASS，故整目录带过去；缺了箭头不显示）

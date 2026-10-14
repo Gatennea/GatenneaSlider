@@ -509,7 +509,34 @@ class SliderMatrix:
 
     def shuffle(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75):
         """
-        随机打乱谜题（纯逻辑，不含动画/GUI状态重置）
+        随机打乱谜题（纯逻辑，不含动画/GUI状态重置）—— 对外入口。
+
+        死局黑名单防护：黑名单覆盖的谜题（当前仅方形 4_4_2，见
+        solver/deadend_guard）终态命中死局黑名单时，回到复原态重新打乱，
+        重试上限 100 次（命中概率约万分之 0.16，几乎不可能循环）；超限打印
+        警告并接受最后一次结果。其它谜题只跑一次 _shuffle_once，行为不变。
+        """
+        from solver.deadend_guard import has_deadend_guard, is_deadend
+
+        if not has_deadend_guard(self.m, self.n, step):
+            self._shuffle_once(attempts, step, bias, min_score)
+            return
+
+        for retry in range(100):
+            if retry:
+                # 死局态向前封闭：从死局态出发的任何合法移动仍落在死局集合
+                # 里，不先回复原态就重打，重试永远出不去。
+                for i, b in enumerate(self.blocks):
+                    b.location = [i // self.n, i % self.n]
+            self._shuffle_once(attempts, step, bias, min_score)
+            if not is_deadend(self.m, self.n, step,
+                              {tuple(b.location) for b in self.blocks}):
+                return
+        print('警告: 打乱终态连续 100 次命中死局黑名单，接受最后一次结果')
+
+    def _shuffle_once(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75):
+        """
+        单次随机打乱核心（终态死局防护的包装在 shuffle）。
 
         模拟玩家随机滑动操作，直接更新滑块位置。
 

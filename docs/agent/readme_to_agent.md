@@ -269,26 +269,26 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 
 ### 5.1 演算法註冊表
 
-`solver/__init__.py` 的 `SOLVER_ALGORITHMS: dict[key, (顯示名, callable)]` 是 GUI「自動求解」唯一來源：
+`solver/__init__.py` 的 `SOLVER_ALGORITHMS: dict[key, (顯示名, callable)]` 是 GUI「自動求解」唯一來源。**字典順序 = 設置-求解器頁展示順序**（2026-10-13 用户定：好用的置頂，低效的沉底備查）：
 
 | key | 顯示名 | 函數 | 特性 |
 | --- | --- | --- | --- |
-| `gather_gradient` | 智能聚攏 | `gather_solver.gradient_gather` | 參數預測 + 多階段 + 路徑優化 |
-| `gather` | 普通聚攏 | `gather_solve_unified`（統一入口） | 貪心聚攏 + patience 停機；**三形態共用這一個入口**，內部按 game 類型分發到 `gather_solve` / `tri_gather_solve` / `mi_gather_solve` |
-| `ida_star` | 最少步 | `solver.solve` | 保證最優，較慢 |
-| `fast` | 最快-1 | `solve_fast` | IDA* 放寬 |
-| `greedy` | 最快-2 | `solve_greedy` | 貪心爬山 + 擾動 |
-| `table` | 查表求解 | `table_solver.table_solve` | 需先 `solver.data` 建表 |
-| ~~`fill_macro`~~ | ~~填洞宏~~ | **已併入 `gap_macro`**（2026-10-12） | 菜單上不再單列：補缺宏遇到多空位/非邊緣缺口本來就轉去跑填洞那一支（兩者是包含關係），而反過來單獨跑填洞對邊緣缺口會全線失敗——留著它等於擺一個會翻車的坑。舊配置 key 由 `file_ops._migrate_solver_algorithm` 遷到 `gap_macro` |
-| `gap_macro` | 填洞補缺 | `gap_solver.solve_gap_macro` | **現役主入口**：判型分發（單缺口雙層共軛／多空位統一驅動／單洞填洞）；函數本身仍是補缺那一支，名字改是因為它現在獨佔菜單 |
+| `hybrid` | 混合求解（自動規劃） | `auto_solver.auto_solve` | **現役首選**：查表 → 補缺宏 → 混合流水線，全解即停；無表按空位數路由（≤2 混合流水線／≥3 先補缺宏），兩路互接力 + 流式多段播放 |
+| `gather_gradient` | 梯度聚攏 | `gather_solver.gradient_gather` | 參數預測 + 多階段 + 路徑優化 |
+| `gap_macro` | 填洞補缺 | `gap_solver.solve_gap_macro` | 判型分發（單缺口雙層共軛／多空位統一驅動／單洞填洞）；遇到多空位/非邊緣缺口轉去跑填洞那一支 |
+| `gather` | 單次聚攏 | `gather_solve_unified`（統一入口） | 貪心聚攏 + patience 停機，只跑一輪；**三形態共用這一個入口**，內部按 game 類型分發到 `gather_solve` / `tri_gather_solve` / `mi_gather_solve`。2026-10-13 由「聚攏」改名，與「梯度聚攏」區分 |
 | `pick_fill` | 選塊填空 | `gap_solver.solve_pick_fill`（包 `solve_single_segment`） | **唯一有前置交互**：先由 `GUI._pick_fill` 收集玩家點選的一對方塊+空位，再由 Ctrl+A 開算；只要求指定空位被填上，不要求整盤還原 |
-| `hybrid` | 混合求解（免表·非最優） | `hybrid_solver.hybrid_solve_with_table` | 有表先查表；無表走「聚攏+填洞」交替 + GBFS 收尾 |
+| `table` | 查表求解 | `table_solver.table_solve` | 需先 `solver.data` 建表 |
+| `ida_star` | IDA*求解 | `solver.solve` | 保證最優，較慢；**舊搜索類，沉底僅備查** |
+| `fast` | IDA*快速 | `solve_fast` | IDA* 放寬；**舊搜索類，沉底僅備查** |
+| `greedy` | 貪心爬山 | `solve_greedy` | 貪心爬山 + 擾動；**舊搜索類，沉底僅備查** |
+| ~~`fill_macro`~~ | ~~填洞宏~~ | **已併入 `gap_macro`**（2026-10-12） | 菜單上不再單列：補缺宏遇到多空位/非邊緣缺口本來就轉去跑填洞那一支（兩者是包含關係），而反過來單獨跑填洞對邊緣缺口會全線失敗——留著它等於擺一個會翻車的坑。舊配置 key 由 `file_ops._migrate_solver_algorithm` 遷到 `gap_macro` |
 
 > 註：上表與實際註冊表可能再度漂移，**以 `solver/__init__.py` 的 `SOLVER_ALGORITHMS` 為準**；各算法的設計動機與機構詳解見 `docs/solver/求解器設計.md`。
 
-> ⚠️ **形態支援表（2026-10-05 起）**：`SOLVER_FORM_SUPPORT` 決定每個算法在哪些谜题形态上可用，**缺省 = 只支援方形**（多数算法是方形语义：4 元组动作 + 矩形目标形状 + 整数坐标，套到异形会静默走错）。目前只有 `gather` 同时支援方形/三角形/米字格。**异形上选到不支持的算法会被明确拒绝**并提示「当前谜题（米字格）没有「查表求解」求解算法功能（该形态目前仅支持：聚拢）」——**不会**像旧版那样静默把算法换成别的。新增算法若要支援异形，必须显式登记进 `SOLVER_FORM_SUPPORT`，不能靠缺省蒙对。
+> ⚠️ **形態支援表（2026-10-05 起）**：`SOLVER_FORM_SUPPORT` 決定每個算法在哪些谜题形态上可用，**缺省 = 只支援方形**（多数算法是方形语义：4 元组动作 + 矩形目标形状 + 整数坐标，套到异形会静默走错）。目前只有 `gather` 同时支援方形/三角形/米字格。**异形上选到不支持的算法会被明确拒绝**并提示「当前谜题（米字格）没有「查表求解」求解算法功能（该形态目前仅支持：单次聚拢）」——**不会**像旧版那样静默把算法换成别的。新增算法若要支援异形，必须显式登记进 `SOLVER_FORM_SUPPORT`，不能靠缺省蒙对。
 >
-> 同理，**不要给某个形态单开一个注册表入口**（历史上曾有 `tri_gather` / `mi_gather`，已移除）：形态差异是内部实现细节，菜单里就该只有一个「聚拢」。
+> 同理，**不要给某个形态单开一个注册表入口**（历史上曾有 `tri_gather` / `mi_gather`，已移除）：形态差异是内部实现细节，菜单里就该只有一个「单次聚拢」。
 
 通用函式庫契約：`f(game, step, max_steps, cancel_check=None, progress_callback=None) → list[action] | None`（`gather` 系回報 `progress_callback` 聚攏指標，即使未還原也回傳動作序列）。新增演算法 = 在 `solver/ml/` 新增模組 + 註冊進 `SOLVER_ALGORITHMS` + 加入設定介面的預設清單。
 
@@ -345,10 +345,31 @@ python -m solver.ml.human_solver
 
 伺服器綁定 `127.0.0.1:5050`；`GameHTTPHandler` 把每個請求轉成指令投到命令佇列，GUI 主執行緒於 `process_commands()` 執行後同步回 JSON。所有回應皆為信封 `{"ok":bool,"message":?...,"...":...}`；參數缺漏/型別/白名单/越界錯誤回 HTTP **400**（solver 參數數值越界為 `ok:false` 且不套用任何值，見 `/solver/params`），未知路徑回 **404**；`OPTIONS` 已開 CORS。
 
-**端點一覽**（舊端點全部保留，舊腳本無需修改）：
+### 6.0 外部控制鑑權（2026-10-13 起，所有業務端點強制）
+
+**威脅模型**：伺服器只綁 `127.0.0.1`，令牌防的是**本機上的其他程序與網頁**（CORS 全開，任意網頁都能探測這個端口）。stdin 管道通道**不設防**——能寫 stdin 的只有啟動遊戲的父進程，天然可信。
+
+- **令牌**：進程級隨機（`secrets.token_urlsafe(24)`），只存內存、不落盤。取得方式：
+  - **AI 啟動**：遊戲往 stdout 打印一行 `GATSLI_TOKEN=<令牌>`（subprocess 管道天然讀到）；
+  - **人類啟動**：遊戲「設置-控制」頁「複製連接話術」按鈕（含令牌 + 端口 + 三步引導的一段話，直接發給外部程序即可——AI 助手是其中最常見的一種）。
+- **傳遞**（二選一）：請求頭 `Authorization: Bearer <令牌>`（推薦）；或 URL 查詢參數 `?token=<令牌>`。
+- **狀態碼**：開關關閉（遊戲「設置-控制」→「允許外部控制」）→ **403** 一切拒絕；令牌缺失 → **401**；令牌不匹配 → **401**。默認開啟。
+- **生命週期**：遊戲重啟即換新令牌；關閉開關會立即作廢當前令牌，重開生成新令牌（關閉期間複製出去的話術隨之失效）。
+- **`GET /help`**：API 索引（端點列表 + 第一條命令引導），永遠與代碼同步；索引與遊戲內「下載控制教程」按鈕導出的自包含 Markdown **同源生成**（教程文件不含令牌——它可能被分享/上傳官網）。**`GET /help/<端點>`**：單個端點的完整用法（說明 + body 字段表 + 返回字段 + curl 示例），如 `GET /help/move`；未知端點回 404 並指回 `/help`。
+
+```bash
+# 標準寫法（推薦 header）
+curl -H "Authorization: Bearer <令牌>" http://127.0.0.1:5050/status
+# 不方便加頭時用 query
+curl "http://127.0.0.1:5050/status?token=<令牌>"
+```
+
+**端點一覽**（舊端點全部保留，舊腳本無需修改；**全部端點都需要令牌**，含 `/help`）：
 
 | Method | Path | Body / 說明 |
 | --- | --- | --- |
+| GET | `/help` | API 索引 `{ok,message,auth,first_step,detail,endpoints:[{path,method,summary}]}`；需要令牌（與全部端點一致） |
+| GET | `/help/<端點>` | 單個端點詳情 `{ok,path,method,summary,description,params:[{name,type,required,desc}],returns,example}`；未知端點回 404。如 `/help/move` |
 | GET | `/status` | 完整狀態（§下方 schema，含求解器/宏/開關資訊） |
 | GET | `/map` | `{"ok":true,"map":"##__\n##__..."}`（按方塊包圍盒裁剪空邊）。**三角形**回 `#^v_` 四字符（菱形胞 2-bit）；方形/序號仍為 `#_` |
 | GET | `/analysis/window` | 目標聚攏視窗 `{ok,window:{r0,c0,rh,cw,overlap},m,n,step}`；**三角形形態不支援，回 HTTP 400** |
@@ -363,7 +384,9 @@ python -m solver.ml.human_solver
 | GET | `/settings` | `{ok,settings:{<鍵>:<值>}}`（13 個 GUI 開關 + 動畫時長） |
 | GET | `/records` | 目前謎題成績摘要 |
 | GET | `/timer/status` | `{"ok":true,...}` + `state`/`elapsed_ms` |
+| GET | `/screenshot` | 保存當前畫面為 PNG：`?path=<目標>` 指定路徑（缺 .png 後綴自動補）；缺省存遊戲目錄 `screenshots/` 下按時間戳命名（同秒連拍自動加 `_1/_2` 不覆蓋）。回 `{ok,path,width,height}`；保存的是最近一次繪製完成的畫面 |
 | POST | `/command` | `{"cmd":"<任意 CLI 指令>"}`（§7 全集） |
+| POST | `/screenshot` | 同 `GET /screenshot`；body 可帶 `{"path":"<目標路徑>"}`，缺省自動命名 |
 | POST | `/move` | `{"direction":"w|s|a|d"}`（方形/序號）或 `{"direction":"w|e|a|d|z|x"}`（三角形，平行於縫隙）；失敗帶 `reason`（§下方列舉） |
 | POST | `/undo` `/redo` `/shuffle` `/reset` `/deselect` `/quit` | — |
 | POST | `/new` | `{"m","n","step","numbered"?:bool}`；`numbered=true` 建帶序號謎題（行主序賦 1..m·n）。`type` 可選 `square`（默認）/`numbered`/`triangle`；`triangle` 以 `m` 作大三角邊長 k（`n` 仍須給） |
@@ -448,10 +471,13 @@ curl -X POST http://127.0.0.1:5050/move -H "Content-Type: application/json" -d '
 
 GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列項目：純字串（stdin）、`(cmd, resp_q)`（HTTP 傳統指令）、`(cmd, resp_q, payload)`（HTTP 富 JSON body：多行地圖/設置等，動作名與 CLI 同名）。指令以空白分隔，第一個 token 為動作。
 
-**完整動作清單**（= `http_server.py` 對映來源，兩介面 1:1）：
+**stdin 通道不設防**（能寫 stdin 的只有啟動遊戲的父進程，天然可信）——與 HTTP 的令牌鑑權（§6.0）是兩套信任模型：HTTP 面向「本機任意程序/網頁」，stdin 面向「啟動方」。
+
+**完整動作清單**（= `http_server.py` 對映來源，兩介面 1:1；`help` 可即時查這份清單 + HTTP API 索引）：
 
 | 動作 | 參數 | 說明 |
 | --- | --- | --- |
+| `help` | — | 打印 CLI 命令索引 + HTTP API 索引（resp_q 通道回 JSON） |
 | `status` | — | 狀態（含 matrix、blocks、solver、macro 等完整 schema） |
 | `map` | — | `#`/`_` 文本地圖（三角形為 `#^v_`） |
 | `move` | `w\|s\|a\|d`（方形）或 `w\|e\|a\|d\|z\|x`（三角形） | 移動（需先選縫隙+滑塊；方形 `v`→w/s、`h`→a/d；三角形 `h`→a/d、`p`→e/z、`n`→w/x，**可省略 select_gap**）；失敗附 reason：not_selected/wrong_direction/disconnected/collision/timer_blocked |
@@ -462,6 +488,7 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `select_gap` | `h\|v line`（方形）／`h\|p\|n line`（三角形） | 例 `select_gap v 1`；三角形 3 族，線號合法性由遊戲側判定 |
 | `select_block` | `row col` | 例 `select_block 0 0` |
 | `deselect` | — | 清選中 |
+| `screenshot` | `[路徑]` | 保存當前畫面為 PNG（缺省存 `screenshots/` 自動命名）；HTTP 同名端點 `GET/POST /screenshot` |
 | `export` / `import` | （沿用舊終端介面） | 地圖字串進出 |
 | `window` | — | 目標聚攏視窗（find_best_window，除錯面板綠框同源） |
 | `holes` | — | 洞/缺口/凸起（detect_holes，region 取視窗） |
@@ -544,6 +571,8 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 
 ```bash
 python test\_test_http_api.py           # HTTP REST 端到端（狀態/分析/求解/宏/存取/模式/開關，含真實求解與取消）
+python test\_test_external_control.py  # 外部控制：令牌鑑權（401/403/兩種傳法）/help 索引/話術/教程/開關換 token/索引防腐爛斷言
+python test\_test_screenshot_api.py    # 截圖端點（GET/POST/自動命名/連拍不覆蓋/CLI 通道）
 python test\_test_mod_constraint.py     # mod 約束/detect_target_corner
 python test\_test_gradient_pipeline.py  # 智能聚攏並行管線收尾
 python test\_test_full.py               # 綜合
