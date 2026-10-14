@@ -3181,6 +3181,15 @@ class EventsMixin:
             if self.settings_scrollbar.on_mouse_down((mx, my)):
                 return
 
+            # ——底部按钮最优先（确定 / 取消 / 恢复默认）——
+            # 各 Tab 里的选项行（算法行等）是横贯对话框整宽的大矩形，列表
+            # 滚到底时这些矩形会盖到底部按钮区。若先判选项行，点「确定」
+            # 会被选项行截获：算法被悄悄改掉、对话框还关不掉 —— 这就是
+            # 「选 A 算法却切到 B」的成因（重叠区只有约 32px，命中哪一条
+            # 取决于点按钮的上半还是下半，故表现像随机）。按钮一律先判。
+            if self._settings_bottom_button_hit(mx, my):
+                return
+
             # 求解器 Tab：点击算法选择
             if self.settings_active_tab == 'solver' and hasattr(self, '_settings_solver_rects'):
                 for algo_key, rect in self._settings_solver_rects.items():
