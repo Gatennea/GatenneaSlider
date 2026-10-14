@@ -12,7 +12,7 @@ import os
 import time
 
 # 確保可以導入項目模塊
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game import SliderMatrix
 from solver.state import state_key, snapshot, restore, encode_state
