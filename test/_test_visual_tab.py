@@ -74,8 +74,10 @@ print("\n--- 视觉页：tab 改名与控件齐全 ---")
 _rnd = open(os.path.join('gui', 'renderer.py'), encoding='utf-8').read()
 check('V0a 第三个 tab 标签为「视觉」',
       'tab_anim_text = self.status_font.render("视觉"' in _rnd)
-check('V0b 顶部设置菜单项同步改名', '视觉' in gui.settings_menu_items,
-      str(gui.settings_menu_items))
+# 「视觉」入口 = 顶栏「设置」→ 对话框 → 视觉 Tab（历史上的「设置」下拉菜单
+# 是死机制，已删；这里锁现行路径：点「设置」直接开对话框，不开下拉）。
+check('V0b 顶栏「设置」点击直达设置对话框', '设置' in gui.menu_items,
+      str(gui.menu_items))
 
 open_settings('animation')
 _tab_row_attrs = {

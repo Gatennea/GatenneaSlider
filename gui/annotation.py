@@ -508,7 +508,7 @@ class AnnotationMixin:
                     getattr(self, 'show_edit_menu', False) or
                     getattr(self, 'show_puzzle_menu', False) or
                     getattr(self, 'show_macro_menu', False) or
-                    getattr(self, 'show_settings_menu', False)):
+                    getattr(self, 'show_search_menu', False)):
                 # 有菜单展开时，点击交给常规下拉菜单处理，避免抢事件
                 return False
             if self._ann_sub_dialog == 'gen':
