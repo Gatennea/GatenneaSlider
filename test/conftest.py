@@ -54,12 +54,9 @@ PYTHON = os.environ.get('GATENNEA_PY', 'D:/python/python.exe')
 # 超时按失败处理并保留已捕获的输出——CI 上挂死比失败更难诊断。
 SCRIPT_TIMEOUT = 600
 
-# 个别更慢脚本的单独上限（键 = 文件名）。_test_bfs_explore 跑
-# (4,4,2) 全图 BFS（8028 态），本机实测要十几分钟，默认 600s 会被
-# 误杀；其余脚本最慢的 _test_profile 也才 90s 级，保持默认。
-_SLOW_TIMEOUT = {
-    '_test_bfs_explore.py': 1800,
-}
+# 个别更慢脚本的单独上限（键 = 文件名）。_test_bfs_explore 已进 _SKIP
+# （4x4 段约 2 小时，非自动回归），目前无条目；机制保留备用。
+_SLOW_TIMEOUT = {}
 
 # 环境敏感、不参与自动回归的脚本（收集即 skip）。
 #   _test_full          sys.path 硬编码项目旧家 'e:/program_project/py/貓九的滑塊遊戲'
@@ -70,10 +67,16 @@ _SLOW_TIMEOUT = {
 #                       而 save/ 整个被 .gitignore——fixture 从未入库，
 #                       本机都没有，CI 更不可能有。属 fill_macro 研发期
 #                       测试，与录制产物绑定，不进自动回归。
+#   _test_bfs_explore   纯探测脚本（无 assert、退出码恒 0，当回归永远绿），
+#                       且 explore(4,4,2) 按 |cone|=558286 态 × ~14ms/态
+#                       估约 2 小时以上——其自带的「超时停止」只在层边界
+#                       检查，深层单层就可能跑几分钟，保护形同虚设。
+#                       设计为手动看增长趋势用，不进自动回归。
 #   _smoke_exe          要打包产物 dist/GatenneaSlider/，只在发版前手动跑。
 _SKIP = {
     '_test_full.py',
     '_test_dent_inner.py',
+    '_test_bfs_explore.py',
     '_smoke_exe.py',
 }
 
