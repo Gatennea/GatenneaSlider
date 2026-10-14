@@ -2297,14 +2297,15 @@ class RendererMixin:
             pygame.draw.rect(self.screen, cbg, toggle, border_radius=4)
             t = self.status_font.render(ctxt, True, ctext_color)
             self.screen.blit(t, t.get_rect(center=toggle.center))
-            # −/+ 按钮（禁用时灰化）
+            # -/+ 按钮（禁用时灰化）。减号必须用 ASCII '-'：U+2212「−」
+            # 在游戏字体里没有字形，上屏是方框（与旁边的 ASCII '+' 对称）。
             dec = pygame.Rect(x + 80, row_y, 28, 26)
             inc = pygame.Rect(x + 196, row_y, 28, 26)
             btn_color = self.colors['input_bg'] if enabled else (55, 55, 55)
             pygame.draw.rect(self.screen, btn_color, dec, border_radius=4)
             pygame.draw.rect(self.screen, btn_color, inc, border_radius=4)
             txt_color = (255, 255, 255) if enabled else (90, 90, 90)
-            d = self.status_font.render("−", True, txt_color)
+            d = self.status_font.render("-", True, txt_color)
             p = self.status_font.render("+", True, txt_color)
             self.screen.blit(d, d.get_rect(center=dec.center))
             self.screen.blit(p, p.get_rect(center=inc.center))
