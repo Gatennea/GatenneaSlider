@@ -27,7 +27,8 @@ API_INDEX = [
     ('/settings', 'BOTH', '查询/修改设置项'),
     ('/analysis/window', 'GET', '局面分析：目标窗'),
     ('/analysis/holes', 'GET', '局面分析：空位（缺口+孔洞）'),
-    ('/analysis/actions', 'GET', '局面分析：当前可行动作'),
+    ('/analysis/actions', 'GET', '局面分析：当前可行动作（含会移动哪些块/能移几格）'),
+    ('/analysis/preview', 'POST', '动作 dry-run：预演单个动作，返回移动后地图（不执行）'),
     ('/solver/algorithms', 'GET', '求解器算法列表'),
     ('/solver/status', 'GET', '求解器运行状态'),
     ('/solver/params', 'BOTH', '查询/修改求解器参数'),
@@ -118,7 +119,10 @@ HELP_DETAILS = {
     '/mode': {
         'desc': '查询/切换游戏模式。GET 返回当前模式；POST 切换。'
                 '注意：只有 practice（练习）和 timed（竞速）能经接口切换，'
-                '创造模式不开放给接口。',
+                '创造模式不开放给接口。\n'
+                '切换模式不重置当前局面、不清步数历史——撤销/重做照常可用；'
+                '仅有的副作用是竞速模式的计时器回到空闲态（未开始的计时作废，'
+                '已开始的成绩不受影响）。',
         'params': [('mode', 'string', True, 'practice 或 timed（仅 POST 需要）')],
         'returns': 'JSON：{ok, mode, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
@@ -156,10 +160,39 @@ HELP_DETAILS = {
     },
     '/analysis/actions': {
         'desc': '局面分析：当前全部可行动作（含未选中态与选中缝隙态两种口径）。'
-                '三角形密铺暂不支持（400 unsupported）。',
+                '三角形密铺暂不支持（400 unsupported）。\n'
+                '每项动作 = (gap_type, gap_line, side, move_dir) 外加三个预览字段：\n'
+                '  blocks    : 该动作会移动的滑块（移动前坐标，行主序）\n'
+                '  max_cells : 沿 move_dir 最远可移动格数（当前步长的整数倍）\n'
+                '  movable   : max_cells > 0。缝隙有效不代表方向真能移动'
+                '（撞车/破坏连通都会让移动失败）——按 movable 筛再动手，'
+                '可消除绝大部分试错。\n'
+                '想看某个动作移动后的完整地图：POST /analysis/preview。',
         'params': [],
-        'returns': 'JSON：{ok, actions:[...]}；不支持时 400 unsupported',
+        'returns': 'JSON：{ok, actions:[{gap_type, gap_line, side, move_dir, '
+                   'blocks, max_cells, movable, reason?}]}；不支持时 400 unsupported',
         'example': 'curl -H "Authorization: Bearer $TOKEN" $BASE/analysis/actions',
+    },
+    '/analysis/preview': {
+        'desc': '动作 dry-run：预演单个动作，返回「会移动哪些块、移动后地图」，'
+                '不碰真实局面（无步数、无历史、无动画）。三角形密铺暂不支持'
+                '（400 unsupported）。\n'
+                '典型用法：GET /analysis/actions 挑一个 movable 的动作，'
+                '先用本端点确认移动后形态符合预期，再按 '
+                'select_gap → select_block → move 执行；不如预期就换一个，'
+                '零成本。\n'
+                '动不了时返回 ok:false + message（含引擎原因：碰撞/破坏连通/'
+                '该侧无滑块）。',
+        'params': [('gap_type', 'string', True, 'h 或 v'),
+                   ('line', 'int', True, '缝号线号（同 select_gap 的口径）'),
+                   ('side', 'string', True, 'h 缝：above/below；v 缝：left/right'),
+                   ('move_dir', 'string', True, 'h 缝：a/d；v 缝：w/s（须平行于缝）')],
+        'returns': 'JSON：{ok, message, blocks_before, blocks_after, max_cells, '
+                   'map_after}；动不了或参数不合法时 {ok:false, message}',
+        'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
+                   '-H "Content-Type: application/json" '
+                   '-d \'{"gap_type":"h","line":2,"side":"above","move_dir":"a"}\' '
+                   '$BASE/analysis/preview',
     },
     '/solver/algorithms': {
         'desc': '求解器算法列表（key + 显示名，顺序即游戏设置页展示顺序），'
@@ -278,10 +311,21 @@ HELP_DETAILS = {
     '/select_gap': {
         'desc': '选中一条缝隙（刀缝）。选中后 /move 会沿这条缝移动整片。'
                 'type：方形 h/v；三角形密铺另加 p/n（3 族缝隙）；米字格另加 '
-                'd1/d2（两条对角缝族）。线号合法性由游戏侧判定。',
+                'd1/d2（两条对角缝族）。\n'
+                '线号语义（方形）：h 的 line 是「行与行之间」的线，有效范围 '
+                '0..行数-2；v 的 line 是「列与列之间」的线，有效范围 0..列数-2。'
+                '失败消息会带上当前局面的有效范围，成功消息也带。\n'
+                '块与线的归属规则：块恰好在线上时归上/左——h 缝 above 侧 = '
+                '行号 ≤ line 的块，below 侧 = 行号 > line；v 缝 left 侧 = '
+                '列号 ≤ line，right 侧 = 列号 > line。\n'
+                '选中后还要 /select_block 选一个该侧的块，才会选中整片；'
+                '米字格可省略 select_block（q 定向由 /move 前的两次点击决定，'
+                '接口上用 select_block 的 q 参数）。\n'
+                '不确定哪些线有效：GET /analysis/actions 直接列出全部合法'
+                '（缝隙, 侧, 方向）组合，省得试错。',
         'params': [('type', 'string', True, 'h/v（三角加 p/n，米字格加 d1/d2）'),
-                   ('line', 'int', True, '缝号线号')],
-        'returns': 'JSON：{ok, message}',
+                   ('line', 'int', True, '缝号线号；失败/成功消息均带当前有效范围')],
+        'returns': 'JSON：{ok, message}（message 带有效范围提示）',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
                    '-H "Content-Type: application/json" '
                    '-d \'{"type":"v","line":3}\' $BASE/select_gap',
@@ -305,8 +349,13 @@ HELP_DETAILS = {
     },
     '/move': {
         'desc': '移动滑块。direction：方形 w/s/a/d（上/下/左/右）；三角形密铺'
-                '另加 e/z/x（六向）；米字格八向再加 q。合法性由游戏侧判定'
-                '（须平行于选中缝隙，或该方向存在可移动的块）。',
+                '另加 e/z/x（六向）；米字格八向再加 q。\n'
+                '合法性由游戏侧判定：方向须平行于选中缝隙（h 缝只能 a/d，'
+                'v 缝只能 w/s），且移动后全盘必须仍是一个连通整体——这条'
+                '「极简规则、复杂涌现」是游戏全部深度的来源。\n'
+                '移动前想预演：POST /analysis/preview 看会移动哪些块、移动后'
+                '地图；移动后不满意：POST /undo 回退（/redo 重做）。\n'
+                '失败时 message 会说明原因（未选中/方向不平行/碰撞/破坏连通）。',
         'params': [('direction', 'string', True, 'w/s/a/d；三角另加 e/z/x；米字格另加 q')],
         'returns': 'JSON：{ok, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
@@ -314,7 +363,9 @@ HELP_DETAILS = {
                    '-d \'{"direction":"w"}\' $BASE/move',
     },
     '/undo': {
-        'desc': '撤销一步。',
+        'desc': '撤销一步（回到移动前的局面与步数）。手解误操作、试错后'
+                '回退都用它；/redo 可重做被撤销的一步。开局即还原态时'
+                '撤销无步可回（仍返回 ok，局面不变）。',
         'params': [],
         'returns': 'JSON：{ok, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" $BASE/undo',
@@ -607,7 +658,9 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
                 "first_step": "GET /status 查看当前局面，再按下方索引调用",
                 "detail": "GET /help/<端点> 查看单个端点的参数/返回/示例，"
                           "如 GET /help/move",
-                "note": "stdin 命令通道（子进程管道）不设防，只有启动游戏的父进程能写",
+                "note": "stdin 命令通道（子进程管道）不设防，只有启动游戏的父进程能写；"
+                        "手解误操作可 POST /undo 回退、POST /redo 重做；"
+                        "执行前想预演用 POST /analysis/preview（dry-run 不碰局面）",
                 "endpoints": [
                     {"path": p, "method": m, "summary": s}
                     for (p, m, s) in API_INDEX
@@ -803,6 +856,29 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "message": "需要 old_name 和 new_name"}, 400)
                 return
             result = self._post_command(f'macro_rename {old_name} {new_name}')
+            self._send_json(result)
+
+        elif path == '/analysis/preview':
+            # dry-run：预演单个动作。参数在 HTTP 层挡明显非法的（族/侧/
+            # 方向搭配），缝隙有效性与可移动性由游戏侧判并给原因。
+            gt = body.get('gap_type', '')
+            line = body.get('line')
+            side = body.get('side', '')
+            md = body.get('move_dir', '')
+            if gt not in ('h', 'v') or line is None:
+                self._send_json(
+                    {"ok": False,
+                     "message": "需要 gap_type (h/v) 和 line"}, 400)
+                return
+            sides = {'h': ('above', 'below'), 'v': ('left', 'right')}
+            dirs = {'h': ('a', 'd'), 'v': ('w', 's')}
+            if side not in sides[gt] or md not in dirs[gt]:
+                self._send_json(
+                    {"ok": False,
+                     "message": "h 缝配 above/below + a/d；v 缝配 left/right + w/s"},
+                    400)
+                return
+            result = self._post_command(f'preview {gt} {line} {side} {md}')
             self._send_json(result)
 
         elif path == '/select_gap':

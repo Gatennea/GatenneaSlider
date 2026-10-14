@@ -347,6 +347,71 @@ code, r = api('POST', '/solver/params', {'max_wait_time_enabled': False})
 check("启用标志切换 ok", code == 200 and r.get('ok')
       and gui.gather_enabled['max_wait_time'] is False, r.get('message', ''))
 
+# ================================================================ 信息层升级
+# （外部 AI 实机反馈整改：错误带原因/线号范围公开/动作预览/mode 零副作用澄清）
+print("=== 信息层：动作预览与语义透明 ===")
+fresh_puzzle(3, 3, 1, 6)
+code, r = api('GET', '/analysis/actions')
+check("IL1 actions 每项带预览字段",
+      code == 200 and r.get('ok') and r.get('actions')
+      and all({'blocks', 'max_cells', 'movable'} <= set(a) for a in r['actions']),
+      str(r)[:80])
+check("IL2 打乱局面至少一个 movable 动作",
+      any(a.get('movable') for a in r.get('actions') or []))
+_pick = next((a for a in r['actions'] if a.get('movable')), None)
+if _pick:
+    _map_before = api('GET', '/map')[1].get('map')
+    code, pv = api('POST', '/analysis/preview',
+                   {'gap_type': _pick['gap_type'], 'line': _pick['gap_line'],
+                    'side': _pick['side'], 'move_dir': _pick['move_dir']})
+    check("IL3 preview 返回 blocks_before/after + map_after",
+          code == 200 and pv.get('ok')
+          and {'blocks_before', 'blocks_after', 'max_cells', 'map_after'} <= set(pv),
+          str(pv)[:80])
+    check("IL4 preview 的 after ≠ before（确实预演了移动）",
+          pv.get('blocks_before') != pv.get('blocks_after'))
+    check("IL5 dry-run 不碰真实局面（/map 与 preview 前一致）",
+          api('GET', '/map')[1].get('map') == _map_before)
+    check("IL6 preview 的 max_cells 与 actions 口径一致",
+          pv.get('max_cells') == _pick.get('max_cells'),
+          f"{pv.get('max_cells')} vs {_pick.get('max_cells')}")
+# 找一个动不了的动作（缝隙有效但方向堵死）：枚举里 movable=false 的，
+# 或刻意构造非法搭配走 400 分支
+code, pv = api('POST', '/analysis/preview',
+               {'gap_type': 'h', 'line': 0, 'side': 'above', 'move_dir': 'w'})
+check("IL7 preview 参数搭配非法 → 400", code == 400 and not pv.get('ok'),
+      f"code={code}")
+code, r = api('POST', '/select_gap', {'type': 'h', 'line': -15})
+check("IL8 select_gap 越界 line 失败且 message 带有效范围",
+      code == 200 and not r.get('ok') and '有效范围' in (r.get('message') or ''),
+      r.get('message', ''))
+code, r = api('POST', '/select_gap', {'type': 'h', 'line': 1})
+check("IL9 select_gap 成功 message 也带有效范围",
+      code == 200 and r.get('ok') and '有效范围' in (r.get('message') or ''),
+      r.get('message', ''))
+code, r = api('GET', '/help')
+check("IL10 /help note 提示 undo/preview 存在",
+      code == 200 and 'undo' in (r.get('note') or '').lower()
+      and 'preview' in (r.get('note') or '').lower())
+code, r = api('GET', '/help/select_gap')
+check("IL11 /help/select_gap 写明归属规则与 line 范围",
+      code == 200 and '归属' in (r.get('description') or '')
+      and '有效范围' in (r.get('description') or ''))
+code, r = api('GET', '/help/analysis/preview')
+check("IL12 /help/analysis/preview 有详情且参数四项",
+      code == 200 and r.get('ok') and len(r.get('params') or []) == 4,
+      str(r)[:80])
+# mode 切换零副作用（外部 AI 误报「timed→practice 重置局面」的防线）
+_map_before = api('GET', '/map')[1].get('map')
+_step_before = api('GET', '/status')[1].get('step_count')
+code, r = api('POST', '/mode', {'mode': 'timed'})
+check("IL13 切 timed ok", code == 200 and r.get('ok'), r.get('message', ''))
+code, r = api('POST', '/mode', {'mode': 'practice'})
+check("IL14 切回 practice ok", code == 200 and r.get('ok'), r.get('message', ''))
+check("IL15 mode 来回切换不重置局面与步数",
+      api('GET', '/map')[1].get('map') == _map_before
+      and api('GET', '/status')[1].get('step_count') == _step_before)
+
 # ================================================================ 收尾
 pump_frames(0.3)
 server.shutdown()
