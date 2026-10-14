@@ -54,6 +54,13 @@ PYTHON = os.environ.get('GATENNEA_PY', 'D:/python/python.exe')
 # 超时按失败处理并保留已捕获的输出——CI 上挂死比失败更难诊断。
 SCRIPT_TIMEOUT = 600
 
+# 个别更慢脚本的单独上限（键 = 文件名）。_test_bfs_explore 跑
+# (4,4,2) 全图 BFS（8028 态），本机实测要十几分钟，默认 600s 会被
+# 误杀；其余脚本最慢的 _test_profile 也才 90s 级，保持默认。
+_SLOW_TIMEOUT = {
+    '_test_bfs_explore.py': 1800,
+}
+
 # 环境敏感、不参与自动回归的脚本（收集即 skip）。
 #   _test_full          sys.path 硬编码项目旧家 'e:/program_project/py/貓九的滑塊遊戲'
 #                       ——该目录在本机真实存在，import 到的是**旧版代码**，
@@ -157,6 +164,7 @@ class ScriptTestItem(pytest.Item):
     def runtest(self):
         if self.path.name in _SKIP:
             pytest.skip(f'环境敏感脚本（{self.path.name}），手动运行')
+        timeout = _SLOW_TIMEOUT.get(self.path.name, SCRIPT_TIMEOUT)
         env = dict(os.environ)
         env.setdefault('SDL_VIDEODRIVER', 'dummy')
         env.setdefault('SDL_AUDIODRIVER', 'dummy')
@@ -164,14 +172,14 @@ class ScriptTestItem(pytest.Item):
             proc = subprocess.run(
                 [PYTHON, '-u', str(self.path)],
                 cwd=ROOT, env=env,
-                capture_output=True, text=True, timeout=SCRIPT_TIMEOUT,
+                capture_output=True, text=True, timeout=timeout,
                 errors='replace')
         except subprocess.TimeoutExpired as exc:
             out = (exc.stdout or '')
             if isinstance(out, bytes):
                 out = out.decode('utf-8', 'replace')
             raise AssertionError(
-                f'脚本超过 {SCRIPT_TIMEOUT}s 未退出（疑似卡死）\n{out}') from None
+                f'脚本超过 {timeout}s 未退出（疑似卡死）\n{out}') from None
         if proc.returncode != 0:
             raise AssertionError(
                 f'退出码 {proc.returncode}\n'
