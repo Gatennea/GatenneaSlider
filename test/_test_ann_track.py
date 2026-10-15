@@ -62,15 +62,28 @@ def main():
     all_ok &= _chk('空位被填→filled', cells == [] and filled == 1 and status == 'filled',
                    f'{cells} f={filled} {status}')
 
-    # ---- 3. 幻影：空位随滑组让出的空格平移 ----
-    # 组在行0 col1..2 向左移 1（旧占位即为 moved）；col3 的空位跟在组后
-    # → 落点 col2 正是让出的空格
-    prev3 = {(0, 1), (0, 2)}
-    cur3 = {(0, 0), (0, 1)}
-    moved3 = [(0, 1), (0, 2)]
+    # ---- 3. 幻影：带内洞随滑组让位平移（docstring 规则 1）----
+    # 组 {(0,2),(0,3)} 向左移 1 吞掉左前方空位 (0,1)，洞与组的相对
+    # 位置不变（左边界外一格）→ 漂到 (0,0)。2026-10-02 幽灵滑块
+    # 重写后的「洞在带内随带漂移」语义。
+    prev3 = {(0, 2), (0, 3)}
+    cur3 = {(0, 1), (0, 2)}
+    moved3 = [(0, 2), (0, 3)]
     cells, filled, status = advance_void_cells(
-        prev3, cur3, moved3, 'v', 0, 'a', 1, [(0, 3)])
-    all_ok &= _chk('空位随组让位平移', cells == [(0, 2)] and status == 'ok',
+        prev3, cur3, moved3, 'v', 0, 'a', 1, [(0, 1)])
+    all_ok &= _chk('空位随组让位平移', cells == [(0, 0)] and status == 'ok',
+                   f'{cells} {status}')
+
+    # ---- 3b. 组尾侧空位：组反方向移动 → 保持原位（规则 3）----
+    # 组 {(0,1),(0,2)} 向左移 1，空位 (0,3) 在组尾侧（移动方向的后方），
+    # 不会被补上、也没有块挪进来 → 原位仍空。（旧版「近似传播」会让它
+    # 跟着漂到让出的 (0,2)，2026-10-02 重写已修正该语义。）
+    prev3b = {(0, 1), (0, 2)}
+    cur3b = {(0, 0), (0, 1)}
+    moved3b = [(0, 1), (0, 2)]
+    cells, filled, status = advance_void_cells(
+        prev3b, cur3b, moved3b, 'v', 0, 'a', 1, [(0, 3)])
+    all_ok &= _chk('组尾侧空位保持原位', cells == [(0, 3)] and status == 'ok',
                    f'{cells} {status}')
 
     # ---- 4. 桥接两个组件 → 不传播 ----

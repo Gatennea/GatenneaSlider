@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """profile predecessors() 在 4x4 step2 上的耗时分布。"""
 import sys, os, time, cProfile, pstats, io, random
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from solver import table_core as tc
 
 

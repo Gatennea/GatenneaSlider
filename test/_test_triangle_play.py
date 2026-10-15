@@ -100,12 +100,12 @@ check(ok is False and '未知方向' in gui.macro_notify_msg,
 
 print("== 單次觸控拖動 ==")
 gui.new_triangle_puzzle(K, 1)
-# 找一個拖右可行的滑塊
+# 找一個拖右可行的滑塊（避開 S1-4 箭頭按鍵區，理由同斜向段）
 start_key = None
 for b in gui.game.blocks:
     k = tri_key(b)
     p, gt, ln, reason, n = gui.game.resolve_drag(k, 'd', 1)
-    if p:
+    if p and gui._arrow_button_hit(*block_screen(k)) is None:
         start_key = k
         break
 check(start_key is not None, "找到一个可向右拖动的滑块")
@@ -169,11 +169,14 @@ for letter, (ux, uy) in DIRECTION_SCREEN.items():
 check(adsorb_ok, "六個方向的螢幕向量都吸附回自身")
 
 # 斜向拖動：取一塊，沿 'e'(↗) 方向拖
+# 選塊要避開 S1-4 箭頭按鍵：按鍵畫在遊戲區兩端、蓋在滑塊之上，
+# 命中優先於起拖（見 events 的 arrow_button 分支）——選中按鍵區
+# 裏的塊，down 會被按鍵吃掉，drag_state 根本不記錄。
 start_key = None
 for b in gui.game.blocks:
     k = tri_key(b)
     p, gt, ln, reason, n = gui.game.resolve_drag(k, 'e', 1)
-    if p:
+    if p and gui._arrow_button_hit(*block_screen(k)) is None:
         start_key = k
         break
 check(start_key is not None, "找到一个可向右上拖动的滑块")

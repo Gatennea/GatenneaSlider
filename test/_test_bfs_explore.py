@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """探测中等尺寸的状态数、不可逆性、性能。"""
 import sys, os, time, random
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from solver import table_core as tc
 
 

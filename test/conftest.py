@@ -1,0 +1,196 @@
+# -*- coding: utf-8 -*-
+"""pytest 适配层：让 pytest 收集本仓库的脚本型回归测试，存量测试零改动。
+
+背景——仓库现存测试都是「自包含脚本」形态：模块级直接执行、check()
+收集失败、sys.exit(1)。pytest 默认只收集 ``test_*.py`` / ``*_test.py``
+且要求 ``test_`` 函数，两者都不匹配 ``_test_*.py``；而且 import 一个
+脚本型模块就等于把它跑一遍（还会撞上 sys.exit）。
+
+做法——``pytest_collect_file`` 钩子 + ast 静态判别：
+  · 模块级有 ``if __name__ == '__main__':`` 守卫 → ScriptTestItem：
+    子进程跑脚本、退出码 0 = PASS，非 0 = FAIL，stdout 全文附进报告。
+    （含「test_xxx(m,n,step) + __main__ 手动调参」的混合体——它们被
+    pytest 原生收集会把参数当 fixture 请求，必须走子进程。）
+  · 无守卫且有 ``def test_*`` → 走 pytest 原生收集；
+  · 无守卫也无 test_ 函数 → ScriptTestItem（模块级直跑的脚本）。
+  ``_test_*.py`` 全部 90+ 个存量测试由此接入，一行不用改。
+
+新测试可以直接写 pytest 原生风格（def test_xxx + assert），与脚本型
+共存；也可以继续写脚本型（如 _test_basic_ops.py），都会被收集。
+
+运行：
+    pytest test/                      # 全量
+    pytest test/ -k basic             # 按名字筛
+    pytest test/ -x                   # 失败即停
+    pytest test/ -n auto              # 并行（需 pytest-xdist）
+
+环境约定：
+  · 子进程解释器由 ``GATENNEA_PY`` 指定（游戏测试要 pygame-ce，本机
+    在 ``D:/python/python.exe``；CI 上设成 ``python``）。
+  · 子进程 cwd = 仓库根（兼容 sys.path.insert(0,'.') 与 abspath 两种写法）。
+  · 环境敏感脚本（要真实显示器/打包产物/特定机器路径）进 _SKIP，
+    收集即跳过，不在 CI 误红。
+"""
+
+import ast
+import os
+import subprocess
+import sys
+
+import pytest
+
+# 仓库根 = test/ 的上一级。pytest 进程（收集方）从一开始就要认得出顶层包
+# （solver/gui/GUI）：test/test/ 下的 pytest 原生文件 import 链依赖它，
+# 且不受这些文件自身 __file__ 算法的影响。conftest 是收集前第一个加载的
+# 模块，放这里最稳。
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+# 跑子进程用的解释器：默认本机 pygame-ce 所在；CI 用 GATENNEA_PY=python 覆盖
+PYTHON = os.environ.get('GATENNEA_PY', 'D:/python/python.exe')
+
+# 单个脚本的墙上时钟上限（秒）：求解器全图测试最慢约百秒级，留足余量；
+# 超时按失败处理并保留已捕获的输出——CI 上挂死比失败更难诊断。
+SCRIPT_TIMEOUT = 600
+
+# 个别更慢脚本的单独上限（键 = 文件名）。_test_bfs_explore 已进 _SKIP
+# （4x4 段约 2 小时，非自动回归），目前无条目；机制保留备用。
+_SLOW_TIMEOUT = {}
+
+# 环境敏感、不参与自动回归的脚本（收集即 skip）。
+#   _test_full          sys.path 硬编码项目旧家 'e:/program_project/py/貓九的滑塊遊戲'
+#                       ——该目录在本机真实存在，import 到的是**旧版代码**，
+#                       本机「假绿」、CI 上必红；其覆盖（TextInput 组件）
+#                       与 _test_quick.py 重叠，不修不删，就此搁置。
+#   _test_dent_inner    基准局是 GUI 录制的人解存档 save/solve_dent*.json，
+#                       而 save/ 整个被 .gitignore——fixture 从未入库，
+#                       本机都没有，CI 更不可能有。属 fill_macro 研发期
+#                       测试，与录制产物绑定，不进自动回归。
+#   _test_bfs_explore   纯探测脚本（无 assert、退出码恒 0，当回归永远绿），
+#                       且 explore(4,4,2) 按 |cone|=558286 态 × ~14ms/态
+#                       估约 2 小时以上——其自带的「超时停止」只在层边界
+#                       检查，深层单层就可能跑几分钟，保护形同虚设。
+#                       设计为手动看增长趋势用，不进自动回归。
+#   _smoke_exe          要打包产物 dist/GatenneaSlider/，只在发版前手动跑。
+_SKIP = {
+    '_test_full.py',
+    '_test_dent_inner.py',
+    '_test_bfs_explore.py',
+    '_smoke_exe.py',
+}
+
+
+def _has_main_guard(path):
+    """ast 判别：模块级是否有 ``if __name__ == '__main__':`` 守卫。
+
+    有守卫 = 设计为「python file.py」直接跑的脚本型测试——包括那批
+    「pytest 风格函数名（test_xxx(m, n, step)）+ __main__ 手动带参调用」
+    的混合体（原 test/test/ 下 4 个求解器测试）。它们被 pytest 原生
+    收集会把函数参数当 fixture 请求（fixture 'm' not found），必须走
+    子进程。
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding='utf-8'), str(path))
+    except (SyntaxError, UnicodeDecodeError):
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.If):
+            for c in ast.walk(node.test):
+                if isinstance(c, ast.Constant) and c.value == '__main__':
+                    return True
+    return False
+
+
+def _has_native_tests(path):
+    """ast 判别：模块级是否有 def test_* （不 import，零副作用）。"""
+    try:
+        tree = ast.parse(path.read_text(encoding='utf-8'), str(path))
+    except (SyntaxError, UnicodeDecodeError):
+        return False
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and node.name.startswith('test'):
+            return True
+        if isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and sub.name.startswith('test'):
+                    return True
+    return False
+
+
+def pytest_collect_file(file_path, parent):
+    """test/ 直属的 _test_*.py：有 __main__ 守卫按脚本收集，其余看形态。
+
+    只接管 ``_test_`` 前缀（仓库约定 = 回归测试）。其余前缀不碰：
+      _check_/_mi_/_dbg_/_draw_  一次性核查 / 调试
+      _gen_                      资源生成（跑了会写文件，绝不进 CI）
+      _shot_                     截图工具（产出图片，非断言）
+      _smoke_exe                 打包产物冒烟（进 _SKIP，手动跑）
+    """
+    if file_path.suffix != '.py':
+        return None
+    if file_path.parent != parent.path:
+        return None
+    if not file_path.name.startswith('_test_'):
+        return None
+    if _has_main_guard(file_path):
+        return ScriptTestFile.from_parent(parent, path=file_path)
+    if _has_native_tests(file_path):
+        return None
+    return ScriptTestFile.from_parent(parent, path=file_path)
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """显式文件参数时去重：pytest 的 isinitpath 会跳过 python_files 检查，
+    内置 Module 收集与 ScriptTestFile 双收同一文件（Module 侧还会把
+    test_xxx(m,n,step) 的参数当 fixture 请求 → ERROR，且 import 时多跑
+    一遍函数体）。目录跑时 python_files 已挡住内置收集，这里无操作。
+    """
+    script_paths = {str(i.path) for i in items
+                    if isinstance(i, ScriptTestItem)}
+    if script_paths:
+        items[:] = [i for i in items
+                    if isinstance(i, ScriptTestItem)
+                    or str(i.path) not in script_paths]
+
+
+class ScriptTestFile(pytest.File):
+    """一个脚本型测试文件 = 一个用例（脚本内部多断言，颗粒度是文件级）。"""
+
+    def collect(self):
+        yield ScriptTestItem.from_parent(self, name=self.path.stem)
+
+
+class ScriptTestItem(pytest.Item):
+    def runtest(self):
+        if self.path.name in _SKIP:
+            pytest.skip(f'环境敏感脚本（{self.path.name}），手动运行')
+        timeout = _SLOW_TIMEOUT.get(self.path.name, SCRIPT_TIMEOUT)
+        env = dict(os.environ)
+        env.setdefault('SDL_VIDEODRIVER', 'dummy')
+        env.setdefault('SDL_AUDIODRIVER', 'dummy')
+        try:
+            proc = subprocess.run(
+                [PYTHON, '-u', str(self.path)],
+                cwd=ROOT, env=env,
+                capture_output=True, text=True, timeout=timeout,
+                errors='replace')
+        except subprocess.TimeoutExpired as exc:
+            out = (exc.stdout or '')
+            if isinstance(out, bytes):
+                out = out.decode('utf-8', 'replace')
+            raise AssertionError(
+                f'脚本超过 {timeout}s 未退出（疑似卡死）\n{out}') from None
+        if proc.returncode != 0:
+            raise AssertionError(
+                f'退出码 {proc.returncode}\n'
+                f'----- stdout -----\n{proc.stdout}\n'
+                f'----- stderr -----\n{proc.stderr}')
+
+    def repr_failure(self, excinfo, style=None):
+        return str(excinfo.value)
+
+    def reportinfo(self):
+        return self.path, 0, f'script: {self.path.name}'

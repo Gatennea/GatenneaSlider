@@ -5,7 +5,7 @@
 真实 draw 链路里跑不跑得起来」。这里连同选缝 + 选中切片一起走完，并且同时在
 enhanced / plain 两种模式下各画一次（plain 必须完全不画标注）。
 
-执行：``D:/python/python.exe test/_smoke_s1_render.py``
+执行：``D:/python/python.exe test/_test_s1_render.py``
 """
 
 import os
