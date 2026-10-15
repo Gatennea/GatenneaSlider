@@ -13,15 +13,24 @@ exp20(2026-09-30) 已在 hybrid 单层测过同配置消融（skip_fill：7.5s�
 口径（用户铁律：运算时间 > 解的长度）：
   - 端到端墙钟时间为主指标；逐局配对（同 seed 同局面 on/off）；
   - ABAB：第 i 对先 on 后 off（i 偶）/ 先 off 后 on（i 奇），抵消热态漂移；
-  - 汇总时报配对差值的中位与分布，不只均值（时间分布长尾）。
+  - 汇总报跨 rep 中位（fillin_report.py），不只均值（时间分布长尾）。
+
+⚠️ 多轮 reps 是必需的（2026-10-16 实测发现）：L2b 路径上的补缺宏候选有
+    30s 墙钟预算（gap_solver._GAP_GUI_TIME_BUDGET）+ 并行 couple 枚举，
+    同盘面同代码可能 2.2s 解出、也可能 30s 到点掉混合续算——线程调度
+    非确定性。单轮数据里这个运气会冒充填洞宏效应（实测同层同解长的一对
+    耗时差 20 倍、且出现反向）。故每对跑 --reps N 轮（rep 间镜像 ABAB），
+    跨 rep 取中位。L1 层无补缺宏参与，单轮即可信。
 
 用法（可反复重启，断点续跑；每次调用在墙钟上限内干净退出）：
   D:\python\python.exe experiments/fillin_ablation.py \
-      --level L1 --m 5 --n 5 --step 2 --games 4 [--wall-cap 540]
+      --level L1 --m 5 --n 5 --step 2 --games 4 [--wall-cap 540] \
+      [--reps 3]
 
 输出：experiments/results/fillin/<level>_<m>x<n>_s<step>.jsonl（逐局追加，
-     已完成的 (level,size,seed,flag) 自动跳过；换 --games 12 即在同一seed
-     序列上扩展为正式档，冒烟数据是正式档的子集，不浪费）。
+     已完成的 (level,size,seed,flag,rep) 自动跳过；旧数据无 rep 字段按
+     rep=0 计；换 --games 12 即在同一 seed 序列上扩展为正式档，冒烟数据
+     是正式档的子集，不浪费）。
 """
 import argparse
 import json
@@ -101,7 +110,10 @@ def _run_one(level, snap, flag, budget):
 
 
 def _load_done(path):
-    """断点续跑：已写入 jsonl 的 (level,size,seed,flag) 不重跑。"""
+    """断点续跑：已写入 jsonl 的 (level,size,seed,flag,rep) 不重跑。
+
+    旧数据无 rep 字段，按 rep=0 计（天然兼容）。
+    """
     done = set()
     if os.path.exists(path):
         with open(path, encoding='utf-8') as f:
@@ -114,7 +126,7 @@ def _load_done(path):
                 except ValueError:
                     continue
                 done.add((d['level'], d['m'], d['n'], d['step'],
-                          d['seed'], d['flag']))
+                          d['seed'], d['flag'], d.get('rep', 0)))
     return done
 
 
@@ -125,6 +137,8 @@ def main():
     ap.add_argument('--n', type=int, required=True)
     ap.add_argument('--step', type=int, required=True)
     ap.add_argument('--games', type=int, default=4)
+    ap.add_argument('--reps', type=int, default=1,
+                    help='每对重复轮数（补缺宏墙钟预算有非确定性，多轮取中位分离变量）')
     ap.add_argument('--seed0', type=int, default=2000)
     ap.add_argument('--wall-cap', type=float, default=540.0,
                     help='单次调用墙钟上限（秒），到点干净退出可续跑')
@@ -139,20 +153,24 @@ def main():
                         % (args.level, args.m, args.n, args.step))
     done = _load_done(path)
 
-    # ABAB 配对计划：第 i 对 i 偶 → (on, off)；i 奇 → (off, on)
+    # ABAB 配对计划：rep 内第 i 对 i 偶 → (on, off)、i 奇 → (off, on)；
+    # rep 间镜像（奇数 rep 反转每对起手），进一步抵消顺序效应。
     plan = []
-    for i in range(args.games):
-        seed = args.seed0 + i
-        order = ('on', 'off') if i % 2 == 0 else ('off', 'on')
-        for pos, flag in enumerate(order):
-            plan.append((seed, flag, pos))
+    for rep in range(args.reps):
+        for i in range(args.games):
+            seed = args.seed0 + i
+            order = ('on', 'off') if i % 2 == 0 else ('off', 'on')
+            if rep % 2 == 1:
+                order = order[::-1]
+            for pos, flag in enumerate(order):
+                plan.append((seed, flag, pos, rep))
 
     t_start = time.perf_counter()
     ran = skipped = 0
     total = len(plan)
     with open(path, 'a', encoding='utf-8') as out:
-        for seed, flag, pos in plan:
-            key = (args.level, args.m, args.n, args.step, seed, flag)
+        for seed, flag, pos, rep in plan:
+            key = (args.level, args.m, args.n, args.step, seed, flag, rep)
             if key in done:
                 skipped += 1
                 continue
@@ -164,14 +182,14 @@ def main():
             rec = _run_one(args.level, snap, flag, budget)
             rec.update({'level': args.level, 'm': args.m, 'n': args.n,
                         'step': args.step, 'seed': seed, 'flag': flag,
-                        'pos': pos, 'budget': budget,
+                        'pos': pos, 'rep': rep, 'budget': budget,
                         'ts': time.strftime('%Y-%m-%d %H:%M:%S')})
             out.write(json.dumps(rec, ensure_ascii=False) + '\n')
             out.flush()
             ran += 1
             extra = (' ' + ' '.join(rec['labels'])) if rec.get('labels') else ''
-            print('[%s %dx%d s%d] seed=%d %-3s %-8s %7.1fs act=%-3d h=%d%s'
-                  % (args.level, args.m, args.n, args.step, seed, flag,
+            print('[%s %dx%d s%d] seed=%d %-3s r%d %-8s %7.1fs act=%-3d h=%d%s'
+                  % (args.level, args.m, args.n, args.step, seed, flag, rep,
                      rec['outcome'], rec['dt'], rec['n_actions'],
                      rec['holes'], extra), flush=True)
     print('[done] 本次 %d 项 / 共 %d 项（跳过已完成 %d）→ %s'
