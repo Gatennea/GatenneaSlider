@@ -93,3 +93,13 @@ def exception(msg: str, exc_type, exc_value, exc_tb) -> None:
     """记一条异常：msg 是一行摘要，trace 用 traceback 模块现成的三件套拼。"""
     trace = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
     write(msg, trace=trace.splitlines())
+
+
+def _gui_log_error(msg: str, level: str = 'error') -> None:
+    """GUI 侧的错误/运行日志入口（2026-10-14 从 GUI.py 搬来，供各 mixin 共用）。
+
+    就是 write 的一层薄包装。以前它住在 GUI.py 里，gui/ 下的 mixin 想记日志
+    只能 import GUI（循环依赖），所以搬进本模块——它本来就是 write 的包装，
+    住这儿最自然。GUI.py 改为 from gui.log_writer import _gui_log_error。
+    """
+    write(msg, level=level)
