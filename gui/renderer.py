@@ -1110,7 +1110,7 @@ class RendererMixin:
                            (i == 1 and self.show_edit_menu) or \
                            (i == 2 and self.show_puzzle_menu) or \
                            (i == 3 and self.show_macro_menu) or \
-                           (i == 4 and self.show_settings_menu)
+                           (i == 5 and self.show_search_menu)
             if is_highlighted:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
@@ -1125,6 +1125,8 @@ class RendererMixin:
             self.draw_puzzle_menu()
         if self.show_macro_menu:
             self.draw_macro_menu()
+        if self.show_search_menu:
+            self.draw_search_menu()
 
     def draw_file_menu(self):
         """绘制文件下拉菜单"""
@@ -1489,27 +1491,27 @@ class RendererMixin:
             macro_x = zoom_x - macro_surface.get_width() - 20
             self.screen.blit(macro_surface, (macro_x, text_y))
 
-    def draw_settings_menu(self):
-        """绘制设置下拉菜单"""
-        settings_rect = self.menu_item_rects[4]  # "设置"是第5个菜单项
-        menu_x = settings_rect.x
+    def draw_search_menu(self):
+        """绘制搜索下拉菜单（顶栏「搜索」：命令面板的鼠标直达入口）"""
+        search_rect = self.menu_item_rects[5]  # "搜索"是第6个菜单项
+        menu_x = search_rect.x
         menu_y = self.menu_bar_height
 
         item_height = 28
-        menu_width = 140
-        menu_height = item_height * len(self.settings_menu_items)
+        menu_width = 150
+        menu_height = item_height * len(self.search_menu_items)
 
         dropdown_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
         pygame.draw.rect(self.screen, self.colors['menu_bg'], dropdown_rect)
         pygame.draw.rect(self.screen, self.colors['dialog_border'], dropdown_rect, 1)
 
-        self.settings_menu_rects = []
-        for i, item in enumerate(self.settings_menu_items):
+        self.search_menu_rects = []
+        for i, item in enumerate(self.search_menu_items):
             y_pos = menu_y + i * item_height
             item_rect = pygame.Rect(menu_x, y_pos, menu_width, item_height)
-            self.settings_menu_rects.append(item_rect)
+            self.search_menu_rects.append(item_rect)
 
-            if i == self.settings_menu_hovered:
+            if i == self.search_menu_hovered:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
             text_surface = self.menu_font.render(item, True, self.colors['menu_text'])
@@ -2297,14 +2299,15 @@ class RendererMixin:
             pygame.draw.rect(self.screen, cbg, toggle, border_radius=4)
             t = self.status_font.render(ctxt, True, ctext_color)
             self.screen.blit(t, t.get_rect(center=toggle.center))
-            # −/+ 按钮（禁用时灰化）
+            # -/+ 按钮（禁用时灰化）。减号必须用 ASCII '-'：U+2212「−」
+            # 在游戏字体里没有字形，上屏是方框（与旁边的 ASCII '+' 对称）。
             dec = pygame.Rect(x + 80, row_y, 28, 26)
             inc = pygame.Rect(x + 196, row_y, 28, 26)
             btn_color = self.colors['input_bg'] if enabled else (55, 55, 55)
             pygame.draw.rect(self.screen, btn_color, dec, border_radius=4)
             pygame.draw.rect(self.screen, btn_color, inc, border_radius=4)
             txt_color = (255, 255, 255) if enabled else (90, 90, 90)
-            d = self.status_font.render("−", True, txt_color)
+            d = self.status_font.render("-", True, txt_color)
             p = self.status_font.render("+", True, txt_color)
             self.screen.blit(d, d.get_rect(center=dec.center))
             self.screen.blit(p, p.get_rect(center=inc.center))

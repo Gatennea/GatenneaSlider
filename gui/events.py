@@ -101,7 +101,7 @@ class EventsMixin:
             ('show_edit_menu', 'edit_menu_rects'),
             ('show_puzzle_menu', 'puzzle_menu_rects'),
             ('show_macro_menu', 'macro_menu_rects'),
-            ('show_settings_menu', 'settings_menu_rects'),
+            ('show_search_menu', 'search_menu_rects'),
         )
         for flag, rects_attr in checks:
             if not getattr(self, flag, False):
@@ -475,8 +475,8 @@ class EventsMixin:
                                 if rect.collidepoint(mx, my):
                                     in_dropdown = True
                                     break
-                        if not in_dropdown and self.show_settings_menu and hasattr(self, 'settings_menu_rects'):
-                            for rect in self.settings_menu_rects:
+                        if not in_dropdown and self.show_search_menu and hasattr(self, 'search_menu_rects'):
+                            for rect in self.search_menu_rects:
                                 if rect.collidepoint(mx, my):
                                     in_dropdown = True
                                     break
@@ -586,12 +586,12 @@ class EventsMixin:
                                 self.macro_menu_hovered = i
                                 break
 
-                    # 设置菜单悬停
-                    self.settings_menu_hovered = -1
-                    if self.show_settings_menu:
-                        for i, rect in enumerate(self.settings_menu_rects):
+                    # 搜索菜单悬停
+                    self.search_menu_hovered = -1
+                    if self.show_search_menu:
+                        for i, rect in enumerate(self.search_menu_rects):
                             if rect.collidepoint(mx, my):
-                                self.settings_menu_hovered = i
+                                self.search_menu_hovered = i
                                 break
 
                     # 滑动条拖拽（缩放/速度）
@@ -816,25 +816,19 @@ class EventsMixin:
                             if puzzle_clicked:
                                 continue
 
-                        # 设置下拉菜单项点击（顶栏「设置」展开）。
-                        # 这一路原本只有绘制没有分派——菜单画得出、点不动，是
-                        # 「找得到却用不了」的典型。补上：前两项跳设置页，第三项
-                        # 开命令面板（鼠标直达入口，不依赖 Ctrl+K）。
-                        if self.show_settings_menu:
-                            settings_clicked = False
-                            for i, rect in enumerate(self.settings_menu_rects):
+                        # 搜索下拉菜单项点击（顶栏「搜索」展开）。
+                        # 命令面板的鼠标直达入口：不依赖 Ctrl+K，纯鼠标玩家
+                        # 也能从菜单栏走到功能可发现性主入口。
+                        if self.show_search_menu:
+                            search_clicked = False
+                            for i, rect in enumerate(self.search_menu_rects):
                                 if rect.collidepoint(x, y):
-                                    item = self.settings_menu_items[i]
-                                    if item == '命令面板':
+                                    if self.search_menu_items[i].startswith('命令面板'):
                                         self.open_command_palette()
-                                    else:
-                                        tab = ('keybindings' if item == '快捷键设置'
-                                               else 'animation')
-                                        self._open_settings_tab(tab)
-                                    settings_clicked = True
+                                    search_clicked = True
                                     break
                             self.close_all_menus()
-                            if settings_clicked:
+                            if search_clicked:
                                 continue
 
                         # 宏定义菜单项点击
@@ -860,27 +854,35 @@ class EventsMixin:
                                     elif self.menu_items[i] == '文件':
                                         self.show_edit_menu = False
                                         self.show_puzzle_menu = False
-                                        self.show_settings_menu = False
+                                        self.show_search_menu = False
                                         self.show_macro_menu = False
                                         self.show_file_menu = not self.show_file_menu
                                     elif self.menu_items[i] == '编辑':
                                         self.show_file_menu = False
                                         self.show_puzzle_menu = False
-                                        self.show_settings_menu = False
+                                        self.show_search_menu = False
                                         self.show_macro_menu = False
                                         self.show_edit_menu = not self.show_edit_menu
                                     elif self.menu_items[i] == '谜题':
                                         self.show_file_menu = False
                                         self.show_edit_menu = False
-                                        self.show_settings_menu = False
+                                        self.show_search_menu = False
                                         self.show_macro_menu = False
                                         self.show_puzzle_menu = not self.show_puzzle_menu
                                     elif self.menu_items[i] == '宏定义':
                                         self.show_file_menu = False
                                         self.show_edit_menu = False
                                         self.show_puzzle_menu = False
-                                        self.show_settings_menu = False
+                                        self.show_search_menu = False
                                         self.show_macro_menu = not self.show_macro_menu
+                                    elif self.menu_items[i] == '搜索':
+                                        # 功能可发现性入口：展开只有一项「命令面板」。
+                                        # 与文件/编辑等菜单同风格——再点自己收起。
+                                        self.show_file_menu = False
+                                        self.show_edit_menu = False
+                                        self.show_puzzle_menu = False
+                                        self.show_macro_menu = False
+                                        self.show_search_menu = not self.show_search_menu
                                     elif self.menu_items[i] == '设置':
                                         self.close_all_menus()
                                         self.show_settings_dialog = True

@@ -224,31 +224,29 @@ _reason = _fi.unsupported_reason(_entry[0], gui._feature_form(),
 check('P5c 不可用项给出可读原因（含当前形态名）',
       bool(_reason) and '米字' in _reason, repr(_reason))
 
-print("\n--- 鼠标入口：设置下拉菜单「命令面板」 ---")
+print("\n--- 鼠标入口：搜索下拉菜单「命令面板」 ---")
 gui.close_command_palette()
 gui.show_settings_dialog = False
 gui.new_puzzle(3, 3, 1)
 gui.close_all_menus()
-gui.show_settings_menu = True
+gui.show_search_menu = True
 gui.draw_menu_bar()
-gui.draw_settings_menu()
-_idx = gui.settings_menu_items.index('命令面板')
-click(gui.settings_menu_rects[_idx].center)
+gui.draw_search_menu()
+_idx = [i for i, it in enumerate(gui.search_menu_items)
+        if it.startswith('命令面板')][0]
+click(gui.search_menu_rects[_idx].center)
 gui.handle_events()
-check('P6a 设置下拉菜单能点开命令面板（不依赖键盘）', gui.palette_active)
+check('P6a 搜索下拉菜单能点开命令面板（不依赖键盘）', gui.palette_active)
 gui.close_command_palette()
 
-# 同一菜单前两项：跳设置页（这个菜单原本只有绘制没有分派，属存量 bug）
-gui.close_all_menus()
-gui.show_settings_menu = True
-gui.draw_menu_bar()
-gui.draw_settings_menu()
-click(gui.settings_menu_rects[1].center)   # 「视觉」
-gui.handle_events()
-check('P6b 设置下拉菜单「视觉」→ 打开设置视觉页',
-      gui.show_settings_dialog and gui.settings_active_tab == 'animation',
-      f'{gui.show_settings_dialog} {gui.settings_active_tab}')
-gui.show_settings_dialog = False
+# 菜单结构本身：顶栏有「搜索」、设置下拉已删（死机制），命令面板只在搜索菜单
+check('P6b 顶栏含「搜索」菜单且位于「设置」与「帮助」之间',
+      gui.menu_items[gui.menu_items.index('设置') + 1] == '搜索'
+      and gui.menu_items[gui.menu_items.index('搜索') + 1] == '帮助',
+      str(gui.menu_items))
+check('P6c 命令面板不在任何「设置」下拉里（死机制已删）',
+      not hasattr(gui, 'settings_menu_items'),
+      'settings_menu_items 应已不存在')
 
 print("\n--- 清场：不留残留状态 ---")
 gui.close_command_palette()

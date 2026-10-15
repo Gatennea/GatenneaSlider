@@ -268,7 +268,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 菜单栏配置
         # 注意：「教程」入口位于“帮助”右侧，点击开始/继续/回顾新手教程；
         # 最后一项「官网」点击用默认浏览器打开 Web 版主页。
-        self.menu_items = ['文件', '编辑', '谜题', '宏定义', '设置', '帮助', '教程', '官网']
+        # 「搜索」位于「设置」与「帮助」之间：功能可发现性的鼠标直达入口
+        # （与「帮助」同属「找不到功能时先来这里」一族）。
+        self.menu_items = ['文件', '编辑', '谜题', '宏定义', '设置', '搜索', '帮助', '教程', '官网']
         self.menu_hovered = -1
         self.menu_item_rects = []
 
@@ -666,11 +668,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._pending_save_as = False
         self._pending_load = False
 
-        # 设置菜单状态
-        self.show_settings_menu = False
-        self.settings_menu_items = ['快捷键设置', '视觉', '命令面板']
-        self.settings_menu_rects = []
-        self.settings_menu_hovered = -1
+        # 搜索菜单状态（顶栏「搜索」：命令面板的鼠标直达入口，不依赖 Ctrl+K）。
+        # 历史上这里曾是「设置」下拉（快捷键设置/视觉/命令面板），但顶栏
+        # 「设置」点击直接开对话框、从无代码展开该下拉——整套机制是死路，
+        # feature_index 却指着「设置→命令面板」。删除死机制，入口迁到
+        # 「搜索」：菜单里就一项，真实可点。
+        self.show_search_menu = False
+        self.search_menu_items = ['命令面板 Ctrl+K']
+        self.search_menu_rects = []
+        self.search_menu_hovered = -1
 
         # 设置对话框状态
         self.show_settings_dialog = False
@@ -1446,7 +1452,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.show_file_menu = False
         self.show_edit_menu = False
         self.show_puzzle_menu = False
-        self.show_settings_menu = False
+        self.show_search_menu = False
         self.show_macro_menu = False
         # 谜题二级子菜单同步收起
         self.puzzle_sub_open = ''

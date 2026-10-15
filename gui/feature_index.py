@@ -104,9 +104,9 @@ FEATURES = (
     dict(id='command_palette', name='命令面板（搜索功能）',
          aliases=('命令面板', '搜索功能', '查找功能', '功能检索', '找不到',
                   '有没有', '在哪', 'palette', 'ctrl k', '搜索'),
-         kind='action', place=('menu_item', '设置', '命令面板'),
+         kind='action', place=('menu_item', '搜索', '命令面板'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='按 Ctrl+K；或顶栏「设置」→「命令面板」。输关键词后 ↑↓ 选择、回车直接到位。',
+         howto='按 Ctrl+K；或顶栏「搜索」→「命令面板」。输关键词后 ↑↓ 选择、回车直接到位。',
          confusion='**不确定某个功能有没有、在哪、当前能不能用，先来这里搜。** '
                    '结果会写明位置、怎么用，以及当前形态/模式下是否可用（不可用会标 ✕ 并说明原因）。'),
 
