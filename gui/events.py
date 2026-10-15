@@ -39,6 +39,8 @@ CLI_COMMANDS = [
      ['solver_algorithms', 'solver_status', 'solver_params']),
     ('window / holes / actions', '局面分析：目标窗 / 空位 / 可行动作',
      ['window', 'holes', 'actions']),
+    ('preview <h|v> <line> <侧> <方向>', '动作 dry-run：预演移动后地图（不执行）',
+     ['preview']),
     ('macro_list / macro_status', '宏列表 / 宏模式状态', ['macro_list', 'macro_status']),
     ('macro_record_start [名称]', '开始录制宏', ['macro_record_start']),
     ('macro_set_base <行> <列>', '设置宏基准块', ['macro_set_base']),
@@ -1460,11 +1462,61 @@ class EventsMixin:
         return window, holes_out, [[r, c] for r, c in protrusions]
 
     def _analysis_actions(self):
-        """合法动作枚举（solver.actions.enumerate_valid_actions）。"""
+        """合法动作枚举（solver.actions.enumerate_valid_actions）+ 轻量预览。
+
+        每项在 (gap_type, gap_line, side, move_dir) 之外附三字段：
+          blocks    : 该动作会移动的滑块（移动前坐标，行主序排序）
+          max_cells : 沿 move_dir 最远可移动格数（current_step 的整数倍）
+          movable   : max_cells > 0。enumerate 只校验了「缝隙有效 × 侧 ×
+                      方向」，没验证方向真能移动——movable 才是调用方
+                      「选了会不会动」的决策依据（外部 AI 反馈的头号
+                      试错来源：按合法列表选一个动作却动不了）。
+        预览 = opt 选组 → try_move_ex 纯预演 → 清选中态，不 commit、
+        不动局面与历史。
+        """
         from solver.actions import enumerate_valid_actions
         acts = enumerate_valid_actions(self.game, self.current_step)
-        return [{'gap_type': a[0], 'gap_line': a[1], 'side': a[2], 'move_dir': a[3]}
-                for a in acts]
+        out = []
+        for (gt, line, side, md) in acts:
+            out.append({'gap_type': gt, 'gap_line': line, 'side': side,
+                        'move_dir': md, **self._preview_action(gt, line, side, md)})
+        return out
+
+    def _preview_action(self, gap_type, line, side, move_dir):
+        """单动作纯预演（方形口径；不 commit，调用方负责随后清选中）。
+
+        返回 {blocks, max_cells, movable[, reason]}：
+          blocks    该动作会移动的滑块（移动前坐标）
+          max_cells 沿 move_dir 最远可移动格数
+          reason    动不了时的引擎原因（max_cells=0 才有）
+        """
+        for b in self.game.blocks:
+            b.be_opted = False
+        rep = None
+        for b in self.game.blocks:
+            r, c = b.location[0], b.location[1]
+            if gap_type == 'h' and ((side == 'above' and r <= line)
+                                    or (side == 'below' and r > line)):
+                rep = b
+                break
+            if gap_type == 'v' and ((side == 'left' and c <= line)
+                                    or (side == 'right' and c > line)):
+                rep = b
+                break
+        if rep is None:
+            return {'blocks': [], 'max_cells': 0, 'movable': False}
+        self.game.opt(gap_type, line, rep)
+        blocks = sorted(list(b.location) for b in self.game.blocks if b.be_opted)
+        reach = self._probe_max_cells(move_dir)
+        reason = ''
+        if reach == 0:
+            _, reason = self.game.try_move_ex(move_dir, self.current_step)
+        for b in self.game.blocks:
+            b.be_opted = False
+        info = {'blocks': blocks, 'max_cells': reach, 'movable': reach > 0}
+        if reason:
+            info['reason'] = reason
+        return info
 
     # settings 白名单：布尔键 + 动画速度（映射 self.animation_duration）
     _SETTINGS_BOOL_KEYS = (
@@ -2075,7 +2127,9 @@ class EventsMixin:
                         if not self.game.is_valid_gap(gap_type, line):
                             self._cmd_reply(
                                 resp_q, False,
-                                f"{self._gap_type_name(gap_type)}缝隙 {line} 不合法")
+                                f"{self._gap_type_name(gap_type)}缝隙 {line} 不合法"
+                                f"（该线处切不出可移动的滑块片：线两侧都要有滑块，"
+                                f"且线号需落在棋盘范围内）")
                             continue
                     elif tri:
                         # 三角形：3 族縫（h=水平 / p=i 常數 / n=i+j 常數）
@@ -2087,25 +2141,41 @@ class EventsMixin:
                         if not self.game.is_valid_gap(gap_type, line):
                             self._cmd_reply(
                                 resp_q, False,
-                                f"{self._gap_type_name(gap_type)}缝隙 {line} 不合法")
+                                f"{self._gap_type_name(gap_type)}缝隙 {line} 不合法"
+                                f"（该线处切不出可移动的滑块片：线两侧都要有滑块，"
+                                f"且线号需落在棋盘范围内）")
                             continue
                     else:
                         if gap_type not in ('h', 'v'):
                             self._cmd_reply(resp_q, False, "类型必须是 h 或 v")
                             continue
                         if gap_type == 'h' and not self.game.is_valid_h_line(line):
-                            self._cmd_reply(resp_q, False, f"横向分割线 {line} 不合法")
+                            b = self.game.get_boundaries()
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"横向分割线 {line} 不合法（当前局面有效范围 "
+                                f"{b['min_row']}..{b['max_row'] - 1}，"
+                                f"即相邻两块行之间的线；贴边或超范围的线没有缝隙）")
                             continue
                         if gap_type == 'v' and not self.game.is_valid_v_line(line):
-                            self._cmd_reply(resp_q, False, f"纵向分割线 {line} 不合法")
+                            b = self.game.get_boundaries()
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"纵向分割线 {line} 不合法（当前局面有效范围 "
+                                f"{b['min_col']}..{b['max_col'] - 1}，"
+                                f"即相邻两块列之间的线；贴边或超范围的线没有缝隙）")
                             continue
+                    # 成功也带上有效范围，调用方不必再猜（外部 AI 反馈：
+                    # 「line 的有效范围不公开」）
+                    rng = self._gap_line_range(gap_type)
+                    hint = f"（有效范围 {rng[0]}..{rng[1]}）" if rng else ""
                     self.selected_gap = (gap_type, line)
                     for b in self.game.blocks:
                         b.be_opted = False
                     self.selected_block = None
                     # 不是「点在缝隙上」选中：滑塊组要重新点一次才会选中
                     # （与方形/三角一致），方向由拖动或虚拟键盘给出
-                    self._cmd_reply(resp_q, True, f"已选中缝隙: {gap_type} {line}")
+                    self._cmd_reply(resp_q, True, f"已选中缝隙: {gap_type} {line}{hint}")
                 
                 elif action == 'select_block':
                     tri = getattr(self, 'triangle_mode', False)
@@ -2584,6 +2654,66 @@ class EventsMixin:
                         print(f"合法动作 {len(acts)} 个:")
                         for a in acts:
                             print(f"  缝{a['gap_type']}{a['gap_line']} {a['side']:6s} → {a['move_dir']}")
+
+                elif action == 'preview':
+                    # dry-run：预演一个动作，返回「会移动哪些块、移动后
+                    # 地图」，不碰真实局面。地图在深拷贝副本上生成（与
+                    # /map 同源同格式，编号形态也对）；动不了时给引擎
+                    # 原因（碰撞/断连通等），让调用方知道为什么。
+                    if self._form_blocked('动作预览'):
+                        self._cmd_reply(resp_q, False, self.macro_notify_msg,
+                                        {'reason': 'unsupported'})
+                        continue
+                    if len(parts) < 5:
+                        self._cmd_reply(
+                            resp_q, False,
+                            "用法: preview <h|v> <line> <above|below|left|right> <w|s|a|d>")
+                        continue
+                    gt = parts[1].lower()
+                    try:
+                        line = int(parts[2])
+                    except ValueError:
+                        self._cmd_reply(resp_q, False, "line 必须是整数")
+                        continue
+                    side = parts[3].lower()
+                    md = parts[4].lower()
+                    sides = {'h': ('above', 'below'), 'v': ('left', 'right')}
+                    dirs = {'h': ('a', 'd'), 'v': ('w', 's')}
+                    if gt not in sides or side not in sides[gt] or md not in dirs[gt]:
+                        self._cmd_reply(
+                            resp_q, False,
+                            "参数不合法：h 缝配 above/below + a/d，v 缝配 left/right + w/s")
+                        continue
+                    info = self._preview_action(gt, line, side, md)
+                    if not info['movable']:
+                        self._cmd_reply(
+                            resp_q, False,
+                            f"该动作动不了：{info.get('reason') or '该侧没有滑块'}")
+                        continue
+                    import copy
+                    from solver.actions import apply_action
+                    shadow = copy.deepcopy(self.game)
+                    ok = apply_action(shadow, (gt, line, side, md),
+                                      self.current_step)
+                    if not ok:
+                        # 真局面上能动但副本上失败（理论上不该发生）——
+                        # 宁可报错也不返回错地图
+                        self._cmd_reply(resp_q, False, "预演失败（副本执行异常）")
+                        continue
+                    # blocks_after 与 blocks_before 同口径 = 「被移动的滑块
+                    # 平移后」（真实执行一步移动 current_step 格，与
+                    # move_selected_blocks 一致；不是全盘坐标）。
+                    dr, dc = {'w': (-1, 0), 's': (1, 0),
+                              'a': (0, -1), 'd': (0, 1)}[md]
+                    dist = max(1, self.current_step)
+                    after = sorted([r + dr * dist, c + dc * dist]
+                                   for r, c in info['blocks'])
+                    self._cmd_reply(resp_q, True, "预览（未执行）", {
+                        'blocks_before': info['blocks'],
+                        'blocks_after': after,
+                        'max_cells': info['max_cells'],
+                        'map_after': shadow.export_map(),
+                    })
 
                 # ========== 局面存取指令 ==========
                 elif action == 'load_map':

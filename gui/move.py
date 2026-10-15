@@ -201,6 +201,30 @@ class MoveMixin:
                  'd1': '主对角', 'd2': '副对角'}
         return names.get(gap_type, gap_type)
 
+    def _gap_line_range(self, gap_type: str):
+        """当前局面该缝族的候选 line 范围 (lo, hi)；取不到回 None。
+
+        给 select_gap 的成功/失败消息带「有效范围」用（外部 AI 反馈：
+        line 的有效范围不公开，全靠试错）。方形 = 边界盒内；三角用
+        game_triangle.gap_index_range（保证两侧非空的候选域）；米字
+        的半整数线号由 is_valid_gap 自判，不给范围提示。
+        """
+        if gap_type not in ('h', 'v'):
+            return None
+        try:
+            if getattr(self, 'triangle_mode', False):
+                from game_triangle import gap_index_range
+                r = gap_index_range(gap_type, self.game.positions())
+                return (r.start, r.stop - 1) if len(r) else None
+            if getattr(self, 'mi_mode', False):
+                return None
+            b = self.game.get_boundaries()
+            if gap_type == 'h':
+                return (b['min_row'], b['max_row'] - 1)
+            return (b['min_col'], b['max_col'] - 1)
+        except Exception:
+            return None
+
     # 三角六向键位 → 晶格方向字母（与 game_triangle.DIRECTIONS 一致；
     # 注意 's' 不是三角方向，故不映射 move_down）
     TRI_MOVE_KEYS = {
