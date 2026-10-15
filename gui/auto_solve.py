@@ -459,10 +459,21 @@ class AutoSolveMixin:
         self.macro_notify_timer = 120
 
     def _update_auto_best(self, end, score, phi):
-        """历史最优：聚拢度 score 最高；完全并列（1e-9 内）取 Φ 最小。"""
+        """刷新恢复点 checkpoint（播放恢复语义：播完/取消后回到哪）。
+
+        择优规则 = solver.auto_solver.partial_better（单一真源，2026-10-15
+        解耦修复）：修复前「并列取 Φ 最小」只在此处实现，与求解器
+        keep_partial 的「只比聚拢度」不一致——headless 调用方拿到的
+        fill_partial 并非同规则最优，且流式播放时求解器并列选中的段会被
+        上报播放，GUI 只能在收到的段之间择优。现规则物理同源，此处只负责
+        「恢复到哪」，不持裁判。函数内 import 零成本：调用发生在 auto_solve
+        运行期，solver 包必已在 sys.modules。
+        """
+        from solver.auto_solver import partial_better
         best = self._auto_best
-        if best is None or score > best['score'] + 1e-9 or (
-                abs(score - best['score']) <= 1e-9 and phi < best['phi'] - 1e-9):
+        if partial_better(score, phi,
+                          best['score'] if best else None,
+                          best['phi'] if best else None):
             self._auto_best = {
                 'score': score, 'phi': phi,
                 'snap': {'m': self.game.m, 'n': self.game.n,

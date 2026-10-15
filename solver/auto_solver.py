@@ -13,12 +13,13 @@
         空位 ≤ 2 → 混合流水线先行（实测 5.1：混合 1.4s vs 补缺宏 57.2s）
         空位 ≥ 3 → 补缺宏先行（实测 06: 1.0s / 07: 0.98s，混合均超时）
       两路都会尝试，路由只定先后；落败方照常接力。
-    ③ 全败时按聚拢度评估部分成果，续算或作断点返回。
+    ③ 全败时按聚拢度（并列 Φ 最小，见 partial_better）评估部分成果，
+       续算或作断点返回。
 
 部分成果链接（chaining）：补缺宏的 partial 若聚拢度高于初始局面，混合
 流水线从该终态续算（动作前缀拼接，整链重放验证后才采纳）；整体失败时
-返回聚拢度提升最大的部分成果（fill_partial 断点协议，GUI 播到断点供
-观察/续跑）。
+返回聚拢度最高（并列 Φ 最小）的部分成果（fill_partial 断点协议，GUI 播到
+断点供观察/续跑）。
 
 返回协议（与 GUI 对齐）：
     (actions4, rep_cells)          成功（actions 为四元组列表）
@@ -47,6 +48,28 @@ from solver.ml.invariants import profile_defect  # 平移无关 Φ（复用，�
 # 混合流水线的自然解出时间中位在秒级~十几秒，90 秒足够；到点归还部分成果，
 # 落实「算不出来尽早发现、发现就停」（用户 2026-10-02 拍板）。
 _CONTINUE_BUDGET = 90.0
+
+
+def partial_better(sc_new, phi_new, sc_old, phi_old):
+    """部分成果择优规则（单一真源，2026-10-15 解耦修复）。
+
+    聚拢度高者胜；完全并列（1e-9 内）取 Φ（剖面缺陷）最小。
+    sc_old/phi_old 为 None 表示「尚无最优」（新来者直接胜出）。
+
+    为什么抽成模块级函数：修复前择优规则分裂两处且不一致——求解器
+    keep_partial 只比聚拢度（并列先到先得），「并列取 Φ 最小」只在 GUI
+    _update_auto_best 实现。后果：① headless 调用方（HTTP API / 实验 /
+    批量实验）拿到的 fill_partial 断点并非同规则最优；② 流式播放时
+    keep_partial 并列选中的段会被上报播放，GUI 只能在收到的段之间择优，
+    救不回没收到的更好段；③ run_hybrid 的续算起点 best['end'] 也建立
+    在该次优选择上。择优属于求解器领域知识，GUI 恢复点
+    （gui/auto_solve.py _update_auto_best）现引用同一函数，物理同源。
+    """
+    if sc_old is None:
+        return True
+    if sc_new > sc_old + 1e-9:
+        return True
+    return abs(sc_new - sc_old) <= 1e-9 and phi_new < phi_old - 1e-9
 
 
 def _end_state(coords0, acts, reps, m, n, step):
@@ -84,10 +107,12 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
 
     stage_cb（2026-10-10 新增）：分阶段流式回调。每当一个候选求解器产出可播的
     动作段，调用 `stage_cb({'label','actions','reps','end','score','phi','solved'})`
-    —— GUI 据此**边算边播**每段动画、并按 `score`（并列取 `phi` 最小）维护历史
-    最优 checkpoint，取消时恢复到该态（多段播放设计哲学：不让人觉得卡死、进度
-    不反悔、打断停在聚拢度最高态）。不传则不流式（保持旧的非流式返回协议，供
-    HTTP/headless 等调用方无感使用）。
+    —— GUI 据此**边算边播**每段动画并维护恢复点 checkpoint，取消时恢复到该态
+    （多段播放设计哲学：不让人觉得卡死、进度不反悔、打断停在聚拢度最高态）。
+    择优规则 = `partial_better`（聚拢度高者胜、并列 Φ 最小），GUI 恢复点
+    选择引用同一函数——规则单一真源，UI 只负责播放与恢复。不传 stage_cb
+    则不流式（保持旧的非流式返回协议，供 HTTP/headless 等调用方无感使用）；
+    此时 fill_partial 断点同样是该规则下的最优，与流式路径一致。
     """
     t0 = time.time()
     m, n = game.m, game.n
@@ -134,7 +159,7 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     best = None   # {'score', 'actions'(4), 'reps', 'end', 'src'}
 
     def keep_partial(acts, reps, src):
-        """记录部分成果，按「终态聚拢度」择优保留。"""
+        """记录部分成果，按 partial_better 规则择优保留（含 Φ 并列裁判）。"""
         nonlocal best
         if not acts:
             return
@@ -142,10 +167,13 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         if not ok or end is None:
             return
         sc = score_of(end)
-        if best is None or sc > best['score'] + 1e-9:
+        ph = _phi_of(end, m, n)
+        if partial_better(sc, ph,
+                          best['score'] if best else None,
+                          best['phi'] if best else None):
             reps_pad = list(reps or []) + [None] * (len(acts) - len(reps or []))
-            best = {'score': sc, 'actions': list(acts), 'reps': reps_pad,
-                    'end': end, 'src': src}
+            best = {'score': sc, 'phi': ph, 'actions': list(acts),
+                    'reps': reps_pad, 'end': end, 'src': src}
 
     # ---- ① 查表：有表即最优，亚秒级，不可能吃亏 ----
     if not cancelled() and not out_of_time():
@@ -278,9 +306,10 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     if best is not None and best['score'] > score0 + 1e-9:
         return {'type': 'fill_partial',
                 'actions': best['actions'], 'rep_cells': best['reps'],
+                'score': best['score'], 'phi': best['phi'],
                 'reason': ('自动规划：各求解器均未全解，返回聚拢度提升最大的'
-                           '部分成果（%s，聚拢度 %.3f→%.3f）'
-                           % (best['src'], score0, best['score'])),
+                           '部分成果（%s，聚拢度 %.3f→%.3f，Φ %.1f）'
+                           % (best['src'], score0, best['score'], best['phi'])),
                 'solver_name': '自动规划'}
     return {'type': 'fill_fail',
             'reason': '自动规划：查表/补缺宏/混合流水线均未全解',
