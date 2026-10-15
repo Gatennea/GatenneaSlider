@@ -26,6 +26,7 @@ import pygame
 from gui.text_input import TextInput
 from gui.scrollbar import Scrollbar
 from gui import feature_index as _fi
+from gui import feature_ai as _ai
 
 
 # 结果列表几何（固定值：高度可预测，滚动条才不会每帧抖动）
@@ -82,12 +83,27 @@ class PaletteMixin:
         self.palette_hover = -1
 
     def _pal_run_search(self):
-        """按当前输入重算结果，并把选择夹回合法范围。"""
+        """按当前输入重算结果，并把选择夹回合法范围。
+
+        空查询时改走 ``list_all``，把面板变成可浏览的「功能地图」——
+        玩家不输任何字也能逛到全部功能（功能可发现性的治本补强）。
+        """
         query = self.palette_input.text
         form = self._feature_form()
         mode = getattr(self, 'game_mode', 'practice')
-        hits = _fi.search(query, form=form, mode=mode, limit=20)
-        self.palette_results = [(entry, available) for _s, entry, available in hits]
+        if query.strip():
+            hits = _fi.search(query, form=form, mode=mode, limit=20)
+            pairs = [(entry, available) for _s, entry, available in hits]
+            # 零命中时改走 suggest 做相近推荐（结果同样可点击直达）
+            if not pairs:
+                pairs = _fi.suggest(query, form=form, mode=mode, k=5)
+            # 仍零命中且 AI 兜底已配置 → 最后一道大模型兜底（离线未配置则静默跳过）
+            if not pairs and _ai.is_configured():
+                pairs = _ai.resolve(query, form=form, mode=mode,
+                                   features=_fi.FEATURES, k=5)
+            self.palette_results = pairs
+        else:
+            self.palette_results = _fi.list_all(form=form, mode=mode, limit=20)
         # 换词后条数会变，旧索引可能越界；夹回范围内而不是重置为 0——
         # 让玩家多删一个字时仍停在同一条上，符合直觉。
         if self.palette_results:

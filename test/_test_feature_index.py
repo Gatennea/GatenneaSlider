@@ -75,8 +75,46 @@ for query, want in _CASES:
     hits = [e['id'] for _s, e, _a in fi.search(query)]
     check(f'「{query}」→ {want}', want in hits)
 
+# ================================================================ 2b 改进检索（S1/S2/S3）
+print("\n--- 2b 改进检索：疑问前缀 / 无空格组合 / 同分精排 ---")
+# S2 疑问前缀剥离：『怎么撤销』应剥离成『撤销』命中 undo
+hits = [e['id'] for _s, e, _a in fi.search('怎么撤销')]
+check('S2「怎么撤销」→ undo（前缀剥离）', 'undo' in hits)
+# S2 句尾语气词 + 前缀：『能不能着色吗』→『着色』
+hits = [e['id'] for _s, e, _a in fi.search('能不能着色吗')]
+check('S2「能不能着色吗」→ coloring_enabled（前缀+语气词）', 'coloring_enabled' in hits)
+# S1 无空格组合词：『三角求解』主路失配，模糊兜底应同时命中异形预设与求解相关
+hits = [e['id'] for _s, e, _a in fi.search('三角求解')]
+check('S1「三角求解」→ preset_exotic（模糊兜底）', 'preset_exotic' in hits)
+check('S1「三角求解」→ auto_solve（模糊兜底）', 'auto_solve' in hits)
+# S1 无空格组合词：『撤销步』应模糊命中 undo
+hits = [e['id'] for _s, e, _a in fi.search('撤销步')]
+check('S1「撤销步」→ undo（模糊兜底）', 'undo' in hits)
+# S3 同分精排：『求解』精确别名(90)的 auto_solve 应排在前，include(60) 的 algo_others 在后
+hits = fi.search('求解')
+check('S3「求解」首位 = auto_solve（精确别名优先）',
+      bool(hits) and hits[0][1]['id'] == 'auto_solve')
+# S3 同分精排：『着色』精确别名(90)的 coloring_enabled 应排首位
+hits = fi.search('着色')
+check('S3「着色」首位 = coloring_enabled', bool(hits) and hits[0][1]['id'] == 'coloring_enabled')
+
 check('空查询返回空结果', fi.search('') == [])
 check('无匹配返回空结果', fi.search('zzzz不存在的东西') == [])
+
+# ================================================================ 2c Phase2：list_all / suggest
+print("\n--- 2c Phase2：空查询功能地图 / 零命中相近推荐 ---")
+allrows = fi.list_all()
+check('list_all 列出全部功能（数量=条目数）',
+      len(allrows) == len(fi.FEATURES) and all(isinstance(r, tuple) and len(r) == 2 for r in allrows))
+check('list_all 可用项排在不可用之前',
+      all(allrows[i][1] >= allrows[i + 1][1] for i in range(len(allrows) - 1)))
+# suggest：零命中时给相近推荐（『三角求解』应推荐到异形预设 / 自动求解）
+sugg = fi.suggest('三角求解')
+sugg_ids = [e['id'] for e, _a in sugg]
+check('suggest「三角求解」非空且含 preset_exotic', bool(sugg) and 'preset_exotic' in sugg_ids)
+check('suggest「三角求解」含 auto_solve', 'auto_solve' in sugg_ids)
+# suggest：垃圾串（无任何模糊重叠）返回空
+check('suggest 垃圾串返回空', fi.suggest('zzzz不存在的东西') == [])
 
 # ================================================================ 3 上下文
 print("\n--- 3 上下文（当前形态决定可用性） ---")

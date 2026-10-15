@@ -681,6 +681,7 @@ class DialogsMixin:
         每条结果依次显示「名称 —— 位置」「怎么用」「常见困惑」，中间空一行。
         """
         from gui import feature_index as _fi
+        from gui import feature_ai as _ai
 
         form = self._feature_form()
         mode = getattr(self, 'game_mode', 'practice')
@@ -689,9 +690,33 @@ class DialogsMixin:
         lines = []
         rects = []
         if not results:
-            lines.append((f'没有功能匹配「{query}」。', True))
-            lines.append(('换个说法试试：着色 / 撤销 / 打乱 / 求解 / 三角 / 米字 / 等级 / 怎么用',
-                          False))
+            sugg = _fi.suggest(query, form=form, mode=mode, k=5)
+            if sugg:
+                lines.append((f'没有功能精确匹配「{query}」，你是不是想找：', True))
+                for entry, available in sugg:
+                    head = entry['name']
+                    head = f'▶ {head}' if available else f'✕ {head}'
+                    head += f'   ——   {_fi.place_text(entry["place"])}'
+                    lines.append((head, False))
+            elif _ai.is_configured():
+                # suggest 仍空且 AI 兜底已配置 → 大模型最后兜底（离线未配置不进此分支）
+                ai_res = _ai.resolve(query, form=form, mode=mode,
+                                     features=_fi.FEATURES, k=5)
+                if ai_res:
+                    lines.append((f'AI 建议（仅供参考）：', True))
+                    for entry, available in ai_res:
+                        head = entry['name']
+                        head = f'▶ {head}' if available else f'✕ {head}'
+                        head += f'   ——   {_fi.place_text(entry["place"])}'
+                        lines.append((head, False))
+                else:
+                    lines.append((f'没有功能匹配「{query}」。', True))
+                    lines.append(('换个说法试试：着色 / 撤销 / 打乱 / 求解 / 三角 / 米字 / 等级 / 怎么用',
+                                  False))
+            else:
+                lines.append((f'没有功能匹配「{query}」。', True))
+                lines.append(('换个说法试试：着色 / 撤销 / 打乱 / 求解 / 三角 / 米字 / 等级 / 怎么用',
+                              False))
             self.help_result_rects = rects
             self.help_sel = 0
             return lines

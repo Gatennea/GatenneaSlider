@@ -444,6 +444,55 @@ for _f in FEATURES:
 
 
 # ---------------------------------------------------------------- 检索
+# ---------------------------------------------------------------- 检索
+# 疑问前缀 / 句尾语气词：匹配前剥离，让「怎么撤销」「能不能着色」直接落到核心词。
+_QUESTION_PREFIXES = (
+    '怎么', '如何', '怎样', '咋', '在哪', '哪里', '为什么', '为啥',
+    '能不能', '能否', '是否', '可以吗', '我想', '我要', '我想找', '我要找', '请问',
+)
+_TRAILING_PARTICLES = ('吗', '呢', '呀', '啊', '吧', '哦')
+
+
+def _strip_question(query):
+    """剥掉口语疑问外壳，返回核心检索串。
+
+    例：『怎么撤销』→『撤销』、『能不能着色吗』→『着色』、『我想找三角求解』→『三角求解』。
+    只动已提交的整串，不影响 IME 组字途中状态（TEXTINPUT 已在事件层处理）。
+    """
+    q = (query or '').strip()
+    for p in _QUESTION_PREFIXES:
+        if q.startswith(p):
+            q = q[len(p):].strip()
+            break
+    while q and q[-1] in _TRAILING_PARTICLES:
+        q = q[:-1].strip()
+    return q
+
+
+def _entry_tokens(entry):
+    """名称 + 全部别名（小写），用于模糊匹配。"""
+    toks = [entry.get('name', '').lower()]
+    toks.extend(a.lower() for a in entry.get('aliases', ()))
+    return toks
+
+
+def _lcs_len(a, b):
+    """最长公共子序列长度（短串专用，O(n·m) 足够）。"""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for ch_a in a:
+        cur = [0] * (len(b) + 1)
+        for j, ch_b in enumerate(b, 1):
+            if ch_a == ch_b:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
 def _haystack(entry):
     """一条功能参与匹配的全部文本（名称 + 别名 + 说明 + 困惑 + 位置）。"""
     parts = [entry.get('name', '')]
@@ -457,7 +506,7 @@ def _haystack(entry):
     return ' '.join(parts).lower()
 
 
-_INDEX = [(f, _haystack(f)) for f in FEATURES]
+_INDEX = [(f, _haystack(f), _entry_tokens(f)) for f in FEATURES]
 
 
 def _score(term, entry, hay):
@@ -479,36 +528,118 @@ def _score(term, entry, hay):
     return 0
 
 
+def _fuzzy_score(needle, tokens):
+    """整串无空格组合词（如『三角求解』）的模糊得分。
+
+    取与任一名称/别名的最长公共子序列，重叠 ≥2 字才给分，上限 50（低于别名
+    包含 60，精确/包含仍优先）。只在「名称+别名」token 上算，避免对 howto/
+    confusion 长文本产生垃圾误中（保证 search('zzzz不存在的东西') 仍返回 []）。
+    """
+    if len(needle) < 2:
+        return 0
+    best = 0
+    for tok in tokens:
+        ov = _lcs_len(needle, tok)
+        if ov > best:
+            best = ov
+    if best < 2:
+        return 0
+    return min(50, 25 + (best - 2) * 10)
+
+
 def search(query, form=None, mode=None, limit=30):
     """模糊检索功能清单。
 
+    两路匹配：
+      1) 主路：按空白分词、所有词都要命中（AND）+ 子串打分；
+      2) 模糊路：整串（无空格的组合词，如『三角求解』）走最长公共子序列，
+         主路全失时兜底，让「中文不空格」也能搜到。
+
+    疑问前缀（怎么/如何/能不能…）与句尾语气词（吗/呢…）在匹配前被剥离。
+
     参数：
-        query: 玩家输入，按空白分词，**所有词都要命中**（AND 语义）。
+        query: 玩家输入。
         form:  当前形态键（'square'/'numbered'/'triangle'/'mi'），用于标注可用性。
         mode:  当前模式键（'practice'/'create'/'timed'），同上。
 
     返回：
-        [(score, entry, available), ...] 按分数降序；available 为当前上下文是否可用。
+        [(score, entry, available), ...] 按 (可用, 综合分, 强命中数) 降序；
+        available 为当前上下文是否可用。返回形状保持稳定，UI 无需改动。
     """
-    terms = [t for t in str(query or '').split() if t]
+    q = _strip_question(query)
+    terms = [t for t in q.split() if t]
     if not terms:
         return []
+
     out = []
-    for entry, hay in _INDEX:
+    for entry, hay, toks in _INDEX:
         total = 0
+        strong = 0
         for term in terms:
             s = _score(term, entry, hay)
             if s == 0:
                 total = 0
+                strong = 0
                 break
             total += s
+            if s >= 60:        # 名称 / 别名命中算强信号，用于同分精排
+                strong += 1
         if total <= 0:
             continue
         available = supports(entry, form, mode)
-        # 当前上下文可用的一律排在不可用之前（同分时）
-        out.append((total, entry, available))
-    out.sort(key=lambda r: (r[2], r[0]), reverse=True)
-    return out[:limit]
+        out.append((total, strong, entry, available))
+
+    # 主路全失 → 模糊兜底（整串作为单一 needle，仅查名称+别名 token）
+    if not out:
+        needle = ''.join(terms)
+        for entry, _hay, toks in _INDEX:
+            fs = _fuzzy_score(needle, toks)
+            if fs <= 0:
+                continue
+            available = supports(entry, form, mode)
+            out.append((fs, 0, entry, available))
+
+    # 排序：(可用, 综合分, 强命中数) 降序；同分不再靠清单插入序
+    out.sort(key=lambda r: (r[3], r[0], r[1]), reverse=True)
+    return [(total, entry, available) for total, _strong, entry, available in out][:limit]
+
+
+def list_all(form=None, mode=None, limit=None):
+    """空查询时列出全部功能，作为「功能地图」供浏览发现。
+
+    排序：(可用优先, 分类优先级, 名称) 升序；返回 [(entry, available), ...]。
+    命令面板打开即调它，玩家不输也能逛到所有功能。
+    """
+    _KIND_ORDER = {'puzzle': 0, 'action': 1, 'setting': 2, 'panel': 3,
+                   'concept': 4, 'link': 5}
+    rows = []
+    for f in FEATURES:
+        avail = supports(f, form, mode)
+        rows.append((not avail, _KIND_ORDER.get(f.get('kind'), 9),
+                     f.get('name', ''), f, avail))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    pairs = [(entry, avail) for _na, _ko, _nm, entry, avail in rows]
+    return pairs if limit is None else pairs[:limit]
+
+
+def suggest(query, form=None, mode=None, k=5):
+    """零命中时的相近推荐：用模糊重叠（最长公共子序列）挑最相近的 k 条。
+
+    返回 [(entry, available), ...]；query 为空或全无模糊重叠时返回 []。
+    帮助框 / 命令面板在 search 拿到 0 命中时改调它，代替「换个说法」。
+    """
+    q = _strip_question(query)
+    needle = ''.join(t for t in q.split() if t)
+    if len(needle) < 2:
+        return []
+    cand = []
+    for entry, _hay, toks in _INDEX:
+        fs = _fuzzy_score(needle, toks)
+        if fs <= 0:
+            continue
+        cand.append((fs, entry, supports(entry, form, mode)))
+    cand.sort(key=lambda r: (r[2], r[0]), reverse=True)
+    return [(entry, avail) for _s, entry, avail in cand[:k]]
 
 
 def supports(entry, form=None, mode=None):
