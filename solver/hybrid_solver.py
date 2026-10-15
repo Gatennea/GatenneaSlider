@@ -9,6 +9,10 @@
 流水线（pipeline='legacy'，保留作回退）：
     全程梯度聚拢 → 填洞宏(带分量代表格) → 逐次单缺口 GBFS 消解
 
+use_fill（2026-10-16 消融开关，默认 True = 现行为）：False 时 alt 交替段
+    只跑聚拢（= exp20 的 skip_fill 消融配置：聚拢 + GBFS、无填洞），供
+    `experiments/fillin_ablation.py` 量化「混合内填洞宏」去留；生产默认不变。
+
 全程 (action, rep_cell) 统一、每段以"从初始态重放"锚定坐标系，
 最终返回 (actions, rep_cells)，与查表求解器一致，GUI 可直接播放。
 
@@ -83,7 +87,7 @@ def _fill_pairs(res):
 def hybrid_solve(game, step, cancel_check=None, progress_callback=None,
                  node_budget=80000, max_rounds=12,
                  pipeline='alt', alt_chunk=30, alt_max_rounds=8,
-                 alt_order='gather_first', **_kwargs):
+                 alt_order='gather_first', use_fill=True, **_kwargs):
     base = deepcopy(game)
     m, n = game.m, game.n
 
@@ -116,6 +120,8 @@ def hybrid_solve(game, step, cancel_check=None, progress_callback=None,
             improved = False
             ops = (('gather', 'fill') if alt_order == 'gather_first'
                    else ('fill', 'gather'))
+            if not use_fill:
+                ops = tuple(op for op in ops if op != 'fill')
             for op in ops:
                 if cancelled():
                     return False
