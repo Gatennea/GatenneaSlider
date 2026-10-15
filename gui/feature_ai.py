@@ -10,12 +10,15 @@
     退回 suggest；绝不抛异常、绝不阻断现有检索。
   · **不编造**：Prompt 强制模型只返回清单内功能 id 的 JSON 数组，清单外一律丢弃。
 
-启用方式（桌面安装版，开发版亦可）：
-  set GATENNEA_AI_ENDPOINT=https://<你的兼容端点>/v1/chat/completions
-  set GATENNEA_AI_KEY=<你的 key>
-  set GATENNEA_AI_MODEL=gpt-4o-mini   # 可选，默认 gpt-4o-mini
+启用方式（桌面安装版，开发版亦可）—— 两种模式：
+  · 作者中转（默认，零门槛）：DEFAULT_TO_RELAY=True 时，未设环境变量就走 RELAY_ENDPOINT
+    中转（占位，部署后替换为真实地址）。玩家无需任何 key / 无需选模型，中转服务端自带
+    key 并补默认模型。未部署前占位地址解析失败 → 静默退回 suggest（不崩）。
+  · 玩家自填：设 GATENNEA_AI_ENDPOINT + GATENNEA_AI_KEY 即改用玩家自己的兼容端点，
+    此时必须自带 key；可选 GATENNEA_AI_MODEL（默认 gpt-4o-mini）。
+  · 可选 GATENNEA_APP_KEY：若中转服务端启用了发布校验（APP_KEY），在此提供以免 401。
 
-TODO（后续）：在设置对话框加 AI 兜底开关 + endpoint/key 输入框，避免让用户改环境变量。
+TODO（后续）：在设置对话框加 AI 兜底开关 + 中转/自填切换，避免让用户改环境变量。
 作者：貓九
 """
 
@@ -26,11 +29,32 @@ import urllib.request
 # 超时（秒）：兜底必须在交互时限内返回，超时即放弃走回 suggest。
 _TIMEOUT = 8
 
+# ---- AI 中转（作者托管）配置 ----
+# 默认走作者中转：玩家零门槛即用 AI 兜底，无需任何 key。
+# 部署后把 RELAY_ENDPOINT 替换为真实 Worker 地址即可（DEFAULT_TO_RELAY 保持 True）。
+DEFAULT_TO_RELAY = True
+RELAY_ENDPOINT = "https://gatennea-backend.gatennea.workers.dev/api/ai/relay"  # 作者中转真实地址
+
+
+def _effective_endpoint():
+    """最终使用的端点：自填优先，否则回落作者中转（若启用）。"""
+    return os.environ.get('GATENNEA_AI_ENDPOINT') or (
+        RELAY_ENDPOINT if DEFAULT_TO_RELAY else '')
+
+
+def _using_relay():
+    """是否走作者中转（无需玩家 key / 服务端补默认模型）。"""
+    return DEFAULT_TO_RELAY and not os.environ.get('GATENNEA_AI_ENDPOINT')
+
 
 def is_configured():
-    """是否已配置可用的 AI 后端（endpoint + key 都在）。"""
-    return bool(os.environ.get('GATENNEA_AI_ENDPOINT')
-                and os.environ.get('GATENNEA_AI_KEY'))
+    """是否已配置可用的 AI 后端。
+
+    自填端点必须同时有 key；走作者中转则无需玩家 key。
+    """
+    if os.environ.get('GATENNEA_AI_ENDPOINT'):
+        return bool(os.environ.get('GATENNEA_AI_KEY'))
+    return DEFAULT_TO_RELAY
 
 
 def _catalog(features, form, mode):
@@ -64,27 +88,36 @@ def resolve(query, form=None, mode=None, features=None, k=5):
     """
     if not is_configured() or not query or not features:
         return []
+    endpoint = _effective_endpoint()
+    if not endpoint:
+        return []
     catalog = _catalog(features, form, mode)
     user_prompt = (
         f"当前形态={form or '任意'}，当前模式={mode or '任意'}。\n"
         f"玩家说：{query}\n"
         f"功能清单：{json.dumps(catalog, ensure_ascii=False)}"
     )
-    body = json.dumps({
-        'model': os.environ.get('GATENNEA_AI_MODEL', 'gpt-4o-mini'),
+    # 走中转时不带 model：服务端用其 AI_MODEL 默认；仅自填端点才带 model。
+    body_obj: dict = {
         'messages': [
             {'role': 'system', 'content': _SYSTEM.format(k=k)},
             {'role': 'user', 'content': user_prompt},
         ],
         'temperature': 0,
-    }).encode('utf-8')
+    }
+    if not _using_relay():
+        body_obj['model'] = os.environ.get('GATENNEA_AI_MODEL', 'gpt-4o-mini')
+    body = json.dumps(body_obj).encode('utf-8')
+
+    headers = {'Content-Type': 'application/json'}
+    key = os.environ.get('GATENNEA_AI_KEY')
+    if key:  # 自填端点才带 key；中转由服务端补 key
+        headers['Authorization'] = f"Bearer {key}"
+    app_key = os.environ.get('GATENNEA_APP_KEY')
+    if app_key:  # 仅当中转服务端启用发布校验（APP_KEY）时才需要
+        headers['X-App-Key'] = app_key
     try:
-        req = urllib.request.Request(
-            os.environ['GATENNEA_AI_ENDPOINT'], data=body,
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f"Bearer {os.environ['GATENNEA_AI_KEY']}",
-            }, method='POST')
+        req = urllib.request.Request(endpoint, data=body, headers=headers, method='POST')
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
             data = json.loads(resp.read().decode('utf-8'))
         content = data['choices'][0]['message']['content']
