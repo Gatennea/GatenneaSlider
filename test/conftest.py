@@ -54,9 +54,16 @@ PYTHON = os.environ.get('GATENNEA_PY', 'D:/python/python.exe')
 # 超时按失败处理并保留已捕获的输出——CI 上挂死比失败更难诊断。
 SCRIPT_TIMEOUT = 600
 
-# 个别更慢脚本的单独上限（键 = 文件名）。_test_bfs_explore 已进 _SKIP
-# （4x4 段约 2 小时，非自动回归），目前无条目；机制保留备用。
-_SLOW_TIMEOUT = {}
+# 个别更慢脚本的单独上限（键 = 文件名，含 .py）。
+#   _test_solver.py        4×4 基准 10 局 + 多档回归，实测 ~480s（临界 600s，
+#                         易被同机其他进程抢 CPU 误判卡死）→ 放宽到 900s。
+#   _test_mi_gather.py     米字格聚拢回归：C3 批量 + D1 方形 + D2 三角共 14 档，
+#                         实测 ~12–15min（纯 solver/ml 逻辑，与 GUI 重构无关）
+#                         → 放宽到 1500s。CI 默认 60min 额度内可容。
+_SLOW_TIMEOUT = {
+    '_test_solver.py': 900,
+    '_test_mi_gather.py': 1500,
+}
 
 # 环境敏感、不参与自动回归的脚本（收集即 skip）。
 #   _test_full          sys.path 硬编码项目旧家 'e:/program_project/py/貓九的滑塊遊戲'
