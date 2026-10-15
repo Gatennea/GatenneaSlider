@@ -8,6 +8,9 @@
 """
 import time
 
+from puzzle_types import puzzle_key
+from records import format_time
+
 
 class SpeedrunMixin:
     """竞速计时与模式切换（原 GUI.py 内联代码，整体搬迁）。"""
