@@ -63,6 +63,13 @@ threading.excepthook = _thread_excepthook
 # ======== 以下正常 import ========
 
 import queue
+
+# 预热 solver 全家桶（含 numpy 等重型依赖）：solver 在 game.shuffle
+# 首次调用时才懒加载（game.py:519），若在主循环运行中（SDL 线程活跃）
+# 首次导入 numpy，会在扩展模块 DLL 加载处死锁（实测 8 分钟无进展、
+# 独立进程仅 0.7s）。干净环境下提前导入约 2s，根治"HTTP 打乱卡死"。
+from solver.deadend_guard import has_deadend_guard, is_deadend  # noqa: E402,F401
+
 from GUI import SliderGUI
 from http_server import start_http_server
 
