@@ -40,8 +40,8 @@ def main():
     assert [b.number for b in gui.game.blocks] == init_nums
 
     # A3b: 合併快照逐步撤銷/重做時編號不丟
-    #      （惰性拆分必須帶 numbers，否則 restore_snapshot 重建的塊
-    #       全部 number=None → 數字消失、is_solved 永不成立、無法還原）
+    #      （整数矩阵随拆分携带编号，否则 restore_snapshot 重建的块
+    #       全部 number=None → 数字消失、is_solved 永不成立、无法还原）
     gui.new_puzzle(5, 5, 1, numbered=True)
     gui.game_history.reset()
     gui.game_history.save_snapshot(gui.game)
@@ -54,7 +54,9 @@ def main():
     assert gui.move_selected_blocks('a') and gui.move_selected_blocks('a')
     snap = gui.game_history.history[-1]
     assert snap['steps'] == 2, f"合併快照 steps={snap['steps']}"
-    assert snap.get('numbers'), '合併快照必須帶 numbers'
+    # 编号直接写在整数矩阵里（值即编号），验证矩阵携带完整 1..25
+    snap_nums = sorted(v for row in snap['matrix'] for v in row if v)
+    assert snap_nums == list(range(1, 26)), '合併快照必须带编号（整数矩阵）'
     assert sorted(b.number for b in gui.game.blocks) == list(range(1, 26))
 
     gui.undo()                      # 合併段被拆開，回到第 1 步末態

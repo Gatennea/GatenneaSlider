@@ -19,8 +19,8 @@
   'puzzle': {'m','n','step','type':'square'|'numbered'},
   'step_count': N,
   'initial_solved': bool,            # True 时 initial 省略（由 m,n,step 重建）
-  'initial': {'matrix','bounds','numbers'?} | None,
-  'final': {'matrix','bounds','numbers'?},
+  'initial': {'matrix','bounds'} | None,   # 编号谜题：matrix 为整数矩阵（值即编号）
+  'final': {'matrix','bounds'},
   'steps': [ {'gt','line','anchor':[r,c],'dir','n'}, ... ],  # 引擎重放原语（坐标均为绝对，见 _apply_step）
   # 注：坐标存绝对（与 move_info 一致）最稳健——重放包围盒可能漂移，相对值会错位；
   #     「相对位置」要求仅针对 formulas 人类记号，steps 只需可正确重放。
@@ -58,35 +58,21 @@ def _game_cells(game) -> frozenset:
 
 
 def _snapshot_field(snap) -> dict:
-    """快照 → 落盘字段（matrix+bounds+可选 numbers）。"""
-    field = {'matrix': snap['matrix'], 'bounds': snap['bounds']}
-    if snap.get('numbers') is not None:
-        field['numbers'] = snap['numbers']
-    return field
+    """快照 → 落盘字段（matrix+bounds；编号直接存在整数矩阵里，无需 numbers）。"""
+    return {'matrix': snap['matrix'], 'bounds': snap['bounds']}
 
 
 def _snapshot_field_from_game(game) -> dict:
-    """从游戏对象抽取当前态的落盘字段。"""
-    bounds = game.matrix_bounds
-    mnr = bounds['min_row']
-    mnc = bounds['min_col']
-    rows = bounds['max_row'] - mnr + 1
-    cols = bounds['max_col'] - mnc + 1
-    nums = [[0] * cols for _ in range(rows)]
-    has_num = False
-    for b in game.blocks:
-        if getattr(b, 'number', None) is not None:
-            nums[b.location[0] - mnr][b.location[1] - mnc] = b.number
-            has_num = True
-    field = {'matrix': [row[:] for row in game.matrix],
-             'bounds': dict(bounds)}
-    if has_num:
-        field['numbers'] = nums
-    return field
+    """从游戏对象抽取当前态的落盘字段（编号已在整数 matrix 中）。"""
+    return {'matrix': [row[:] for row in game.matrix],
+            'bounds': dict(game.matrix_bounds)}
 
 
-def _game_from_snapshot(snap, m, n) -> SliderMatrix:
-    """用快照的 matrix/bounds/numbers 重建一个 SliderMatrix（仅方形/数字）。"""
+def _game_from_snapshot(snap, m, n, numbered: bool = False) -> SliderMatrix:
+    """用快照的整数 matrix/bounds 重建一个 SliderMatrix（仅方形/数字）。
+
+    numbered=True 时 matrix 的值即编号（0=空），据此还原块编号。
+    """
     bounds = snap['bounds']
     mnr = bounds['min_row']
     mnc = bounds['min_col']
@@ -97,14 +83,14 @@ def _game_from_snapshot(snap, m, n) -> SliderMatrix:
                 cells.append((mnr + i, mnc + j))
     g = SliderMatrix(m, n)
     g.blocks = [Block([r, c]) for (r, c) in cells]
-    nums = snap.get('numbers')
-    if nums:
-        num_map = {(mnr + i, mnc + j): v
-                   for i, row in enumerate(nums)
-                   for j, v in enumerate(row) if v}
+    if numbered:
         for b in g.blocks:
-            b.number = num_map.get(tuple(b.location))
+            # 编号即矩阵值（matrix[行][列]）
+            ri = b.location[0] - mnr
+            ci = b.location[1] - mnc
+            b.number = snap['matrix'][ri][ci]
     g.matrix_bounds = dict(bounds)
+    g.numbered = numbered
     g.update_matrix()  # 依据块位置重建矩阵（包围盒收紧到当前棋形）
     return g
 
@@ -262,7 +248,7 @@ def compress_snapshots(puzzle, snapshots, step_count, readonly=False) -> dict:
 
     initial = snapshots[0]
     final = snapshots[-1]
-    game = _game_from_snapshot(initial, m, n)  # 重放起点 = 初始态
+    game = _game_from_snapshot(initial, m, n, numbered=(kind == 'numbered'))  # 重放起点 = 初始态
 
     steps = []
     formulas = []
@@ -360,7 +346,8 @@ def decompress_to_normal(compressed) -> dict:
     if compressed.get('initial_solved'):
         game = create_puzzle(m, n, step, kind=kind)
     else:
-        game = _game_from_snapshot(compressed['initial'], m, n)
+        game = _game_from_snapshot(compressed['initial'], m, n,
+                                   numbered=(kind == 'numbered'))
 
     snapshots_out = [_snapshot_field_from_game(game)]
     steps_total = 0
@@ -379,10 +366,6 @@ def decompress_to_normal(compressed) -> dict:
                 'bounds': dict(game.matrix_bounds),
                 'move_info': mv_info, 'moves': [mv_info],
                 'steps': 1, 'step_total': steps_total}
-        if any(getattr(b, 'number', None) is not None for b in game.blocks):
-            f = _snapshot_field_from_game(game)
-            if 'numbers' in f:
-                snap['numbers'] = f['numbers']
         snapshots_out.append(snap)
         if (idx + 1) % CHECKPOINT_EVERY == 0:
             cp = cp_by_at.get(idx + 1)
@@ -435,7 +418,8 @@ def load_compressed_into_gui(gui, compressed):
     if compressed.get('initial_solved'):
         game = create_puzzle(m, n, step, kind=kind)
     else:
-        game = _game_from_snapshot(compressed['initial'], m, n)
+        game = _game_from_snapshot(compressed['initial'], m, n,
+                                   numbered=(kind == 'numbered'))
     gui.game = game
     gui.game_history.history.append(_snapshot_field_from_game(game))
     gui.game_history.history_index = 0
@@ -458,11 +442,6 @@ def load_compressed_into_gui(gui, compressed):
                     'bounds': dict(gui.game.matrix_bounds),
                     'move_info': mv_info, 'moves': [mv_info],
                     'steps': 1, 'step_total': steps_total}
-            if any(getattr(b, 'number', None) is not None
-                   for b in gui.game.blocks):
-                f = _snapshot_field_from_game(gui.game)
-                if 'numbers' in f:
-                    snap['numbers'] = f['numbers']
             gui.game_history.history.append(snap)
             if (idx + 1) % CHECKPOINT_EVERY == 0:
                 cp = cp_by_at.get(idx + 1)
@@ -479,11 +458,13 @@ def load_compressed_into_gui(gui, compressed):
 
     if warned:
         # 回退：直接用末态快照重建（棋盘正确，历史最小化）
-        fg = _game_from_snapshot(compressed['final'], m, n)
+        fg = _game_from_snapshot(compressed['final'], m, n,
+                                 numbered=(kind == 'numbered'))
         gui.game = fg
         gui.game_history.history = [
             _snapshot_field_from_game(
-                _game_from_snapshot(compressed['initial'], m, n)
+                _game_from_snapshot(compressed['initial'], m, n,
+                                   numbered=(kind == 'numbered'))
                 if not compressed.get('initial_solved') else
                 create_puzzle(m, n, step, kind=kind)),
             _snapshot_field_from_game(fg),

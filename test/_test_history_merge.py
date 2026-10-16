@@ -50,6 +50,7 @@ def _set_cells(g, cells):
 
 def _set_numbered(g, cell_num):
     """按 {坐标: 编号} 布块（带序號谜题）"""
+    g.numbered = True
     g.blocks = []
     for cell, num in sorted(cell_num.items()):
         b = Block(list(cell))
@@ -286,14 +287,14 @@ def test_numbered_history():
     h = GameHistory()
     _set_numbered(g, st0)
     h.save_snapshot(g)
-    _check('参考态快照带 numbers', bool(h.history[0].get('numbers')), '')
+    _check('参考态快照带编号（整数矩阵）', bool(snapshot_numbers(h.history[0])), '')
     _set_numbered(g, st1)
     h.save_snapshot(g, mv1, session_key=5)
     _set_numbered(g, st2)
     h.save_snapshot(g, mv2, session_key=5)
 
     snap = h.history[-1]
-    _check('合并快照带 numbers', bool(snap.get('numbers')), '')
+    _check('合并快照带编号（整数矩阵）', bool(snapshot_numbers(snap)), '')
     _check('合并快照编号 = 末态', snapshot_numbers(snap) == st2,
            str(sorted(snapshot_numbers(snap).items())))
     expanded = expand_snapshot_moves(h.history[0], snap)

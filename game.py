@@ -114,7 +114,7 @@ class SliderMatrix:
         matrix_bounds: dict - 矩阵对应的边界范围
     """
     
-    __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds')
+    __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds', 'numbered')
     
     def __init__(self, m: int = 6, n: int = 6):
         """
@@ -136,6 +136,9 @@ class SliderMatrix:
         # 初始化矩阵相关属性
         self.matrix = None
         self.matrix_bounds = None
+        # numbered=True 时 update_matrix 将块的编号写入矩阵（整数矩阵），
+        # 否则只写 1；默认 False，由 new_puzzle / 载入路径显式置位
+        self.numbered = False
         self.update_matrix()
     
     def get_boundaries(self) -> dict:
@@ -286,10 +289,16 @@ class SliderMatrix:
         self.matrix_bounds = bounds
         
         # 在矩阵中标记滑块位置
+        # numbered 谜题：整数矩阵，0=空、k=编号为 k 的块（与三角/米字一致，
+        # 编号即矩阵值，省去并行 numbers 字段）；其余形态只写 1（占位）。
         for block in self.blocks:
             row = block.location[0] - min_row  # 转换为矩阵行索引
             col = block.location[1] - min_col  # 转换为矩阵列索引
-            self.matrix[row][col] = 1
+            if getattr(self, 'numbered', False):
+                num = getattr(block, 'number', None)
+                self.matrix[row][col] = num if num is not None else 1
+            else:
+                self.matrix[row][col] = 1
     
     def get_matrix(self) -> list[list[int]]:
         """

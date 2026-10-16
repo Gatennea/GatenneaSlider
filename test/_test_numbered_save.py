@@ -19,8 +19,11 @@ with open(path, encoding='utf-8') as f:
     data = json.load(f)
 assert data['version'] == 2, data['version']
 assert data['puzzle']['type'] == 'numbered', data['puzzle']
-assert 'numbers' in data['history']['snapshots'][0]
-print('PASS: v2 存档带 type=numbered 与 numbers')
+# 编号直接写在整数矩阵里（值即编号），验证首快照矩阵携带完整 1..16
+init_nums = sorted(v for row in data['history']['snapshots'][0]['matrix']
+                   for v in row if v)
+assert init_nums == list(range(1, 17)), init_nums
+print('PASS: v2 存档带 type=numbered 且编号在整数矩阵中')
 
 # 2. 读档恢复 numbered 标志与编号
 gui.new_puzzle(3, 3, 2)               # 先换成普通局
@@ -67,8 +70,11 @@ assert saved and os.path.exists(saved)
 with open(saved, encoding='utf-8') as f:
     d3 = json.load(f)
 assert d3['version'] == 2 and d3['puzzle']['type'] == 'numbered'
-assert 'numbers' in d3['history']['snapshots'][0]
-print('PASS: 成绩面板另存为产生 v2 带序号存档')
+# 编号直接写在整数矩阵里（值即编号），验证首快照矩阵携带完整 1..16
+d3_nums = sorted(v for row in d3['history']['snapshots'][0]['matrix']
+                 for v in row if v)
+assert d3_nums == list(range(1, 17)), d3_nums
+print('PASS: 成绩面板另存为产生 v2 带序号存档（编号在整数矩阵中）')
 
 gui.new_puzzle(3, 3, 2)
 gui._rp_load_into_practice(rec)

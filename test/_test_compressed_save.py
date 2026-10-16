@@ -243,18 +243,18 @@ def test_numbered():
     check("数字局产出压缩格式", is_compressed(comp), f"format={comp.get('format')}")
     dec = decompress_to_normal(comp)
     check("数字档校验和解压后可验", verify_checksum(dec))
-    check("末态 numbers 保留",
-          dec['history']['snapshots'][-1].get('numbers')
-          == gui.game_history.history[-1].get('numbers'))
+    check("末态矩阵（含编号）保留",
+          dec['history']['snapshots'][-1]['matrix']
+          == gui.game_history.history[-1]['matrix'])
 
     gui2 = SliderGUI(m=6, n=6, step=2)
     gui2.animation_enabled = False
     gui2._load_save_data(comp)
     check("载入数字压缩档 numbered 标记", gui2.numbered is True)
     check("载入后末态一致", gui_final_cells(gui2) == gui_final_cells(gui))
-    check("载入后逐快照 numbers 与解压档一致",
-          [h.get('numbers') for h in gui2.game_history.history]
-          == [s.get('numbers') for s in dec['history']['snapshots']])
+    check("载入后逐快照矩阵（含编号）与解压档一致",
+          [h['matrix'] for h in gui2.game_history.history]
+          == [s['matrix'] for s in dec['history']['snapshots']])
     check("数字载入无回退告警", not getattr(gui2, 'macro_notify_msg', None),
           f"msg={getattr(gui2, 'macro_notify_msg', None)!r}")
 

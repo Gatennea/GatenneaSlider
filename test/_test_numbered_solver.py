@@ -120,8 +120,8 @@ for i, alg in enumerate(algs):
         break
 check("最终形状复原 game.is_solved()", solved)
 check("终局编号集合仍为 1..36（无丢失/重复）", numbers_snapshot(gui))
-check("末快照带 numbers 且值完整",
-      sorted(v for row in gui.game_history.history[-1].get('numbers', [])
+check("末快照带编号且值完整（整数矩阵）",
+      sorted(v for row in gui.game_history.history[-1]['matrix']
              for v in row if v) == list(range(1, TOTAL + 1)))
 
 # ---- 场景 2：逐步撤销回打乱态，编号随快照恢复 ----

@@ -71,4 +71,7 @@ def create_puzzle(
             return MiSliderMatrix(m, n)
         except ImportError:
             pass
-    return SliderMatrix(m, n)
+    g = SliderMatrix(m, n)
+    # numbered 形态：矩阵直接存整数（编号即矩阵值）；块编号由调用方随后赋予
+    g.numbered = (kind == 'numbered') or numbered
+    return g

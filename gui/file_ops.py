@@ -17,6 +17,7 @@ import pygame
 from puzzle_types import create_puzzle
 from gui.compressed_save import (is_compressed, load_compressed_into_gui,
                                  compress_from_game, convert_save_file)
+from history import validate_snapshot
 
 
 def _compute_checksum(data: dict) -> str:
@@ -494,8 +495,6 @@ class FileOpsMixin:
                 snap_data['steps'] = snap['steps']
             if snap.get('step_total'):
                 snap_data['step_total'] = snap['step_total']
-            if snap.get('numbers'):
-                snap_data['numbers'] = snap['numbers']
             history_data['snapshots'].append(snap_data)
         numbered = bool(getattr(self, 'numbered', False))
         triangle = bool(getattr(self, 'triangle_mode', False))
@@ -537,12 +536,12 @@ class FileOpsMixin:
                 self.macro_notify_msg = warn
                 self.macro_notify_timer = 180
                 print(f"压缩存档载入：{warn}")
+            # 压缩存档的只读标记同样要应用（与普通分支一致）
+            self._readonly = bool(save_data.get('readonly', False))
             self._reset_file_dirty()
             return
         # 载入会整体替换棋盘 → 结束进行中的标注会话
         self._ann_cancel_session('载入存档')
-        # 载入只读标志：带 readonly:true 的存档载入后为只读
-        self._readonly = bool(save_data.get('readonly', False))
         version = int(save_data.get('version', 1))
         # 完整性校验：带 checksum 的存档必须通过；旧存档无该字段则跳过
         ck = save_data.get('checksum')
@@ -562,9 +561,23 @@ class FileOpsMixin:
         kind = 'square'
         if version >= 2:
             kind = puzzle.get('type', 'square')
+
+        history_data = save_data.get('history', {})
+        snapshots = history_data.get('snapshots', [])
+        # ③ 载入前先校验每条快照的 matrix/bounds：坏数据（形如字符串/形状错乱/
+        # 包围盒不符/单元非整数）直接判失败，绝不静默当成功载入
+        # （否则会生成死局并把垃圾原样写回磁盘）。校验在改状态之前，
+        # 失败时当前局面保持原样。
+        for snap in snapshots:
+            validate_snapshot(snap, kind)
+
+        # 载入只读标志：带 readonly:true 的存档载入后为只读（校验通过后才设，
+        # 避免载入失败却把当前局的只读标记改掉）
+        self._readonly = bool(save_data.get('readonly', False))
+
         # v1 存档的 snapshots 若带 numbers（搭便车存档），也按带序号还原
         self.numbered = kind == 'numbered' or any(
-            snap.get('numbers') for snap in save_data.get('history', {}).get('snapshots', []))
+            snap.get('numbers') for snap in snapshots)
         # 三角形密铺：mode 标记 + 大三角形边长（k 缺省时退回 m）
         self.triangle_mode = kind == 'triangle'
         # 米字格：mode 标记；切回别的形态时必须一起清掉，否则旧旗标会让
@@ -577,8 +590,6 @@ class FileOpsMixin:
         self.current_step = step
 
         self.game_history.reset()
-        history_data = save_data.get('history', {})
-        snapshots = history_data.get('snapshots', [])
         for i, snap in enumerate(snapshots):
             move_info = snap.get('move_info')
             moves = snap.get('moves')
@@ -596,8 +607,16 @@ class FileOpsMixin:
                 # 载入后不承接旧选中会话，避免与后续移动误合并
                 'session_key': None,
             }
+            # 旧格式兼容：01 矩阵 + 平行 numbers 表 → 折叠进整数矩阵（值即编号），
+            # 不再携带 numbers 字段（编号谜题的整数矩阵本身即承载编号）
             if snap.get('numbers'):
-                entry['numbers'] = snap['numbers']
+                nums = snap['numbers']
+                mat = [row[:] for row in snap['matrix']]
+                for i, row in enumerate(nums):
+                    for j, v in enumerate(row):
+                        if v:
+                            mat[i][j] = v
+                entry['matrix'] = mat
             self.game_history.history.append(entry)
         self.game_history.history_index = history_data.get('history_index', 0)
         # 步数以历史累计值为准（合并快照一条覆盖多步，不能再按索引算）
@@ -605,6 +624,10 @@ class FileOpsMixin:
 
         # 从快照重建游戏状态（依版本/形態分派）
         self.game = create_puzzle(m, n, step, kind=kind, triangle_side=triangle_side)
+        # 形态标记同步到逻辑对象：编号谜题的整数矩阵靠 numbered 还原编号；
+        # 三角/米字为独立矩阵编码，其逻辑类 __slots__ 不含 numbered，跳过
+        if kind in ('square', 'numbered'):
+            self.game.numbered = self.numbered
         if kind == 'triangle':
             self.current_m = self.current_n = self.game.k
             # 载入后按当前棋盘大小重新适配缩放并居中（存档不保存 zoom）
@@ -751,8 +774,14 @@ class FileOpsMixin:
             print(f"游戏已从 {path} 加载")
             self._reset_file_dirty()
         except FileNotFoundError:
+            # ① 载入失败也要给用户可见提示（与保存路径一致，绝不静默）
+            self.macro_notify_msg = "打开失败：未找到文件"
+            self.macro_notify_timer = 180
             print("未找到文件")
         except (json.JSONDecodeError, KeyError, ValueError) as e:
+            # ① 同上：格式错误/校验失败/矩阵非法等一律弹状态栏提示
+            self.macro_notify_msg = f"打开失败：{e}"
+            self.macro_notify_timer = 180
             print(f"文件格式错误: {e}")
 
     def export_map(self):

@@ -17,6 +17,7 @@ import pygame
 from datetime import datetime
 from records import format_time
 from puzzle_types import create_puzzle, puzzle_key
+from game import SliderMatrix
 
 
 class RecordsPanelMixin:
@@ -498,10 +499,15 @@ class RecordsPanelMixin:
                 game = create_puzzle(rec['m'], rec['n'], rec['step'])
             if not game.import_map(self._rp_record_map_str(rec)):
                 return ''
-            game.update_matrix()
+            # 编号谜题：先置 numbered，并在赋号后再 update_matrix，
+            # 整数矩阵才能把编号写进去（值在赋号后才确定）。
+            # 仅方形/编号逻辑对象（SliderMatrix）带 numbered 槽，三角跳过
+            if type(game) is SliderMatrix:
+                game.numbered = numbered
             if numbered:
                 for i, block in enumerate(sorted(game.blocks, key=lambda b: (b.location[0], b.location[1]))):
                     block.number = i + 1
+            game.update_matrix()
             # 同上（gui/events.py）：mi 的 restore 走懒更新，`.matrix` 可能
             # 是 None。get_matrix() 會順帶刷新 matrix_bounds，下面取 bounds
             # 才是當前局面的值。
@@ -511,14 +517,7 @@ class RecordsPanelMixin:
                 'bounds': dict(game.matrix_bounds),
                 'move_info': None,
             }
-            if numbered:
-                bounds = dict(game.matrix_bounds)
-                num_map = {tuple(b.location): b.number for b in game.blocks}
-                snap['numbers'] = [
-                    [num_map.get((bounds['min_row'] + ri, bounds['min_col'] + ci), 0) if v else 0
-                     for ci, v in enumerate(row)]
-                    for ri, row in enumerate(mat)
-                ]
+            # 编号直接写在整数矩阵里（值即编号），无需并行 numbers 字段
             data = {
                 'version': 2 if (numbered or triangle) else 1,
                 'puzzle': {'m': rec['m'], 'n': rec['n'], 'step': rec['step']},
@@ -558,11 +557,14 @@ class RecordsPanelMixin:
                                       kind='triangle', triangle_side=rec['m'])
         else:
             self.game = create_puzzle(rec['m'], rec['n'], rec['step'])
+        # 仅方形/编号逻辑对象（SliderMatrix）带 numbered 槽，三角跳过
+        if type(self.game) is SliderMatrix:
+            self.game.numbered = numbered
         self.game.import_map(self._rp_record_map_str(rec))
-        self.game.update_matrix()
         if numbered:
             for i, block in enumerate(sorted(self.game.blocks, key=lambda b: (b.location[0], b.location[1]))):
                 block.number = i + 1
+        self.game.update_matrix()
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
         if triangle:

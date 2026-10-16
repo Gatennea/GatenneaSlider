@@ -16,6 +16,69 @@ from game import Block
 _DIRS = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
 
 
+def validate_snapshot(snap, kind='square'):
+    """载入存档前校验单条快照的 matrix/bounds 是否合法。
+
+    目的：坏数据（matrix 存成字符串/标量、行宽不齐、尺寸与包围盒不符、
+    单元类型非整数、三角/米字位打包超出值域）一律判失败，绝不静默当成功载入
+    —— 否则会生成死局并把垃圾原样写回磁盘。
+
+    合法则返回 None；非法抛出 ValueError（带中文说明），由上层转成用户提示。
+    """
+    if not isinstance(snap, dict):
+        raise ValueError('快照不是对象')
+    matrix = snap.get('matrix')
+    bounds = snap.get('bounds')
+    if matrix is None or bounds is None:
+        raise ValueError('快照缺少 matrix 或 bounds')
+    if not isinstance(matrix, list) or len(matrix) == 0:
+        raise ValueError('matrix 不是非空二维数组（可能存成了字符串/标量）')
+    if not all(isinstance(row, list) for row in matrix):
+        raise ValueError('matrix 行不是数组（可能存成了字符串）')
+    nrows = len(matrix)
+    ncols = None
+    for row in matrix:
+        if ncols is None:
+            ncols = len(row)
+            if ncols == 0:
+                raise ValueError('matrix 行宽为 0')
+        elif len(row) != ncols:
+            raise ValueError('matrix 行宽不一致')
+        for v in row:
+            # bool 是 int 的子类，必须显式排除（True/False 不是合法编号）
+            if not isinstance(v, int) or isinstance(v, bool):
+                raise ValueError('matrix 单元不是整数')
+    if not isinstance(bounds, dict):
+        raise ValueError('bounds 不是对象')
+    for key in ('min_row', 'max_row', 'min_col', 'max_col'):
+        kv = bounds.get(key)
+        if not isinstance(kv, int) or isinstance(kv, bool):
+            raise ValueError(f'bounds.{key} 缺失或非整数')
+    if bounds['min_row'] > bounds['max_row'] or bounds['min_col'] > bounds['max_col']:
+        raise ValueError('bounds 区间非法（min 大于 max）')
+    bh = bounds['max_row'] - bounds['min_row'] + 1
+    bw = bounds['max_col'] - bounds['min_col'] + 1
+    if bh != nrows or bw != ncols:
+        raise ValueError('matrix 尺寸与 bounds 不一致')
+    # 值域：三角/米字是位打包，超范围会静默丢位 → 拒绝；
+    # 方形/编号：0=空、>0=块（含编号），仅要求非负整数
+    if kind == 'triangle':
+        for row in matrix:
+            for v in row:
+                if v < 0 or v > 3:
+                    raise ValueError('三角形 matrix 单元超出 0~3')
+    elif kind == 'mi':
+        for row in matrix:
+            for v in row:
+                if v < 0 or v > 255:
+                    raise ValueError('米字格 matrix 单元超出 0~255')
+    else:
+        for row in matrix:
+            for v in row:
+                if v < 0:
+                    raise ValueError('matrix 单元为负数')
+
+
 def snapshot_cells(snap) -> frozenset:
     """快照 → 绝对坐标格集 {(r, c)}"""
     bounds = snap.get('bounds', {})
@@ -27,40 +90,52 @@ def snapshot_cells(snap) -> frozenset:
         for j, v in enumerate(row) if v)
 
 
-def cells_to_snapshot(cells: set) -> dict:
-    """绝对坐标格集 → {matrix, bounds}（紧凑包围盒）"""
+def cells_to_snapshot(cells: set, num_map: dict = None) -> dict:
+    """绝对坐标格集 → {matrix, bounds}（紧凑包围盒）。
+
+    num_map 提供 (r, c) -> 编号 时，矩阵写成整数（编号即矩阵值，0=空）；
+    否则占位写 1。带序号谜题逐步拆分的「中间态」靠 num_map 携带编号，
+    使撤销拆分出的每帧快照都自带编号（否则还原会丢号）。
+    """
     mnr = min(r for r, _ in cells)
     mxr = max(r for r, _ in cells)
     mnc = min(c for _, c in cells)
     mxc = max(c for _, c in cells)
-    matrix = [[1 if (r, c) in cells else 0 for c in range(mnc, mxc + 1)]
-              for r in range(mnr, mxr + 1)]
+    matrix = []
+    for i, r in enumerate(range(mnr, mxr + 1)):
+        row = []
+        for j, c in enumerate(range(mnc, mxc + 1)):
+            if (r, c) in cells:
+                if num_map is not None:
+                    row.append(num_map.get((r, c), 1))
+                else:
+                    row.append(1)
+            else:
+                row.append(0)
+        matrix.append(row)
     return {'matrix': matrix,
             'bounds': {'min_row': mnr, 'max_row': mxr,
                        'min_col': mnc, 'max_col': mxc}}
 
 
 def snapshot_numbers(snap) -> dict:
-    """快照 numbers 表 → {(r, c): 编号}（带序号谜题；方形/无编号返回 {}）"""
-    numbers = snap.get('numbers')
-    if not numbers:
+    """快照的编号表 → {(r, c): 编号}。
+
+    编号谜题的整数矩阵里「值即编号」（0=空），直接读取即可；
+    方形/无编号（矩阵全 1）返回 {}。用「是否存在 >1 的值」判定编号矩阵
+    （编号 k>=2 必含 >1；1x1 退化局忽略）。
+    """
+    matrix = snap.get('matrix', [])
+    if not matrix:
         return {}
     bounds = snap.get('bounds', {})
     min_row = bounds.get('min_row', 0)
     min_col = bounds.get('min_col', 0)
+    if not any(v > 1 for row in matrix for v in row):
+        return {}
     return {(min_row + i, min_col + j): val
-            for i, row in enumerate(numbers)
+            for i, row in enumerate(matrix)
             for j, val in enumerate(row) if val}
-
-
-def numbers_matrix(num_map: dict, bounds: dict) -> list:
-    """{(r, c): 编号} → 与 matrix 对齐的二维编号表（空格 0）"""
-    min_row = bounds['min_row']
-    min_col = bounds['min_col']
-    rows = bounds['max_row'] - min_row + 1
-    cols = bounds['max_col'] - min_col + 1
-    return [[num_map.get((min_row + i, min_col + j), 0)
-             for j in range(cols)] for i in range(rows)]
 
 
 def compose_move_info(moves: list):
@@ -126,9 +201,7 @@ def expand_snapshot_moves(prev_snap, snap) -> list:
                        if (r, c) in moved}
             num_map = {p: v for p, v in num_map.items() if p not in moved}
             num_map.update(shifted)
-        post = snap if i == len(moves) - 1 else cells_to_snapshot(cells)
-        if num_map and post is not snap:
-            post['numbers'] = numbers_matrix(num_map, post['bounds'])
+        post = snap if i == len(moves) - 1 else cells_to_snapshot(cells, num_map)
         out.append((pre, post, mv))
         pre = post
     return out
@@ -168,25 +241,6 @@ class GameHistory:
         if self.history_index < len(self.history) - 1:
             self.history = self.history[:self.history_index + 1]
 
-        # 编号矩阵辅助：将 game.blocks 的 number 映射到 matrix 对齐的二维表
-        # 必须按位置查找：移动后 game.blocks 的顺序不再是矩阵扫描序
-        def _numbers_matrix():
-            num_map = {tuple(b.location): b.number for b in game.blocks}
-            bounds = game.matrix_bounds
-            min_row = bounds['min_row']
-            min_col = bounds['min_col']
-            nums = []
-            for row_idx, row in enumerate(game.matrix):
-                new_row = []
-                for col_idx, val in enumerate(row):
-                    if val == 1:
-                        num = num_map.get((min_row + row_idx, min_col + col_idx))
-                        new_row.append(num if num is not None else 0)
-                    else:
-                        new_row.append(0)
-                nums.append(new_row)
-            return nums
-
         # 合并：同一次选中的连续移动只占一个矩阵快照
         if (session_key is not None and move_info is not None and self.history
                 and self.history[-1].get('session_key') == session_key):
@@ -197,11 +251,7 @@ class GameHistory:
             snap['steps'] += 1
             snap['step_total'] += 1
             snap['move_info'] = compose_move_info(snap['moves'])
-            # 同步编号快照（若有）
-            if any(getattr(b, 'number', None) is not None for b in game.blocks):
-                snap['numbers'] = _numbers_matrix()
-            else:
-                snap.pop('numbers', None)
+            # 编号直接存在 matrix（整数矩阵，值即编号），无需并行 numbers 字段
             return
 
         prev_total = self.history[-1].get('step_total', 0) if self.history else 0
@@ -215,8 +265,7 @@ class GameHistory:
             'step_total': prev_total + steps,
             'session_key': session_key,
         }
-        if any(getattr(b, 'number', None) is not None for b in game.blocks):
-            snapshot['numbers'] = _numbers_matrix()
+        # 编号直接存在 matrix（整数矩阵，值即编号），无需并行 numbers 字段
 
         # 追加快照
         self.history.append(snapshot)
@@ -276,26 +325,17 @@ class GameHistory:
                                 Block([min_row + row_idx + 0.5,
                                        min_col + col_idx + 0.5, q]))
         else:
-            # 根據矩陣重建滑塊列表
+            # 根據矩陣重建滑塊列表；编号谜题的整数矩阵「值即编号」，直接取用
             game.blocks = []
+            numbered = getattr(game, 'numbered', False)
             for row_idx, row in enumerate(matrix):
                 for col_idx, val in enumerate(row):
-                    if val == 1:
-                        game.blocks.append(Block([min_row + row_idx, min_col + col_idx]))
-        
-        # 恢复编号信息（若有）
-        numbers = snapshot.get('numbers')
-        if numbers:
-            num_map = {}
-            for row_idx, row in enumerate(numbers):
-                for col_idx, val in enumerate(row):
-                    if val != 0:
-                        r = min_row + row_idx
-                        c = min_col + col_idx
-                        num_map[(r, c)] = val
-            for block in game.blocks:
-                block.number = num_map.get(tuple(block.location))
-        
+                    if val:
+                        b = Block([min_row + row_idx, min_col + col_idx])
+                        if numbered:
+                            b.number = val
+                        game.blocks.append(b)
+
         # 更新游戏内部状态
         game.matrix = [r[:] for r in matrix]
         game.matrix_bounds = dict(bounds)
@@ -334,10 +374,8 @@ class GameHistory:
                 'step_total': base_total + k + 1,
                 'session_key': None,
             }
-            # 编号必须跟着拆分一起带走：否则撤销/重做恢复到这些中间态时
-            # restore_snapshot 重建出的块全部 number=None（数字消失、永远无法还原）
-            if post.get('numbers'):
-                snap_new['numbers'] = [row[:] for row in post['numbers']]
+            # 编号直接写在整数矩阵里（值即编号），随快照一起携带，
+            # 撤销/重做恢复到这些中间态时 restore_snapshot 据矩阵还原块编号
             new_snaps.append(snap_new)
         self.history[index:index + 1] = new_snaps
         return index + len(new_snaps) - 1
