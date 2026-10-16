@@ -102,8 +102,7 @@ def _phi_of(coords, m, n):
 
 
 def auto_solve(game, step, cancel_check=None, progress_callback=None,
-               stage_cb=None, time_budget=None, hybrid_use_fill=True,
-               **_kwargs):
+               stage_cb=None, time_budget=None, **_kwargs):
     """自动规划入口：查表 → 补缺宏 → 混合流水线，全解即停，全败取最优部分。
 
     stage_cb（2026-10-10 新增）：分阶段流式回调。每当一个候选求解器产出可播的
@@ -114,10 +113,6 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     选择引用同一函数——规则单一真源，UI 只负责播放与恢复。不传 stage_cb
     则不流式（保持旧的非流式返回协议，供 HTTP/headless 等调用方无感使用）；
     此时 fill_partial 断点同样是该规则下的最优，与流式路径一致。
-
-    hybrid_use_fill（2026-10-16 消融开关，默认 True）：透传给混合流水线的
-    use_fill；False = 混合内不跑填洞宏（exp20 skip_fill 配置），仅供
-    experiments/fillin_ablation.py 消融使用，生产默认不变。
     """
     t0 = time.time()
     m, n = game.m, game.n
@@ -251,13 +246,12 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         if best is not None and best['score'] > score0 + 1e-9:
             seed = best['end']
             note = '补缺宏部分成果终态（聚拢度 %.3f→%.3f）' % (score0, best['score'])
-        emit('自动规划·混合流水线', '聚拢↔填洞交替+GBFS，从%s' % note)
+        emit('自动规划·混合流水线', '聚拢+GBFS，从%s' % note)
         try:
             if seed is coords0:
                 hres = hybrid_solve(build_game(seed, m, n), step,
                                     cancel_check=cancel_check,
-                                    progress_callback=progress_callback,
-                                    use_fill=hybrid_use_fill)
+                                    progress_callback=progress_callback)
             else:
                 # 续算带 90s 上限：到点归还部分成果，尽早停（用户拍板）
                 deadline = time.time() + _CONTINUE_BUDGET
@@ -268,8 +262,7 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
 
                 hres = hybrid_solve(build_game(seed, m, n), step,
                                     cancel_check=seed_cancel,
-                                    progress_callback=progress_callback,
-                                    use_fill=hybrid_use_fill)
+                                    progress_callback=progress_callback)
         except Exception:
             hres = False
         if not isinstance(hres, tuple):
