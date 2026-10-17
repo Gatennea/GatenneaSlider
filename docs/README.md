@@ -36,6 +36,7 @@
 |---|---|---|
 | `docs/solver/求解器設計.md` | 矩形求解器详细设计（总账） | 维护中 |
 | `docs/solver/求解器優化發現.md` | Φ vs σ 等优化发现（2026-10-10） | 维护中 |
+| `docs/solver/求解器優化發現_2026-10-17.md` | 深夜优化：find_best_window / fast_window 前缀和、canonicalize 去集合化、restore 原地化（含三項敗組留檔） | 已上线（未推送） |
 | `docs/solver/求解器現狀總結.md` | 对外状态摘要 | ⚠️ 待补：未含 multi-stage 多段播放 |
 | `docs/solver/求解器對外討論版.md` | 对外讨论版 | ⚠️ 待补：与现状总结重叠、未含多段播放 |
 | `docs/solver/異形求解器計劃.md` | 异形（三角 / 米字）求解器蓝图 | M0–M4 已执行；M5 建表 / 通用解法未落实 |

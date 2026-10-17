@@ -69,24 +69,66 @@ def best_window(coords, m, n):
 
 
 def fast_window(coords, m, n):
-    """启发用快速窗口，保证不返回 None。"""
+    """启发用快速窗口，保证不返回 None。
+
+    **前綴和版**（2026-10-17 深夜優化）：舊實現對每個候選窗口新建一個
+    h×w 的座標集合再與 B 相交（≤50 窗 × O(h·w) 集合構造 + 相交）。本函數是
+    GBFS（guided_reduce_one）每個節點 + 每個後繼的調用點，實測占 GBFS 段
+    33%。改為二維前綴和：建表 O(網格) + 查窗 O(1)，只對最終勝出窗口算一次
+    holes/protr（舊版對每個「刷新紀錄」的中間窗口也算，純浪費）。
+    枚舉順序（朝向 (m,n)→(n,m)，r0/c0 升序）、「嚴格大於才更新」規則、
+    視窗範圍公式（rlo/rhi/clo/chi 與 5 格夾取）與舊版逐字一致，輸出相同
+    （差分測試見 experiments/_bench_find_window.py 的 fast_window 部分）。
+    """
     B = set(coords)
     rs = [r for r, _ in B]
     cs = [c for _, c in B]
     minr, maxr, minc, maxc = min(rs), max(rs), min(cs), max(cs)
-    best = None
+    best_inside = -1
+    best_key = None
     for h, w in ((m, n), (n, m)):
         rlo, rhi = minr - 1, max(maxr - h + 2, minr + 1)
         clo, chi = minc - 1, max(maxc - w + 2, minc + 1)
-        for r0 in range(rlo, min(rhi, rlo + 5)):
-            for c0 in range(clo, min(chi, clo + 5)):
-                win = set((r, c) for r in range(r0, r0 + h)
-                          for c in range(c0, c0 + w))
-                inside = len(win & B)
-                if best is None or inside > best[0]:
-                    best = (inside, (r0, c0, h, w), win - B, B - win)
-    if best is not None:
-        return best[1], best[2], best[3]
+        r_end = min(rhi, rlo + 5)   # r0 升序枚舉的排他上界（≤ rlo+5，舊版同）
+        c_end = min(chi, clo + 5)
+        # 網格覆蓋 = 全部候選窗 ∪ B：
+        #   行 [rlo, max(r_end + h, maxr + 1))，列 [clo, max(c_end + w, maxc + 1))
+        R = max(r_end + h, maxr + 1) - rlo
+        C = max(c_end + w, maxc + 1) - clo
+        grid = bytearray(R * C)
+        for r, c in B:
+            ri = r - rlo
+            ci = c - clo
+            if 0 <= ri < R and 0 <= ci < C:
+                grid[ri * C + ci] = 1
+        # 二維前綴和：ps[(i+1)*(C+1)+(j+1)] = grid[0..i][0..j] 之和
+        W = C + 1
+        ps = [0] * ((R + 1) * W)
+        for i in range(R):
+            row_acc = 0
+            gbase = i * C
+            cur = (i + 1) * W
+            above = i * W
+            for j in range(C):
+                row_acc += grid[gbase + j]
+                ps[cur + j + 1] = ps[above + j + 1] + row_acc
+        for r0 in range(rlo, r_end):
+            ri = r0 - rlo
+            r2 = ri + h
+            row2 = r2 * W
+            row1 = ri * W
+            for c0 in range(clo, c_end):
+                ci = c0 - clo
+                c2 = ci + w
+                inside = ps[row2 + c2] - ps[row1 + c2] - ps[row2 + ci] + ps[row1 + ci]
+                if inside > best_inside:
+                    best_inside = inside
+                    best_key = (r0, c0, h, w)
+    if best_key is not None:
+        r0, c0, h, w = best_key
+        win = set((r, c) for r in range(r0, r0 + h)
+                  for c in range(c0, c0 + w))
+        return (r0, c0, h, w), win - B, B - win
     win = set((r, c) for r in range(minr, maxr + 1)
               for c in range(minc, maxc + 1))
     return (minr, minc, maxr - minr + 1, maxc - minc + 1), win - B, B - win

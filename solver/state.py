@@ -108,13 +108,26 @@ def snapshot(game: SliderMatrix) -> dict:
 def restore(game: SliderMatrix, snap: dict):
     """
     從快照恢復遊戲狀態（用於搜索回溯）
-    
-    參數：
-        game: SliderMatrix 實例（會被原地修改）
-        snap: snapshot() 返回的快照字典
+
+    **原地恢復**（2026-10-17 深夜優化）：舊實現每呼叫都新建全部 Block
+    （`Block([r, c])` × K）+ 全量重建矩陣；求解熱路徑裡「套用→打分→恢復」
+    每個候選動作一次，8×8 實測 Block.__init__ 被調 25 萬次。改為就地改寫
+    既有 Block 的 location（塊數一致時），並把瞬態槽位清零到與新 Block
+    等價的狀態（be_opted=False、number=None——與舊實現新建 Block 的預設值
+    逐字一致，觀察行為不變）；塊數不一致（理論不發生）才走重建分支。
+    矩陣仍照舊 eager 重建（呼叫方約定恢復後 matrix 可用，不改變語義）。
     """
     game.m = snap['m']
     game.n = snap['n']
-    game.blocks = [Block([r, c]) for r, c in snap['blocks']]
+    blocks = game.blocks
+    snap_blocks = snap['blocks']
+    if blocks is not None and len(blocks) == len(snap_blocks):
+        for b, loc in zip(blocks, snap_blocks):
+            b.location[0] = loc[0]
+            b.location[1] = loc[1]
+            b.be_opted = False
+            b.number = None
+    else:
+        game.blocks = [Block([r, c]) for r, c in snap_blocks]
     game.matrix = None
     game.update_matrix()

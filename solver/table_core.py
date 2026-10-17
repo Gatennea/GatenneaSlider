@@ -60,7 +60,15 @@ def _mask_is_connected(mask, W, col0, colW):
 
 
 def is_single_connected(positions) -> bool:
-    """对外接口：基于 frozenset 的连通性判定（镜像 game.py）。"""
+    """對外接口：基於 frozenset 的連通性判定（鏡像 game.py）。
+
+    ⚠️ 2026-10-17 深夜實測留檔：曾改走 bitboard（build_occupancy +
+    is_connected 位並行 BFS），語義等價已過 367 例差分，但 ABAB 滿盤語料
+    **0.44×（0/8 輪）——慢一倍以上，已回退**。原因：本函數的呼叫方
+    （expand 的逐單位步校驗）手頭只有坐標集，位棋盤要先花 O(K+H) 建掩碼，
+    而 set-DFS 在 K≤100 的實測規模下直接四鄰居查找更快。位並行的勝場在
+    「還要順便取連通分量掩碼」的場景（如 game.opt），純判定不值得。
+    """
     if not positions:
         return True
     positions = set(positions)
@@ -108,13 +116,38 @@ def _variants(coords):
     return out
 
 
+def _normalized_sorted(coords):
+    """平移歸一到原點 + 排序成 list（_normalize 的 list 版，供規範化熱路徑）。"""
+    rs = [r for r, _ in coords]
+    cs = [c for _, c in coords]
+    mr, mc = min(rs), min(cs)
+    return sorted((r - mr, c - mc) for r, c in coords)
+
+
 @lru_cache(maxsize=100_000)
 def _canonicalize_fs(fs: frozenset) -> int:
+    """規範化 + 8 個 D4 變體取字典序最小 → 位打包整數。
+
+    **變體鏈去 frozenset 化**（2026-10-17 深夜優化）：舊版 _variants 產生
+    8 個 frozenset，每個再 _normalize 成 frozenset 後 sorted——變換鏈上
+    白造 16 個集合（每個 O(K) 雜誌）。改為 list 推導式管線（無雜誌），
+    _normalize 直接出排序 list；枚舉順序與「< 嚴格小才更新」規則不變，
+    取 min 的結果與舊版逐字相同（差分測試見 experiments/_bench_find_window.py
+    的 canonicalize 部分）。_normalize/_rot90/_flip/_variants 保留原实现
+    （外部無使用者，但語義文檔價值留底）；本函數走等價的 list 管線。
+    _normalize/_rot90/_flip/_variants 現由 experiments/_bench_find_window.py
+    引用作差分基線（改前快照復刻），不是死碼。
+    """
     best = None
-    for v in _variants(fs):
-        nv = sorted(_normalize(v))
+    rot = list(fs)
+    for _ in range(4):
+        nv = _normalized_sorted(rot)
         if best is None or nv < best:
             best = nv
+        nv = _normalized_sorted([(r, -c) for r, c in rot])
+        if nv < best:
+            best = nv
+        rot = [(c, -r) for r, c in rot]
     h = 0
     for r, c in best:
         h = h * 65536 + (r * 256 + c)

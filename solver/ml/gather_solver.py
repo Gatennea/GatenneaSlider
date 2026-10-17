@@ -41,6 +41,13 @@ def max_overlap(coords, m, n):
     平移不变：枚举所有矩形左上角位置。
     转置对称：同时考虑 m×n 与 n×m 两个朝向。
     用二维前缀和 O(1) 查询任意矩形内方块数。
+
+    註（2026-10-17 深夜實測）：曾試圖把前綴和/網格扁平化成一位
+    bytearray（與 find_best_window 同批構想），ABAB 8 輪逐輪配對結果
+    **0.94×（8 輪輸 6）——無增益，已回退**。快在哪裡是有條件的：
+    find_best_window 的收益來自消掉「逐窗 O(K) 函數呼叫」，本函數早就
+    沒有那個呼叫，扁平化只是換了種索引写法，Python 層面打平甚至略慢。
+    留檔以免重複踩坑。
     """
     total = m * n
     if len(coords) != total:
@@ -120,6 +127,13 @@ def find_best_window(coords, m, n, step):
     _compute_target_region → 本函數）。改用整數內部計數 + ½ 步進的乘法，
     對整數座標（方形/三角）與半整數座標（米字）都成立，輸出型別與舊版
     一致（整數輸入 → 整數輸出）。
+
+    **前綴和版**（2026-10-17 深夜優化）：舊實現對每個候選窗口 O(K) 重數
+    方塊（_overlap_at），本函數又是 GUI 指標面板每帧 + 填洞宏 + 人類風格
+    求解器的熱路徑。改為與 `max_overlap` 同構的二維前綴和：建表 O(R·C)、
+    查窗 O(1)。**枚舉順序、比較規則（嚴格大於才更新）、提前退出條件與舊版
+    逐字一致，輸出逐字相同——差分測試見
+    `experiments/_bench_find_window.py`（數百個隨機局面零差異）。
     """
     if not coords:
         return 0, 0, (m, n), 0
@@ -144,19 +158,64 @@ def find_best_window(coords, m, n, step):
         return v // scale if scale == 1 else v / 2.0
 
     best = (_out(lo_r), _out(lo_c), (m, n), 0)
+    total = m * n
     for rh, cw in ((m, n), (n, m)):
-        for i_r in range(lo_r - rh * scale + scale, hi_r + scale, scale):
+        rh_s, cw_s = rh * scale, cw * scale
+        # 枚舉起止必須與舊版逐字一致。舊版是
+        #   range(lo - size*scale + scale, hi + scale, scale)
+        # 當 (hi - lo) 不被 scale 整除時——米字錯位態是**混合晶格**
+        # （半整數與整數座標混存，lo/hi 在 2× 下奇偶不同）——區間會
+        # 多半格。舊版用 _overlap_at 逐窗數方塊、不建網格，多半格無害；
+        # 前綴和版若按對齊區間開網格就會越界（2026-10-17 深夜回歸：
+        # 米字錯位態 T3c IndexError，GUI 指標面板同路徑）。因此按「實際
+        # 最後一枚舉起點」開網格；整數路徑（scale=1）last==hi，與舊公式
+        # 逐字相同，基準不受影響。
+        i_r0 = lo_r - rh_s + scale
+        i_c0 = lo_c - cw_s + scale
+        last_r = i_r0 + ((hi_r + scale - 1 - i_r0) // scale) * scale
+        last_c = i_c0 + ((hi_c + scale - 1 - i_c0) // scale) * scale
+        gr0, gc0 = i_r0, i_c0
+        R = last_r + rh_s - gr0
+        C = last_c + cw_s - gc0
+
+        # 建網格（扁平一維，避免二維 list 雙索引開銷）
+        grid = bytearray(R * C)
+        for r, c in coords:
+            ri = int(round(r * scale)) - gr0
+            ci = int(round(c * scale)) - gc0
+            if 0 <= ri < R and 0 <= ci < C:
+                grid[ri * C + ci] = 1
+
+        # 二維前綴和：ps[(i+1)*(C+1)+(j+1)] = grid[0..i][0..j] 之和
+        W = C + 1
+        ps = [0] * ((R + 1) * W)
+        for i in range(R):
+            row_acc = 0
+            gbase = i * C
+            cur = (i + 1) * W
+            above = i * W
+            for j in range(C):
+                row_acc += grid[gbase + j]
+                ps[cur + j + 1] = ps[above + j + 1] + row_acc
+
+        for i_r in range(i_r0, last_r + 1, scale):
             r0 = _out(i_r)
             if r_mod is not None and r0 % step != r_mod:
                 continue
-            for i_c in range(lo_c - cw * scale + scale, hi_c + scale, scale):
+            ri = i_r - gr0
+            r2 = ri + rh_s
+            row2 = r2 * W
+            row1 = ri * W
+            for i_c in range(i_c0, last_c + 1, scale):
                 c0 = _out(i_c)
                 if c_mod is not None and c0 % step != c_mod:
                     continue
-                cnt = _overlap_at(coords, rh, cw, r0, c0)
+                ci = i_c - gc0
+                c2 = ci + cw_s
+                cnt = ps[row2 + c2] - ps[row1 + c2] - ps[row2 + ci] + ps[row1 + ci]
                 if cnt > best[3]:
                     best = (r0, c0, (rh, cw), cnt)
-                    if cnt == m * n:
+                    if cnt == total:
                         return best
     return best
 
