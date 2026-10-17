@@ -55,8 +55,12 @@ PYTHON = os.environ.get('GATENNEA_PY', 'D:/python/python.exe')
 SCRIPT_TIMEOUT = 600
 
 # 个别更慢脚本的单独上限（键 = 文件名，含 .py）。
-#   _test_solver.py        4×4 基准 10 局 + 多档回归，实测 ~480s（临界 600s，
-#                         易被同机其他进程抢 CPU 误判卡死）→ 放宽到 900s。
+#   _test_solver.py        4×4 基准 10 局 + 多档回归。2026-10-18 修 flaky：
+#                         脚本内已 random.seed(20261018) 播种（shuffle 走全局
+#                         random，無種子時每輪局面不同、IDA* 單局方差極大，
+#                         實測 0.17s~65s+、歷史 734s，900s 曾被隨機擊穿
+#                         誤報卡死）。播種後實測總耗時 223s（確定），
+#                         → 900s（約 4× 餘量，覆蓋負載/慢機）。
 #   _test_mi_gather.py     米字格聚拢回归：C3 批量 + D1 方形 + D2 三角共 14 档，
 #                         实测 ~12–15min（纯 solver/ml 逻辑，与 GUI 重构无关）
 #                         → 放宽到 1500s。CI 默认 60min 额度内可容。

@@ -10,6 +10,7 @@
 import sys
 import os
 import time
+import random
 
 # 確保可以導入項目模塊
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -125,6 +126,14 @@ def test_shuffle_solve_cycle(m=4, n=4, step=2, shuffle_attempts=20, max_depth=80
 
 def main():
     """主測試函數"""
+    # 固定種子（2026-10-18 修 flaky）：shuffle 走全局 random，無種子時每輪
+    # 抽到的局面不同，而 IDA* 單局耗時方差極大（實測 0.17s ~ 65s+，歷史
+    # profile 見過 734s，2026-10-18 甚至一局 >30min）——十局基準總耗時的
+    # 尾部極長，900s 超時預算會被隨機擊穿，誤報「疑似卡死」。播種後每輪
+    # 局面一致、耗時確定，超時預算可精確設定；真要出現求解回歸也會穩定
+    # 復現。更換種子請同步實測總耗時並更新 conftest 的 _SLOW_TIMEOUT。
+    random.seed(20261018)
+
     print("\n" + "=" * 60)
     print("  貓九的滑塊遊戲 — 求解器測試")
     print("=" * 60 + "\n")
