@@ -29,17 +29,30 @@ import urllib.request
 # 超时（秒）：兜底必须在交互时限内返回，超时即放弃走回 suggest。
 _TIMEOUT = 8
 
+# ===== 部署自定义域名后需改的配置（共 3 处，清单见后端 README「绑定自定义域名」节）=====
+#   ① 本文件 RELAY_ENDPOINT（游戏 exe 侧的后端地址）
+#   ② GatenneaSliderWeb/src/io/ApiClient.ts 的 API_BASE（网页版侧的后端地址）
+#   ③ GatenneaSliderBackend/wrangler.toml 的 ALLOWED_ORIGIN（仅当官网本身也换自定义域才改；
+#      后端绑自定义域是在 Cloudflare 控制台操作，不在这 3 处文本里）
+# 提示：改 RELAY_ENDPOINT 后必须重新打包 exe；也可设环境变量 GATENNEA_RELAY_ENDPOINT 覆盖，免重打包。
+
 # ---- AI 中转（作者托管）配置 ----
 # 默认走作者中转：玩家零门槛即用 AI 兜底，无需任何 key。
-# 部署后把 RELAY_ENDPOINT 替换为真实 Worker 地址即可（DEFAULT_TO_RELAY 保持 True）。
+# 部署自定义域后把 RELAY_ENDPOINT 改成 https://你的域/api/ai/relay（DEFAULT_TO_RELAY 保持 True）。
 DEFAULT_TO_RELAY = True
-RELAY_ENDPOINT = "https://gatennea-backend.gatennea.workers.dev/api/ai/relay"  # 作者中转真实地址
+# 后端地址（自定义域后改这里）：游戏 exe 实际连的后端 Worker 地址。
+RELAY_ENDPOINT = "https://gatennea-backend.gatennea.workers.dev/api/ai/relay"
 
 
 def _effective_endpoint():
-    """最终使用的端点：自填优先，否则回落作者中转（若启用）。"""
-    return os.environ.get('GATENNEA_AI_ENDPOINT') or (
-        RELAY_ENDPOINT if DEFAULT_TO_RELAY else '')
+    """最终使用的端点：自填端点优先，其次环境变量中继覆盖，否则回落作者中转（若启用）。
+
+    GATENNEA_AI_ENDPOINT  = 玩家自填端点（须自带 key）
+    GATENNEA_RELAY_ENDPOINT = 覆盖作者中转地址（部署自定义域后免重打包 exe 用）
+    """
+    return (os.environ.get('GATENNEA_AI_ENDPOINT')
+            or os.environ.get('GATENNEA_RELAY_ENDPOINT')
+            or (RELAY_ENDPOINT if DEFAULT_TO_RELAY else ''))
 
 
 def _using_relay():
