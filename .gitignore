@@ -62,3 +62,19 @@ web/
 
 開發約定/
 experiments/results/
+
+# ===== 大型实验数据 / 产物 / 媒体（有意不入库）=====
+# full_A dump 679MB：引擎可重算，官网注明（见 docs/math 决议）
+experiments/math_repro/full_A/
+# 实验输出：截图 / bench / profile 日志
+experiments/out/
+experiments/*_out.txt
+# 另 AI 的宣传片产物（嵌套 git 仓库，由对方自行管理）
+video/
+# 官网制作中间产物（无代码引用）
+arrow_B_rgba.png
+arrow_b64.txt
+# 压缩存档功能样例（玩家向示例，非源码）
+压缩存档样例/
+# 测试截图残留
+test/_mi_slide.png
