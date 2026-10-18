@@ -628,6 +628,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._shuffle_fade_last_ms = 0      # 上一帧时刻（淡入淡出按时间推进）
         self._shuffle_demo_notify = None    # 演示结束后补发的通知 (msg, timer)
         self._shuffle_demo_game = None      # 演示绑定的棋局对象（换盘即失效）
+        self._shuffle_demo_prev_duration = None  # 演示前玩家滑动步长（收尾恢复）
 
         # 连续撤销/重做（虚拟键盘一键连续播放）：True=连续模式进行中
         self._continuous_undo = False
