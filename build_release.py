@@ -10,9 +10,15 @@
 
 用法：
     D:/python/python.exe build_release.py
-    D:/python/python.exe build_release.py --version v197-20261006
+    D:/python/python.exe build_release.py --version v20261017
 
-版本号规则（2026-10-06 用户拍板）：Git 提交数 + 打包日期，不给版本号时自动算。
+版本号规则（2026-10-17 改）：改为**打包日期**，形如 v20261017，不给版本号时自动取今天。
+- 旧规则（2026-10-06）是「Git 提交数 + 日期」，但 squash 合并会让提交数变小、版本号
+  倒退，自动更新器会误判「已是最新」。日期天然单调、与 git 历史无关，故改用之。
+- 更新器只比版本号 v 后第一个 '-' 前的整数（v20261017 → 20261017），恒大于旧的
+  v197 等提交数版本，过渡无碍。
+- 同日要发两版：直接取下一天日期，或用 --version v20261017-2（但比较只看前导整数，
+  同日真正「更新型号」需用带时分的 vYYYYMMDDHHMM 才能比旧的大）。
 
 产出（都在 dist/ 下）：
     GatenneaSlider-Windows.zip          ← 上传到 Release 的那个文件
@@ -24,7 +30,6 @@ import argparse
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import time
 import zipfile
@@ -57,28 +62,33 @@ def sha256_of(path):
     return h.hexdigest()
 
 
-def git_commit_count():
-    """HEAD 往回数的提交总数。"""
-    out = subprocess.run(['git', 'rev-list', '--count', 'HEAD'],
-                         cwd=ROOT, capture_output=True, text=True)
-    n = out.stdout.strip()
-    if not n.isdigit():
-        raise RuntimeError(f'git rev-list --count HEAD 返回异常：{n!r}')
-    return int(n)
+def today_version():
+    """版本号 = 打包当天日期，形如 v20261017。
 
-
-def guess_version():
-    """没给 --version 时，版本号 = Git 提交数 + 打包日期（用户 2026-10-06 拍板）。
-
-    形如 v197-20261006：197 是 HEAD 的提交数，20261006 是打包当天。
-
-    为什么不继续用 v1.0.0 / v0.1.0 那套语义版本号：这个项目还没有对外承诺兼容性的
-    需求，「算不算 1.0」每次发版都要纠结一次，而纠结出来的数字对用户毫无信息量。
-    提交数 + 日期是客观事实——一眼能看出「这是第几次提交、哪天打的」，两个版本
-    谁新谁旧也不会看错。真到了要对外承诺的那天再换也不迟。
+    2026-10-17 起不再用 Git 提交数（squash 合并会让提交数变小、版本号倒退，导致
+    自动更新器误判「已是最新」）。日期天然单调、与 git 历史无关，更新器只比较 v 后
+    第一个 '-' 前的整数（v20261017 → 20261017），恒大于旧的 v197 等提交数版本。
     """
-    n = git_commit_count()
-    return f'v{n}-{time.strftime("%Y%m%d")}'
+    return f'v{time.strftime("%Y%m%d")}'
+
+
+def validate_version(vstr):
+    """手填版本号校验（--version 覆盖时生效）。
+    - 日期制 vYYYYMMDD / vYYYYMMDD-xxx：要求日期不早于今天（防倒退）。
+    - 旧制 vN-YYYYMMDD：校验日期部分不晚于过去，放行。
+    - 其余数字型版本号：放行（视为显式指定）。
+    合法返回 True。"""
+    if not vstr or not isinstance(vstr, str):
+        return False
+    s = vstr[1:] if vstr.startswith('v') else vstr
+    head = s.split('-')[0]
+    tail = s.split('-')[1] if '-' in s else ''
+    today = int(time.strftime('%Y%m%d'))
+    if head.isdigit() and len(head) == 8:
+        return int(head) >= today            # 日期制：不能发过去的日期
+    if head.isdigit() and tail.isdigit() and len(tail) == 8:
+        return int(tail) >= today            # 旧制：日期部分不能晚于过去
+    return head.isdigit()                    # 其他数字型放行
 
 
 def main():
@@ -91,7 +101,11 @@ def main():
         print('        先跑 build_exe.bat 生成 onedir 产物，再执行本脚本。')
         return 1
 
-    version = args.version or guess_version()
+    version = args.version or today_version()
+    if args.version and not validate_version(version):
+        print(f'[ERROR] 版本号 {version} 不合法：须为 vYYYYMMDD 或 vYYYYMMDD-xxx，'
+              f'且日期不早于今天（{time.strftime("%Y%m%d")}）')
+        return 1
     zip_path = os.path.join(OUT_DIR, ZIP_NAME)
 
     # 把「最小 version.json」嵌进应用目录（随 zip 发出去，游戏运行时读它判断当前版本）。
