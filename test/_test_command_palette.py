@@ -109,14 +109,26 @@ check('P2b 首条命中最相关（着色 → 分组着色）',
 check('P2c 结果行有可点击矩形',
       len(gui.palette_result_rects) == len(gui.palette_results))
 
-# 无结果
-gui.open_command_palette()
-for ch in 'zzzz不存在的功能':
-    text_input(ch)
-    gui.handle_events()
-gui.draw_command_palette()
-check('P2d 无匹配时结果为空且不崩', gui.palette_results == [])
-check('P2e 无匹配时清空点击矩形', gui.palette_result_rects == [])
+# 无结果（真零命中：search/suggest 全空）
+# ⚠️ 必须先摘掉 AI 兜底：is_configured() 默认走作者中转返回 True（任何
+# 机器都「已配置」），零命中查询会真的联网——测试不能依赖网络。摘掉后
+# 才能确定性验证「结果为空 + 矩形清空」这条路径。
+# （旧查询 'zzzz不存在的功能' 不成立：其中的「功能」二字本身就能命中
+# 「命令面板（搜索功能）」，search=1，suggest 兜底根本没上场。）
+import gui.palette as _pal_mod
+from gui import feature_ai as _fai
+_ai_orig = _fai.is_configured
+_fai.is_configured = lambda: False
+try:
+    gui.open_command_palette()
+    for ch in '鿅鿅':
+        text_input(ch)
+        gui.handle_events()
+    gui.draw_command_palette()
+    check('P2d 无匹配时结果为空且不崩', gui.palette_results == [])
+    check('P2e 无匹配时清空点击矩形', gui.palette_result_rects == [])
+finally:
+    _fai.is_configured = _ai_orig
 
 print("\n--- 键盘：↑↓ 选择 + 回车执行 ---")
 gui.open_command_palette()
