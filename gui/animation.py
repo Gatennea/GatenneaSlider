@@ -553,6 +553,13 @@ class AnimationMixin:
         if prev is not None:
             self.animation_duration = prev
         self._shuffle_demo_prev_duration = None
+        # 复位演示转场借用的 animating 守卫：淡出/淡入期手动置 True 挡输入
+        # （见 _play_next_shuffle_record），转场结束后 anim_blocks 已空——
+        # commit_animation 见空块直接 return，标志将永远卡在 True，
+        # 键盘/拖拽/求解守卫全部失效（「打乱后不能滑动」bug 2026-10-18）。
+        # anim_blocks 非空 = 有真实动画在播（如换盘后新局的过渡），不误杀。
+        if self.animating and not self.anim_blocks:
+            self.animating = False
 
     @contextmanager
     def _demo_logic_positions(self):

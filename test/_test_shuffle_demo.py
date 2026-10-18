@@ -174,6 +174,18 @@ check('T3 全程不碰歷史', len(gui.game_history.history) == 1
 check('T3 通知已補發', gui.macro_notify_timer > 0
       and '已打乱' in gui.macro_notify_msg,
       gui.macro_notify_msg)
+check('T3 結束後 animating 復位（轉場守衛解除）',
+      not gui.animating and not gui.anim_blocks)
+
+# 端到端穿透驗證：F2（指標面板）不在動畫守衛豁免清單（undo/redo/auto_solve/
+# 空格）裡。animating 卡死時 KEYDOWN 會被 events.py 的動畫守衛吞掉、面板
+# 不翻轉——正是「打亂後快捷鍵全失效」的用戶體感；修復後應正常 toggle。
+_before = getattr(gui, 'show_metrics_panel', False)
+pygame.event.post(pygame.event.Event(pygame.KEYDOWN,
+                                     key=pygame.K_F2, mod=0, unicode=''))
+gui.handle_events()
+check('T3 結束後鍵盤輸入恢復（F2 穿透動畫守衛）',
+      getattr(gui, 'show_metrics_panel', False) != _before)
 
 # ================================================================ T4 短記錄不求淡出
 print()
@@ -203,6 +215,8 @@ frames = run_demo_until_done(gui2)
 check('T4 演完即終態、無淡出',
       not gui2._shuffle_demo_active and positions(gui2.game) == final2,
       f'{frames} 幀')
+check('T4 結束後 animating 復位',
+      not gui2.animating and not gui2.anim_blocks)
 
 # ================================================================ T5 中斷對齊
 print()
