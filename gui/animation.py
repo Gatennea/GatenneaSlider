@@ -406,12 +406,12 @@ class AnimationMixin:
     # reset + save_snapshot(终态)，演示的提交一律不碰历史。
     # ------------------------------------------------------------------
 
-    # 最多演示几步；步长另行指定（见 SHUFFLE_DEMO_STEP_MS），总时长控制在
-    # 「几步」+「几秒」的量级（50 步 ≈ 7.5s）
+    # 最多演示几步（步长跟随速度滑动条，见 SHUFFLE_DEMO_STEP_MAX_MS）
     SHUFFLE_DEMO_STEPS = 50
-    # 演示播放每步时长（毫秒）——比玩家滑动（GUI 默认 300ms）短，
-    # 50 步连播不拖沓；玩家滑动节奏不受影响
-    SHUFFLE_DEMO_STEP_MS = 150
+    # 演示步长上限（毫秒）：跟随玩家当前动画速度，但截断在 150ms——
+    # 速度滑动条拉到最慢（1000ms）时 50 步要 50 秒，必须截断；
+    # 拉到最快（50ms）时演示就按 50ms/步连播（≈2.5s）
+    SHUFFLE_DEMO_STEP_MAX_MS = 150
     # 淡出 / 淡入各自的时长（毫秒）；两段合计 ~0.7s
     SHUFFLE_FADE_MS = 350
 
@@ -437,7 +437,8 @@ class AnimationMixin:
         self._shuffle_demo_active = True
         self._shuffle_demo_phase = 'play'
         self._shuffle_fade_alpha = 0.0
-        # 演示用较短步长连播：记住玩家滑动步长，收尾时恢复
+        # 演示播放会临时截断步长（见 _play_next_shuffle_record）：存下玩家
+        # 当前速度，_clear_demo_state 时恢复，滑动条设置不被演示改写
         self._shuffle_demo_prev_duration = self.animation_duration
         # 视图按当前（打乱前）盘面适配；截断演示在切终态时会再适配一次
         self._fit_board_view()
@@ -463,7 +464,10 @@ class AnimationMixin:
             blocks = self._find_blocks_at_positions(rec['moved'])
             if len(blocks) != len(rec['moved']):
                 continue  # 位置对不上（理论不发生）：跳过该步，演示继续
-            self.animation_duration = self.SHUFFLE_DEMO_STEP_MS
+            # 步长跟随玩家当前速度（滑动条值），上限 SHUFFLE_DEMO_STEP_MAX_MS；
+            # 演示前已存原值（_shuffle_demo_prev_duration），收尾时恢复
+            self.animation_duration = min(self.animation_duration,
+                                          self.SHUFFLE_DEMO_STEP_MAX_MS)
             self.start_animation(blocks, rec['final'])
             self._shuffle_demo_playing = True
             return
