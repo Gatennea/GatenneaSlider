@@ -33,6 +33,8 @@ typedef unsigned char u8;
 static int M_, N_, S_, K_;      // 谜题参数：行、列、步长、格数 = M*N
 static int NCLS;                // 同余类数 = S*S
 static bool g_full_sticky = false;     // R8b：全量逐边验证粘连型（默认抽样 300）
+static std::string g_dump_dir;          // -dump <dir>：逐状态落盘目标目录
+static bool g_dump_edges = true;        // -noedges：跳过 edges.bin
 
 // 枚举窗口：行 r ∈ [0, K-1]；列位 b ∈ [0, 2K-2]，实际列 = b - (K-1)。
 // （列跨宽度证明：每个同余类恰 target 个格子 ⇒ 奇偶列各 ≤ K/2 列 ⇒
@@ -1039,6 +1041,8 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[a], "-bias") && a + 1 < argc) r6_bias = atof(argv[++a]);
         if (!strcmp(argv[a], "-seed") && a + 1 < argc) r6_seed = (unsigned)atoi(argv[++a]);
         if (!strcmp(argv[a], "-fullsticky")) g_full_sticky = true;
+        if (!strcmp(argv[a], "-dump") && a + 1 < argc) g_dump_dir = argv[++a];
+        if (!strcmp(argv[a], "-noedges")) g_dump_edges = false;
     }
     if (r6_steps > 0) { run_R6(r6_steps, r6_bias, r6_seed); return 0; }
 
@@ -1182,6 +1186,39 @@ int main(int argc, char** argv) {
         }
         fflush(stdout);
 
+        // ---------- 死局吸引盆（O2）：能走到某个死局的状态集合 ----------
+        // x 能走到死局 d  <=>  反向图(radj)上 d 能走到 x。故从死局集合沿反向边 BFS。
+        {
+            std::vector<char> inBasin(NST, 0);
+            std::vector<int> bq;
+            bq.reserve(NST);
+            for (size_t t = 0; t < deadlist.size(); t++) {
+                int d = deadlist[t];
+                if (!inBasin[d]) { inBasin[d] = 1; bq.push_back(d); }
+            }
+            for (size_t h = 0; h < bq.size(); h++) {
+                int u = bq[h];
+                for (int e = rstart[u]; e < rstart[u + 1]; e++) {
+                    int v = radj[e];
+                    if (!inBasin[v]) { inBasin[v] = 1; bq.push_back(v); }
+                }
+            }
+            int nBasin = 0, nUnsolv = 0, basinInB = 0, unsolvNotBasin = 0;
+            for (int i = 0; i < NST; i++) {
+                if (inBasin[i]) nBasin++;
+                if (!inB[i]) { nUnsolv++; if (!inBasin[i]) unsolvNotBasin++; }
+                if (inBasin[i] && inB[i]) basinInB++;
+            }
+            printf("--- dead-end basin (O2) ---\n");
+            printf("basin (reaches a dead end) = %d\n", nBasin);
+            printf("unsolvable (A - B)         = %d\n", nUnsolv);
+            printf("basin n B                  = %d  (0 => no solvable state reaches a dead end)\n", basinInB);
+            printf("(A - B) \\ basin            = %d\n", unsolvNotBasin);
+            printf("CONJECTURE basin == (A-B): %s\n",
+                   (nBasin == nUnsolv && basinInB == 0 && unsolvNotBasin == 0) ? "YES" : "NO");
+            fflush(stdout);
+        }
+
         // 弱连通分量（全 A 上把弧当无向边）
         std::vector<int> parent(NST);
         for (int i = 0; i < NST; i++) parent[i] = i;
@@ -1212,6 +1249,130 @@ int main(int argc, char** argv) {
         printf("goal component size = %d\n", sz[groot]);
         run_extra_stats(keys, fstart, fadj, inB, inCone, gid);
         run_scc_stats(fstart, fadj, inB, inCone, gid);
+
+        // ---------- 逐状态落盘：完整着色集 A 的状态图 + 集合归属 ----------
+        if (!g_dump_dir.empty()) {
+            // 真死局 = 出度 0 的 sink（图论严格定义）；同时保留旧的 cone\B 口径作对照
+            std::vector<char> sink(NST, 0);
+            std::vector<int> trueDead; trueDead.reserve(NST);
+            std::vector<int> outdeg(NST, 0);
+            for (int i = 0; i < NST; i++) {
+                int od = fstart[i + 1] - fstart[i];
+                outdeg[i] = od;
+                if (od == 0) { sink[i] = 1; trueDead.push_back(i); }
+            }
+            // 吸引盆（真死局口径）：x 能走到真死局 d  <=>  反向图 d 能走到 x
+            std::vector<char> inBasinTrue(NST, 0);
+            std::vector<int> bq2; bq2.reserve(NST);
+            for (size_t t = 0; t < trueDead.size(); t++) {
+                int d = trueDead[t];
+                if (!inBasinTrue[d]) { inBasinTrue[d] = 1; bq2.push_back(d); }
+            }
+            for (size_t h = 0; h < bq2.size(); h++) {
+                int u = bq2[h];
+                for (int e = rstart[u]; e < rstart[u + 1]; e++) {
+                    int v = radj[e];
+                    if (!inBasinTrue[v]) { inBasinTrue[v] = 1; bq2.push_back(v); }
+                }
+            }
+            std::string base = g_dump_dir;
+            // 旧口径吸引盆（cone\B 作为“死局”）：从 cone\B 状态沿反向图 BFS
+            std::vector<char> inBasinOld(NST, 0);
+            std::vector<int> bqo; bqo.reserve(NST);
+            for (int i = 0; i < NST; i++)
+                if (inCone[i] && !inB[i] && !inBasinOld[i]) { inBasinOld[i] = 1; bqo.push_back(i); }
+            for (size_t h = 0; h < bqo.size(); h++) {
+                int u = bqo[h];
+                for (int e = rstart[u]; e < rstart[u + 1]; e++) {
+                    int v = radj[e];
+                    if (!inBasinOld[v]) { inBasinOld[v] = 1; bqo.push_back(v); }
+                }
+            }
+            // membership.bin : 每状态 16 字节定长记录
+            {
+                FILE* fp = fopen((base + "/membership.bin").c_str(), "wb");
+                if (!fp) fprintf(stderr, "cannot open membership.bin\n");
+                else {
+                    for (int i = 0; i < NST; i++) {
+                        unsigned char rec[16]; memset(rec, 0, 16);
+                        unsigned int id = (unsigned int)i; memcpy(rec + 0, &id, 4);
+                        unsigned char flags = 0;
+                        if (inCone[i]) flags |= 1;
+                        if (inB[i]) flags |= 2;
+                        if (sink[i]) flags |= 4;
+                        if (inBasinTrue[i]) flags |= 8;
+                        if (inCone[i] && !inB[i]) flags |= 16;   // cone\B（旧“死局”口径）
+                        if (inB[i] && !inCone[i]) flags |= 32;    // 外部前驱
+                        if (!inB[i] && !inBasinTrue[i]) flags |= 64; // 两不沾（真死局口径）
+                        if (inCone[i] && inB[i]) flags |= 128;    // 可解
+                        rec[4] = flags;
+                        unsigned short od = (unsigned short)outdeg[i];
+                        unsigned short idg = (unsigned short)deg[i];
+                        memcpy(rec + 6, &od, 2); memcpy(rec + 8, &idg, 2);
+                        int d = dist[i]; memcpy(rec + 10, &d, 4);
+                        fwrite(rec, 1, 16, fp);
+                    }
+                    fclose(fp);
+                }
+            }
+            // boards.bin : 每状态 16×u16（规范形）
+            {
+                FILE* fp = fopen((base + "/boards.bin").c_str(), "wb");
+                if (fp) { for (int i = 0; i < NST; i++) fwrite(keys[i].r, 2, 16, fp); fclose(fp); }
+            }
+            // edges.bin : (u32 u, u32 v) 前向边
+            if (g_dump_edges) {
+                FILE* fp = fopen((base + "/edges.bin").c_str(), "wb");
+                if (fp) {
+                    for (int u = 0; u < NST; u++)
+                        for (int e = fstart[u]; e < fstart[u + 1]; e++) {
+                            unsigned int uu = (unsigned int)u, vv = (unsigned int)fadj[e];
+                            fwrite(&uu, 4, 1, fp); fwrite(&vv, 4, 1, fp);
+                        }
+                    fclose(fp);
+                }
+            }
+            // summary.txt
+            {
+                int nCone = 0, nB = 0, nSol = 0, nSink = 0, nCnB = 0, nExt = 0, nTNT = 0;
+                int nBasinTrue = 0, nUnsolv = 0, nSinkInB = 0;
+                int nBasinOld = 0, nTNT_old = 0;
+                for (int i = 0; i < NST; i++) {
+                    if (inCone[i]) nCone++;
+                    if (inB[i]) nB++;
+                    if (inCone[i] && inB[i]) nSol++;
+                    if (sink[i]) { nSink++; if (inB[i]) nSinkInB++; }
+                    if (inCone[i] && !inB[i]) nCnB++;
+                    if (inB[i] && !inCone[i]) nExt++;
+                    if (!inB[i]) nUnsolv++;
+                    if (inBasinTrue[i]) nBasinTrue++;
+                    if (inBasinOld[i]) nBasinOld++;
+                    if (!inB[i] && !inBasinTrue[i]) nTNT++;
+                    if (!inB[i] && !inBasinOld[i]) nTNT_old++;
+                }
+                FILE* fp = fopen((base + "/summary.txt").c_str(), "w");
+                if (fp) {
+                    fprintf(fp, "=== (%d,%d,%d) K=%d ===\n", M_, N_, S_, K_);
+                    fprintf(fp, "|A|                  = %d\n", NST);
+                    fprintf(fp, "|cone|               = %d\n", nCone);
+                    fprintf(fp, "|B| (逆向可达/可解集)= %d\n", nB);
+                    fprintf(fp, "god (回程口径,B内)    = %d\n", god);
+                    fprintf(fp, "可解 cone∩B           = %d\n", nSol);
+                    fprintf(fp, "真死局 sink(出度0)    = %d  (其中在B内=%d)\n", nSink, nSinkInB);
+                    fprintf(fp, "cone\\B(旧\"死局\"口径)  = %d\n", nCnB);
+                    fprintf(fp, "外部前驱 B\\cone        = %d\n", nExt);
+                    fprintf(fp, "吸引盆(真死局口径)    = %d\n", nBasinTrue);
+                    fprintf(fp, "吸引盆(旧 cone\\B口径) = %d\n", nBasinOld);
+                    fprintf(fp, "不可解 A-B            = %d\n", nUnsolv);
+                    fprintf(fp, "两不沾(真死局口径)    = %d\n", nTNT);
+                    fprintf(fp, "两不沾(旧口径)        = %d\n", nTNT_old);
+                    fprintf(fp, "edges                = %lld\n", (long long)fadj.size());
+                    fclose(fp);
+                }
+            }
+            fprintf(stderr, "dumped %d states -> %s (edges=%s)\n", NST, base.c_str(), g_dump_edges ? "yes" : "no");
+        }
+
         fflush(stdout);
     }
     printf("DONE\n");
