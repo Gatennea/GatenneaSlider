@@ -153,11 +153,40 @@ def pytest_collect_file(file_path, parent):
     return ScriptTestFile.from_parent(parent, path=file_path)
 
 
+class _NoImportModule(pytest.Module):
+    """内置 Module 收集的替身：收集阶段不 import 模块本体。
+
+    为什么需要它：``pytest test/_test_xxx.py``（显式文件参数）时 pytest 的
+    isinitpath 会跳过 python_files 检查，内置 ``pytest_collect_file`` 仍把
+    脚本型测试收集成 Module——**import 即整跑一遍**（起 HTTP server、构造
+    GUI、发完全部请求），与 ScriptTestItem 的子进程双跑并抢端口
+    （_test_mi_http / _test_http_api 实证：子进程版请求被父进程 import 版
+    的 server 吃掉，10s 超时假红）。目录跑时 python_files 已挡住，唯显式
+    文件参数漏网。这里对 ``_test_*.py`` 抢先返回不 import 的替身
+    （tryfirst + firstresult 语义：默认 makemodule 不再跑）。
+    """
+
+    def collect(self):
+        return []
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pycollect_makemodule(module_path, parent):
+    if module_path.name.startswith('_test_'):
+        return _NoImportModule.from_parent(parent, path=module_path)
+    return None
+
+
 def pytest_collection_modifyitems(session, config, items):
     """显式文件参数时去重：pytest 的 isinitpath 会跳过 python_files 检查，
     内置 Module 收集与 ScriptTestFile 双收同一文件（Module 侧还会把
     test_xxx(m,n,step) 的参数当 fixture 请求 → ERROR，且 import 时多跑
     一遍函数体）。目录跑时 python_files 已挡住内置收集，这里无操作。
+
+    注：import 副作用已由 ``_NoImportModule`` + ``pytest_pycollect_makemodule``
+    从源头拦住（2026-10-18，显式文件参数下 Module.collect 会整跑脚本型
+    测试——起 HTTP server / 构造 GUI / 发全部请求，与子进程版抢端口假红）；
+    本去重保留作兜底（兼容无 makemodule 钩子的 pytest 版本）。
     """
     script_paths = {str(i.path) for i in items
                     if isinstance(i, ScriptTestItem)}
