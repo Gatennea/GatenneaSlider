@@ -279,6 +279,88 @@ gui6.shuffle_puzzle()
 check('T7 動畫關閉不演示', not gui6._shuffle_demo_active)
 check('T7 動畫關閉通知立即發', gui6.macro_notify_timer > 0)
 
+# ================================================================ T8 打亂中 xx% 進度
+print()
+print("=" * 60)
+print("T8 「打亂中 xx%」進度（切屏瞬間正好 100%）")
+print("=" * 60)
+
+gui7 = make_gui()
+gui7.animation_duration = 20
+gui7.SHUFFLE_FADE_MS = 2
+gui7.SHUFFLE_DEMO_STEPS = 2           # 3 條記錄 > 2 → 截斷 + 淡出
+random.seed(17)
+with_truncated_records(gui7, 3, gui7.shuffle_puzzle)
+check('T8 演示已啓動', gui7._shuffle_demo_active)
+# 啓動即播第一步（_start_shuffle_demo 尾部直接開播），故初始進度=1/total
+check('T8 啓動後第一步已計入進度',
+      0.0 < gui7._shuffle_demo_progress <= 1.0,
+      f'progress={gui7._shuffle_demo_progress}')
+
+# 逐幀驅動，捕捉「fade_out → fade_in」切換的那一幀（=切屏瞬間）
+prog_at_switch = None
+switch_ok = False
+frames = 0
+prev_phase = gui7._shuffle_demo_phase
+monotonic = True
+last_p = -1.0
+while getattr(gui7, '_shuffle_demo_active', False) and frames < 3000:
+    if gui7.animating:
+        gui7.anim_start_time = pygame.time.get_ticks() - gui7.animation_duration - 5
+    if gui7._shuffle_demo_phase in ('fade_out', 'fade_in'):
+        gui7._shuffle_fade_last_ms -= 20
+    gui7.update_animation()
+    gui7._update_shuffle_demo()
+    p = gui7._shuffle_demo_progress
+    # 收尾復位（_clear_demo_state 歸 0）不算「遞減」：演示已結束
+    if p < last_p - 1e-9 and gui7._shuffle_demo_active:
+        monotonic = False
+    last_p = p
+    if gui7._shuffle_demo_phase != prev_phase:
+        if prev_phase == 'fade_out' and gui7._shuffle_demo_phase == 'fade_in':
+            prog_at_switch = gui7._shuffle_demo_progress
+            switch_ok = True
+        prev_phase = gui7._shuffle_demo_phase
+    frames += 1
+
+check('T8 捕獲到切屏幀（fade_out→fade_in）', switch_ok, f'{frames} 幀')
+check('T8 切屏瞬間進度正好 100%',
+      switch_ok and prog_at_switch is not None and prog_at_switch == 1.0
+      and int(prog_at_switch * 100) == 100,
+      f'progress={prog_at_switch}')
+check('T8 播放期進度單調不減', monotonic)
+check('T8 結束後進度復位', gui7._shuffle_demo_progress == 0.0)
+
+# 未截斷（短記錄）：演完即 100%（_play_next_shuffle_record 的 else 分支
+# 先置 1.0 再收尾復位）——語義由截斷路徑的切屏斷言覆蓋，此處驗渲染在各
+# 進度值下不炸（dummy surface 真實走一遍繪製）
+gui8 = make_gui()
+gui8.animation_duration = 20
+gui8.SHUFFLE_DEMO_STEPS = 50
+random.seed(23)
+pre8 = positions(gui8.game)          # 先取打亂前位置（順序別抄錯）
+recs_all = []
+gui8.game.shuffle(80, 2, min_score=0.6, record=recs_all)
+take = recs_all[:3]
+for b, p in zip(gui8.game.blocks, pre8):
+    b.location = list(p)
+replay(gui8.game, take)
+final8 = positions(gui8.game)
+gui8._start_shuffle_demo(take, pre8, final8, ('演示完成', 60))
+run_demo_until_done(gui8)
+for p in (0.0, 0.37, 0.9, 0.99, 1.0):
+    gui8._shuffle_demo_active = True
+    gui8._shuffle_demo_progress = p
+    gui8._shuffle_demo_phase = 'play'
+    try:
+        gui8.draw_shuffle_progress()
+        ok = True
+    except Exception as e:
+        ok = False
+        print('   渲染異常:', e)
+    check(f'T8 渲染冒煙 progress={p:.2f}', ok)
+gui8._clear_demo_state()
+
 # ================================================================ 匯總
 print("\n" + "=" * 60)
 if _failures:

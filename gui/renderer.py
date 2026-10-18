@@ -3187,3 +3187,69 @@ class RendererMixin:
                               pygame.SRCALPHA)
         veil.fill(self.colors['background'] + (alpha,))
         self.screen.blit(veil, (0, 0))
+
+    def draw_shuffle_progress(self):
+        """打乱演示的「打乱中 xx%」进度提示（画在淡出蒙层之上，最上层）。
+
+        形态：屏幕底部居中的一条圆角进度条 + 条上方居中的文字。
+        - 播放期：按已演步数/演示总步数推进
+        - 淡出期：随蒙层不透明度补足，全遮（切屏）瞬间正好 100%
+        - 淡入期：定格 100%，随蒙层一起淡出——切屏那一刻的 100% 有短暂定格
+        填充色由主题蓝渐变到完成绿（>=90%），末端带发光头；100% 时文字
+        也变绿，强调「满格切屏」。
+        """
+        if not getattr(self, '_shuffle_demo_active', False):
+            return
+        progress = min(1.0, max(0.0, getattr(self, '_shuffle_demo_progress', 0.0)))
+        # 淡入收尾中（蒙层正在撤）：进度条随蒙层同步淡出，避免突然消失
+        veil_alpha = int(getattr(self, '_shuffle_fade_alpha', 0.0))
+        if getattr(self, '_shuffle_demo_phase', None) == 'fade_in':
+            fade = 1.0 - veil_alpha / 255.0
+        else:
+            fade = 1.0
+        if fade <= 0.01:
+            return
+
+        sw, sh = self.screen_width, self.screen_height
+        bar_w = min(420, int(sw * 0.5))
+        bar_h = 10
+        bar_x = (sw - bar_w) // 2
+        bar_y = sh - 78
+        radius = bar_h // 2
+
+        blue = self.colors['block']            # (60,150,200) 主题蓝
+        green = self.colors['solved']          # (0,200,80) 完成绿
+        # 90% 起蓝→绿渐变：给「即将完成」一个视觉暗示
+        if progress < 0.9:
+            fill_rgb = blue
+        else:
+            t = (progress - 0.9) / 0.1
+            fill_rgb = tuple(int(blue[i] + (green[i] - blue[i]) * t) for i in range(3))
+
+        alpha_btn = int(255 * fade)
+        track = pygame.Surface((bar_w, bar_h), pygame.SRCALPHA)
+        pygame.draw.rect(track, (255, 255, 255, int(38 * fade)), track.get_rect(),
+                         border_radius=radius)
+        self.screen.blit(track, (bar_x, bar_y))
+        if progress > 0:
+            fill_w = max(bar_h, int(bar_w * progress))  # 至少一个圆头，0% 也可见起点
+            fill = pygame.Surface((fill_w, bar_h), pygame.SRCALPHA)
+            pygame.draw.rect(fill, fill_rgb + (alpha_btn,), fill.get_rect(),
+                             border_radius=radius)
+            # 末端发光头：转场时有「能量充满」的感觉
+            glow = pygame.Surface((bar_h + 8, bar_h + 8), pygame.SRCALPHA)
+            pygame.draw.circle(glow, fill_rgb + (alpha_btn,),
+                               ((bar_h + 8) // 2, (bar_h + 8) // 2), bar_h // 2 + 3)
+            self.screen.blit(fill, (bar_x, bar_y))
+            self.screen.blit(glow, (bar_x + fill_w - (bar_h + 8) // 2,
+                                    bar_y - 4))
+
+        # 文字：「打乱中 xx%」；:>3d 让位数变化时宽度稳定（不抖）；
+        # 100% 时文字变绿，与填充末端同色，强调「满格切屏」
+        pct = int(progress * 100)
+        done = (progress >= 1.0)
+        text_rgb = green if done else (235, 240, 245)
+        label = self.status_font.render(f'打乱中 {pct:>3d}%', True, text_rgb)
+        label.set_alpha(alpha_btn)
+        lw, lh = label.get_size()
+        self.screen.blit(label, ((sw - lw) // 2, bar_y - lh - 10))

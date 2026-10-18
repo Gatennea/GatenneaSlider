@@ -629,6 +629,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._shuffle_demo_notify = None    # 演示结束后补发的通知 (msg, timer)
         self._shuffle_demo_game = None      # 演示绑定的棋局对象（换盘即失效）
         self._shuffle_demo_prev_duration = None  # 演示前玩家滑动步长（收尾恢复）
+        self._shuffle_demo_progress = 0.0   # 「打乱中 xx%」进度 0~1（切屏瞬间=1）
+        self._shuffle_demo_done = 0         # 已演步数
+        self._shuffle_demo_total = 0        # 演示总步数
+        self._shuffle_demo_fade_base = 0.0  # 淡出补足进度的起点
 
         # 连续撤销/重做（虚拟键盘一键连续播放）：True=连续模式进行中
         self._continuous_undo = False
@@ -1669,6 +1673,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 打乱演示转场蒙层（淡出/淡入，盖住棋盘切换到打乱终态）
                 self.draw_shuffle_fade()
+
+                # 「打乱中 xx%」进度提示（画在蒙层之上：淡出到全遮时
+                # 正好看到 100%，与切屏时刻严格对齐）
+                self.draw_shuffle_progress()
 
                 pygame.display.flip()
                 dt_ms = clock.tick(60)

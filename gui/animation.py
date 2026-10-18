@@ -437,6 +437,12 @@ class AnimationMixin:
         self._shuffle_demo_active = True
         self._shuffle_demo_phase = 'play'
         self._shuffle_fade_alpha = 0.0
+        # 「打乱中 xx%」进度：演示总步数 / 已演步数；淡出阶段按蒙层不透明度
+        # 补足，切屏（全遮）瞬间正好 1.0=100%（见 _update_shuffle_demo）
+        self._shuffle_demo_total = max(1, len(self._shuffle_demo_queue))
+        self._shuffle_demo_done = 0
+        self._shuffle_demo_progress = 0.0
+        self._shuffle_demo_fade_base = 0.0
         # 演示播放会临时截断步长（见 _play_next_shuffle_record）：存下玩家
         # 当前速度，_clear_demo_state 时恢复，滑动条设置不被演示改写
         self._shuffle_demo_prev_duration = self.animation_duration
@@ -469,6 +475,8 @@ class AnimationMixin:
             self.animation_duration = min(self.animation_duration,
                                           self.SHUFFLE_DEMO_STEP_MAX_MS)
             self.start_animation(blocks, rec['final'])
+            self._shuffle_demo_done += 1
+            self._shuffle_demo_progress = self._shuffle_demo_done / self._shuffle_demo_total
             self._shuffle_demo_playing = True
             return
         # 全部演完：记录被截断 → 淡出切入终态；否则盘面已在终态、直接收尾
@@ -476,10 +484,14 @@ class AnimationMixin:
             self._shuffle_demo_phase = 'fade_out'
             self._shuffle_fade_alpha = 0.0
             self._shuffle_fade_last_ms = pygame.time.get_ticks()
+            # 进度补足的起点：淡出期间从当前百分比平滑涨到 100%，
+            # 全遮（切屏）瞬间正好满格——用户要的「切屏时正好 100%」
+            self._shuffle_demo_fade_base = self._shuffle_demo_progress
             # 淡入淡出期间保持 animating：既有输入守卫（键盘/拖拽/求解）
             # 全部自动生效，转场中途不会被打断
             self.animating = True
         else:
+            self._shuffle_demo_progress = 1.0  # 未截断：演完即 100%
             self._finish_shuffle_demo()
 
     def _update_shuffle_demo(self):
@@ -498,13 +510,20 @@ class AnimationMixin:
         step = 255.0 * dt / max(1, self.SHUFFLE_FADE_MS)
         if phase == 'fade_out':
             self._shuffle_fade_alpha = min(255.0, self._shuffle_fade_alpha + step)
+            # 进度随蒙层同步补足：alpha 满 255（全遮=切屏）时 progress 正好 1.0
+            frac = self._shuffle_fade_alpha / 255.0
+            base = getattr(self, '_shuffle_demo_fade_base', 0.0)
+            self._shuffle_demo_progress = base + (1.0 - base) * frac
             if self._shuffle_fade_alpha >= 255.0:
-                # 全遮住：换盘到打乱终态（视图适配也在这刻做，藏在蒙层后面）
+                # 全遮住：换盘到打乱终态（视图适配也在这刻做，藏在蒙层后面）。
+                # 此刻 progress 恰为 1.0——「切屏时正好 100%」
                 for b, p in zip(self.game.blocks, getattr(self, '_shuffle_demo_final', [])):
                     b.location = list(p)
                 self._fit_board_view()
                 self._shuffle_demo_phase = 'fade_in'
         elif phase == 'fade_in':
+            # 定格 100% 随蒙层一起淡出（渲染层按 alpha 同步淡出进度条）
+            self._shuffle_demo_progress = 1.0
             self._shuffle_fade_alpha = max(0.0, self._shuffle_fade_alpha - step)
             if self._shuffle_fade_alpha <= 0.0:
                 self._finish_shuffle_demo()
@@ -548,6 +567,10 @@ class AnimationMixin:
         self._shuffle_fade_alpha = 0.0
         self._shuffle_demo_notify = None
         self._shuffle_demo_game = None
+        self._shuffle_demo_progress = 0.0
+        self._shuffle_demo_done = 0
+        self._shuffle_demo_total = 0
+        self._shuffle_demo_fade_base = 0.0
         # 恢复玩家滑动的步长（演示期间用的是 SHUFFLE_DEMO_STEP_MS）
         prev = getattr(self, '_shuffle_demo_prev_duration', None)
         if prev is not None:
