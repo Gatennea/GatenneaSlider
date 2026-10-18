@@ -10,9 +10,12 @@
 - cancel_animation: 取消动画
 - _start_undo_redo_animation: 撤销/重做动画
 - _update_slider_from_mouse: 动画速度滑动条
+- 打乱演示动画（_start_shuffle_demo 一族）：打乱后逐步重放打乱过程，
+  步数过多只演前几步再淡入终态（2026-10-18 新增）
 """
 
 import pygame
+from contextlib import contextmanager
 
 
 class AnimationMixin:
@@ -101,6 +104,14 @@ class AnimationMixin:
         for i, block in enumerate(self.anim_blocks):
             block.location = list(self.anim_end_pos[i])
 
+        # 打乱演示的提交：只是在「重播」打乱过程——不记历史、不计步、不弹
+        # 复原窗（历史已在 shuffle_puzzle 里按打乱终态重置），落位后直接
+        # 推进下一条记录
+        if getattr(self, '_shuffle_demo_playing', False):
+            self._reset_anim_state()
+            self._play_next_shuffle_record()
+            return
+
         undo_redo_type = self._undo_redo_type
 
         if undo_redo_type == 'undo':
@@ -131,15 +142,7 @@ class AnimationMixin:
         self._mark_file_dirty()
 
         # 清除动画状态
-        self.animating = False
-        self._undo_redo_type = None
-        self.anim_blocks = []
-        self.anim_start_pos = []
-        self.anim_end_pos = []
-        self.anim_progress = 0.0
-        self._anim_dr = 0.0
-        self._anim_dc = 0.0
-        self._restore_anim_duration()
+        self._reset_anim_state()
 
         # 宏执行模式：动画结束后继续执行下一个宏步骤
         if getattr(self, 'macro_executing', False) and not getattr(self, 'macro_selecting_base', False):
@@ -161,8 +164,25 @@ class AnimationMixin:
             self._anim_duration_base = None
         self._anim_true_start = None
 
+    def _reset_anim_state(self):
+        """清空滑块动画的运行态（位置已由调用方落位，这里只清状态）。"""
+        self.animating = False
+        self._undo_redo_type = None
+        self.anim_blocks = []
+        self.anim_start_pos = []
+        self.anim_end_pos = []
+        self.anim_progress = 0.0
+        self._anim_dr = 0.0
+        self._anim_dc = 0.0
+        self._restore_anim_duration()
+
     def cancel_animation(self):
         """取消当前动画，恢复到动画前的位置，并清空队列"""
+        # 打乱演示中断（撤销/删除成绩等路径会走到这里）：先把棋盘对齐到
+        # 打乱终态再清动画态——否则取消后棋盘停在演示中途，与已按终态重置
+        # 的历史（第一条快照=打乱终态）不符
+        if getattr(self, '_shuffle_demo_active', False):
+            self._abort_shuffle_demo()
         if not self.anim_blocks:
             return
         # 真實起點優先：拖拽接續把 anim_start_pos 前移過（見 _apply_drag_origin）
@@ -371,3 +391,187 @@ class AnimationMixin:
             old_progress = elapsed / max(1, self.animation_duration)
             self.anim_start_time = pygame.time.get_ticks() - int(old_progress * new_duration)
         self.animation_duration = new_duration
+
+    # ------------------------------------------------------------------
+    # 打乱演示动画（2026-10-18）
+    #
+    # 打乱本身是纯逻辑、瞬时完成的（game.shuffle 带 record 记录每步）。
+    # 演示 = 把棋盘放回打乱前状态，按记录逐步重放：与玩家滑动共用
+    # start_animation / commit_animation 管道（三形态渲染插值自动生效），
+    # 步数过多只演前 SHUFFLE_DEMO_STEPS 步，然后淡出（全屏蒙层）、在
+    # 全遮住的瞬间把棋盘切成打乱终态、再淡入——玩家看到的就是
+    # 「演示几步 → 转场 → 打乱结果」。
+    #
+    # 历史语义不变：shuffle_puzzle 在演示开始前就已 step_count=0 +
+    # reset + save_snapshot(终态)，演示的提交一律不碰历史。
+    # ------------------------------------------------------------------
+
+    # 最多演示几步（默认 300ms/步 ≈ 3.6s，正好是「几步」+「几秒」的量级）
+    SHUFFLE_DEMO_STEPS = 12
+    # 淡出 / 淡入各自的时长（毫秒）；两段合计 ~0.7s
+    SHUFFLE_FADE_MS = 350
+
+    def _start_shuffle_demo(self, records, pre_positions, final_positions, notify):
+        """启动打乱演示。
+
+        参数：
+            records       : game.shuffle(record=...) 的记录列表（执行顺序）
+            pre_positions : 打乱前各块位置（与 game.blocks 同序）——演示起点
+            final_positions: 打乱终态各块位置（同序）——截断时淡入的目标
+            notify        : 演示结束后补发的通知 (msg, timer)， None 则不补发
+        """
+        # 放回打乱前状态（records[0] 的 moved 正是从该状态出发的）
+        for b, p in zip(self.game.blocks, pre_positions):
+            b.location = list(p)
+        self._clear_selection_all()
+        self._shuffle_demo_game = self.game  # 身份锚：换盘（新局/载入/回放）
+        #                                    → 演示视为失效，只清状态不写盘
+        self._shuffle_demo_final = [list(p) for p in final_positions]
+        self._shuffle_demo_notify = notify
+        self._shuffle_demo_need_fade = len(records) > self.SHUFFLE_DEMO_STEPS
+        self._shuffle_demo_queue = list(records[:self.SHUFFLE_DEMO_STEPS])
+        self._shuffle_demo_active = True
+        self._shuffle_demo_phase = 'play'
+        self._shuffle_fade_alpha = 0.0
+        # 视图按当前（打乱前）盘面适配；截断演示在切终态时会再适配一次
+        self._fit_board_view()
+        self._play_next_shuffle_record()
+
+    def _shuffle_demo_stale(self) -> bool:
+        """演示所绑定的棋盘是否已被整体替换（新局/载入/成绩回放）。
+
+        所有换盘路径都是 `self.game = create_puzzle(...)`（换对象），
+        因此对象身份一变，演示里记的位置/块就全部作废——必须只清状态，
+        绝不能往新棋盘上写旧位置。
+        """
+        return getattr(self, '_shuffle_demo_game', None) is not self.game
+
+    def _play_next_shuffle_record(self):
+        """播放下一条打乱记录；队列空则进入淡出（截断时）或直接收尾。"""
+        self._shuffle_demo_playing = False
+        if self._shuffle_demo_stale():
+            self._clear_demo_state()
+            return
+        while self._shuffle_demo_queue:
+            rec = self._shuffle_demo_queue.pop(0)
+            blocks = self._find_blocks_at_positions(rec['moved'])
+            if len(blocks) != len(rec['moved']):
+                continue  # 位置对不上（理论不发生）：跳过该步，演示继续
+            self.start_animation(blocks, rec['final'])
+            self._shuffle_demo_playing = True
+            return
+        # 全部演完：记录被截断 → 淡出切入终态；否则盘面已在终态、直接收尾
+        if getattr(self, '_shuffle_demo_need_fade', False):
+            self._shuffle_demo_phase = 'fade_out'
+            self._shuffle_fade_alpha = 0.0
+            self._shuffle_fade_last_ms = pygame.time.get_ticks()
+            # 淡入淡出期间保持 animating：既有输入守卫（键盘/拖拽/求解）
+            # 全部自动生效，转场中途不会被打断
+            self.animating = True
+        else:
+            self._finish_shuffle_demo()
+
+    def _update_shuffle_demo(self):
+        """每帧推进打乱演示的淡出/淡入（记录播放由动画系统驱动）。"""
+        if not getattr(self, '_shuffle_demo_active', False):
+            return
+        if self._shuffle_demo_stale():
+            self._clear_demo_state()
+            return
+        phase = self._shuffle_demo_phase
+        if phase == 'play':
+            return
+        now = pygame.time.get_ticks()
+        dt = now - getattr(self, '_shuffle_fade_last_ms', now)
+        self._shuffle_fade_last_ms = now
+        step = 255.0 * dt / max(1, self.SHUFFLE_FADE_MS)
+        if phase == 'fade_out':
+            self._shuffle_fade_alpha = min(255.0, self._shuffle_fade_alpha + step)
+            if self._shuffle_fade_alpha >= 255.0:
+                # 全遮住：换盘到打乱终态（视图适配也在这刻做，藏在蒙层后面）
+                for b, p in zip(self.game.blocks, getattr(self, '_shuffle_demo_final', [])):
+                    b.location = list(p)
+                self._fit_board_view()
+                self._shuffle_demo_phase = 'fade_in'
+        elif phase == 'fade_in':
+            self._shuffle_fade_alpha = max(0.0, self._shuffle_fade_alpha - step)
+            if self._shuffle_fade_alpha <= 0.0:
+                self._finish_shuffle_demo()
+
+    def _finish_shuffle_demo(self):
+        """演示正常结束：清状态、对齐终态、补发通知。"""
+        if self._shuffle_demo_stale():
+            self._clear_demo_state()
+            return
+        for b, p in zip(self.game.blocks, getattr(self, '_shuffle_demo_final', [])):
+            b.location = list(p)
+        notify = self._shuffle_demo_notify
+        self._clear_demo_state()
+        if notify:
+            self.macro_notify_msg, self.macro_notify_timer = notify
+        self.ensure_blocks_visible()
+
+    def _abort_shuffle_demo(self):
+        """演示被外力打断（再次打乱/撤销/删成绩）：棋盘直接对齐终态。
+
+        棋盘已被整体替换时（换锚失效）只清状态——此刻 self.game.blocks
+        是新棋盘的块，写旧位置会把新局搞乱。
+        """
+        if not getattr(self, '_shuffle_demo_active', False):
+            return
+        if not self._shuffle_demo_stale():
+            for b, p in zip(self.game.blocks, getattr(self, '_shuffle_demo_final', [])):
+                b.location = list(p)
+            # 连正在播的那条记录的动画态一起清掉（否则 cancel_animation 的
+            # 常规路径会把块拖回动画起点，抵掉这次终态对齐）
+            self._reset_anim_state()
+        self._clear_demo_state()
+
+    def _clear_demo_state(self):
+        """清空打乱演示的全部状态（不动棋盘）。"""
+        self._shuffle_demo_active = False
+        self._shuffle_demo_playing = False
+        self._shuffle_demo_queue = []
+        self._shuffle_demo_need_fade = False
+        self._shuffle_demo_phase = None
+        self._shuffle_fade_alpha = 0.0
+        self._shuffle_demo_notify = None
+        self._shuffle_demo_game = None
+
+    @contextmanager
+    def _demo_logic_positions(self):
+        """打乱演示播放期间：让「盘面查询」看到打乱终态而非视觉上的打乱前状态。
+
+        演示把 game.blocks 临时放回打乱前状态逐步重放（_start_shuffle_demo），
+        但逻辑语义——判胜 / HTTP /status 的 matrix 与 blocks / 求解器状态——
+        必须回答终态，否则会出现「打乱后仍判胜」「status 还是旧盘面」。
+        整盘被替换（reset / 新局 / 载入）后锚失效，不再修正（直接看新盘面）。
+
+        嵌套安全：内层透传不重复交换；matrix 缓存进出还原，外部无感。
+        """
+        active = (getattr(self, '_shuffle_demo_active', False)
+                  and getattr(self, '_shuffle_demo_game', None) is self.game
+                  and getattr(self, '_shuffle_demo_depth', 0) == 0)
+        if not active:
+            yield
+            return
+        self._shuffle_demo_depth = 1
+        blocks = self.game.blocks
+        saved_pos = [list(b.location) for b in blocks]
+        saved_matrix = self.game.matrix
+        try:
+            for b, p in zip(blocks, self._shuffle_demo_final):
+                b.location = list(p)
+            yield
+        finally:
+            for b, p in zip(blocks, saved_pos):
+                b.location = list(p)
+            self.game.matrix = saved_matrix
+            self._shuffle_demo_depth = 0
+
+    def _clear_selection_all(self):
+        """清掉所有块的选中高亮与当前选中项（演示起止用）。"""
+        for b in self.game.blocks:
+            b.be_opted = False
+        self.selected_gap = None
+        self.selected_block = None

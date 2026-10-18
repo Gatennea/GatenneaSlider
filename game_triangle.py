@@ -60,6 +60,7 @@ resolve_drag() 完成選組與步數夾緊。因此日後換成 12 向的新形�
 from __future__ import annotations
 
 from game import Block
+from game import record_shuffle_move
 
 # 6 個晶格移動方向：字母 → 斜座標位移 (di, dj)
 # 字母按螢幕方向佈局（見模組 docstring 的鍵盤圖）：W E / A D / Z X
@@ -529,8 +530,12 @@ class TriangleSliderMatrix:
         """散度 = 1 - compute_score（0 = 復原態，越大越散）。"""
         return 1.0 - self.compute_score()
 
-    def _random_move(self, step: int, bias: float, cur_scatter: float):
-        """執行一次隨機合法滑動；回傳 (是否移動, 新的散度)。"""
+    def _random_move(self, step: int, bias: float, cur_scatter: float, record=None):
+        """執行一次隨機合法滑動；回傳 (是否移動, 新的散度)。
+
+        record 非 None 時按執行順序記錄該步（格式見 game.record_shuffle_move），
+        供 GUI 演示動畫重放。
+        """
         import math
         import random
         gaps = self.all_gaps()
@@ -555,6 +560,9 @@ class TriangleSliderMatrix:
                         b.be_opted = False
                     return False, cur_scatter
             cur_scatter = cand_scatter
+        if record is not None:
+            record_shuffle_move(record, self, gap_type, line,
+                                direction, step, final_positions)
         self.commit_move(final_positions)
         for b in self.blocks:
             b.be_opted = False
@@ -573,22 +581,24 @@ class TriangleSliderMatrix:
         return 1.0 - min(1.0, (self.k * self.k) / area)
 
     def shuffle(self, attempts: int, step: int, bias: float = 0.0,
-                min_score: float = 0.75) -> None:
+                min_score: float = 0.75, record=None) -> None:
         """隨機打亂（純邏輯）：隨機選縫隙/方向/滑塊，重複合法滑動。
 
         參數意義與方形版一致：bias>0 用 Metropolis 準則偏向更散的狀態；
         min_score 為聚攏度下限，太高就重洗（最多 attempts*3 次重試）。
+        record 非 None 時記錄每次成功移動（供 GUI 演示動畫重放，格式見
+        game.record_shuffle_move）；三角無死局黑名單，記錄全程連續有效。
         """
         cur_scatter = self._scatter()
         for _ in range(attempts):
-            _moved, cur_scatter = self._random_move(step, bias, cur_scatter)
+            _moved, cur_scatter = self._random_move(step, bias, cur_scatter, record)
         if min_score is None:
             return
         for _ in range(attempts * 3):
             if self.compute_score() <= min_score:
                 break
             for _attempt in range(attempts):
-                _moved, cur_scatter = self._random_move(step, bias, cur_scatter)
+                _moved, cur_scatter = self._random_move(step, bias, cur_scatter, record)
         for b in self.blocks:
             b.be_opted = False
 

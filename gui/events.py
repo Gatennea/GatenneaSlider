@@ -1306,33 +1306,38 @@ class EventsMixin:
         blocks（含 mod 分组；米字格为 q 朝向 + 晶格记号 lat）、macro/solver，
         供 AI 一次取齐决策信息。
         """
-        self.game.update_matrix()
         step = self.current_step
         tri = getattr(self, 'triangle_mode', False)
         mi = getattr(self, 'mi_mode', False)
-        blocks = [
-            {"row": b.location[0], "col": b.location[1],
-             "mod": [b.location[0] % step, b.location[1] % step],
-             "num": getattr(b, 'number', None)}
-            for b in self.game.blocks
-        ]
-        if tri:
-            # 三角形密铺：附带 up 朝向（▲/▼），供调用方还原密铺结构
-            for blk, b in zip(blocks, self.game.blocks):
-                blk['up'] = bool(b.location[2])
-        if mi:
-            # 米字格：附带 q 朝向（N/E/S/W，斜边朝向哪条格边）。平移不改 q，
-            # 因此同一格可能缺块（导入/打乱后），调用方要靠 q 才能定位单元
-            from game_mi import lattice_of
-            for blk, b in zip(blocks, self.game.blocks):
-                blk['q'] = b.location[2] if len(b.location) >= 3 else None
-                # 斜向一格走完，一半的块落进 B 晶格（半整数坐标），此时
-                # [r%step, c%step] 会在 0.0/0.5 之间来回翻，不再是那种
-                # 「同组块余数相同」的不变式。改发晶格记号 A/B（整数/A、
-                # 半整/B），它是错位态唯一稳定的分组依据（规划表 20）
-                blk['lat'] = ('A', 'B')[lattice_of(b.location)]
-                del blk['mod']
-        solver_state = self._get_solver_state()
+        # 打乱演示播放中：blocks / matrix / solved / solver_state 都按打乱
+        # 终态回答（视觉上棋盘还在重演打乱前状态，见 _demo_logic_positions）
+        with self._demo_logic_positions():
+            self.game.update_matrix()
+            blocks = [
+                {"row": b.location[0], "col": b.location[1],
+                 "mod": [b.location[0] % step, b.location[1] % step],
+                 "num": getattr(b, 'number', None)}
+                for b in self.game.blocks
+            ]
+            matrix = self.game.get_matrix()
+            solved = self.is_solved()
+            solver_state = self._get_solver_state()
+            if tri:
+                # 三角形密铺：附带 up 朝向（▲/▼），供调用方还原密铺结构
+                for blk, b in zip(blocks, self.game.blocks):
+                    blk['up'] = bool(b.location[2])
+            if mi:
+                # 米字格：附带 q 朝向（N/E/S/W，斜边朝向哪条格边）。平移不改 q，
+                # 因此同一格可能缺块（导入/打乱后），调用方要靠 q 才能定位单元
+                from game_mi import lattice_of
+                for blk, b in zip(blocks, self.game.blocks):
+                    blk['q'] = b.location[2] if len(b.location) >= 3 else None
+                    # 斜向一格走完，一半的块落进 B 晶格（半整数坐标），此时
+                    # [r%step, c%step] 会在 0.0/0.5 之间来回翻，不再是那种
+                    # 「同组块余数相同」的不变式。改发晶格记号 A/B（整数/A、
+                    # 半整/B），它是错位态唯一稳定的分组依据（规划表 20）
+                    blk['lat'] = ('A', 'B')[lattice_of(b.location)]
+                    del blk['mod']
         if mi:
             kind = 'mi'
         elif tri:
@@ -1345,11 +1350,9 @@ class EventsMixin:
             "puzzle": puzzle_key(step, self.current_m, self.current_n, kind=kind,
                                  triangle_side=self.game.k if tri else None),
             "step_count": self.step_count,
-            "solved": self.is_solved(),
-            # `get_matrix()` 而不是 `.matrix`：mi 的 `restore` 会把 matrix
-            # 置 None 走懒更新（見 solver/ml/mi_adapter.py），直接取属性可能
-            # 拿到 None。get_matrix() 在 None 时才重建，语义等价且更安全。
-            "matrix": self.game.get_matrix(),
+            "solved": solved,
+            # matrix / blocks 已在演示期修正分支按终态取好（见上 with 块）
+            "matrix": matrix,
             "selected_gap": list(self.selected_gap) if self.selected_gap else None,
             "selected_block": self.selected_block.location if self.selected_block else None,
             "animating": self.animating,

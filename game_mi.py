@@ -66,6 +66,7 @@ import math
 from functools import lru_cache
 
 from game import Block
+from game import record_shuffle_move
 
 # 8 個移動方向：字母 → (Δrow, Δcol)，每步 step 格。
 # 字母按鍵盤方位排布，與螢幕方向（y 軸向下）一致：
@@ -829,8 +830,12 @@ class MiSliderMatrix:
             return 1.0
         return 1.0 - min(1.0, (4 * self.m * self.n) / area)
 
-    def _random_move(self, step: int, bias: float, cur_scatter: float):
-        """執行一次隨機合法滑動；回傳 (是否移動, 新的散度)。"""
+    def _random_move(self, step: int, bias: float, cur_scatter: float, record=None):
+        """執行一次隨機合法滑動；回傳 (是否移動, 新的散度)。
+
+        record 非 None 時按執行順序記錄該步（格式見 game.record_shuffle_move），
+        供 GUI 演示動畫重放。
+        """
         import math
         import random
         gaps = self.all_gaps()
@@ -854,27 +859,32 @@ class MiSliderMatrix:
                     self._clear_selection()
                     return False, cur_scatter
             cur_scatter = cand_scatter
+        if record is not None:
+            record_shuffle_move(record, self, gap_type, line,
+                                direction, step, final_positions)
         self.commit_move(final_positions)
         self._clear_selection()
         return True, cur_scatter
 
     def shuffle(self, attempts: int, step: int, bias: float = 0.0,
-                min_score: float = 0.75) -> None:
+                min_score: float = 0.75, record=None) -> None:
         """隨機打亂（純邏輯）：隨機選縫隙/方向/滑塊，重複合法滑動。
 
         參數意義與方形版一致：bias>0 用 Metropolis 準則偏向更散的狀態；
         min_score 為聚攏度下限，太高就重洗（最多 attempts*3 次重試）。
+        record 非 None 時記錄每次成功移動（供 GUI 演示動畫重放，格式見
+        game.record_shuffle_move）；米字無死局黑名單，記錄全程連續有效。
         """
         cur_scatter = self._scatter()
         for _ in range(attempts):
-            _moved, cur_scatter = self._random_move(step, bias, cur_scatter)
+            _moved, cur_scatter = self._random_move(step, bias, cur_scatter, record)
         if min_score is None:
             return
         for _ in range(attempts * 3):
             if self.compute_score() <= min_score:
                 break
             for _attempt in range(attempts):
-                _moved, cur_scatter = self._random_move(step, bias, cur_scatter)
+                _moved, cur_scatter = self._random_move(step, bias, cur_scatter, record)
         self._clear_selection()
 
     # ---------- 連通性 ----------

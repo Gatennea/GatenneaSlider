@@ -97,6 +97,32 @@ class Block:
             raise ValueError("Invalid direction")
 
 
+def record_shuffle_move(record, game, gap_type, line, direction, step,
+                        final_positions):
+    """记录一步打乱移动，供 GUI 演示动画重放（纯数据，无 GUI 依赖）。
+
+    三种形态（方形 / 三角 / 米字）的打乱都是「选缝 → 选中一片 → 平移」，
+    与玩家动作同构，因此记录格式通用：
+
+        'moved'     : 该步选中块（be_opted）的移动前位置，与块同序
+        'final'     : try_move 返回的移动后位置，与 moved 按索引一一对应
+        'gap'       : (gap_type, line) 该步用的缝隙
+        'direction' : 移动方向字母
+        'step'      : 步长
+
+    GUI 端重放：_find_blocks_at_positions(moved) 找到块对象 →
+    start_animation(blocks, final)。调用方传 None 时整体跳过（零开销），
+    故 solver/ml 等批量打乱的调用方不受影响。
+    """
+    record.append({
+        'moved': [tuple(b.location) for b in game.blocks if b.be_opted],
+        'final': [tuple(p) for p in final_positions],
+        'gap': (gap_type, line),
+        'direction': direction,
+        'step': step,
+    })
+
+
 class SliderMatrix:
     """
     滑块矩阵管理类
@@ -516,7 +542,8 @@ class SliderMatrix:
         from solver.heuristic import compute_score
         return compute_score(self)
 
-    def shuffle(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75):
+    def shuffle(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75,
+                record=None):
         """
         随机打乱谜题（纯逻辑，不含动画/GUI状态重置）—— 对外入口。
 
@@ -524,11 +551,18 @@ class SliderMatrix:
         solver/deadend_guard）终态命中死局黑名单时，回到复原态重新打乱，
         重试上限 100 次（命中概率约万分之 0.16，几乎不可能循环）；超限打印
         警告并接受最后一次结果。其它谜题只跑一次 _shuffle_once，行为不变。
+
+        参数 record：传入 list 时，把每一次成功移动按执行顺序记录进去
+        （格式见模块级 record_shuffle_move）。记录全程累积——打乱是从
+        打乱前状态连续演变到终态的，GUI 可从打乱前快照按记录逐步重放出
+        完整过程；步数过多时由 GUI 决定只演前几步再淡入终局。死局重试
+        会回到复原态重打，此时记录已无意义，由调用方清空重取（GUI 在
+        重试路径外先存快照，不受影响）。
         """
         from solver.deadend_guard import has_deadend_guard, is_deadend
 
         if not has_deadend_guard(self.m, self.n, step):
-            self._shuffle_once(attempts, step, bias, min_score)
+            self._shuffle_once(attempts, step, bias, min_score, record)
             return
 
         for retry in range(100):
@@ -537,13 +571,16 @@ class SliderMatrix:
                 # 里，不先回复原态就重打，重试永远出不去。
                 for i, b in enumerate(self.blocks):
                     b.location = [i // self.n, i % self.n]
-            self._shuffle_once(attempts, step, bias, min_score)
+                if record is not None:
+                    record.clear()  # 回到复原态重打：上一轮的记录作废
+            self._shuffle_once(attempts, step, bias, min_score, record)
             if not is_deadend(self.m, self.n, step,
                               {tuple(b.location) for b in self.blocks}):
                 return
         print('警告: 打乱终态连续 100 次命中死局黑名单，接受最后一次结果')
 
-    def _shuffle_once(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75):
+    def _shuffle_once(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75,
+                      record=None):
         """
         单次随机打乱核心（终态死局防护的包装在 shuffle）。
 
@@ -636,7 +673,10 @@ class SliderMatrix:
                         continue
                 cur_scatter = cand_scatter  # 接受后更新
 
-            # 提交移动
+            # 提交移动（先记录：moved 要取提交前的位置）
+            if record is not None:
+                record_shuffle_move(record, self, gap_type, line,
+                                    direction, step, final_positions)
             self.commit_move(final_positions)
 
             # 清除选中状态
@@ -712,6 +752,9 @@ class SliderMatrix:
                             for b in self.blocks:
                                 b.be_opted = False
                             continue
+                    if record is not None:
+                        record_shuffle_move(record, self, gap_type, line,
+                                            direction, step, final_positions)
                     self.commit_move(final_positions)
                     for b in self.blocks:
                         b.be_opted = False

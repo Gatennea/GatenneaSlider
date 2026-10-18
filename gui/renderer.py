@@ -3169,3 +3169,21 @@ class RendererMixin:
                                center, dot_r)
             self.screen.blit(surf, (item['x'] - center[0], item['y'] - center[1]))
         self._click_feedback = alive
+
+    def draw_shuffle_fade(self):
+        """打乱演示的淡出/淡入全屏蒙层。
+
+        演示只演前几步时，结尾用这块蒙层盖住「棋盘切到打乱终态」的瞬间：
+        淡出到全遮 → 换盘（动画状态机在蒙层背后做）→ 淡入。整帧绘制
+        最上层调用（与单击涟漪同层，谁后画谁在上，本方法在 flip 前最后
+        调用）。蒙层是整屏的、与棋盘形态无关——三形态共用这一块。
+        """
+        if not getattr(self, '_shuffle_demo_active', False):
+            return
+        alpha = int(getattr(self, '_shuffle_fade_alpha', 0.0))
+        if alpha <= 0:
+            return
+        veil = pygame.Surface((self.screen_width, self.screen_height),
+                              pygame.SRCALPHA)
+        veil.fill(self.colors['background'] + (alpha,))
+        self.screen.blit(veil, (0, 0))

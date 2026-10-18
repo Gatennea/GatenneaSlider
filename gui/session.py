@@ -43,28 +43,68 @@ class SessionMixin:
             self.macro_notify_timer = 90
             return
 
-        # 取消当前动画
+        # 取消当前动画 / 打乱演示
+        self._abort_shuffle_demo()
         if self.animating:
             self.cancel_animation()
 
         attempts = self.current_m * self.current_n * 10  # 打乱次数
 
+        # 演示动画起点：打乱前各块位置。打乱本身是纯逻辑、瞬时完成的；
+        # 「打乱过程动画」靠 game.shuffle 带 record 记录每步，从该状态重放
+        # （格式与语义见 game.record_shuffle_move / gui/animation.py 演示段）
+        pre_positions = [list(b.location) for b in self.game.blocks]
+        records = []
+
         # 调用 game.py 的 shuffle 方法，传入偏置强度和难度门槛
         self.game.shuffle(
             attempts, self.current_step,
             bias=self.shuffle_bias,
-            min_score=self.shuffle_min_score
+            min_score=self.shuffle_min_score,
+            record=records
         )
 
         # 清除选中状态
         self.selected_gap = None
         self.selected_block = None
 
-        # 步数归零，重置历史记录（以打乱态为第一条）
+        # 步数归零，重置历史记录（以打乱态为第一条）。演示动画一律不碰
+        # 历史——这条语义保持不变：打乱结束（含演示）后历史里只有终态
         self.step_count = 0
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
+        final_positions = [list(b.location) for b in self.game.blocks]
+
+        # 打乱难度门槛：随机重洗到上限后仍可能未达标，如实提示（不静默）
+        unmet = (self.shuffle_min_score is not None
+                 and self.game.compute_score() > self.shuffle_min_score)
+        if self.game_mode == 'timed':
+            self._timer_enter_ready()
+            notify_msg = f"已打乱：{attempts}步（空格开始计时）"
+        else:
+            self._timer_cancel()
+            notify_msg = f"已打乱：{attempts}步（练习模式）"
+        if unmet:
+            notify_msg += "；本次随机打乱未达难度门槛，可再打乱一次"
+        notify = (notify_msg, 120)
+
+        # 打乱过程演示：enhanced 模式 + 滑动动画开着 + 确实有可演的步骤。
+        # 演示从打乱前状态逐步重放，步数过多只演前几步，再淡出切入终态；
+        # 期间棋盘输入被 animating 守卫挡着，结束/中断都会对齐到终态
+        demo = (records and self.animation_enabled
+                and self.animation_duration > 0
+                and getattr(self, 'ui_mode', 'enhanced') == 'enhanced')
+        if demo:
+            # 通知延后到演示结束再补发：那会儿玩家才能真正操作
+            self._start_shuffle_demo(records, pre_positions,
+                                     final_positions, notify)
+        else:
+            self._fit_board_view()
+            self.macro_notify_msg, self.macro_notify_timer = notify
+
+    def _fit_board_view(self):
+        """按当前盘面适配视图（打乱后 / 演示切终态时用）。"""
         if getattr(self, 'triangle_mode', False):
             # 三角形的缩放本就是自动适配的（建局/载入都走 _fit_triangle_zoom），
             # 而打乱会把形状摊得比初始大三角更开，原 zoom 可能被 max_zoom 夹过、
@@ -72,18 +112,6 @@ class SessionMixin:
             self.zoom = self._fit_triangle_zoom()
             self.center_map()
         self.ensure_blocks_visible()
-        # 打乱难度门槛：随机重洗到上限后仍可能未达标，如实提示（不静默）
-        unmet = (self.shuffle_min_score is not None
-                 and self.game.compute_score() > self.shuffle_min_score)
-        if self.game_mode == 'timed':
-            self._timer_enter_ready()
-            self.macro_notify_msg = f"已打乱：{attempts}步（空格开始计时）"
-        else:
-            self._timer_cancel()
-            self.macro_notify_msg = f"已打乱：{attempts}步（练习模式）"
-        if unmet:
-            self.macro_notify_msg += "；本次随机打乱未达难度门槛，可再打乱一次"
-        self.macro_notify_timer = 120
 
     def reset_puzzle(self):
         """重置谜题到初始状态"""

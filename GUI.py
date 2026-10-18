@@ -616,6 +616,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._undo_redo_type = None  # 当前动画类型：'undo'/'redo'/None
         self._animation_queue = []   # 待执行的撤销/重做队列，存储 'undo'/'redo'
 
+        # 打乱演示动画（2026-10-18）：打乱后从打乱前状态按记录逐步重放，
+        # 步数过多只演前 SHUFFLE_DEMO_STEPS 步，再淡出切入打乱终态
+        self._shuffle_demo_active = False   # 演示进行中（含淡入淡出）
+        self._shuffle_demo_playing = False  # 正在播某一条记录（动画系统驱动）
+        self._shuffle_demo_queue = []       # 待播记录（见 game.record_shuffle_move）
+        self._shuffle_demo_final = []       # 打乱终态（与 game.blocks 同序）
+        self._shuffle_demo_need_fade = False  # 记录被截断：结尾需淡入终态
+        self._shuffle_demo_phase = None     # 'play' / 'fade_out' / 'fade_in'
+        self._shuffle_fade_alpha = 0.0      # 蒙层不透明度 0~255
+        self._shuffle_fade_last_ms = 0      # 上一帧时刻（淡入淡出按时间推进）
+        self._shuffle_demo_notify = None    # 演示结束后补发的通知 (msg, timer)
+        self._shuffle_demo_game = None      # 演示绑定的棋局对象（换盘即失效）
+
         # 连续撤销/重做（虚拟键盘一键连续播放）：True=连续模式进行中
         self._continuous_undo = False
         self._continuous_redo = False
@@ -1115,6 +1128,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def is_solved(self) -> bool:
         """判断当前是否为复原状态（比较0-1矩阵形状；带序号时额外检查编号顺序）"""
+        # 打乱演示播放中：视觉盘面是打乱前状态，逻辑上按打乱终态判胜
+        # （演示只是重演过程，语义盘面早已是终态，见 _demo_logic_positions）
+        with self._demo_logic_positions():
+            return self._is_solved_positions()
+
+    def _is_solved_positions(self) -> bool:
+        """按当前 blocks 位置判胜（is_solved 的盘面判定核心）"""
         if not getattr(self, 'numbered', False):
             return self.game.is_solved()
         if not self.game.is_solved():
@@ -1484,6 +1504,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 更新动画
                 self.update_animation()
 
+                # 打乱演示：推进淡出/淡入（记录播放由上面的动画系统驱动）
+                self._update_shuffle_demo()
+
                 # S0-1：复原弹窗动画计时器——此前全项目从未递增，弹窗恒停第 0 帧
                 # （缩放 0.7 / 透明 / 光晕 0 且 6 秒自动关闭永不触发）。每帧自增使其真正生效。
                 if getattr(self, '_solved_popup_active', False):
@@ -1642,6 +1665,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 左键单击反馈（盖在所有界面之上，含模态对话框）
                 self.draw_click_feedback()
+
+                # 打乱演示转场蒙层（淡出/淡入，盖住棋盘切换到打乱终态）
+                self.draw_shuffle_fade()
 
                 pygame.display.flip()
                 dt_ms = clock.tick(60)
