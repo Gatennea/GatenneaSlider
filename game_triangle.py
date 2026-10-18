@@ -60,6 +60,7 @@ resolve_drag() 完成選組與步數夾緊。因此日後換成 12 向的新形�
 from __future__ import annotations
 
 from game import Block
+from game import commit_shuffle_step
 from game import record_shuffle_move
 
 # 6 個晶格移動方向：字母 → 斜座標位移 (di, dj)
@@ -559,14 +560,15 @@ class TriangleSliderMatrix:
                     for b in self.blocks:
                         b.be_opted = False
                     return False, cur_scatter
-            cur_scatter = cand_scatter
-        if record is not None:
-            record_shuffle_move(record, self, gap_type, line,
-                                direction, step, final_positions)
-        self.commit_move(final_positions)
-        for b in self.blocks:
-            b.be_opted = False
-        return True, cur_scatter
+        # 安全打亂（對齊網頁版 shuffle_safe）：提交 + 可逆性校驗，不可逆
+        # 自動回滾該步——整條路徑反轉即是合法解法，終態保證有解
+        if commit_shuffle_step(self, gap_type, line, block, direction, step,
+                               GAP_DIRECTIONS[gap_type], final_positions,
+                               record):
+            if bias > 0:
+                cur_scatter = cand_scatter  # 校驗通過才真正接受該候選
+            return True, cur_scatter
+        return False, cur_scatter
 
     def _scatter_of(self, cells: set) -> float:
         """給定位置集合的散度（不依賴 self.blocks，供 Metropolis 預估用）。"""
@@ -588,6 +590,9 @@ class TriangleSliderMatrix:
         min_score 為聚攏度下限，太高就重洗（最多 attempts*3 次重試）。
         record 非 None 時記錄每次成功移動（供 GUI 演示動畫重放，格式見
         game.record_shuffle_move）；三角無死局黑名單，記錄全程連續有效。
+        安全打亂（2026-10-18 起）：每步過可逆性校驗（見
+        game.can_undo_shuffle_step），終態保證有解——整條打亂路徑反轉即是
+        合法解法；約 15% 的隨機走法不可逆被丟棄，有效步數略少於 attempts。
         """
         cur_scatter = self._scatter()
         for _ in range(attempts):

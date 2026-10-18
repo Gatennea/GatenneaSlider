@@ -66,6 +66,7 @@ import math
 from functools import lru_cache
 
 from game import Block
+from game import commit_shuffle_step
 from game import record_shuffle_move
 
 # 8 個移動方向：字母 → (Δrow, Δcol)，每步 step 格。
@@ -858,13 +859,17 @@ class MiSliderMatrix:
                 if random.random() >= math.exp(bias * (cand_scatter - cur_scatter)):
                     self._clear_selection()
                     return False, cur_scatter
-            cur_scatter = cand_scatter
-        if record is not None:
-            record_shuffle_move(record, self, gap_type, line,
-                                direction, step, final_positions)
-        self.commit_move(final_positions)
+        # 安全打亂（對齊網頁版 shuffle_safe）：提交 + 可逆性校驗，不可逆
+        # 自動回滾該步——整條路徑反轉即是合法解法，終態保證有解
+        if commit_shuffle_step(self, gap_type, line, block, direction, step,
+                               GAP_DIRECTIONS[gap_type], final_positions,
+                               record):
+            if bias > 0:
+                cur_scatter = cand_scatter  # 校驗通過才真正接受該候選
+            self._clear_selection()
+            return True, cur_scatter
         self._clear_selection()
-        return True, cur_scatter
+        return False, cur_scatter
 
     def shuffle(self, attempts: int, step: int, bias: float = 0.0,
                 min_score: float = 0.75, record=None) -> None:
@@ -874,6 +879,10 @@ class MiSliderMatrix:
         min_score 為聚攏度下限，太高就重洗（最多 attempts*3 次重試）。
         record 非 None 時記錄每次成功移動（供 GUI 演示動畫重放，格式見
         game.record_shuffle_move）；米字無死局黑名單，記錄全程連續有效。
+        安全打亂（2026-10-18 起）：每步過可逆性校驗（見
+        game.can_undo_shuffle_step，方向含斜向半格），終態保證有解——整條
+        打亂路徑反轉即是合法解法；不可逆的隨機走法被丟棄，有效步數略少
+        於 attempts。
         """
         cur_scatter = self._scatter()
         for _ in range(attempts):

@@ -97,6 +97,74 @@ class Block:
             raise ValueError("Invalid direction")
 
 
+def can_undo_shuffle_step(game, gap_type, line, block, step, directions,
+                          before_sel):
+    """安全打乱的可逆性校验（2026-10-18，对齐网页版 shuffle_safe）。
+
+    在一步移动 commit **之后**调用：用同一个块触发同一条缝的 opt，遍历该
+    缝族的所有方向，看能否把当前选中的分量精确推回 before_sel（该步移动前
+    那组块的位置集合）。能 → 该步可逆、保留；不能 → 调用方回滚该步。
+
+    为什么遍历方向而非固定「反方向」：
+      · 三角有三种缝隙朝向、米字含斜向半格，「反向」没有统一方向表；
+      · 可逆的语义本就是「存在一条同缝合法移动能精确回到移动前」——
+        玩家能操作回去就算数，不必纠结是否原路，遍历反而不会误拒。
+    分量一致性天然被落点集合覆盖：移动后若与别的块粘成更大一坨，opt 会
+    选中更大组，落点集合数量就对不上 before_sel → 判定不可逆（保守但
+    安全：宁可少走一步，也不放行任何可能回不去的操作）。
+
+    只读不改：opt/try_move 均不动坐标，调用方随后清 be_opted 即可。
+    """
+    game.opt(gap_type, line, block)
+    if not any(b.be_opted for b in game.blocks):
+        return False
+    for d in directions:
+        back = game.try_move(d, step)
+        if back and {tuple(p) for p in back} == before_sel:
+            return True
+    return False
+
+
+def commit_shuffle_step(game, gap_type, line, block, direction, step,
+                        directions, final_positions, record=None):
+    """提交一步打乱移动并做可逆性校验（安全打乱，2026-10-18）。
+
+    对齐网页版 shuffle_safe 的结构：**先提交、再校验、不可逆回滚**——用
+    同一个块触发同一条缝的 opt，遍历 directions 看能否把当前选中的分量
+    精确推回移动前的位置集合。可逆 → 采纳该步；不可逆 → 回滚坐标与
+    record，当作这步没走过（4_4_2 实测约 15% 的随机走法不可逆）。
+
+    为什么值得：每一步都可逆 ⟺ 整条打乱路径反转是一条合法解法 ⟺ 终态
+    **保证有解**。于是开局自带一条已知解法，指示、自动求解、关卡生成
+    永远有答案；也不可能撞死局（死局都在 cone\\B 里，可逆可达的终态必然
+    不在），死局黑名单降级为冗余兜底。
+
+    校验必须在 commit 之后：未提交时 opt 选中的组还在原位，任何方向的
+    落点都不可能等于「原位」——放在提交前会恒假（2026-10-18 踩过）。
+
+    record 非 None 时按执行顺序记录；该步被回滚则退回这条记录。
+    """
+    before_locs = [list(b.location) for b in game.blocks]
+    before_sel = {tuple(b.location) for b in game.blocks if b.be_opted}
+    if record is not None:
+        record_shuffle_move(record, game, gap_type, line, direction, step,
+                            final_positions)
+    game.commit_move(final_positions)
+    ok = can_undo_shuffle_step(game, gap_type, line, block, step, directions,
+                               before_sel)
+    for b in game.blocks:
+        b.be_opted = False
+    if ok:
+        return True
+    # 不可逆：轻量回滚——只写回坐标（保留 Block.number 等其余属性）；
+    # matrix 是懒更新缓存，commit_move 本就不动它，无需处理
+    for i, b in enumerate(game.blocks):
+        b.location = before_locs[i]
+    if record is not None:
+        record.pop()
+    return False
+
+
 def record_shuffle_move(record, game, gap_type, line, direction, step,
                         final_positions):
     """记录一步打乱移动，供 GUI 演示动画重放（纯数据，无 GUI 依赖）。
@@ -558,6 +626,14 @@ class SliderMatrix:
         完整过程；步数过多时由 GUI 决定只演前几步再淡入终局。死局重试
         会回到复原态重打，此时记录已无意义，由调用方清空重取（GUI 在
         重试路径外先存快照，不受影响）。
+
+        安全打乱（2026-10-18 起，对齐网页版 shuffle_safe）：每一步都过
+        可逆性校验——同一条缝上存在某方向能把选中组精确推回移动前，否则
+        该步作废（4_4_2 实测约 15% 的随机走法不可逆）。于是整条打乱路径
+        反转即是一条合法解法，**终态保证有解**：开局自带已知解法，指示、
+        自动求解、关卡生成永远有答案；也不可能撞死局（死局都在 cone\\B 里，
+        可逆可达的终态必然不在），死局黑名单因此只是冗余兜底。代价是
+        有效步数略少于 attempts（约 -15%），min_score 兜底补打乱强度。
         """
         from solver.deadend_guard import has_deadend_guard, is_deadend
 
@@ -671,18 +747,16 @@ class SliderMatrix:
                         for b in self.blocks:
                             b.be_opted = False
                         continue
-                cur_scatter = cand_scatter  # 接受后更新
 
-            # 提交移动（先记录：moved 要取提交前的位置）
-            if record is not None:
-                record_shuffle_move(record, self, gap_type, line,
-                                    direction, step, final_positions)
-            self.commit_move(final_positions)
-
-            # 清除选中状态
-            for b in self.blocks:
-                b.be_opted = False
-
+            # 安全打乱（对齐网页版 shuffle_safe）：提交 + 可逆性校验，
+            # 不可逆自动回滚该步——整条打乱路径反转即是合法解法，终态
+            # 保证有解；4_4_2 实测约 15% 的随机走法过不了这一关
+            if commit_shuffle_step(
+                    self, gap_type, line, block, direction, step,
+                    ('a', 'd') if gap_type == 'h' else ('w', 's'),
+                    final_positions, record):
+                if bias > 0:
+                    cur_scatter = cand_scatter  # 校验通过才真正接受该候选
         # 确保最终清除所有选中状态
         for b in self.blocks:
             b.be_opted = False
@@ -752,12 +826,12 @@ class SliderMatrix:
                             for b in self.blocks:
                                 b.be_opted = False
                             continue
-                    if record is not None:
-                        record_shuffle_move(record, self, gap_type, line,
-                                            direction, step, final_positions)
-                    self.commit_move(final_positions)
-                    for b in self.blocks:
-                        b.be_opted = False
+                    # 安全打乱（同主循环）：提交 + 可逆性校验，不可逆
+                    # 自动回滚该步——终态可解是无条件保证，与 record 无关
+                    commit_shuffle_step(
+                        self, gap_type, line, block, direction, step,
+                        ('a', 'd') if gap_type == 'h' else ('w', 's'),
+                        final_positions, record)
                 # 檢查這次重洗是否滿足條件
                 coords = {tuple(b.location) for b in self.blocks}
                 if _cur_score() <= min_score:
