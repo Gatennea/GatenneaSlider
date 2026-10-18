@@ -1,0 +1,56 @@
+====================================================================
+求解器性能实验记录（2026-10-19 深夜）
+入口：experiments/_bench_hybrid_profile.py / _bench_canon_packed.py /
+      _bench_expand_mask.py / _bench_tiebreak.py
+口径：主指标=运算时间（用户 2026-09-30 拍板）；python=D:/python/python.exe
+====================================================================
+
+【基线（优化前，main 6494bc6）】
+  5×5 step2 hybrid_solve：seed1000 8.9s / 1001 4.5s / 1002 13.1s / 1003 0.3s
+                          合计 26.8s；解长 66/44/79/19 步
+  6×6 step2 seed1000：138.0s，解长 114 步
+
+【实验 A：canonicalize 解析式归一 + 打包整数管线】
+  差分：1626/1626 一致（漂移坐标/非方形/对称并列路径；对改前快照逐字）
+  微基准（未封装 __wrapped__ ABAB）：3.28×（0.403s vs 1.323s）
+  端到端：26.8s → 24.8s（-7.5%），解长不变
+  废弃中间版：偏置打包+逐变体求 min 仅 1.06×（min(genexpr) 117k 次
+  烧 0.72s，比排序省下的还多）——教训写进 table_core docstring
+
+【实验 B：expand 连通性掩码化（整数移位 + 位并行 BFS）】
+  差分：2660/2660 一致（14120 个后继逐字相同，含 step 1..7/漂移/不连通输入）
+       + 8×8 抽查 160 例 0 不一致
+  端到端（叠加 A 后）：8.1s → 6.1s（seed1000，单此项约 -25%）
+
+【A+B 合计】
+  5×5 step2 四种子：26.8s → 18.7s（-30%），解长 66/44/79/19 全程不变
+  6×6 seed1000：138.0s → 80.8s（-41%），解长 114 步不变
+  → 板子越大 GBFS 节点越多，收益越大
+
+【实验 C：GBFS 平手策略（净负，记敗組，已回退）】
+  等 h 时俯冲（堆键 -ng）vs 现状 BFS（ng）：
+    seed1000  5.9s→4.7s（66 步不变）      赢
+    seed1001  3.6s→6.4s（44→82 步）       输（解长崩）
+    seed1002  7.8s→18.7s（79→69 步）      输（时间 2.4×）
+    seed1003  0.5s→0.3s（19 步不变）      赢
+  合计 17.8s→30.1s。结论：维持 BFS 平手策略。
+
+【测量第三坑（cProfile 按调用次数收税）】
+  canonicalize 旧版含 273 万次生成器呼叫，cProfile 口径「占 GBFS
+  27.7%」虚高，真实约 15%；A 项端到端仅 -7.5% 与之一致。
+  → 占比一律以端到端墙钟复核。
+
+【全套测试终审（pytest test/ -q，45m34s）】
+  5 failed / 89 passed / 3 skipped。
+  5 个失败全部确诊为既有失败（非今晚回归）：
+    · _test_http_api / _test_numbered_p2 / _test_tri_gather：
+      干净树（git stash）同样 exit=1；tri_gather 逐断言对照输出仅
+      耗时数字不同、PASS/FAIL 判定逐字一致
+    · _test_mi_gather：昨晚之前 lastfailed 缓存已在；依赖链
+      （mi_adapter→ShapeGather 不传 canonicalize，默认透传）证明
+      不碰改动模块
+    · _test_triangle_render：仅 GUI/渲染依赖；昨晚之前缓存已在
+  _test_command_palette（既有失败，已修）：干净树同样挂——旧查询
+  'zzzz不存在的功能' 本身能命中（含「功能」）+ AI 兜底默认走作者
+  中转恒 True 会联网；修法=摘 is_configured + 真零命中串 '鿅鿅'。
+  _test_solver / _test_mi_http / _test_safe_shuffle 等全部通过。

@@ -124,34 +124,78 @@ def _normalized_sorted(coords):
     return sorted((r - mr, c - mc) for r, c in coords)
 
 
+# ---------------------------------------------------------------------------
+# 打包整數規範化（2026-10-19）：q = r*B + c（歸一後 r,c ∈ [0, extent]）
+#   _PB = 分量進位基；_PS = 分量位移；_PM = 分量掩碼
+# 約束（與舊版折疊格式相同）：歸一後 extent < 256（h 折疊 r*256+c 的需要）；
+# 打包本身只要求 extent < _PB。
+# ---------------------------------------------------------------------------
+_PB = 1 << 21
+_PS = 21
+_PM = _PB - 1
+
+
 @lru_cache(maxsize=100_000)
 def _canonicalize_fs(fs: frozenset) -> int:
     """規範化 + 8 個 D4 變體取字典序最小 → 位打包整數。
 
-    **變體鏈去 frozenset 化**（2026-10-17 深夜優化）：舊版 _variants 產生
-    8 個 frozenset，每個再 _normalize 成 frozenset 後 sorted——變換鏈上
-    白造 16 個集合（每個 O(K) 雜誌）。改為 list 推導式管線（無雜誌），
-    _normalize 直接出排序 list；枚舉順序與「< 嚴格小才更新」規則不變，
-    取 min 的結果與舊版逐字相同（差分測試見 experiments/_bench_find_window.py
-    的 canonicalize 部分）。_normalize/_rot90/_flip/_variants 保留原实现
-    （外部無使用者，但語義文檔價值留底）；本函數走等價的 list 管線。
-    _normalize/_rot90/_flip/_variants 現由 experiments/_bench_find_window.py
-    引用作差分基線（改前快照復刻），不是死碼。
+    **解析式歸一 + 打包整數管線**（2026-10-19 深夜優化，含一次中間版教訓）：
+    舊版變體鏈在 tuple 空間運算（_normalized_sorted × 8：兩次 unpack 遍歷 +
+    兩次 min + 元組推導式 + 元組排序）。端到端實測（5×5 step2 四種子，
+    主指標=運算時間）：26.8s → 24.8s，約 -7.5%；本函數自身微基準
+    （未封裝 ABAB）3.09×。
+    ⚠️ 測量坑留檔：cProfile 按調用次數收稅，舊版管線含 273 萬次生成器
+    呼叫，「占 GBFS 27.7%」是虛高口径，真實占比約 15%——端到端牆鐘才可信。
+    本版：一次性掃描求 min/max 歸一到原點並打包成整數 q=r*B+c；對歸一集
+    s（h=max r, w=max c），8 個 D4 變體的歸一偏移是 (h,w) 的顯式函數——
+    V0=s, V1={(r,w-c)}, V2={(c,h-r)}, V3={(c,r)}, V4={(h-r,w-c)},
+    V5={(h-r,c)}, V6={(w-c,r)}, V7={(w-c,h-r)}——每個變體只需一條整數
+    算式（無 min 遍歷、無元組构造），整數排序即字典序。
+    ⚠️ 中間版（偏置打包 _PO + 逐變體 _norm_variant 求 min）微基準僅 1.06×：
+    min(genexpr) 117k 次調用燒 0.72s，比排序省下的還多——已廢棄，
+    復刻見 experiments/_bench_canon_packed.py 的差分基準（輸出與本版逐字
+    一致，因兩版都等價於舊語義）。
+    差分測試（含漂移坐標/非方形/對稱并列路徑）見 experiments/_bench_canon_packed.py。
     """
+    PB, PS, PM = _PB, _PS, _PM
+    # 1) 單遍掃描求 min/max（fs 非空；空集舊版即拋 ValueError，語義一致）
+    it = iter(fs)
+    r0, c0 = next(it)
+    minr = maxr = r0
+    minc = maxc = c0
+    for r, c in it:
+        if r < minr:
+            minr = r
+        elif r > maxr:
+            maxr = r
+        if c < minc:
+            minc = c
+        elif c > maxc:
+            maxc = c
+    h = maxr - minr
+    w = maxc - minc
+    # 2) 打包（歸一後 r,c ∈ [0, extent]，c < PB ⟹ 整數序 = 字典序）
+    rot = [(r - minr) * PB + (c - minc) for r, c in fs]
+    # 3) 八變體（解析式偏移，無 min 遍歷）
+    cands = (
+        rot,
+        [q - 2 * (q & PM) + w for q in rot],
+        [(q & PM) * PB + h - (q >> PS) for q in rot],
+        [(q & PM) * PB + (q >> PS) for q in rot],
+        [h * PB + w - q for q in rot],
+        [h * PB - q + 2 * (q & PM) for q in rot],
+        [w * PB - (q & PM) * PB + (q >> PS) for q in rot],
+        [w * PB - (q & PM) * PB + h - (q >> PS) for q in rot],
+    )
     best = None
-    rot = list(fs)
-    for _ in range(4):
-        nv = _normalized_sorted(rot)
+    for lst in cands:
+        nv = sorted(lst)
         if best is None or nv < best:
             best = nv
-        nv = _normalized_sorted([(r, -c) for r, c in rot])
-        if nv < best:
-            best = nv
-        rot = [(c, -r) for r, c in rot]
-    h = 0
-    for r, c in best:
-        h = h * 65536 + (r * 256 + c)
-    return h
+    h_out = 0
+    for q in best:
+        h_out = h_out * 65536 + ((q >> PS) * 256 + (q & PM))
+    return h_out
 
 
 def canonicalize(coords) -> int:

@@ -9,8 +9,8 @@
 """
 import heapq
 
-from solver.table_core import (canonicalize, _side_components,
-                               is_single_connected)
+from bitboard import is_connected
+from solver.table_core import (canonicalize, _side_components)
 
 DCHAR = {(0, 1): 'd', (0, -1): 'a', (1, 0): 's', (-1, 0): 'w'}
 DDIR = {v: k for k, v in DCHAR.items()}
@@ -23,25 +23,59 @@ def expand(coords, step):
     out = []
     rows = [r for r, _ in B]
     cols = [c for _, c in B]
+    minr, maxr = min(rows), max(rows)
+    minc, maxc = min(cols), max(cols)
+    # 網格（每次 expand 建一次，全部 go 共用；2026-10-19 深夜優化）：
+    #   整體平移歸一到 [step, extent+step]，四邊各留 step 格 guard——
+    #   go() 的單位步移位（du=±1 格、最多 step 次）不越界、不繞行。
+    #   舊版逐單位步重建坐標集 + set-DFS 連通判定（is_single_connected）。
+    #   端到端實測（主指標=運算時間）：5×5 step2 四種子含 canonicalize
+    #   優化共 26.8s→18.7s（-30%），其中本項單獨貢獻 8.1s→6.1s（seed1000，
+    #   約 -25%）；6×6 硬茬 138.0s→80.8s（-41%，步數不變）。
+    #   ⚠️ 2026-10-17 已判過「每次呼叫都重建掩碼」的位棋盤版 0.44× 死刑；
+    #   本版勝負手在於掩碼在 go() 內只建一次、移位增量更新。
+    W = maxc - minc + 1 + 2 * step
+    H = maxr - minr + 1 + 2 * step
+    orr, orc = minr - step, minc - step
+    B_mask = 0
+    for r, c in B:
+        B_mask |= 1 << ((r - orr) * W + (c - orc))
+    col0 = colW = 0
+    for i in range(H):
+        col0 |= 1 << (i * W)
+        colW |= 1 << (i * W + W - 1)
 
     def go(comp, gt, L, side, D):
         du = (D[0] // step if D[0] else 0, D[1] // step if D[1] else 0)
-        non = B - set(comp)
-        cur = set(comp)
+        non = B - comp
+        # 分量掩碼：每次 go 只建這一次，之後逐單位步整數移位
+        cm = 0
+        for r, c in comp:
+            cm |= 1 << ((r - orr) * W + (c - orc))
+        nm = B_mask ^ cm               # non = B - comp（comp ⊆ B）
+        sh = du[0] * W + du[1]         # 單位步位移量（±1 格 → ±W 或 ±1）
         for _ in range(step):
-            cur = {(r + du[0], c + du[1]) for r, c in cur}
-            if cur & non or not is_single_connected(cur | non):
+            cm = (cm << sh) if sh > 0 else (cm >> -sh)
+            if cm & nm or not is_connected(cm | nm, W, col0, colW):
                 return
-        res = frozenset(non | cur)
+        # 成功：non 用元組集原樣，comp 從掩碼提取（guard 格即真實坐標）
+        res = list(non)
+        m = cm
+        while m:
+            b = m & -m
+            m ^= b
+            i = b.bit_length() - 1
+            res.append((orr + i // W, orc + i % W))
         if len(res) == total:
-            out.append((res, (gt, L, side, DCHAR[du]), next(iter(comp))))
+            out.append((frozenset(res), (gt, L, side, DCHAR[du]),
+                        next(iter(comp))))
 
-    for L in range(min(rows), max(rows)):
+    for L in range(minr, maxr):
         for side in ('above', 'below'):
             for comp in _side_components(B, 'h', L, side):
                 for sgn in (-1, 1):
                     go(comp, 'h', L, side, (0, sgn * step))
-    for L in range(min(cols), max(cols)):
+    for L in range(minc, maxc):
         for side in ('left', 'right'):
             for comp in _side_components(B, 'v', L, side):
                 for sgn in (-1, 1):
