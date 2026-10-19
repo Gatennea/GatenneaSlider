@@ -53,6 +53,10 @@ print('PASS: 拖拽跟随意象 + 预览渲染')
 # 6. 三段式操作：选缝 → 选块 → 移动（核心操作在序号模式下不变）
 gui.new_puzzle(4, 4, 2, numbered=True)
 gui.shuffle_puzzle()
+# 无头环境没有主循环推帧：打乱演示停在视觉=打乱前、逻辑=打乱终态的
+# 中间态。先按标准路径把演示对齐到终态再抓状态（_test_shuffle_demo.py
+# 同手法），否则 before 抓到的是演示里的旧盘面，撤销后必不相等。
+gui._finish_shuffle_demo()
 before = {tuple(b.location): b.number for b in gui.game.blocks}
 moved = False
 bounds = gui.game.matrix_bounds

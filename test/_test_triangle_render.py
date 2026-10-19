@@ -277,6 +277,10 @@ from game import Block  # noqa: E402
 check(gui.is_solved() is True, "建局态走 GUI 层判定为复原")
 gui.shuffle_puzzle()
 check(gui.is_solved() is False, "打乱后判为非复原")
+# 无头环境没有主循环推帧，打乱演示永远不会自己走完——先把演示对齐到
+# 终态并清掉（与 _test_shuffle_demo.py 同一手法），否则 is_solved 会
+# 一直按演示逻辑盘（打乱终态）回答，下面手动摆回的块被完全忽略。
+gui._finish_shuffle_demo()
 gui.game.blocks = [Block(list(key)) for key in gui.game.goal_cells()]
 check(gui.is_solved() is True, "摆回目标大三角后判复原")
 
@@ -289,6 +293,8 @@ check('尚未实现' not in gui.macro_notify_msg,
       f"滑動已開放（不再被攔截）：{gui.macro_notify_msg}")
 before = set(gui.game.positions())
 gui.shuffle_puzzle()
+# 同上：无头环境新演示停在视觉=打乱前，先对齐终态再比对「局面改变」
+gui._finish_shuffle_demo()
 check(set(gui.game.positions()) != before, "打乱已开放（局面改变）")
 gui.macro_notify_msg = ''
 gui.solver_algorithm = 'ida_star'      # 模拟用户手动设成方形算法
