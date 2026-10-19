@@ -251,6 +251,9 @@ class GameHistory:
             snap['steps'] += 1
             snap['step_total'] += 1
             snap['move_info'] = compose_move_info(snap['moves'])
+            # 捆绑状态随快照更新（自由捆绑；无组时 None 省空间）
+            snap['groups'] = (game.groups_as_positions()
+                              if hasattr(game, 'groups_as_positions') else None)
             # 编号直接存在 matrix（整数矩阵，值即编号），无需并行 numbers 字段
             return
 
@@ -264,6 +267,9 @@ class GameHistory:
             'steps': steps,
             'step_total': prev_total + steps,
             'session_key': session_key,
+            # 捆绑状态（自由捆绑模式）：{位置: gid}；无组为 None
+            'groups': (game.groups_as_positions()
+                       if hasattr(game, 'groups_as_positions') else None),
         }
         # 编号直接存在 matrix（整数矩阵，值即编号），无需并行 numbers 字段
 
@@ -335,6 +341,9 @@ class GameHistory:
                         if numbered:
                             b.number = val
                         game.blocks.append(b)
+            # 恢复捆绑状态（自由捆绑；旧快照无该字段 = 无捆绑）
+            if hasattr(game, 'set_groups_from_positions'):
+                game.set_groups_from_positions(snapshot.get('groups'))
 
         # 更新游戏内部状态
         game.matrix = [r[:] for r in matrix]

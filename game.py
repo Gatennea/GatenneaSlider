@@ -32,12 +32,15 @@ class Block:
     属性：
         location: list[int] - 滑块的坐标位置 [行, 列]
         be_opted: bool - 是否被选中（用于高亮显示）
+        group: int - 捆绑组编号（0=未捆绑；自由捆绑模式，见
+            docs/spec/bandaged_mode.md）。捆绑组是刚体：组内任一块
+            被选中时整组一起平移，缝隙切不开组。
 
     注意：location 是可变的（commit_move 原地改写），而 __hash__/__eq__ 基于
     location——禁止把 Block 直接作为 set/dict 的键，一律用 tuple(b.location)。
     """
     
-    __slots__ = ('location', 'be_opted', 'number')
+    __slots__ = ('location', 'be_opted', 'number', 'group')
     
     def __init__(self, location: list[int], be_opted: bool = False):
         """
@@ -50,6 +53,7 @@ class Block:
         self.location = location
         self.be_opted = be_opted
         self.number = None
+        self.group = 0
     
     def __eq__(self, other) -> bool:
         """
@@ -208,7 +212,8 @@ class SliderMatrix:
         matrix_bounds: dict - 矩阵对应的边界范围
     """
     
-    __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds', 'numbered')
+    __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds', 'numbered',
+                 'goal_pattern')
     
     def __init__(self, m: int = 6, n: int = 6):
         """
@@ -233,6 +238,10 @@ class SliderMatrix:
         # numbered=True 时 update_matrix 将块的编号写入矩阵（整数矩阵），
         # 否则只写 1；默认 False，由 new_puzzle / 载入路径显式置位
         self.numbered = False
+        # 自定义还原形态（自由捆绑/设计模式，docs/spec/bandaged_mode.md）：
+        # None = 默认满矩形（is_solved 走矩形快路径）；frozenset((r,c),...)
+        # = 设计态保存的样式，is_solved 改走 D4 八变换比较（旋转/翻面都算还原）
+        self.goal_pattern = None
         self.update_matrix()
     
     def get_boundaries(self) -> dict:
@@ -443,11 +452,336 @@ class SliderMatrix:
             return  # 选定块不在该侧（理论不发生，防御性早退）
 
         comp = component(opt_mask, start_bit, W, col0, colW)
+        # 捆绑扩展（自由捆绑模式，docs/spec/bandaged_mode.md）：
+        # 选中片里出现的捆绑组，整组强制选中——捆绑组是刚体，缝隙切不开。
+        # 组员若在盘面远处不在 comp 里，也会被拖入选中片（随之平移），
+        # 拉扯导致碰撞时由 try_move_ex 拒绝该步（捆绑魔方「转不动」体感）。
+        sel_groups = set()
         for b in blocks:
             br, bc = b.location[0], b.location[1]
             if comp & (1 << ((br - off_r) * W + (bc - off_c))):
                 b.be_opted = True
+                if b.group:
+                    sel_groups.add(b.group)
+        if sel_groups:
+            for b in blocks:
+                if b.group and b.group in sel_groups:
+                    b.be_opted = True
     
+    # ------------------------------------------------------------------
+    # 自由捆绑（docs/spec/bandaged_mode.md）
+    #   捆绑组是刚体：组内任一块被 opt 选中时整组一起平移（见 opt 的
+    #   捆绑扩展），缝隙切不开组；可逆性/有解性由「合法移动收窄为子集」
+    #   自动继承。v1 仅方形（4-邻接在整数坐标的占用格上走）。
+    # ------------------------------------------------------------------
+
+    def _pos_to_block(self) -> dict:
+        """位置 (r,c) → Block 的当前映射（每次调用重建，O(块数)）。"""
+        return {(b.location[0], b.location[1]): b for b in self.blocks}
+
+    def bind_path(self, a_pos: tuple, b_pos: tuple):
+        """把 a_pos → b_pos 的一条最短路径（4-邻接、只在占用格上走，
+        直线优先）上的所有块绑成一个新捆绑组。
+
+        参数：
+            a_pos, b_pos: 起止位置 (row, col)
+
+        返回：
+            int - 新组编号（≥1）；两端不可达（中间有空位断开）返回 None。
+            任一端不是占用格同样返回 None。路径长度为 1（同块）时返回
+            其已有组号或 None（无组可退）。
+        """
+        pmap = self._pos_to_block()
+        if a_pos not in pmap or b_pos not in pmap:
+            return None
+        if a_pos == b_pos:
+            g = pmap[a_pos].group
+            return g if g else None
+        # BFS：直线步（同方向延续）优先——用 (转向次数, 步数) 字典序，
+        # 即先走尽量少转弯的最短路（视觉上是一条「顺」的胶带）。
+        from collections import deque
+        occ = set(pmap)
+        start = (a_pos, None)
+        dist = {a_pos: 0}
+        turn = {a_pos: 0}
+        prev = {a_pos: None}
+        dq = deque([(a_pos, None)])
+        best_b = None
+        # 分层 BFS：同层内先扩展直线步
+        while dq:
+            pos, d = dq.popleft()
+            if pos == b_pos:
+                best_b = pos
+                break
+            for nd in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                nxt = (pos[0] + nd[0], pos[1] + nd[1])
+                if nxt not in occ:
+                    continue
+                nt = turn[pos] + (0 if d is not None and nd == d else 1)
+                if nxt in dist:
+                    # 已访问：仅在「转向更少」时更新（保证直线优先）
+                    if nt < turn.get(nxt, 99):
+                        turn[nxt] = nt
+                        prev[nxt] = pos
+                        dq.append((nxt, nd))
+                    continue
+                dist[nxt] = dist[pos] + 1
+                turn[nxt] = nt
+                prev[nxt] = pos
+                dq.append((nxt, nd))
+        if best_b is None:
+            return None
+        # 回溯路径
+        path = []
+        cur = best_b
+        while cur is not None:
+            path.append(cur)
+            cur = prev[cur]
+        path.reverse()
+        # 路径上任一块已有组 → 并入该组（组可增长）；否则新建
+        gid = 0
+        for p in path:
+            g = pmap[p].group
+            if g:
+                gid = g
+                break
+        if not gid:
+            gid = max((b.group for b in self.blocks), default=0) + 1
+        for p in path:
+            pmap[p].group = gid
+        return gid
+
+    def unbind_at(self, pos: tuple) -> bool:
+        """解绑 pos 所在捆绑组（整组拆开）。
+
+        返回：该位置原本在组里（执行了解绑）为 True，否则 False。
+        """
+        pmap = self._pos_to_block()
+        b = pmap.get(pos)
+        if b is None or not b.group:
+            return False
+        gid = b.group
+        for other in self.blocks:
+            if other.group == gid:
+                other.group = 0
+        return True
+
+    def clear_groups(self) -> int:
+        """清空所有捆绑组，返回被解散的组数。"""
+        gids = {b.group for b in self.blocks if b.group}
+        for b in self.blocks:
+            b.group = 0
+        return len(gids)
+
+    def groups_summary(self) -> list:
+        """当前捆绑组一览：[(gid, [位置...]), ...] 按 gid 排序，供 HUD/视觉。"""
+        acc = {}
+        for b in self.blocks:
+            if b.group:
+                acc.setdefault(b.group, []).append((b.location[0], b.location[1]))
+        return sorted(acc.items())
+
+    def set_groups_from_positions(self, mapping: dict) -> None:
+        """从 {位置: gid} 恢复捆绑状态（history 快照/压缩存档回放用）。
+
+        位置对不上当前块（撤销后盘面已变）的条目静默忽略；先清空再灌入。
+        """
+        self.clear_groups()
+        if not mapping:
+            return
+        pmap = self._pos_to_block()
+        for pos, gid in mapping.items():
+            pos = tuple(pos)
+            b = pmap.get(pos)
+            if b is not None:
+                b.group = int(gid)
+
+    def groups_as_positions(self) -> dict:
+        """捆绑状态的 {位置: gid} 序列化形式（供快照存档）。"""
+        return {(b.location[0], b.location[1]): b.group
+                for b in self.blocks if b.group}
+
+    # ------------------------------------------------------------------
+    # 自定义还原形态（设计模式：增/减/捆/解 → 保存样式 → 作为谜题目标态）
+    #   goal_pattern 是平移归一到原点的 frozenset((r,c),...)；is_solved
+    #   走 D4 八变换比较。打乱强度用 pattern_fit（与 goal 的最大 D4 交集率）。
+    # ------------------------------------------------------------------
+
+    def set_goal_pattern(self, cells) -> bool:
+        """把当前盘面（或给定 cells）设为自定义还原形态。
+
+        传入 cells（可迭代 (r,c)）时直接采用（自动平移归一到原点）；
+        不传则取当前盘面。返回是否设置成功（空盘面拒绝）。
+        """
+        cells = list(cells) if cells is not None else [
+            (b.location[0], b.location[1]) for b in self.blocks]
+        if not cells:
+            return False
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        mr, mc = min(rs), min(cs)
+        self.goal_pattern = frozenset((r - mr, c - mc) for r, c in cells)
+        return True
+
+    def clear_goal_pattern(self) -> None:
+        """清除自定义还原形态，回到默认满矩形判定。"""
+        self.goal_pattern = None
+
+    def pattern_fit(self, cells=None) -> float:
+        """当前（或给定）形状与 goal_pattern 的 D4 最大交集率（0~1）。
+
+        对 goal 的 8 个 D4 变体各自平移归一到原点，与 cells（同样归一）
+        取最大 |交| / |cells|。无 goal_pattern 时退化为「距满矩形的
+        填充率」语义不适用，返回 0.0 由调用方处理。
+        """
+        if cells is None:
+            cells = [(b.location[0], b.location[1]) for b in self.blocks]
+        cells = list(cells)
+        if not cells or self.goal_pattern is None:
+            return 0.0
+
+        def norm(s):
+            rs = [r for r, _ in s]
+            cs = [c for _, c in s]
+            mr, mc = min(rs), min(cs)
+            return {(r - mr, c - mc) for r, c in s}
+
+        cur = norm(cells)
+        g = norm(self.goal_pattern)
+        h = max(r for r, _ in g)
+        w = max(c for _, c in g)
+        best = 0
+        base = list(g)
+        for _ in range(4):
+            for var in (base, [(r, w - c) for r, c in base]):
+                best = max(best, len(cur & set(var)))
+            base = [(c, h - r) for r, c in base]
+        return best / len(cells)
+
+    def apply_pattern(self, cells, groups=None) -> None:
+        """按给定样式重塑盘面（自定义谜题初始化/设计态提交）。
+
+        cells 平移归一到原点后重建 blocks（编号形态按行主序重编号）；
+        groups 为 {位置(归一后): gid} 恢复捆绑。m/n 更新为边界盒尺寸，
+        is_valid_h_line 等边界逻辑随之适配。
+        """
+        cells = [(r, c) for r, c in cells]
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        mr, mc = min(rs), min(cs)
+        norm_cells = sorted((r - mr, c - mc) for r, c in cells)
+        self.blocks = []
+        numbered = getattr(self, 'numbered', False)
+        for i, (r, c) in enumerate(norm_cells):
+            b = Block([r, c])
+            if numbered:
+                b.number = i + 1
+            self.blocks.append(b)
+        self.m = max(r for r, _ in norm_cells) + 1
+        self.n = max(c for _, c in norm_cells) + 1
+        self.update_matrix()
+        if groups:
+            self.set_groups_from_positions(
+                {(r - mr, c - mc): gid for (r, c), gid in
+                 ((tuple(k), v) for k, v in groups.items())})
+
+    def has_legal_move(self, step: int = 1) -> bool:
+        """当前盘面是否存在至少一步合法移动（step=1 即可动性检测）。
+
+        设计态保存样式前必须校验——「缺格小形状可能在单一连通约束下
+        完全冻住」（如 3×3 的 L 形：任何移动都会把某块甩成孤立）。
+        冻形不是 bug（捆绑魔方精神的极端：Bicube 也只有特定角能转），
+        但作为可玩谜题无意义，保存/启用时由 GUI 拦截提示。
+        """
+        if len(self.blocks) < 2:
+            return False
+        bounds = self.get_boundaries()
+        h_lines = [i for i in range(bounds['min_row'] + 1, bounds['max_row'])
+                   if self.is_valid_h_line(i)]
+        v_lines = [j for j in range(bounds['min_col'] + 1, bounds['max_col'])
+                   if self.is_valid_v_line(j)]
+        for gt, lines in (('h', h_lines), ('v', v_lines)):
+            dirs = ('a', 'd') if gt == 'h' else ('w', 's')
+            for line in lines:
+                for blk in self.blocks:
+                    self.opt(gt, line, blk)
+                    for d in dirs:
+                        if self.try_move(d, step):
+                            for b in self.blocks:
+                                b.be_opted = False
+                            return True
+                    for b in self.blocks:
+                        b.be_opted = False
+        return False
+
+    def toggle_block(self, pos: tuple) -> str:
+        """设计态：pos 处有块则删除，无块则添加（都是合法操作——
+        「放置破坏底层引擎的逻辑」由安全打乱/可逆校验兜底，不在引擎层拦）。
+
+        返回：'added' / 'removed' / 'invalid'（pos 非整数坐标）。
+        """
+        r, c = pos
+        if not (isinstance(r, int) and isinstance(c, int)):
+            return 'invalid'
+        for i, b in enumerate(self.blocks):
+            if b.location[0] == r and b.location[1] == c:
+                del self.blocks[i]
+                self.update_matrix()
+                return 'removed'
+        self.blocks.append(Block([r, c]))
+        self.update_matrix()
+        return 'added'
+
+    def add_block(self, pos: tuple) -> bool:
+        """设计态：在空格 pos 添加块（已占用返回 False）。"""
+        if any(b.location[0] == pos[0] and b.location[1] == pos[1]
+               for b in self.blocks):
+            return False
+        self.blocks.append(Block([pos[0], pos[1]]))
+        self.update_matrix()
+        return True
+
+    def remove_block(self, pos: tuple) -> bool:
+        """设计态：删除 pos 处的块（无块返回 False）。"""
+        for i, b in enumerate(self.blocks):
+            if b.location[0] == pos[0] and b.location[1] == pos[1]:
+                del self.blocks[i]
+                self.update_matrix()
+                return True
+        return False
+
+    def pattern_export(self) -> dict:
+        """导出当前盘面为样式 dict（JSON 可存）：归一 cells + 捆绑 + 尺寸。"""
+        cells = [(b.location[0], b.location[1]) for b in self.blocks]
+        if not cells:
+            return {'cells': [], 'groups': {}, 'm': self.m, 'n': self.n}
+        mr = min(r for r, _ in cells)
+        mc = min(c for _, c in cells)
+        norm = sorted((r - mr, c - mc) for r, c in cells)
+        groups = {}
+        for b in self.blocks:
+            if b.group:
+                groups[f'{b.location[0] - mr},{b.location[1] - mc}'] = b.group
+        return {
+            'cells': [[r, c] for r, c in norm],
+            'groups': groups,
+            'm': self.m,
+            'n': self.n,
+        }
+
+    @staticmethod
+    def pattern_import(data: dict):
+        """从样式 dict 还原 cells 列表 + groups 映射（供 apply_pattern）。
+
+        返回 (cells: list[(r,c)], groups: dict[(r,c), gid])。
+        """
+        cells = [tuple(p) for p in data.get('cells', [])]
+        groups = {}
+        for k, v in (data.get('groups') or {}).items():
+            r, c = k.split(',')
+            groups[(int(r), int(c))] = int(v)
+        return cells, groups
+
     def opt_simple(self, direction: str, line: int, selected_block: 'Block'):
         """
         分割线选中操作 - 简单版本（保留作为参考）
@@ -495,14 +829,24 @@ class SliderMatrix:
     
     def is_solved(self) -> bool:
         """
-        判断当前是否为复原状态（检查滑块是否形成完整的 m×n 或 n×m 矩形）
-        
-        返回：
-            bool - 复原返回 True，否则返回 False
+        判断当前是否为复原状态。
+
+        默认（无自定义形态）：检查滑块是否形成完整的 m×n 或 n×m 矩形
+        （矩形旋转/翻面后仍是矩形，D4 等价免费成立）。
+        自定义形态（goal_pattern，设计模式保存的样式）：当前形状的 D4
+        八变换任一与样式平移归一后相同即算还原（旋转/翻面都算）。
         """
         if not self.blocks:
             return False
-        
+
+        cells = frozenset((b.location[0], b.location[1]) for b in self.blocks)
+
+        if self.goal_pattern is not None:
+            # 自定义样式：canonicalize = 8 种 D4 变体各自平移归一取最小，
+            # 与 solver 的规范形同源（数学文档的 A 集定义同款）
+            from solver.table_core import canonicalize
+            return canonicalize(cells) == canonicalize(self.goal_pattern)
+
         rows = [b.location[0] for b in self.blocks]
         cols = [b.location[1] for b in self.blocks]
         min_r, max_r = min(rows), max(rows)
@@ -516,7 +860,7 @@ class SliderMatrix:
             return False
         
         # 矩形内无空洞
-        pos_set = set((b.location[0], b.location[1]) for b in self.blocks)
+        pos_set = cells
         for r in range(min_r, max_r + 1):
             for c in range(min_c, max_c + 1):
                 if (r, c) not in pos_set:
@@ -645,8 +989,15 @@ class SliderMatrix:
             if retry:
                 # 死局态向前封闭：从死局态出发的任何合法移动仍落在死局集合
                 # 里，不先回复原态就重打，重试永远出不去。
-                for i, b in enumerate(self.blocks):
-                    b.location = [i // self.n, i % self.n]
+                if self.goal_pattern is not None:
+                    # 自定义形态：回复到 goal 样式（而非默认满矩形）
+                    cells = sorted(self.goal_pattern)
+                    for i, b in enumerate(self.blocks):
+                        if i < len(cells):
+                            b.location = list(cells[i])
+                else:
+                    for i, b in enumerate(self.blocks):
+                        b.location = [i // self.n, i % self.n]
                 if record is not None:
                     record.clear()  # 回到复原态重打：上一轮的记录作废
             self._shuffle_once(attempts, step, bias, min_score, record)
@@ -781,7 +1132,13 @@ class SliderMatrix:
                 return 0.5 * fill_rate + 0.5 * (1.0 - aspect_error)
             for _ in range(max_retries):
                 coords = {tuple(b.location) for b in self.blocks}
-                if _cur_score() <= min_score:
+                if self.goal_pattern is not None:
+                    # 自定义形态（设计模式样式）：强度判据换成「与 goal 的
+                    # D4 最大交集率」——fit 过高 = 终态太像还原态 = 太简单。
+                    # 默认满矩形路径不受影响。
+                    if self.pattern_fit(coords) <= min_score:
+                        break
+                elif _cur_score() <= min_score:
                     break
                 # 不够散，重新打乱（带 bias 加速）
                 found_good = False
