@@ -1,6 +1,0 @@
-R6: closure with 32 generators = 2304
-R6: closure with 34 generators = 2304
-R6: trivial upper bound (labels stay in own class) = 2304
-R6: closure over ALL generators = 4608, among them same-phase = 2304
-R6: STRICT group order = 2304  (= upper bound ⇒ 精确阶)
-R6: group order = 2304  (= upper bound ⇒ 精确阶)

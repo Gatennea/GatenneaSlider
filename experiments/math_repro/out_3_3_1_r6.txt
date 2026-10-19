@@ -1,4 +1,0 @@
-R6: closure with 32 generators = 362880
-R6: closure with 64 generators = 362880
-R6: trivial upper bound (labels stay in own class) = 362880
-R6: group order = 362880  (= upper bound ⇒ 精确阶)

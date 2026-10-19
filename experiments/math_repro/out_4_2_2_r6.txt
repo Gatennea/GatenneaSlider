@@ -1,3 +1,0 @@
-R6: closure with 1 generators = 1
-R6: trivial upper bound (labels stay in own class) = 16
-R6: group order = 1  (下界；未与上界闭合)

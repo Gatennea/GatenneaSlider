@@ -1,2 +1,0 @@
-R6: trivial upper bound (labels stay in own class) = 1
-R6: group order = 1  (= upper bound ⇒ 精确阶)
