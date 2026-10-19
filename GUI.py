@@ -847,6 +847,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.numbered = numbered
         # 形态标记同步到逻辑对象：编号谜题的整数矩阵靠 numbered 还原编号
         self.game.numbered = numbered
+        # 新谜题 = 默认满矩形还原目标（样式局的 D4 判定只属于那一个局）
+        self._ann_style_goal = None
 
         # 重置状态
         self.zoom = 1.0

@@ -1471,6 +1471,16 @@ class RendererMixin:
         puzzle_x = (self.screen_width - puzzle_surface.get_width()) // 2
         self.screen.blit(puzzle_surface, (puzzle_x, text_y))
 
+        # 样式局：还原目标 = 自定义样式（D4 八变换，旋转/翻面都算还原）
+        if getattr(self, '_ann_style_goal', None):
+            style_text = f'目标：样式「{self._ann_style_goal}」（旋转/翻面都算还原）'
+            style_surface = self.status_font.render(
+                style_text, True, (255, 210, 120))
+            style_x = min(puzzle_x + puzzle_surface.get_width() + 20,
+                          self.screen_width - self.right_panel_width
+                          - style_surface.get_width() - 10)
+            self.screen.blit(style_surface, (style_x, text_y))
+
         # 右侧：缩放比例
         zoom_text = f"缩放：{int(self.zoom * 100)}%"
         zoom_surface = self.status_font.render(zoom_text, True, self.colors['status_text'])
