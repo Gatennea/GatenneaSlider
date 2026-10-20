@@ -992,6 +992,36 @@ class EventsMixin:
                             gap = self.get_gap_at_pos(x, y)
                             block = self.get_block_at_pos(x, y)
 
+                        # 捆绑块渲染为「一整块」刚性体：点中其「内部缝」原位置应
+                        # 判定为选滑块，而非弹「选不动」。只针对内部缝——块内部
+                        # 本就 gap=None 走选块路径，组外侧相邻的外缝必须仍可选中
+                        # （选外缝+点块=整组刚性平移）。方形才有 group 概念，米字
+                        # 格/三角无 group 字段、hasattr 兜底返回空集直接跳过。
+                        if not (getattr(self, 'mi_mode', False)
+                                or getattr(self, 'triangle_mode', False)):
+                            _bi = (self.game.bandage_internal_seams()
+                                   if hasattr(self.game, 'bandage_internal_seams')
+                                   else set())
+                            if gap is not None and gap in _bi:
+                                # 命中捆绑内部缝：这段不能把胶粘块从中间切开，
+                                # 整组只能随动——把它当作点中滑块（选该组任一块
+                                # 等价，刚性体选哪块都通向同一整组）。
+                                wx, wy = self.screen_to_world(x, y)
+                                best = None
+                                best_d = None
+                                for b in self.game.blocks:
+                                    if not getattr(b, 'group', 0):
+                                        continue
+                                    bx, by, bw, bh = self.board_view.block_rect(*b.location)
+                                    cx, cy = bx + bw / 2.0, by + bh / 2.0
+                                    d = (cx - wx) ** 2 + (cy - wy) ** 2
+                                    if best_d is None or d < best_d:
+                                        best_d = d
+                                        best = b
+                                if best is not None:
+                                    block = best
+                                gap = None
+
                         # 控制模式开关（独立布尔，可任意组合）
                         two_touch_on = getattr(self, 'control_two_touch', True)
                         mouse_kb_on = getattr(self, 'control_mouse_kb', True)
@@ -1026,40 +1056,24 @@ class EventsMixin:
                                     self.selected_gap = None
                                 else:
                                     gap_type, line = gap
-                                    # 捆绑内部缝只有方形有（game_mi/三角无
-                                    # group 字段，也没有该方法）——hasattr 兜底
-                                    # 返回空集，米字格/三角照常走原提示。
-                                    internal = (self.game.bandage_internal_seams()
-                                                if hasattr(self.game, 'bandage_internal_seams')
-                                                else set())
-                                    if gap in internal:
-                                        # 缝卡在捆绑块内部：这段不能把胶粘块从中间
-                                        # 切开，整组只能随动。真的「选不动」——
-                                        # 不改动 selected_gap（保留上一缝或 None），
-                                        # 只给提示，与米字格错位态锁缝同思路：看得见
-                                        # 却选不动，且确实无法选中（不是选中后再劝退）。
-                                        self.macro_notify_msg = \
-                                            "这条缝卡在捆绑块内部：选不动（整组随动，不能单独拆开）"
-                                        self.macro_notify_timer = 140
-                                    else:
-                                        self.selected_gap = gap
-                                        for b in self.game.blocks:
-                                            b.be_opted = False
-                                        self.selected_block = None
-                                        # 换缝 = 上一次「选中滑块的那一点」作废，
-                                        # 箭头按键回到切片外沿（不再钉在旧鼠标点）
-                                        self._gap_anchor_world = None
-                                        # 操作提示：选中缝隙
-                                        msg = f"选中{self._gap_type_name(gap_type)}缝隙"
-                                        note = self.MI_STEP_NOTE.get(gap_type)
-                                        if getattr(self, 'mi_mode', False) and note:
-                                            # 米字格的「一格」按族定義，選縫時就把
-                                            # 距離說清楚，玩家才好預期滑多遠
-                                            msg += f"（{note}）"
-                                        self.macro_notify_msg = msg
-                                        self.macro_notify_timer = 120
-                                        # 新手教程：步骤1 选中缝隙 → 步骤2
-                                        self._tut_on_gap_clicked()
+                                    self.selected_gap = gap
+                                    for b in self.game.blocks:
+                                        b.be_opted = False
+                                    self.selected_block = None
+                                    # 换缝 = 上一次「选中滑块的那一点」作废，
+                                    # 箭头按键回到切片外沿（不再钉在旧鼠标点）
+                                    self._gap_anchor_world = None
+                                    # 操作提示：选中缝隙
+                                    msg = f"选中{self._gap_type_name(gap_type)}缝隙"
+                                    note = self.MI_STEP_NOTE.get(gap_type)
+                                    if getattr(self, 'mi_mode', False) and note:
+                                        # 米字格的「一格」按族定義，選縫時就把
+                                        # 距離說清楚，玩家才好預期滑多遠
+                                        msg += f"（{note}）"
+                                    self.macro_notify_msg = msg
+                                    self.macro_notify_timer = 120
+                                    # 新手教程：步骤1 选中缝隙 → 步骤2
+                                    self._tut_on_gap_clicked()
                             # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，不选中、不平移
                         elif getattr(self, 'mi_mode', False) and block is not None \
                                 and self.selected_gap is not None and selectable:
