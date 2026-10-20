@@ -601,6 +601,28 @@ class SliderMatrix:
         return {(b.location[0], b.location[1]): b.group
                 for b in self.blocks if b.group}
 
+    def bandage_internal_seams(self) -> set:
+        """所有「分割同组相邻两块」的缝集合（set of (gap_type, line)）。
+
+        方形里一条 h 缝 (line) 是行 line 与 line+1 之间的横缝；若同一捆绑组
+        同时占住 (line, c) 与 (line+1, c)，这条缝就卡在块的内部——它无法用来
+        把捆绑块从中间切开（整组必须一起平移）。渲染上这条缝段不画过块身，
+        选中时给「选不动」提示。v 缝同理（列 c 与 c+1 之间）。
+
+        注意：这**不是**把缝锁死——捆绑块沿该缝整体平移依旧合法（块身只是
+        跟着滑，不会被切开）。只是缝在块内部那段对「拆分」无意义。
+        """
+        pm = {(b.location[0], b.location[1]): b.group for b in self.blocks}
+        res = set()
+        for (r, c), g in pm.items():
+            if not g:
+                continue
+            if (r + 1, c) in pm and pm[(r + 1, c)] == g:
+                res.add(('h', r))
+            if (r, c + 1) in pm and pm[(r, c + 1)] == g:
+                res.add(('v', c))
+        return res
+
     # ------------------------------------------------------------------
     # 自定义还原形态（设计模式：增/减/捆/解 → 保存样式 → 作为谜题目标态）
     #   goal_pattern 是平移归一到原点的 frozenset((r,c),...)；is_solved

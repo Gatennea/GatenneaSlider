@@ -23,6 +23,7 @@ from game_triangle import tri_key
 from game_triangle import DIRECTIONS as TRI_DIRECTIONS
 from game_triangle import GAP_DIRECTIONS as TRI_GAP_DIRECTIONS
 from gui.cell_class import cell_class, class_index
+from gui.group_render import draw_group_chunks
 from gui.mi_view import MiBoardView
 from gui.triangle_view import TriangleBoardView
 from records import format_time
@@ -463,6 +464,9 @@ class RendererMixin:
         min_row, max_row = bounds['min_row'], bounds['max_row']
         min_col, max_col = bounds['min_col'], bounds['max_col']
 
+        # 缝隙绘制：连续整条线（与历史版本一致）。先画缝线、后画滑块，
+        # 滑块覆盖缝线；捆绑组的大矩形最后绘制，会盖住组内那段缝线，
+        # 因此「捆绑块内部不露缝」由覆盖自然达成，无需切断缝线段。
         # 绘制选中的横向分割线
         for i in range(min_row, max_row + 2):
             gap_y = board_y + i * (scaled_cell + scaled_gap) - scaled_gap // 2
@@ -627,6 +631,11 @@ class RendererMixin:
                 text_rect = text.get_rect(center=(screen_x + scaled_cell / 2, screen_y + scaled_cell / 2))
                 self.screen.blit(text, text_rect)
 
+        # 捆绑组可视化（自由捆绑）：把同组滑块画成一整块实心矩形，
+        # 让玩家在游玩中能一眼看出「这几块是胶粘的刚性整体」。
+        # 三角形/米字形态当前没有 group 字段，直接跳过。
+        self._draw_bandaged_groups_play(scaled_cell, scaled_gap)
+
         # 连锁提示：高亮的空格（无滑块）同样叠半透明白
         if hint_empty is not None:
             step_px = scaled_cell + scaled_gap
@@ -667,6 +676,94 @@ class RendererMixin:
         # S1-4：方向标注必须画在**滑块之后**（最上层）。放在缝隙绘制阶段会被
         # 后画的滑块盖掉一半——圆的一半陷在块底下，看着像画崩了。
         self._draw_gap_direction_annotation()
+
+    def _draw_bandaged_groups_play(self, scaled_cell, scaled_gap):
+        """游玩主棋盘的捆绑组渲染：同组滑块 → 一整块「放大版普通滑塊」。
+
+        目标画风（用户 2026-10-20 明确）：捆绑块就「像一个大一号的普通滑塊」——
+        用普通块的填充色（block / block_selected）+ 普通块的灰色边框
+        （colors['border']，宽度/圆角同普通块）；组内不画任何内部分隔线，
+        读成一整块刚性体。矩形组（最常见，如 2*2、1*N）直接画一个「放大版
+        普通块」圆角矩形；非矩形组（L 形/折线）退化为通用原语（实心填充 +
+        仅外轮廓，无内部线）。三角/米字没有 group 字段，直接返回。
+        """
+        if getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False):
+            return
+        # 收集捆绑组（gid -> 块的屏幕有效位置），复用方块循环的偏移口径
+        anim_map = {}
+        if getattr(self, 'animating', False) and getattr(self, 'anim_blocks', None):
+            t = self.ease_out(self.anim_progress)
+            dr = self._anim_dr * t
+            dc = self._anim_dc * t
+            for i, block in enumerate(self.anim_blocks):
+                sr, sc = self.anim_start_pos[i]
+                anim_map[id(block)] = (sr + dr, sc + dc)
+        follow_map = {}
+        if getattr(self, 'drag_following', False):
+            dr, dc = self.drag_follow_offset
+            if abs(dr) > 1e-9 or abs(dc) > 1e-9:
+                for block in self.game.blocks:
+                    if block.be_opted:
+                        follow_map[id(block)] = (block.location[0] + dr,
+                                                 block.location[1] + dc)
+        # (位置) -> 是否选中，给 draw_group_chunks 决定填充色
+        sel_pos = set()
+        groups = {}
+        for block in self.game.blocks:
+            g = getattr(block, 'group', 0)
+            if not g:
+                continue
+            if id(block) in follow_map:
+                lr, lc = follow_map[id(block)]
+            elif id(block) in anim_map:
+                lr, lc = anim_map[id(block)]
+            else:
+                lr, lc = block.location[0], block.location[1]
+            if block.be_opted:
+                sel_pos.add((lr, lc))
+            groups.setdefault(g, []).append((lr, lc))
+        if not groups:
+            return
+        step_px = scaled_cell + scaled_gap
+
+        def get_rect(r, c):
+            x = c * step_px + self.camera_x
+            y = r * step_px + self.camera_y
+            # 用 int() 截断而非 round()：与方块循环的坐标口径严格一致
+            # （pygame.draw.rect 对 float 截断），否则某些列差 1px，
+            # 底下方块自带的 border 会从填充边缘露出一条细线。
+            return (int(x), int(y), int(scaled_cell))
+
+        from .group_render import draw_group_chunks
+        # 与普通块完全一致的边框：颜色 / 宽度 / 圆角
+        border_color = self.colors['border']
+        border_w = max(1, int(2 * self.zoom))
+        radius = int(5 * self.zoom)
+
+        for gid, cells in groups.items():
+            rs = [r for r, c in cells]
+            cs = [c for r, c in cells]
+            r0, r1 = min(rs), max(rs)
+            c0, c1 = min(cs), max(cs)
+            is_rect = len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1)
+            selected = any((r, c) in sel_pos for r, c in cells)
+            if is_rect:
+                # 像「一个大一号的普通滑塊」：单个圆角矩形，填充+边框同普通块
+                x = c0 * step_px + self.camera_x
+                y = r0 * step_px + self.camera_y
+                w = (c1 - c0 + 1) * scaled_cell + (c1 - c0) * scaled_gap
+                h = (r1 - r0 + 1) * scaled_cell + (r1 - r0) * scaled_gap
+                fill = self.colors['block_selected'] if selected else self.colors['block']
+                rect = pygame.Rect(int(x), int(y), int(w), int(h))
+                pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
+                pygame.draw.rect(self.screen, border_color, rect, border_w,
+                                 border_radius=radius)
+            else:
+                # 非矩形（L 形/折线）：通用原语——实心填充 + 仅外轮廓，无内部线
+                draw_group_chunks(self.screen, {gid: cells}, get_rect, scaled_gap,
+                                  self.colors['block'], self.colors['block_selected'],
+                                  border_color, border_w,
+                                  is_selected=lambda r, c: (r, c) in sel_pos)
 
     # ---------- S1-2 / S1-4：三形态共用的语义反馈原语 ----------
     #

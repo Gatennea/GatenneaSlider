@@ -2695,27 +2695,34 @@ class AnnotationMixin:
                                      pygame.Rect(int(x), int(y),
                                                  max(1, int(cs)),
                                                  max(1, int(cs))), 1)
-        # 捆绑可视化（自由捆绑）：组内相邻块之间画连线；待配对第一点画圈
+        # 捆绑可视化（自由捆绑）：同组块画成一整块实心矩形；待配对第一点画圈
         if self._ann_design_groups:
-            self._ann_draw_group_links()
+            self._ann_draw_group_chunks()
 
-    def _ann_draw_group_links(self):
-        """构造画布上的捆绑连线：同组且 4-邻接的块对画线，按组号取色。"""
-        palette = [(255, 120, 90), (90, 200, 255), (160, 255, 130),
-                   (255, 210, 90), (210, 140, 255), (90, 255, 220)]
-        by_pos = {p: gid for p, gid in self._ann_design_groups.items()}
-        for (r, c), gid in by_pos.items():
-            col = palette[(gid - 1) % len(palette)]
-            # 只朝右/下画（每对内边一条线）
-            for nd in ((0, 1), (1, 0)):
-                nb = (r + nd[0], c + nd[1])
-                if by_pos.get(nb) == gid:
-                    cx1, cy1 = self._cell_center_screen(r, c)
-                    cx2, cy2 = self._cell_center_screen(*nb)
-                    pygame.draw.line(self.screen, col,
-                                     (int(cx1), int(cy1)),
-                                     (int(cx2), int(cy2)),
-                                     max(2, int(3 * self.zoom)))
+    def _ann_draw_group_chunks(self):
+        """构造画布上的捆绑渲染：同组块 → 一整块实心矩形（与游玩共用几何）。
+
+        复用 gui.group_render.draw_group_chunks：沿用现有块填充色（不引入
+        新颜色），同组格填同色并桥接内部缝隙 → 读成一块，只在组外描加粗轮廓。
+        这里只把构造坐标 (r,c) 翻译成屏幕矩形（world_to_screen + 缩放）。
+        """
+        from .group_render import draw_group_chunks, _darker
+        stepw = self.cell_size + self.gap_width
+        cs = self.cell_size * self.zoom
+        gapped = self.gap_width * self.zoom
+
+        def get_rect(r, c):
+            x, y = self.world_to_screen(c * stepw, r * stepw)
+            return (int(x), int(y), cs)
+        groups = {}
+        for (r, c), gid in self._ann_design_groups.items():
+            groups.setdefault(gid, []).append((r, c))
+        fill = self.colors['block']
+        fill_sel = self.colors['block_selected']
+        outline = _darker(self.colors['border'], 0.55)
+        ow = max(2, int(2.5 * self.zoom))
+        draw_group_chunks(self.screen, groups, get_rect, gapped,
+                          fill, fill_sel, outline, ow)
         # 待配对第一点：画高亮圈
         first = self._ann_design_bind_first
         if first is not None and first in self._ann_build_coords:

@@ -1025,25 +1025,41 @@ class EventsMixin:
                                 if self.selected_gap == gap:
                                     self.selected_gap = None
                                 else:
-                                    self.selected_gap = gap
-                                    for b in self.game.blocks:
-                                        b.be_opted = False
-                                    self.selected_block = None
-                                    # 换缝 = 上一次「选中滑块的那一点」作废，
-                                    # 箭头按键回到切片外沿（不再钉在旧鼠标点）
-                                    self._gap_anchor_world = None
-                                    # 操作提示：选中缝隙
                                     gap_type, line = gap
-                                    msg = f"选中{self._gap_type_name(gap_type)}缝隙"
-                                    note = self.MI_STEP_NOTE.get(gap_type)
-                                    if getattr(self, 'mi_mode', False) and note:
-                                        # 米字格的「一格」按族定義，選縫時就把
-                                        # 距離說清楚，玩家才好預期滑多遠
-                                        msg += f"（{note}）"
-                                    self.macro_notify_msg = msg
-                                    self.macro_notify_timer = 120
-                                    # 新手教程：步骤1 选中缝隙 → 步骤2
-                                    self._tut_on_gap_clicked()
+                                    # 捆绑内部缝只有方形有（game_mi/三角无
+                                    # group 字段，也没有该方法）——hasattr 兜底
+                                    # 返回空集，米字格/三角照常走原提示。
+                                    internal = (self.game.bandage_internal_seams()
+                                                if hasattr(self.game, 'bandage_internal_seams')
+                                                else set())
+                                    if gap in internal:
+                                        # 缝卡在捆绑块内部：这段不能把胶粘块从中间
+                                        # 切开，整组只能随动。真的「选不动」——
+                                        # 不改动 selected_gap（保留上一缝或 None），
+                                        # 只给提示，与米字格错位态锁缝同思路：看得见
+                                        # 却选不动，且确实无法选中（不是选中后再劝退）。
+                                        self.macro_notify_msg = \
+                                            "这条缝卡在捆绑块内部：选不动（整组随动，不能单独拆开）"
+                                        self.macro_notify_timer = 140
+                                    else:
+                                        self.selected_gap = gap
+                                        for b in self.game.blocks:
+                                            b.be_opted = False
+                                        self.selected_block = None
+                                        # 换缝 = 上一次「选中滑块的那一点」作废，
+                                        # 箭头按键回到切片外沿（不再钉在旧鼠标点）
+                                        self._gap_anchor_world = None
+                                        # 操作提示：选中缝隙
+                                        msg = f"选中{self._gap_type_name(gap_type)}缝隙"
+                                        note = self.MI_STEP_NOTE.get(gap_type)
+                                        if getattr(self, 'mi_mode', False) and note:
+                                            # 米字格的「一格」按族定義，選縫時就把
+                                            # 距離說清楚，玩家才好預期滑多遠
+                                            msg += f"（{note}）"
+                                        self.macro_notify_msg = msg
+                                        self.macro_notify_timer = 120
+                                        # 新手教程：步骤1 选中缝隙 → 步骤2
+                                        self._tut_on_gap_clicked()
                             # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，不选中、不平移
                         elif getattr(self, 'mi_mode', False) and block is not None \
                                 and self.selected_gap is not None and selectable:
