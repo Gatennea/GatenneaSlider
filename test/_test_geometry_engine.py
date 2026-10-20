@@ -15,6 +15,8 @@
   H 形状可达性 BFS     —— 「能否打乱」探针 + 确定性
   I 三维立方晶格       —— 48 对称 / 滑移 / 旋转还原 / 冻形（核心零改动延伸）
   J 板型注册表         —— 注册 / 查询 / 未知显式报错 / 参数校验
+  K 差分·映射层        —— Move ↔ 动作 dict / 演示 record 往返、跨引擎重放、
+                         路径回放、错误路径显式拒绝、goal_canonical 缓存
 """
 
 import os
@@ -46,6 +48,17 @@ from engine import (  # noqa: E402
     square_spec,
     verify_path,
 )
+from engine.compat import (  # noqa: E402
+    action_to_move,
+    apply_action,
+    direction_table,
+    move_to_action,
+    move_to_record,
+    record_to_action,
+    record_to_move,
+    register_direction_vocab,
+)
+from game import DIRECTIONS as GAME_DIRECTIONS  # noqa: E402
 from game import SliderMatrix  # noqa: E402
 from solver.table_core import canonicalize, int_to_coords  # noqa: E402
 
@@ -440,6 +453,181 @@ try:
     check(False, "空方向表的永冻板型必须拒绝")
 except ValueError:
     check(True, "空方向表显式拒绝")
+
+# ----------------------------------------------------------------------
+# K 差分·映射层（Move ↔ 既有动作格式，P1 桥）
+# ----------------------------------------------------------------------
+print("== K 差分·映射层（Move ↔ 动作 dict / 演示 record） ==")
+
+
+def _game_replay_action(g, action):
+    """在现有引擎上按动作 dict 重放一步（GUI 同路：opt → try_move → commit）。
+
+    锚块取选中片里任意一块：opt 按锚块定侧、选同侧连通分量（捆绑扩展），
+    与引擎 legal_moves 的 (side, comp, group closure) 同构。返回结果点集；
+    选不中/走不动返回 None（调用方按差分失败计）。
+    """
+    target = {tuple(p) for p in action['moved_positions']}
+    anchor = next((b for b in g.blocks if tuple(b.location) in target), None)
+    if anchor is None:
+        return None
+    g.opt(action['gap_type'], action['gap_line'], anchor)
+    if not any(b.be_opted for b in g.blocks):
+        return None
+    pos = g.try_move(action['direction'], action['step'])
+    if not pos:
+        return None
+    g.commit_move(pos)
+    return frozenset(tuple(b.location) for b in g.blocks)
+
+
+# K1 往返：move → action → move 全等（全部合法移动，多尺寸/等级）
+rt_count = 0
+rt_bad = []
+for m, n, step in ((4, 4, 1), (4, 4, 2), (3, 5, 1), (2, 6, 2), (3, 3, 3)):
+    spec = square_spec(m, n)
+    for b in random_walk_states(m, n, step, 25, seed=900 + m * 10 + n + step):
+        for mv in b.legal_moves(step):
+            act = move_to_action(spec, mv)
+            back = action_to_move(spec, act)
+            rt_count += 1
+            if back != mv:
+                rt_bad.append((mv, act))
+check(not rt_bad and rt_count >= 300,
+      f"动作往返全等（{rt_count} 个合法移动，偏差 {len(rt_bad)}）")
+
+# K2 跨引擎差分：动作 dict 在现有方形引擎上重放，结果与引擎 apply 一致。
+# 这是「切层」的安全证明——存档/宏里的旧动作喂给新桥，两边走出同一局面。
+replay_cases = 0
+replay_bad = []
+for m, n, step in ((4, 4, 1), (4, 4, 2), (3, 5, 1)):
+    spec = square_spec(m, n)
+    states = random_walk_states(m, n, step, 40, seed=310 + m * 7 + n)
+    picks = [states[0], states[len(states) // 2], states[-1]]
+    picks += random.Random(11).sample(states, min(3, len(states)))
+    uniq, seen = [], set()
+    for b in picks:
+        k = b.canonical_key()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(b)
+    for b in uniq:
+        g0 = _game_from_cells(m, n, sorted(b.points))
+        for mv in b.legal_moves(step):
+            act = move_to_action(spec, mv)
+            got = _game_replay_action(_clone_game(g0), act)
+            want = frozenset(p.point for p in b.apply(mv).blocks)
+            replay_cases += 1
+            if got != want:
+                replay_bad.append((m, n, step, act, got is None))
+check(not replay_bad and replay_cases >= 200,
+      f"动作在现有引擎上重放一致（{replay_cases} 步，偏差 {len(replay_bad)}）")
+
+# K3 record 往返：move → record → move 全等；record → action 与直转同形
+rec_count = 0
+rec_bad = 0
+for m, n, step in ((4, 4, 1), (3, 5, 2)):
+    spec = square_spec(m, n)
+    for b in random_walk_states(m, n, step, 20, seed=520 + m + n):
+        for mv in b.legal_moves(step):
+            rec = move_to_record(spec, mv)
+            rec_count += 1
+            if record_to_move(spec, rec) != mv:
+                rec_bad += 1
+            elif record_to_action(rec) != move_to_action(spec, mv):
+                rec_bad += 1
+check(rec_bad == 0 and rec_count >= 200,
+      f"record 往返全等（{rec_count} 个合法移动，偏差 {rec_bad}）")
+
+# K4 路径回放：safe_scramble 的前进/撤销路径逐条 apply_action ——
+#    前进到终态；撤销路径逆序回到起点（「路径反转即解法」在动作层成立）。
+rng_k = random.Random(20261021)
+path_ok = True
+path_steps = 0
+for m, n, step in ((3, 4, 1), (4, 4, 2), (2, 5, 1)):
+    spec = square_spec(m, n)
+    start = square_board(m, n)
+    end, fwd, undo = safe_scramble(start, step, 15, rng_k)
+    cur = start
+    for mv in fwd:
+        cur = apply_action(cur, move_to_action(spec, mv))
+        path_steps += 1
+    if cur != end:
+        path_ok = False
+    cur2 = end
+    for mv in reversed(undo):
+        cur2 = apply_action(cur2, move_to_action(spec, mv))
+        path_steps += 1
+    if cur2 != start:
+        path_ok = False
+check(path_ok and path_steps >= 60,
+      f"safe_scramble 路径经动作 dict 回放（{path_steps} 步：前进到终态、"
+      f"逆序撤销回起点）")
+
+# K5 错误路径：结构坏/不合法，全部显式抛错（AGENTS.md §2）
+spec42 = square_spec(4, 2)
+b42 = square_board(4, 2)
+good = b42.legal_moves(1)[0]
+good_act = move_to_action(spec42, good)
+
+
+def _expect_raise(fn, msg):
+    try:
+        fn()
+        check(False, f"{msg}：未抛错（静默容忍 = 缺陷）")
+    except (ValueError, TypeError, KeyError) as e:
+        check(True, f"{msg}：显式拒绝（{type(e).__name__}）")
+
+
+_expect_raise(lambda: action_to_move(spec42, {**good_act, 'gap_type': 'z'}),
+              "未知缝族")
+_expect_raise(lambda: action_to_move(spec42, {**good_act, 'direction': 'q'}),
+              "非法方向字母")
+_expect_raise(lambda: action_to_move(
+    spec42, {'gap_type': 'v', 'gap_line': 0, 'direction': 'a', 'step': 1,
+             'moved_positions': [(0, 0)]}),
+    "字母与缝族不平行（'a' 对 'v' 族）")
+_expect_raise(lambda: action_to_move(spec42, {**good_act, 'step': 0}),
+              "step=0")
+_expect_raise(lambda: action_to_move(spec42, {**good_act, 'merged': 2}),
+              "merged 合并态动作")
+_expect_raise(lambda: action_to_move(spec42,
+                                     {'gap_type': 'h', 'gap_line': 0}),
+              "动作 dict 缺键")
+_expect_raise(lambda: action_to_move(spec42, {**good_act,
+                                              'moved_positions': []}),
+              "空选中片")
+_expect_raise(lambda: action_to_move(spec42, {**good_act, 'moved_positions':
+                                              [(0, 0), (0, 0)]}),
+              "选中片重复坐标")
+_expect_raise(lambda: action_to_move(spec42, {**good_act, 'moved_positions':
+                                              [(0.5, 0)]}),
+              "选中片离格点（半整数坐标）")
+_expect_raise(lambda: action_to_move(
+    spec42, {'gap_type': 'h', 'gap_line': 1, 'direction': 'a', 'step': 1,
+             'moved_positions': [(0, 0), (2, 0)]}),
+    "选中片横跨缝两侧")
+_expect_raise(lambda: apply_action(
+    b42, {'gap_type': 'h', 'gap_line': 0, 'direction': 'a', 'step': 1,
+          'moved_positions': [(0, 0)]}),
+    "结构合法但非本局合法移动（单块切开走）")
+_expect_raise(lambda: direction_table(replace(spec42, name='no_such')),
+              "未注册词汇表的板型")
+_expect_raise(lambda: register_direction_vocab('square', {'x': (1, 0)}),
+              "同名词汇表重复注册")
+check(direction_table(spec42) == GAME_DIRECTIONS,
+      "方形字母表与 game.DIRECTIONS 逐项一致（桥不偷偷改词汇）")
+
+# K6 goal_canonical 缓存：同一对象 + 与现算一致 + replace 出的 spec 独立
+specA = square_spec(4, 4)
+first = specA.goal_canonical()
+second = specA.goal_canonical()
+check(first is second, "goal_canonical 命中缓存（重复调用同一对象）")
+check(first == Board(specA, specA.goal_blocks).canonical_key(),
+      "缓存值与现算一致")
+specB = replace(specA, seam_clear=lambda fam, t, board: True)
+check(specB.goal_canonical() == first,
+      "replace 出的新 spec 缓存独立且同值")
 
 print()
 if failures:

@@ -255,8 +255,18 @@ class BoardSpec:
                 raise ValueError(f"板型 {self.name!r} 还原态不单一连通")
 
     def goal_canonical(self):
-        """还原态的规范形（is_solved 的比较基准；每次现算，P1 再缓存）。"""
-        return Board(self, self.goal_blocks).canonical_key()
+        """还原态的规范形（is_solved 的比较基准）。
+
+        P1 起缓存：BoardSpec 不可变（frozen），还原态规范形永远不变 →
+        缓存永不过期。frozen dataclass 挂私有字段用 object.__setattr__
+        （与 Board.__post_init__ 整理 blocks 同手法）。注意空还原态返回
+        ()（falsy 但不能用真值判缓存——用 ``is None``）。
+        """
+        cached = getattr(self, '_goal_canonical', None)
+        if cached is None:
+            cached = Board(self, self.goal_blocks).canonical_key()
+            object.__setattr__(self, '_goal_canonical', cached)
+        return cached
 
 
 @dataclass(frozen=True)

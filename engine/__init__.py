@@ -14,12 +14,20 @@ P0 范围（有意收敛）：
     米字 / 三角预留（P2 实例化）；
   · 不动 game*.py / gui/ / solver/——main 行为零变化。
 
+P1 进行中（本分支）：``engine/compat.py`` 提供 Move ↔ 既有动作格式
+（history 动作 dict / 打乱演示 record）的映射层与 ``apply_action``
+回放原语，为「方形引擎切到引擎层」铺桥（见 docs/spec/几何引擎.md §5）。
+
 纯逻辑零 pygame（AGENTS.md §10 延续）。
 """
 
 from .analysis import (frozen, locked_seams, safe_scramble,
                        shape_reachability, verify_path)
 from .board import Block, Board, BoardSpec, Move, SeamFamily
+from .compat import (SQUARE_DIRECTIONS, action_to_move, apply_action,  # noqa: F401
+                     direction_table, move_to_action, move_to_record,
+                     record_to_action, record_to_move,
+                     register_direction_vocab)
 from .lattice import Lattice, cubic_lattice, square_lattice
 from .registry import (board_types, cubic_board, cubic_spec,
                        get_board_type, make_board, register_board_type,
@@ -32,4 +40,7 @@ __all__ = [
     'square_spec', 'square_board', 'cubic_spec', 'cubic_board',
     'locked_seams', 'frozen', 'shape_reachability',
     'safe_scramble', 'verify_path',
+    'SQUARE_DIRECTIONS', 'register_direction_vocab', 'direction_table',
+    'move_to_action', 'action_to_move', 'apply_action',
+    'move_to_record', 'record_to_action', 'record_to_move',
 ]
