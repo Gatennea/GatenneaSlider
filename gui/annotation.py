@@ -338,6 +338,7 @@ class AnnotationMixin:
         self._ann_build_clear_btn = None
         self._ann_build_cancel_btn = None
         # 设计态（自由捆绑，2026-10-20）：构造画布上的捆绑工具与样式存取
+        self._ann_design_btn_rects = {}     # 设计工具条按钮矩形（每帧重建）
         self._ann_design_groups = {}        # 归一位置 -> gid（构造态捆绑）
         self._ann_design_next_gid = 1       # 下一捆绑组号
         self._ann_design_bind_active = False  # 捆绑工具开关
@@ -349,6 +350,7 @@ class AnnotationMixin:
         self._ann_design_name_rect = None   # 工具条上的样式名输入框（每帧重建）
         self._ann_design_menu_rect = None   # 样式库下拉矩形（每帧重建）
         self._ann_design_menu_items = []    # 样式库下拉项 [(name, rect)]
+        self._ann_design_frozen = False     # 设计视图冻形缓存（重建时刷新）
         # 输入框记忆（config/annotation_inputs.json，随机生成 + 手动构造共用）
         self._ann_saved_inputs = None
         self._ann_preview_data = None
@@ -424,6 +426,10 @@ class AnnotationMixin:
         else:
             if self._ann_sub_dialog == 'build':
                 self._ann_build_cancel()
+                self.annotation_mode = False
+                self._ann_notify('标注模式已关闭')
+            elif self._ann_sub_dialog == 'design':
+                self._ann_design_cancel()
                 self.annotation_mode = False
                 self._ann_notify('标注模式已关闭')
             elif self._ann_sub_dialog is not None:
@@ -502,7 +508,7 @@ class AnnotationMixin:
         if event.type == pygame.KEYDOWN:
             if self._ann_sub_dialog == 'gen':
                 return self._ann_gen_dialog_event(event)
-            if self._ann_sub_dialog == 'build':
+            if self._ann_sub_dialog in ('build', 'design'):
                 return self._ann_build_dialog_event(event)
             if self._ann_sub_dialog == 'preview':
                 return self._ann_preview_dialog_event(event)
@@ -523,9 +529,13 @@ class AnnotationMixin:
                     getattr(self, 'show_search_menu', False)):
                 # 有菜单展开时，点击交给常规下拉菜单处理，避免抢事件
                 return False
+            # 首页样式库下拉（开时优先：点项开局、点他处收起）
+            if (self._ann_view == 'home'
+                    and self._ann_design_style_menu is not None):
+                return self._ann_style_menu_click(x, y)
             if self._ann_sub_dialog == 'gen':
                 return self._ann_gen_dialog_click(x, y)
-            if self._ann_sub_dialog == 'build':
+            if self._ann_sub_dialog in ('build', 'design'):
                 return self._ann_build_dialog_click(x, y)
             if self._ann_sub_dialog == 'preview':
                 return self._ann_preview_dialog_click(x, y)
@@ -651,6 +661,62 @@ class AnnotationMixin:
         self._ann_gen_error = ''
         self._ann_sub_dialog = 'gen'
 
+    def _ann_btn_design(self):
+        """设计还原态：构建「还原成什么样」的样式（形状 + 捆绑）。
+
+        与手动构造（造打乱局面）语义分开：设计的产品是样式文件，
+        作为谜题的还原目标；开局走首页[样式库]。画布初始为满矩形
+        还原态，点格删减/添加出想要的形状，捆绑后[存样式]。
+        """
+        if self.triangle_mode or self.mi_mode:
+            self._ann_notify('设计仅方形开放（三角/米字 v3）')
+            return
+        m, n, step = self.current_m, self.current_n, self.current_step
+        # 备份当前局面：退出设计时原样恢复（同手动构造）
+        self._ann_build_backup = {
+            'cells': frozenset({self._ann_normalize_build_pos(tuple(b.location))
+                                for b in self.game.blocks}),
+            'numbers': {self._ann_normalize_build_pos(tuple(b.location)): b.number
+                        for b in self.game.blocks if b.number is not None},
+            'stack': [],
+            'numbered': bool(getattr(self, 'numbered', False)),
+            'm': m, 'n': n, 'step': step,
+            'history': self.game_history,
+        }
+        self._ann_build_fields = {'m': str(m), 'n': str(n), 'step': str(step)}
+        self._ann_build_active = 'm'
+        self._ann_build_error = ''
+        self._ann_build_numbered = False
+        self._ann_build_numbers = {}
+        self._ann_build_num_stack = []
+        self._ann_design_reset()
+        self._ann_design_style_name = ''
+        self._ann_design_name_active = False
+        # 初始 = 满矩形还原态：设计的就是还原态，从满盘删减最直观
+        self._ann_build_coords = {(r, c) for r in range(m) for c in range(n)}
+        self.current_m, self.current_n, self.current_step = m, n, step
+        self._ann_rebuild_game_from_coords()
+        self._ann_sub_dialog = 'design'
+        self._ann_view = 'design'
+        self.center_map()
+        self._ann_notify('设计模式：拼出还原态形状，[捆绑]后[存样式]；'
+                         '开局用首页[样式库]')
+
+    def _ann_btn_style_lib(self):
+        """首页样式库下拉开关：选样式直接开局（样式 = 还原目标）。"""
+        self._ann_design_style_menu = (
+            None if self._ann_design_style_menu is not None else True)
+
+    def _ann_style_menu_click(self, x, y):
+        """首页样式库下拉点击：点项开局；点他处收起。返回 True=已消费。"""
+        for nm, r in getattr(self, '_ann_design_menu_items', []):
+            if r.collidepoint(x, y):
+                self._ann_design_style_menu = None
+                self._ann_design_start_style(nm)
+                return True
+        self._ann_design_style_menu = None
+        return True
+
     def _ann_btn_manual_build(self):
         """手动构造：直接在主棋盘上自由点选。
 
@@ -690,6 +756,8 @@ class AnnotationMixin:
             for b in self.game.blocks if b.number is not None
         }
         self._ann_build_num_stack = []
+        # 构造是「打乱局面」语义：设计态（捆绑/样式/下拉）一律不带入
+        self._ann_design_reset()
         # 以「当前棋盘状态」为基础进入构造，而不是还原态：
         # 画布初始就是当前所有滑块，可直接点格增删、点窗外格补凸起
         coords = {self._ann_normalize_build_pos(tuple(b.location))
@@ -710,7 +778,7 @@ class AnnotationMixin:
         game.m/game.n 与 current_step，故这里必须同步——构造视图中以输入框
         最新有效值为准（点选增删前已校验过参数），否则尺寸修改后仍按旧值计算。
         """
-        if getattr(self, '_ann_view', None) == 'build':
+        if getattr(self, '_ann_view', None) in ('build', 'design'):
             try:
                 m, n, step = self._ann_build_param()
                 self.current_m, self.current_n, self.current_step = m, n, step
@@ -749,6 +817,12 @@ class AnnotationMixin:
                 b.group = self._ann_design_groups.get(tuple(b.location), 0)
         self.game.blocks = blocks
         self.game.update_matrix()
+        # 设计视图：重建后刷新冻形缓存（存样式校验与工具条实时提示共用）
+        if getattr(self, '_ann_view', None) == 'design':
+            self._ann_design_frozen = (
+                bool(self.game.blocks)
+                and hasattr(self.game, 'has_legal_move')
+                and not self.game.has_legal_move())
 
     def _ann_normalize_build_pos(self, pos):
         """把构造坐标规范化为形态标准表示。
@@ -809,8 +883,8 @@ class AnnotationMixin:
         self._ann_build_error = ''
         self._ann_rebuild_game_from_coords()
 
-    def _ann_build_cancel(self):
-        """取消构造：恢复进入前的局面与历史。"""
+    def _ann_build_restore_backup(self):
+        """把进入构造/设计前备份的局面与历史原样恢复。"""
         bk = getattr(self, '_ann_build_backup', None)
         if bk is not None:
             self.current_m = bk['m']
@@ -850,6 +924,10 @@ class AnnotationMixin:
                      max(0, len(self.game_history.history) - 1))
             self.game_history.restore_snapshot(self.game, hi)
             self._ann_build_backup = None
+
+    def _ann_build_cancel(self):
+        """取消构造：恢复进入前的局面与历史。"""
+        self._ann_build_restore_backup()
         self._ann_sub_dialog = None
         self._ann_view = 'home'
         self._ann_build_error = ''
@@ -859,6 +937,17 @@ class AnnotationMixin:
         self.center_map()
         self._ann_notify('已取消手动构造')
 
+    def _ann_design_cancel(self):
+        """退出设计：恢复进入前局面；未保存的样式编辑丢弃。"""
+        self._ann_build_restore_backup()
+        self._ann_sub_dialog = None
+        self._ann_view = 'home'
+        self._ann_build_error = ''
+        self._ann_design_reset()
+        self._ann_store_inputs('design', self._ann_build_fields)
+        self.center_map()
+        self._ann_notify('已退出设计（未保存的编辑已丢弃）')
+
     def _ann_design_reset(self):
         """清空设计态全部状态（取消构造/清空画布时调用）。"""
         self._ann_design_groups = {}
@@ -866,6 +955,7 @@ class AnnotationMixin:
         self._ann_design_bind_active = False
         self._ann_design_bind_first = None
         self._ann_design_style_menu = None
+        self._ann_design_frozen = False
 
     def _ann_btn_from_current(self):
         """④ 当前棋盘作为起点。"""
@@ -1445,6 +1535,8 @@ class AnnotationMixin:
             self._ann_store_inputs('gen', self._ann_gen_fields)
         elif self._ann_sub_dialog == 'build':
             self._ann_store_inputs('build', self._ann_build_fields)
+        elif self._ann_sub_dialog == 'design':
+            self._ann_store_inputs('design', self._ann_build_fields)
         self._ann_sub_dialog = None
         self._ann_preview_data = None
         self._ann_build_error = ''
@@ -1620,7 +1712,7 @@ class AnnotationMixin:
         """标注/创造模式渲染入口（run 循环里、浮动面板之后调用）。"""
         if not (getattr(self, 'annotation_mode', False) or self.create_mode):
             return
-        if self._ann_view == 'build':
+        if self._ann_view in ('build', 'design'):
             self._ann_draw_build_canvas()
         elif self._ann_view in ('target', 'recording'):
             self._ann_draw_track_markers()
@@ -1667,10 +1759,12 @@ class AnnotationMixin:
     def _ann_draw_bar(self):
         """底部标注工具栏（随视图变化）。"""
         w = min(820, self.screen_width - self.right_panel_width - 24)
-        x = self.screen_width - self.right_panel_width - w - 10
-        # 手动构造视图：工具条加高，内嵌 m/n/step 参数输入 + 操作按钮，
+        bar_x = self.screen_width - self.right_panel_width - w - 10
+        x = bar_x  # add() 会推进 x；bar_x 恒为工具条左缘（下拉定位用）
+        # 手动构造/设计视图：工具条加高，内嵌参数输入 + 操作按钮，
         # 这样主棋盘完全留给点格增删滑块（不再用居中弹窗遮挡棋盘）。
-        bar_h = 82 if self._ann_view == 'build' else self._ANN_BAR_H
+        bar_h = 82 if self._ann_view in ('build', 'design') \
+            else self._ANN_BAR_H
         y, h = self.screen_height - self.status_bar_height - \
             bar_h - 8, bar_h
         self._ann_bar_rect = pygame.Rect(x, y, w, h)
@@ -1705,12 +1799,15 @@ class AnnotationMixin:
                 # 随机生成只对方形开放（三角/米字没有随机生成）
                 if not self.triangle_mode and not self.mi_mode:
                     add('random_gen', '随机生成', (70, 120, 180))
+                    # 设计=构建还原态样式（与造打乱局面的构造语义分开）
+                    add('design', '设计还原态', (60, 120, 90))
+                    add('style_lib', '样式库▾', (70, 120, 180))
                 if self.triangle_mode or self.mi_mode:
                     title_text = ('创造模式：请用[手动构造]造题 · '
                                   '造好即成为当前谜题 · ESC 退出')
                 else:
-                    title_text = ('创造模式：随机挖洞/缺口 或 手动构造 · '
-                                  '造好即成为当前谜题 · ESC 退出')
+                    title_text = ('创造模式：随机生成/手动构造 造打乱局面 · '
+                                  '设计还原态 造还原样式 · ESC 退出')
             else:
                 add('exit_mode', '退出标注', (120, 90, 90))
                 add('from_current', '④ 当前状态', (70, 120, 180))
@@ -1720,9 +1817,15 @@ class AnnotationMixin:
             title = self.status_font.render(title_text, True, (200, 200, 210))
             self.screen.blit(title, (self._ann_bar_rect.x + 6,
                                      self._ann_bar_rect.y - 18))
+            # 首页样式库下拉（开时画在工具条上方，定位用工具条左缘）
+            if self._ann_design_style_menu is not None:
+                self._ann_draw_style_menu(bar_x, y, w)
         elif self._ann_view == 'build':
             # 参数输入直接内嵌在底部工具条，主棋盘用于点格增删滑块
             self._ann_draw_build_toolbar(x, y, w, h)
+        elif self._ann_view == 'design':
+            # 设计还原态样式：同画布语义、不同工具条与产出（样式而非局面）
+            self._ann_draw_design_toolbar(x, y, w, h)
         elif self._ann_view in ('target', 'recording'):
             if self._ann_view == 'target':
                 add('abort', '放弃', (150, 90, 90))
@@ -1772,118 +1875,16 @@ class AnnotationMixin:
         主棋盘完全留给点格增删滑块，因此这里不用居中弹窗。
         点击/键盘事件由 _ann_build_dialog_click / _ann_build_dialog_event 处理，
         它们根据 _ann_build_field_rects 与各按钮矩形判定命中。
+        设计控件已独立为「设计还原态」工具条（_ann_draw_design_toolbar）——
+        手动构造造的是打乱局面，不掺还原态语义。
         """
         row1 = y + 10
         row2 = y + 46
         fh = 26
-        self._ann_build_field_rects = {}
-        bx = x + 10
-        # 参数行按形态：三角只填边长 k／等级 step
-        param_fields = (('k', '边长'), ('step', '等级')) \
-            if self.triangle_mode else (('m', '行'), ('n', '列'), ('step', '等级'))
-        for key, label in param_fields:
-            ls = self.status_font.render(label, True, (200, 200, 210))
-            self.screen.blit(ls, (bx, row1 + 5))
-            lbl_w = ls.get_width() + 4
-            frect = pygame.Rect(bx + lbl_w, row1, 52, fh)
-            self._ann_build_field_rects[key] = frect
-            fbg = self.colors['input_active'] if self._ann_build_active == key \
-                else self.colors['input_bg']
-            pygame.draw.rect(self.screen, fbg, frect, border_radius=4)
-            pygame.draw.rect(self.screen, self.colors['dialog_border'], frect, 1,
-                             border_radius=4)
-            vs = self.status_font.render(
-                self._ann_build_fields.get(key, ''), True,
-                self.colors['input_text'])
-            self.screen.blit(vs, (frect.x + 5, frect.y + 4))
-            if self._ann_build_active == key:
-                cx = frect.x + 5 + vs.get_width() + 2
-                pygame.draw.line(self.screen, self.colors['input_text'],
-                                 (cx, frect.y + 4), (cx, frect.bottom - 4), 1)
-            bx = frect.right + 16
-
-        # ---- 设计态控件（自由捆绑 + 样式存取；仅方形，三角/米字 v3）----
+        self._ann_draw_param_fields(x, row1, fh)
+        # 构造工具条无设计控件：清空矩形，防上次设计会话残留吞点击
         self._ann_design_btn_rects = {}
-        if not self.triangle_mode and not self.mi_mode:
-            # 样式名输入框
-            ls = self.status_font.render('名', True, (200, 200, 210))
-            self.screen.blit(ls, (bx, row1 + 5))
-            nrect = pygame.Rect(bx + ls.get_width() + 4, row1, 90, fh)
-            self._ann_design_name_rect = nrect
-            nbg = self.colors['input_active'] if self._ann_design_name_active \
-                else self.colors['input_bg']
-            pygame.draw.rect(self.screen, nbg, nrect, border_radius=4)
-            pygame.draw.rect(self.screen, self.colors['dialog_border'], nrect,
-                             1, border_radius=4)
-            nvs = self.status_font.render(self._ann_design_style_name or '',
-                                          True, self.colors['input_text'])
-            self.screen.blit(nvs, (nrect.x + 5, nrect.y + 4))
-            if self._ann_design_name_active:
-                cx = nrect.x + 5 + nvs.get_width() + 2
-                pygame.draw.line(self.screen, self.colors['input_text'],
-                                 (cx, nrect.y + 4), (cx, nrect.bottom - 4), 1)
-            bx = nrect.right + 10
-
-            def dbtn(name, text, color=None, w_pad=14):
-                nonlocal bx
-                tw = self.status_font.size(text)[0] + w_pad
-                rect = pygame.Rect(bx, row1, tw, fh)
-                c = color or self.colors['button_bg']
-                if rect.collidepoint(pygame.mouse.get_pos()):
-                    c = (min(255, c[0] + 25), min(255, c[1] + 25),
-                         min(255, c[2] + 25))
-                pygame.draw.rect(self.screen, c, rect, border_radius=6)
-                s = self.status_font.render(text, True, (255, 255, 255))
-                self.screen.blit(s, s.get_rect(center=rect.center))
-                self._ann_design_btn_rects[name] = rect
-                bx = rect.right + 8
-                return rect
-
-            dbtn('save', '存样式', (60, 120, 90))
-            bind_col = (200, 140, 40) if self._ann_design_bind_active \
-                else self.colors['button_bg']
-            bind_txt = '捆绑:开' if self._ann_design_bind_active else '捆绑:关'
-            if self._ann_design_bind_first is not None:
-                bind_txt += f'({self._ann_design_bind_first[0]},' \
-                            f'{self._ann_design_bind_first[1]})…'
-            dbtn('bind', bind_txt, bind_col, w_pad=10)
-            dbtn('unbind_all', '清捆绑', (120, 90, 60), w_pad=10)
-            dbtn('styles', '样式库▾', (70, 120, 180), w_pad=10)
-            # 捆绑组统计
-            gsum = self._ann_design_groups
-            if gsum:
-                gtxt = f'捆绑 {len(set(gsum.values()))} 组 / ' \
-                       f'{len(gsum)} 颗'
-                gs = self.status_font.render(gtxt, True, (255, 210, 120))
-                self.screen.blit(gs, (bx + 2, row1 + 5))
-
-        # 样式库下拉（开时画在工具条上方）
-        if self._ann_design_style_menu is not None:
-            from gui import design_styles
-            names = design_styles.list_styles(self.config_dir)
-            mh = 24
-            mrect = pygame.Rect(x + 10, y - len(names) * mh - 4,
-                                min(220, w - 20), len(names) * mh)
-            bg = pygame.Surface(mrect.size, pygame.SRCALPHA)
-            bg.fill((45, 45, 60, 245))
-            self.screen.blit(bg, mrect)
-            pygame.draw.rect(self.screen, (110, 110, 130), mrect, 1,
-                             border_radius=6)
-            self._ann_design_menu_rect = mrect
-            self._ann_design_menu_items = []
-            for i, nm in enumerate(names):
-                r = pygame.Rect(mrect.x + 4, mrect.y + i * mh + 2,
-                                mrect.w - 8, mh - 4)
-                self._ann_design_menu_items.append((nm, r))
-                if r.collidepoint(pygame.mouse.get_pos()):
-                    pygame.draw.rect(self.screen, (70, 90, 130), r,
-                                     border_radius=4)
-                s = self.status_font.render(nm, True, (230, 230, 240))
-                self.screen.blit(s, (r.x + 8, r.y + 3))
-            if not names:
-                s = self.status_font.render('（没有已存样式）', True,
-                                            (180, 180, 190))
-                self.screen.blit(s, (mrect.x + 10, mrect.y + 3))
+        self._ann_design_name_rect = None
 
         # 按钮行（右上对齐，状态文字留左侧空间）
         def toolbar_btn(rect, text, color=None):
@@ -1926,6 +1927,176 @@ class AnnotationMixin:
         color = (150, 230, 160) if is_ok else (255, 150, 140)
         st = self.status_font.render('手动构造  ' + msg, True, color)
         self.screen.blit(st, (x + 10, row2 + 3))
+
+    def _ann_draw_param_fields(self, x, row1, fh):
+        """m/n/step（三角 k/step）参数输入框；返回右端 x 供后续控件接力。
+
+        构造与设计两个工具条共用同一套参数语义（改尺寸重排画布）。
+        """
+        self._ann_build_field_rects = {}
+        bx = x + 10
+        # 参数行按形态：三角只填边长 k／等级 step
+        param_fields = (('k', '边长'), ('step', '等级')) \
+            if self.triangle_mode else (('m', '行'), ('n', '列'), ('step', '等级'))
+        for key, label in param_fields:
+            ls = self.status_font.render(label, True, (200, 200, 210))
+            self.screen.blit(ls, (bx, row1 + 5))
+            lbl_w = ls.get_width() + 4
+            frect = pygame.Rect(bx + lbl_w, row1, 52, fh)
+            self._ann_build_field_rects[key] = frect
+            fbg = self.colors['input_active'] if self._ann_build_active == key \
+                else self.colors['input_bg']
+            pygame.draw.rect(self.screen, fbg, frect, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], frect, 1,
+                             border_radius=4)
+            vs = self.status_font.render(
+                self._ann_build_fields.get(key, ''), True,
+                self.colors['input_text'])
+            self.screen.blit(vs, (frect.x + 5, frect.y + 4))
+            if self._ann_build_active == key:
+                cx = frect.x + 5 + vs.get_width() + 2
+                pygame.draw.line(self.screen, self.colors['input_text'],
+                                 (cx, frect.y + 4), (cx, frect.bottom - 4), 1)
+            bx = frect.right + 16
+        return bx
+
+    def _ann_draw_design_toolbar(self, x, y, w, h):
+        """设计还原态工具条：参数 + 样式名/存样式/捆绑/清捆绑 + 冻形状态。
+
+        与手动构造工具条分开：设计的产品是「还原态样式」（形状 + 捆绑），
+        没有「应用/还原m×n」——开局走首页[样式库]，不走应用。
+        """
+        row1 = y + 10
+        row2 = y + 46
+        fh = 26
+        bx = self._ann_draw_param_fields(x, row1, fh)
+        self._ann_design_btn_rects = {}
+        self._ann_build_ok_btn = None     # 设计视图无「应用」（防残留矩形）
+        self._ann_build_reset_btn = None  # 也无「还原m×n」
+        # 样式名输入框
+        ls = self.status_font.render('名', True, (200, 200, 210))
+        self.screen.blit(ls, (bx, row1 + 5))
+        nrect = pygame.Rect(bx + ls.get_width() + 4, row1, 90, fh)
+        self._ann_design_name_rect = nrect
+        nbg = self.colors['input_active'] if self._ann_design_name_active \
+            else self.colors['input_bg']
+        pygame.draw.rect(self.screen, nbg, nrect, border_radius=4)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'], nrect,
+                         1, border_radius=4)
+        nvs = self.status_font.render(self._ann_design_style_name or '',
+                                      True, self.colors['input_text'])
+        self.screen.blit(nvs, (nrect.x + 5, nrect.y + 4))
+        if self._ann_design_name_active:
+            cx = nrect.x + 5 + nvs.get_width() + 2
+            pygame.draw.line(self.screen, self.colors['input_text'],
+                             (cx, nrect.y + 4), (cx, nrect.bottom - 4), 1)
+        bx = nrect.right + 10
+
+        def dbtn(name, text, color=None, w_pad=14):
+            nonlocal bx
+            tw = self.status_font.size(text)[0] + w_pad
+            rect = pygame.Rect(bx, row1, tw, fh)
+            c = color or self.colors['button_bg']
+            if rect.collidepoint(pygame.mouse.get_pos()):
+                c = (min(255, c[0] + 25), min(255, c[1] + 25),
+                     min(255, c[2] + 25))
+            pygame.draw.rect(self.screen, c, rect, border_radius=6)
+            s = self.status_font.render(text, True, (255, 255, 255))
+            self.screen.blit(s, s.get_rect(center=rect.center))
+            self._ann_design_btn_rects[name] = rect
+            bx = rect.right + 8
+            return rect
+
+        dbtn('save', '存样式', (60, 120, 90))
+        bind_col = (200, 140, 40) if self._ann_design_bind_active \
+            else self.colors['button_bg']
+        bind_txt = '捆绑:开' if self._ann_design_bind_active else '捆绑:关'
+        if self._ann_design_bind_first is not None:
+            bind_txt += f'({self._ann_design_bind_first[0]},' \
+                        f'{self._ann_design_bind_first[1]})…'
+        dbtn('bind', bind_txt, bind_col, w_pad=10)
+        dbtn('unbind_all', '清捆绑', (120, 90, 60), w_pad=10)
+        # 捆绑组统计
+        gsum = self._ann_design_groups
+        if gsum:
+            gtxt = f'捆绑 {len(set(gsum.values()))} 组 / ' \
+                   f'{len(gsum)} 颗'
+            gs = self.status_font.render(gtxt, True, (255, 210, 120))
+            self.screen.blit(gs, (bx + 2, row1 + 5))
+
+        # 右侧按钮：清空 / 退出（复用构造按钮矩形名，点击分发共用）
+        def toolbar_btn(rect, text, color=None):
+            c = color or self.colors['button_bg']
+            if rect.collidepoint(pygame.mouse.get_pos()):
+                c = (min(255, c[0] + 25), min(255, c[1] + 25),
+                     min(255, c[2] + 25))
+            pygame.draw.rect(self.screen, c, rect, border_radius=6)
+            s = self.status_font.render(text, True, (255, 255, 255))
+            self.screen.blit(s, s.get_rect(center=rect.center))
+
+        rbx = x + w - 10
+        bh = 26
+
+        def place_right(text, color=None):
+            nonlocal rbx
+            tw = self.status_font.size(text)[0] + 18
+            rect = pygame.Rect(rbx - tw, row2, tw, bh)
+            toolbar_btn(rect, text, color)
+            rbx = rect.left - 8
+            return rect
+
+        self._ann_build_cancel_btn = place_right('退出', (120, 90, 90))
+        self._ann_build_clear_btn = place_right('清空')
+        self._ann_build_dialog_rect = self._ann_bar_rect
+
+        # 即时状态：块数 / 组数 / 冻形（缓存于重建时，不逐帧算）
+        try:
+            self._ann_build_param()
+            n_groups = len(set(self._ann_design_groups.values()))
+            if not self._ann_build_coords:
+                msg, is_ok = '空画布：点格放置滑块拼出还原态形状', False
+            elif getattr(self, '_ann_design_frozen', False):
+                msg, is_ok = '冻形：没有任何合法移动，无法保存为样式', False
+            else:
+                msg = (f'{len(self._ann_build_coords)} 颗 · '
+                       f'{n_groups} 组捆绑 · 可[存样式]')
+                is_ok = True
+        except ValueError as e:
+            msg, is_ok = str(e), False
+        if self._ann_build_error:
+            msg, is_ok = self._ann_build_error, False
+        color = (150, 230, 160) if is_ok else (255, 150, 140)
+        st = self.status_font.render('设计还原态  ' + msg, True, color)
+        self.screen.blit(st, (x + 10, row2 + 3))
+
+    def _ann_draw_style_menu(self, x, y, w):
+        """样式库下拉（首页用）：画在工具条上方，项矩形存菜单项列表。"""
+        from gui import design_styles
+        names = design_styles.list_styles(self.config_dir)
+        mh = 24
+        menu_h = max(len(names) * mh, 26)
+        mrect = pygame.Rect(x + 10, y - menu_h - 4,
+                            min(220, w - 20), menu_h)
+        bg = pygame.Surface(mrect.size, pygame.SRCALPHA)
+        bg.fill((45, 45, 60, 245))
+        self.screen.blit(bg, mrect)
+        pygame.draw.rect(self.screen, (110, 110, 130), mrect, 1,
+                         border_radius=6)
+        self._ann_design_menu_rect = mrect
+        self._ann_design_menu_items = []
+        for i, nm in enumerate(names):
+            r = pygame.Rect(mrect.x + 4, mrect.y + i * mh + 2,
+                            mrect.w - 8, mh - 4)
+            self._ann_design_menu_items.append((nm, r))
+            if r.collidepoint(pygame.mouse.get_pos()):
+                pygame.draw.rect(self.screen, (70, 90, 130), r,
+                                 border_radius=4)
+            s = self.status_font.render(nm, True, (230, 230, 240))
+            self.screen.blit(s, (r.x + 8, r.y + 3))
+        if not names:
+            s = self.status_font.render('（没有已存样式）', True,
+                                        (180, 180, 190))
+            self.screen.blit(s, (mrect.x + 10, mrect.y + 3))
 
     # ---- 状态提示（工具条右下方小字） ----
     def _ann_draw_msg(self):
@@ -2049,24 +2220,17 @@ class AnnotationMixin:
         """构造弹窗：点输入框聚焦 / 点按钮操作 / 点窗外交互棋盘增删滑块。"""
         dlg = self._ann_build_dialog_rect
         if dlg is not None and dlg.collidepoint(x, y):
-            # 样式库下拉优先（开时浮在工具条上方，先于工具条按钮判定）
-            if self._ann_design_style_menu is not None:
-                for nm, r in getattr(self, '_ann_design_menu_items', []):
-                    if r.collidepoint(x, y):
-                        self._ann_design_style_menu = None
-                        self._ann_design_start_style(nm)
+            # 设计态控件（存样式 / 捆绑 / 清捆绑 / 样式名输入）仅设计视图有
+            if self._ann_view == 'design':
+                for name, rect in self._ann_design_btn_rects.items():
+                    if rect.collidepoint(x, y):
+                        self._ann_design_btn(name)
                         return True
-                self._ann_design_style_menu = None  # 点他处收起
-            # 设计态控件（样式名输入 / 存样式 / 捆绑 / 清捆绑 / 样式库）
-            for name, rect in self._ann_design_btn_rects.items():
-                if rect.collidepoint(x, y):
-                    self._ann_design_btn(name)
+                nrect = getattr(self, '_ann_design_name_rect', None)
+                if nrect is not None and nrect.collidepoint(x, y):
+                    self._ann_design_name_active = True
+                    self._ann_build_active = None
                     return True
-            nrect = getattr(self, '_ann_design_name_rect', None)
-            if nrect is not None and nrect.collidepoint(x, y):
-                self._ann_design_name_active = True
-                self._ann_build_active = None
-                return True
             for key, rect in self._ann_build_field_rects.items():
                 if rect.collidepoint(x, y):
                     self._ann_build_active = key
@@ -2281,6 +2445,8 @@ class AnnotationMixin:
         复用 shuffle_puzzle 全部既有机制（演示动画/历史重置/难度门槛）。
         """
         from gui import design_styles
+        self._ann_design_reset()   # 防御：清掉可能残留的设计/下拉状态
+        self._ann_build_backup = None  # 开局是新会话：丢弃任何构造/设计备份
         data = design_styles.load_style(self.config_dir, name)
         if not data:
             self._ann_notify(f'样式「{name}」读取失败')
@@ -2334,10 +2500,16 @@ class AnnotationMixin:
             self._ann_notify('已取消捆绑选点')
             return True
         if event.key == pygame.K_ESCAPE:
-            self._ann_build_cancel()
+            if self._ann_view == 'design':
+                self._ann_design_cancel()
+            else:
+                self._ann_build_cancel()
             return True
         if event.key == pygame.K_RETURN:
-            self._ann_build_apply()
+            if self._ann_view == 'design':
+                self._ann_design_save_style()   # 设计视图：回车 = 存样式
+            else:
+                self._ann_build_apply()
             return True
         if event.key == pygame.K_TAB:
             keys = ['k', 'step'] if self.triangle_mode else ['m', 'n', 'step']
