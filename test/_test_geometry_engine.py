@@ -17,6 +17,11 @@
   J 板型注册表         —— 注册 / 查询 / 未知显式报错 / 参数校验
   K 差分·映射层        —— Move ↔ 动作 dict / 演示 record 往返、跨引擎重放、
                          路径回放、错误路径显式拒绝、goal_canonical 缓存
+  L 差分·米字 preset   —— 引擎 vs game_mi：词汇/邻表一致、每个合法移动在
+                         game 上逐一重放（缝有效性/选中集/走法/结果态）、
+                         game 移动全集 ⊆ 引擎、侧分区覆盖、还原判定
+                         （平移/換晶格/旋转/转置/挖洞）、安全打乱双重重放、
+                         错位态重叠判定对拍 + 拒绝路径非空性
 """
 
 import os
@@ -40,6 +45,8 @@ from engine import (  # noqa: E402
     get_board_type,
     locked_seams,
     make_board,
+    mi_board,
+    mi_geometry,
     register_board_type,
     safe_scramble,
     shape_reachability,
@@ -291,14 +298,14 @@ g = _game_from_cells(2, 3, cells, groups=groups)
 check(engine_result_set(eb, 1) == game_move_results(g, 1),
       "捆绑局面移动集合与现有引擎一致")
 drag = [m for m in eb.legal_moves(1)
-        if set(m.moved) >= {(0, 0), (1, 0)}]
+        if {(0, 0), (1, 0)} <= {k[0] for k in m.moved}]
 check(len(drag) >= 1, "存在把捆绑组整体拖动的合法移动")
 if drag:
     mv = drag[0]
     nb = eb.apply(mv)
     delta = tuple(mv.step * x for x in mv.direction)
-    check(nb.point_map[(delta[0], delta[1])].group == 7
-          and nb.point_map[(1 + delta[0], delta[1])].group == 7,
+    check(nb.block_map[((delta[0], delta[1]), '')].group == 7
+          and nb.block_map[((1 + delta[0], delta[1]), '')].group == 7,
           "拖动后两组员仍同组且同步位移")
 
 # ----------------------------------------------------------------------
@@ -364,7 +371,7 @@ for bad_step in (0, -1, 1.5, '2'):
 # 回放防护：别局的 Move 不能误放到本局
 b55 = square_board(5, 5)
 stale = next(m for m in b55.legal_moves(1)
-             if any(p[1] > 1 for p in m.moved))
+             if any(p[0][1] > 1 for p in m.moved))
 try:
     b32.apply(stale)
     check(False, "别局 Move 必须显式拒绝")
@@ -391,7 +398,7 @@ moves = cube.legal_moves(1)
 check(len(moves) > 0, f"立方体有合法移动（{len(moves)} 个）")
 mv = next(m for m in moves if m.family == 'r')
 delta = tuple(mv.step * x for x in mv.direction)
-moved = set(mv.moved)
+moved = {k[0] for k in mv.moved}
 expected = frozenset(
     tuple(p[i] + (delta[i] if p in moved else 0) for i in range(3))
     for p in cube.points)
@@ -628,6 +635,408 @@ check(first == Board(specA, specA.goal_blocks).canonical_key(),
 specB = replace(specA, seam_clear=lambda fam, t, board: True)
 check(specB.goal_canonical() == first,
       "replace 出的新 spec 缓存独立且同值")
+
+# ----------------------------------------------------------------------
+# L 米字 preset：引擎 vs game_mi 差分对拍（P2）
+# ----------------------------------------------------------------------
+print("== L 米字 preset：引擎 vs game_mi 差分对拍 ==")
+import game_mi
+from game_mi import (DIRECTIONS as MI_GAME_DIRECTIONS,  # noqa: E402
+                     GAP_DIRECTIONS as MI_GAME_GAP,
+                     _has_overlap, any_overlap, mi_key, neighbors, side_of)
+
+
+def _mi_norm2(x):
+    """实坐标 → game location 分量（整数化归 int，与 commit_move 同约定）。"""
+    return int(x) if float(x).is_integer() else float(x)
+
+
+def _mi_game_from_keys(keys, m, n):
+    """引擎块键集合 → game_mi.MiSliderMatrix（键数不足 4mn 时截掉多余块）。"""
+    g = game_mi.MiSliderMatrix(m, n)
+    for gb, (p, o) in zip(g.blocks, sorted(keys)):
+        gb.location = [_mi_norm2(p[0] / 2), _mi_norm2(p[1] / 2), o]
+    del g.blocks[len(keys):]
+    g.update_matrix()
+    return g
+
+
+def _mi_engine_keys_to_game(keys):
+    """引擎块键 → game 位置 (r, c, q)（实坐标，整数分量归一化）。"""
+    out = set()
+    for p, o in keys:
+        out.add((_mi_norm2(p[0] / 2), _mi_norm2(p[1] / 2), o))
+    return out
+
+
+def _mi_components(cells):
+    """按 game_mi 5-邻接求连通分量（与 opt 的 DFS 同邻接定义）。"""
+    seen, out = set(), []
+    for c in cells:
+        if c in seen:
+            continue
+        comp, stack = set(), [c]
+        seen.add(c)
+        while stack:
+            cur = stack.pop()
+            comp.add(cur)
+            for nb in neighbors(cur):
+                if nb in cells and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        out.append(comp)
+    return out
+
+
+def mi_game_move_results(g, step):
+    """game_mi 的完整移动结果集合（全部有效缝 × 两侧 × 全部分量 × 平行方向）。
+
+    与方形版 game_move_results 同哲学；米字侧遍历 game 自己的 all_gaps
+    候选缝、分量用 game 自己的 neighbors。每次成功提交后还原 location，
+    供同一局面的下一轮候选使用。
+    """
+    results = set()
+    orig = [list(b.location) for b in g.blocks]
+    cells = g.positions()
+    key_to_block = {mi_key(b): b for b in g.blocks}
+    for gap_type, line in g.all_gaps():
+        for side in (0, 1):
+            same = {c for c in cells if side_of(gap_type, line, c) == side}
+            for comp in _mi_components(same):
+                g.opt(gap_type, line, key_to_block[min(comp)])
+                for d in MI_GAME_GAP[gap_type]:
+                    pos = g.try_move(d, step)
+                    if pos:
+                        g.commit_move(pos)
+                        results.add(frozenset(mi_key(b) for b in g.blocks))
+                        for b, loc in zip(g.blocks, orig):
+                            b.location = list(loc)
+    return results
+
+
+def mi_engine_move_replay(eb, g, mv):
+    """引擎移动 → game_mi 重放核对（L1a 的单元，逐项钉死移动语义）。
+
+    依次校验：① 缝过得了 game 的 is_valid_gap；② game 的 opt 选中集与
+    引擎 moved 逐键相同；③ game 的 try_move 接受该走法；④ 提交后的结果
+    态与引擎 apply 一致。任一不过返回 (False, 细节)。
+    """
+    action = move_to_action(eb.spec, mv)
+    moved_game = _mi_engine_keys_to_game(mv.moved)
+    rep = min(moved_game)
+    gb = next((b for b in g.blocks if mi_key(b) == rep), None)
+    if gb is None:
+        return False, f"选中片代表块 {rep} 不在 game 盘面上"
+    if not g.is_valid_gap(action['gap_type'], action['gap_line']):
+        return False, (f"缝 ({action['gap_type']}, {action['gap_line']}) "
+                       f"过不了 game 的 is_valid_gap")
+    orig = [list(b.location) for b in g.blocks]
+    g.opt(action['gap_type'], action['gap_line'], gb)
+    selected = {mi_key(b) for b in g.blocks if b.be_opted}
+    if selected != moved_game:
+        for b, loc in zip(g.blocks, orig):
+            b.location = list(loc)
+        return False, (f"game 选中集与引擎 moved 不一致：多 "
+                       f"{sorted(selected - moved_game)[:3]} / 少 "
+                       f"{sorted(moved_game - selected)[:3]}")
+    pos = g.try_move(action['direction'], mv.step)
+    if not pos:
+        for b, loc in zip(g.blocks, orig):
+            b.location = list(loc)
+        return False, (f"game 拒绝引擎移动（{action['direction']} "
+                       f"step={mv.step}）")
+    g.commit_move(pos)
+    result = frozenset(mi_key(b) for b in g.blocks)
+    for b, loc in zip(g.blocks, orig):
+        b.location = list(loc)
+    expect = frozenset(_mi_engine_keys_to_game(eb.apply(mv).keys))
+    if result != expect:
+        return False, "game 重放结果态与引擎 apply 不一致"
+    return True, ''
+
+
+def mi_engine_seam_partitions(eb):
+    """引擎侧全部有效缝（seam_clear 通过且 t 在秩区间内）的侧分区（game 坐标）。"""
+    spec = eb.spec
+    keys = eb.keys
+    parts = set()
+    for fam in spec.seam_families:
+        vals = {k: fam.rank_of(k[0], k[1]) for k in keys}
+        lo, hi = min(vals.values()), max(vals.values())
+        for t in range(lo + 1, hi + 1):
+            if not spec.seam_clear(fam, t, eb):
+                continue
+            side_lo = frozenset(k for k in keys if vals[k] < t)
+            parts.add((frozenset(_mi_engine_keys_to_game(side_lo)),
+                       frozenset(_mi_engine_keys_to_game(keys - side_lo))))
+    return parts
+
+
+def mi_game_seam_partitions(g):
+    """game 侧全部有效缝（all_gaps）的侧分区。"""
+    cells = g.positions()
+    parts = set()
+    for gap_type, line in g.all_gaps():
+        s0 = frozenset(c for c in cells if side_of(gap_type, line, c) == 0)
+        parts.add((s0, frozenset(cells - s0)))
+    return parts
+
+
+def mi_game_reject_attribution(g, step):
+    """game 侧全部候选走法的拒绝归因（L6 非空性证明用，只读不改盘面）。
+
+    逐步检查复刻 try_move_ex 的 _check_step 三步判据（键相交 / 几何
+    重叠 / 单一连通），用于定位失败发生在第几步、该步选中片是否键
+    不相交。纯统计：不提交任何移动，location 不被改动。
+    """
+    stats = {'ok': 0, 'collision_key': 0, 'collision_overlap_only': 0,
+             'disconnected': 0}
+    cells = g.positions()
+    key_to_block = {mi_key(b): b for b in g.blocks}
+    for gap_type, line in g.all_gaps():
+        for side in (0, 1):
+            same = {c for c in cells if side_of(gap_type, line, c) == side}
+            for comp in _mi_components(same):
+                g.opt(gap_type, line, key_to_block[min(comp)])
+                sel = [b for b in g.blocks if b.be_opted]
+                if not sel:
+                    continue
+                non_keys = {mi_key(b) for b in g.blocks if not b.be_opted}
+                for d in MI_GAME_GAP[gap_type]:
+                    delta = MI_GAME_DIRECTIONS[d]
+                    cur = [list(b.location) for b in sel]
+                    reason = 'ok'
+                    for _ in range(step):
+                        nxt = [(c[0] + delta[0], c[1] + delta[1], c[2])
+                               for c in cur]
+                        nxt_set = set(nxt)
+                        if nxt_set & non_keys:
+                            reason = 'collision_key'
+                            break
+                        if _has_overlap(nxt_set, non_keys):
+                            reason = 'collision_overlap_only'
+                            break
+                        if not g.is_single_connected(nxt_set | non_keys):
+                            reason = 'disconnected'
+                            break
+                        cur = nxt
+                    stats[reason] += 1
+    return stats
+
+
+def _mi_random_walk_states(m, n, step, count, seed):
+    """从还原态随机走 count 步，沿途采样局面（按规范形去重）。"""
+    rng = random.Random(seed)
+    cur = mi_board(m, n)
+    states, seen = [cur], {cur.canonical_key()}
+    for _ in range(count):
+        ms = cur.legal_moves(step)
+        if not ms:
+            break
+        cur = cur.apply(rng.choice(ms))
+        k = cur.canonical_key()
+        if k not in seen:
+            seen.add(k)
+            states.append(cur)
+    return states
+
+
+def _mi_game_apply_action(g, action):
+    """在 game_mi 上按动作 dict 重放一步（GUI 同路：opt → try_move → commit）。"""
+    target = tuple(action['moved_positions'][0])
+    anchor = next((b for b in g.blocks if mi_key(b) == target), None)
+    if anchor is None:
+        return None
+    g.opt(action['gap_type'], action['gap_line'], anchor)
+    if not any(b.be_opted for b in g.blocks):
+        return None
+    pos = g.try_move(action['direction'], action['step'])
+    if not pos:
+        return None
+    g.commit_move(pos)
+    return frozenset(mi_key(b) for b in g.blocks)
+
+
+# ---- L0 词汇与邻表：引擎常量表 = game_mi × 2（桥不偷偷改词汇）----
+check(mi_geometry.MI_DIRECTIONS ==
+      {k: (2 * v[0], 2 * v[1]) for k, v in MI_GAME_DIRECTIONS.items()},
+      "米字方向字母表与 game_mi.DIRECTIONS 逐项一致（×2 坐标）")
+check(mi_geometry.MI_GAP_DIRECTIONS == MI_GAME_GAP,
+      "米字缝族方向表与 game_mi.GAP_DIRECTIONS 一致")
+_nb_bad = 0
+for _q in mi_geometry.MI_ORIENTATIONS:
+    _eng = {(*off[0], off[1])
+            for off in dict(mi_geometry.MI_ORIENT_STEPS)[_q]}
+    _game = {(round(2 * nb[0]), round(2 * nb[1]), nb[2])
+             for nb in neighbors((0, 0, _q))}
+    if _eng != _game:
+        _nb_bad += 1
+check(_nb_bad == 0, "米字 5 邻表与 game_mi.neighbors 逐项一致（×2 坐标）")
+
+# ---- 退化尺寸：1×1 有两条对角缝、8 个合法移动；单块板冻形，两引擎一致 ----
+mi11 = mi_board(1, 1)
+g11 = _mi_game_from_keys(mi11.keys, 1, 1)
+check(len(mi11.legal_moves(1)) == 8,
+      f"1×1 米字 8 个合法移动（两条对角缝 × 两侧 × 两方向，实际 "
+      f"{len(mi11.legal_moves(1))}）")
+check(set(g11.all_gaps()) == {('d1', 0), ('d2', 0)},
+      f"1×1 米字有两条对角缝（game all_gaps 实测 {sorted(g11.all_gaps())}）")
+mi1b = Board.from_keys(mi11.spec, [((0, 0), 'N')])
+g1b = _mi_game_from_keys(mi1b.keys, 1, 1)
+check(frozen(mi1b, 1) is True and g1b.all_gaps() == [],
+      "单块米字冻形（引擎零合法移动，game 无有效缝）")
+
+# ---- 采样局面：四个尺寸还原态 + 随机走查态（规范形去重，总量封顶）----
+sampled = [(m, n, mi_board(m, n)) for m, n in ((3, 3), (2, 3), (2, 2), (1, 1))]
+_seen = {eb.canonical_key() for _, _, eb in sampled}
+for m, n, step, cnt, seed in ((3, 3, 1, 60, 4242), (2, 3, 1, 60, 777),
+                              (3, 3, 2, 50, 99), (2, 2, 1, 40, 55)):
+    for b in _mi_random_walk_states(m, n, step, cnt, seed):
+        k = b.canonical_key()
+        if k in _seen:
+            continue
+        _seen.add(k)
+        sampled.append((m, n, b))
+        if len(sampled) >= 18:
+            break
+    if len(sampled) >= 18:
+        break
+
+# ---- L1 移动对拍 ----
+l1a_bad, l1a_count = [], 0
+game_only_total = engine_only_total = 0
+state_ov_bad = []
+for m, n, eb in sampled:
+    g = _mi_game_from_keys(eb.keys, m, n)
+    if any_overlap(g.positions()):
+        state_ov_bad.append((m, n))
+        continue
+    for step in ((1, 2) if m * n > 1 else (1,)):
+        moves = eb.legal_moves(step)
+        # L1a：引擎每个合法移动 → game 逐一重放（缝/选中集/走法/结果态）
+        for mv in moves:
+            l1a_count += 1
+            ok, detail = mi_engine_move_replay(eb, g, mv)
+            if not ok:
+                l1a_bad.append((m, n, step, mv.family, mv.t, detail))
+        # L1b：game 每个移动的结果 ⊆ 引擎结果集合（完整性方向）
+        eng_results = {frozenset(_mi_engine_keys_to_game(nb.keys))
+                       for nb in (eb.apply(mv) for mv in moves)}
+        game_results = mi_game_move_results(g, step)
+        game_only_total += len(game_results - eng_results)
+        engine_only_total += len(eng_results - game_results)
+check(not state_ov_bad, f"采样局面本身无任何两块重叠（偏差 {state_ov_bad}）")
+check(not l1a_bad and l1a_count >= 200,
+      f"引擎每个合法移动在 game_mi 上逐一重放一致（{l1a_count} 个，"
+      f"偏差 {len(l1a_bad)}）"
+      + (f"；首例 {l1a_bad[0][:5]}: {l1a_bad[0][5]}" if l1a_bad else ""))
+check(game_only_total == 0,
+      f"game 的每个移动引擎都有（game ⊆ engine；engine 多出 "
+      f"{engine_only_total} 个结果——game 的候选缝生成是启发式、引擎给"
+      f"全量有效缝，多出部分的正确性由上面的逐一重放保底）")
+
+# ---- L2 缝隙分区：game 每条有效缝的侧分区，引擎必有同分区的有效缝 ----
+l2_bad, l2_parts = [], 0
+for m, n, eb in sampled:
+    g = _mi_game_from_keys(eb.keys, m, n)
+    eng_parts = mi_engine_seam_partitions(eb)
+    game_parts = mi_game_seam_partitions(g)
+    l2_parts += len(game_parts)
+    missing = game_parts - eng_parts
+    if missing:
+        l2_bad.append((m, n, len(missing)))
+check(not l2_bad,
+      f"game 每条有效缝的侧分区引擎都有（{l2_parts} 个分区，偏差 {l2_bad}）")
+
+# ---- L4 还原判定：采样局面 + 平移/換晶格/旋转/转置/挖洞变体 ----
+def _mi_sym(eb, f):
+    """D4 变换：(r, c) → f(r, c)；朝向按 base 边法线的诱导置换 N→W→S→E→N。"""
+    qmap = {'N': 'W', 'W': 'S', 'S': 'E', 'E': 'N'}
+    return Board(eb.spec, tuple(
+        Block(f(b.point), qmap[b.orient], b.group) for b in eb.blocks))
+
+
+l4_bad, l4_count = [], 0
+for m, n, eb in sampled:
+    variants = [
+        eb,
+        eb.translate((4, -2)),                  # 整数平移（A 晶格内）
+        eb.translate((1, 1)),                   # 半整平移（A → B 晶格）
+        _mi_sym(eb, lambda p: (-p[1], p[0])),   # 90° 旋转
+        _mi_sym(eb, lambda p: (p[1], p[0])),    # 转置
+    ]
+    if len(eb.blocks) > 4:
+        variants.append(Board(eb.spec, eb.blocks[1:]))   # 挖掉一块
+    for vb in variants:
+        l4_count += 1
+        g = _mi_game_from_keys(vb.keys, m, n)
+        if vb.is_solved() != g.is_solved():
+            l4_bad.append((m, n, vb.is_solved(), g.is_solved()))
+check(not l4_bad,
+      f"还原判定一致（{l4_count} 个局面/变体：平移/換晶格/旋转/转置/挖洞，"
+      f"偏差 {len(l4_bad)}）")
+
+# ---- L5 安全打乱：路径/撤销在 game_mi 上双重重放 ----
+rng = random.Random(20261021)
+b53 = mi_board(3, 3)
+final, path, undo_path = safe_scramble(b53, 1, 30, rng)
+check(len(path) == 30, f"30 步全部可逆（实际 {len(path)}）")
+check(len(undo_path) == len(path), "每步都记录了撤销移动")
+check(not final.is_solved(), "终态不是还原态")
+check(verify_path(b53, path) == final, "路径重放与终态一致")
+check(verify_path(final, tuple(reversed(undo_path))) == b53,
+      "反转撤销路径精确回到还原态（字面解法）")
+g5 = _mi_game_from_keys(b53.keys, 3, 3)
+g5_ok = True
+for mv in path:
+    if _mi_game_apply_action(g5, move_to_action(b53.spec, mv)) is None:
+        g5_ok = False
+        break
+if g5_ok:
+    if g5.is_solved() or frozenset(g5.positions()) != \
+            frozenset(_mi_engine_keys_to_game(final.keys)):
+        g5_ok = False
+    else:
+        for mv in reversed(undo_path):
+            if _mi_game_apply_action(g5, move_to_action(b53.spec, mv)) is None:
+                g5_ok = False
+                break
+        if g5_ok and frozenset(g5.positions()) != \
+                frozenset(_mi_engine_keys_to_game(b53.keys)):
+            g5_ok = False
+check(g5_ok, "打乱路径经 game_mi 重放：前进到终态、逆序撤销回起点")
+
+# ---- L6 错位态重叠：判定对拍 + 拒绝路径非空性 ----
+# 有界区域内全部合法点（引擎整数坐标，p0≡p1 mod 2 = A/B 双晶格）× 四朝向
+_pts6 = [(r, c) for r in range(7) for c in range(7) if (r - c) % 2 == 0]
+_keys6 = [((r, c), q) for r, c in _pts6
+          for q in mi_geometry.MI_ORIENTATIONS]
+ov_bad = ov_positive = 0
+for k1 in _keys6:
+    g1 = next(iter(_mi_engine_keys_to_game({k1})))
+    for k2 in _keys6:
+        g2 = next(iter(_mi_engine_keys_to_game({k2})))
+        eng = mi_geometry.has_overlap({k1}, {k2})
+        # game 的键相交在调用方 _check_step，_has_overlap 只管几何
+        game = (g1 == g2) or _has_overlap({g1}, {g2})
+        if eng != game:
+            ov_bad += 1
+        if eng and k1 != k2:
+            ov_positive += 1
+check(ov_bad == 0,
+      f"重叠判定与 game_mi 逐对一致（{len(_keys6)}² 对，偏差 {ov_bad}）")
+check(ov_positive > 0,
+      f"错位态存在键不同但正面积重叠的块对（{ov_positive} 对——"
+      f"「键集合不相交」放它们过去就是死盘，几何判定非摆设）")
+rej = {'ok': 0, 'collision_key': 0, 'collision_overlap_only': 0,
+       'disconnected': 0}
+for m, n, eb in sampled:
+    g = _mi_game_from_keys(eb.keys, m, n)
+    for k, v in mi_game_reject_attribution(g, 1).items():
+        rej[k] += v
+check(rej['collision_overlap_only'] > 0,
+      f"走查中出现的「键不相交但几何重叠」拒绝 {rej['collision_overlap_only']} "
+      f"次（候选统计 {rej}）")
 
 print()
 if failures:

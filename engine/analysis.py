@@ -19,15 +19,18 @@ def locked_seams(board: Board):
 
     返回 [{'family': 族名, 't': 缝位置, 'reason': 原因}]。
     板型没有 seam_clear 钩子时返回 []（该板型不存在锁死缝概念）。
+    缝坐标走 ``SeamFamily.rank_of(point, orient)``（P2 硬骨 9：米字
+    四族的 rank 带朝向修正，点部线性泛函只够方形/立方）。
     """
     spec = board.spec
     if spec.seam_clear is None:
         return []
-    pts = board.points
     out = []
     for fam in spec.seam_families:
-        vals = {p: _dot(fam.coeffs, p) for p in pts}
-        lo, hi = min(vals.values()), max(vals.values())
+        vals = [fam.rank_of(b.point, b.orient) for b in board.blocks]
+        if not vals:
+            continue
+        lo, hi = min(vals), max(vals)
         for t in range(lo + 1, hi + 1):
             if not spec.seam_clear(fam, t, board):
                 out.append({'family': fam.name, 't': t,

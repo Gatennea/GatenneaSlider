@@ -12,12 +12,19 @@ P1 要把方形引擎切到引擎层（docs/spec/几何引擎.md §5），切之
   · 引擎 Move：``family / t / side / direction(元组) / step / moved``。
 
 三处既有格式与引擎的差一在本层吸收，调用方不用记：
-  · **缝序号**：既有引擎的 gap_line 是 0 基行/列号，引擎 ``t = gap_line + 1``
-    （切分族双游：{p: f(p)=t} 的 f<t 侧 = above/left，f≥t 侧 = below/right）；
-  · **方向**：既有格式用字母（方形 a/d/w/s），引擎用方向元组——词汇表
-    按板型注册（square 已注册；三角/米字的字母表在 P2 随板型落地，
-    两引擎的 DIRECTIONS 表现成即是）；
-  · **side**：既有格式不记侧（由 moved 相对缝的位置隐含），本层负责推导。
+  · **缝序号**：既有引擎的 gap_line 与引擎 t 的关系**随板型/缝族而定**
+    ——统一公式 ``t = line_scale · L + 1``（line_scale 挂在 SeamFamily 上：
+    方形/立方/米字 d1/d2 = 1，米字 h/v = 4——错位态会出现 ¼ 线，点部
+    整数模型必须放大线分辨率）。米字 h/v 的 L 可以是 ¼ 整数，动作 dict
+    的 gap_line 随之可能是 0.25 这类值（与 game_mi.gap_candidates 同形）；
+  · **方向**：既有格式用字母（方形 a/d/w/s，米字 q/w/e/a/d/z/s/x），
+    引擎用方向元组——词汇表按板型注册（square / mi 已注册）；
+  · **坐标**：既有格式的位置是**真实坐标**（= 引擎点 / lattice.scale；
+    米字 B 晶格是半整数），引擎用整数点——换算按 spec 的 scale 走；
+  · **side**：既有格式不记侧（由 moved 相对缝的位置隐含），本层负责推导；
+  · **位置形状**：无朝向板型的位置就是点 (r, c)；带朝向板型（米字）
+    是 (r, c, q)——与 GUI move_info 的 moved_positions 逐项同形，
+    块键 (point, orient) 与它的互换在本层完成（P2 硬骨 7）。
 
 本模块是**迁移件**：既有格式随旧引擎退役时一并删除。引擎核心零依赖
 本层，本层也**不 import 任何 game*.py**——迁移方向就是让上层只同
@@ -28,7 +35,8 @@ engine 对话，桥自己不能反向依赖旧引擎（方形字母表在此重�
 跨侧选中片，全部显式抛错，绝不静默兜底。纯逻辑零 pygame。
 """
 
-from .board import Board, Move, _dot  # noqa: F401  （_dot 供本模块复用）
+from .board import Board, Move, _add, _dot  # noqa: F401  （_add/_dot 供本模块复用）
+from .mi_geometry import MI_DIRECTIONS  # noqa: E402  （米字字母表随 P2 板型落地）
 
 
 # ----------------------------------------------------------------------
@@ -112,19 +120,85 @@ def _letter_to_dir(spec, letter):
     return table[letter]
 
 
-def _norm_points(raw, spec, what):
-    """位置列表 → 排序去重元组（接受 list/tuple，拒绝非整数/离格点）。"""
+def _real_to_point(spec, coords, what):
+    """既有格式的真实坐标（= 引擎点 / scale）→ 引擎整数点。
+
+    方形/立方 scale=1：坐标即点，整数校验交给 lattice.valid；
+    米字 scale=2：GUI 的 moved_positions 是实坐标 (r, c, q)——A 晶格
+    整数、B 晶格半整数。乘 scale 转引擎点，**非 1/scale 倍数显式拒绝**
+    （AGENTS.md §2：不静默取整——取整会把一个动作悄悄搬到别的缝上）。
+    """
+    scale = spec.lattice.scale
+    if scale == 1:
+        return tuple(coords)
+    out = []
+    for x in coords:
+        if isinstance(x, bool) or not isinstance(x, (int, float)):
+            raise ValueError(f"{what} 含非数值坐标 {x!r}")
+        v = x * scale
+        if isinstance(v, float):
+            if not v.is_integer():
+                raise ValueError(
+                    f"{what} 含坐标 {x!r}（不是 1/{scale} 的倍数，"
+                    f"无法精确转到引擎整数点）")
+            v = int(v)
+        out.append(v)
+    return tuple(out)
+
+
+def _norm_keys(raw, spec, what):
+    """位置列表 → 排序去重的块键 (point, orient) 元组。
+
+    接受两种位置形状：长度 = dim 的点（orient 缺省 ''，方形/立方），
+    或长度 = dim+1 的点 + 朝向（米字 (r, c, q)，与 GUI move_info 的
+    moved_positions 逐项同形）。坐标按 lattice.scale 放大成引擎点，
+    拒绝非整数倍 / 离格点 / 未知朝向 / 重复。
+    """
     if not isinstance(raw, (list, tuple)) or not raw:
         raise ValueError(f"{what} 须为非空列表，收到 {raw!r}")
+    dim = spec.lattice.dim
     out = []
     for p in raw:
-        q = tuple(p) if isinstance(p, (list, tuple)) else None
-        if q is None or not spec.lattice.valid(q):
+        if not isinstance(p, (list, tuple)):
+            raise ValueError(f"{what} 含非法位置 {p!r}")
+        if len(p) == dim:
+            key = (_real_to_point(spec, p, what), '')
+        elif len(p) == dim + 1 and isinstance(p[dim], str):
+            key = (_real_to_point(spec, p[:dim], what), p[dim])
+        else:
+            raise ValueError(
+                f"{what} 含非法位置 {p!r}（长度须为 {dim} 或 {dim + 1}）")
+        if not spec.lattice.valid(key[0]):
             raise ValueError(f"{what} 含非法坐标 {p!r}（不在板型格上）")
-        out.append(q)
+        if spec.orientations:
+            if key[1] not in spec.orientations:
+                raise ValueError(
+                    f"{what} 含未知朝向 {key[1]!r}（合法: {spec.orientations}）")
+        elif key[1] != '':
+            raise ValueError(
+                f"板型 {spec.name!r} 未声明朝向，位置却带朝向 {key[1]!r}")
+        out.append(key)
     if len(set(out)) != len(out):
-        raise ValueError(f"{what} 存在重复坐标")
+        raise ValueError(f"{what} 存在重复块键")
     return tuple(sorted(out))
+
+
+def _keys_to_positions(keys, spec):
+    """块键 → 既有格式的位置（真实坐标 = 引擎点 / scale，orient 为 '' 时剥掉）。
+
+    整数结果归一为 int（与 GUI location / gap_candidates 的整数归一同形：
+    A 晶格块写 [0, 1, 'N'] 而不是 [0.0, 1.0, 'N']）。
+    """
+    scale = spec.lattice.scale
+    out = []
+    for p, o in keys:
+        if scale == 1:
+            q = p
+        else:
+            q = tuple(int(x / scale) if x % scale == 0 else x / scale
+                      for x in p)
+        out.append(q if o == '' else q + (o,))
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -133,9 +207,10 @@ def _norm_points(raw, spec, what):
 def move_to_action(spec, move) -> dict:
     """引擎 Move → history 动作 dict（存档 / moves 日志 / move_info 同格式）。
 
-    差一在本层吸收：``gap_line = t - 1``；方向元组 → 字母；moved 排序。
-    产出可 JSON 序列化（元组在 json.dump 下自动变 list，与 GUI 写的
-    move_info 逐键同形）。
+    差一在本层吸收：``gap_line = (t - 1) / line_scale``（方形/立方/米字
+    d1/d2 为 int；米字 h/v 可能是 0.25 这类 ¼ 线，整数时归一成 int，与
+    game_mi.gap_candidates 的归一同形）；方向元组 → 字母；坐标转真实
+    值。产出可 JSON 序列化（与 GUI 写的 move_info 逐键同形）。
     """
     fam = _family_of(spec, move.family)
     if _dot(fam.coeffs, move.direction) != 0:
@@ -150,12 +225,17 @@ def move_to_action(spec, move) -> dict:
             f"{len(letters)} 个字母（{letters}）——词汇表须与方向一一对应")
     if not move.moved:
         raise ValueError("空选中片的移动不能转动作（合法移动必有非空 moved）")
+    if fam.line_scale == 1:
+        line = move.t - 1
+    else:
+        raw = (move.t - 1) / fam.line_scale
+        line = int(raw) if raw.is_integer() else raw
     return {
         'gap_type': move.family,
-        'gap_line': move.t - 1,
+        'gap_line': line,
         'direction': letters[0],
         'step': move.step,
-        'moved_positions': [tuple(p) for p in move.moved],
+        'moved_positions': _keys_to_positions(move.moved, spec),
     }
 
 
@@ -163,14 +243,18 @@ def move_to_record(spec, move) -> dict:
     """引擎 Move → 打乱演示 record dict（与 game.record_shuffle_move 同格式）。
 
     ``'final'`` 由 moved + step·direction 现算（record 格式本就冗余，
-    GUI 重放只消费 moved/final/gap/direction/step）。
+    GUI 重放只消费 moved/final/gap/direction/step）。位置形状与
+    move_to_action 一致（无朝向板型剥 orient）。
     """
     action = move_to_action(spec, move)
     delta = tuple(move.step * x for x in move.direction)
+    final = []
+    for p, o in move.moved:
+        q = _add(p, delta)
+        final.append(q if o == '' else q + (o,))
     return {
         'moved': action['moved_positions'],
-        'final': [tuple(p[i] + delta[i] for i in range(len(p)))
-                  for p in action['moved_positions']],
+        'final': final,
         'gap': (action['gap_type'], action['gap_line']),
         'direction': action['direction'],
         'step': move.step,
@@ -204,14 +288,21 @@ def action_to_move(spec, action) -> Move:
             f"动作方向 {action['direction']!r}={d} 不平行于缝族 "
             f"{fam.name!r}（f(d)={_dot(fam.coeffs, d)}）")
     line = action['gap_line']
-    if type(line) is not int:
-        raise ValueError(f"gap_line 须为整数，收到 {line!r}")
+    if isinstance(line, bool) or not isinstance(line, (int, float)):
+        raise ValueError(f"gap_line 须为数值，收到 {line!r}")
+    scaled = fam.line_scale * line
+    if isinstance(scaled, float):
+        if not scaled.is_integer():
+            raise ValueError(
+                f"gap_line {line!r} 不是 1/{fam.line_scale} 的倍数"
+                f"（缝族 {fam.name!r} 的线分辨率是 {fam.line_scale}×）")
+        scaled = int(scaled)
     step = action['step']
     if type(step) is not int or step < 1:
         raise ValueError(f"step 须为 ≥ 1 的整数，收到 {step!r}")
-    moved = _norm_points(action['moved_positions'], spec, 'moved_positions')
-    t = line + 1
-    vals = {_dot(fam.coeffs, p) for p in moved}
+    moved = _norm_keys(action['moved_positions'], spec, 'moved_positions')
+    t = scaled + 1
+    vals = {fam.rank_of(p, o) for p, o in moved}
     if all(v < t for v in vals):
         side = -1
     elif all(v >= t for v in vals):
@@ -266,3 +357,5 @@ def apply_action(board, action) -> Board:
 
 
 register_direction_vocab('square', SQUARE_DIRECTIONS)
+# 米字字母表（引擎坐标 = game_mi.DIRECTIONS × 2，等价性由 L 节差分钉死）
+register_direction_vocab('mi', MI_DIRECTIONS)

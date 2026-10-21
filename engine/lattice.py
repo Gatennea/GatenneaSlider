@@ -4,10 +4,13 @@
 坐标模型（整个引擎的地基， deliberately 极简）：
   · 一个「点」= 长度为 ``dim`` 的整数元组；真实几何坐标 = 整数 / ``scale``。
     - 方形 ``Z²``：``scale=1``，点 = (r, c)；
-    - 米字半整晶格（P2 预位）：``scale=2``，点 = (2r, 2c)，合法性约束
+    - 米字半整晶格（P2 已落地）：``scale=2``，点 = (2r, 2c)，合法性约束
       ``2r ≡ 2c (mod 2)``（即 p≡q，A/B 双晶格的代数形式）。
   · 邻接 = 点 + ``neighbor_steps`` 里的偏移。方形 4 邻接、三角 3 邻接、
     米字 5 邻接（3 同晶格 + 2 跨晶格）**只是换一张偏移表**，无分支代码。
+  · **带朝向的板型**（米字 N/E/S/W）邻接查 ``orient_steps`` 表：偏移
+    同时含点位移与朝向位移，按 (point, orient) 联合查——同格心四块
+    互为邻或不邻取决于朝向，点级偏移表表达不了。
   · 自同构群 = 规范化（canonicalize）的对称来源。默认「超八面体群」
     （轴置换 × 符号翻转）：2 维即 D4 八变换（与 solver/table_core 的
     canonicalize 同源），3 维即立方体 48 变换。特殊格（如三角密铺的
@@ -31,10 +34,18 @@ class Lattice:
         dim: 坐标维度（2=平面，3=立体；引擎核心按任意维度写）。
         scale: 坐标都是整数，真实坐标 = 整数 / scale（半整晶格填 2）。
         neighbor_steps: 连通性邻接偏移表（整数元组，长度须为 dim）。
+            点级邻接（方形/立方）；orient_steps 非空时本表退居为
+            「无朝向板型」的邻接，两者至少其一非空。
         parity_linear: 可选合法性约束——点 p 合法当且仅当
             ``sum(parity_linear[i]*p[i]) % 2 == 0``（米字双晶格填 (1,1)）。
         symmetry: 自同构群生成方式，当前仅 'hyperoctahedral'
             （轴置换 × 符号翻转；对 Z^d 及其半整子格均封闭）。
+        orient_steps: 可选**带朝向**邻接表：
+            ``((orient, ((dpoint, dorient), ...)), ...)``——每块按
+            (point, orient) 联合查偏移（米字 5 邻：3 同晶格 + 2 跨晶格，
+            同格心四块互为邻或不邻取决于朝向）。非空 = 该板型的连通性
+            按联合键走；空 = 点级邻接（orient 恒 '' 的板型）。
+            表内 dorient 必须也是表内 orient（封闭才可能连通）。
     """
 
     dim: int
@@ -42,6 +53,7 @@ class Lattice:
     neighbor_steps: tuple = ()
     parity_linear: tuple = None
     symmetry: str = 'hyperoctahedral'
+    orient_steps: tuple = ()
 
     def __post_init__(self):
         if type(self.dim) is not int or self.dim < 1:
@@ -72,6 +84,34 @@ class Lattice:
             raise ValueError(
                 f"不支持的自同构群: {self.symmetry!r}"
                 f"（当前仅 'hyperoctahedral'；三角等特殊群待 P2 扩展）")
+        # ---- orient_steps：带朝向邻接表（米字 5 邻）----
+        if self.orient_steps:
+            if self.neighbor_steps:
+                raise ValueError(
+                    "orient_steps 与 neighbor_steps 二选一：带朝向板型的"
+                    "邻接全走 orient_steps，不允许两张表并存（防歧义）")
+            orients = []
+            for entry in self.orient_steps:
+                if (not isinstance(entry, tuple) or len(entry) != 2
+                        or not isinstance(entry[0], str) or not entry[0]
+                        or not isinstance(entry[1], tuple) or not entry[1]):
+                    raise ValueError(
+                        f"orient_steps 元素须为 (orient, 非空偏移元组)，"
+                        f"收到 {entry!r}")
+                orients.append(entry[0])
+            if len(set(orients)) != len(orients):
+                raise ValueError(f"orient_steps 的 orient 重复: {orients}")
+            oset = set(orients)
+            for orient, offs in self.orient_steps:
+                for off in offs:
+                    if (not isinstance(off, tuple) or len(off) != 2
+                            or not isinstance(off[0], tuple)
+                            or len(off[0]) != self.dim
+                            or not all(type(x) is int for x in off[0])
+                            or off[1] not in oset):
+                        raise ValueError(
+                            f"orient {orient!r} 的偏移 {off!r} 非法："
+                            f"须为 (长度 {self.dim} 的整数点位移, 表内 orient)")
 
     # ------------------------------------------------------------------
     # 坐标合法性
@@ -99,6 +139,26 @@ class Lattice:
             q = tuple(point[i] + s[i] for i in range(self.dim))
             if self.valid(q):
                 yield q
+
+    def neighbors_of(self, point, orient=''):
+        """(point, orient) 的全部邻接块 → (point', orient')。
+
+        带朝向板型（orient_steps 非空）按联合键查偏移表——同格心四块
+        互为邻或不邻取决于朝向（米字 N 与 S 只共顶点、不共边），点级
+        偏移表表达不了这种关系。表路径**不做 valid 复核**：表由板型
+        定义者保证封闭（米字表从合法点只会走到合法点），复核只会掩盖
+        表错误；下游按键集合成员判定，坏键自然落空。
+
+        无朝向板型（方形/立方）走点级邻接，orient 原样带回（恒 ''）。
+        """
+        if self.orient_steps:
+            table = dict(self.orient_steps)
+            for dpoint, dorient in table.get(orient, ()):
+                yield (tuple(point[i] + dpoint[i]
+                             for i in range(self.dim)), dorient)
+        else:
+            for q in self.neighbors(point):
+                yield (q, orient)
 
     # ------------------------------------------------------------------
     # 自同构群（规范化的对称来源）
