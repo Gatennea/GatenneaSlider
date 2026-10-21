@@ -237,7 +237,17 @@ class TriangleBoardView:
 
     def candidate_gaps(self, wx: float, wy: float, cells,
                        tolerance: float = 10.0):
-        """候選縫隙（未經遊戲邏輯驗證），由近到遠。"""
+        """候選縫隙（未經遊戲邏輯驗證），由近到遠。
+
+        防呆：點必須落在棋形凸包（即「棋盤圖像」範圍）內或貼邊 tolerance
+        距離內，否則不回傳任何縫隙——三角形棋盤是三角形而非矩形，其包圍盒
+        有兩個空角；若只用「到無限長縫隙線的距離」判斷，空角裡單擊也會命中
+        某條線而選中縫隙。方形 candidate_gaps 有矩形邊界守衛、米字 gap_at 只
+        認棋盤內的單位邊，都不會這樣；這裡用棋形凸包對齊同一行為。
+        """
+        hull = self.board_hull(cells)
+        if hull and not _point_near_polygon(wx, wy, hull, tolerance):
+            return []
         found = []
         for gap_type in GAP_DIRECTIONS:
             for line in gap_index_range(gap_type, cells):
@@ -270,3 +280,47 @@ def _point_in_tri(px: float, py: float, pts) -> bool:
     has_neg = d1 < 0 or d2 < 0 or d3 < 0
     has_pos = d1 > 0 or d2 > 0 or d3 > 0
     return not (has_neg and has_pos)
+
+
+def _point_in_polygon(px: float, py: float, poly) -> bool:
+    """點是否在多邊形內（射線法，凹凸皆可用；邊界視為內）。"""
+    n = len(poly)
+    if n < 3:
+        return False
+    inside = False
+    x0, y0 = poly[0]
+    for k in range(1, n + 1):
+        x1, y1 = poly[k % n]
+        if (y0 > py) != (y1 > py):
+            xint = x0 + (py - y0) * (x1 - x0) / (y1 - y0)
+            if px < xint:
+                inside = not inside
+        x0, y0 = x1, y1
+    return inside
+
+
+def _seg_dist(px: float, py: float,
+              ax: float, ay: float, bx: float, by: float) -> float:
+    """點到線段 (a,b) 的最短距離。"""
+    dx = bx - ax
+    dy = by - ay
+    l2 = dx * dx + dy * dy
+    if l2 < 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / l2
+    t = max(0.0, min(1.0, t))
+    cx = ax + t * dx
+    cy = ay + t * dy
+    return math.hypot(px - cx, py - cy)
+
+
+def _point_near_polygon(px: float, py: float, poly, margin: float) -> bool:
+    """點在 poly 內，或在 margin 距離內。"""
+    if _point_in_polygon(px, py, poly):
+        return True
+    for k in range(len(poly)):
+        ax, ay = poly[k]
+        bx, by = poly[(k + 1) % len(poly)]
+        if _seg_dist(px, py, ax, ay, bx, by) <= margin:
+            return True
+    return False
