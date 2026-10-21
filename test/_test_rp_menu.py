@@ -42,16 +42,21 @@ check("面板总高固定=340+160", gui._rp_panel_size()[1] == 340 + 160)
 gui.rp_detail_id = None
 check("收起时详情高度为 0", gui._rp_detail_height() == 0)
 
-# ---------- 2. 自适应字号 ----------
+# ---------- 2. 初始矩阵按等比方格绘制（不再用文字 █ 拼，避免纵向拉伸） ----------
 gui.rp_detail_id = r1['id']
 h = gui._rp_detail_height()
 avail_w = 132 - 16
 avail_h = h - 24 - 4
-fs6 = gui._rp_matrix_font_size(6, 6, avail_w, avail_h)     # 6 行
-fs14 = gui._rp_matrix_font_size(14, 10, avail_w, avail_h)  # 14 行
-check(f"6行矩阵字号=12 (实际{fs6})", fs6 == 12)
-check(f"14行矩阵字号缩小 (实际{fs14})", fs14 < 12)
-check(f"字号不小于下限8 (实际{fs14})", fs14 >= 8)
+box = pygame.Rect(0, 0, avail_w, avail_h)
+cell6, gap6, ox6, oy6 = gui._rp_matrix_geometry(6, 6, box)
+cell14, gap14, _, _ = gui._rp_matrix_geometry(14, 10, box)
+check(f"6x6 格边长=19 (实际{cell6})", cell6 == 19)
+check(f"14x10 格边长缩小 (实际{cell14})", cell14 < cell6)
+# 关键：格子必须是正方形（宽高由同一个 cell 决定），且整体不超出可用区域
+check("6x6 网格不超宽", cell6 * 6 - gap6 <= avail_w)
+check("6x6 网格不超高", cell6 * 6 - gap6 <= avail_h)
+check("14x10 网格不超高", cell14 * 14 - gap14 <= avail_h)
+check("14x10 网格不超宽", cell14 * 10 - gap14 <= avail_w)
 
 # 渲染 14 行矩阵：应完整绘制（行数不减）
 gui._rp_build_layout()
@@ -61,6 +66,22 @@ rec = gui._rp_detail_record()
 gui._rp_draw_detail(gui.rp_pos[0], gui.rp_pos[1] + hh - gui._rp_detail_height(), w, gui._rp_detail_height(), rec)
 lines_used = mat_big.count('\n') + 1
 check("14行矩阵全部渲染（不再截断到12）", lines_used == 14)
+
+# 三角形记录（▲/▼ 朝向标记）渲染不抛异常
+tri_key = key + ''  # 复用当前 key，仅构造三角显示串
+mat_tri = "\n".join(["#^v_", "_#^v", "__#^"])
+r3 = gui.records.add_record(tri_key, 3, 3, 1, mat_tri, 30000, 12, False)
+r3['puzzle_key'] = str(r3.get('puzzle_key', tri_key)) + '~tri3'
+gui.rp_detail_id = r3['id']
+try:
+    gui._rp_draw_detail(gui.rp_pos[0], gui.rp_pos[1] + hh - gui._rp_detail_height(),
+                        w, gui._rp_detail_height(), gui._rp_detail_record())
+    tri_ok = True
+except Exception as e:
+    tri_ok = False
+    print("  三角形矩阵渲染异常:", e)
+check("三角形初始矩阵（▲/▼ 标记）渲染不抛异常", tri_ok)
+gui.rp_detail_id = r1['id']
 
 # ---------- 3. 生成时间含年份+秒 ----------
 ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(r1['ts']))
