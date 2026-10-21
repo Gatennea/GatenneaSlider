@@ -48,6 +48,87 @@ class RendererMixin:
         gap = max(1, int(round(self.gap_width * self.zoom)))
         return cell, gap, cell + gap
 
+    def _slider_corner_radius(self):
+        """滑塊圓角半徑（像素），三形態統一取值。
+
+        方形 rect 的 border_radius 本就用 int(5*zoom)；三角/米字的多邊形
+        圓角也走同一檔，三種形態的滑塊圓角觀感才統一（不再「方形有圓角、
+        另兩個尖角」）。放在一處是單一來源，改半徑只動這一行。
+        """
+        return max(1, int(5 * self.zoom))
+
+    def _rounded_polygon_points(self, pts, radius):
+        """把多邊形每個頂點按固定像素半徑削圓（與方形 border_radius 同觀感）。
+
+        用真·圓弧：沿頂點兩條邊各回退 cut = radius / tan(θ/2) 得切點，
+        再以「內角平分線方向、距頂點 radius / sin(θ/2)」定圓心，採短弧採樣。
+        退化保護：邊太短使 cut 超過半邊長時自動縮小有效半徑；近乎平角 /
+        退化頂點保留原樣；圓心若落在外側則翻轉（凸多邊形保險，正常不觸發）。
+        三角/米字滑塊皆為三角形（凸），適用。
+        """
+        n = len(pts)
+        if n < 3 or radius <= 0:
+            return [tuple(p) for p in pts]
+        out = []
+        SEG = 5
+        for k in range(n):
+            prev = pts[(k - 1) % n]
+            cur = pts[k]
+            nxt = pts[(k + 1) % n]
+            vin_x, vin_y = prev[0] - cur[0], prev[1] - cur[1]
+            vout_x, vout_y = nxt[0] - cur[0], nxt[1] - cur[1]
+            l1 = math.hypot(vin_x, vin_y)
+            l2 = math.hypot(vout_x, vout_y)
+            if l1 < 1e-6 or l2 < 1e-6:
+                out.append(tuple(cur))
+                continue
+            uin_x, uin_y = vin_x / l1, vin_y / l1
+            uout_x, uout_y = vout_x / l2, vout_y / l2
+            dot = max(-1.0, min(1.0, uin_x * uout_x + uin_y * uout_y))
+            ang = math.acos(dot)
+            if ang < 1e-3 or ang > math.pi - 1e-3:
+                out.append(tuple(cur))
+                continue
+            cut = radius / math.tan(ang / 2.0)
+            cut = min(cut, l1 / 2.0, l2 / 2.0)
+            if cut < 1e-6:
+                out.append(tuple(cur))
+                continue
+            r_eff = cut * math.tan(ang / 2.0)
+            p1 = (cur[0] + uin_x * cut, cur[1] + uin_y * cut)
+            p2 = (cur[0] + uout_x * cut, cur[1] + uout_y * cut)
+            # 內角平分線（從頂點出發的兩邊方向之和）指向多邊形內部
+            bx, by = uin_x + uout_x, uin_y + uout_y
+            bl = math.hypot(bx, by)
+            if bl < 1e-9:  # 退化：二次貝塞爾兜底
+                out.append(tuple(p1))
+                for s in range(1, SEG):
+                    t = s / float(SEG)
+                    mt = 1 - t
+                    out.append((mt * mt * p1[0] + 2 * mt * t * cur[0] + t * t * p2[0],
+                                mt * mt * p1[1] + 2 * mt * t * cur[1] + t * t * p2[1]))
+                out.append(tuple(p2))
+                continue
+            bnx, bny = bx / bl, by / bl
+            dist = r_eff / math.sin(ang / 2.0)
+            ox, oy = cur[0] + bnx * dist, cur[1] + bny * dist
+            # 保險：圓心落在外側則翻轉（凸多邊形不應發生，但防萬一）
+            if not self._point_in_convex((ox, oy), pts):
+                ox, oy = cur[0] - bnx * dist, cur[1] - bny * dist
+            a1 = math.atan2(p1[1] - oy, p1[0] - ox)
+            a2 = math.atan2(p2[1] - oy, p2[0] - ox)
+            da = a2 - a1
+            while da > math.pi:
+                da -= 2 * math.pi
+            while da < -math.pi:
+                da += 2 * math.pi
+            out.append(tuple(p1))
+            for s in range(1, SEG):
+                a = a1 + da * (s / float(SEG))
+                out.append((ox + r_eff * math.cos(a), oy + r_eff * math.sin(a)))
+            out.append(tuple(p2))
+        return out
+
     def _tri_view(self) -> TriangleBoardView:
         """三角形棋盤視圖（隨 cell_size/gap_width 緩存重建）。"""
         view = getattr(self, '_triangle_view', None)
@@ -151,6 +232,7 @@ class RendererMixin:
         self._draw_triangle_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
+        radius = self._slider_corner_radius()  # 三形態統一圓角半徑
         # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）
         follow_map = {}
         if self.drag_following:
@@ -229,11 +311,12 @@ class RendererMixin:
                         ring_color = self._group_color_for((i, j))
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                pygame.draw.polygon(self.screen, fill, poly)
-                pygame.draw.polygon(self.screen, border_color, poly, border_w)
+                rpoly = self._rounded_polygon_points(poly, radius)
+                pygame.draw.polygon(self.screen, fill, rpoly)
+                pygame.draw.polygon(self.screen, border_color, rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（hover 更亮）
                 if hint_occ is not None and (i, j, up) in hint_occ:
-                    self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
+                    self._draw_hint_overlay(rpoly, (i, j, up) == hint_hover)
                 if ring_color is not None:
                     ring_w = max(2, int(4 * self.zoom))
                     pygame.draw.polygon(self.screen, ring_color,
@@ -261,7 +344,8 @@ class RendererMixin:
             for (i, j, up) in sorted(hint_empty):
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
+                self._draw_hint_overlay(self._rounded_polygon_points(poly, radius),
+                                       (i, j, up) == hint_hover)
 
         # 调试面板打开时：先画目标框（并把同一结果存到 self._target_region），
         # 再以该结果为基准画洞/缺口/凸起标记，两者严格一致。
@@ -341,6 +425,7 @@ class RendererMixin:
         self._draw_mi_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
+        radius = self._slider_corner_radius()  # 三形態統一圓角半徑
         selected = []
         normal = []
         for block in self.game.blocks:
@@ -384,12 +469,13 @@ class RendererMixin:
                     border_color, border_w = _play_head
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                pygame.draw.polygon(self.screen, fill, poly)
+                rpoly = self._rounded_polygon_points(poly, radius)
+                pygame.draw.polygon(self.screen, fill, rpoly)
                 pygame.draw.polygon(self.screen, border_color,
-                                    poly, border_w)
+                                    rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（與方形/三角同一套語言）
                 if hint_occ is not None and (r, c, q) in hint_occ:
-                    self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
+                    self._draw_hint_overlay(rpoly, (r, c, q) == hint_hover)
                 # 分组着色：縮環從外側向內一圈（位置類不含朝向 q，半整數
                 # 座標在 cell_class 內部整數化），線寬沿用方形慣例。pygame
                 # 多邊形描邊向外也擴半個線寬，直接描會漫進縫隙蓋住選中紅線
@@ -406,7 +492,8 @@ class RendererMixin:
             for (r, c, q) in sorted(hint_empty):
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
+                self._draw_hint_overlay(self._rounded_polygon_points(poly, radius),
+                                       (r, c, q) == hint_hover)
 
         # 调试面板打开时：先画目标框（同一结果存进 self._target_region），
         # 再以该结果为基准画洞/缺口/凸起标记，两者严格一致（同方形纪律）。
@@ -613,8 +700,8 @@ class RendererMixin:
                     border_color = self.colors['border']
                     border_w = max(1, int(2 * self.zoom))
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
-            pygame.draw.rect(self.screen, fill, rect, border_radius=int(5 * self.zoom))
-            pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=int(5 * self.zoom))
+            pygame.draw.rect(self.screen, fill, rect, border_radius=self._slider_corner_radius())
+            pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=self._slider_corner_radius())
 
             # 连锁提示：同组格叠一层半透明白（hover 更亮），着色描边仍在最上层
             if hint_occ is not None and tuple(block.location) in hint_occ:
@@ -662,7 +749,7 @@ class RendererMixin:
             bx = board_x + bc * step_px + cam_x
             by = board_y + br * step_px + cam_y
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
-            pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=int(5 * self.zoom))
+            pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=self._slider_corner_radius())
 
         # 调试面板打开时：先画目标窗口框（并把同一 region 存到 self），
         # 再以该 region 为基准画洞/缺口/凸起标记，两者严格一致。
@@ -746,7 +833,7 @@ class RendererMixin:
         # 与普通块完全一致的边框：颜色 / 宽度 / 圆角
         border_color = self.colors['border']
         border_w = max(1, int(2 * self.zoom))
-        radius = int(5 * self.zoom)
+        radius = self._slider_corner_radius()
 
         for gid, cells in groups.items():
             rs = [r for r, c in cells]
@@ -889,7 +976,7 @@ class RendererMixin:
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
             pygame.draw.rect(self.screen, gold, hl_rect,
                              max(1, int(3 * self.zoom)),
-                             border_radius=int(5 * self.zoom))
+                             border_radius=self._slider_corner_radius())
         hole = pf.get('hole')
         if hole:
             radius = max(3, int(scaled_cell * 0.35))
