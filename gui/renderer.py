@@ -145,6 +145,46 @@ class RendererMixin:
             out.append(tuple(p2))
         return out
 
+    # 米字/三角滑块在缩得较小时，斜边切割像素出现明显阶梯锯齿（方形是
+    # 轴对齐边，天然贴合像素网格，无此问题；本精简版 pygame 无 gfxdraw，
+    # 用不了多边形抗锯齿）。办法是局部超采样抗锯齿（SSAA）：在 S 倍大的
+    # 临时面上硬边绘制，再 smoothscale 回目标尺寸——边界像素与「透明」
+    # 混合成半透明边，blit 时与棋盘底色自然融合，得到平滑边缘。只在 cell
+    # 小于阈值时启用：大 cell 斜边锯齿本不可见，省掉每滑块一次 surface 分
+    # 配 + smoothscale 的开销（256 滑块时差距明显）。
+    _SLIDER_AA_MIN_CELL = 18   # cell(px) 低于此值才给三角/米字滑块开 AA
+    _SLIDER_AA_SCALE = 3       # 超采样倍率
+
+    def _slider_aa_on(self, cell_px):
+        """三角/米字滑块是否启用抗锯齿（cell 小于阈值时）。"""
+        return cell_px < self._SLIDER_AA_MIN_CELL
+
+    def _draw_aa_polygon(self, poly, fill, border_color=None, border_w=0):
+        """局部超采样抗锯齿画一个多边形（填充 + 可选描边）到 self.screen。
+
+        poly 为屏幕坐标浮点列表。按外包框建一块 SRCALPHA 临时面，坐标平移
+        到局部并放大 _SLIDER_AA_SCALE 倍，硬边填充 + 描边，再 smoothscale
+        回 1×，blit 到外包框原点。边缘半透明与底色混合，斜边不再有阶梯；
+        外形轮廓位置不变，不侵占块间缝隙（与 _board_px 的等宽缝隙兼容）。
+        """
+        S = self._SLIDER_AA_SCALE
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        pad = max(2, int(border_w) + 2)
+        x0 = int(math.floor(min(xs))) - pad
+        y0 = int(math.floor(min(ys))) - pad
+        x1 = int(math.ceil(max(xs))) + pad
+        y1 = int(math.ceil(max(ys))) + pad
+        w = max(1, x1 - x0)
+        h = max(1, y1 - y0)
+        big = pygame.Surface((w * S, h * S), pygame.SRCALPHA)
+        ipoly = [(int(round((p[0] - x0) * S)), int(round((p[1] - y0) * S)))
+                 for p in poly]
+        pygame.draw.polygon(big, fill, ipoly)
+        if border_color is not None and border_w > 0:
+            pygame.draw.polygon(big, border_color, ipoly, max(1, border_w * S))
+        self.screen.blit(pygame.transform.smoothscale(big, (w, h)), (x0, y0))
+
     def _tri_view(self) -> TriangleBoardView:
         """三角形棋盤視圖（隨 cell_size/gap_width 緩存重建）。"""
         view = getattr(self, '_triangle_view', None)
@@ -328,8 +368,12 @@ class RendererMixin:
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
                 rpoly = self._rounded_polygon_points(poly, depth)
-                pygame.draw.polygon(self.screen, fill, rpoly)
-                pygame.draw.polygon(self.screen, border_color, rpoly, border_w)
+                if self._slider_aa_on(scaled_cell):
+                    self._draw_aa_polygon(rpoly, fill, border_color, border_w)
+                else:
+                    pygame.draw.polygon(self.screen, fill, rpoly)
+                    pygame.draw.polygon(self.screen, border_color,
+                                        rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（hover 更亮）
                 if hint_occ is not None and (i, j, up) in hint_occ:
                     self._draw_hint_overlay(rpoly, (i, j, up) == hint_hover)
@@ -486,9 +530,12 @@ class RendererMixin:
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 rpoly = self._rounded_polygon_points(poly, depth)
-                pygame.draw.polygon(self.screen, fill, rpoly)
-                pygame.draw.polygon(self.screen, border_color,
-                                    rpoly, border_w)
+                if self._slider_aa_on(scaled_cell):
+                    self._draw_aa_polygon(rpoly, fill, border_color, border_w)
+                else:
+                    pygame.draw.polygon(self.screen, fill, rpoly)
+                    pygame.draw.polygon(self.screen, border_color,
+                                        rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（與方形/三角同一套語言）
                 if hint_occ is not None and (r, c, q) in hint_occ:
                     self._draw_hint_overlay(rpoly, (r, c, q) == hint_hover)
