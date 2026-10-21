@@ -37,6 +37,7 @@ engine 对话，桥自己不能反向依赖旧引擎（方形字母表在此重�
 
 from .board import Board, Move, _add, _dot  # noqa: F401  （_add/_dot 供本模块复用）
 from .mi_geometry import MI_DIRECTIONS  # noqa: E402  （米字字母表随 P2 板型落地）
+from .tri_geometry import TRI_DIRECTIONS  # noqa: E402  （三角字母表随 P2 板型落地）
 
 
 # ----------------------------------------------------------------------
@@ -157,14 +158,25 @@ def _norm_keys(raw, spec, what):
     if not isinstance(raw, (list, tuple)) or not raw:
         raise ValueError(f"{what} 须为非空列表，收到 {raw!r}")
     dim = spec.lattice.dim
+    # 三角的既有格式用布尔朝向（up=True/False），引擎用字符串 'up'/'down'——
+    # 仅当板型声明这两个朝向时做 bool↔字符串映射，互不影响其他板型。
+    tri_orient = (spec.orientations == ('up', 'down'))
     out = []
     for p in raw:
         if not isinstance(p, (list, tuple)):
             raise ValueError(f"{what} 含非法位置 {p!r}")
         if len(p) == dim:
             key = (_real_to_point(spec, p, what), '')
-        elif len(p) == dim + 1 and isinstance(p[dim], str):
-            key = (_real_to_point(spec, p[:dim], what), p[dim])
+        elif len(p) == dim + 1:
+            raw_orient = p[dim]
+            if tri_orient and isinstance(raw_orient, bool):
+                o = 'up' if raw_orient else 'down'
+            elif isinstance(raw_orient, str):
+                o = raw_orient
+            else:
+                raise ValueError(
+                    f"{what} 含非法朝向 {raw_orient!r}（须为字符串或布尔）")
+            key = (_real_to_point(spec, p[:dim], what), o)
         else:
             raise ValueError(
                 f"{what} 含非法位置 {p!r}（长度须为 {dim} 或 {dim + 1}）")
@@ -197,7 +209,14 @@ def _keys_to_positions(keys, spec):
         else:
             q = tuple(int(x / scale) if x % scale == 0 else x / scale
                       for x in p)
-        out.append(q if o == '' else q + (o,))
+        if o == '':
+            out.append(q)
+        elif o == 'up':
+            out.append(q + (True,))      # 三角既有格式用布尔朝向
+        elif o == 'down':
+            out.append(q + (False,))
+        else:
+            out.append(q + (o,))
     return out
 
 
@@ -359,3 +378,6 @@ def apply_action(board, action) -> Board:
 register_direction_vocab('square', SQUARE_DIRECTIONS)
 # 米字字母表（引擎坐标 = game_mi.DIRECTIONS × 2，等价性由 L 节差分钉死）
 register_direction_vocab('mi', MI_DIRECTIONS)
+# 三角字母表（斜坐标单位位移，与 game_triangle.DIRECTIONS 逐项一致，
+# 等价性由 M 节差分钉死）
+register_direction_vocab('tri', TRI_DIRECTIONS)

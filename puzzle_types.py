@@ -55,7 +55,23 @@ def create_puzzle(
 
     Stage 0 僅回傳 SliderMatrix；triangle/mi 分派至各自模組，模組缺失時
     回退方形（呼叫方需自行處理）。
+
+    幾何引擎開關（engine.config.ENABLED，默認關）：打開時改走
+    engine.adapter.EngineGame（方形/三角/米字一套引擎邏輯）。默認關 →
+    完全走舊 game*.py 路徑，對主工作區零擾動；引擎不可用時安靜回退舊引擎。
     """
+    # 試運行開關：啟用幾何引擎時改走 engine.adapter（懶導入，默認關不碰舊路徑）
+    try:
+        from engine.config import is_enabled
+        if is_enabled() and kind in ('square', 'numbered', 'triangle', 'mi'):
+            from engine.adapter import create_adapter_puzzle
+            return create_adapter_puzzle(kind, m, n, step,
+                                        triangle_side=triangle_side)
+    except ImportError:
+        # 引擎模組缺失（未安裝 / 裁剪版）→ 安靜回退舊 game*.py，不破壞既有行為。
+        # ⚠️ 只吞 ImportError：引擎自身的真 bug 必須響（AGENTS.md §2 不靜默兜底），
+        # 寬泛 except 會把引擎缺陷藏成「悄悄退回舊引擎」。
+        pass
     if kind == 'triangle':
         # 預留接口：Stage B 實作後取消 try/except 並匯入 TriangleSliderMatrix
         try:

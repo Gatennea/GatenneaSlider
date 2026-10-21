@@ -12,16 +12,19 @@ GUI 绘制层（P3）将直接消费 spec.cell_polygon 等钩子把板型画出�
   · 'mi'      米字格（半整双晶格 scale=2、N/E/S/W 朝向 5 邻接、四族缝
     带朝向修正的 rank、span 锁死缝、错位态 SAT 重叠）——P2 落地，
     与 game_mi.MiSliderMatrix 差分对拍见测试 L 节。
+  · 'tri'     三角密铺（斜坐标 Z²、up/down 朝向 3 邻接、3 缝族 h/p/n、
+    中心反演对称 + 还原态 120° 轨道 solved_check）——P2 落地，与
+    game_triangle.TriangleSliderMatrix 差分对拍见测试 M 节。
 
-三角 preset 属 P2 剩余件：参数表见 docs/math/异形推广方案_2026-10-16.md
-§2（格空间/方向/缝/还原态/块数五件套齐全），落地时要处理 D3 显式
-对称表（lattice.symmetry 当前仅 hyperoctahedral）与还原态 120° 轨道
-的 solved_check 口径。
+三角 preset 的还原态 120° 旋转轨道走 solved_check 钩子（凸包）；其 6 折
+旋转群不闭合于「朝向=方向向量」机制，故对称群用最小合法的 C2（中心反演），
+还原判据不依赖本群大小（§4.2 真问题用钩子规避）。
 
 纪律：未知板型名显式 KeyError，不静默兜底（AGENTS.md §2）。
 """
 
 from . import mi_geometry
+from . import tri_geometry
 from .board import Block, Board, BoardSpec, SeamFamily
 from .lattice import Lattice, cubic_lattice, square_lattice
 
@@ -184,8 +187,109 @@ def mi_board(m: int, n: int) -> Board:
 
 
 # ----------------------------------------------------------------------
+# 三角 preset（P2：正三角形密铺，斜坐标 Z² + up/down 朝向）
+# ----------------------------------------------------------------------
+def tri_lattice() -> Lattice:
+    """三角密铺格点：斜坐标 Z²（scale=1，全整数合法）、up/down 三邻、
+    中心反演对称（交换二色，使朝向集闭合；还原走 solved_check 钩子）。
+    """
+    return Lattice(dim=2, scale=1,
+                   orient_steps=tri_geometry.TRI_ORIENT_STEPS,
+                   symmetry='central_inversion')
+
+
+def _tri_goal_blocks(k: int) -> tuple:
+    """边长 k 实心正三角形的还原态块集合（▲: i+j≤k-1；▼: i+j≤k-2）。
+
+    块数 = k² 恰为实心正三角形面积（game_triangle 同口径）。
+    """
+    blocks = []
+    for i in range(k):
+        for j in range(k - i):
+            blocks.append(Block((i, j), 'up'))
+    for i in range(k - 1):
+        for j in range(k - 1 - i):
+            blocks.append(Block((i, j), 'down'))
+    return tuple(blocks)
+
+
+def tri_spec(k: int, name: str = 'tri', default_shape: bool = True) -> BoardSpec:
+    """三角密铺板型：边长 k 实心正三角形为还原态（默认）；可传
+    default_shape=False + 自定义 goal_blocks 作设计态（精确比目标）。
+
+    与 game_triangle.TriangleSliderMatrix 的对应关系（引擎单位）：
+      · point = (i, j) 斜坐标；orient ∈ {up, down}；合法点 = 全整数；
+      · 6 方向 / 3 缝族（h/p 取向无关走 coeffs、n 带朝向修正钩子）；
+      · seam_clear = None（三角无缝被锁死，与 game 一致）；
+      · overlap = None（三角块无半格偏移，键相交即碰撞，同方形）；
+      · 还原判定 = solved_check 钩子（凸包轨道：任意平移 / 120°/240°
+        旋转等效），不依赖本群（三角 6 折旋转不闭合于朝向方向机制）。
+    """
+    if type(k) is not int or k < 2:
+        raise ValueError(f"tri_spec 的 k 须为 ≥ 2 的整数，收到 {k!r}")
+
+    def _solved(board: Board) -> bool:
+        """还原判定（与 game_triangle.is_solved 逐字同标准）。
+
+        默认还原态（default_shape=True）= 边长 k 实心正三角形，位置/朝向
+        不限（平移 + 120°/240° 旋转等效）→ 走凸包几何判据；自定义设计态
+        （default_shape=False）= 位置集合与还原态逐块相同即还原。
+        """
+        goal_keys = {(b.point, b.orient) for b in board.spec.goal_blocks}
+        keys = board.keys
+        if len(keys) != len(goal_keys):
+            return False
+        if keys == goal_keys:
+            return True
+        if not default_shape:
+            return False
+        if len(keys) != k * k:
+            return False
+        verts = set()
+        for ij, up in keys:
+            verts.update(tri_geometry.tri_vertices(ij[0], ij[1], up))
+        hull = tri_geometry.convex_hull(verts)
+        if len(hull) != 3:
+            return False
+        target = k * k
+        for t in range(3):
+            da = hull[(t + 1) % 3][0] - hull[t][0]
+            db = hull[(t + 1) % 3][1] - hull[t][1]
+            if da * da + da * db + db * db != target:
+                return False
+        # cells_inside_triangle 返回 (i, j, up_bool)，转成引擎键 ((i,j), orient) 再比
+        inside = tri_geometry.cells_inside_triangle(hull)
+        inside_keys = {((i, j), 'up' if up else 'down')
+                       for (i, j, up) in inside}
+        return inside_keys == keys
+
+    D = tri_geometry.TRI_DIRECTIONS
+    return BoardSpec(
+        name=name,
+        lattice=tri_lattice(),
+        directions=tuple(D.values()),
+        seam_families=(
+            SeamFamily('h', (0, 1), (D['a'], D['d'])),
+            SeamFamily('p', (1, 0), (D['e'], D['z'])),
+            SeamFamily('n', (1, 1), (D['w'], D['x']),
+                       rank=tri_geometry.rank_n),
+        ),
+        orientations=tri_geometry.TRI_ORIENTATIONS,
+        orient_dirs=tuple(tri_geometry.TRI_ORIENT_DIRS[o]
+                          for o in tri_geometry.TRI_ORIENTATIONS),
+        goal_blocks=_tri_goal_blocks(k),
+        solved_check=_solved,
+    )
+
+
+def tri_board(k: int) -> Board:
+    return make_board('tri', k=k)
+
+
+# ----------------------------------------------------------------------
 # 内置注册
 # ----------------------------------------------------------------------
 register_board_type('square', square_spec)
 register_board_type('cubic', cubic_spec)
 register_board_type('mi', mi_spec)
+register_board_type('tri', tri_spec)

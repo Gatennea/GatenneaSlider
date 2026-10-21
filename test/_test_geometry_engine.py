@@ -47,6 +47,9 @@ from engine import (  # noqa: E402
     make_board,
     mi_board,
     mi_geometry,
+    tri_board,
+    tri_geometry,
+    tri_spec,
     register_board_type,
     safe_scramble,
     shape_reachability,
@@ -644,6 +647,11 @@ import game_mi
 from game_mi import (DIRECTIONS as MI_GAME_DIRECTIONS,  # noqa: E402
                      GAP_DIRECTIONS as MI_GAME_GAP,
                      _has_overlap, any_overlap, mi_key, neighbors, side_of)
+import game_triangle
+from game_triangle import (DIRECTIONS as TRI_GAME_DIRECTIONS,  # noqa: E402
+                          GAP_DIRECTIONS as TRI_GAME_GAP,
+                          tri_key, neighbors as tri_neighbors,
+                          side_of as tri_side_of)
 
 
 def _mi_norm2(x):
@@ -1037,6 +1045,317 @@ for m, n, eb in sampled:
 check(rej['collision_overlap_only'] > 0,
       f"走查中出现的「键不相交但几何重叠」拒绝 {rej['collision_overlap_only']} "
       f"次（候选统计 {rej}）")
+
+
+# ======================================================================
+print("== M 三角 preset：引擎 vs game_triangle 差分对拍 ==")
+# ----------------------------------------------------------------------
+# 坐标约定与 game_triangle 同套斜坐标（纯整数）：point=(i,j)、orient∈{up,down}；
+# 既有格式的位置是 (i, j, bool)。以下辅助负责两侧格式互转与移动重放。
+# ----------------------------------------------------------------------
+def tri_engine_keys_to_game(keys):
+    """引擎块键 ((i,j),'up'/'down') → game 位置 (i,j,bool)。"""
+    return {(i, j, (o == 'up')) for (i, j), o in keys}
+
+
+def tri_game_cells_to_engine(cells):
+    """game 位置 (i,j,bool) → 引擎块键 ((i,j),'up'/'down')。"""
+    return {((i, j), 'up' if up else 'down') for (i, j, up) in cells}
+
+
+def tri_game_from_keys(keys, k):
+    """引擎块键集合 → game_triangle.TriangleSliderMatrix(k) 重建。"""
+    g = game_triangle.TriangleSliderMatrix(k)
+    g.blocks = [game_triangle._make_block(i, j, (o == 'up'))
+                for (i, j), o in keys]
+    g.update_matrix()
+    return g
+
+
+def _tri_components(cells):
+    """连通分量（三角 3-邻接：game_triangle.neighbors）。"""
+    remaining = set(cells)
+    comps = []
+    while remaining:
+        seed = remaining.pop()
+        comp = {seed}
+        stack = [seed]
+        while stack:
+            cur = stack.pop()
+            for nb in tri_neighbors(cur):
+                if nb in remaining:
+                    remaining.discard(nb)
+                    comp.add(nb)
+                    stack.append(nb)
+        comps.append(frozenset(comp))
+    return comps
+
+
+def tri_game_move_results(g, step):
+    """game 侧全部走法的结果集合（L1b 完整性方向）。"""
+    results = set()
+    orig = [list(b.location) for b in g.blocks]
+    cells = g.positions()
+    key_to_block = {tri_key(b): b for b in g.blocks}
+    for gap_type, line in g.all_gaps():
+        for side in (0, 1):
+            same = {c for c in cells if tri_side_of(gap_type, line, c) == side}
+            for comp in _tri_components(same):
+                g.opt(gap_type, line, key_to_block[min(comp)])
+                for d in TRI_GAME_GAP[gap_type]:
+                    pos = g.try_move(d, step)
+                    if pos:
+                        g.commit_move(pos)
+                        results.add(frozenset(tri_key(b) for b in g.blocks))
+                        for b, loc in zip(g.blocks, orig):
+                            b.location = list(loc)
+    return results
+
+
+def tri_engine_move_replay(eb, g, mv):
+    """引擎移动 → game_triangle 重放核对（L1a 单元：缝/选中集/走法/结果态）。"""
+    action = move_to_action(eb.spec, mv)
+    moved_game = tri_engine_keys_to_game(mv.moved)
+    rep = min(moved_game)
+    gb = next((b for b in g.blocks if tri_key(b) == rep), None)
+    if gb is None:
+        return False, f"选中片代表块 {rep} 不在 game 盘面上"
+    if not g.is_valid_gap(action['gap_type'], action['gap_line']):
+        return False, (f"缝 ({action['gap_type']}, {action['gap_line']}) "
+                       f"过不了 game 的 is_valid_gap")
+    orig = [list(b.location) for b in g.blocks]
+    g.opt(action['gap_type'], action['gap_line'], gb)
+    selected = {tri_key(b) for b in g.blocks if b.be_opted}
+    if selected != moved_game:
+        for b, loc in zip(g.blocks, orig):
+            b.location = list(loc)
+        return False, (f"game 选中集与引擎 moved 不一致：多 "
+                       f"{sorted(selected - moved_game)[:3]} / 少 "
+                       f"{sorted(moved_game - selected)[:3]}")
+    pos = g.try_move(action['direction'], mv.step)
+    if not pos:
+        for b, loc in zip(g.blocks, orig):
+            b.location = list(loc)
+        return False, (f"game 拒绝引擎移动（{action['direction']} "
+                       f"step={mv.step}）")
+    g.commit_move(pos)
+    result = frozenset(tri_key(b) for b in g.blocks)
+    for b, loc in zip(g.blocks, orig):
+        b.location = list(loc)
+    expect = frozenset(tri_engine_keys_to_game(eb.apply(mv).keys))
+    if result != expect:
+        return False, "game 重放结果态与引擎 apply 不一致"
+    return True, ''
+
+
+def tri_game_apply_action(g, action):
+    """在 game_triangle 上按动作 dict 重放一步（GUI 同路：opt→try→commit）。"""
+    target = tuple(action['moved_positions'][0])
+    anchor = next((b for b in g.blocks if tri_key(b) == target), None)
+    if anchor is None:
+        return None
+    g.opt(action['gap_type'], action['gap_line'], anchor)
+    if not any(b.be_opted for b in g.blocks):
+        return None
+    pos = g.try_move(action['direction'], action['step'])
+    if not pos:
+        return None
+    g.commit_move(pos)
+    return frozenset(tri_key(b) for b in g.blocks)
+
+
+def tri_engine_seam_partitions(eb):
+    """引擎侧全部有效缝的侧分区（game 坐标）。"""
+    spec = eb.spec
+    keys = eb.keys
+    parts = set()
+    for fam in spec.seam_families:
+        vals = {k: fam.rank_of(k[0], k[1]) for k in keys}
+        lo, hi = min(vals.values()), max(vals.values())
+        for t in range(lo + 1, hi + 1):
+            side_lo = frozenset(k for k in keys if vals[k] < t)
+            parts.add((frozenset(tri_engine_keys_to_game(side_lo)),
+                       frozenset(tri_engine_keys_to_game(keys - side_lo))))
+    return parts
+
+
+def tri_game_seam_partitions(g):
+    """game 侧全部有效缝（all_gaps）的侧分区。"""
+    cells = g.positions()
+    parts = set()
+    for gap_type, line in g.all_gaps():
+        s0 = frozenset(c for c in cells if tri_side_of(gap_type, line, c) == 0)
+        parts.add((s0, frozenset(cells - s0)))
+    return parts
+
+
+def _tri_rotate_vertices(cells, times):
+    """绕原点整体旋转 times×120°：旋转全部顶点后再重算内部单元（轨道等价构造）。
+
+    R(i,j)=(-i-j,i) 是三角密铺的整数格自同构（把三族缝的边长方向映到
+    另三族边长方向），转动 hull 顶点、再 cells_inside_triangle 即得旋转后
+    的实心正三角形——这一构造与 game_triangle.is_solved 的凸包判据同源，
+    专门用于验证「120°/240° 旋转后的还原态仍判还原」（§4.2 真问题）。
+    """
+    verts = set()
+    for i, j, up in cells:
+        verts.update(game_triangle.tri_vertices(i, j, up))
+    pts = [tuple(v) for v in verts]
+    for _ in range(times % 3):
+        pts = [(-a - b, a) for (a, b) in pts]
+    hull = game_triangle.convex_hull(pts)
+    return game_triangle.cells_inside_triangle(hull)
+
+
+def _tri_random_walk_states(k, step, count, seed):
+    """从还原态随机走 count 步，沿途采样局面（按规范形去重）。"""
+    rng = random.Random(seed)
+    cur = tri_board(k)
+    states, seen = [cur], {cur.canonical_key()}
+    for _ in range(count):
+        ms = cur.legal_moves(step)
+        if not ms:
+            break
+        cur = cur.apply(rng.choice(ms))
+        kk = cur.canonical_key()
+        if kk not in seen:
+            seen.add(kk)
+            states.append(cur)
+    return states
+
+
+# ---- M0 词汇与邻表：引擎常量表 = game_triangle（桥不偷偷改词汇）----
+check(tri_geometry.TRI_DIRECTIONS ==
+      {k: v for k, v in TRI_GAME_DIRECTIONS.items()},
+      "三角方向字母表与 game_triangle.DIRECTIONS 逐项一致")
+check(tri_geometry.TRI_GAP_DIRECTIONS == TRI_GAME_GAP,
+      "三角缝族方向表与 game_triangle.GAP_DIRECTIONS 一致")
+_eng_orient_steps = dict(tri_geometry.TRI_ORIENT_STEPS)
+_nb_bad = 0
+for _o in tri_geometry.TRI_ORIENTATIONS:
+    _eng = {(*off[0], off[1] == 'up') for off in _eng_orient_steps[_o]}
+    _game = {(*nb[:2], nb[2]) for nb in tri_neighbors((0, 0, _o == 'up'))}
+    if _eng != _game:
+        _nb_bad += 1
+check(_nb_bad == 0, "三角 3 邻表与 game_triangle.neighbors 逐项一致")
+
+# ---- 采样局面：三个尺寸还原态 + 随机走查态（规范形去重）----
+sampled_tri = [(k, tri_board(k)) for k in (3, 4, 5)]
+_seen_tri = {eb.canonical_key() for _, eb in sampled_tri}
+for k, step, cnt, seed in ((3, 1, 60, 4242), (4, 1, 60, 777),
+                           (3, 2, 50, 99), (4, 2, 40, 55)):
+    for b in _tri_random_walk_states(k, step, cnt, seed):
+        kk = b.canonical_key()
+        if kk in _seen_tri:
+            continue
+        _seen_tri.add(kk)
+        sampled_tri.append((k, b))
+        if len(sampled_tri) >= 18:
+            break
+    if len(sampled_tri) >= 18:
+        break
+check(len(sampled_tri) >= 8, f"三角采样局面数量达标（{len(sampled_tri)}）")
+
+# ---- M1 移动对拍 ----
+m1a_bad, m1a_count = [], 0
+game_only_total = engine_only_total = 0
+for k, eb in sampled_tri:
+    g = tri_game_from_keys(eb.keys, k)
+    for step in (1, 2):
+        moves = eb.legal_moves(step)
+        for mv in moves:
+            m1a_count += 1
+            ok, detail = tri_engine_move_replay(eb, g, mv)
+            if not ok:
+                m1a_bad.append((k, step, mv.family, mv.t, detail))
+        eng_results = {frozenset(tri_engine_keys_to_game(nb.keys))
+                       for nb in (eb.apply(mv) for mv in moves)}
+        game_results = tri_game_move_results(g, step)
+        game_only_total += len(game_results - eng_results)
+        engine_only_total += len(eng_results - game_results)
+check(m1a_count >= 200, f"三角采样局面能产出足量合法移动（{m1a_count} 个）")
+check(not m1a_bad,
+      f"引擎每个合法移动在 game_triangle 上逐一重放一致（{m1a_count} 个，"
+      f"偏差 {len(m1a_bad)}）"
+      + (f"；首例 {m1a_bad[0][:4]}: {m1a_bad[0][4]}" if m1a_bad else ""))
+check(game_only_total == 0,
+      f"game 的每个移动引擎都有（game ⊆ engine；engine 多出 "
+      f"{engine_only_total} 个——出现则说明引擎漏缝，需查 M2）")
+check(engine_only_total == 0,
+      f"引擎的每个移动 game 也有（engine ⊆ game；双向相等，偏差 "
+      f"{engine_only_total}）")
+
+# ---- M2 缝隙分区：game 每条有效缝的侧分区，引擎必有且仅有同分区 ----
+m2_bad, m2_parts = [], 0
+for k, eb in sampled_tri:
+    g = tri_game_from_keys(eb.keys, k)
+    eng_parts = tri_engine_seam_partitions(eb)
+    game_parts = tri_game_seam_partitions(g)
+    m2_parts += len(game_parts)
+    missing = game_parts - eng_parts
+    extra = eng_parts - game_parts
+    if missing or extra:
+        m2_bad.append((k, len(missing), len(extra)))
+check(not m2_bad,
+      f"三角缝分区引擎与 game 完全相等（{m2_parts} 个分区，"
+      f"game 缺 {[x[1] for x in m2_bad]} / 引擎多 {[x[2] for x in m2_bad]}）")
+
+# ---- M4 还原判定：采样局面 + 平移/120°/240° 旋转/挖洞变体 ----
+m4_bad, m4_count = [], 0
+orbit_seen = False
+for k, eb in sampled_tri:
+    g0 = tri_game_from_keys(eb.keys, k)
+    variants = [('原态', eb, g0)]
+    if eb.is_solved():  # 仅还原态做轨道变体（平移/旋转仍还原、挖洞变非还原）
+        for label, times in (('平移', None), ('120°', 1), ('240°', 2)):
+            if times is None:
+                vb = eb.translate((3, -2))
+            else:
+                rc = _tri_rotate_vertices(tri_engine_keys_to_game(eb.keys), times)
+                vb = Board.from_keys(eb.spec,
+                                     tri_game_cells_to_engine(rc))
+                if vb.keys != eb.keys:
+                    orbit_seen = True
+            gv = tri_game_from_keys(vb.keys, k)
+            variants.append((label, vb, gv))
+        vb = Board(eb.spec, eb.blocks[1:])  # 挖掉一块 → 非还原
+        gv = tri_game_from_keys(vb.keys, k)
+        variants.append(('挖洞', vb, gv))
+    for label, vb, gv in variants:
+        m4_count += 1
+        if vb.is_solved() != gv.is_solved():
+            m4_bad.append((k, label, vb.is_solved(), gv.is_solved()))
+check(orbit_seen, "120°/240° 旋转确实产生与还原态不同的等价还原局面（轨道非平凡）")
+check(not m4_bad,
+      f"三角还原判定一致（{m4_count} 个局面/变体：平移/120°/240°/挖洞，"
+      f"偏差 {len(m4_bad)}）")
+
+# ---- M5 安全打乱：路径/撤销在 game_triangle 上双重重放 ----
+rng = random.Random(20261021)
+b_t = tri_board(4)
+final_t, path_t, undo_t = safe_scramble(b_t, 1, 30, rng)
+check(len(path_t) == 30, f"三角 30 步全部可逆（实际 {len(path_t)}）")
+check(len(undo_t) == len(path_t), "三角每步都记录了撤销移动")
+check(not final_t.is_solved(), "三角终态不是还原态")
+check(verify_path(b_t, path_t) == final_t, "三角路径重放与终态一致")
+check(verify_path(final_t, tuple(reversed(undo_t))) == b_t,
+      "三角反转撤销路径精确回到还原态（字面解法）")
+g_t = tri_game_from_keys(b_t.keys, 4)
+gt_ok = True
+for mv in path_t:
+    if tri_game_apply_action(g_t, move_to_action(b_t.spec, mv)) is None:
+        gt_ok = False
+        break
+if gt_ok and frozenset(g_t.positions()) != tri_engine_keys_to_game(final_t.keys):
+    gt_ok = False
+check(gt_ok, "三角打乱路径经 game_triangle 重放：前进到终态、逆序撤销回起点")
+
+# ---- 冻形检测：单块三角零合法移动（与 game 一致）----
+single_t = Board.from_keys(tri_spec(3), [((0, 0), 'up')])
+check(frozen(single_t, 1) is True, "单块三角冻形（引擎零合法移动）")
+g_single = tri_game_from_keys(single_t.keys, 3)
+check(g_single.all_gaps() == [], "单块三角在 game 无有效缝（与引擎一致）")
+
 
 print()
 if failures:

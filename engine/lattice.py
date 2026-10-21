@@ -38,8 +38,14 @@ class Lattice:
             「无朝向板型」的邻接，两者至少其一非空。
         parity_linear: 可选合法性约束——点 p 合法当且仅当
             ``sum(parity_linear[i]*p[i]) % 2 == 0``（米字双晶格填 (1,1)）。
-        symmetry: 自同构群生成方式，当前仅 'hyperoctahedral'
-            （轴置换 × 符号翻转；对 Z^d 及其半整子格均封闭）。
+        symmetry: 自同构群生成方式：
+            · 'hyperoctahedral'（默认）：轴置换 × 符号翻转；对 Z^d 及其
+              半整子格均封闭（方形 D4 / 立方 48 / 米字双晶格）；
+            · 'central_inversion'：仅 恒等 + 中心反演 x→−x；三角密铺的
+              真实对称（中心反演交换 up/down 二色，使朝向集闭合）。
+              三角的 6 折旋转群不闭合于「朝向=方向向量」机制（60° 旋转
+              把单一朝向方向映到 6 个不同晶格方向），故用 C2 作最小合法
+              对称——还原判定走 solved_check 钩子（凸包），不依赖本群。
         orient_steps: 可选**带朝向**邻接表：
             ``((orient, ((dpoint, dorient), ...)), ...)``——每块按
             (point, orient) 联合查偏移（米字 5 邻：3 同晶格 + 2 跨晶格，
@@ -80,10 +86,10 @@ class Lattice:
                 raise ValueError(
                     f"parity_linear 只支持全同系数（如 (1,1)），收到 "
                     f"{self.parity_linear!r}（混合系数对自同构群不封闭）")
-        if self.symmetry not in ('hyperoctahedral',):
+        if self.symmetry not in ('hyperoctahedral', 'central_inversion'):
             raise ValueError(
                 f"不支持的自同构群: {self.symmetry!r}"
-                f"（当前仅 'hyperoctahedral'；三角等特殊群待 P2 扩展）")
+                f"（当前仅 'hyperoctahedral' / 'central_inversion'）")
         # ---- orient_steps：带朝向邻接表（米字 5 邻）----
         if self.orient_steps:
             if self.neighbor_steps:
@@ -171,7 +177,21 @@ class Lattice:
           · dim=3 → 48 个（立方体全对称，含反射）。
         半整子格（parity_linear=(1,1)）对该群封闭（P+Q 的奇偶在置换与
         取反下不变），故米字晶格可直接复用本群。
+
+        'central_inversion' = 仅 恒等 + 中心反演（x→−x）：三角密铺的真实
+        对称，且中心反演交换 up/down 二色，使三角朝向集闭合（见 symmetry
+        字段 docstring）。还原判定走 solved_check 钩子，不依赖本群大小。
         """
+        if self.symmetry == 'central_inversion':
+            def _id(p):
+                return p
+
+            def _neg(p):
+                return tuple(-x for x in p)
+
+            yield _id
+            yield _neg
+            return
         for perm in permutations(range(self.dim)):
             for signs in product((1, -1), repeat=self.dim):
                 def sym(p, perm=perm, signs=signs):

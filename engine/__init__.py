@@ -20,27 +20,30 @@ P1 已完成映射件（本分支）：``engine/compat.py`` 提供 Move ↔ 既�
 「切层本体」（让 GUI/求解器改调引擎层）未开始。
 
 P2 进行中（本分支）：``(point, orient)`` 联合键 + orient 进规范形 +
-四族缝 rank 钩子已落地，**米字 preset 已实例化并与 game_mi 差分对齐**
-（``engine/mi_geometry.py`` 几何层 + ``registry`` 注册；测试 L 节——
-每个合法移动在 game_mi 上逐一重放一致、移动集合互相覆盖、还原判定
-一致、可逆打乱双重重放、错位态重叠判定逐对一致）。三角 preset
-（D3 对称表 + 120° 还原轨道）与产品化预检属 P2 剩余件。
+四族缝 rank 钩子已落地，**米字 + 三角 preset 已实例化**：
+  · 米字（``engine/mi_geometry.py``）与 game_mi 差分对齐（测试 L 节）；
+  · 三角（``engine/tri_geometry.py``，中心反演对称 + 还原态 120°
+    轨道 solved_check）与 game_triangle 差分对齐（测试 M 节）。
+产品化预检（锁死缝/冻形/可打乱性 GUI 提示）属 P2 剩余件。
 
 纯逻辑零 pygame（AGENTS.md §10 延续）。
 """
 
 from .analysis import (frozen, locked_seams, safe_scramble,
                        shape_reachability, verify_path)
+from .adapter import EngineGame, create_adapter_puzzle  # noqa: F401  （启用开关落点）
 from .board import Block, Board, BoardSpec, Move, SeamFamily
 from .compat import (SQUARE_DIRECTIONS, action_to_move, apply_action,  # noqa: F401
                      direction_table, move_to_action, move_to_record,
                      record_to_action, record_to_move,
                      register_direction_vocab)
+from .config import ENABLED, is_enabled, set_enabled  # noqa: F401  （试运行开关）
 from .lattice import Lattice, cubic_lattice, square_lattice
 from .registry import (board_types, cubic_board, cubic_spec,
                        get_board_type, make_board, mi_board, mi_lattice,
                        mi_spec, register_board_type, square_board,
-                       square_spec)
+                       square_spec, tri_board, tri_lattice, tri_spec)
+from . import mi_geometry, tri_geometry  # noqa: E402  （几何层，供测试/适配器直接引用）
 
 __all__ = [
     'Block', 'Board', 'BoardSpec', 'Move', 'SeamFamily',
@@ -48,9 +51,12 @@ __all__ = [
     'register_board_type', 'get_board_type', 'board_types', 'make_board',
     'square_spec', 'square_board', 'cubic_spec', 'cubic_board',
     'mi_spec', 'mi_board', 'mi_lattice',
+    'tri_spec', 'tri_board', 'tri_lattice', 'tri_geometry', 'mi_geometry',
     'locked_seams', 'frozen', 'shape_reachability',
     'safe_scramble', 'verify_path',
     'SQUARE_DIRECTIONS', 'register_direction_vocab', 'direction_table',
     'move_to_action', 'action_to_move', 'apply_action',
     'move_to_record', 'record_to_action', 'record_to_move',
+    'EngineGame', 'create_adapter_puzzle',
+    'ENABLED', 'is_enabled', 'set_enabled',
 ]
