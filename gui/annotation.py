@@ -1728,11 +1728,11 @@ class AnnotationMixin:
                            self.screen_height - self.status_bar_height)
 
     def _ann_cell_center(self, r, c):
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
-        step_px = scaled_cell + scaled_gap
-        return (c * step_px + self.camera_x + scaled_cell / 2,
-                r * step_px + self.camera_y + scaled_cell / 2)
+        scaled_cell, _, step_px = self._board_px()   # 与主棋盘同一套整数像素
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
+        return (c * step_px + cam_x + scaled_cell / 2,
+                r * step_px + cam_y + scaled_cell / 2)
 
     def _ann_draw_track_markers(self):
         """在棋盘上画跟踪标记：空位圈 + 凸起框。"""
@@ -2685,15 +2685,18 @@ class AnnotationMixin:
                                for p in view.piece_polygon(r, c, q)]
                         pygame.draw.polygon(self.screen, outline, pts, 1)
         else:
-            # 空格轮廓（有滑块处主渲染器已画）
+            # 空格轮廓（有滑块处主渲染器已画）——用与主棋盘相同的整数像素几何，
+            # 否则非整数缩放下轮廓会和滑块错开 1~3px
+            cs, _, step_px = self._board_px()
+            cam_x = int(round(self.camera_x))
+            cam_y = int(round(self.camera_y))
             for r in range(r_lo, r_hi + 1):
                 for c in range(c_lo, c_hi + 1):
                     if (r, c) in self._ann_build_coords:
                         continue
-                    x, y = self.world_to_screen(c * stepw, r * stepw)
+                    x, y = c * step_px + cam_x, r * step_px + cam_y
                     pygame.draw.rect(self.screen, outline,
-                                     pygame.Rect(int(x), int(y),
-                                                 max(1, int(cs)),
+                                     pygame.Rect(x, y, max(1, int(cs)),
                                                  max(1, int(cs))), 1)
         # 捆绑可视化（自由捆绑）：同组块画成一整块实心矩形；待配对第一点画圈
         if self._ann_design_groups:
@@ -2707,13 +2710,13 @@ class AnnotationMixin:
         这里只把构造坐标 (r,c) 翻译成屏幕矩形（world_to_screen + 缩放）。
         """
         from .group_render import draw_group_chunks, _darker
-        stepw = self.cell_size + self.gap_width
-        cs = self.cell_size * self.zoom
-        gapped = self.gap_width * self.zoom
+        # 与主棋盘同一套整数像素几何（否则非整数缩放下整组会比底下的滑块错开）
+        cs, gapped, step_px = self._board_px()
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
 
         def get_rect(r, c):
-            x, y = self.world_to_screen(c * stepw, r * stepw)
-            return (int(x), int(y), cs)
+            return (c * step_px + cam_x, r * step_px + cam_y, cs)
         groups = {}
         for (r, c), gid in self._ann_design_groups.items():
             groups.setdefault(gid, []).append((r, c))
@@ -2734,11 +2737,11 @@ class AnnotationMixin:
 
     def _cell_center_screen(self, r, c):
         """构造坐标 (r,c) 的屏幕中心（与主渲染同坐标系）。"""
-        stepw = self.cell_size + self.gap_width
-        x, y = self.world_to_screen(
-            c * stepw + self.cell_size * self.zoom / 2,
-            r * stepw + self.cell_size * self.zoom / 2)
-        return x, y
+        scaled_cell, _, step_px = self._board_px()   # 与主棋盘同一套整数像素
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
+        return (c * step_px + cam_x + scaled_cell / 2,
+                r * step_px + cam_y + scaled_cell / 2)
         # 目标框：仅方形画——与求解器/调试面板同源（find_best_window，
         # mod-aware），是「该还原理的位置」；三角/米字没有求解器，
         # anchor 只是类匹配偏移、画出的还原态轮廓对用户无意义

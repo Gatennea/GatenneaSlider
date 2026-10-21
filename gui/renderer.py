@@ -32,6 +32,22 @@ from records import format_time
 class RendererMixin:
     """渲染相关方法 Mixin"""
 
+    def _board_px(self):
+        """方形棋盘的像素几何 → (格宽, 缝隙, 步进)，三个数全是整数像素。
+
+        **为什么必须取整**：缝隙不是画出来的，而是「相邻两块之间的剩余空间」。
+        若按 float 走（如 zoom=1.9 时格宽 114、缝 7.6、步进 121.6），
+        `pygame.Rect` 对 float 坐标是截断，相邻两块的截断误差不相等，
+        于是同一块棋盘上出现「这条缝 13px、那条 14px」——观感就是缝不齐。
+        先把格宽/缝隙各自四舍五入成整数，步进 = 格宽 + 缝隙 也就恒为整数，
+        任何两列（行）之间的缝都严格等于同一个 `缝隙` 值。
+
+        与 SVG / canvas 版对齐的口径：那边坐标本身就是整数像素，故从来没这个毛病。
+        """
+        cell = max(1, int(round(self.cell_size * self.zoom)))
+        gap = max(1, int(round(self.gap_width * self.zoom)))
+        return cell, gap, cell + gap
+
     def _tri_view(self) -> TriangleBoardView:
         """三角形棋盤視圖（隨 cell_size/gap_width 緩存重建）。"""
         view = getattr(self, '_triangle_view', None)
@@ -457,8 +473,10 @@ class RendererMixin:
         self._board_x = board_x
         self._board_y = board_y
 
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
+        scaled_cell, scaled_gap, step_px = self._board_px()
+        # 相机偏移一次取整，随后的格坐标就都是整数 → 缝隙严格等宽
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
 
         bounds = self.game.get_boundaries()
         min_row, max_row = bounds['min_row'], bounds['max_row']
@@ -467,53 +485,48 @@ class RendererMixin:
         # 缝隙绘制：连续整条线（与历史版本一致）。先画缝线、后画滑块，
         # 滑块覆盖缝线；捆绑组的大矩形最后绘制，会盖住组内那段缝线，
         # 因此「捆绑块内部不露缝」由覆盖自然达成，无需切断缝线段。
+        # 缝的像素带 = [board + i*step - gap, board + i*step)：正好是第 i-1 行与
+        # 第 i 行之间的空白，与滑块的位置共用同一组整数，缝宽恒等于 scaled_gap。
+        gap_left = board_x + min_col * step_px + cam_x - 20
+        gap_right = board_x + (max_col + 1) * step_px + cam_x + 20
+        gap_top = board_y + min_row * step_px + cam_y - 20
+        gap_bottom = board_y + (max_row + 1) * step_px + cam_y + 20
+
         # 绘制选中的横向分割线
         for i in range(min_row, max_row + 2):
-            gap_y = board_y + i * (scaled_cell + scaled_gap) - scaled_gap // 2
-            screen_gap_y = gap_y + self.camera_y
+            band_y = board_y + i * step_px - scaled_gap + cam_y
 
             if self.selected_gap == ('h', i - 1):
+                line_y = band_y + scaled_gap // 2
                 pygame.draw.line(self.screen, self.colors['line'],
-                               (0, screen_gap_y), (self.screen_width, screen_gap_y), 3)
+                               (0, line_y), (self.screen_width, line_y), 3)
 
         # 绘制选中的纵向分割线
         for j in range(min_col, max_col + 2):
-            gap_x = board_x + j * (scaled_cell + scaled_gap) - scaled_gap // 2
-            screen_gap_x = gap_x + self.camera_x
+            band_x = board_x + j * step_px - scaled_gap + cam_x
 
             if self.selected_gap == ('v', j - 1):
+                line_x = band_x + scaled_gap // 2
                 pygame.draw.line(self.screen, self.colors['line'],
-                               (screen_gap_x, 0), (screen_gap_x, self.screen_height), 3)
+                               (line_x, 0), (line_x, self.screen_height), 3)
 
         # 绘制未选中的横向缝隙
         for i in range(min_row, max_row + 2):
-            gap_y = board_y + i * (scaled_cell + scaled_gap) - scaled_gap // 2
-            screen_gap_y = gap_y + self.camera_y
-
-            board_right = board_x + (max_col - min_col + 1) * (scaled_cell + scaled_gap) + min_col * (scaled_cell + scaled_gap)
-            screen_start_x = board_x + min_col * (scaled_cell + scaled_gap) + self.camera_x - 20
-            screen_end_x = board_right + self.camera_x + 20
+            band_y = board_y + i * step_px - scaled_gap + cam_y
 
             if self.selected_gap != ('h', i - 1):
-                pygame.draw.line(self.screen, self.colors['gap'],
-                               (screen_start_x, screen_gap_y),
-                               (screen_end_x, screen_gap_y),
-                               max(1, int(scaled_gap)))
+                pygame.draw.rect(self.screen, self.colors['gap'],
+                                 pygame.Rect(gap_left, band_y,
+                                             gap_right - gap_left, scaled_gap))
 
         # 绘制未选中的纵向缝隙
         for j in range(min_col, max_col + 2):
-            gap_x = board_x + j * (scaled_cell + scaled_gap) - scaled_gap // 2
-            screen_gap_x = gap_x + self.camera_x
-
-            board_bottom = board_y + (max_row - min_row + 1) * (scaled_cell + scaled_gap) + min_row * (scaled_cell + scaled_gap)
-            screen_start_y = board_y + min_row * (scaled_cell + scaled_gap) + self.camera_y - 20
-            screen_end_y = board_bottom + self.camera_y + 20
+            band_x = board_x + j * step_px - scaled_gap + cam_x
 
             if self.selected_gap != ('v', j - 1):
-                pygame.draw.line(self.screen, self.colors['gap'],
-                               (screen_gap_x, screen_start_y),
-                               (screen_gap_x, screen_end_y),
-                               max(1, int(scaled_gap)))
+                pygame.draw.rect(self.screen, self.colors['gap'],
+                                 pygame.Rect(band_x, gap_top,
+                                             scaled_gap, gap_bottom - gap_top))
 
         # 构建动画方块位置映射（使用统一偏移量，确保整组平移视觉一致）
         anim_map = {}
@@ -548,18 +561,14 @@ class RendererMixin:
         for block in self.game.blocks:
             if id(block) in follow_map:
                 lr, lc = follow_map[id(block)]
-                x = board_x + lc * (scaled_cell + scaled_gap)
-                y = board_y + lr * (scaled_cell + scaled_gap)
             elif id(block) in anim_map:
                 lr, lc = anim_map[id(block)]
-                x = board_x + lc * (scaled_cell + scaled_gap)
-                y = board_y + lr * (scaled_cell + scaled_gap)
             else:
-                x = board_x + block.location[1] * (scaled_cell + scaled_gap)
-                y = board_y + block.location[0] * (scaled_cell + scaled_gap)
+                lr, lc = block.location[0], block.location[1]
 
-            screen_x = x + self.camera_x
-            screen_y = y + self.camera_y
+            # 格坐标 → 整数像素：拖动/动画期间 lr/lc 为小数，round 后仍是逐像素平移
+            screen_x = int(round(board_x + lc * step_px)) + cam_x
+            screen_y = int(round(board_y + lr * step_px)) + cam_y
 
             if screen_x < -scaled_cell or screen_x > self.screen_width + scaled_cell:
                 continue
@@ -638,10 +647,9 @@ class RendererMixin:
 
         # 连锁提示：高亮的空格（无滑块）同样叠半透明白
         if hint_empty is not None:
-            step_px = scaled_cell + scaled_gap
             for (r, c) in sorted(hint_empty):
-                bx = board_x + c * step_px + self.camera_x
-                by = board_y + r * step_px + self.camera_y
+                bx = board_x + c * step_px + cam_x
+                by = board_y + r * step_px + cam_y
                 self._draw_hint_overlay(
                     [(bx, by), (bx + scaled_cell, by),
                      (bx + scaled_cell, by + scaled_cell), (bx, by + scaled_cell)],
@@ -651,8 +659,8 @@ class RendererMixin:
         base = getattr(self, 'macro_record_base_point', None)
         if base is not None:
             br, bc = base
-            bx = board_x + bc * (scaled_cell + scaled_gap) + self.camera_x
-            by = board_y + br * (scaled_cell + scaled_gap) + self.camera_y
+            bx = board_x + bc * step_px + cam_x
+            by = board_y + br * step_px + cam_y
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
             pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=int(5 * self.zoom))
 
@@ -724,15 +732,15 @@ class RendererMixin:
             groups.setdefault(g, []).append((lr, lc))
         if not groups:
             return
-        step_px = scaled_cell + scaled_gap
+        step_px = scaled_cell + scaled_gap    # 两个参数已是整数像素（见 _board_px）
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
 
         def get_rect(r, c):
-            x = c * step_px + self.camera_x
-            y = r * step_px + self.camera_y
-            # 用 int() 截断而非 round()：与方块循环的坐标口径严格一致
-            # （pygame.draw.rect 对 float 截断），否则某些列差 1px，
-            # 底下方块自带的 border 会从填充边缘露出一条细线。
-            return (int(x), int(y), int(scaled_cell))
+            # 与方块循环同口径：整数 step + round 到像素，缝宽才与普通块一致
+            x = int(round(c * step_px)) + cam_x
+            y = int(round(r * step_px)) + cam_y
+            return (x, y, scaled_cell)
 
         from .group_render import draw_group_chunks
         # 与普通块完全一致的边框：颜色 / 宽度 / 圆角
@@ -748,13 +756,15 @@ class RendererMixin:
             is_rect = len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1)
             selected = any((r, c) in sel_pos for r, c in cells)
             if is_rect:
-                # 像「一个大一号的普通滑塊」：单个圆角矩形，填充+边框同普通块
-                x = c0 * step_px + self.camera_x
-                y = r0 * step_px + self.camera_y
-                w = (c1 - c0 + 1) * scaled_cell + (c1 - c0) * scaled_gap
-                h = (r1 - r0 + 1) * scaled_cell + (r1 - r0) * scaled_gap
+                # 像「一个大一号的普通滑塊」：单个圆角矩形，填充+边框同普通块。
+                # 宽高用「整数步进 × 格数 − 缝隙」算，正好覆盖到相邻格的外沿，
+                # 与逐块画出来的边界逐像素对齐。
+                x = int(round(c0 * step_px)) + cam_x
+                y = int(round(r0 * step_px)) + cam_y
+                w = (c1 - c0 + 1) * step_px - scaled_gap
+                h = (r1 - r0 + 1) * step_px - scaled_gap
                 fill = self.colors['block_selected'] if selected else self.colors['block']
-                rect = pygame.Rect(int(x), int(y), int(w), int(h))
+                rect = pygame.Rect(x, y, w, h)
                 pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
                 pygame.draw.rect(self.screen, border_color, rect, border_w,
                                  border_radius=radius)
@@ -869,12 +879,13 @@ class RendererMixin:
         gold = self.PICK_FILL_GOLD
         board_x = getattr(self, '_board_x', 0)
         board_y = getattr(self, '_board_y', 0)
-        scaled_cell = self.cell_size * self.zoom
-        cell_step = scaled_cell + self.gap_width * self.zoom
+        scaled_cell, _, cell_step = self._board_px()   # 与主棋盘同一套整数像素
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
         p = pf.get('block')
         if p is not None:
-            bx = board_x + p[1] * cell_step + self.camera_x
-            by = board_y + p[0] * cell_step + self.camera_y
+            bx = board_x + p[1] * cell_step + cam_x
+            by = board_y + p[0] * cell_step + cam_y
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
             pygame.draw.rect(self.screen, gold, hl_rect,
                              max(1, int(3 * self.zoom)),
@@ -885,8 +896,8 @@ class RendererMixin:
             line_w = max(2, int(2 * self.zoom))
             half = scaled_cell / 2
             for r, c in hole.get('cells', []):
-                cx = board_x + c * cell_step + self.camera_x + half
-                cy = board_y + r * cell_step + self.camera_y + half
+                cx = board_x + c * cell_step + cam_x + half
+                cy = board_y + r * cell_step + cam_y + half
                 pygame.draw.circle(self.screen, gold, (int(cx), int(cy)),
                                    radius, line_w)
 
@@ -906,9 +917,9 @@ class RendererMixin:
             view = self._mi_view()
             return self.world_to_screen(
                 *view.piece_center(key[0], key[1], key[2]))
-        step_px = self.cell_size * self.zoom + self.gap_width * self.zoom
-        return (key[1] * step_px + step_px / 2.0 + self.camera_x,
-                key[0] * step_px + step_px / 2.0 + self.camera_y)
+        _, _, step_px = self._board_px()
+        return (key[1] * step_px + step_px / 2.0 + int(round(self.camera_x)),
+                key[0] * step_px + step_px / 2.0 + int(round(self.camera_y)))
 
     def _game_dir_tables(self):
         """该形态的 (DIRECTIONS, GAP_DIRECTIONS)。
@@ -946,7 +957,7 @@ class RendererMixin:
                 pts = [self.world_to_screen(*p)
                        for p in view.piece_polygon(key[0], key[1], key[2])]
             else:
-                step_px = self.cell_size * self.zoom + self.gap_width * self.zoom
+                _, _, step_px = self._board_px()
                 half = step_px / 2.0
                 pts = [(cx - half, cy - half), (cx + half, cy - half),
                        (cx + half, cy + half), (cx - half, cy + half)]

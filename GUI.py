@@ -1265,14 +1265,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         min_row, max_row = bounds['min_row'], bounds['max_row']
         min_col, max_col = bounds['min_col'], bounds['max_col']
 
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
+        scaled_cell, scaled_gap, step_px = self._board_px()   # 与绘制同一套整数像素
 
-        map_width = (max_col - min_col + 1) * scaled_cell + (max_col - min_col) * scaled_gap
-        map_height = (max_row - min_row + 1) * scaled_cell + (max_row - min_row) * scaled_gap
+        map_width = (max_col - min_col + 1) * step_px - scaled_gap
+        map_height = (max_row - min_row + 1) * step_px - scaled_gap
 
-        map_center_x = min_col * (scaled_cell + scaled_gap) + map_width / 2
-        map_center_y = min_row * (scaled_cell + scaled_gap) + map_height / 2
+        map_center_x = min_col * step_px + map_width / 2
+        map_center_y = min_row * step_px + map_height / 2
 
         game_center_y = self.menu_bar_height + (self.screen_height - self.menu_bar_height - self.status_bar_height) / 2
 
@@ -1290,14 +1289,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         bounds = self.game.get_boundaries()
         min_row, max_row = bounds['min_row'], bounds['max_row']
         min_col, max_col = bounds['min_col'], bounds['max_col']
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
+        scaled_cell, scaled_gap, step_px = self._board_px()   # 与绘制同一套整数像素
 
         # 滑塊区域在屏幕上的范围
-        left   = min_col * (scaled_cell + scaled_gap) + self.camera_x
-        right  = max_col * (scaled_cell + scaled_gap) + scaled_cell + self.camera_x
-        top    = min_row * (scaled_cell + scaled_gap) + self.camera_y
-        bottom = max_row * (scaled_cell + scaled_gap) + scaled_cell + self.camera_y
+        left   = min_col * step_px + self.camera_x
+        right  = max_col * step_px + scaled_cell + self.camera_x
+        top    = min_row * step_px + self.camera_y
+        bottom = max_row * step_px + scaled_cell + self.camera_y
 
         # 视口范围
         view_left   = 0
