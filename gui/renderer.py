@@ -49,25 +49,35 @@ class RendererMixin:
         return cell, gap, cell + gap
 
     def _slider_corner_radius(self):
-        """滑塊圓角半徑（像素），三形態統一取值。
+        """方形滑塊圓角半徑（像素），三形態統一取值。
 
-        方形 rect 的 border_radius 本就用 int(5*zoom)；三角/米字的多邊形
-        圓角也走同一檔，三種形態的滑塊圓角觀感才統一（不再「方形有圓角、
-        另兩個尖角」）。放在一處是單一來源，改半徑只動這一行。
+        三角/米字的多邊形圓角與此對齊的**不是字面半徑**，而是「視覺削進深度」
+        （見 _slider_corner_depth）——因 pygame 的 rect border_radius 只把角
+        削進 R·(√2−1)，而三角尖角若給同檔 R 會被削進 R·1.73（約 4 倍），
+        觀感會「圓得過頭」。故三形態統一以方形的削進深度為準。改半徑只動這裡。
         """
-        return max(1, int(5 * self.zoom))
+        return max(1, int(round(5 * self.zoom)))
 
-    def _rounded_polygon_points(self, pts, radius):
-        """把多邊形每個頂點按固定像素半徑削圓（與方形 border_radius 同觀感）。
+    def _slider_corner_depth(self):
+        """方形 border_radius=R 時角頂被削進的實際距離（像素）。
 
-        用真·圓弧：沿頂點兩條邊各回退 cut = radius / tan(θ/2) 得切點，
-        再以「內角平分線方向、距頂點 radius / sin(θ/2)」定圓心，採短弧採樣。
+        等於 R·(√2−1)；三角/米字多邊形圓角以此深度為準，三形態削進一致。
+        """
+        return max(1, int(round(self._slider_corner_radius() * (math.sqrt(2) - 1))))
+
+    def _rounded_polygon_points(self, pts, depth):
+        """把凸多邊形每個頂點削進固定像素深度 depth（與方形 border_radius 同觀感）。
+
+        對頂角 θ：弧半徑 r = depth·sin(θ/2)/(1−sin(θ/2))，沿兩邊各回退
+        cut = r·tan(θ/2) 得切點，再以「內角平分線方向、距頂點 r/sin(θ/2)」定圓心，
+        採短弧採樣。如此**任意頂角的削進深度都 = depth**，與方形對齊，
+        不會再出現「同檔 R 下三角被削 4 倍」的過圓現象。
         退化保護：邊太短使 cut 超過半邊長時自動縮小有效半徑；近乎平角 /
         退化頂點保留原樣；圓心若落在外側則翻轉（凸多邊形保險，正常不觸發）。
         三角/米字滑塊皆為三角形（凸），適用。
         """
         n = len(pts)
-        if n < 3 or radius <= 0:
+        if n < 3 or depth <= 0:
             return [tuple(p) for p in pts]
         out = []
         SEG = 5
@@ -89,12 +99,18 @@ class RendererMixin:
             if ang < 1e-3 or ang > math.pi - 1e-3:
                 out.append(tuple(cur))
                 continue
-            cut = radius / math.tan(ang / 2.0)
+            sin_h = math.sin(ang / 2.0)
+            denom = 1.0 / sin_h - 1.0
+            if denom < 1e-9:
+                out.append(tuple(cur))
+                continue
+            r_eff = depth / denom
+            cut = r_eff * math.tan(ang / 2.0)
             cut = min(cut, l1 / 2.0, l2 / 2.0)
             if cut < 1e-6:
                 out.append(tuple(cur))
                 continue
-            r_eff = cut * math.tan(ang / 2.0)
+            r_eff = cut / math.tan(ang / 2.0)
             p1 = (cur[0] + uin_x * cut, cur[1] + uin_y * cut)
             p2 = (cur[0] + uout_x * cut, cur[1] + uout_y * cut)
             # 內角平分線（從頂點出發的兩邊方向之和）指向多邊形內部
@@ -232,7 +248,7 @@ class RendererMixin:
         self._draw_triangle_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
-        radius = self._slider_corner_radius()  # 三形態統一圓角半徑
+        depth = self._slider_corner_depth()  # 三形態統一圓角削進深度
         # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）
         follow_map = {}
         if self.drag_following:
@@ -311,7 +327,7 @@ class RendererMixin:
                         ring_color = self._group_color_for((i, j))
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                rpoly = self._rounded_polygon_points(poly, radius)
+                rpoly = self._rounded_polygon_points(poly, depth)
                 pygame.draw.polygon(self.screen, fill, rpoly)
                 pygame.draw.polygon(self.screen, border_color, rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（hover 更亮）
@@ -344,7 +360,7 @@ class RendererMixin:
             for (i, j, up) in sorted(hint_empty):
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                self._draw_hint_overlay(self._rounded_polygon_points(poly, radius),
+                self._draw_hint_overlay(self._rounded_polygon_points(poly, depth),
                                        (i, j, up) == hint_hover)
 
         # 调试面板打开时：先画目标框（并把同一结果存到 self._target_region），
@@ -425,7 +441,7 @@ class RendererMixin:
         self._draw_mi_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
-        radius = self._slider_corner_radius()  # 三形態統一圓角半徑
+        depth = self._slider_corner_depth()  # 三形態統一圓角削進深度
         selected = []
         normal = []
         for block in self.game.blocks:
@@ -469,7 +485,7 @@ class RendererMixin:
                     border_color, border_w = _play_head
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                rpoly = self._rounded_polygon_points(poly, radius)
+                rpoly = self._rounded_polygon_points(poly, depth)
                 pygame.draw.polygon(self.screen, fill, rpoly)
                 pygame.draw.polygon(self.screen, border_color,
                                     rpoly, border_w)
@@ -492,7 +508,7 @@ class RendererMixin:
             for (r, c, q) in sorted(hint_empty):
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                self._draw_hint_overlay(self._rounded_polygon_points(poly, radius),
+                self._draw_hint_overlay(self._rounded_polygon_points(poly, depth),
                                        (r, c, q) == hint_hover)
 
         # 调试面板打开时：先画目标框（同一结果存进 self._target_region），
