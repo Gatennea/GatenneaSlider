@@ -17,9 +17,11 @@ import pygame
 
 from game import DIRECTIONS as SQ_DIRECTIONS
 from game_mi import mi_key, mi_vertices
+from game_mi import neighbors as mi_neighbors
 from game_mi import DIRECTIONS as MI_DIRECTIONS
 from game_mi import GAP_DIRECTIONS as MI_GAP_DIRECTIONS
 from game_triangle import tri_key
+from game_triangle import neighbors as tri_neighbors
 from game_triangle import DIRECTIONS as TRI_DIRECTIONS
 from game_triangle import GAP_DIRECTIONS as TRI_GAP_DIRECTIONS
 from gui.cell_class import cell_class, class_index
@@ -31,6 +33,159 @@ from records import format_time
 
 class RendererMixin:
     """渲染相关方法 Mixin"""
+
+    def _board_px(self):
+        """方形棋盘的像素几何 → (格宽, 缝隙, 步进)，三个数全是整数像素。
+
+        **为什么必须取整**：缝隙不是画出来的，而是「相邻两块之间的剩余空间」。
+        若按 float 走（如 zoom=1.9 时格宽 114、缝 7.6、步进 121.6），
+        `pygame.Rect` 对 float 坐标是截断，相邻两块的截断误差不相等，
+        于是同一块棋盘上出现「这条缝 13px、那条 14px」——观感就是缝不齐。
+        先把格宽/缝隙各自四舍五入成整数，步进 = 格宽 + 缝隙 也就恒为整数，
+        任何两列（行）之间的缝都严格等于同一个 `缝隙` 值。
+
+        与 SVG / canvas 版对齐的口径：那边坐标本身就是整数像素，故从来没这个毛病。
+        """
+        cell = max(1, int(round(self.cell_size * self.zoom)))
+        gap = max(1, int(round(self.gap_width * self.zoom)))
+        return cell, gap, cell + gap
+
+    def _slider_corner_radius(self):
+        """方形滑塊圓角半徑（像素），三形態統一取值。
+
+        三角/米字的多邊形圓角與此對齊的**不是字面半徑**，而是「視覺削進深度」
+        （見 _slider_corner_depth）——因 pygame 的 rect border_radius 只把角
+        削進 R·(√2−1)，而三角尖角若給同檔 R 會被削進 R·1.73（約 4 倍），
+        觀感會「圓得過頭」。故三形態統一以方形的削進深度為準。改半徑只動這裡。
+        """
+        return max(1, int(round(5 * self.zoom)))
+
+    def _slider_corner_depth(self):
+        """方形 border_radius=R 時角頂被削進的實際距離（像素）。
+
+        等於 R·(√2−1)；三角/米字多邊形圓角以此深度為準，三形態削進一致。
+        """
+        return max(1, int(round(self._slider_corner_radius() * (math.sqrt(2) - 1))))
+
+    def _rounded_polygon_points(self, pts, depth):
+        """把凸多邊形每個頂點削進固定像素深度 depth（與方形 border_radius 同觀感）。
+
+        對頂角 θ：弧半徑 r = depth·sin(θ/2)/(1−sin(θ/2))，沿兩邊各回退
+        cut = r·tan(θ/2) 得切點，再以「內角平分線方向、距頂點 r/sin(θ/2)」定圓心，
+        採短弧採樣。如此**任意頂角的削進深度都 = depth**，與方形對齊，
+        不會再出現「同檔 R 下三角被削 4 倍」的過圓現象。
+        退化保護：邊太短使 cut 超過半邊長時自動縮小有效半徑；近乎平角 /
+        退化頂點保留原樣；圓心若落在外側則翻轉（凸多邊形保險，正常不觸發）。
+        三角/米字滑塊皆為三角形（凸），適用。
+        """
+        n = len(pts)
+        if n < 3 or depth <= 0:
+            return [tuple(p) for p in pts]
+        out = []
+        SEG = 5
+        for k in range(n):
+            prev = pts[(k - 1) % n]
+            cur = pts[k]
+            nxt = pts[(k + 1) % n]
+            vin_x, vin_y = prev[0] - cur[0], prev[1] - cur[1]
+            vout_x, vout_y = nxt[0] - cur[0], nxt[1] - cur[1]
+            l1 = math.hypot(vin_x, vin_y)
+            l2 = math.hypot(vout_x, vout_y)
+            if l1 < 1e-6 or l2 < 1e-6:
+                out.append(tuple(cur))
+                continue
+            uin_x, uin_y = vin_x / l1, vin_y / l1
+            uout_x, uout_y = vout_x / l2, vout_y / l2
+            dot = max(-1.0, min(1.0, uin_x * uout_x + uin_y * uout_y))
+            ang = math.acos(dot)
+            if ang < 1e-3 or ang > math.pi - 1e-3:
+                out.append(tuple(cur))
+                continue
+            sin_h = math.sin(ang / 2.0)
+            denom = 1.0 / sin_h - 1.0
+            if denom < 1e-9:
+                out.append(tuple(cur))
+                continue
+            r_eff = depth / denom
+            cut = r_eff * math.tan(ang / 2.0)
+            cut = min(cut, l1 / 2.0, l2 / 2.0)
+            if cut < 1e-6:
+                out.append(tuple(cur))
+                continue
+            r_eff = cut / math.tan(ang / 2.0)
+            p1 = (cur[0] + uin_x * cut, cur[1] + uin_y * cut)
+            p2 = (cur[0] + uout_x * cut, cur[1] + uout_y * cut)
+            # 內角平分線（從頂點出發的兩邊方向之和）指向多邊形內部
+            bx, by = uin_x + uout_x, uin_y + uout_y
+            bl = math.hypot(bx, by)
+            if bl < 1e-9:  # 退化：二次貝塞爾兜底
+                out.append(tuple(p1))
+                for s in range(1, SEG):
+                    t = s / float(SEG)
+                    mt = 1 - t
+                    out.append((mt * mt * p1[0] + 2 * mt * t * cur[0] + t * t * p2[0],
+                                mt * mt * p1[1] + 2 * mt * t * cur[1] + t * t * p2[1]))
+                out.append(tuple(p2))
+                continue
+            bnx, bny = bx / bl, by / bl
+            dist = r_eff / math.sin(ang / 2.0)
+            ox, oy = cur[0] + bnx * dist, cur[1] + bny * dist
+            # 保險：圓心落在外側則翻轉（凸多邊形不應發生，但防萬一）
+            if not self._point_in_convex((ox, oy), pts):
+                ox, oy = cur[0] - bnx * dist, cur[1] - bny * dist
+            a1 = math.atan2(p1[1] - oy, p1[0] - ox)
+            a2 = math.atan2(p2[1] - oy, p2[0] - ox)
+            da = a2 - a1
+            while da > math.pi:
+                da -= 2 * math.pi
+            while da < -math.pi:
+                da += 2 * math.pi
+            out.append(tuple(p1))
+            for s in range(1, SEG):
+                a = a1 + da * (s / float(SEG))
+                out.append((ox + r_eff * math.cos(a), oy + r_eff * math.sin(a)))
+            out.append(tuple(p2))
+        return out
+
+    # 米字/三角滑块在缩得较小时，斜边切割像素出现明显阶梯锯齿（方形是
+    # 轴对齐边，天然贴合像素网格，无此问题；本精简版 pygame 无 gfxdraw，
+    # 用不了多边形抗锯齿）。办法是局部超采样抗锯齿（SSAA）：在 S 倍大的
+    # 临时面上硬边绘制，再 smoothscale 回目标尺寸——边界像素与「透明」
+    # 混合成半透明边，blit 时与棋盘底色自然融合，得到平滑边缘。只在 cell
+    # 小于阈值时启用：大 cell 斜边锯齿本不可见，省掉每滑块一次 surface 分
+    # 配 + smoothscale 的开销（256 滑块时差距明显）。
+    _SLIDER_AA_MIN_CELL = 18   # cell(px) 低于此值才给三角/米字滑块开 AA
+    _SLIDER_AA_SCALE = 3       # 超采样倍率
+
+    def _slider_aa_on(self, cell_px):
+        """三角/米字滑块是否启用抗锯齿（cell 小于阈值时）。"""
+        return cell_px < self._SLIDER_AA_MIN_CELL
+
+    def _draw_aa_polygon(self, poly, fill, border_color=None, border_w=0):
+        """局部超采样抗锯齿画一个多边形（填充 + 可选描边）到 self.screen。
+
+        poly 为屏幕坐标浮点列表。按外包框建一块 SRCALPHA 临时面，坐标平移
+        到局部并放大 _SLIDER_AA_SCALE 倍，硬边填充 + 描边，再 smoothscale
+        回 1×，blit 到外包框原点。边缘半透明与底色混合，斜边不再有阶梯；
+        外形轮廓位置不变，不侵占块间缝隙（与 _board_px 的等宽缝隙兼容）。
+        """
+        S = self._SLIDER_AA_SCALE
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        pad = max(2, int(border_w) + 2)
+        x0 = int(math.floor(min(xs))) - pad
+        y0 = int(math.floor(min(ys))) - pad
+        x1 = int(math.ceil(max(xs))) + pad
+        y1 = int(math.ceil(max(ys))) + pad
+        w = max(1, x1 - x0)
+        h = max(1, y1 - y0)
+        big = pygame.Surface((w * S, h * S), pygame.SRCALPHA)
+        ipoly = [(int(round((p[0] - x0) * S)), int(round((p[1] - y0) * S)))
+                 for p in poly]
+        pygame.draw.polygon(big, fill, ipoly)
+        if border_color is not None and border_w > 0:
+            pygame.draw.polygon(big, border_color, ipoly, max(1, border_w * S))
+        self.screen.blit(pygame.transform.smoothscale(big, (w, h)), (x0, y0))
 
     def _tri_view(self) -> TriangleBoardView:
         """三角形棋盤視圖（隨 cell_size/gap_width 緩存重建）。"""
@@ -135,6 +290,7 @@ class RendererMixin:
         self._draw_triangle_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
+        depth = self._slider_corner_depth()  # 三形態統一圓角削進深度
         # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）
         follow_map = {}
         if self.drag_following:
@@ -181,6 +337,7 @@ class RendererMixin:
         # 悬停连锁提示：同類（含朝向）的塊提亮、空位實心提亮（悬停键更亮）
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+
         # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
         _sel_anim = self._sel_anim_border()
         # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
@@ -213,11 +370,16 @@ class RendererMixin:
                         ring_color = self._group_color_for((i, j))
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                pygame.draw.polygon(self.screen, fill, poly)
-                pygame.draw.polygon(self.screen, border_color, poly, border_w)
+                rpoly = self._rounded_polygon_points(poly, depth)
+                if self._slider_aa_on(scaled_cell):
+                    self._draw_aa_polygon(rpoly, fill, border_color, border_w)
+                else:
+                    pygame.draw.polygon(self.screen, fill, rpoly)
+                    pygame.draw.polygon(self.screen, border_color,
+                                        rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（hover 更亮）
                 if hint_occ is not None and (i, j, up) in hint_occ:
-                    self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
+                    self._draw_hint_overlay(rpoly, (i, j, up) == hint_hover)
                 if ring_color is not None:
                     ring_w = max(2, int(4 * self.zoom))
                     pygame.draw.polygon(self.screen, ring_color,
@@ -239,13 +401,22 @@ class RendererMixin:
                         center=self.world_to_screen(cx, cy))
                     self.screen.blit(text, text_rect)
 
+        # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**：
+        # 放在循環前會被後畫的普通塊連同邊框一起蓋掉（實測只剩幾根細線）
+        self._draw_bandaged_groups_poly(
+            lambda b: (follow_map.get(id(b)) or anim_map.get(id(b))
+                       or tri_key(b)),
+            lambda key, inset: view.piece_polygon(*key, inset=inset),
+            tri_neighbors)
+
         # 悬停连锁提示：同類空位叠半透明白（与方形空格同一套语言，
         # 不是描边轮廓——轮廓会让空位看着像有块）
         if hint_empty:
             for (i, j, up) in sorted(hint_empty):
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                self._draw_hint_overlay(poly, (i, j, up) == hint_hover)
+                self._draw_hint_overlay(self._rounded_polygon_points(poly, depth),
+                                       (i, j, up) == hint_hover)
 
         # 调试面板打开时：先画目标框（并把同一结果存到 self._target_region），
         # 再以该结果为基准画洞/缺口/凸起标记，两者严格一致。
@@ -325,6 +496,7 @@ class RendererMixin:
         self._draw_mi_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
+        depth = self._slider_corner_depth()  # 三形態統一圓角削進深度
         selected = []
         normal = []
         for block in self.game.blocks:
@@ -342,6 +514,7 @@ class RendererMixin:
 
         # 悬停连锁提示：同類（含朝向 q）的塊提亮、空位實心提亮
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
+
 
         # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
         _sel_anim = self._sel_anim_border()
@@ -368,12 +541,16 @@ class RendererMixin:
                     border_color, border_w = _play_head
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                pygame.draw.polygon(self.screen, fill, poly)
-                pygame.draw.polygon(self.screen, border_color,
-                                    poly, border_w)
+                rpoly = self._rounded_polygon_points(poly, depth)
+                if self._slider_aa_on(scaled_cell):
+                    self._draw_aa_polygon(rpoly, fill, border_color, border_w)
+                else:
+                    pygame.draw.polygon(self.screen, fill, rpoly)
+                    pygame.draw.polygon(self.screen, border_color,
+                                        rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（與方形/三角同一套語言）
                 if hint_occ is not None and (r, c, q) in hint_occ:
-                    self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
+                    self._draw_hint_overlay(rpoly, (r, c, q) == hint_hover)
                 # 分组着色：縮環從外側向內一圈（位置類不含朝向 q，半整數
                 # 座標在 cell_class 內部整數化），線寬沿用方形慣例。pygame
                 # 多邊形描邊向外也擴半個線寬，直接描會漫進縫隙蓋住選中紅線
@@ -385,12 +562,20 @@ class RendererMixin:
                         self.screen, self._group_color_for((r, c)),
                         self._tri_ring(poly, ring_w / 2.0), ring_w)
 
+        # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**
+        self._draw_bandaged_groups_poly(
+            lambda b: (anim_map.get(id(b)) or follow_map.get(id(b))
+                       or mi_key(b)),
+            lambda key, inset: view.piece_polygon(*key, inset=inset),
+            mi_neighbors)
+
         # 悬停连锁提示：同類空位叠半透明白（与方形空格同一套语言）
         if hint_empty:
             for (r, c, q) in sorted(hint_empty):
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                self._draw_hint_overlay(poly, (r, c, q) == hint_hover)
+                self._draw_hint_overlay(self._rounded_polygon_points(poly, depth),
+                                       (r, c, q) == hint_hover)
 
         # 调试面板打开时：先画目标框（同一结果存进 self._target_region），
         # 再以该结果为基准画洞/缺口/凸起标记，两者严格一致（同方形纪律）。
@@ -457,8 +642,10 @@ class RendererMixin:
         self._board_x = board_x
         self._board_y = board_y
 
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
+        scaled_cell, scaled_gap, step_px = self._board_px()
+        # 相机偏移一次取整，随后的格坐标就都是整数 → 缝隙严格等宽
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
 
         bounds = self.game.get_boundaries()
         min_row, max_row = bounds['min_row'], bounds['max_row']
@@ -467,53 +654,48 @@ class RendererMixin:
         # 缝隙绘制：连续整条线（与历史版本一致）。先画缝线、后画滑块，
         # 滑块覆盖缝线；捆绑组的大矩形最后绘制，会盖住组内那段缝线，
         # 因此「捆绑块内部不露缝」由覆盖自然达成，无需切断缝线段。
+        # 缝的像素带 = [board + i*step - gap, board + i*step)：正好是第 i-1 行与
+        # 第 i 行之间的空白，与滑块的位置共用同一组整数，缝宽恒等于 scaled_gap。
+        gap_left = board_x + min_col * step_px + cam_x - 20
+        gap_right = board_x + (max_col + 1) * step_px + cam_x + 20
+        gap_top = board_y + min_row * step_px + cam_y - 20
+        gap_bottom = board_y + (max_row + 1) * step_px + cam_y + 20
+
         # 绘制选中的横向分割线
         for i in range(min_row, max_row + 2):
-            gap_y = board_y + i * (scaled_cell + scaled_gap) - scaled_gap // 2
-            screen_gap_y = gap_y + self.camera_y
+            band_y = board_y + i * step_px - scaled_gap + cam_y
 
             if self.selected_gap == ('h', i - 1):
+                line_y = band_y + scaled_gap // 2
                 pygame.draw.line(self.screen, self.colors['line'],
-                               (0, screen_gap_y), (self.screen_width, screen_gap_y), 3)
+                               (0, line_y), (self.screen_width, line_y), 3)
 
         # 绘制选中的纵向分割线
         for j in range(min_col, max_col + 2):
-            gap_x = board_x + j * (scaled_cell + scaled_gap) - scaled_gap // 2
-            screen_gap_x = gap_x + self.camera_x
+            band_x = board_x + j * step_px - scaled_gap + cam_x
 
             if self.selected_gap == ('v', j - 1):
+                line_x = band_x + scaled_gap // 2
                 pygame.draw.line(self.screen, self.colors['line'],
-                               (screen_gap_x, 0), (screen_gap_x, self.screen_height), 3)
+                               (line_x, 0), (line_x, self.screen_height), 3)
 
         # 绘制未选中的横向缝隙
         for i in range(min_row, max_row + 2):
-            gap_y = board_y + i * (scaled_cell + scaled_gap) - scaled_gap // 2
-            screen_gap_y = gap_y + self.camera_y
-
-            board_right = board_x + (max_col - min_col + 1) * (scaled_cell + scaled_gap) + min_col * (scaled_cell + scaled_gap)
-            screen_start_x = board_x + min_col * (scaled_cell + scaled_gap) + self.camera_x - 20
-            screen_end_x = board_right + self.camera_x + 20
+            band_y = board_y + i * step_px - scaled_gap + cam_y
 
             if self.selected_gap != ('h', i - 1):
-                pygame.draw.line(self.screen, self.colors['gap'],
-                               (screen_start_x, screen_gap_y),
-                               (screen_end_x, screen_gap_y),
-                               max(1, int(scaled_gap)))
+                pygame.draw.rect(self.screen, self.colors['gap'],
+                                 pygame.Rect(gap_left, band_y,
+                                             gap_right - gap_left, scaled_gap))
 
         # 绘制未选中的纵向缝隙
         for j in range(min_col, max_col + 2):
-            gap_x = board_x + j * (scaled_cell + scaled_gap) - scaled_gap // 2
-            screen_gap_x = gap_x + self.camera_x
-
-            board_bottom = board_y + (max_row - min_row + 1) * (scaled_cell + scaled_gap) + min_row * (scaled_cell + scaled_gap)
-            screen_start_y = board_y + min_row * (scaled_cell + scaled_gap) + self.camera_y - 20
-            screen_end_y = board_bottom + self.camera_y + 20
+            band_x = board_x + j * step_px - scaled_gap + cam_x
 
             if self.selected_gap != ('v', j - 1):
-                pygame.draw.line(self.screen, self.colors['gap'],
-                               (screen_gap_x, screen_start_y),
-                               (screen_gap_x, screen_end_y),
-                               max(1, int(scaled_gap)))
+                pygame.draw.rect(self.screen, self.colors['gap'],
+                                 pygame.Rect(band_x, gap_top,
+                                             scaled_gap, gap_bottom - gap_top))
 
         # 构建动画方块位置映射（使用统一偏移量，确保整组平移视觉一致）
         anim_map = {}
@@ -548,18 +730,14 @@ class RendererMixin:
         for block in self.game.blocks:
             if id(block) in follow_map:
                 lr, lc = follow_map[id(block)]
-                x = board_x + lc * (scaled_cell + scaled_gap)
-                y = board_y + lr * (scaled_cell + scaled_gap)
             elif id(block) in anim_map:
                 lr, lc = anim_map[id(block)]
-                x = board_x + lc * (scaled_cell + scaled_gap)
-                y = board_y + lr * (scaled_cell + scaled_gap)
             else:
-                x = board_x + block.location[1] * (scaled_cell + scaled_gap)
-                y = board_y + block.location[0] * (scaled_cell + scaled_gap)
+                lr, lc = block.location[0], block.location[1]
 
-            screen_x = x + self.camera_x
-            screen_y = y + self.camera_y
+            # 格坐标 → 整数像素：拖动/动画期间 lr/lc 为小数，round 后仍是逐像素平移
+            screen_x = int(round(board_x + lc * step_px)) + cam_x
+            screen_y = int(round(board_y + lr * step_px)) + cam_y
 
             if screen_x < -scaled_cell or screen_x > self.screen_width + scaled_cell:
                 continue
@@ -604,8 +782,8 @@ class RendererMixin:
                     border_color = self.colors['border']
                     border_w = max(1, int(2 * self.zoom))
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
-            pygame.draw.rect(self.screen, fill, rect, border_radius=int(5 * self.zoom))
-            pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=int(5 * self.zoom))
+            pygame.draw.rect(self.screen, fill, rect, border_radius=self._slider_corner_radius())
+            pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=self._slider_corner_radius())
 
             # 连锁提示：同组格叠一层半透明白（hover 更亮），着色描边仍在最上层
             if hint_occ is not None and tuple(block.location) in hint_occ:
@@ -638,10 +816,9 @@ class RendererMixin:
 
         # 连锁提示：高亮的空格（无滑块）同样叠半透明白
         if hint_empty is not None:
-            step_px = scaled_cell + scaled_gap
             for (r, c) in sorted(hint_empty):
-                bx = board_x + c * step_px + self.camera_x
-                by = board_y + r * step_px + self.camera_y
+                bx = board_x + c * step_px + cam_x
+                by = board_y + r * step_px + cam_y
                 self._draw_hint_overlay(
                     [(bx, by), (bx + scaled_cell, by),
                      (bx + scaled_cell, by + scaled_cell), (bx, by + scaled_cell)],
@@ -651,10 +828,10 @@ class RendererMixin:
         base = getattr(self, 'macro_record_base_point', None)
         if base is not None:
             br, bc = base
-            bx = board_x + bc * (scaled_cell + scaled_gap) + self.camera_x
-            by = board_y + br * (scaled_cell + scaled_gap) + self.camera_y
+            bx = board_x + bc * step_px + cam_x
+            by = board_y + br * step_px + cam_y
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
-            pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=int(5 * self.zoom))
+            pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=self._slider_corner_radius())
 
         # 调试面板打开时：先画目标窗口框（并把同一 region 存到 self），
         # 再以该 region 为基准画洞/缺口/凸起标记，两者严格一致。
@@ -676,6 +853,92 @@ class RendererMixin:
         # S1-4：方向标注必须画在**滑块之后**（最上层）。放在缝隙绘制阶段会被
         # 后画的滑块盖掉一半——圆的一半陷在块底下，看着像画崩了。
         self._draw_gap_direction_annotation()
+
+    def _draw_bandaged_groups_poly(self, disp_key, poly_of, neighbors_of):
+        """三角/米字：把捆绑组画成一整块（组内无缝、只描组外边界）。
+
+        与方形 `_draw_bandaged_groups_play` 同观感。单位块是多边形，所以
+        不能照搬「大矩形」那套，做法（gui/group_render.draw_group_pieces）：
+          - 每块按普通块形状填色（组外留正常缝隙）；
+          - 组内共用边铺一块同色四边形——端点取**两侧内缩边**，四边形天然
+            落在组内，不会像粗线段那样在 60° 外角戳出组外（踩过）；
+          - 只给非共用边重描边框，外轮廓与普通块边框同宽同色。
+
+        disp_key(block)：显示用位置（拖拽跟随/动画插值），坐标可能带浮点
+        噪声，故键统一 round 到 1e-3 再比对相邻关系。
+        poly_of(key, inset)：该位置的世界坐标多边形（inset=True 为普通块形状）。
+        neighbors_of(key)：该形态的相邻位置表（game_triangle/game_mi.neighbors）。
+        """
+        groups = {}
+        for b in self.game.blocks:
+            gid = getattr(b, 'group', 0)
+            if not gid:
+                continue
+            groups.setdefault(gid, []).append((disp_key(b), b.be_opted))
+        if not groups:
+            return
+
+        def _n(key):
+            return tuple(round(v, 3)
+                         if isinstance(v, (int, float)) and not isinstance(v, bool)
+                         else v for v in key)
+
+        from gui.group_render import (_round_pt, bridge_quad, draw_group_pieces,
+                                      interior_angle, piece_edge_flags,
+                                      shared_edge_index)
+        for _gid, items in groups.items():
+            fulls = {_n(key): poly_of(key, False) for key, _sel in items}
+            insets = {_n(key): poly_of(key, True) for key, _sel in items}
+            keys = set(fulls)
+            pieces = []
+            bridges = []
+            # 组内 ≥3 块共用的顶点：各块内缩后会在该点周围漏出 ≈gap 的小洞
+            # （米字同格四块的中心最典型）→ 记下顶点、各块在该点的内角之和
+            # 与「到内缩顶点的最大距离」，交给 draw_group_pieces 补同色圆点。
+            #
+            # **内角之和 ≈ 2π 才是组内部点**：截图上那个小凸包就是没判这个——
+            # 组外边界上恰好也有 3 块同组块交于一点（角各 60°，和为 π），
+            # 那里根本没有洞，画圆就鼓到轮廓外面去了。
+            vmap = {}
+            for key, sel in items:
+                nk = _n(key)
+                full_poly, inset_poly = fulls[nk], insets[nk]
+                for vi, v in enumerate(full_poly):
+                    vk = _round_pt(v)
+                    off = math.hypot(v[0] - inset_poly[vi][0],
+                                     v[1] - inset_poly[vi][1])
+                    ang = interior_angle(full_poly, vi)
+                    rec = vmap.get(vk)
+                    if rec is None:
+                        vmap[vk] = [ang, off, sel]
+                    else:
+                        rec[0] += ang
+                        rec[1] = max(rec[1], off)
+            for key, sel in items:
+                nk = _n(key)
+                nbs = {_n(nb) for nb in neighbors_of(key)} & keys
+                nbs.discard(nk)
+                flags = piece_edge_flags(fulls[nk], [fulls[k] for k in nbs])
+                pieces.append((insets[nk], flags, sel))
+                for nk2 in sorted(nbs):
+                    if nk > nk2:      # 每条内部缝只画一次
+                        continue
+                    i = shared_edge_index(fulls[nk], fulls[nk2])
+                    j = shared_edge_index(fulls[nk2], fulls[nk])
+                    if i is None or j is None:
+                        continue
+                    pa, pb = insets[nk], insets[nk2]
+                    bridges.append((bridge_quad(
+                        (pa[i], pa[(i + 1) % len(pa)]),
+                        (pb[j], pb[(j + 1) % len(pb)])), sel))
+            # 只在「被同组块围满一圈」的顶点补点（内角之和 ≈ 2π）；
+            # 外边界上的顶点（和 < 2π）本来就没有洞，补了会鼓出轮廓。
+            dots = [(v, off, sel) for v, (ang, off, sel) in vmap.items()
+                    if ang >= 2 * math.pi - 0.2]
+            draw_group_pieces(
+                self.screen, pieces, bridges, self.world_to_screen,
+                self.colors['block'], self.colors['block_selected'],
+                self.colors['border'], max(1, int(2 * self.zoom)), dots)
 
     def _draw_bandaged_groups_play(self, scaled_cell, scaled_gap):
         """游玩主棋盘的捆绑组渲染：同组滑块 → 一整块「放大版普通滑塊」。
@@ -724,21 +987,21 @@ class RendererMixin:
             groups.setdefault(g, []).append((lr, lc))
         if not groups:
             return
-        step_px = scaled_cell + scaled_gap
+        step_px = scaled_cell + scaled_gap    # 两个参数已是整数像素（见 _board_px）
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
 
         def get_rect(r, c):
-            x = c * step_px + self.camera_x
-            y = r * step_px + self.camera_y
-            # 用 int() 截断而非 round()：与方块循环的坐标口径严格一致
-            # （pygame.draw.rect 对 float 截断），否则某些列差 1px，
-            # 底下方块自带的 border 会从填充边缘露出一条细线。
-            return (int(x), int(y), int(scaled_cell))
+            # 与方块循环同口径：整数 step + round 到像素，缝宽才与普通块一致
+            x = int(round(c * step_px)) + cam_x
+            y = int(round(r * step_px)) + cam_y
+            return (x, y, scaled_cell)
 
         from .group_render import draw_group_chunks
         # 与普通块完全一致的边框：颜色 / 宽度 / 圆角
         border_color = self.colors['border']
         border_w = max(1, int(2 * self.zoom))
-        radius = int(5 * self.zoom)
+        radius = self._slider_corner_radius()
 
         for gid, cells in groups.items():
             rs = [r for r, c in cells]
@@ -748,13 +1011,15 @@ class RendererMixin:
             is_rect = len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1)
             selected = any((r, c) in sel_pos for r, c in cells)
             if is_rect:
-                # 像「一个大一号的普通滑塊」：单个圆角矩形，填充+边框同普通块
-                x = c0 * step_px + self.camera_x
-                y = r0 * step_px + self.camera_y
-                w = (c1 - c0 + 1) * scaled_cell + (c1 - c0) * scaled_gap
-                h = (r1 - r0 + 1) * scaled_cell + (r1 - r0) * scaled_gap
+                # 像「一个大一号的普通滑塊」：单个圆角矩形，填充+边框同普通块。
+                # 宽高用「整数步进 × 格数 − 缝隙」算，正好覆盖到相邻格的外沿，
+                # 与逐块画出来的边界逐像素对齐。
+                x = int(round(c0 * step_px)) + cam_x
+                y = int(round(r0 * step_px)) + cam_y
+                w = (c1 - c0 + 1) * step_px - scaled_gap
+                h = (r1 - r0 + 1) * step_px - scaled_gap
                 fill = self.colors['block_selected'] if selected else self.colors['block']
-                rect = pygame.Rect(int(x), int(y), int(w), int(h))
+                rect = pygame.Rect(x, y, w, h)
                 pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
                 pygame.draw.rect(self.screen, border_color, rect, border_w,
                                  border_radius=radius)
@@ -869,24 +1134,25 @@ class RendererMixin:
         gold = self.PICK_FILL_GOLD
         board_x = getattr(self, '_board_x', 0)
         board_y = getattr(self, '_board_y', 0)
-        scaled_cell = self.cell_size * self.zoom
-        cell_step = scaled_cell + self.gap_width * self.zoom
+        scaled_cell, _, cell_step = self._board_px()   # 与主棋盘同一套整数像素
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
         p = pf.get('block')
         if p is not None:
-            bx = board_x + p[1] * cell_step + self.camera_x
-            by = board_y + p[0] * cell_step + self.camera_y
+            bx = board_x + p[1] * cell_step + cam_x
+            by = board_y + p[0] * cell_step + cam_y
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
             pygame.draw.rect(self.screen, gold, hl_rect,
                              max(1, int(3 * self.zoom)),
-                             border_radius=int(5 * self.zoom))
+                             border_radius=self._slider_corner_radius())
         hole = pf.get('hole')
         if hole:
             radius = max(3, int(scaled_cell * 0.35))
             line_w = max(2, int(2 * self.zoom))
             half = scaled_cell / 2
             for r, c in hole.get('cells', []):
-                cx = board_x + c * cell_step + self.camera_x + half
-                cy = board_y + r * cell_step + self.camera_y + half
+                cx = board_x + c * cell_step + cam_x + half
+                cy = board_y + r * cell_step + cam_y + half
                 pygame.draw.circle(self.screen, gold, (int(cx), int(cy)),
                                    radius, line_w)
 
@@ -906,9 +1172,9 @@ class RendererMixin:
             view = self._mi_view()
             return self.world_to_screen(
                 *view.piece_center(key[0], key[1], key[2]))
-        step_px = self.cell_size * self.zoom + self.gap_width * self.zoom
-        return (key[1] * step_px + step_px / 2.0 + self.camera_x,
-                key[0] * step_px + step_px / 2.0 + self.camera_y)
+        _, _, step_px = self._board_px()
+        return (key[1] * step_px + step_px / 2.0 + int(round(self.camera_x)),
+                key[0] * step_px + step_px / 2.0 + int(round(self.camera_y)))
 
     def _game_dir_tables(self):
         """该形态的 (DIRECTIONS, GAP_DIRECTIONS)。
@@ -946,7 +1212,7 @@ class RendererMixin:
                 pts = [self.world_to_screen(*p)
                        for p in view.piece_polygon(key[0], key[1], key[2])]
             else:
-                step_px = self.cell_size * self.zoom + self.gap_width * self.zoom
+                _, _, step_px = self._board_px()
                 half = step_px / 2.0
                 pts = [(cx - half, cy - half), (cx + half, cy - half),
                        (cx + half, cy + half), (cx - half, cy + half)]
@@ -1371,8 +1637,7 @@ class RendererMixin:
             if i == self.puzzle_menu_hovered:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
-            is_current = (len(preset) >= 4
-                          and self._preset_puzzle_key(preset) == current_key)
+            is_current = self._preset_is_current(preset, current_key)
 
             name = preset[0]
             color = self.colors['menu_selected'] if is_current else self.colors['menu_text']
@@ -1441,8 +1706,7 @@ class RendererMixin:
             if i == self.puzzle_sub_hovered:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
-            is_current = (len(preset) >= 4
-                          and self._preset_puzzle_key(preset) == current_key)
+            is_current = self._preset_is_current(preset, current_key)
 
             name = preset[0]
             color = self.colors['menu_selected'] if is_current else self.colors['menu_text']
@@ -1571,21 +1835,20 @@ class RendererMixin:
             pygame.draw.rect(self.screen, (110, 110, 110), self._timer_bar_rect,
                              1, border_radius=3)
 
-        # 中间：当前谜题信息（带形态后缀：带序号 #num / 三角形 tri{k} / 米字格 mi{m}*{n}）
-        puzzle_text = f"谜题：{self._current_puzzle_key()}"
-        puzzle_surface = self.status_font.render(puzzle_text, True, self.colors['status_text'])
+        # 中间：当前谜题信息。样式局就用样式标题占这个位置——它不是一个
+        # 官方档位，写「谜题：1~3*3」会让这局看起来是预设谜题；样式名本身
+        # 已经是「在玩什么」最准确的答案，所以不再另起一截「目标：样式…」。
+        style_goal = getattr(self, '_ann_style_goal', None)
+        if style_goal:
+            puzzle_text = f'样式：{style_goal}'
+            puzzle_color = (255, 210, 120)
+        else:
+            # 带形态后缀：带序号 #num / 三角形 tri{k} / 米字格 mi{m}*{n}
+            puzzle_text = f"谜题：{self._current_puzzle_key()}"
+            puzzle_color = self.colors['status_text']
+        puzzle_surface = self.status_font.render(puzzle_text, True, puzzle_color)
         puzzle_x = (self.screen_width - puzzle_surface.get_width()) // 2
         self.screen.blit(puzzle_surface, (puzzle_x, text_y))
-
-        # 样式局：还原目标 = 自定义样式（D4 八变换，旋转/翻面都算还原）
-        if getattr(self, '_ann_style_goal', None):
-            style_text = f'目标：样式「{self._ann_style_goal}」（旋转/翻面都算还原）'
-            style_surface = self.status_font.render(
-                style_text, True, (255, 210, 120))
-            style_x = min(puzzle_x + puzzle_surface.get_width() + 20,
-                          self.screen_width - self.right_panel_width
-                          - style_surface.get_width() - 10)
-            self.screen.blit(style_surface, (style_x, text_y))
 
         # 右侧：缩放比例
         zoom_text = f"缩放：{int(self.zoom * 100)}%"

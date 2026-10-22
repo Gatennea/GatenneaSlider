@@ -35,6 +35,7 @@ import json
 import hashlib
 from game import Block, SliderMatrix
 from puzzle_types import create_puzzle
+from history import groups_to_json, snapshot_groups
 
 CHECKPOINT_EVERY = 10
 
@@ -57,21 +58,42 @@ def _game_cells(game) -> frozenset:
     return frozenset(tuple(b.location) for b in game.blocks)
 
 
+def _game_groups(game):
+    """游戏 → 内存快照用的 {位置: gid}（无捆绑返回 None）。"""
+    if not hasattr(game, 'groups_as_positions'):
+        return None
+    return game.groups_as_positions() or None
+
+
 def _snapshot_field(snap) -> dict:
-    """快照 → 落盘字段（matrix+bounds；编号直接存在整数矩阵里，无需 numbers）。"""
-    return {'matrix': snap['matrix'], 'bounds': snap['bounds']}
+    """快照 → 落盘字段（matrix+bounds；编号直接存在整数矩阵里，无需 numbers）。
+
+    捆绑组一并落盘（[[r,c,gid],...]）：少了它，重放/末态重建会把捆绑块拆散。
+    """
+    out = {'matrix': snap['matrix'], 'bounds': snap['bounds']}
+    groups = groups_to_json(snap.get('groups'))
+    if groups:
+        out['groups'] = groups
+    return out
 
 
 def _snapshot_field_from_game(game) -> dict:
     """从游戏对象抽取当前态的落盘字段（编号已在整数 matrix 中）。"""
-    return {'matrix': [row[:] for row in game.matrix],
-            'bounds': dict(game.matrix_bounds)}
+    out = {'matrix': [row[:] for row in game.matrix],
+           'bounds': dict(game.matrix_bounds)}
+    groups = (groups_to_json(game.groups_as_positions())
+              if hasattr(game, 'groups_as_positions') else None)
+    if groups:
+        out['groups'] = groups
+    return out
 
 
 def _game_from_snapshot(snap, m, n, numbered: bool = False) -> SliderMatrix:
     """用快照的整数 matrix/bounds 重建一个 SliderMatrix（仅方形/数字）。
 
     numbered=True 时 matrix 的值即编号（0=空），据此还原块编号。
+    快照带 groups 时一并恢复捆绑组（重放必须与存档时同一套刚性约束，
+    否则「整组平移」的步骤会被当成「单块平移」重放，末态对不上）。
     """
     bounds = snap['bounds']
     mnr = bounds['min_row']
@@ -92,19 +114,29 @@ def _game_from_snapshot(snap, m, n, numbered: bool = False) -> SliderMatrix:
     g.matrix_bounds = dict(bounds)
     g.numbered = numbered
     g.update_matrix()  # 依据块位置重建矩阵（包围盒收紧到当前棋形）
+    # 兼容两种来源：内存历史快照（tuple 当 key）与 JSON 读回的列表形式
+    groups = snapshot_groups(snap)
+    if groups and hasattr(g, 'set_groups_from_positions'):
+        g.set_groups_from_positions(groups)
     return g
 
 
 def _state_hash(game) -> str:
-    """游戏当前态的稳定哈希（matrix + 编号），用于校验点与末态比对。"""
+    """游戏当前态的稳定哈希（matrix + 编号 + 捆绑组），用于校验点与末态比对。"""
     # 编号必须序列化成 [r, c, 编号] 列表（排序保稳）：dict 用 tuple 当 key
     # 会让 json.dumps 抛 TypeError——数字谜题此前因此在压缩分支必炸。
     nums = sorted([b.location[0], b.location[1], b.number]
                   for b in game.blocks
                   if getattr(b, 'number', None) is not None)
-    payload = json.dumps({'m': game.matrix, 'n': nums}, sort_keys=True,
-                         ensure_ascii=False)
-    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+    payload = {'m': game.matrix, 'n': nums}
+    # 捆绑组只在存在时计入：旧存档（无组）哈希与修复前完全一致，
+    # 不会因为算法变化把旧压缩档误判成「校验不通过」。
+    groups = (groups_to_json(game.groups_as_positions())
+              if hasattr(game, 'groups_as_positions') else None)
+    if groups:
+        payload['g'] = groups
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
 def _checksum(data) -> str:
@@ -180,7 +212,14 @@ def _encode_formula(game, gt, gap_line, direction, n) -> str:
         comps = _components(side_blocks)
         comps.sort(key=lambda comp: min(c for _, c in comp))
         a = max(c for _, c in moved) - min(c for _, c in moved) + 1
-    j = comps.index(moved) + 1
+    # 捆绑块可能跨缝：整组被拉过缝线时，选中集合不再等于缝某一侧的任何
+    # 一个 4-连通分量（分量里混进了没跟着动的块）。公式只是展示记号
+    # （重放只认 steps 原语），这里退化成「重叠最多的分量」，绝不让存档失败。
+    try:
+        j = comps.index(moved) + 1
+    except ValueError:
+        j = (max(range(len(comps)), key=lambda i: len(comps[i] & moved)) + 1
+             if comps else 1)
     letter = _DIR_FORMULA[direction]
     parts = []
     if j > 1:
@@ -322,6 +361,10 @@ def compress_from_game(gui) -> dict:
     kind = 'numbered' if getattr(gui, 'numbered', False) else 'square'
     puzzle = {'m': gui.current_m, 'n': gui.current_n,
               'step': gui.current_step, 'type': kind}
+    # 自定义样式局：记录预设名（导入时按名查样式文件恢复还原目标）
+    _preset = getattr(gui, '_ann_style_goal', None)
+    if _preset:
+        puzzle['preset'] = _preset
     snapshots = gui.game_history.history
     readonly = bool(getattr(gui, '_readonly', False))
     return compress_snapshots(puzzle, snapshots, gui.step_count, readonly)
@@ -366,6 +409,11 @@ def decompress_to_normal(compressed) -> dict:
                 'bounds': dict(game.matrix_bounds),
                 'move_info': mv_info, 'moves': [mv_info],
                 'steps': 1, 'step_total': steps_total}
+        # 这里是「直接落盘」的快照序列，groups 必须是 JSON 安全形式
+        # （tuple 当 key 会让 _checksum 的 json.dumps 抛 TypeError）
+        _g = groups_to_json(_game_groups(game))
+        if _g:
+            snap['groups'] = _g
         snapshots_out.append(snap)
         if (idx + 1) % CHECKPOINT_EVERY == 0:
             cp = cp_by_at.get(idx + 1)
@@ -441,7 +489,8 @@ def load_compressed_into_gui(gui, compressed):
             snap = {'matrix': [row[:] for row in gui.game.matrix],
                     'bounds': dict(gui.game.matrix_bounds),
                     'move_info': mv_info, 'moves': [mv_info],
-                    'steps': 1, 'step_total': steps_total}
+                    'steps': 1, 'step_total': steps_total,
+                    'groups': _game_groups(gui.game)}
             gui.game_history.history.append(snap)
             if (idx + 1) % CHECKPOINT_EVERY == 0:
                 cp = cp_by_at.get(idx + 1)
@@ -472,11 +521,15 @@ def load_compressed_into_gui(gui, compressed):
         gui.game_history.history_index = len(gui.game_history.history) - 1
         gui.step_count = compressed['step_count']
         gui._readonly = bool(compressed.get('readonly', False))
+        # 自定义样式局：按预设名恢复还原目标（D4）
+        gui._ann_apply_saved_style_goal(puzzle.get('preset'))
         return False, "压缩存档公式校验未通过，已按末态加载（存档可能损坏）"
 
     gui.game_history.history_index = len(gui.game_history.history) - 1
     gui.step_count = steps_total
     gui._readonly = bool(compressed.get('readonly', False))
+    # 自定义样式局：按预设名恢复还原目标（D4）；无预设名则清空
+    gui._ann_apply_saved_style_goal(puzzle.get('preset'))
     return True, ""
 
 

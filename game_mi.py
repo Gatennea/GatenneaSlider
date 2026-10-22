@@ -69,6 +69,8 @@ from game import Block
 from game import commit_shuffle_step
 from game import record_shuffle_move
 
+from bandage import BandageMixin
+
 # 8 個移動方向：字母 → (Δrow, Δcol)，每步 step 格。
 # 字母按鍵盤方位排布，與螢幕方向（y 軸向下）一致：
 #       Q(↖)  W(↑)  E(↗)
@@ -255,6 +257,37 @@ def side_of(gap_type: str, line, key: tuple) -> int:
     is_valid_gap 先確認縫合法才談得上；縫無效時 opt 會直接放棄選組。
     """
     return 0 if gap_rank(gap_type, key) <= line else 1
+
+
+def seam_between(a: tuple, b: tuple, valid=None):
+    """分隔單位塊 a、b 的那條縫 (gap_type, line)；不共邊回 None。
+
+    判據走 gap_rank：同族 rank 相等 ⇒ 該族縫不切它們；不等就取
+    min(rank_a, rank_b) 作線號，再用 side_of 複核兩者分居兩側。
+
+    **米字不能只靠 rank**：同格相鄰的 N/E 會被 h 線（N 的底邊那條）也
+    「分到兩側」，那是誤判；真正的縫必須本身合法。所以 valid 在這裡不是
+    可選項而是必需——傳 `game.is_valid_gap`，挑出其中合法的那條。實測
+    （experiments/_probe_seam_between2.py）滿盤/帶洞/錯位態三種局面下，
+    全部相鄰對都恰好只剩 1 個合法候選。
+    """
+    a = tuple(a)
+    b = tuple(b)
+    cands = []
+    for fam in ('h', 'v', 'd1', 'd2'):
+        ra, rb = gap_rank(fam, a), gap_rank(fam, b)
+        if ra == rb:
+            continue
+        line = min(ra, rb)
+        if side_of(fam, line, a) != side_of(fam, line, b):
+            cands.append((fam, line))
+    if not cands:
+        return None
+    if valid is not None:
+        for cand in cands:
+            if valid(*cand):
+                return cand
+    return cands[0]
 
 
 def gap_candidates(gap_type: str, cells) -> list:
@@ -535,7 +568,7 @@ def any_overlap(cells) -> bool:
     return False
 
 
-class MiSliderMatrix:
+class MiSliderMatrix(BandageMixin):
     """米字格滑塊矩陣（與 SliderMatrix / TriangleSliderMatrix 同契約）。
 
     差異處：
@@ -543,13 +576,17 @@ class MiSliderMatrix:
       之後 r/c 可以是半整數（B 晶格），見模組 docstring；
     - matrix 為每格 8-bit 網格：bit0~3 = A 晶格四塊（N/E/S/W），
       bit4~7 = B 晶格（同一格錯開半格的）四塊。
+
+    捆綁組與方形同語義（bandage.BandageMixin）：組是剛體，選中片裡的組
+    整組被拖入選中片，合法移動收窄為原遊戲子集。
     """
 
     # 快照/矩陣的位序表：history.restore_snapshot 靠這個類屬性認出 4-bit 網格
     # （SliderMatrix 也有 m/n，不能靠它區分形態）
     Q_ORDER = ('N', 'E', 'S', 'W')
 
-    __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds')
+    __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds',
+                 'goal_pattern')
 
     def __init__(self, m: int = 6, n: int = 6):
         if m < 1 or n < 1:
@@ -557,6 +594,8 @@ class MiSliderMatrix:
         self.m = m
         self.n = n
         self.blocks = []
+        # 自訂還原形態（設計態樣式）；None = 預設「實心 m×n」判定
+        self.goal_pattern = None
         for r in range(m):
             for c in range(n):
                 for q in ('N', 'E', 'S', 'W'):
@@ -571,10 +610,53 @@ class MiSliderMatrix:
                 for r in range(self.m) for c in range(self.n)
                 for q in ('N', 'E', 'S', 'W')}
 
+    # ---------- 自訂樣式（設計還原態）----------
+    def apply_pattern(self, cells, groups=None) -> None:
+        """按給定樣式重塑盤面（自訂形狀 + 捆綁），與方形同名方法同契約。
+
+        米字的位置是 (r, c, q)，錯位態 r/c 可能是半整數；樣式存的是設計
+        畫布上的原座標，原樣擺回，還原判定（goal_pattern 精確比對）才對
+        得上。m/n 只作覆蓋上界（按 floor 後的格數算）。
+        """
+        cells = [tuple(c) for c in cells]
+        if not cells:
+            return
+        self.blocks = blocks_from_cells(cells)
+        rs = [math.floor(c[0]) for c in cells]
+        cs = [math.floor(c[1]) for c in cells]
+        self.m = max(self.m, max(rs) - min(rs) + 1)
+        self.n = max(self.n, max(cs) - min(cs) + 1)
+        self.update_matrix()
+        if groups:
+            self.set_groups_from_positions(dict(groups))
+
+    def set_goal_pattern(self, cells=None) -> bool:
+        """指定自訂還原形態（None = 取當前盤面）；空集合拒絕。"""
+        if cells is None:
+            cells = self.positions()
+        cells = frozenset(tuple(c) for c in cells)
+        if not cells:
+            return False
+        self.goal_pattern = cells
+        return True
+
+    def clear_goal_pattern(self) -> None:
+        """清除自訂還原形態，回到預設「實心 m×n」判定。"""
+        self.goal_pattern = None
+
     # ---------- 位置集合 ----------
     def positions(self) -> set:
         """全部滑塊位置 (r, c, q) 集合。"""
         return {mi_key(b) for b in self.blocks}
+
+    # ---------- 捆綁組的幾何鉤子（bandage.BandageMixin）----------
+    def neighbors_of(self, pos) -> tuple:
+        """與該單位塊共邊的 5 個相鄰格（3 同晶格 + 2 跨晶格）。"""
+        return neighbors(tuple(pos))
+
+    def seam_between_positions(self, a, b):
+        """分隔兩塊的那條縫；不共邊回 None（米字必須用合法性挑候選）。"""
+        return seam_between(tuple(a), tuple(b), self.is_valid_gap)
 
     def get_boundaries(self) -> dict:
         """滑塊所在格的邊界（row/col，與方形同鍵名）。"""
@@ -730,6 +812,9 @@ class MiSliderMatrix:
         for block in self.blocks:
             if mi_key(block) in visited:
                 block.be_opted = True
+        # 捆綁組是剛體：選中片裡出現的組整組拖進來（跨晶格組員也算），
+        # 重疊/斷開照舊由 _check_step 拒絕
+        self._expand_opted_groups()
 
     # ---------- 移動 ----------
     def _check_step(self, moved: set, non_selected: set) -> tuple:
@@ -931,7 +1016,13 @@ class MiSliderMatrix:
         各滑一格就能在整數／半數座標之間換晶格，所以「錯開半格的實心矩形」
         也算復原，不要求回到建局那張整數格圖。半整數座標只用於 min/max
         與計數，判據本身照舊。
+
+        自訂樣式（設計態 goal_pattern）優先：位置集合與樣式**逐塊相同**
+        即還原（同上，安全打亂的路徑可逆保證能走回這組位置）。
         """
+        goal = self.goal_pattern
+        if goal is not None:
+            return self.positions() == goal
         counts = {}
         for key in self.positions():
             cell = (key[0], key[1])

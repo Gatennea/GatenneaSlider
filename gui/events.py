@@ -799,6 +799,17 @@ class EventsMixin:
                                             self.custom_active_field = 'm'
                                             self.custom_error = ''
                                             puzzle_clicked = True
+                                        elif len(preset) == 1 and preset[0] == '高级选项...':
+                                            # 高级选项 = 设计还原态画布（自定义谜题
+                                            # 的超集：选尺寸 + 自由捆绑/解绑 + 点格增删）。
+                                            # 三形态都支持；异形形状固定为标准形，
+                                            # 只做点缝绑解（v4）。
+                                            self._ann_open_advanced()
+                                            puzzle_clicked = True
+                                        elif len(preset) == 3 and preset[1] == '__custom__':
+                                            # 自定义预设：用保存的还原态样式开局
+                                            self._ann_design_start_style(preset[2])
+                                            puzzle_clicked = True
                                         elif len(preset) >= 4:
                                             _, pm, pn, ps = preset[:4]
                                             kind = preset[4] if len(preset) > 4 else 'square'
@@ -871,6 +882,9 @@ class EventsMixin:
                                         self.show_search_menu = False
                                         self.show_macro_menu = False
                                         self.show_puzzle_menu = not self.show_puzzle_menu
+                                        if self.show_puzzle_menu:
+                                            # 展开前刷新：并入新增/删除的自定义预设
+                                            self._refresh_puzzle_presets()
                                     elif self.menu_items[i] == '宏定义':
                                         self.show_file_menu = False
                                         self.show_edit_menu = False
@@ -989,38 +1003,29 @@ class EventsMixin:
                             # 第二下触控），见 _mi_click_query
                             gap, block = self._mi_click_query(x, y)
                         else:
-                            gap = self.get_gap_at_pos(x, y)
-                            block = self.get_block_at_pos(x, y)
+                            # 方形/三角：命中缝/块；点到「画得出、点得到、
+                            # 选不动」的外沿缝时给提示（与米字格一致）
+                            gap, block = self._sq_click_query(x, y)
 
                         # 捆绑块渲染为「一整块」刚性体：点中其「内部缝」原位置应
                         # 判定为选滑块，而非弹「选不动」。只针对内部缝——块内部
                         # 本就 gap=None 走选块路径，组外侧相邻的外缝必须仍可选中
-                        # （选外缝+点块=整组刚性平移）。方形才有 group 概念，米字
-                        # 格/三角无 group 字段、hasattr 兜底返回空集直接跳过。
-                        if not (getattr(self, 'mi_mode', False)
-                                or getattr(self, 'triangle_mode', False)):
-                            _bi = (self.game.bandage_internal_seams()
-                                   if hasattr(self.game, 'bandage_internal_seams')
-                                   else set())
-                            if gap is not None and gap in _bi:
-                                # 命中捆绑内部缝：这段不能把胶粘块从中间切开，
-                                # 整组只能随动——把它当作点中滑块（选该组任一块
-                                # 等价，刚性体选哪块都通向同一整组）。
-                                wx, wy = self.screen_to_world(x, y)
-                                best = None
-                                best_d = None
-                                for b in self.game.blocks:
-                                    if not getattr(b, 'group', 0):
-                                        continue
-                                    bx, by, bw, bh = self.board_view.block_rect(*b.location)
-                                    cx, cy = bx + bw / 2.0, by + bh / 2.0
-                                    d = (cx - wx) ** 2 + (cy - wy) ** 2
-                                    if best_d is None or d < best_d:
-                                        best_d = d
-                                        best = b
-                                if best is not None:
-                                    block = best
-                                gap = None
+                        # （选外缝+点块=整组刚性平移）。
+                        # v4 起三角/米字也有 group（bandage.BandageMixin），三形态
+                        # 统一；块心定位交给 _bandage_group_block_near（各方形态
+                        # 自己的视图算），命中即当「点中该组滑块」。
+                        _bi = (self.game.bandage_internal_seams()
+                               if hasattr(self.game, 'bandage_internal_seams')
+                               else set())
+                        if gap is not None and gap in _bi:
+                            # 命中捆绑内部缝：这段不能把胶粘块从中间切开，
+                            # 整组只能随动——把它当作点中滑块（选该组任一块
+                            # 等价，刚性体选哪块都通向同一整组）。
+                            wx, wy = self.screen_to_world(x, y)
+                            best = self._bandage_group_block_near(wx, wy)
+                            if best is not None:
+                                block = best
+                            gap = None
 
                         # 控制模式开关（独立布尔，可任意组合）
                         two_touch_on = getattr(self, 'control_two_touch', True)

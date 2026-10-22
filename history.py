@@ -16,6 +16,105 @@ from game import Block
 _DIRS = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
 
 
+# ---------------------------------------------------------------- 捆绑组编解码
+# 内存里捆绑态是 {位置: gid}（tuple 当 key），json.dumps 不接受 tuple key，
+# 落盘必须换成 JSON 安全形式：[[r, c, gid], ...]（排序保稳、紧凑）。
+#
+# 位置长度随形态变：方形 2 元 (r,c)、三角 3 元 (i,j,up)、米字 3 元 (r,c,q)。
+# 落盘统一写成「位置各分量 + gid」——最后一格恒为 gid，前面的都是坐标，
+# 因此 2 元与 3 元位置共用同一套读写，方形旧档（[r,c,gid]）天然兼容。
+def _coord_to_json(x):
+    """坐标分量 → JSON 值（整数就写整数；三角/米字的半格坐标保留小数）。"""
+    f = float(x)
+    return int(f) if f.is_integer() else f
+
+
+def _coord_from_json(x):
+    """JSON 坐标 → 数值（整数值还原成 int，否则 float）。"""
+    f = float(x)
+    return int(f) if f.is_integer() else f
+
+
+def _comp_to_json(x):
+    """位置分量 → JSON 值。三角的 up 是 bool（写成 1/0），米字的 q 是字母（原样）。"""
+    if isinstance(x, str):
+        return x
+    if isinstance(x, bool):
+        return 1 if x else 0
+    return _coord_to_json(x)
+
+
+def _comp_from_json(x):
+    """JSON 值 → 位置分量。字母原样保留；其余转数值（"2" 这类手改值也认）。"""
+    if isinstance(x, str):
+        try:
+            return _coord_from_json(x)
+        except (TypeError, ValueError):
+            return x
+    return _coord_from_json(x)
+
+
+def groups_to_json(mapping):
+    """{位置: gid} → 落盘的 [[坐标..., gid], ...]；空/None 返回 None（不写字段省空间）。
+
+    允许传入已经是落盘形式的 list（或字符串 key 的 dict）——内存态与落盘态
+    在几条转换路径上会混用，先归一再序列化，避免炸在 `.items()` 上。
+    """
+    if not mapping:
+        return None
+    if isinstance(mapping, (list, tuple)) or (
+            isinstance(mapping, dict)
+            and not all(isinstance(k, tuple) for k in mapping)):
+        mapping = groups_from_json(mapping) or {}
+    out = []
+    for pos, gid in mapping.items():
+        out.append([_comp_to_json(comp) for comp in pos] + [int(gid)])
+    out.sort()
+    return out
+
+
+def groups_from_json(raw):
+    """落盘形式 → {位置: gid}；兼容 [[r,c,gid]...]、[[i,j,up,gid]...] 与 {"r,c": gid}。"""
+    if not raw:
+        return None
+    out = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                pos = tuple(_comp_from_json(p) for p in str(k).split(','))
+                if len(pos) < 2:
+                    continue
+                out[pos] = int(v)
+            except (ValueError, TypeError):
+                continue
+    elif isinstance(raw, (list, tuple)):
+        for item in raw:
+            # 最后一格是 gid，前面都是坐标分量（2 元/3 元位置都走这条）
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                continue
+            try:
+                pos = tuple(_comp_from_json(p) for p in item[:-1])
+                out[pos] = int(item[-1])
+            except (ValueError, TypeError):
+                continue
+    return out or None
+
+
+def snapshot_groups(snap):
+    """快照 → {位置: gid}（内存态可能是 tuple-key dict，也可能是落盘形式）。"""
+    if not isinstance(snap, dict):
+        return None
+    raw = snap.get('groups')
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        # 内存快照直接用 tuple-key dict；JSON 读回来的是字符串 key
+        if all(isinstance(k, tuple) for k in raw):
+            return {tuple(k): int(v) for k, v in raw.items()}
+        return groups_from_json(raw)
+    return groups_from_json(raw)
+
+
 def validate_snapshot(snap, kind='square'):
     """载入存档前校验单条快照的 matrix/bounds 是否合法。
 
@@ -77,6 +176,26 @@ def validate_snapshot(snap, kind='square'):
             for v in row:
                 if v < 0:
                     raise ValueError('matrix 单元为负数')
+
+    # 捆绑组（自由捆绑 / 高级选项）：坏数据（负数 gid、条目不是 [坐标...,gid]）
+    # 直接判失败——否则载入后 gid 会被塞进块里，产生无法解释的刚性约束。
+    # 条目最后一格恒为 gid（前面是 2 元/3 元位置），故统一取 item[-1]；
+    # 三角/米字也带捆绑，三种形态一概校验。
+    raw_groups = snap.get('groups')
+    if raw_groups:
+        if isinstance(raw_groups, dict):
+            gids = list(raw_groups.values())
+        elif isinstance(raw_groups, (list, tuple)):
+            gids = []
+            for item in raw_groups:
+                if not isinstance(item, (list, tuple)) or len(item) < 3:
+                    raise ValueError('快照 groups 条目格式错误（应为 [坐标..., gid]）')
+                gids.append(item[-1])
+        else:
+            raise ValueError('快照 groups 不是数组')
+        for gid in gids:
+            if not isinstance(gid, int) or isinstance(gid, bool) or gid <= 0:
+                raise ValueError('快照 groups 的 gid 不是正整数')
 
 
 def snapshot_cells(snap) -> frozenset:
@@ -186,6 +305,9 @@ def expand_snapshot_moves(prev_snap, snap) -> list:
     cells = set(snapshot_cells(prev_snap))
     # 带序号：编号随块一起动（块移动不换号），逐步重建中间态的编号表
     num_map = snapshot_numbers(prev_snap)
+    # 捆绑关系同理：整组一起平移，中间态必须带上 groups，
+    # 否则撤销拆到该段中点时 set_groups_from_positions(None) 会把捆绑清掉。
+    grp = snapshot_groups(prev_snap) or {}
     out = []
     pre = prev_snap
     for i, mv in enumerate(moves):
@@ -201,7 +323,14 @@ def expand_snapshot_moves(prev_snap, snap) -> list:
                        if (r, c) in moved}
             num_map = {p: v for p, v in num_map.items() if p not in moved}
             num_map.update(shifted)
+        if grp:
+            g_shift = {(r + dr, c + dc): g for (r, c), g in grp.items()
+                       if (r, c) in moved}
+            grp = {p: g for p, g in grp.items() if p not in moved}
+            grp.update(g_shift)
         post = snap if i == len(moves) - 1 else cells_to_snapshot(cells, num_map)
+        if post is not snap and grp:
+            post['groups'] = dict(grp)
         out.append((pre, post, mv))
         pre = post
     return out
@@ -341,9 +470,16 @@ class GameHistory:
                         if numbered:
                             b.number = val
                         game.blocks.append(b)
-            # 恢复捆绑状态（自由捆绑；旧快照无该字段 = 无捆绑）
-            if hasattr(game, 'set_groups_from_positions'):
-                game.set_groups_from_positions(snapshot.get('groups'))
+
+        # 恢复捆绑状态（自由捆绑；旧快照无该字段 = 无捆绑）。
+        # **必须在三条重建分支之后统一做**：位置匹配与形态无关
+        # （方形 (r,c) / 三角 (i,j,up) / 米字 (r,c,q) 都由 groups_as_positions
+        # 出来、按 tuple(location) 对上），之前只写在方形分支里，导致三角/
+        # 米字存档带着 groups 落盘、载入后却静默变回全散块。
+        # 内存态通常是 {tuple: gid}，但压缩存档回放建立的快照可能已是落盘
+        # 形式 [[坐标..., gid],...]，统一归一后再灌。
+        if hasattr(game, 'set_groups_from_positions'):
+            game.set_groups_from_positions(snapshot_groups(snapshot))
 
         # 更新游戏内部状态
         game.matrix = [r[:] for r in matrix]

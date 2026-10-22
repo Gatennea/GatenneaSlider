@@ -309,6 +309,17 @@ class AnnotationMixin:
         """创造模式（「模式」开关第三态）：由 game_mode 派生，避免两处状态不一致。"""
         return getattr(self, 'game_mode', '') == 'create'
 
+    @property
+    def ann_canvas_active(self):
+        """编辑器画布是否占据主界面（标注 / 创造 / 高级选项设计会话）。
+
+        三者共用同一套画布与工具条，但对玩家可见的意义不同：
+        前两个由来已久，第三个只是谜题菜单里的「高级选项」——它不该让
+        玩家掉进隐藏的标注模式，故单独用一个会话标记，不碰 annotation_mode。
+        """
+        return (getattr(self, 'annotation_mode', False) or self.create_mode
+                or getattr(self, '_ann_design_session', False))
+
     def _ann_init_state(self):
         """初始化标注模式状态（GUI.__init__ 中调用）。"""
         self.annotation_mode = False        # 模式总开关
@@ -347,6 +358,9 @@ class AnnotationMixin:
         self._ann_design_name_active = False  # 名字输入态
         self._ann_design_style_menu = None  # 样式库下拉（开时为选项列表）
         self._ann_style_goal = None         # 当前局的还原目标样式名（样式局）
+        # 高级选项画布会话：玩家可从谜题菜单进入，与隐藏的标注模式相互独立
+        # （进入/退出都保持原本的模式，不把玩家丢进 B/Z/M/S 的开发者界面）
+        self._ann_design_session = False
         self._ann_design_name_rect = None   # 工具条上的样式名输入框（每帧重建）
         self._ann_design_menu_rect = None   # 样式库下拉矩形（每帧重建）
         self._ann_design_menu_items = []    # 样式库下拉项 [(name, rect)]
@@ -411,6 +425,10 @@ class AnnotationMixin:
 
     def _ann_toggle_mode(self):
         """模式总开关（隐藏入口 B/Z/M/S 触发）。"""
+        if getattr(self, '_ann_design_session', False):
+            # 高级选项画布会话中：隐藏入口不接管（否则会把玩家拖进标注模式）
+            self._ann_notify('高级选项进行中：先退出设计再切换模式')
+            return
         if self.timer_state == 'running':
             self._ann_notify('计时进行中无法进入标注模式')
             return
@@ -463,7 +481,7 @@ class AnnotationMixin:
 
         两种模式都关闭时只检测标注模式的隐藏入口（B/Z/M/S），其余事件放行。
         """
-        active = getattr(self, 'annotation_mode', False) or self.create_mode
+        active = self.ann_canvas_active
         if not active:
             return self._ann_track_toggle_keys(event)
 
@@ -564,6 +582,9 @@ class AnnotationMixin:
             self._ann_abort('已取消本次标注（ESC）')
         elif self.create_mode:
             self._ann_exit_create()
+        elif getattr(self, '_ann_design_session', False):
+            # 高级选项画布：ESC = 退出设计并还原进入前局面
+            self._ann_design_cancel()
         else:
             self.annotation_mode = False
             self._ann_notify('标注模式已关闭')
@@ -662,15 +683,33 @@ class AnnotationMixin:
         self._ann_sub_dialog = 'gen'
 
     def _ann_btn_design(self):
-        """设计还原态：构建「还原成什么样」的样式（形状 + 捆绑）。
+        """设计还原态 / 高级选项：构建「还原成什么样」的样式（形状 + 捆绑）。
 
         与手动构造（造打乱局面）语义分开：设计的产品是样式文件，
-        作为谜题的还原目标；开局走首页[样式库]。画布初始为满矩形
-        还原态，点格删减/添加出想要的形状，捆绑后[存样式]。
+        作为谜题的还原目标；开局走首页[样式库]/谜题菜单。画布初始 = 进入前
+        的盘面（方形：点格删减/添加出想要的形状；三形态都能点缝捆绑/解绑，
+        之后[存样式]）。
+        从谜题菜单「高级选项」进入时（练习模式），只开设计会话标记
+        `_ann_design_session`，**不改 annotation_mode / game_mode**——这个入口
+        是给玩家的，不能把玩家丢进隐藏的标注模式；退出即回到原样。
+
+        三形态（方形/三角/米字）都是「点格增删滑块 + 点缝捆绑/解绑」的完整
+        设计画布：还原态形状完全自定义，保存前过连通性 + 可打乱两道判定
+        （见 _ann_validate_connected / _ann_validate_shuffleable）。异形开局
+        时按 cells 摆回形状并设 goal_pattern（_ann_design_start_style）。
         """
-        if self.triangle_mode or self.mi_mode:
-            self._ann_notify('设计仅方形开放（三角/米字 v3）')
+        if self._ann_view == 'design':
+            # 重复进入会把「进入前备份」覆盖成编辑中的盘面，退出就回不去了
+            self._ann_notify('已在设计画布中（ESC 或[退出]返回）')
             return
+        if self.timer_state == 'running':
+            # 画布会重建盘面（退出才还原）：竞速计时中进来等于改题目
+            self._ann_notify('计时进行中无法进入高级选项')
+            return
+        if not self.create_mode:
+            # 玩家入口：保持练习模式原状，仅标记「画布会话」以接管事件与绘制
+            self.annotation_mode = False
+            self._ann_design_session = True
         m, n, step = self.current_m, self.current_n, self.current_step
         # 备份当前局面：退出设计时原样恢复（同手动构造）
         self._ann_build_backup = {
@@ -678,13 +717,21 @@ class AnnotationMixin:
                                 for b in self.game.blocks}),
             'numbers': {self._ann_normalize_build_pos(tuple(b.location)): b.number
                         for b in self.game.blocks if b.number is not None},
+            'groups': {self._ann_normalize_build_pos(tuple(b.location)):
+                       int(getattr(b, 'group', 0) or 0)
+                       for b in self.game.blocks if getattr(b, 'group', 0)},
             'stack': [],
             'numbered': bool(getattr(self, 'numbered', False)),
             'm': m, 'n': n, 'step': step,
             'history': self.game_history,
         }
-        self._ann_build_fields = {'m': str(m), 'n': str(n), 'step': str(step)}
-        self._ann_build_active = 'm'
+        # 参数行按形态给：三角只有边长 k／等级（米字与方形一样填行/列/等级）
+        if self.triangle_mode:
+            self._ann_build_fields = {'k': str(m), 'step': str(step)}
+            self._ann_build_active = 'k'
+        else:
+            self._ann_build_fields = {'m': str(m), 'n': str(n), 'step': str(step)}
+            self._ann_build_active = 'm'
         self._ann_build_error = ''
         self._ann_build_numbered = False
         self._ann_build_numbers = {}
@@ -692,15 +739,42 @@ class AnnotationMixin:
         self._ann_design_reset()
         self._ann_design_style_name = ''
         self._ann_design_name_active = False
-        # 初始 = 满矩形还原态：设计的就是还原态，从满盘删减最直观
-        self._ann_build_coords = {(r, c) for r in range(m) for c in range(n)}
+        # 画布初始 = 进入前那盘棋的盘面（形状 + 捆绑原样带入）：
+        # 玩家要改的是自己眼前这个形态，再从它增删成目标还原态。
+        coords = {self._ann_normalize_build_pos(tuple(b.location))
+                  for b in self.game.blocks}
+        groups = {}
+        for b in self.game.blocks:
+            gid = int(getattr(b, 'group', 0) or 0)
+            if gid:
+                groups[self._ann_normalize_build_pos(tuple(b.location))] = gid
+        self._ann_build_coords = coords
+        # 捆绑键统一用**完整位置元组**（方形 (r,c)、三角 (i,j,up)、米字
+        # (r,c,q)）——三种形态共用同一份 dict / 同一套绑解代码。
+        self._ann_design_groups = dict(groups)
+        self._ann_design_next_gid = (max(groups.values()) + 1) if groups else 1
         self.current_m, self.current_n, self.current_step = m, n, step
         self._ann_rebuild_game_from_coords()
         self._ann_sub_dialog = 'design'
         self._ann_view = 'design'
         self.center_map()
-        self._ann_notify('设计模式：拼出还原态形状，[捆绑]后[存样式]；'
-                         '开局用首页[样式库]')
+        if self.triangle_mode or self.mi_mode:
+            self._ann_notify('高级选项：还原态形状可自定义（点格增删滑块，'
+                             '需保持连通）；点缝捆绑/解绑，命名后[存样式]'
+                             '（ESC/退出 回到原局）')
+        else:
+            self._ann_notify('设计模式：初始为当前状态，点格增删、点缝捆绑，'
+                             '命名后[存样式]（ESC/退出 回到原局）')
+
+    def _ann_open_advanced(self):
+        """高级选项入口：从谜题菜单（练习模式）打开设计还原态画布。
+
+        「高级选项」是普通自定义的超集——同样的画布（形状增删 + 自由捆绑），
+        但保存前不做滑块数量 / mod 不变量校验，只过「可打乱」判定。语义与
+        创造模式手动构造无关（那个改的是当前局面，本方法改的是还原目标），
+        故直接进入同一套设计视图，由 _ann_btn_design 完成画布初始化。
+        """
+        self._ann_btn_design()
 
     def _ann_btn_style_lib(self):
         """首页样式库下拉开关：选样式直接开局（样式 = 还原目标）。"""
@@ -791,6 +865,11 @@ class AnnotationMixin:
         # 方形照旧捏 Block；三角还要同步 game.k（m/n 由 current_* 同步）
         if self.triangle_mode:
             k = self.current_m
+            # 形状可自定义：允许长到参数 k 之外（画布外扩一圈），此时 k 只作
+            # 覆盖上界，别让 k < 实际形状害得 is_solved/边界逻辑错判
+            if self._ann_build_coords:
+                k = max(k, max(c[0] + c[1]
+                               for c in self._ann_build_coords) + 1)
             self.game.k = k
             self.game.m = k
             self.game.n = k
@@ -811,10 +890,10 @@ class AnnotationMixin:
         else:
             for b in blocks:
                 b.number = None
-        # 设计态捆绑（自由捆绑；仅方形 Block 有 group 字段）
-        if not self.triangle_mode and not self.mi_mode:
-            for b in blocks:
-                b.group = self._ann_design_groups.get(tuple(b.location), 0)
+        # 设计态捆绑（自由捆绑）：三种形态的 Block 都有 group 字段（v4 起
+        # 三角/米字也走 bandage.BandageMixin），键是完整位置元组，直接套用。
+        for b in blocks:
+            b.group = self._ann_design_groups.get(tuple(b.location), 0)
         self.game.blocks = blocks
         self.game.update_matrix()
         # 设计视图：重建后刷新冻形缓存（存样式校验与工具条实时提示共用）
@@ -917,6 +996,11 @@ class AnnotationMixin:
             else:
                 for b in blocks:
                     b.number = None
+            # 捆绑一併回复（三形态通用）：退出设计/取消构造要回到进入前那盘
+            bk_groups = {self._ann_normalize_build_pos(k): int(v)
+                         for k, v in (bk.get('groups') or {}).items()}
+            for b in blocks:
+                b.group = bk_groups.get(tuple(b.location), 0)
             self.game.blocks = blocks
             self.game.update_matrix()
             self.game_history = bk['history']
@@ -938,13 +1022,20 @@ class AnnotationMixin:
         self._ann_notify('已取消手动构造')
 
     def _ann_design_cancel(self):
-        """退出设计：恢复进入前局面；未保存的样式编辑丢弃。"""
+        """退出设计：恢复进入前局面；未保存的样式编辑丢弃。
+
+        高级选项（玩家入口）连会话标记一并清掉，回到进入前那个模式——
+        不能把玩家留在隐藏的标注模式里。创造模式下则保留创造态首页。
+        """
         self._ann_build_restore_backup()
         self._ann_sub_dialog = None
         self._ann_view = 'home'
         self._ann_build_error = ''
         self._ann_design_reset()
         self._ann_store_inputs('design', self._ann_build_fields)
+        if not self.create_mode:
+            self.annotation_mode = False
+            self._ann_design_session = False
         self.center_map()
         self._ann_notify('已退出设计（未保存的编辑已丢弃）')
 
@@ -1076,6 +1167,8 @@ class AnnotationMixin:
     def _ann_leave_to_home(self):
         self._ann_view = 'home'
         self._ann_sub_dialog = None
+        # 画布会话只在设计视图内有效：回首页即作废（防止退出后仍被判定为画布态）
+        self._ann_design_session = False
         self._ann_recording = False
         self._ann_pick = None
         self._ann_base_idx = None
@@ -1547,6 +1640,13 @@ class AnnotationMixin:
     def _ann_cancel_session(self, reason):
         """在 new_puzzle/shuffle/_load_save_data 等入口调用，安全清场。"""
         was_active = self._ann_view in ('target', 'recording') or self._ann_recording
+        if getattr(self, '_ann_design_session', False):
+            # 盘面即将被整体替换：设计会话作废，**不能**回滚备份
+            # （否则旧盘面会覆盖掉刚载入/刚切换的新谜题）
+            self._ann_design_session = False
+            self._ann_build_backup = None
+            self._ann_design_reset()
+            self._ann_notify(f'{reason}：已退出高级选项（未保存的编辑已丢弃）')
         self._ann_leave_to_home()
         if was_active and getattr(self, 'annotation_mode', False):
             self._ann_notify(f'{reason}：已结束当前标注')
@@ -1709,8 +1809,8 @@ class AnnotationMixin:
     # 渲染
     # ==================================================================
     def draw_annotation_mode(self):
-        """标注/创造模式渲染入口（run 循环里、浮动面板之后调用）。"""
-        if not (getattr(self, 'annotation_mode', False) or self.create_mode):
+        """标注/创造/设计会话渲染入口（run 循环里、浮动面板之后调用）。"""
+        if not self.ann_canvas_active:
             return
         if self._ann_view in ('build', 'design'):
             self._ann_draw_build_canvas()
@@ -1728,11 +1828,11 @@ class AnnotationMixin:
                            self.screen_height - self.status_bar_height)
 
     def _ann_cell_center(self, r, c):
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
-        step_px = scaled_cell + scaled_gap
-        return (c * step_px + self.camera_x + scaled_cell / 2,
-                r * step_px + self.camera_y + scaled_cell / 2)
+        scaled_cell, _, step_px = self._board_px()   # 与主棋盘同一套整数像素
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
+        return (c * step_px + cam_x + scaled_cell / 2,
+                r * step_px + cam_y + scaled_cell / 2)
 
     def _ann_draw_track_markers(self):
         """在棋盘上画跟踪标记：空位圈 + 凸起框。"""
@@ -1799,15 +1899,15 @@ class AnnotationMixin:
                 # 随机生成只对方形开放（三角/米字没有随机生成）
                 if not self.triangle_mode and not self.mi_mode:
                     add('random_gen', '随机生成', (70, 120, 180))
-                    # 设计=构建还原态样式（与造打乱局面的构造语义分开）
-                    add('design', '设计还原态', (60, 120, 90))
+                    # 设计还原态（自定义谜题）已迁至谜题菜单「高级选项」，
+                    # 与造打乱局面的手动构造语义分开，避免混淆。
                     add('style_lib', '样式库▾', (70, 120, 180))
                 if self.triangle_mode or self.mi_mode:
                     title_text = ('创造模式：请用[手动构造]造题 · '
                                   '造好即成为当前谜题 · ESC 退出')
                 else:
                     title_text = ('创造模式：随机生成/手动构造 造打乱局面 · '
-                                  '设计还原态 造还原样式 · ESC 退出')
+                                  'ESC 退出（自定义还原态走菜单「高级选项」）')
             else:
                 add('exit_mode', '退出标注', (120, 90, 90))
                 add('from_current', '④ 当前状态', (70, 120, 180))
@@ -2008,13 +2108,6 @@ class AnnotationMixin:
             return rect
 
         dbtn('save', '存样式', (60, 120, 90))
-        bind_col = (200, 140, 40) if self._ann_design_bind_active \
-            else self.colors['button_bg']
-        bind_txt = '捆绑:开' if self._ann_design_bind_active else '捆绑:关'
-        if self._ann_design_bind_first is not None:
-            bind_txt += f'({self._ann_design_bind_first[0]},' \
-                        f'{self._ann_design_bind_first[1]})…'
-        dbtn('bind', bind_txt, bind_col, w_pad=10)
         dbtn('unbind_all', '清捆绑', (120, 90, 60), w_pad=10)
         # 捆绑组统计
         gsum = self._ann_design_groups
@@ -2049,24 +2142,22 @@ class AnnotationMixin:
         self._ann_build_clear_btn = place_right('清空')
         self._ann_build_dialog_rect = self._ann_bar_rect
 
-        # 即时状态：块数 / 组数 / 冻形（缓存于重建时，不逐帧算）
+        # 即时状态：块数 / 组数 / 可打乱（缓存于重建时，不逐帧算）
         try:
             self._ann_build_param()
             n_groups = len(set(self._ann_design_groups.values()))
             if not self._ann_build_coords:
                 msg, is_ok = '空画布：点格放置滑块拼出还原态形状', False
-            elif getattr(self, '_ann_design_frozen', False):
-                msg, is_ok = '冻形：没有任何合法移动，无法保存为样式', False
             else:
                 msg = (f'{len(self._ann_build_coords)} 颗 · '
-                       f'{n_groups} 组捆绑 · 可[存样式]')
+                       f'{n_groups} 组捆绑 · 点格增删 / 点缝绑解 · 可[存样式]')
                 is_ok = True
         except ValueError as e:
             msg, is_ok = str(e), False
         if self._ann_build_error:
             msg, is_ok = self._ann_build_error, False
         color = (150, 230, 160) if is_ok else (255, 150, 140)
-        st = self.status_font.render('设计还原态  ' + msg, True, color)
+        st = self.status_font.render('高级选项  ' + msg, True, color)
         self.screen.blit(st, (x + 10, row2 + 3))
 
     def _ann_draw_style_menu(self, x, y, w):
@@ -2253,7 +2344,13 @@ class AnnotationMixin:
             return False
         if y > self.screen_height - self.status_bar_height:
             return False
-        # 弹窗外：直接在主棋盘点选增删滑块。
+        # 弹窗外：直接在主棋盘点选。
+        # **设计态（高级选项）必须先分流**：三形态都是「点缝绑解」语义，
+        # 不能落到下面按形态的增删滑块分支（异形的世界坐标反解会直接把点缝
+        # 当成点格，绑/解全失效）。异形形状固定，连点格都不增删。
+        if self._ann_view == 'design':
+            return self._ann_design_board_click(x, y)
+        #
         # 三角/米字用各自 view 的 world_to_cell（不带 cells，空位也给身份）；
         # 方形照旧用 get_cell_at_pos。
         #
@@ -2266,16 +2363,17 @@ class AnnotationMixin:
         if self.triangle_mode:
             wx, wy = self.screen_to_world(x, y)
             cell = self._tri_view().world_to_cell(wx, wy)
+            if cell is not None:
+                self._ann_build_toggle(cell)
+            return True
         elif self.mi_mode:
             wx, wy = self.screen_to_world(x, y)
             cell = self._mi_view().world_to_cell(wx, wy)
-        else:
-            cell = self.get_cell_at_pos(x, y)
-        if cell is None:
+            if cell is not None:
+                self._ann_build_toggle(cell)
             return True
-        # 捆绑工具激活（设计态）：点击走捆绑/解绑，不增删滑块
-        if self._ann_design_bind_active:
-            self._ann_design_click(cell)
+        cell = self.get_cell_at_pos(x, y)
+        if cell is None:
             return True
         self._ann_build_toggle(cell)
         return True
@@ -2286,98 +2384,205 @@ class AnnotationMixin:
     #   再点组内任一块 = 整组解绑。语义与引擎 bind_path/unbind_at 一致
     #   （构造集是「将有」的块，与引擎等价）。
     # ------------------------------------------------------------------
-    def _ann_design_click(self, pos):
-        pos = self._ann_normalize_build_pos(pos)
-        if pos not in self._ann_build_coords:
-            self._ann_build_error = '捆绑只能点在已有滑块上（空位请先放置滑块）'
-            return
-        first = self._ann_design_bind_first
-        if first is None:
-            # 第一点：记录待配对（再点同色组块则直接解绑）
-            gid = self._ann_design_groups.get(pos, 0)
-            if gid:
-                self._ann_design_unbind(pos)
-                self._ann_notify(f'已解绑第 {gid} 组')
-            else:
-                self._ann_design_bind_first = pos
-                self._ann_build_error = ''
-                self._ann_notify('已选起点：再点一个滑块完成捆绑（ESC 取消）')
-            return
-        if first == pos:
-            self._ann_design_bind_first = None
-            self._ann_notify('已取消本次捆绑')
-            return
-        ok = self._ann_design_bind(first, pos)
-        self._ann_design_bind_first = None
-        if ok:
-            self._ann_rebuild_game_from_coords()
-            self._ann_build_error = ''
-        else:
-            self._ann_build_error = '两点之间不连通（中间有空位），无法捆绑'
+    def _ann_design_board_click(self, x, y):
+        """设计画布落点分流：点格增删滑块 / 点缝绑解（三形态通用）。
 
-    def _ann_design_bind(self, a, b) -> bool:
-        """在构造集上找 a→b 的最短路径（BFS，4 邻接），路径整体绑成组。
+        纯靠落点判定，与手动构造的增删滑块互不冲突：
+          - 点缝（gap）→ 绑/解（_ann_design_seam_click）
+          - 点格（cell）→ 增删该滑块（_ann_build_toggle）
 
-        路径上任一点已有组 → 并入该组（组可增长）。返回是否成功。
+        必须先判缝：get_cell_at_pos 在缝隙上也会返回相邻格（缝只有 4px，
+        落在按格取整的判定范围内），若先判格会把「点缝绑/解」误当增删滑块。
+        get_gap_at_pos 只在真正贴近**有效**缝时才返回（两侧都有块），
+        形状外沿那一圈缝会被它否掉，所以先判缝也不会吞掉点格增删。
+
+        异形（三角/米字）现在与方形一样支持自定义还原态形状：格命中由各自
+        视图的 world_to_cell 给出（空位也给身份），增删交给 _ann_build_toggle
+        ——越界判定、三种形态的重建都在那里统一做。样式携带「形状 + 捆绑」，
+        开局时按 cells 摆回并设成 goal_pattern（见 _ann_design_start_style）。
         """
-        from collections import deque
-        occ = self._ann_build_coords
-        if a not in occ or b not in occ:
-            return False
-        prev = {a: None}
-        dq = deque([a])
-        while dq:
-            cur = dq.popleft()
-            if cur == b:
-                break
-            for nd in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-                nxt = (cur[0] + nd[0], cur[1] + nd[1])
-                if nxt in occ and nxt not in prev:
-                    prev[nxt] = cur
-                    dq.append(nxt)
-        if b not in prev:
-            return False
-        path = []
-        cur = b
-        while cur is not None:
-            path.append(cur)
-            cur = prev[cur]
-        gid = 0
-        for p in path:
-            g = self._ann_design_groups.get(p, 0)
-            if g:
-                gid = g
-                break
-        if not gid:
-            gid = self._ann_design_next_gid
-            self._ann_design_next_gid += 1
-        for p in path:
-            self._ann_design_groups[p] = gid
-        self._ann_notify(f'已捆绑 {len(path)} 颗（第 {gid} 组）')
+        gap = self.get_gap_at_pos(x, y)
+        if gap is not None:
+            self._ann_design_seam_click(gap, x, y)
+            return True
+        if self.triangle_mode or self.mi_mode:
+            wx, wy = self.screen_to_world(x, y)
+            view = self._tri_view() if self.triangle_mode else self._mi_view()
+            cell = view.world_to_cell(wx, wy)
+            if cell is not None:
+                self._ann_build_toggle(cell)
+            return True
+        cell = self.get_cell_at_pos(x, y)
+        if cell is not None:
+            r, c = int(cell[0]), int(cell[1])
+            if 0 <= r < self.current_m and 0 <= c < self.current_n:
+                self._ann_build_toggle((r, c))
         return True
 
-    def _ann_design_unbind(self, pos):
-        """解绑 pos 所在组（整组）。"""
-        gid = self._ann_design_groups.get(pos, 0)
-        if not gid:
-            return False
-        for p in [k for k, v in self._ann_design_groups.items() if v == gid]:
-            del self._ann_design_groups[p]
+    def _ann_design_seam_pairs(self) -> dict:
+        """{縫: [(位置A, 位置B), ...]} —— 每條有效縫兩側的**所有**相鄰對。
+
+        三形態通用的縫反推：對每個相鄰對問 game.seam_between_positions
+        （由各形態的 neighbors_of / 族-rank 實作）。一條縫是一整**線**，
+        線上通常並排著好多對相鄰塊（方形的一整行、米字的一條斜鏈），所以
+        值是「候選對列表」而不是單一一對 —— 要綁哪一對得看玩家點在線上的
+        哪一段，由 `_ann_design_seam_pair_at` 按落點挑最近的。
+        """
+        if not hasattr(self.game, 'seam_between_positions'):
+            return {}
+        occ = {tuple(b.location) for b in self.game.blocks}
+        pairs = {}
+        for a in sorted(occ):
+            for b in self.game.neighbors_of(a):
+                b = tuple(b)
+                if b not in occ or not (a < b):
+                    continue
+                seam = self.game.seam_between_positions(a, b)
+                if seam is not None:
+                    pairs.setdefault(seam, []).append((a, b))
+        return pairs
+
+    def _ann_design_pair_mid_world(self, ab):
+        """一對相鄰塊的「共邊中點」（世界座標）：兩塊塊心的中點。"""
+        view = self._tri_view() if self.triangle_mode else self._mi_view()
+        ax, ay = view.piece_center(*ab[0])
+        bx, by = view.piece_center(*ab[1])
+        return (ax + bx) / 2.0, (ay + by) / 2.0
+
+    def _ann_design_side_of(self, gap, pos) -> int:
+        """位置在該縫的哪一側（0 = 索引小的一側）。三形態各自的判據。"""
+        gt, line = gap
+        if self.triangle_mode:
+            from game_triangle import side_of
+            return side_of(gt, line, pos)
+        if self.mi_mode:
+            from game_mi import side_of
+            return side_of(gt, line, pos)
+        # 方形：與 game 的縫族定義一致（'h' 按行、'v' 按列）
+        rank = pos[0] if gt == 'h' else pos[1]
+        return 0 if rank <= line else 1
+
+    def _ann_design_seam_pair_at(self, gap, x, y):
+        """點擊的縫兩側那一對滑塊 (A, B)；判定不出來回 None。
+
+        異形（三角/米字）：先按縫反查候選對，再用落點的世界座標挑最近的
+        那一對——同一條縫線上並排好幾對，取錯對就會綁到別處的兩塊。
+        方形：照舊用落點的世界座標定列/行（省掉逐對求距離，行為與舊版一致）。
+        """
+        if self.triangle_mode or self.mi_mode:
+            cands = self._ann_design_seam_pairs().get(tuple(gap))
+            if not cands:
+                return None
+            if len(cands) == 1:
+                return cands[0]
+            wx, wy = self.screen_to_world(x, y)
+
+            def _d(ab):
+                mx, my = self._ann_design_pair_mid_world(ab)
+                return (mx - wx) ** 2 + (my - wy) ** 2
+
+            return min(cands, key=_d)
+        gt, line = gap
+        wx, wy = self.screen_to_world(x, y)
+        unit = self.board_view.cell_size + self.board_view.gap_width
+        if gt == 'h':
+            c = int(wx // unit)
+            return (line, c), (line + 1, c)
+        r = int(wy // unit)
+        return (r, line), (r, line + 1)
+
+    def _ann_design_seam_click(self, gap, x, y):
+        """点缝：判定两侧并绑/解。
+
+        缝两侧同组（卡在捆绑块内部）→ 沿整条缝解绑（贯穿整个捆绑块）；
+        缝两侧不同组 / 至少一侧未绑 → 把两侧（含各自整组）合并为一个组。
+
+        两侧那一对滑块由 `_ann_design_seam_pair_at` 给出（方形按落点算、
+        异形按缝反查）。拿不到 = 缝线延伸到了棋盘外沿（那一圈缝画得出来
+        但没有第二块），无需操作。
+        """
+        ab = self._ann_design_seam_pair_at(gap, x, y)
+        if ab is None:
+            self._ann_notify('该缝两侧不全有滑块，无需操作')
+            return
+        a, b = ab
+        coords = self._ann_build_coords
+        if a not in coords or b not in coords:
+            self._ann_notify('该缝两侧不全有滑块，无需操作')
+            return
+        ga = self._ann_design_groups.get(a, 0)
+        gb = self._ann_design_groups.get(b, 0)
+        if ga and gb and ga == gb:
+            self._ann_design_unbind_line(gap)        # 内部缝 → 沿整条线解绑
+        else:
+            self._ann_design_bind_seam(a, b)         # 不同组/未绑 → 合并
         self._ann_rebuild_game_from_coords()
-        return True
+        self._ann_build_error = ''
+
+    def _ann_design_bind_seam(self, a, b):
+        """把缝两侧的两块（含各自整组）合并为一个捆绑组。"""
+        groups = self._ann_design_groups
+        ga = groups.get(a, 0)
+        gb = groups.get(b, 0)
+        if ga and gb and ga == gb:
+            return  # 已在同组（分流时已走解绑）
+        if ga and gb:
+            for p, g in list(groups.items()):
+                if g == gb:
+                    groups[p] = ga
+            self._ann_notify(f'已合并两组为第 {ga} 组')
+        elif ga:
+            groups[b] = ga
+            self._ann_notify(f'已把该滑块绑入第 {ga} 组')
+        elif gb:
+            groups[a] = gb
+            self._ann_notify(f'已把该滑块绑入第 {gb} 组')
+        else:
+            new_gid = self._ann_design_next_gid
+            self._ann_design_next_gid += 1
+            groups[a] = new_gid
+            groups[b] = new_gid
+            self._ann_notify(f'已新建第 {new_gid} 组（捆绑两滑块）')
+
+    def _ann_design_unbind_line(self, gap):
+        """沿整条缝 gap 解绑：把横跨该缝的捆绑组拆分为两半。
+
+        「横跨」= 同一个组在缝的两侧都有成员（用各形态的 side_of 判侧），
+        与方形旧实现（`r >= line+1` 归新组）等价，但三角/米字的缝族与
+        位置维度都不同，故一律走 `_ann_design_side_of`。
+        单个滑块单元（gid=0）无法再解——本方法只处理 straddle 的组，
+        满足「解绑必须贯穿整个捆绑块、不能只解一段长度为 1 的缝」。
+        """
+        sides = {}
+        for pos, g in self._ann_design_groups.items():
+            if not g:
+                continue
+            sides.setdefault(g, set()).add(self._ann_design_side_of(gap, pos))
+        straddle = [g for g, ss in sides.items() if len(ss) > 1]
+        if not straddle:
+            self._ann_notify('该缝不是同一捆绑块的内部缝，无需解绑')
+            return
+        ng = self._ann_design_next_gid
+        for g in sorted(straddle):
+            for pos, gg in list(self._ann_design_groups.items()):
+                if gg == g and self._ann_design_side_of(gap, pos) == 1:
+                    self._ann_design_groups[pos] = ng
+            ng += 1
+        self._ann_design_next_gid = ng
+        # 解绑后若某组只剩 1 颗（单滑块单元不允许继续解绑）→ 视为无捆绑
+        _sizes = {}
+        for _g in self._ann_design_groups.values():
+            if _g:
+                _sizes[_g] = _sizes.get(_g, 0) + 1
+        for _p, _g in list(self._ann_design_groups.items()):
+            if _g and _sizes.get(_g, 0) == 1:
+                del self._ann_design_groups[_p]
+        self._ann_notify('已沿该缝将捆绑块解开为两块（贯穿整条线）')
 
     def _ann_design_btn(self, name):
         """设计态工具条按钮分发。"""
         if name == 'save':
             self._ann_design_save_style()
-        elif name == 'bind':
-            self._ann_design_bind_active = not self._ann_design_bind_active
-            self._ann_design_bind_first = None
-            if self._ann_design_bind_active:
-                self._ann_notify('捆绑工具已开：点两个已有滑块完成捆绑；'
-                                 '点组内滑块解绑')
-            else:
-                self._ann_notify('捆绑工具已关')
         elif name == 'unbind_all':
             self._ann_design_clear_groups()
         elif name == 'styles':
@@ -2399,8 +2604,16 @@ class AnnotationMixin:
     def _ann_design_save_style(self):
         """把当前构造存为自定义样式（config/design_styles/<名>.json）。
 
-        保存前过两道关：非空盘面 + 冻形检测（has_legal_move）——
-        冻形（任何移动都甩孤立块）存了也玩不了，拦下并说明。
+        保存前过三道关：非空盘面 + 连通性（整片形状 + 每个捆绑组各自连通，
+        见 _ann_validate_connected）+ 「可打乱」判定 —— 冻形、分裂成两片、
+        组内断开的盘面存了也玩不了，拦下并说明。
+
+        落盘格式按形态分两路：
+          - 方形/带序号：version 1（cells=[[r,c]]、groups={"r,c": gid}），
+            与旧样式逐字段兼容；
+          - 三角/米字：version 2，带 kind（triangle/mi）与尺寸键，cells 与
+            groups 都是「完整位置元组」数组（三角含 up 布尔、米字含 q 字符、
+            米字错位态还可能是半整数），旧读取方看到 kind 就知道怎么解。
         """
         from gui import design_styles
         name = (self._ann_design_style_name or '').strip()
@@ -2412,37 +2625,225 @@ class AnnotationMixin:
         if not cells:
             self._ann_build_error = '空盘面无法保存为样式'
             return
-        # 实时同步 game 后做冻形检测（构造态即最终态）
+        # 实时同步 game 后做「可打乱」检测（高级选项不做滑块数量 / mod 不变量
+        # 校验，只要求至少两个能滑动且相连的刚体，保证能真正打乱成谜题）
         self._ann_rebuild_game_from_coords()
-        if hasattr(self.game, 'has_legal_move') and \
-                not self.game.has_legal_move():
-            self._ann_build_error = ('冻形：当前棋形没有任何合法移动，'
-                                     '保存了也玩不了——请增删滑块改善')
+        ok, err = self._ann_validate_shuffleable()
+        if not ok:
+            self._ann_build_error = err
             return
-        data = {
-            'version': 1,
-            'name': name,
-            'm': self.current_m,
-            'n': self.current_n,
-            'step': self.current_step,
-            'cells': [[r, c] for r, c in cells],
-            'groups': {f'{r},{c}': gid for (r, c), gid
-                       in self._ann_design_groups.items()},
-        }
+        exotic = self.triangle_mode or self.mi_mode
+        if exotic:
+            data = {
+                'version': 2,
+                'name': name,
+                'kind': 'triangle' if self.triangle_mode else 'mi',
+                'm': self.current_m,
+                'n': self.current_n,
+                'step': self.current_step,
+                'cells': [list(p) for p in cells],
+                'groups': [[*p, gid] for p, gid
+                           in sorted(self._ann_design_groups.items())],
+            }
+        else:
+            data = {
+                'version': 1,
+                'name': name,
+                'm': self.current_m,
+                'n': self.current_n,
+                'step': self.current_step,
+                'cells': [[r, c] for r, c in cells],
+                'groups': {f'{r},{c}': gid for (r, c), gid
+                           in self._ann_design_groups.items()},
+            }
         path = design_styles.save_style(self.config_dir, name, data)
         if path:
             self._ann_build_error = ''
             self._ann_design_name_active = False
+            n_groups = len(set(self._ann_design_groups.values()))
             self._ann_notify(f'已保存样式「{name}」（{len(cells)} 颗'
-                             f'{len(set(data["groups"].values()))} 组捆绑）')
+                             f'{n_groups} 组捆绑）')
         else:
             self._ann_build_error = '保存失败（磁盘写入错误）'
 
-    def _ann_design_start_style(self, name: str):
-        """用已存样式开局：盘面摆成样式 → 设为 D4 还原目标 → 安全打乱。
+    def _ann_all_valid_gaps(self) -> list:
+        """当前盘面上所有可选的缝 [(gap_type, line), ...]（三形态通用）。
 
-        旋转/翻面都算还原（is_solved 走 canonicalize 八变换）。
-        复用 shuffle_puzzle 全部既有机制（演示动画/历史重置/难度门槛）。
+        三角/米字直接问 game.all_gaps()（各族候选线已按 side_of 算好）；
+        方形没有这个接口，沿用「边界盒内逐条线问 is_valid_*_line」。
+        """
+        game = self.game
+        if hasattr(game, 'all_gaps'):
+            try:
+                return [(gt, ln) for (gt, ln) in game.all_gaps()
+                        if game.is_valid_gap(gt, ln)]
+            except Exception:
+                return []
+        bounds = game.get_boundaries()
+        out = []
+        for i in range(bounds['min_row'] + 1, bounds['max_row']):
+            if game.is_valid_h_line(i):
+                out.append(('h', i))
+        for j in range(bounds['min_col'] + 1, bounds['max_col']):
+            if game.is_valid_v_line(j):
+                out.append(('v', j))
+        return out
+
+    def _ann_dirs_for_gap(self, gap_type: str) -> tuple:
+        """该缝族允许的移动方向（平行于缝）。"""
+        if self.triangle_mode:
+            from game_triangle import GAP_DIRECTIONS
+            return GAP_DIRECTIONS.get(gap_type, ())
+        if self.mi_mode:
+            from game_mi import GAP_DIRECTIONS
+            return GAP_DIRECTIONS.get(gap_type, ())
+        return {'h': ('a', 'd'), 'v': ('w', 's')}.get(gap_type, ())
+
+    def _ann_find_movable_blocks(self, step=None):
+        """返回重建后的 game 中，参与过至少一次合法移动的滑块集合。
+
+        刚性捆绑组视为一体：组内任一可达即整组可达（opt 的捆绑扩展会把
+        同组整组拖入选中片）。用于「可打乱」判定的「可动」统计。
+
+        只在 game 上做 opt + try_move_ex 预测（两者都不提交位置），测完
+        清掉 be_opted 标志，不污染实际盘面。缝与方向都问形态自己的接口，
+        三角/米字（3~4 个缝族、六向移动）与方形共用这一份代码。
+        """
+        game = self.game
+        step = self.current_step if step is None else step
+        movable = set()
+        blocks = game.blocks
+        if len(blocks) < 2:
+            return movable
+        try:
+            for gt, line in self._ann_all_valid_gaps():
+                dirs = self._ann_dirs_for_gap(gt)
+                if not dirs:
+                    continue
+                for blk in blocks:
+                    game.opt(gt, line, blk)
+                    for d in dirs:
+                        pos, _ = game.try_move_ex(d, step)
+                        if pos:
+                            for b in blocks:
+                                if b.be_opted:
+                                    movable.add(b)
+                    for b in blocks:
+                        b.be_opted = False
+        finally:
+            for b in blocks:
+                b.be_opted = False
+        return movable
+
+    def _ann_adjacent(self, pos) -> list:
+        """該位置在當前形態下的所有邊相鄰位置（不判斷是否在盤面上）。"""
+        game = self.game
+        if hasattr(game, 'neighbors_of'):
+            return [tuple(n) for n in game.neighbors_of(tuple(pos))]
+        r, c = pos[0], pos[1]
+        return [(r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)]
+
+    def _ann_components(self, positions) -> list:
+        """把位置集合按「邊相鄰」拆成連通分量（三形態通用）。"""
+        rest = {tuple(p) for p in positions}
+        out = []
+        while rest:
+            start = next(iter(rest))
+            comp = {start}
+            stack = [start]
+            rest.discard(start)
+            while stack:
+                cur = stack.pop()
+                for nb in self._ann_adjacent(cur):
+                    if nb in rest:
+                        rest.discard(nb)
+                        comp.add(nb)
+                        stack.append(nb)
+            out.append(comp)
+        return out
+
+    def _ann_validate_connected(self):
+        """连通性判定（存样式前必过）：整片形状 + 每个捆绑组各自连通。
+
+        为什么必须判：
+          - 整片——两块互不相连的滑块在「每一步之后必须单一连通」的规则下
+            永远不可能相遇，等于一开局就分成两盘死棋；
+          - 组内——捆绑组是刚体，组内断开的话「整组一起动」根本换不出
+            合法走法（引擎按整体连通判，会一律拒绝），玩家只会看到死局。
+        相邻关系问形态自己的 neighbors_of（方形退回 4-邻域），所以三角的
+        3-邻接、米字的 5-邻接都按各自规则算。
+
+        返回 (ok, err_msg)。
+        """
+        cells = {tuple(b.location) for b in self.game.blocks}
+        if not cells:
+            return False, '空盘面无法保存为样式'
+        comps = self._ann_components(cells)
+        if len(comps) > 1:
+            sizes = '、'.join(str(len(c)) for c in
+                              sorted(comps, key=len, reverse=True))
+            return False, (f'还原态不连通：分成 {len(comps)} 片（各 {sizes} 颗），'
+                           f'互不相连的滑块永远滑不到一起，请先补成一片')
+        summary = (self.game.groups_summary()
+                   if hasattr(self.game, 'groups_summary') else [])
+        for gid, positions in summary:
+            subs = self._ann_components(positions)
+            if len(subs) > 1:
+                return False, (f'第 {gid} 组捆绑不连通（拆成 {len(subs)} 段）：'
+                               f'刚体组必须是一整片，请重新绑一下')
+        return True, ''
+
+    def _ann_validate_shuffleable(self):
+        """高级选项存样式前的「可打乱」判定（暂定启发式，2026-10-20）。
+
+        规则（用户确认）：至少 2 颗滑块各自能成功滑动，且这两颗（或两组）
+        通过共用缝相连（边相邻），保证局面是一个可被打乱的整体，而非冻形
+        或互不相连的两盘。bandage 组视为刚体，组内任一可达即整组可达。
+
+        邻接问 game.neighbors_of（三形态各自的边相邻表），方形退回 4-邻域。
+
+        返回 (ok, err_msg)。
+        """
+        game = self.game
+        if len(game.blocks) < 2:
+            return False, '盘面至少需要 2 颗滑块才能构成谜题'
+        ok, err = self._ann_validate_connected()
+        if not ok:
+            return False, err
+        movable = self._ann_find_movable_blocks()
+        if len(movable) < 2:
+            return False, (f'当前只有 {len(movable)} 颗能滑动，'
+                           f'至少要有 2 颗能滑的滑块（否则无法打乱）')
+        # 共用缝相连：movable 集合中存在一对相邻的滑块
+        occ = {tuple(b.location) for b in movable}
+        shared = False
+        for p in occ:
+            if hasattr(game, 'neighbors_of'):
+                nbs = [tuple(n) for n in game.neighbors_of(p)]
+            else:
+                nbs = [(p[0] + 1, p[1]), (p[0] - 1, p[1]),
+                       (p[0], p[1] + 1), (p[0], p[1] - 1)]
+            if any(n in occ for n in nbs):
+                shared = True
+                break
+        if not shared:
+            return False, ('能滑动的滑块彼此不共用缝（互不相连），'
+                           '无法作为整体打乱')
+        return True, ''
+
+    def _ann_design_start_style(self, name: str):
+        """用已存样式开局：盘面就摆成样式本身（还原态），**不自动打乱**。
+
+        与官方预设语义一致（new_puzzle / new_triangle_puzzle 都是「建局即
+        还原态」，打乱由玩家用 Alt+S 或「编辑-打乱」另行触发）。旋转/翻面
+        都算还原（方形 is_solved 走 canonicalize 八变换）。
+
+        会话级重置（终止梯度流水线、断连续撤销、清计时成绩、脱只读存档、
+        历史重置）统一复用 new_puzzle，避免和官方开局走两套账。
+
+        三角/米字样式（kind=triangle/mi）：还原态是本形态的标准形（内建判定，
+        没有 goal_pattern），样式带的信息其实只有捆绑——所以建局走对应形态的
+        new_*_puzzle，再把 groups 套到同位置的滑块上，形状不动。
         """
         from gui import design_styles
         self._ann_design_reset()   # 防御：清掉可能残留的设计/下拉状态
@@ -2455,23 +2856,125 @@ class AnnotationMixin:
         if not cells:
             self._ann_notify(f'样式「{name}」是空盘面')
             return
-        groups = {}
-        for k, v in (data.get('groups') or {}).items():
-            r, c = k.split(',')
-            groups[(int(r), int(c))] = int(v)
-        # 摆盘 + 设还原目标
+        kind = str(data.get('kind') or 'square')
+        groups = design_styles.groups_from_data(data)
+
+        if kind in ('triangle', 'mi'):
+            step = int(data.get('step') or self.current_step)
+            if kind == 'triangle':
+                # 建局只是拿一套会话重置 + 合法形态骨架；形状随后按 cells 重塑。
+                # k 取「覆盖样式的斜边上界」，new_triangle_puzzle 还要求
+                # step ≤ k-2（k-step ≥ 2 才动得起来）。
+                cover = max(p[0] + p[1] for p in cells) + 1
+                k = max(3, int(data.get('m') or 0), cover)
+                step = max(1, min(step, k - 2))
+                if not self.new_triangle_puzzle(k, step):
+                    self._ann_notify(f'样式「{name}」无法开局（三角形 边长{k} '
+                                     f'等级{step}）')
+                    return
+            else:
+                floors_r = [int(math.floor(p[0])) for p in cells]
+                floors_c = [int(math.floor(p[1])) for p in cells]
+                m = max(2, int(data.get('m') or 0),
+                        max(floors_r) - min(floors_r) + 1)
+                n = max(2, int(data.get('n') or 0),
+                        max(floors_c) - min(floors_c) + 1)
+                step = max(1, min(step, max(m, n) - 1))
+                if not self.new_mi_puzzle(m, n, step):
+                    self._ann_notify(f'样式「{name}」无法开局（米字格 {m}×{n} '
+                                     f'等级{step}）')
+                    return
+            # 按样式重塑：自定义形状 + 捆绑，并把这组位置设为还原目标。
+            # 异形原本的还原判定是内建的「实心大三角 / 实心矩形」，
+            # goal_pattern 一旦设上就改为与样式逐块比位置（见各自 is_solved）。
+            self.game.apply_pattern(cells, groups)
+            self.game.set_goal_pattern(cells)
+            self.current_m, self.current_n = self.game.m, self.game.n
+            self._ann_style_goal = name
+            self.selected_gap = None
+            self.selected_block = None
+            self.step_count = 0
+            self.center_map()
+            self.game_history.reset()
+            self.game_history.save_snapshot(self.game)
+            self._mark_file_dirty()
+            self._ann_leave_to_home()
+            n_bound = len(groups) if groups else 0
+            self._ann_notify(f'已按样式「{name}」开局（{len(cells)} 颗'
+                             + (f'、{n_bound} 颗已捆绑' if n_bound else '')
+                             + '；Alt+S 打乱后再恢复成这个形状）')
+            return
+
+        rs = [p[0] for p in cells]
+        cs = [p[1] for p in cells]
+        m = int(data.get('m') or (max(rs) - min(rs) + 1))
+        n = int(data.get('n') or (max(cs) - min(cs) + 1))
+        if max(m, n) < 2:
+            self._ann_notify(f'样式「{name}」尺寸过小，无法开局')
+            return
+        # new_puzzle 要求 step < max(m, n)：样式跨尺寸复用时可能越界，夹一下
+        step = int(data.get('step') or self.current_step)
+        step = max(1, min(step, max(m, n) - 1))
+
+        # 基础局 + 全套会话重置/守卫（教程锁定、计时中、只读脱钩、历史重置）
+        if not self.new_puzzle(m, n, step):
+            self._ann_notify(f'样式「{name}」无法开局（{m}×{n} 等级{step}）')
+            return
+
+        # 摆成还原态：apply_pattern 收敛 m/n 到 cells 边界盒并恢复捆绑
         self.game.apply_pattern(cells, groups)
         self.game.set_goal_pattern(cells)
         self.current_m = self.game.m
         self.current_n = self.game.n
-        self.current_step = data.get('step', self.current_step)
         self._ann_style_goal = name  # HUD/提示用：当前局的还原目标样式名
+        # new_puzzle 的快照记的是满矩形，摆盘后要以样式态为第 0 步
+        self.selected_gap = None
+        self.selected_block = None
+        self.step_count = 0
+        self.center_map()
+        self.game_history.reset()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
         self._ann_leave_to_home()
-        self._ann_notify(f'已按样式「{name}」开局（旋转/翻面都算还原）')
-        # 安全打乱（带演示动画；样式局 attempts 按实际块数放大）
-        self.shuffle_puzzle()
-        self._ann_notify(f'样式「{name}」：把盘面恢复成设计的样子'
-                         '（旋转/翻面都算还原）')
+        self._ann_notify(f'已按样式「{name}」开局（还原态；Alt+S 打乱后'
+                         '再恢复成这个样子，旋转/翻面都算还原）')
+
+    def _ann_apply_saved_style_goal(self, name):
+        """存档导入用：按已存预设名恢复还原目标。
+
+        高级选项保存的样式局存档只记预设名、不内嵌样式，导入时按名查
+        config/design_styles/<name>.json 取 cells 设还原目标。找不到
+        （样式被删/改名）时保持默认判定并提示。返回是否恢复成功。
+
+        三形态一律设 goal_pattern：方形走 D4 规范化比形状；三角/米字的
+        is_solved 见到 goal_pattern 就改为「位置集合与样式逐块相同」。
+        （v4 早期异形样式只有捆绑、没有自定义形状，那时不设目标；现在
+        形状可自定义，必须跟着恢复，否则读档后少了/多了块的局会被判成
+        已还原或永远判不出。）
+        """
+        from gui import design_styles
+        self._ann_style_goal = None
+        if not name:
+            return False
+        data = design_styles.load_style(self.config_dir, name)
+        kind = str((data or {}).get('kind') or 'square')
+        if not hasattr(self.game, 'set_goal_pattern'):
+            # 旧版异形 Block 没有该接口：只记名字（HUD/菜单 ✓ 用），不动判定
+            if not data:
+                self.macro_notify_msg = f'预设「{name}」未找到，按默认还原判定'
+                self.macro_notify_timer = 180
+                return False
+            self._ann_style_goal = name
+            return True
+        cells = [tuple(p) for p in (data or {}).get('cells', [])]
+        if not cells:
+            self.macro_notify_msg = f'预设「{name}」未找到，按默认还原判定'
+            self.macro_notify_timer = 180
+            return False
+        # 三形态通用：goal_pattern 决定还原判定（异形见到它就走逐块比位置）
+        self.game.set_goal_pattern(cells)
+        self._ann_style_goal = name
+        return True
 
     def _ann_build_dialog_event(self, event):
         if event.type != pygame.KEYDOWN:
@@ -2637,7 +3140,16 @@ class AnnotationMixin:
         self._ann_build_clear()
 
     def _ann_btn_build_cancel(self):
-        self._ann_build_cancel()
+        """工具条[退出]：按当前视图分流（设计走设计退出，构造走构造取消）。
+
+        两者语义不同：设计退出要清掉会话标记（玩家入口不能留下标注模式），
+        构造取消只恢复局面。此前一律走构造取消，导致点[退出]后玩家被丢进
+        隐藏的标注模式首页。
+        """
+        if self._ann_view == 'design':
+            self._ann_design_cancel()
+        else:
+            self._ann_build_cancel()
 
     def _ann_draw_build_canvas(self):
         """主棋盘构造叠加层：可构造范围轮廓 + 目标区域高亮。
@@ -2685,19 +3197,47 @@ class AnnotationMixin:
                                for p in view.piece_polygon(r, c, q)]
                         pygame.draw.polygon(self.screen, outline, pts, 1)
         else:
-            # 空格轮廓（有滑块处主渲染器已画）
+            # 空格轮廓（有滑块处主渲染器已画）——用与主棋盘相同的整数像素几何，
+            # 否则非整数缩放下轮廓会和滑块错开 1~3px
+            cs, _, step_px = self._board_px()
+            cam_x = int(round(self.camera_x))
+            cam_y = int(round(self.camera_y))
             for r in range(r_lo, r_hi + 1):
                 for c in range(c_lo, c_hi + 1):
                     if (r, c) in self._ann_build_coords:
                         continue
-                    x, y = self.world_to_screen(c * stepw, r * stepw)
+                    x, y = c * step_px + cam_x, r * step_px + cam_y
                     pygame.draw.rect(self.screen, outline,
-                                     pygame.Rect(int(x), int(y),
-                                                 max(1, int(cs)),
+                                     pygame.Rect(x, y, max(1, int(cs)),
                                                  max(1, int(cs))), 1)
-        # 捆绑可视化（自由捆绑）：同组块画成一整块实心矩形；待配对第一点画圈
-        if self._ann_design_groups:
+        # 捆绑可视化（自由捆绑）：方形这里补画一次整块矩形；三角/米字由
+        # 主渲染器（draw_triangle_board / draw_mi_board 末尾的
+        # _draw_bandaged_groups_poly）随每次重绘就画好了，不必重复。
+        if self._ann_design_groups and not (self.triangle_mode or self.mi_mode):
             self._ann_draw_group_chunks()
+        # 目标框：仅方形画——与求解器/调试面板同源（find_best_window，
+        # mod-aware），是「该还原理的位置」；三角/米字没有求解器，
+        # anchor 只是类匹配偏移、画出的还原态轮廓对用户无意义
+        # （构造中位置漂移时框也不对），故不画。
+        if not (self.triangle_mode or self.mi_mode):
+            region = _target_region_of(self._ann_build_coords, m, n, step)
+            if region is not None:
+                r0, c0, (rh, cw) = region
+                x0, y0 = self.world_to_screen(c0 * stepw, r0 * stepw)
+                x1, y1 = self.world_to_screen((c0 + cw) * stepw, (r0 + rh) * stepw)
+                pygame.draw.rect(self.screen, (120, 210, 255),
+                                 pygame.Rect(int(x0), int(y0),
+                                             max(1, int(x1 - x0)),
+                                             max(1, int(y1 - y0))), 2)
+        # 顶部操作提示（不遮棋盘中部）：构造/设计两种画布各说各的
+        if self._ann_view == 'design':
+            hint_text = ('设计还原态：点格增删滑块，点缝捆绑/解绑；'
+                         '命名后[存样式]，ESC/[退出] 回到原局')
+        else:
+            hint_text = ('点棋盘格放/取滑块，点窗外格补凸起；'
+                         '改下方参数后 Enter 应用')
+        hint = self.status_font.render(hint_text, True, (150, 220, 255))
+        self.screen.blit(hint, (self.menu_bar_height + 8, self.menu_bar_height + 6))
 
     def _ann_draw_group_chunks(self):
         """构造画布上的捆绑渲染：同组块 → 一整块实心矩形（与游玩共用几何）。
@@ -2707,13 +3247,13 @@ class AnnotationMixin:
         这里只把构造坐标 (r,c) 翻译成屏幕矩形（world_to_screen + 缩放）。
         """
         from .group_render import draw_group_chunks, _darker
-        stepw = self.cell_size + self.gap_width
-        cs = self.cell_size * self.zoom
-        gapped = self.gap_width * self.zoom
+        # 与主棋盘同一套整数像素几何（否则非整数缩放下整组会比底下的滑块错开）
+        cs, gapped, step_px = self._board_px()
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
 
         def get_rect(r, c):
-            x, y = self.world_to_screen(c * stepw, r * stepw)
-            return (int(x), int(y), cs)
+            return (c * step_px + cam_x, r * step_px + cam_y, cs)
         groups = {}
         for (r, c), gid in self._ann_design_groups.items():
             groups.setdefault(gid, []).append((r, c))
@@ -2734,30 +3274,11 @@ class AnnotationMixin:
 
     def _cell_center_screen(self, r, c):
         """构造坐标 (r,c) 的屏幕中心（与主渲染同坐标系）。"""
-        stepw = self.cell_size + self.gap_width
-        x, y = self.world_to_screen(
-            c * stepw + self.cell_size * self.zoom / 2,
-            r * stepw + self.cell_size * self.zoom / 2)
-        return x, y
-        # 目标框：仅方形画——与求解器/调试面板同源（find_best_window，
-        # mod-aware），是「该还原理的位置」；三角/米字没有求解器，
-        # anchor 只是类匹配偏移、画出的还原态轮廓对用户无意义
-        # （构造中位置漂移时框也不对），故不画。
-        if not (self.triangle_mode or self.mi_mode):
-            region = _target_region_of(self._ann_build_coords, m, n, step)
-            if region is not None:
-                r0, c0, (rh, cw) = region
-                x0, y0 = self.world_to_screen(c0 * stepw, r0 * stepw)
-                x1, y1 = self.world_to_screen((c0 + cw) * stepw, (r0 + rh) * stepw)
-                pygame.draw.rect(self.screen, (120, 210, 255),
-                                 pygame.Rect(int(x0), int(y0),
-                                             max(1, int(x1 - x0)),
-                                             max(1, int(y1 - y0))), 2)
-        # 顶部操作提示（不遮棋盘中部）
-        hint = self.status_font.render(
-            '点棋盘格放/取滑块，点窗外格补凸起；改下方参数后 Enter 应用',
-            True, (150, 220, 255))
-        self.screen.blit(hint, (self.menu_bar_height + 8, self.menu_bar_height + 6))
+        scaled_cell, _, step_px = self._board_px()   # 与主棋盘同一套整数像素
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
+        return (c * step_px + cam_x + scaled_cell / 2,
+                r * step_px + cam_y + scaled_cell / 2)
 
     def _btn_row4(self, r1, t1, r2, t2, r3, t3, r4, t4):
         mouse = pygame.mouse.get_pos()

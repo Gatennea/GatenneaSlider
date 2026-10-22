@@ -200,16 +200,16 @@ class MetricsPanelMixin:
         holes, protrusions, _ = detect_holes(coords, game.m, game.n, step_len,
                                              region=region)
 
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
-        cell_step = scaled_cell + scaled_gap
+        scaled_cell, scaled_gap, cell_step = self._board_px()   # 与主棋盘同一套整数像素
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
         half = scaled_cell / 2
         radius = max(3, int(scaled_cell * 0.35))
         line_w = max(2, int(2 * self.zoom))
 
         def _cell_center(r, c):
-            return (c * cell_step + self.camera_x + half,
-                    r * cell_step + self.camera_y + half)
+            return (c * cell_step + cam_x + half,
+                    r * cell_step + cam_y + half)
 
         # 目標窗口內的空位：孔洞→圓圈、缺口→三角形
         for h in holes:
@@ -281,13 +281,13 @@ class MetricsPanelMixin:
 
         board_x = getattr(self, '_board_x', 0)
         board_y = getattr(self, '_board_y', 0)
-        scaled_cell = self.cell_size * self.zoom
-        scaled_gap = self.gap_width * self.zoom
-        cell_step = scaled_cell + scaled_gap
-        x = board_x + c0 * cell_step + self.camera_x
-        y = board_y + r0 * cell_step + self.camera_y
-        w = cw * scaled_cell + (cw - 1) * scaled_gap
-        h = rh * scaled_cell + (rh - 1) * scaled_gap
+        scaled_cell, scaled_gap, cell_step = self._board_px()   # 与主棋盘同一套整数像素
+        cam_x = int(round(self.camera_x))
+        cam_y = int(round(self.camera_y))
+        x = board_x + c0 * cell_step + cam_x
+        y = board_y + r0 * cell_step + cam_y
+        w = cw * cell_step - scaled_gap
+        h = rh * cell_step - scaled_gap
         pygame.draw.rect(self.screen, (80, 220, 100),
                          (int(x), int(y), int(w), int(h)),
                          max(2, int(2 * self.zoom)))
