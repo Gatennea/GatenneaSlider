@@ -36,11 +36,11 @@ from engine.adapter import EngineGame  # noqa: E402
 
 _failures = []
 
-# ⚠️ H 節的 toggle_geometry_engine 會把開關寫進 config/engine.json（產品行為：
-# 撥過一次就記住）。那份文件是**全局開關**——寫成 true 會讓同批並行跑的其它
-# 測試也拿到 EngineGame，於是「編號丟失」「形態判錯」等假象一齊爆出來
-# （實測一次污染把全套從 7 失敗頂到 26 失敗）。故這裡把持久化重定向到臨時
-# 文件：既驗到 persist 行為，又不碰別人的環境。
+# ⚠️ 引擎開關是**全局** config/engine.json（或环境变量 GATENNEA_ENGINE）。写成
+# true 會讓同批并行跑的其它测试也拿到 EngineGame，于是「编号丢失」「形态判错」
+# 等假象一齐爆出（实测一次污染把全套从 7 失败顶到 26 失败）。故把持久化路径
+# 重定向到临时文件：本節若调用 persist 只写到临时文件，不碰别人环境；开机也先
+# 删掉上一轮残留，避免跨轮次污染。
 import tempfile  # noqa: E402
 
 _CFG_PATH = ecfg.config_path()
@@ -370,16 +370,22 @@ for kind, m, n, tri_k in (('square', 4, 4, None), ('triangle', 3, 3, 3),
     check(f"{kind} is_valid_gap/h_line/v_line 全等", diffs == 0,
           f"({total} 條線，差 {diffs})")
 
-# ================================================================ H GUI 撥動
-print("\n== H GUI 撥動開關 ==")
+# ================================================================ H 引擎開關（config 層）
+# 几何引擎的「开关」现仅由 engine.config 控制（config/engine.json 或环境变量
+# GATENNEA_ENGINE），不再有 GUI 内一键拨动（产品决定：试运行开关不需要快捷键/
+# 菜单项，避免与命令面板 Ctrl+K 混淆）。本節驗證：拨动 config 后 new_puzzle 按
+# 当前参数重建出正确逻辑对象（EngineGame / SliderMatrix）。
+print("\n== H 引擎開關（config 層）==")
 ecfg.set_enabled(True)
 gui.new_puzzle(4, 4, 2)
 check("開著建局 → EngineGame", isinstance(gui.game, EngineGame))
-gui.toggle_geometry_engine()
-check("拨动后 → 经典引擎", gui.engine_label() == '经典'
+ecfg.set_enabled(False)
+gui.new_puzzle(4, 4, 2)
+check("關掉后 → 经典引擎", gui.engine_label() == '经典'
       and type(gui.game).__name__ == 'SliderMatrix')
-gui.toggle_geometry_engine()
-check("再拨回 → 几何引擎", gui.engine_label() == '几何'
+ecfg.set_enabled(True)
+gui.new_puzzle(4, 4, 2)
+check("再開 → 几何引擎", gui.engine_label() == '几何'
       and isinstance(gui.game, EngineGame))
 ecfg.set_enabled(False)
 gui.new_puzzle(4, 4, 2)

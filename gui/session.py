@@ -165,55 +165,6 @@ class SessionMixin:
         except ImportError:
             return '经典'
 
-    def toggle_geometry_engine(self):
-        """拨动「几何引擎 / 经典引擎」开关，并重建当前局让开关立即生效。
-
-        几何引擎是可行性验证产物：三形态共用一套逻辑（engine/ 包），已与旧
-        game*.py 逐项差分对齐（test/_test_geometry_engine.py 的 A~M 节 +
-        test/_test_engine_adapter.py）。开关默认关（零扰动），打开后 GUI 走的
-        就是引擎层——用来观察体感是否与经典引擎一致。
-
-        换引擎要换逻辑对象，故按当前参数重建一局（回到还原态）。样式局
-        （自定义还原目标）暂不走引擎层，切换时如实提示、不静默降级。
-        """
-        try:
-            from engine import config as _ecfg
-        except ImportError:
-            self.macro_notify_msg = "几何引擎不可用（engine 模块缺失）"
-            self.macro_notify_timer = 150
-            return False
-        if getattr(self, '_ann_style_goal', None):
-            self.macro_notify_msg = "样式局暂不支持几何引擎（自定义还原目标）"
-            self.macro_notify_timer = 150
-            return False
-        new_val = not _ecfg.is_enabled()
-        _ecfg.set_enabled(new_val)
-        wrote = _ecfg.persist(new_val)
-        # 按当前参数重建：换引擎必须换逻辑对象
-        kind = self._current_kind()
-        try:
-            if kind == 'triangle':
-                self.new_triangle_puzzle(getattr(self.game, 'k',
-                                                 self.current_m),
-                                         self.current_step)
-            elif kind == 'mi':
-                self.new_mi_puzzle(self.current_m, self.current_n,
-                                   self.current_step)
-            else:
-                self.new_puzzle(self.current_m, self.current_n,
-                                self.current_step,
-                                numbered=(kind == 'numbered'))
-        except Exception:
-            # 引擎层建局失败：退回经典引擎，不让玩家卡在半成品状态
-            _ecfg.set_enabled(False)
-            _ecfg.persist(False)
-            raise
-        name = '几何引擎' if new_val else '经典引擎'
-        tip = '' if wrote else '（写入配置失败，仅本次生效）'
-        self.macro_notify_msg = f"已切到{name}{tip}：已按当前参数重开一局"
-        self.macro_notify_timer = 180
-        return True
-
     # ==================== 计时器 ====================
 
     def _current_kind(self) -> str:

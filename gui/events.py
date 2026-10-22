@@ -3675,13 +3675,6 @@ class EventsMixin:
             self._start_update_now()
             return
 
-        if kind == 'engine':
-            # 几何引擎开关（实验）：拨动 engine.config 并重建当前局
-            self.close_all_menus()
-            self.show_help = False
-            self.toggle_geometry_engine()
-            return
-
         # 'none'：概念条目，没有可跳的界面，只弹一条说明提示
         self.macro_notify_msg = entry['name']
         self.macro_notify_timer = 90
