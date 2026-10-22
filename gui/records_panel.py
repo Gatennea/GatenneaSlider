@@ -31,8 +31,8 @@ class RecordsPanelMixin:
     _RP_WIDTH = 320
     _RP_SUMMARY_H = 64   # 统计摘要区高度（允许自动换行）
     _RP_MAX_VISIBLE = 8
-    _RP_DETAIL_FIXED_H = 160  # 详情区固定高度（矩阵完整显示，超高自动缩字号）
-    _RP_MATRIX_MIN_FS = 8     # 初始矩阵最小字号（低于此仍放不下则裁剪）
+    _RP_DETAIL_FIXED_H = 160  # 详情区固定高度（矩阵按方格缩放，完整显示）
+    _RP_MATRIX_GAP = 1        # 初始矩阵格间缝隙（px）：只留发丝缝，连通形状仍读得出来
 
     # 列 x 偏移（相对面板左边）
     _RP_COL_IDX = 10
@@ -62,7 +62,7 @@ class RecordsPanelMixin:
         self.rp_matrix_rect = None       # 详情区左侧矩阵可点击区域（点击弹出操作菜单）
         self.rp_matrix_menu_open = False # 初始状态操作菜单是否打开
         self.rp_matrix_menu_rects = []   # [(rect, action_key)] 菜单项区域
-        self._rp_fonts = {}              # 自适应字号字体缓存
+        self._rp_last_matrix_cell = 0    # 上次绘制初始矩阵的格边长（调试/测试用）
 
     def _rp_current_key(self):
         return puzzle_key(self.current_step, self.current_m, self.current_n,
@@ -342,52 +342,78 @@ class RecordsPanelMixin:
         # 初始状态操作菜单（绘制在面板之上）
         self._rp_draw_matrix_menu(x, y, w)
 
-    def _rp_get_font(self, size):
-        """按字号获取缓存的字体（用于初始矩阵自适应缩放）"""
-        fnt = self._rp_fonts.get(size)
-        if fnt is None:
-            try:
-                fnt = pygame.font.Font('C:/Windows/Fonts/msyh.ttc', size)
-            except Exception:
-                fnt = pygame.font.Font(None, size)
-            self._rp_fonts[size] = fnt
-        return fnt
+    def _rp_matrix_geometry(self, rows, cols, box):
+        """初始矩阵的方格几何：(格边长 cell, 缝隙 gap, 网格左上角 ox, oy)。
 
-    def _rp_matrix_font_size(self, line_count, col_count, avail_w, avail_h):
-        """选择能完整放下矩阵的最大字号（从默认字号递减到下限）"""
-        base = min(12, self.status_font.get_height())
-        for fs in range(base, self._RP_MATRIX_MIN_FS - 1, -1):
-            if line_count * (fs + 2) <= avail_h and col_count * fs <= avail_w:
-                return fs
-        return self._RP_MATRIX_MIN_FS
+        方格必须等比（宽高相等），整体居中放在 box 内：
+        - 格边长 cell 由「可用宽 / 列数」与「可用高 / 行数」取小者决定，
+          因此任何行列数都完整可见、不会被裁掉，也不会被纵向拉伸。
+        - 只留 1px 发丝缝：相邻格子还能数得清，又不会把连通形状打散成一堆小方块。
+        """
+        if rows <= 0 or cols <= 0 or box.w <= 0 or box.h <= 0:
+            return 0, 0, box.x, box.y
+        cell = max(1, min((box.w + 1) // cols, (box.h + 1) // rows))
+        gap = self._RP_MATRIX_GAP if cell >= 4 else 0
+        if gap >= cell:
+            gap = max(0, cell - 1)
+        grid_w = cell * cols - gap
+        grid_h = cell * rows - gap
+        ox = box.x + max(0, (box.w - grid_w) // 2)
+        oy = box.y + max(0, (box.h - grid_h) // 2)
+        return cell, gap, ox, oy
+
+    def _rp_draw_matrix(self, box, lines, cols):
+        """在 box 内画初始矩阵（真方格，非文字 █）。
+
+        lines 是 `_rp_matrix_display` 的输出行（方形 █/·、三角形 █▲▼·）：
+        - █ = 有滑块；▲/▼ = 有滑块且带三角形朝向标记；其余 = 空位。
+        """
+        rows = len(lines)
+        cell, gap, ox, oy = self._rp_matrix_geometry(rows, cols, box)
+        self._rp_last_matrix_cell = cell
+        if cell <= 0:
+            return
+        inner = max(1, cell - gap)
+        fill = (160, 210, 255)
+        mark = (24, 44, 72)
+        for r, line in enumerate(lines):
+            cy = oy + r * cell
+            for c, ch in enumerate(line[:cols]):
+                if ch not in ('█', '▲', '▼'):
+                    continue
+                cx = ox + c * cell
+                pygame.draw.rect(self.screen, fill, pygame.Rect(cx, cy, inner, inner))
+                if ch in ('▲', '▼') and inner >= 6:
+                    # 朝向标记：小三角，朝上 / 朝下
+                    pad = max(1, inner // 5)
+                    x0, y0 = cx + pad, cy + pad
+                    x1, y1 = cx + inner - pad, cy + inner - pad
+                    xmid = (x0 + x1) // 2
+                    if ch == '▲':
+                        pts = [(xmid, y0), (x0, y1), (x1, y1)]
+                    else:
+                        pts = [(xmid, y1), (x0, y0), (x1, y0)]
+                    pygame.draw.polygon(self.screen, mark, pts)
 
     def _rp_draw_detail(self, x, y, w, h, rec):
-        """绘制行详情：左侧初始矩阵（完整显示，自适应字号，可点击弹出操作菜单），右侧信息每条一行"""
+        """绘制行详情：左侧初始矩阵（真方格等比缩放，可点击弹出操作菜单），右侧信息每条一行"""
         detail_rect = pygame.Rect(x + self._RP_PAD, y, w - self._RP_PAD * 2, h)
         pygame.draw.rect(self.screen, (46, 50, 62), detail_rect, border_radius=4)
         pygame.draw.rect(self.screen, (110, 120, 150), detail_rect, 1, border_radius=4)
 
-        # 左：初始矩阵（完整显示，行数多时自动缩小字号）
+        # 左：初始矩阵（方格绘制，按可用区域等比缩放，行列再多也不会被拉伸或裁掉）
         left_w = 132
         label = self.status_font.render("初始状态（点击）", True, (140, 160, 200))
         self.screen.blit(label, (x + self._RP_PAD + 8, y + 6))
         matrix = self._rp_matrix_display(rec['initial_matrix'],
                                          self._rp_is_triangle(rec))
-        raw_lines = matrix.split('\n')
-        lines = [ln for ln in raw_lines if ln]
+        lines = [ln for ln in matrix.split('\n') if ln]
         cols = max((len(ln) for ln in lines), default=0)
-        avail_w = left_w - 16
-        avail_h = h - 24 - 4
-        fs = self._rp_matrix_font_size(len(lines), cols, avail_w, avail_h)
-        fnt = self._rp_get_font(fs)
-        line_h = fs + 2
-        my = y + 24
+        box = pygame.Rect(x + self._RP_PAD + 8, y + 24,
+                          left_w - 16, max(8, h - 24 - 4))
         old_clip = self.screen.get_clip()
         self.screen.set_clip(detail_rect)  # 极端情况下裁掉超出详情区部分，避免盖住其他内容
-        for line in lines:
-            line_surf = fnt.render(line, True, (160, 210, 255))
-            self.screen.blit(line_surf, (x + self._RP_PAD + 8, my))
-            my += line_h
+        self._rp_draw_matrix(box, lines, cols)
         self.screen.set_clip(old_clip)
         self.rp_matrix_rect = pygame.Rect(x + self._RP_PAD, y + 4, left_w, h - 8)
 
