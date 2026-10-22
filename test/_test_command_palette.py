@@ -236,19 +236,18 @@ _reason = _fi.unsupported_reason(_entry[0], gui._feature_form(),
 check('P5c 不可用项给出可读原因（含当前形态名）',
       bool(_reason) and '米字' in _reason, repr(_reason))
 
-print("\n--- 鼠标入口：搜索下拉菜单「命令面板」 ---")
+print("\n--- 鼠标入口：顶栏「搜索」直接打开命令面板 ---")
 gui.close_command_palette()
 gui.show_settings_dialog = False
 gui.new_puzzle(3, 3, 1)
 gui.close_all_menus()
-gui.show_search_menu = True
+# 顶栏矩形只在完整绘制帧里填充；无头测试须先画一次菜单栏，点击命中才有效。
 gui.draw_menu_bar()
-gui.draw_search_menu()
-_idx = [i for i, it in enumerate(gui.search_menu_items)
-        if it.startswith('命令面板')][0]
-click(gui.search_menu_rects[_idx].center)
+# 顶栏「搜索」现在点击即开命令面板（无下拉，单选项不需要下拉）
+_search_idx = gui.menu_items.index('搜索')
+click(gui.menu_item_rects[_search_idx].center)
 gui.handle_events()
-check('P6a 搜索下拉菜单能点开命令面板（不依赖键盘）', gui.palette_active)
+check('P6a 顶栏「搜索」点击直接打开命令面板（不依赖键盘）', gui.palette_active)
 gui.close_command_palette()
 
 # 菜单结构本身：顶栏有「搜索」、设置下拉已删（死机制），命令面板只在搜索菜单

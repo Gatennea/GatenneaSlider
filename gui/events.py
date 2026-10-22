@@ -103,7 +103,6 @@ class EventsMixin:
             ('show_edit_menu', 'edit_menu_rects'),
             ('show_puzzle_menu', 'puzzle_menu_rects'),
             ('show_macro_menu', 'macro_menu_rects'),
-            ('show_search_menu', 'search_menu_rects'),
         )
         for flag, rects_attr in checks:
             if not getattr(self, flag, False):
@@ -477,11 +476,6 @@ class EventsMixin:
                                 if rect.collidepoint(mx, my):
                                     in_dropdown = True
                                     break
-                        if not in_dropdown and self.show_search_menu and hasattr(self, 'search_menu_rects'):
-                            for rect in self.search_menu_rects:
-                                if rect.collidepoint(mx, my):
-                                    in_dropdown = True
-                                    break
                         # 如果不在菜单栏、下拉菜单或右侧面板，跳过事件
                         if my >= self.menu_bar_height and mx < self.screen_width - self.right_panel_width and not in_dropdown:
                             continue
@@ -586,14 +580,6 @@ class EventsMixin:
                         for i, rect in enumerate(self.macro_menu_rects):
                             if rect.collidepoint(mx, my):
                                 self.macro_menu_hovered = i
-                                break
-
-                    # 搜索菜单悬停
-                    self.search_menu_hovered = -1
-                    if self.show_search_menu:
-                        for i, rect in enumerate(self.search_menu_rects):
-                            if rect.collidepoint(mx, my):
-                                self.search_menu_hovered = i
                                 break
 
                     # 滑动条拖拽（缩放/速度）
@@ -829,21 +815,6 @@ class EventsMixin:
                             if puzzle_clicked:
                                 continue
 
-                        # 搜索下拉菜单项点击（顶栏「搜索」展开）。
-                        # 命令面板的鼠标直达入口：不依赖 Ctrl+K，纯鼠标玩家
-                        # 也能从菜单栏走到功能可发现性主入口。
-                        if self.show_search_menu:
-                            search_clicked = False
-                            for i, rect in enumerate(self.search_menu_rects):
-                                if rect.collidepoint(x, y):
-                                    if self.search_menu_items[i].startswith('命令面板'):
-                                        self.open_command_palette()
-                                    search_clicked = True
-                                    break
-                            self.close_all_menus()
-                            if search_clicked:
-                                continue
-
                         # 宏定义菜单项点击
                         if self.show_macro_menu:
                             macro_clicked = False
@@ -867,19 +838,16 @@ class EventsMixin:
                                     elif self.menu_items[i] == '文件':
                                         self.show_edit_menu = False
                                         self.show_puzzle_menu = False
-                                        self.show_search_menu = False
                                         self.show_macro_menu = False
                                         self.show_file_menu = not self.show_file_menu
                                     elif self.menu_items[i] == '编辑':
                                         self.show_file_menu = False
                                         self.show_puzzle_menu = False
-                                        self.show_search_menu = False
                                         self.show_macro_menu = False
                                         self.show_edit_menu = not self.show_edit_menu
                                     elif self.menu_items[i] == '谜题':
                                         self.show_file_menu = False
                                         self.show_edit_menu = False
-                                        self.show_search_menu = False
                                         self.show_macro_menu = False
                                         self.show_puzzle_menu = not self.show_puzzle_menu
                                         if self.show_puzzle_menu:
@@ -889,16 +857,13 @@ class EventsMixin:
                                         self.show_file_menu = False
                                         self.show_edit_menu = False
                                         self.show_puzzle_menu = False
-                                        self.show_search_menu = False
                                         self.show_macro_menu = not self.show_macro_menu
                                     elif self.menu_items[i] == '搜索':
-                                        # 功能可发现性入口：展开只有一项「命令面板」。
-                                        # 与文件/编辑等菜单同风格——再点自己收起。
-                                        self.show_file_menu = False
-                                        self.show_edit_menu = False
-                                        self.show_puzzle_menu = False
-                                        self.show_macro_menu = False
-                                        self.show_search_menu = not self.show_search_menu
+                                        # 「搜索」即命令面板入口：点击直接打开，
+                                        # 无需单选项下拉（只有一项「命令面板」纯属多余）。
+                                        # 键盘首选仍是 Ctrl+K。
+                                        self.close_all_menus()
+                                        self.open_command_palette()
                                     elif self.menu_items[i] == '设置':
                                         self.close_all_menus()
                                         self.show_settings_dialog = True
