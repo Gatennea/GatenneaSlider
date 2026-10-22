@@ -24,6 +24,9 @@ def _boot():
     gui.game_mode = 'practice'
     gui.tutorial_active = False
     gui.tut_show_prompt = False
+    # 启动会自动恢复上一会话（config/temp_history.json）：先建干净局面，
+    # 否则残留的谜题/历史会让后面的 apply_pattern 叠在旧局上，点击判定全偏
+    gui.new_puzzle(5, 5, 2)
     # 关闭会拦截棋盘点击的模态层
     for attr in ('_update_in_progress',):
         setattr(gui, attr, False)

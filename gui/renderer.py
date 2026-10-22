@@ -17,9 +17,11 @@ import pygame
 
 from game import DIRECTIONS as SQ_DIRECTIONS
 from game_mi import mi_key, mi_vertices
+from game_mi import neighbors as mi_neighbors
 from game_mi import DIRECTIONS as MI_DIRECTIONS
 from game_mi import GAP_DIRECTIONS as MI_GAP_DIRECTIONS
 from game_triangle import tri_key
+from game_triangle import neighbors as tri_neighbors
 from game_triangle import DIRECTIONS as TRI_DIRECTIONS
 from game_triangle import GAP_DIRECTIONS as TRI_GAP_DIRECTIONS
 from gui.cell_class import cell_class, class_index
@@ -181,6 +183,7 @@ class RendererMixin:
         # 悬停连锁提示：同類（含朝向）的塊提亮、空位實心提亮（悬停键更亮）
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+
         # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
         _sel_anim = self._sel_anim_border()
         # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
@@ -238,6 +241,14 @@ class RendererMixin:
                     text_rect = text.get_rect(
                         center=self.world_to_screen(cx, cy))
                     self.screen.blit(text, text_rect)
+
+        # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**：
+        # 放在循環前會被後畫的普通塊連同邊框一起蓋掉（實測只剩幾根細線）
+        self._draw_bandaged_groups_poly(
+            lambda b: (follow_map.get(id(b)) or anim_map.get(id(b))
+                       or tri_key(b)),
+            lambda key, inset: view.piece_polygon(*key, inset=inset),
+            tri_neighbors)
 
         # 悬停连锁提示：同類空位叠半透明白（与方形空格同一套语言，
         # 不是描边轮廓——轮廓会让空位看着像有块）
@@ -343,6 +354,7 @@ class RendererMixin:
         # 悬停连锁提示：同類（含朝向 q）的塊提亮、空位實心提亮
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
 
+
         # S1-2：撤销/重做的边框配色（三形态共用同一处定义），每帧只算一次
         _sel_anim = self._sel_anim_border()
         # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
@@ -384,6 +396,13 @@ class RendererMixin:
                     pygame.draw.polygon(
                         self.screen, self._group_color_for((r, c)),
                         self._tri_ring(poly, ring_w / 2.0), ring_w)
+
+        # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**
+        self._draw_bandaged_groups_poly(
+            lambda b: (anim_map.get(id(b)) or follow_map.get(id(b))
+                       or mi_key(b)),
+            lambda key, inset: view.piece_polygon(*key, inset=inset),
+            mi_neighbors)
 
         # 悬停连锁提示：同類空位叠半透明白（与方形空格同一套语言）
         if hint_empty:
@@ -676,6 +695,92 @@ class RendererMixin:
         # S1-4：方向标注必须画在**滑块之后**（最上层）。放在缝隙绘制阶段会被
         # 后画的滑块盖掉一半——圆的一半陷在块底下，看着像画崩了。
         self._draw_gap_direction_annotation()
+
+    def _draw_bandaged_groups_poly(self, disp_key, poly_of, neighbors_of):
+        """三角/米字：把捆绑组画成一整块（组内无缝、只描组外边界）。
+
+        与方形 `_draw_bandaged_groups_play` 同观感。单位块是多边形，所以
+        不能照搬「大矩形」那套，做法（gui/group_render.draw_group_pieces）：
+          - 每块按普通块形状填色（组外留正常缝隙）；
+          - 组内共用边铺一块同色四边形——端点取**两侧内缩边**，四边形天然
+            落在组内，不会像粗线段那样在 60° 外角戳出组外（踩过）；
+          - 只给非共用边重描边框，外轮廓与普通块边框同宽同色。
+
+        disp_key(block)：显示用位置（拖拽跟随/动画插值），坐标可能带浮点
+        噪声，故键统一 round 到 1e-3 再比对相邻关系。
+        poly_of(key, inset)：该位置的世界坐标多边形（inset=True 为普通块形状）。
+        neighbors_of(key)：该形态的相邻位置表（game_triangle/game_mi.neighbors）。
+        """
+        groups = {}
+        for b in self.game.blocks:
+            gid = getattr(b, 'group', 0)
+            if not gid:
+                continue
+            groups.setdefault(gid, []).append((disp_key(b), b.be_opted))
+        if not groups:
+            return
+
+        def _n(key):
+            return tuple(round(v, 3)
+                         if isinstance(v, (int, float)) and not isinstance(v, bool)
+                         else v for v in key)
+
+        from gui.group_render import (_round_pt, bridge_quad, draw_group_pieces,
+                                      interior_angle, piece_edge_flags,
+                                      shared_edge_index)
+        for _gid, items in groups.items():
+            fulls = {_n(key): poly_of(key, False) for key, _sel in items}
+            insets = {_n(key): poly_of(key, True) for key, _sel in items}
+            keys = set(fulls)
+            pieces = []
+            bridges = []
+            # 组内 ≥3 块共用的顶点：各块内缩后会在该点周围漏出 ≈gap 的小洞
+            # （米字同格四块的中心最典型）→ 记下顶点、各块在该点的内角之和
+            # 与「到内缩顶点的最大距离」，交给 draw_group_pieces 补同色圆点。
+            #
+            # **内角之和 ≈ 2π 才是组内部点**：截图上那个小凸包就是没判这个——
+            # 组外边界上恰好也有 3 块同组块交于一点（角各 60°，和为 π），
+            # 那里根本没有洞，画圆就鼓到轮廓外面去了。
+            vmap = {}
+            for key, sel in items:
+                nk = _n(key)
+                full_poly, inset_poly = fulls[nk], insets[nk]
+                for vi, v in enumerate(full_poly):
+                    vk = _round_pt(v)
+                    off = math.hypot(v[0] - inset_poly[vi][0],
+                                     v[1] - inset_poly[vi][1])
+                    ang = interior_angle(full_poly, vi)
+                    rec = vmap.get(vk)
+                    if rec is None:
+                        vmap[vk] = [ang, off, sel]
+                    else:
+                        rec[0] += ang
+                        rec[1] = max(rec[1], off)
+            for key, sel in items:
+                nk = _n(key)
+                nbs = {_n(nb) for nb in neighbors_of(key)} & keys
+                nbs.discard(nk)
+                flags = piece_edge_flags(fulls[nk], [fulls[k] for k in nbs])
+                pieces.append((insets[nk], flags, sel))
+                for nk2 in sorted(nbs):
+                    if nk > nk2:      # 每条内部缝只画一次
+                        continue
+                    i = shared_edge_index(fulls[nk], fulls[nk2])
+                    j = shared_edge_index(fulls[nk2], fulls[nk])
+                    if i is None or j is None:
+                        continue
+                    pa, pb = insets[nk], insets[nk2]
+                    bridges.append((bridge_quad(
+                        (pa[i], pa[(i + 1) % len(pa)]),
+                        (pb[j], pb[(j + 1) % len(pb)])), sel))
+            # 只在「被同组块围满一圈」的顶点补点（内角之和 ≈ 2π）；
+            # 外边界上的顶点（和 < 2π）本来就没有洞，补了会鼓出轮廓。
+            dots = [(v, off, sel) for v, (ang, off, sel) in vmap.items()
+                    if ang >= 2 * math.pi - 0.2]
+            draw_group_pieces(
+                self.screen, pieces, bridges, self.world_to_screen,
+                self.colors['block'], self.colors['block_selected'],
+                self.colors['border'], max(1, int(2 * self.zoom)), dots)
 
     def _draw_bandaged_groups_play(self, scaled_cell, scaled_gap):
         """游玩主棋盘的捆绑组渲染：同组滑块 → 一整块「放大版普通滑塊」。
@@ -1371,8 +1476,7 @@ class RendererMixin:
             if i == self.puzzle_menu_hovered:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
-            is_current = (len(preset) >= 4
-                          and self._preset_puzzle_key(preset) == current_key)
+            is_current = self._preset_is_current(preset, current_key)
 
             name = preset[0]
             color = self.colors['menu_selected'] if is_current else self.colors['menu_text']
@@ -1441,8 +1545,7 @@ class RendererMixin:
             if i == self.puzzle_sub_hovered:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
-            is_current = (len(preset) >= 4
-                          and self._preset_puzzle_key(preset) == current_key)
+            is_current = self._preset_is_current(preset, current_key)
 
             name = preset[0]
             color = self.colors['menu_selected'] if is_current else self.colors['menu_text']
@@ -1562,21 +1665,20 @@ class RendererMixin:
             pygame.draw.rect(self.screen, (110, 110, 110), self._timer_bar_rect,
                              1, border_radius=3)
 
-        # 中间：当前谜题信息（带形态后缀：带序号 #num / 三角形 tri{k} / 米字格 mi{m}*{n}）
-        puzzle_text = f"谜题：{self._current_puzzle_key()}"
-        puzzle_surface = self.status_font.render(puzzle_text, True, self.colors['status_text'])
+        # 中间：当前谜题信息。样式局就用样式标题占这个位置——它不是一个
+        # 官方档位，写「谜题：1~3*3」会让这局看起来是预设谜题；样式名本身
+        # 已经是「在玩什么」最准确的答案，所以不再另起一截「目标：样式…」。
+        style_goal = getattr(self, '_ann_style_goal', None)
+        if style_goal:
+            puzzle_text = f'样式：{style_goal}'
+            puzzle_color = (255, 210, 120)
+        else:
+            # 带形态后缀：带序号 #num / 三角形 tri{k} / 米字格 mi{m}*{n}
+            puzzle_text = f"谜题：{self._current_puzzle_key()}"
+            puzzle_color = self.colors['status_text']
+        puzzle_surface = self.status_font.render(puzzle_text, True, puzzle_color)
         puzzle_x = (self.screen_width - puzzle_surface.get_width()) // 2
         self.screen.blit(puzzle_surface, (puzzle_x, text_y))
-
-        # 样式局：还原目标 = 自定义样式（D4 八变换，旋转/翻面都算还原）
-        if getattr(self, '_ann_style_goal', None):
-            style_text = f'目标：样式「{self._ann_style_goal}」（旋转/翻面都算还原）'
-            style_surface = self.status_font.render(
-                style_text, True, (255, 210, 120))
-            style_x = min(puzzle_x + puzzle_surface.get_width() + 20,
-                          self.screen_width - self.right_panel_width
-                          - style_surface.get_width() - 10)
-            self.screen.blit(style_surface, (style_x, text_y))
 
         # 右侧：缩放比例
         zoom_text = f"缩放：{int(self.zoom * 100)}%"

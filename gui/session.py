@@ -35,6 +35,11 @@ class SessionMixin:
         # 只读存档：禁止打乱
         if self._readonly_blocked():
             return
+        # 构造/设计画布中：主棋盘就是编辑画布，打乱会把未保存的编辑冲掉
+        if getattr(self, '_ann_sub_dialog', None) in ('build', 'design'):
+            self.macro_notify_msg = "构造/设计中：先退出画布再打乱"
+            self.macro_notify_timer = 90
+            return
         # 标注会话随棋盘重置而结束
         self._ann_cancel_session('打乱')
         # 计时进行中禁止打乱
@@ -127,6 +132,16 @@ class SessionMixin:
             self.macro_notify_timer = 90
             return
         self._timer_cancel()
+        # 高级选项样式局：复原 = 回到样式还原态，不是默认满矩形。
+        # new_puzzle 会清 goal_pattern/_ann_style_goal，直接重建等于一转就把
+        # 自定义还原目标丢了（样式局开局本就是还原态，玩家按 Ctrl+R 的期望
+        # 显然是回到那个形状）。样式文件被删/改名时退回普通重建。
+        preset = getattr(self, '_ann_style_goal', None)
+        if preset:
+            from gui import design_styles
+            if design_styles.load_style(self.config_dir, preset):
+                self._ann_design_start_style(preset)
+                return
         # 按当前形态重建：只分「三角 / 其它」会让米字格被当成矩形重建
         # （Ctrl+R 之后米字格变矩形，尺寸等级还正好是初始预设），
         # 带序号重建后编号也一起丢掉——两者都是这里漏了分支。
@@ -173,8 +188,30 @@ class SessionMixin:
         return puzzle_key(ps, pm, pn, kind=kind,
                           triangle_side=pm if kind == 'triangle' else None)
 
+    def _preset_is_current(self, preset, current_key=None) -> bool:
+        """菜单项是否标记为「当前所在」（✓ 与高亮共用）。
+
+        高级选项样式局的 m/n/step 往往正好等于某个官方档位（例如 3×3 等级1，
+        因为样式的边界盒就是那次设计画布的尺寸），只比分榜键会把那一档标成
+        「当前✓」——看起来像这局变成了预设谜题。所以样式局只认自己那条
+        自定义预设 `('名','__custom__','名')`，官方档位一律不标。
+        """
+        style = getattr(self, '_ann_style_goal', None)
+        if len(preset) == 3 and preset[1] == '__custom__':
+            return style is not None and preset[2] == style
+        if style:
+            return False
+        if current_key is None:
+            current_key = self._current_puzzle_key()
+        return len(preset) >= 4 and self._preset_puzzle_key(preset) == current_key
+
     def _current_puzzle_label(self) -> str:
         """当前谜题的人话描述（谜题菜单底部状态行用）。"""
+        style = getattr(self, '_ann_style_goal', None)
+        if style:
+            # 高级选项样式局不是任何一个官方档位：尺寸/等级可能刚好撞上
+            # 预设（3×3 等级1 之类），但说「当前：矩形 3×3 等级1」是错的
+            return f'样式「{style}」'
         if getattr(self, 'triangle_mode', False):
             k = getattr(self.game, 'k', self.current_m)
             return f'三角形 边长{k} 等级{self.current_step}'

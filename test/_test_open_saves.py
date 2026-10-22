@@ -42,6 +42,12 @@ class _LoadStub(FileOpsMixin):
     selected_block = None
     animating = False
     anim_blocks = []
+    _ann_style_goal = None
+
+    def _ann_apply_saved_style_goal(self, name=None):
+        """镜像 GUI 的样式目标恢复（本 stub 不涉标注混入，只清标记）。"""
+        self._ann_style_goal = None
+        return False
 
 
 def main():

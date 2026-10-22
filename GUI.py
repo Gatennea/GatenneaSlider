@@ -394,6 +394,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             ('异形谜题 ▸', '__sub__', 'exotic'),
             ('---',),
             ('自定义...',),
+            ('高级选项...',),
             ('__current__',),   # 底部「当前：矩形 6×6 等级2」状态行
         ]
 
@@ -434,10 +435,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 ('8×8 等级2', 8, 8, 2, 'numbered'),
             ],
         }
-        # 二级子菜单交互状态：当前展开的 subkey（''=无）、条目矩形、悬停项
+
+        # 谜题菜单二级交互状态：当前展开的 subkey、条目矩形、悬停项
         self.puzzle_sub_open = ''
         self.puzzle_sub_rects = []
         self.puzzle_sub_hovered = -1
+        # 静态预设 + 动态并入的自定义预设（高级选项保存的样式）
+        self._refresh_puzzle_presets()
 
         # 自动求解状态
         self._auto_solve_result = None     # None=空闲, list=解法, False=无解
@@ -799,6 +803,36 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 首次启动：弹出新手教程引导
         self._tut_check_first_launch()
 
+    def _refresh_puzzle_presets(self):
+        """重建谜题菜单：在静态条目后动态并入「高级选项」保存的自定义预设。
+
+        自定义预设条目格式 ('预设名', '__custom__', name)：len==3 且 preset[1]
+        == '__custom__'，渲染为可点击项、点击走 _ann_design_start_style 开局。
+        官方预设（矩形/三角/米字/数字）由 (m,n,step[,kind]) 元组标识，不带
+        __custom__ 标记，载入存档时据此区分。
+        """
+        from gui import design_styles
+        base = [
+            ('快速开始：矩形 6×6 等级2', 6, 6, 2),
+            ('矩形谜题 ▸', '__sub__', 'rect'),
+            ('异形谜题 ▸', '__sub__', 'exotic'),
+            ('---',),
+            ('自定义...',),
+            ('高级选项...',),
+        ]
+        styles = design_styles.list_styles(self.config_dir)
+        if styles:
+            base.append(('---',))  # 预设分隔线
+            base += [(name, '__custom__', name) for name in styles]
+        base.append(('__current__',))   # 底部当前状态行
+        self.puzzle_presets = base
+
+        # 二级子菜单交互状态：当前展开的 subkey（''=无）、条目矩形、悬停项
+        self.puzzle_sub_open = ''
+        self.puzzle_sub_rects = []
+        self.puzzle_sub_hovered = -1
+
+
     def new_puzzle(self, m: int, n: int, step: int = 1, numbered: bool = False):
         """
         创建新谜题
@@ -930,6 +964,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # puzzle 仍是 n~mi*m 而三族缝隙只剩 'h' 选得中）
         self.mi_mode = False
         self.numbered = False
+        # 换形态 = 换谜题：自定义样式目标（方形专属的 goal_pattern）必须作废，
+        # 否则底部栏会继续显示「样式：X」、存档还会把方形样式名写进三角存档
+        self._ann_style_goal = None
 
         # 切到三角形时把求解器落到「聚拢」：查表/补缺宏/DFS/IDA* 都是方形
         # 语义（动作 4 元组 + 矩形目标形状），在 tri 上会静默走错。
@@ -1023,6 +1060,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.mi_mode = True
         self.triangle_mode = False
         self.numbered = False
+        # 换形态 = 换谜题：方形专属的自定义样式目标必须作废（同三角开局）
+        self._ann_style_goal = None
         # 米字格按冻结决策禁用单次触控（只做两次触控 + 虚拟键盘）；
         # 摆在模式切换处而不是每次点击处检查，避免开着单次触控进米字格
         self.control_single_touch = False

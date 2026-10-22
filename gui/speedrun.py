@@ -69,6 +69,9 @@ class SpeedrunMixin:
             return False
         if mode == self.game_mode:
             return True
+        # 高级选项设计画布：切模式 = 放弃未保存的编辑（先把盘面还原回进入前）
+        if getattr(self, '_ann_design_session', False):
+            self._ann_design_cancel()
         # 离开创造模式：收掉创造界面
         if self.create_mode:
             self._ann_leave_to_home()

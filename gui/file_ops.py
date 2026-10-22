@@ -17,7 +17,7 @@ import pygame
 from puzzle_types import create_puzzle
 from gui.compressed_save import (is_compressed, load_compressed_into_gui,
                                  compress_from_game, convert_save_file)
-from history import validate_snapshot
+from history import (validate_snapshot, groups_to_json, groups_from_json)
 
 
 def _compute_checksum(data: dict) -> str:
@@ -486,6 +486,11 @@ class FileOpsMixin:
                 'matrix': snap['matrix'],
                 'bounds': snap['bounds']
             }
+            # 捆绑组（自由捆绑 / 高级选项）：{位置:gid} → [[r,c,gid],...]。
+            # 不写的话载入后恢复端拿到 None，会把整盘静默拆成散块。
+            _groups = groups_to_json(snap.get('groups'))
+            if _groups:
+                snap_data['groups'] = _groups
             if snap.get('move_info'):
                 snap_data['move_info'] = snap['move_info']
             # 合并快照：逐步动作日志与步数（会话标识不入盘，载入后不承接旧会话）
@@ -517,6 +522,11 @@ class FileOpsMixin:
             data['puzzle']['triangle_side'] = self.game.k
         if mi:
             data['puzzle']['type'] = 'mi'
+        # 高级选项自定义样式局：只记预设名（不内嵌样式），导入时按名查
+        # config/design_styles/<名>.json 恢复还原目标（D4）。官方预设为 None。
+        _preset = getattr(self, '_ann_style_goal', None)
+        if _preset:
+            data['puzzle']['preset'] = _preset
         if getattr(self, 'save_readonly_flag', False):
             data['readonly'] = True
         data['checksum'] = _compute_checksum(data)
@@ -606,6 +616,8 @@ class FileOpsMixin:
                 'step_total': snap.get('step_total', i),
                 # 载入后不承接旧选中会话，避免与后续移动误合并
                 'session_key': None,
+                # 捆绑关系随快照还原；旧存档无该字段 = 全散块（行为与修复前一致）
+                'groups': groups_from_json(snap.get('groups')),
             }
             # 旧格式兼容：01 矩阵 + 平行 numbers 表 → 折叠进整数矩阵（值即编号），
             # 不再携带 numbers 字段（编号谜题的整数矩阵本身即承载编号）
@@ -638,6 +650,10 @@ class FileOpsMixin:
             self.zoom = self._fit_mi_zoom()
             self.center_map()
         self.game_history.restore_snapshot(self.game, self.game_history.history_index)
+
+        # 自定义预设局：按存档记录的预设名恢复还原目标（D4）；无预设名则清空，
+        # 避免上一局的样式判定残留到本局（官方预设/普通方形走默认满矩形判定）。
+        self._ann_apply_saved_style_goal(puzzle.get('preset'))
 
         self.selected_gap = None
         self.selected_block = None

@@ -63,6 +63,8 @@ from game import Block
 from game import commit_shuffle_step
 from game import record_shuffle_move
 
+from bandage import BandageMixin
+
 # 6 個晶格移動方向：字母 → 斜座標位移 (di, dj)
 # 字母按螢幕方向佈局（見模組 docstring 的鍵盤圖）：W E / A D / Z X
 DIRECTIONS = {
@@ -185,6 +187,37 @@ def finger_line(gap_type: str, key: tuple) -> int:
     raise ValueError(f"unknown gap type: {gap_type}")
 
 
+def seam_between(a: tuple, b: tuple, valid=None):
+    """分隔單位三角 a、b 的那條縫 (gap_type, line)；兩者不共邊回 None。
+
+    判據不寫死幾何，走 gap_rank：同族 rank 相等 ⇒ 這族縫不把兩塊分開；
+    rank 不等就取 min(rank_a, rank_b) 作線號，再用 side_of 複核兩者確實
+    落在一條縫的兩側（三角三族都只有一條縫共用同一條邊，實測全部相鄰對
+    恰好命中 1 個候選，見 experiments/_probe_seam_between2.py）。
+
+    valid：可選的 `(fam, line) -> bool` 合法性判定（一般傳
+    `game.is_valid_gap`）。帶洞局面下候選可能不止一個，用它挑出真的那條；
+    都不合法時退回首個候選——呼叫方（內部縫/點縫綁解）自己會兜底。
+    """
+    a = tuple(a)
+    b = tuple(b)
+    cands = []
+    for fam in ('h', 'p', 'n'):
+        ra, rb = gap_rank(fam, a), gap_rank(fam, b)
+        if ra == rb:
+            continue
+        line = min(ra, rb)
+        if side_of(fam, line, a) != side_of(fam, line, b):
+            cands.append((fam, line))
+    if not cands:
+        return None
+    if valid is not None:
+        for cand in cands:
+            if valid(*cand):
+                return cand
+    return cands[0]
+
+
 def _cross(o, a, b) -> int:
     """整數叉積（符號等價於平面叉積，用於凸包與半平面判定）。
 
@@ -263,16 +296,20 @@ def hull_area_units(verts) -> int:
     return abs(total) // 2
 
 
-class TriangleSliderMatrix:
+class TriangleSliderMatrix(BandageMixin):
     """正三角形密鋪滑塊矩陣。
 
     與 SliderMatrix 盡量保持相同契約（blocks / matrix / matrix_bounds /
     get_boundaries / update_matrix / is_solved），差異處：
     - Block.location 為 [i, j, up] 三元素；
     - matrix 為菱形胞 2-bit 網格（bit0=▲ 存在，bit1=▼ 存在）。
+
+    捆綁組（group）與方形同語義：組是剛體，opt 選完連通片後把整組拖進
+    選中片（bandage.BandageMixin），合法移動隨之收窄為原遊戲的子集。
     """
 
-    __slots__ = ('k', 'm', 'n', 'blocks', 'matrix', 'matrix_bounds')
+    __slots__ = ('k', 'm', 'n', 'blocks', 'matrix', 'matrix_bounds',
+                 'goal_pattern')
 
     def __init__(self, k: int = 6):
         if k < 2:
@@ -281,6 +318,8 @@ class TriangleSliderMatrix:
         self.m = k
         self.n = k
         self.blocks = []
+        # 自訂還原形態（設計態樣式）；None = 預設「實心大三角」判定
+        self.goal_pattern = None
         # ▲(i, j)：i, j >= 0 且 i+j <= k-1
         for i in range(k):
             for j in range(k - i):
@@ -304,10 +343,52 @@ class TriangleSliderMatrix:
                   for i in range(self.k - 1) for j in range(self.k - 1 - i)}
         return cells
 
+    # ---------- 自訂樣式（設計還原態）----------
+    def apply_pattern(self, cells, groups=None) -> None:
+        """按給定樣式重塑盤面（自訂形狀 + 捆綁），與方形同名方法同契約。
+
+        三角的位置是斜座標三元組 (i, j, up)，不做平移歸一——樣式的 cells
+        存的就是設計畫布上的原座標，原樣擺回才能讓還原判定（goal_pattern
+        精確比對）對得上。k 只作「覆蓋上界」：形狀可能超出建局的大三角。
+        """
+        cells = [tuple(c) for c in cells]
+        if not cells:
+            return
+        self.blocks = blocks_from_cells(cells)
+        self.k = max(self.k, max(c[0] + c[1] for c in cells) + 1)
+        self.m = self.k
+        self.n = self.k
+        self.update_matrix()
+        if groups:
+            self.set_groups_from_positions(dict(groups))
+
+    def set_goal_pattern(self, cells=None) -> bool:
+        """指定自訂還原形態（None = 取當前盤面）；空集合拒絕。"""
+        if cells is None:
+            cells = self.positions()
+        cells = frozenset(tuple(c) for c in cells)
+        if not cells:
+            return False
+        self.goal_pattern = cells
+        return True
+
+    def clear_goal_pattern(self) -> None:
+        """清除自訂還原形態，回到預設「實心大三角」判定。"""
+        self.goal_pattern = None
+
     # ---------- 位置集合 ----------
     def positions(self) -> set:
         """全部滑塊位置 (i, j, up) 集合。"""
         return {tri_key(b) for b in self.blocks}
+
+    # ---------- 捆綁組的幾何鉤子（bandage.BandageMixin）----------
+    def neighbors_of(self, pos) -> tuple:
+        """與該單位三角共邊的 3 個相鄰格（可不在盤面上）。"""
+        return neighbors(tuple(pos))
+
+    def seam_between_positions(self, a, b):
+        """分隔兩塊的那條縫；不共邊回 None。"""
+        return seam_between(tuple(a), tuple(b), self.is_valid_gap)
 
     def get_boundaries(self) -> dict:
         """滑塊在斜座標下的邊界（row=i, col=j，與方形同鍵名）。"""
@@ -409,6 +490,9 @@ class TriangleSliderMatrix:
         for block in self.blocks:
             if tri_key(block) in visited:
                 block.be_opted = True
+        # 捆綁組是剛體：選中片裡出現的組，整組一起進選中片（組員在盤面
+        # 另一頭也拖進來），碰撞/斷開由 try_move_ex 照舊拒絕
+        self._expand_opted_groups()
 
     # ---------- 移動（B2）----------
     def _check_step(self, moved: set, non_selected: set) -> tuple:
@@ -628,7 +712,15 @@ class TriangleSliderMatrix:
 
     # ---------- 復原判定 ----------
     def is_solved(self) -> bool:
-        """全部 k² 個單位三角拼成邊長 k 的實心大正三角形（位置/朝向不限）。"""
+        """全部 k² 個單位三角拼成邊長 k 的實心大正三角形（位置/朝向不限）。
+
+        自訂樣式（設計態 goal_pattern）優先：位置集合與樣式**逐塊相同**即
+        還原——打亂是從這個形狀出發的安全打亂（路徑可逆），反著走必然回到
+        這組位置，所以精確比對不會出現「明明擺對卻判不出」。
+        """
+        goal = self.goal_pattern
+        if goal is not None:
+            return self.positions() == goal
         cells = self.positions()
         if len(cells) != self.k * self.k:
             return False

@@ -68,6 +68,43 @@ def load_style(config_dir: str, name: str):
         return None
 
 
+def groups_from_data(data: dict) -> dict:
+    """样式里的捆绑组 → {完整位置元组: gid}（读侧统一入口）。
+
+    两种落盘形式都要认：
+      - version 1（方形/带序号）：{"r,c": gid}
+      - version 2（三角/米字）：[[分量..., gid], ...]——位置可能是 3 分量
+        （三角含 up、米字含 q），米字错位态还可能是半整数坐标
+    坏项一律跳过（缺 gid / gid 非正 / 形状不合法），不让一份坏样式把
+    开局流程打断。
+    """
+    raw = (data or {}).get('groups')
+    out = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                parts = str(k).split(',')
+                pos = tuple(int(x) for x in parts)
+                gid = int(v)
+            except Exception:
+                continue
+            if gid > 0:
+                out[pos] = gid
+        return out
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            pos = tuple(item[:-1])
+            try:
+                gid = int(item[-1])
+            except Exception:
+                continue
+            if gid > 0 and len(pos) >= 2:
+                out[pos] = gid
+    return out
+
+
 def delete_style(config_dir: str, name: str) -> bool:
     """删除样式；存在并删除成功返回 True。"""
     path = os.path.join(styles_dir(config_dir), f'{sanitize_name(name)}.json')

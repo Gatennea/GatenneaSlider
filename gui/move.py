@@ -7,6 +7,7 @@ move_selected_blocks 是方形/通用的移动入口，三角/米字各有 prepa
 _bump_move_session 管「同一选中会话的连续移动并入同一快照」（撤销/历史
 也依赖它，故留名不变）。依赖 tri_key 与 op_log，均为模块级 import。
 """
+from game_mi import mi_key
 from game_triangle import tri_key
 
 from gui import op_log
@@ -37,7 +38,9 @@ class MoveMixin:
             return False
         if self.create_mode:
             return False
-        if self.annotation_mode and getattr(self, '_ann_view', None) == 'build':
+        if (getattr(self, '_ann_design_session', False)
+                or (self.annotation_mode
+                    and getattr(self, '_ann_view', None) == 'build')):
             return False
         if self.game_mode == 'timed' and self.timer_state == 'ready':
             return False
@@ -93,9 +96,17 @@ class MoveMixin:
                 self.macro_notify_msg = "创造模式：请用[随机生成]或[手动构造]造题"
             self.macro_notify_timer = 90
             return False
-        # 标注模式的手动构造视图：主棋盘是编辑画布，禁止滑动
-        if self.annotation_mode and self._ann_view == 'build':
-            self.macro_notify_msg = "构造中：点格增删滑块，按[应用并开始]完成"
+        # 标注模式的手动构造视图 / 高级选项设计画布：主棋盘是编辑画布，禁止滑动
+        if (getattr(self, '_ann_design_session', False)
+                or (self.annotation_mode and self._ann_view == 'build')):
+            if self._ann_view == 'build':
+                _msg = "构造中：点格增删滑块，按[应用并开始]完成"
+            elif getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False):
+                # 异形的高级选项形状固定为标准形，只有点缝绑解
+                _msg = "高级选项：形状固定，点缝捆绑/解绑，[存样式]后退出"
+            else:
+                _msg = "高级选项：点格增删/点缝捆绑，[存样式]后退出"
+            self.macro_notify_msg = _msg
             self.macro_notify_timer = 90
             return False
         # 计时模式：就绪态（已打乱未开始）禁止滑动，保证公平
@@ -386,6 +397,102 @@ class MoveMixin:
         from game_mi import span
         return any(lo < line < hi
                    for (lo, hi) in (span(gap_type, k) for k in cells))
+
+    def _rejected_seam_at(self, screen_x: int, screen_y: int):
+        """這次點擊附近有沒有一條「畫得出、點得到、選不動」的縫；有就回它。
+
+        幾何與 get_gap_at_pos 同源（都走視圖的 candidate_gaps），差別只在
+        這裡保留被引擎否決的候選：方形/三角否決的都是棋盤最外沿那條——
+        一側沒有塊，整條線平移沒有意義，所以選不動。回 None 表示沒有。
+
+        命中帶比選縫窄（方形 gap+3px、三角 6px；選縫用的是 gap+10 / 10）：
+        提示要掛在「真的點在那條線上」才算說得對，否則在棋盤外沿的深色
+        背景上起手拖地圖也會被念一句，反而吵。外沿線在塊外只露出幾個像素，
+        這個帶寬正好蓋住它。
+        """
+        try:
+            wx, wy = self.screen_to_world(screen_x, screen_y)
+            if getattr(self, 'triangle_mode', False):
+                for cand in self._tri_view().candidate_gaps(
+                        wx, wy, self.game.positions(), tolerance=6.0):
+                    if not self.game.is_valid_gap(*cand):
+                        return cand
+                return None
+            bounds = self.game.get_boundaries()
+            for kind, idx in self.board_view.candidate_gaps(
+                    wx, wy, bounds, tolerance=3.0):
+                if kind == 'h' and not self.game.is_valid_h_line(idx):
+                    return ('h', idx)
+                if kind == 'v' and not self.game.is_valid_v_line(idx):
+                    return ('v', idx)
+        except Exception as e:
+            print(f"_rejected_seam_at error: {e}")
+        return None
+
+    def _bandage_group_block_near(self, wx: float, wy: float):
+        """世界座標附近最近的「已捆綁」滑塊；沒有捆綁塊回 None。
+
+        用途：點中捆綁組的**內部縫**時，把它當成「點中該組的滑塊」（整組
+        剛性體，點哪塊都通向同一整組），而不是彈「這條縫選不動」。
+
+        三形態的位置語義不同（方形 (r,c)、三角 (i,j,up)、米字 (r,c,q)），
+        所以「塊心」一律交給各自視圖算——方形用 block_rect，異形用
+        piece_center（三角重心 / 米字內心）。都回世界座標，可直接和
+        screen_to_world 的結果比距離。
+        """
+        tri_mode = getattr(self, 'triangle_mode', False)
+        mi_mode = getattr(self, 'mi_mode', False)
+        if tri_mode:
+            view = self._tri_view()
+        elif mi_mode:
+            view = self._mi_view()
+        else:
+            view = None
+        best = None
+        best_d = None
+        for b in self.game.blocks:
+            if not getattr(b, 'group', 0):
+                continue
+            if tri_mode:
+                cx, cy = view.piece_center(*tri_key(b))
+            elif mi_mode:
+                cx, cy = view.piece_center(*mi_key(b))
+            else:
+                bx, by, bw, bh = self.board_view.block_rect(*b.location)
+                cx, cy = bx + bw / 2.0, by + bh / 2.0
+            d = (cx - wx) ** 2 + (cy - wy) ** 2
+            if best_d is None or d < best_d:
+                best_d = d
+                best = b
+        return best
+
+    def _sq_click_query(self, screen_x: int, screen_y: int) -> tuple:
+        """方形/三角一次點擊的命中結果 (縫隙, 滑塊)，選不動的縫改走提示。
+
+        棋盤最外沿那一圈縫是畫出來的（縫線比棋盤寬 20px，且整條沿外邊
+        走），也點得到，但只有一側有塊——選不動。舊代碼對這種點擊一聲不
+        響，玩家只覺得「點了沒反應」；米字格對錯位態鎖死的縫早就會說清楚
+        （_mi_click_query），這裡對齊同一句話式：「這條縫選不動（為什麼）：
+        該怎麼辦」。只在這一下既沒點中縫、也沒點中塊時才說，正常的選縫/
+        選塊流程一字不變。
+        """
+        gap = self.get_gap_at_pos(screen_x, screen_y)
+        block = self.get_block_at_pos(screen_x, screen_y)
+        # 选块填空的两下点击语义是「选哪块、填哪个坑」，不是滑动，
+        # 此时别插嘴说缝选不动
+        if (gap is None and block is None
+                and getattr(self, '_pick_fill', None) is None):
+            seam = self._rejected_seam_at(screen_x, screen_y)
+            if seam is not None:
+                # 排障日誌：與米字格的 mi_seam_reject 對位，事後能看出
+                # 玩家說的「點了沒反應」到底落在哪條外沿縫上
+                op_log.log('sq_seam_reject', gap=list(seam),
+                           form='tri' if getattr(self, 'triangle_mode', False)
+                           else 'sq')
+                self.macro_notify_msg = ("这条缝选不动（棋盘外沿，外侧没有滑块）："
+                                         "请选里面的缝")
+                self.macro_notify_timer = 120
+        return gap, block
 
     def _mi_click_query(self, screen_x: int, screen_y: int) -> tuple:
         """米字格一次點擊的命中結果 (縫隙, 滑塊)，選不動的縫改走提示。
