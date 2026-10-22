@@ -98,6 +98,17 @@ FEATURES = (
          howto='顶栏「文件」→「另存为...」，换文件名存一份新档。',
          confusion=''),
 
+    dict(id='geom_engine', name='几何引擎开关（实验）',
+         aliases=('几何引擎', '引擎', 'engine', '切换引擎', '新引擎', '引擎开关'),
+         kind='setting', place=('settings', 'solver'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='Ctrl+K 搜「几何引擎」回车即切换；切换后按当前参数重开一局。'
+               '状态栏左侧常显当前引擎（几何 / 经典）。',
+         confusion='几何引擎是**实验开关**：三形态共用一套逻辑（engine/ 包），'
+                   '已与旧引擎逐项差分对齐。默认关（走经典引擎，零扰动）；'
+                   '打开后用来对比体感是否一致。切换会重开当前局（换逻辑对象）。'
+                   '样式局（自定义还原目标）暂不支持。'),
+
     # ---------------- 找功能（元功能：找不到别的入口时先来这里） ----------------
     # 排在清单最前：它是「不知道有没有 / 不知道在哪」时的兜底入口，检索时
     # 「命令面板」四个字若能命中自己，玩家就能从帮助框里也把它翻出来。
@@ -394,6 +405,8 @@ _ACTIONS = {
     'algo_gather': {'type': 'settings', 'tab': 'solver'},
     'algo_others': {'type': 'settings', 'tab': 'solver'},
     'pick_fill': {'type': 'settings', 'tab': 'solver'},
+    # 几何引擎开关（实验）：直接拨动 engine.config 并重建当前局
+    'geom_engine': {'type': 'engine'},
     # 面板 / 开关（直接切换，等价右下角快捷开关）
     'virtual_keyboard': {'type': 'toggle', 'key': 'show_virtual_keyboard'},
     'metrics_panel': {'type': 'toggle', 'key': 'show_metrics_panel'},

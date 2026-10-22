@@ -19,6 +19,25 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 from gui import feature_index as fi  # noqa: E402
 from GUI import SliderGUI  # noqa: E402
 
+# ⚠️ 本档会遍历 FEATURES 把**每一条都真的激活一遍**。其中「几何引擎」条目
+# 会把开关写进 `config/engine.json`（产品行为：拨过一次就记住），而那份文件
+# 是**全局开关**——写成 true 会让同批接着跑的其它测试全部拿到 EngineGame，
+# 一齐爆出假失败（实测全套从 7 失败顶到 15~17 失败，且症状全是三角/米字
+# GUI 测试崩，看着像引擎有 bug，其实是污染）。故这里把持久化重定向到临时
+# 文件，跑完删掉，与 `_test_engine_gui.py` H 节同一招。
+import tempfile  # noqa: E402
+
+from engine import config as _ecfg  # noqa: E402
+
+_REAL_CFG_PATH = _ecfg.config_path()
+_TMP_CFG = os.path.join(tempfile.gettempdir(),
+                        '_gatennea_engine_cfg_featidx.json')
+_ecfg.config_path = lambda: _TMP_CFG
+_CFG_BACKUP = None
+if os.path.isfile(_REAL_CFG_PATH):
+    with open(_REAL_CFG_PATH, 'r', encoding='utf-8') as _fp:
+        _CFG_BACKUP = _fp.read()
+
 _failures = []
 
 
@@ -168,6 +187,19 @@ try:
 finally:
     webbrowser.open = _orig_open
     gui._tut_start = _orig_tut_start
+    # 还原开关文件（见文件头的重定向说明），并清掉临时文件
+    _ecfg.clear_override()
+    try:
+        if _CFG_BACKUP is None:
+            if os.path.isfile(_REAL_CFG_PATH):
+                os.remove(_REAL_CFG_PATH)
+        else:
+            with open(_REAL_CFG_PATH, 'w', encoding='utf-8') as _fp:
+                _fp.write(_CFG_BACKUP)
+        if os.path.isfile(_TMP_CFG):
+            os.remove(_TMP_CFG)
+    except OSError as _e:
+        print(f"[WARN] 还原开关文件失败: {_e}")
 
 check('官网条目真的调用了浏览器打开',
       bool(_opened_urls) and 'GatenneaSliderWeb' in _opened_urls[-1])

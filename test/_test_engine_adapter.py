@@ -237,6 +237,63 @@ check(sel_family == sel_letter,
       f"方形 opt 接受缝族名与方向字母选中同一片（差异 "
       f"{len(sel_family ^ sel_letter)}）")
 
+# ======================================================================
+print("== N7 move_ok / can_slide ≡ legal_moves（快路径不许跑偏）==")
+# 快路径是性能命门（6×6 打乱 2777ms→26ms 全靠它），必须与枚举器逐项
+# 等价，否则「跑得快但判错」比慢更糟。这里对三形态的随机游走局面做
+# 双向差分：枚举器认的 move_ok 全认；手工捏的坏 move 两边都不认。
+from engine.board import Move  # noqa: E402
+from engine.registry import square_board, tri_board, mi_board  # noqa: E402
+
+
+def _perturb(mv, **kw):
+    d = {'family': mv.family, 't': mv.t, 'side': mv.side,
+         'direction': mv.direction, 'step': mv.step, 'moved': mv.moved}
+    d.update(kw)
+    return Move(**d)
+
+
+for _kind, _board, _step in (('square', square_board(4, 4), 2),
+                             ('triangle', tri_board(3), 1),
+                             ('mi', mi_board(2, 2), 1)):
+    states = _random_walk(_board, _step, 12, seed=_kind.__len__())
+    enum_total = 0
+    bad_rejected = 0
+    for st in states:
+        ms = st.legal_moves(_step)
+        enum_total += len(ms)
+        # ① 枚举器认的，move_ok 必须认；can_slide 也必须推得动
+        for m in ms:
+            if not st.move_ok(m):
+                check(False, f"{_kind} move_ok 拒绝了枚举器认可的移动 {m}")
+                break
+            if st.can_slide(m.moved, m.direction, m.step) is None:
+                check(False, f"{_kind} can_slide 拒绝了枚举器认可的移动 {m}")
+                break
+        else:
+            # ② 捏坏的移动：move_ok 必须拒绝（且不许抛异常）
+            if ms:
+                m0 = ms[0]
+                bads = [
+                    ('跨缝选中', _perturb(m0, side=-m0.side)),
+                    ('步长 0', _perturb(m0, step=0)),
+                    ('全员选中', _perturb(m0, moved=tuple(sorted(st.keys)))),
+                ]
+                if len(m0.moved) > 1:
+                    bads.append(('选中片少一块',
+                                 _perturb(m0, moved=m0.moved[:-1])))
+                for _why, bm in bads:
+                    try:
+                        if st.move_ok(bm):
+                            check(False, f"{_kind} move_ok 放过了坏移动（{_why}）")
+                    except Exception as _e:      # 不静默兜底：报错即失败
+                        check(False, f"{_kind} move_ok 对坏移动（{_why}）抛异常"
+                                     f" {type(_e).__name__}: {_e}")
+                    else:
+                        bad_rejected += 1
+    check(enum_total > 0, f"{_kind} 随机游走产出合法移动（{enum_total} 条）")
+    check(bad_rejected > 0, f"{_kind} 坏移动全部被拒（{bad_rejected} 例）")
+
 print()
 if failures:
     print(f"共 {len(failures)} 項失敗")

@@ -1550,6 +1550,15 @@ class RendererMixin:
         timer_x = step_x + step_surface.get_width() + 30
         self.screen.blit(timer_surface, (timer_x, text_y))
 
+        # 左侧：当前逻辑引擎（几何引擎开关的状态指示，见 engine/config.py）
+        # 常显而非只在几何态显示——玩家随时能确认自己跑的是哪一套。
+        engine_text = f"引擎：{self.engine_label()}"
+        engine_on = (self.engine_label() == '几何')
+        engine_color = (120, 220, 200) if engine_on else self.colors['status_text']
+        engine_surface = self.status_font.render(engine_text, True, engine_color)
+        engine_x = timer_x + timer_surface.get_width() + 30
+        self.screen.blit(engine_surface, (engine_x, text_y))
+
         # 计时区可点：竞速模式下「开始计时 / 放弃(DNF)」原本只有空格能按，
         # 这里补一个纯鼠标入口（画细框提示这里能点）。控制设计原则：只用
         # 鼠标也要能完成一切游戏内操作。

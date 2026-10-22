@@ -840,13 +840,21 @@ class AutoSolveMixin:
             if rep is None and rep_cells and i < len(rep_cells):
                 rep = rep_cells[i]
             if rep is not None:
-                # rep 的第三分量是**米字格必需的**（q 朝向）：mi 的位置是
-                # (r, c, q)，同一个 (r, c) 上最多 8 块，只带前两分量会定位到
-                # 错的块 → opt 从错块起 DFS → 整步动作被静默改写。方形与三角
-                # 的位置不含朝向分量（三角第三位是 up，同格 ▲/▼ 各一块，
-                # 前两分量已足够），所以按形态裁长度。
+                # rep 的第三分量是**米字格与三角形都必需的**：
+                # mi 的位置是 (r, c, q)，同一个 (r, c) 上最多 8 块；三角的
+                # 位置是 (i, j, up)，同一个 (i, j) 上正好 ▲▼ 各一块，而
+                # **'n' 族缝恰好从这两块之间穿过**（gap_rank：▲=i+j、
+                # ▼=i+j+1，线 L=i+j 时 ▲ 在 0 侧、▼ 在 1 侧）。只带前两
+                # 分量的话 `_find_block_by_cell` 按「盘面里第一块」命中，
+                # 可能从错朝向起 DFS → opt 选错侧 → 整步动作被静默改写
+                # （回放表现为「解法播到一半走歪/某步不可移动」）。
+                # ⚠️ 这不是理论风险：经典引擎块序把所有 ▲ 排在前面，恰好
+                # 一直命中对的那块；几何引擎按键排序（down<up）后必挂
+                # （2026-10-22 P3 观察期实测，G7b 复现）。方形的位置不含
+                # 朝向分量，维持两分量。
                 loc = list(rep)
-                op['rep_cell'] = loc[:3] if self.mi_mode else loc[:2]
+                op['rep_cell'] = loc[:3] if (self.mi_mode
+                                             or self.triangle_mode) else loc[:2]
             ops.append(op)
 
         self._gather_info = {

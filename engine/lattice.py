@@ -26,6 +26,10 @@ from dataclasses import dataclass
 from itertools import permutations, product
 
 
+# 邻接缓存硬上限（条目数；超出即停止缓存，只慢不影响正确性）
+_NBR_CACHE_CAP = 1 << 18
+
+
 @dataclass(frozen=True)
 class Lattice:
     """格点：坐标维度、缩放、合法性约束、邻接表、自同构群。
@@ -62,6 +66,14 @@ class Lattice:
     orient_steps: tuple = ()
 
     def __post_init__(self):
+        # 邻接记忆化缓存（不是 dataclass 字段：不参与 eq/repr，纯加速件）。
+        # ⚠️ 为什么必须缓存：连通性判定是引擎最热的内环（一次 6×6 打乱
+        #    里 neighbors_of 被调 ~900 万次）。邻接表本身是常量，逐次重算
+        #    dict(self.orient_steps) + 元组拼接纯属浪费。缓存按 (point,
+        #    orient) 索引，条目数天然被盘面规模封住；仍加硬上限防异常板型
+        #    无限膨胀（超上限即退化成不缓存，行为不变，只慢）。
+        object.__setattr__(self, '_nbr_cache', {})
+        object.__setattr__(self, '_orient_table', dict(self.orient_steps))
         if type(self.dim) is not int or self.dim < 1:
             raise ValueError(f"Lattice.dim 须为正整数，收到 {self.dim!r}")
         if type(self.scale) is not int or self.scale < 1:
@@ -147,7 +159,7 @@ class Lattice:
                 yield q
 
     def neighbors_of(self, point, orient=''):
-        """(point, orient) 的全部邻接块 → (point', orient')。
+        """(point, orient) 的全部邻接块 → **元组** ((point', orient'), ...)。
 
         带朝向板型（orient_steps 非空）按联合键查偏移表——同格心四块
         互为邻或不邻取决于朝向（米字 N 与 S 只共顶点、不共边），点级
@@ -156,15 +168,25 @@ class Lattice:
         表错误；下游按键集合成员判定，坏键自然落空。
 
         无朝向板型（方形/立方）走点级邻接，orient 原样带回（恒 ''）。
+
+        ⚠️ 返回**元组不是生成器**（记忆化的代价，见 __post_init__ 的缓存
+        说明）：调用方一律 ``for q in lat.neighbors_of(...)``，语义不变；
+        想拿生成器自行 ``iter(...)``。
         """
-        if self.orient_steps:
-            table = dict(self.orient_steps)
-            for dpoint, dorient in table.get(orient, ()):
-                yield (tuple(point[i] + dpoint[i]
-                             for i in range(self.dim)), dorient)
+        cache = self._nbr_cache
+        key = (point, orient)
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+        if self._orient_table:
+            out = tuple((tuple(point[i] + dpoint[i]
+                               for i in range(self.dim)), dorient)
+                        for dpoint, dorient in self._orient_table.get(orient, ()))
         else:
-            for q in self.neighbors(point):
-                yield (q, orient)
+            out = tuple((q, orient) for q in self.neighbors(point))
+        if len(cache) < _NBR_CACHE_CAP:
+            cache[key] = out
+        return out
 
     # ------------------------------------------------------------------
     # 自同构群（规范化的对称来源）

@@ -615,3 +615,93 @@ class Board:
 
     def has_legal_move(self, step: int) -> bool:
         return bool(self.legal_moves(step))
+
+    # ------------------------------------------------------------------
+    # 单点平移（不枚举全空间）
+    # ------------------------------------------------------------------
+    def can_slide(self, moved, direction, step, fam=None, t=None):
+        """**只校验这一次**平移能否成立（合法回最终选中片，否则 None）。
+
+        与 legal_moves 的判据逐项一致——非空选中片、不能全员选中（整体
+        平移无意义）、锁死缝（spec.seam_clear 钩子）、逐步碰撞、逐步单一
+        连通——但**不枚举整棵合法移动树**。
+
+        ⚠️ 为什么必须有这条通道：try_move / 打乱 / 拖动这类路径是「选中片
+        已知、只问这一步行不行」，用 ``move in legal_moves(step)`` 判成员
+        等于每次都把全空间算一遍。实测 6×6 s2 打乱 2777ms，其中 98% 烧在
+        legal_moves 的枚举上（288 次调用 / 33.4s）；改走这里后同参数
+        ≈40ms，与旧引擎同量级。枚举器留给求解器与 has_legal_move。
+
+        缝族/缝号（fam, t）给了才查锁死缝——opt 那条路径已经保证选中片
+        在同一侧，锁死缝是唯一还需要补的几何判据。
+        """
+        moved = frozenset(moved)
+        if not moved:
+            return None
+        keys = self.keys
+        if not moved <= keys:
+            return None
+        if len(moved) == len(keys):
+            return None                      # 全员选中 = 整体平移
+        if fam is not None and t is not None and self.spec.seam_clear is not None:
+            if not self.spec.seam_clear(fam, t, self):
+                return None
+        rest = keys - moved
+        return self._slide_ok(moved, rest, direction, step, self.spec)
+
+    def move_ok(self, move) -> bool:
+        """Move 是否是本局面的合法移动——**完整 legal_moves 语义**，
+        但只算这一条缝，不枚举整棵树。
+
+        比 can_slide 多一道「选中片必须是缝某一侧的某个连通分量的捆绑
+        闭包」：can_slide 只管「推得动、不断开」，允许任意子集（这正是
+        try_move 想要的——连按方向键时选中片不会因贴到邻块而被撑大，
+        与旧引擎逐项一致）；而回放 / 存档校验要的是 legal_moves 那种
+        「这一片确实是一次合法点击的产物」，故走本函数。
+
+        只枚举本族本缝的 2 个侧面（每侧一次连通分量拆分），其余判据
+        （锁死缝、逐步碰撞、逐步连通、非全员）与 legal_moves 逐项一致。
+        """
+        fam = next((f for f in self.spec.seam_families
+                    if f.name == move.family), None)
+        if fam is None or move.direction not in fam.parallel:
+            return False
+        if type(move.step) is not int or move.step < 1:
+            return False
+        keys = self.keys
+        moved = frozenset(move.moved)
+        if not moved or not moved <= keys or len(moved) == len(keys):
+            return False
+        if self.spec.seam_clear is not None and \
+                not self.spec.seam_clear(fam, move.t, self):
+            return False
+        # 选中片整片落在缝的一侧（与 compat.action_to_move 同判据）
+        vals = {fam.rank_of(p, o) for p, o in moved}
+        if all(v < move.t for v in vals):
+            side = -1
+        elif all(v >= move.t for v in vals):
+            side = 1
+        else:
+            return False
+        if side != move.side:
+            return False
+        side_set = frozenset(k for k in keys
+                             if (fam.rank_of(k[0], k[1]) < move.t)
+                             == (side == -1))
+        bmap = self.block_map
+        for comp in _connected_components(side_set, self.spec):
+            if _group_closure(comp, bmap) == moved:
+                return self.can_slide(moved, move.direction, move.step) is not None
+        return False
+
+    def slide(self, moved, direction, step, fam=None, t=None):
+        """过校验并应用：合法回新局面，非法回 None（can_slide + 落位）。"""
+        final = self.can_slide(moved, direction, step, fam, t)
+        if final is None:
+            return None
+        delta = tuple(step * x for x in direction)
+        mv = frozenset(moved)
+        return Board(self.spec, tuple(
+            Block(_add(b.point, delta) if (b.point, b.orient) in mv else b.point,
+                  b.orient, b.group)
+            for b in self.blocks))

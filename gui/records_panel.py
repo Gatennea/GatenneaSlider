@@ -17,7 +17,7 @@ import pygame
 from datetime import datetime
 from records import format_time
 from puzzle_types import create_puzzle, puzzle_key
-from game import SliderMatrix
+from game import SliderMatrix  # noqa: F401  （历史保留：能力检查前的类型判据）
 
 
 class RecordsPanelMixin:
@@ -501,8 +501,11 @@ class RecordsPanelMixin:
                 return ''
             # 编号谜题：先置 numbered，并在赋号后再 update_matrix，
             # 整数矩阵才能把编号写进去（值在赋号后才确定）。
-            # 仅方形/编号逻辑对象（SliderMatrix）带 numbered 槽，三角跳过
-            if type(game) is SliderMatrix:
+            # 仅方形/编号逻辑对象带 numbered 槽，三角/米字跳过。
+            # ⚠️ 用**能力检查**而不是 `type(game) is SliderMatrix`：几何引擎
+            #    开关打开时这里是 EngineGame（三形态共用一个类），写死类名会
+            #    静默丢掉 numbered → 编号谜题的存档矩阵全是 1。
+            if hasattr(game, 'numbered'):
                 game.numbered = numbered
             if numbered:
                 for i, block in enumerate(sorted(game.blocks, key=lambda b: (b.location[0], b.location[1]))):
@@ -557,8 +560,13 @@ class RecordsPanelMixin:
                                       kind='triangle', triangle_side=rec['m'])
         else:
             self.game = create_puzzle(rec['m'], rec['n'], rec['step'])
-        # 仅方形/编号逻辑对象（SliderMatrix）带 numbered 槽，三角跳过
-        if type(self.game) is SliderMatrix:
+        # 仅带 numbered 槽的逻辑对象才设（SliderMatrix / EngineGame 都有；
+        # 三角/米字旧类 __slots__ 不含它，设了会 AttributeError）。
+        # ⚠️ 用**能力检查**而不是 `type(self.game) is SliderMatrix`：几何引擎
+        # 开关打开时 create_puzzle 回的是 EngineGame——按类名判会把编号局
+        # 的 numbered 静默丢掉（矩阵值全变 1，与 puzzle_types 提前 return
+        # 那个坑同族）。
+        if hasattr(self.game, 'numbered'):
             self.game.numbered = numbered
         self.game.import_map(self._rp_record_map_str(rec))
         if numbered:

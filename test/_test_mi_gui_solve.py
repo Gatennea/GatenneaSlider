@@ -52,7 +52,7 @@ def _gui_mi(m=4, n=4, step=2, shuffle=0, seed=3):
     return g
 
 
-def _to_ops(actions, step, mi_mode=True):
+def _to_ops(actions, step, mi_mode=True, tri_mode=False):
     """复刻 GUI._handle_gather_result 的 5 元组 → ops 转换。"""
     ops = []
     for action in actions:
@@ -65,7 +65,9 @@ def _to_ops(actions, step, mi_mode=True):
               'direction': md, 'step': step}
         if rep is not None:
             loc = list(rep)
-            op['rep_cell'] = loc[:3] if mi_mode else loc[:2]
+            # 与产品同口径：米字 (r,c,q) 与三角 (i,j,up) 都保留第三分量
+            # （米字同格 8 块、三角同格 ▲▼ 被 'n' 族缝分隔），方形才裁两分量。
+            op['rep_cell'] = loc[:3] if (mi_mode or tri_mode) else loc[:2]
         ops.append(op)
     return ops
 
@@ -342,7 +344,7 @@ def g6_square_replay_not_broken():
 
 
 def g7_tri_replay_not_broken():
-    print('\n--- G7 三角回放路径没被改坏（rep 只带两分量仍能播）---')
+    print('\n--- G7 三角回放路径（rep 带齐朝向分量才能精确播）---')
     from game_triangle import TriangleSliderMatrix
     from GUI import SliderGUI
     from solver.ml import tri_adapter as TA
@@ -360,9 +362,9 @@ def g7_tri_replay_not_broken():
         b.location = list(loc)
     g.game._clear_selection()
     g.game.update_matrix()
-    ops = _to_ops(res['actions'], 2, mi_mode=False)
-    check('G7a 三角 op 的 rep_cell 只带两分量',
-          all(len(o['rep_cell']) == 2 for o in ops),
+    ops = _to_ops(res['actions'], 2, mi_mode=False, tri_mode=True)
+    check('G7a 三角 op 的 rep_cell 带齐朝向分量',
+          all(len(o['rep_cell']) == 3 for o in ops),
           f'样例 {ops[0]["rep_cell"]}')
     ok, err = _replay_via_gui(g, ops)
     check('G7b 三角 op 走 GUI 真回放层播完', ok,

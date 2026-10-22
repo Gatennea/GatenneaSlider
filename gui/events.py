@@ -3670,6 +3670,13 @@ class EventsMixin:
             self._start_update_now()
             return
 
+        if kind == 'engine':
+            # 几何引擎开关（实验）：拨动 engine.config 并重建当前局
+            self.close_all_menus()
+            self.show_help = False
+            self.toggle_geometry_engine()
+            return
+
         # 'none'：概念条目，没有可跳的界面，只弹一条说明提示
         self.macro_notify_msg = entry['name']
         self.macro_notify_timer = 90
@@ -4408,15 +4415,23 @@ class EventsMixin:
 def _side_of_any(game, gap_type, line, key) -> int:
     """缝隙侧判定 —— 方形以外的两种形态各有一个同名 `side_of`，这里按形态分派。
 
-    为什么不直接 `game.side_of`：`side_of` 是**模块级函数**（`game_triangle` /
-    `game_mi` 各自一份，语义一致：0 = 索引小的一侧、1 = 大的一侧），没有挂
-    在引擎类上。回放层要按当前 game 的形态挑对那一份，写成「引擎类 → 函数」
-    的映射比在调用点写 if/else 干净。
+    为什么不直接 `game.side_of`：旧引擎的 `side_of` 是**模块级函数**
+    （`game_triangle` / `game_mi` 各自一份，语义一致：0 = 索引小的一侧、
+    1 = 大的一侧），没有挂在类上。回放层要按当前 game 的形态挑对那一份。
+
+    **几何引擎（EngineGame）自带 `side_of` 方法**（`engine/adapter.py`，
+    判据是 `SeamFamily.rank_of`，与两份模块级函数逐形态等价）——先做能力
+    检查，别按模块名枚举：引擎开关打开时 `type(game).__module__` 是
+    `engine.adapter`，两条旧分支都落空 → 直接 ValueError，米字/三角的
+    自动求解回放整条瘫掉（P3 可游玩观察期实测）。
 
     方形走的是坐标比较（`'above'/'below'/'left'/'right'` 词），不参与这个
     函数 —— 调用方 `_find_block_on_side` 已经先用 `side in (0, 1)` 把方形
     分流掉了。
     """
+    own = getattr(game, 'side_of', None)
+    if callable(own):
+        return own(gap_type, line, key)
     mod = type(game).__module__
     if mod == 'game_mi':
         from game_mi import side_of

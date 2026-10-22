@@ -37,15 +37,29 @@ def check(name, cond, extra=''):
 def _gui_tri(k=4, step=2, shuffle=120, seed=3):
     """构造一个已打乱的三角 GUI。
 
-    **不能靠 SliderGUI(m,n,step) 的默认形态** —— 它恢复的是「上次关闭时的
+    **不能靠 SliderGUI(m=n,step) 的默认形态** —— 它恢复的是「上次关闭时的
     形态」（mi 那个坑，见面板 H9 组），必须显式 new_triangle_puzzle。
+
+    **盘面固定由经典引擎生成**：两套引擎的 shuffle 同种子不同态（随机走法
+    不同，但都是合法打乱），直接随当前引擎打乱会让「还原率」这类指标随
+    引擎漂移——本测试的意图是测求解器/回放质量，故盘面与引擎解耦。
     """
     from GUI import SliderGUI
-    g = SliderGUI(m=k, n=k, step=step)
-    g.new_triangle_puzzle(k, step)
+    from game import Block
+    import engine.config as ecfg
+    _prev = ecfg.is_enabled()
+    ecfg.set_enabled(False)
+    _gb = SliderGUI(m=k, n=k, step=step)
+    _gb.new_triangle_puzzle(k, step)
     if shuffle:
         random.seed(seed)
-        g.game.shuffle(shuffle, step)
+        _gb.game.shuffle(shuffle, step)
+    _board = [list(b.location) for b in _gb.game.blocks]
+    ecfg.set_enabled(_prev)
+    g = SliderGUI(m=k, n=k, step=step)
+    g.new_triangle_puzzle(k, step)
+    g.game.blocks = [Block(list(p)) for p in _board]
+    g.game.update_matrix()
     g.animation_enabled = False
     return g
 
@@ -66,7 +80,10 @@ def _to_ops(actions, step):
         op = {'gap_type': gd, 'gap_line': gl, 'side': side,
               'direction': md, 'step': step}
         if rep is not None:
-            op['rep_cell'] = list(rep)[:2]
+            # 与 GUI._handle_gather_result 同口径：三角 rep 带**三分量**
+            # (i, j, up)——'n' 族缝分隔同格 ▲▼，截成两分量会让回放从错
+            # 朝向起 DFS（2026-10-22 修，几何引擎下必现）。
+            op['rep_cell'] = list(rep)[:3]
         ops.append(op)
     return ops
 
@@ -157,7 +174,9 @@ def m3_ops_and_replay():
         g.game.update_matrix()
         ok = True
         for op in ops:
-            blk = g._find_block_by_cell(op['rep_cell'][0], op['rep_cell'][1])
+            _rc = op['rep_cell']
+            blk = g._find_block_by_cell(
+                _rc[0], _rc[1], _rc[2] if len(_rc) > 2 else None)
             if blk is None:
                 ok = False
                 break
@@ -195,7 +214,9 @@ def m4_replay_all_actions():
         g.game._clear_selection()
         g.game.update_matrix()
         for op in ops:
-            blk = g._find_block_by_cell(op['rep_cell'][0], op['rep_cell'][1])
+            _rc = op['rep_cell']
+            blk = g._find_block_by_cell(
+                _rc[0], _rc[1], _rc[2] if len(_rc) > 2 else None)
             if blk is None:
                 bad += 1
                 break

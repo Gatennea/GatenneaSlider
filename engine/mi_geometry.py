@@ -223,3 +223,25 @@ def seam_locked(family, t, board) -> bool:
         if lo < t < hi:
             return True
     return False
+
+
+# ----------------------------------------------------------------------
+# 块的几何顶点（散度/聚拢度用；真实坐标 (x, y)，与 game_mi.mi_vertices
+# 同式，供差分对拍）
+# ----------------------------------------------------------------------
+def block_vertices(r, c, q: str) -> tuple:
+    """单位块的三个顶点（**真实坐标** (x, y)，浮点；格心 = (c+½, r+½)）。
+
+    公式是线性的，半整数坐标（错位态）原样可用。与 game_mi.mi_vertices
+    逐式同形——引擎侧自持一份，避免反向依赖旧引擎；等价性由测试钉死。
+    """
+    cx, cy = c + 0.5, r + 0.5
+    if q == 'N':
+        return ((cx, cy), (c, r), (c + 1, r))
+    if q == 'E':
+        return ((cx, cy), (c + 1, r), (c + 1, r + 1))
+    if q == 'S':
+        return ((cx, cy), (c, r + 1), (c + 1, r + 1))
+    if q == 'W':
+        return ((cx, cy), (c, r), (c, r + 1))
+    raise ValueError(f"unknown quarter: {q!r}")

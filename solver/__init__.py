@@ -113,6 +113,11 @@ def game_form(game) -> str:
         return 'mi'
     if name == 'TriangleSliderMatrix':
         return 'triangle'
+    if name == 'EngineGame':
+        # 几何引擎适配器（三形态共用一个类）：形态挂在 game.kind 上，
+        # 同样不依赖 GUI 旗标（kind 是逻辑对象自带的属性）。
+        kind = getattr(game, 'kind', 'square')
+        return 'square' if kind in ('square', 'numbered') else kind
     return 'square'
 
 

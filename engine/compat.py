@@ -362,11 +362,12 @@ def apply_action(board, action) -> Board:
     """动作 dict 在 board 上重放（存档 / 宏回放原语）。
 
     转换 + 校验「该动作确实是本局面的合法移动」（出现在
-    ``legal_moves(step)`` 且 moved 一致）+ apply。不合法显式抛错——
-    回放层最怕静默容忍一个错动作、然后整条路径跑偏。
+    ``board.move_ok``（完整 legal_moves 语义，但不枚举整棵移动树）+
+    apply。不合法显式抛错——回放层最怕静默容忍一个错动作、然后整条
+    路径跑偏。
     """
     move = action_to_move(board.spec, action)
-    if move not in board.legal_moves(move.step):
+    if not board.move_ok(move):
         raise ValueError(
             f"动作在当前局面不合法: {move.family} t={move.t} "
             f"side={move.side} dir={move.direction} step={move.step} "

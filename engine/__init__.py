@@ -37,7 +37,8 @@ from .compat import (SQUARE_DIRECTIONS, action_to_move, apply_action,  # noqa: F
                      direction_table, move_to_action, move_to_record,
                      record_to_action, record_to_move,
                      register_direction_vocab)
-from .config import ENABLED, is_enabled, set_enabled  # noqa: F401  （试运行开关）
+from .config import (describe, is_enabled, persist,  # noqa: F401  （试运行开关）
+                     set_enabled, source)
 from .lattice import Lattice, cubic_lattice, square_lattice
 from .registry import (board_types, cubic_board, cubic_spec,
                        get_board_type, make_board, mi_board, mi_lattice,
