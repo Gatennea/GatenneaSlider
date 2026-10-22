@@ -543,8 +543,7 @@ class AnnotationMixin:
             if (getattr(self, 'show_file_menu', False) or
                     getattr(self, 'show_edit_menu', False) or
                     getattr(self, 'show_puzzle_menu', False) or
-                    getattr(self, 'show_macro_menu', False) or
-                    getattr(self, 'show_search_menu', False)):
+                    getattr(self, 'show_macro_menu', False)):
                 # 有菜单展开时，点击交给常规下拉菜单处理，避免抢事件
                 return False
             # 首页样式库下拉（开时优先：点项开局、点他处收起）

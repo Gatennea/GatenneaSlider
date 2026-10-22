@@ -690,15 +690,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._pending_save_as = False
         self._pending_load = False
 
-        # 搜索菜单状态（顶栏「搜索」：命令面板的鼠标直达入口，不依赖 Ctrl+K）。
-        # 历史上这里曾是「设置」下拉（快捷键设置/视觉/命令面板），但顶栏
-        # 「设置」点击直接开对话框、从无代码展开该下拉——整套机制是死路，
-        # feature_index 却指着「设置→命令面板」。删除死机制，入口迁到
-        # 「搜索」：菜单里就一项，真实可点。
-        self.show_search_menu = False
-        self.search_menu_items = ['命令面板 Ctrl+K']
-        self.search_menu_rects = []
-        self.search_menu_hovered = -1
+        # 顶栏「搜索」：命令面板的鼠标直达入口，点击直接打开（不依赖 Ctrl+K）。
+        # 早期这里曾是一个只有一项「命令面板」的下拉，纯属多余——单选项不需要
+        # 下拉，故改为点击即开面板。Ctrl+K 仍是键盘首选。
 
         # 设置对话框状态
         self.show_settings_dialog = False
@@ -1518,7 +1512,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.show_file_menu = False
         self.show_edit_menu = False
         self.show_puzzle_menu = False
-        self.show_search_menu = False
         self.show_macro_menu = False
         # 谜题二级子菜单同步收起
         self.puzzle_sub_open = ''

@@ -1472,8 +1472,7 @@ class RendererMixin:
                            (i == 0 and self.show_file_menu) or \
                            (i == 1 and self.show_edit_menu) or \
                            (i == 2 and self.show_puzzle_menu) or \
-                           (i == 3 and self.show_macro_menu) or \
-                           (i == 5 and self.show_search_menu)
+                           (i == 3 and self.show_macro_menu)
             if is_highlighted:
                 pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
@@ -1488,8 +1487,6 @@ class RendererMixin:
             self.draw_puzzle_menu()
         if self.show_macro_menu:
             self.draw_macro_menu()
-        if self.show_search_menu:
-            self.draw_search_menu()
 
     def draw_file_menu(self):
         """绘制文件下拉菜单"""
@@ -1860,35 +1857,6 @@ class RendererMixin:
             macro_surface = self.status_font.render(macro_text, True, macro_color)
             macro_x = zoom_x - macro_surface.get_width() - 20
             self.screen.blit(macro_surface, (macro_x, text_y))
-
-    def draw_search_menu(self):
-        """绘制搜索下拉菜单（顶栏「搜索」：命令面板的鼠标直达入口）"""
-        search_rect = self.menu_item_rects[5]  # "搜索"是第6个菜单项
-        menu_x = search_rect.x
-        menu_y = self.menu_bar_height
-
-        item_height = 28
-        menu_width = 150
-        menu_height = item_height * len(self.search_menu_items)
-
-        dropdown_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
-        pygame.draw.rect(self.screen, self.colors['menu_bg'], dropdown_rect)
-        pygame.draw.rect(self.screen, self.colors['dialog_border'], dropdown_rect, 1)
-
-        self.search_menu_rects = []
-        for i, item in enumerate(self.search_menu_items):
-            y_pos = menu_y + i * item_height
-            item_rect = pygame.Rect(menu_x, y_pos, menu_width, item_height)
-            self.search_menu_rects.append(item_rect)
-
-            if i == self.search_menu_hovered:
-                pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
-
-            text_surface = self.menu_font.render(item, True, self.colors['menu_text'])
-            text_rect = text_surface.get_rect()
-            text_rect.x = menu_x + 12
-            text_rect.centery = y_pos + item_height // 2
-            self.screen.blit(text_surface, text_rect)
 
     def draw_settings_dialog(self):
         """绘制设置对话框"""
