@@ -200,14 +200,26 @@ def load_model(doc, *, shapes=None, path=None):
             raise ModelError(
                 f'{where} 缝族 {fname!r} 的 step 不沿缝（与 coeffs 不正交）：'
                 f'coeffs={coeffs}, step={step}')
-        families.append(SeamFamily(fname, coeffs, (step, (-step[0], -step[1]))))
+        rank_mode = s.get('rank')
+        if rank_mode not in (None, 'centroid'):
+            raise ModelError(
+                f'{where} 缝族 {fname!r} 的 rank 只支持 None / '
+                f"'centroid'，收到 {rank_mode!r}")
+        # SeamFamily 的 rank 钩子要读 int_verts（在 _assemble 里定义），
+        # 故这里只带模式进去，由 _assemble 落地成闭包。
+        families.append((fname, coeffs, step, rank_mode))
 
     return _assemble(name, doc, basis, scale, offsets, goal, families,
                      shapes, path)
 
 
 def _assemble(name, doc, basis, scale, offsets, goal, families, shapes, path):
-    """把校验过的数据组装成 BoardSpec（几何钩子全部由数据 + 通用算法推出）。"""
+    """把校验过的数据组装成 BoardSpec（几何钩子全部由数据 + 通用算法推出）。
+
+    ``families`` 元素 = ``(族名, coeffs, step, rank_mode)``；``rank_mode``
+    为 None 时走点部线性泛函（锚点 rank），'centroid' 时改走**质心
+    rank**（coeffs·顶点均值，见下面 _centroid_rank 的docstring）。
+    """
 
     # ---- 缓存 ----
     # 这些闭包算的都是纯函数，但会被打乱/求解器按「每步每族」调用成百上千
@@ -338,6 +350,36 @@ def _assemble(name, doc, basis, scale, offsets, goal, families, shapes, path):
 
     def seam_clear(fam, t, board):
         return any(tt == t for tt, _line in seam_lines(board, fam))
+
+    def _centroid_rank(coeffs):
+        """质心 rank 钩子：rank = coeffs · mean(整数顶点)。
+
+        为什么需要它：默认的点部 rank 用**锚点**（normalize 后 offs 全 ≥0
+        的 bbox 最小角），而锚点对该块的真实几何位置可能偏低——典型是
+        ▼（offs (0,1),(1,0),(1,1)，bbox 角 (0,0) 根本不是顶点）：三角
+        晶格 n 族（coeffs (1,1)）的缝正好沿 ▲▼ 共享斜边走，两块必须分居
+        缝两侧，锚点 rank 会把 ▼ 错放到缝的下侧（引擎 tri preset 的
+        rank_n 钩子就是补这个洞）。质心 rank 对任意凸块恒给出几何正确
+        的分侧：缝线穿过块的某条边时质心必严格居于其一侧，不穿块时质心
+        与整块同侧（seam_lines 的「不劈块」过滤已保证后者）。
+
+        返回浮点；全部消费方（legal_moves / move_ok / compat / board_view）
+        都只拿 rank 与整数缝号 t 比大小或排序，浮点安全。
+        """
+
+        def hook(point, orient):
+            vs = int_verts(point, orient)
+            return sum(coeffs[0] * v[0] + coeffs[1] * v[1]
+                       for v in vs) / len(vs)
+
+        return hook
+
+    fam_objs = []
+    for (fname, coeffs, step, rank_mode) in families:
+        hook = _centroid_rank(coeffs) if rank_mode == 'centroid' else None
+        fam_objs.append(SeamFamily(
+            fname, coeffs, (step, (-step[0], -step[1])), rank=hook))
+    families = tuple(fam_objs)
 
     # 朝向顺序 = **文件里的书写顺序**（不是字典序）。这个顺序会经
     # update_matrix 编码进快照 matrix（值 = 下标+1），换实现后若顺序变了，
