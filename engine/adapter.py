@@ -948,19 +948,24 @@ class EngineGame:
 
     def _shuffle_once(self, attempts: int, step: int, bias: float,
                       min_score, record) -> None:
-        """单次随机打乱核心（死局防护的包装在 shuffle）。"""
+        """单次随机打乱核心（死局防护的包装在 shuffle）。
+
+        attempts = **尝试次数**：不可逆的随机走法会被 `_random_move` 跳过，
+        实际走成的步数少于它。这是既有难度口径，不动——调用方要报「打乱了
+        多少步」请用 record 的长度（GUI 的提示即如此）。
+        """
         cur_scatter = self._scatter()
         for _ in range(attempts):
-            _moved, cur_scatter = self._random_move(step, bias, cur_scatter,
-                                                    record)
+            _ok, cur_scatter = self._random_move(step, bias, cur_scatter,
+                                                 record)
         if min_score is None:
             return
         for _ in range(attempts * 3):
             if self.compute_score() <= min_score:
                 break
             for _attempt in range(attempts):
-                _moved, cur_scatter = self._random_move(step, bias,
-                                                        cur_scatter, record)
+                _ok, cur_scatter = self._random_move(step, bias,
+                                                     cur_scatter, record)
         self._clear_selection()
 
     def shuffle(self, attempts: int, step: int, bias: float = 0.0,

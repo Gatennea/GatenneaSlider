@@ -1082,6 +1082,9 @@ class SliderMatrix:
 
         cur_scatter = _scatter({tuple(b.location) for b in self.blocks})
 
+        # attempts = **尝试次数**（不是走成的步数）：不可逆的随机走法会被
+        # continue 跳过，所以实际步数少于它。这是既有难度口径，不动——
+        # 调用方要报「打乱了多少步」请用 record 的长度（见 gui/session.py）。
         for _ in range(attempts):
             bounds = self.get_boundaries()
             min_row, max_row = bounds['min_row'], bounds['max_row']
@@ -1143,6 +1146,8 @@ class SliderMatrix:
         # 确保最终清除所有选中状态
         for b in self.blocks:
             b.be_opted = False
+        # ⚠️ 不在这里记「实际步数」：SliderMatrix 有 __slots__，挂新属性会
+        #    AttributeError。调用方以 `record` 长度为准（它就是成功流水）。
 
         # min_score 校验：聚拢度过高说明题目太简单，重洗直到满足要求
         if min_score is not None:

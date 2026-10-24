@@ -52,13 +52,19 @@ def main():
 
     g = gui.game
     records = []
+    # 与 GUI 同参：attempts = m*n*10（这是**尝试次数**，不是走成的步数——
+    # 不可逆走法会被跳过）。GUI 的「已打乱 N 步」现在按 records 长度报，
+    # 所以这里顺便钉住「实走 ≤ 尝试」以及真实耗时可接受。
+    target = 4 * 4 * 10
     t0 = time.perf_counter()
-    g.shuffle(160, 2, bias=0.0, min_score=None, record=records)
+    g.shuffle(target, 2, bias=0.0, min_score=None, record=records)
     cost = time.perf_counter() - t0
-    print(f'  打乱 160 步耗时 {cost:.2f}s，记录 {len(records)} 条')
+    print(f'  尝试 {target} 次，实走 {len(records)} 步，耗时 {cost:.2f}s')
 
     check(bool(records), '打乱产出了可重放的记录')
     check(not g.is_solved(), '打乱后不是还原态')
+    check(len(records) <= target,
+          f'实走步数不超过尝试次数（{len(records)} ≤ {target}）')
     check(cost < 3.0, f'打乱耗时在可接受范围（{cost:.2f}s < 3s）')
 
     # 逐步反向重放：每一步都必须能精确退回

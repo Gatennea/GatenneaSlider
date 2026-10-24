@@ -68,7 +68,7 @@ class SessionMixin:
         if self.animating:
             self.cancel_animation()
 
-        attempts = self.current_m * self.current_n * 10  # 打乱次数
+        attempts = self.current_m * self.current_n * 10  # 打乱尝试次数
 
         # 演示动画起点：打乱前各块位置。打乱本身是纯逻辑、瞬时完成的；
         # 「打乱过程动画」靠 game.shuffle 带 record 记录每步，从该状态重放
@@ -99,12 +99,16 @@ class SessionMixin:
         # 打乱难度门槛：随机重洗到上限后仍可能未达标，如实提示（不静默）
         unmet = (self.shuffle_min_score is not None
                  and self.game.compute_score() > self.shuffle_min_score)
+        # 提示里的步数用**实际走成**的步数，不是 attempts（attempts 是尝试
+        # 次数：不可逆走法被跳过，两者能差到 5 倍，玩家看到的步数与盘面
+        # 打乱程度对不上）。records 是唯一的成功流水，两种引擎都往里写。
+        real_steps = len(records)
         if self.game_mode == 'timed':
             self._timer_enter_ready()
-            notify_msg = f"已打乱：{attempts}步（空格开始计时）"
+            notify_msg = f"已打乱：{real_steps}步（空格开始计时）"
         else:
             self._timer_cancel()
-            notify_msg = f"已打乱：{attempts}步（练习模式）"
+            notify_msg = f"已打乱：{real_steps}步（练习模式）"
         if unmet:
             notify_msg += "；本次随机打乱未达难度门槛，可再打乱一次"
         notify = (notify_msg, 120)
