@@ -381,6 +381,8 @@ def _assemble(name, doc, basis, scale, offsets, goal, families, shapes, path):
         cell_polygon=cell_polygon,
         components=components,
         seam_lines=seam_lines,
+        seam_width=doc.get('seam_width'),
+        corner_radius=doc.get('corner_radius'),
     )
     return LoadedModel(spec, doc, path)
 

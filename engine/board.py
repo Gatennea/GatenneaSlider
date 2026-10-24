@@ -281,6 +281,14 @@ class BoardSpec:
             默认实现是「t 逐整数枚举 + seam_clear 过滤」，只适用于缝坐标
             连续可分的板型；显式邻接板型的缝必须落在真实块边上，由几何
             直接给出（见 engine/shatter_geometry 的 _seam_lines）。
+        seam_width: 可选渲染参数（设计像素，缩放随 zoom 走）。通用多边形通道
+            画「块内缩半缝宽 + 铺缝色底」时用的缝宽；None = 退回渲染器的
+            gap_width 旧口径（默认 4px）。密铺板型（如碎三角）的缝正是
+            「缝延长构成的晶格」节点，放这里让每种板型自定缝的粗细。
+        corner_radius: 可选渲染参数（设计像素）。圆角半径上限；None = 退回
+            渲染器 _slider_corner_radius（≈5px）。注意：圆角半径必须 ≤ 缝半宽，
+            否则削圆角的弧会越过缝、在密铺顶点戳出尖刺——故调大圆角时要
+            同步调大 seam_width（corner_radius ≤ seam_width/2）。
     """
 
     name: str
@@ -296,6 +304,8 @@ class BoardSpec:
     cell_polygon: object = None
     components: object = None
     seam_lines: object = None
+    seam_width: object = None        # 渲染：缝宽（设计像素；None=退回渲染器 gap_width 旧口径）
+    corner_radius: object = None    # 渲染：圆角半径上限（设计像素；None=退回 _slider_corner_radius）
 
     def __post_init__(self):
         if not isinstance(self.lattice, Lattice):
@@ -313,6 +323,17 @@ class BoardSpec:
                 raise TypeError(
                     f"板型 {self.name!r} 的 {hook_name} 须可调用或 None，"
                     f"收到 {type(hook).__name__}")
+        # 渲染用几何参数：缝宽 / 圆角半径（设计像素；可经模型 JSON 设定）。
+        for _num_name in ('seam_width', 'corner_radius'):
+            _v = getattr(self, _num_name)
+            if _v is not None:
+                if isinstance(_v, bool) or not isinstance(_v, (int, float)):
+                    raise TypeError(
+                        f"板型 {self.name!r} 的 {_num_name} 须为数字或 None，"
+                        f"收到 {type(_v).__name__}")
+                if _v < 0:
+                    raise ValueError(
+                        f"板型 {self.name!r} 的 {_num_name} 须非负，收到 {_v!r}")
         lat = self.lattice
         dim = lat.dim
         # 方向表：整数元组、至少一个非零、长度=dim。

@@ -103,13 +103,22 @@ class RendererMixin:
                 continue
             # 弧半徑直接取 radius（不再由削進深度反推——那正是「角越尖越尖」
             # 的來源）。邊太短時 cut 會被鉗到半邊長，r_eff 隨之縮小。
+            #
+            # 切點幾何（2026-10-24 修正）：圓心在角平分線上、距頂點
+            # d = r/sin(θ/2)（因圓心到兩邊的**垂距**須等於 r：d·sin(θ/2)=r），
+            # 故切點沿邊回退的量是 **cut = r·cot(θ/2) = r/tan(θ/2)**，不是
+            # r·tan(θ/2)。舊式用 tan，只在 θ=90°（方形）時與 cot 相等；
+            # 60° 角算出 0.577r（應為 1.732r）、45° 算出 0.414r（應為
+            # 2.414r）——角越尖圓角越弱，方形跟三角/碎三角依舊是兩種畫風，
+            # 而且切點不在圓上（|O−p1| = 1.53r ≠ r），弧接不上直邊會在每個
+            # 角留一個小折角。改用 cot 後任意角度的圓角尺寸才與方形一致。
             r_eff = radius
-            cut = r_eff * math.tan(ang / 2.0)
+            cut = r_eff / math.tan(ang / 2.0)
             cut = min(cut, l1 / 2.0, l2 / 2.0)
             if cut < 1e-6:
                 out.append(tuple(cur))
                 continue
-            r_eff = cut / math.tan(ang / 2.0)
+            r_eff = cut * math.tan(ang / 2.0)
             p1 = (cur[0] + uin_x * cut, cur[1] + uin_y * cut)
             p2 = (cur[0] + uout_x * cut, cur[1] + uout_y * cut)
             # 內角平分線（從頂點出發的兩邊方向之和）指向多邊形內部
@@ -377,24 +386,19 @@ class RendererMixin:
         hull = view.board_hull(cells)
         self._draw_triangle_gaps(view, cells, hull)
 
-        # 縫帶底：用**未內縮**的精確形狀鋪 gap 色。
-        # 三角是 60° 六塊交會，每塊各內縮半個縫寬後，頂點周圍必然留下一個
-        # 小六邊形；`_draw_triangle_gaps` 沿各條縫畫的是矩形帶，蓋不到那個
-        # 六邊形的楔形角，於是露出背景色——比縫色 (80) 暗得多的 (30)，放大
-        # 看就是每個頂點的「梅花黑點」（用戶 2026-10-24 投訴畫風不統一，
-        # 這是三角與方形的第二處差異；方形是 90° 四塊交會、恰好填滿一圈）。
-        # 精確形狀的並集恰好等於「盤面 + 縫帶」，鋪一層就乾淨了。
-        # 必須在 selected_gap 之前鋪，否則紅線被蓋掉。
-        if getattr(self, 'gap_width', 0) > 0:
-            _seal = self.colors['gap']
-            for block in self.game.blocks:
-                i, j, up = tri_key(block)
-                pts = [self.world_to_screen(*p)
-                       for p in view.piece_polygon(i, j, up, inset=False)]
-                # 外擴 1px：斜邊的柵格化在相鄰塊之間會留 1px 亞像素縫，
-                # 不補就會在縫裡數到背景色（像素測試抓到的就是這些）
-                pygame.draw.polygon(
-                    self.screen, _seal, self._offset_polygon_px(pts, 1.0))
+        # **不鋪縫帶底**（2026-10-25 移除，勿再加回）。
+        #
+        # 曾經在這裡用「未內縮的精確形狀」整片鋪 gap 灰當封底，理由是三角
+        # 60° 六塊交會、塊內縮後頂點周圍留下小六邊形，`_draw_triangle_gaps`
+        # 的矩形帶蓋不到楔形角 → 露背景成「梅花黑點」。
+        #
+        # 但那等於把**沒有滑塊的地方全部填成灰**：縫一寬整盤就發灰。用戶
+        # 2026-10-25 定調——「灰色按理來說只是縫隙畫線才對」，方形本來就
+        # 只畫線（沒有這層封底），碎三角已改成露背景 + 細灰線，三角/米字
+        # 一併對齊：縫帶露出背景，灰色只由 `_draw_triangle_gaps` 沿縫畫線。
+        # 頂點處露背景是**故意**的，線在那裡交會就是晶格節點。
+        # （2026-10-25 曾在頂點額外畫一顆灰圓「補節點」，用戶判「畫蛇添足」，
+        #   已移除——頂點就該是線交會的樣子，不該多畫東西。）
 
         self._draw_triangle_selected_gap(view, hull)
 
@@ -606,19 +610,12 @@ class RendererMixin:
                              self.world_to_screen(*p2),
                              max(1, int(self.gap_width * self.zoom * 0.35)))
 
-        # 縫帶底：與三角同一手法——用**未內縮**的精確形狀鋪 gap 色，讓塊
-        # 內縮後露出的縫、以及頂點交會處的空隙，全部落在縫色上而不是背景色。
-        # 米字每格 4 個三角形，一格的頂點是 4 塊＋相鄰格共 8 塊交會，圓角
-        # 削角後露黑的範圍比三角更大（實測放大圖是羽毛狀黑角）。
-        # 鋪在 selected_gap 之前，否則紅線被蓋掉。
-        if getattr(self, 'gap_width', 0) > 0:
-            _seal = self.colors['gap']
-            for block in self.game.blocks:
-                r, c, q = mi_key(block)
-                pts = [self.world_to_screen(*p)
-                       for p in view.piece_polygon(r, c, q, inset=False)]
-                pygame.draw.polygon(
-                    self.screen, _seal, self._offset_polygon_px(pts, 1.0))
+        # **不鋪縫帶底**（2026-10-25 移除，勿再加回）——與三角同一處置：
+        # 灰色只用來沿縫畫線，縫帶露出背景。移除前這裡是用未內縮的精確形狀
+        # 整片鋪 gap 灰（米字每格 4 塊、頂點 8 塊交會，鋪了才不露黑角），
+        # 代價是「沒有滑塊的地方」全是灰。用戶認可的米字樣式正是**移除這層**
+        # 之後的樣子（2026-10-23 那版），故改回來。頂點不再額外補任何形狀
+        # （用戶判「畫蛇添足」，與三角同）。
 
         self._draw_mi_selected_gap(view, hull)
 
@@ -910,35 +907,29 @@ class RendererMixin:
         board = self.game.board
         origin = self._poly_view_origin(view)
 
-        # 選中縫足跡的繪製**移到塊循環之後**（見本方法末段）：碎三角多邊形
-        # 邊貼邊、無縫隙（gap_width=0），若沿用方形「先畫縫再畫塊」的舊序，
-        # 塊會把整條紅縫蓋掉——玩家點中縫卻看不到任何紅線（2026-10-24 用戶
+        # 選中縫足跡的繪製**移到塊循環之後**（見本方法末段）：碎三角等多邊形
+        # 板型即便有縫也極窄，若沿用方形「先畫縫再畫塊」的舊序，塊會把整條
+        # 紅縫蓋掉——玩家點中縫卻看不到任何紅線（2026-10-24 用戶
         # 實測「沒有選中縫隙的效果」）。故通用通道改為壓在塊之上畫。
         gap = getattr(self, 'selected_gap', None)
 
-        # 圓角半徑：與方形/三角/米字取同一個值（`_slider_corner_radius`）。
+        # 圓角半徑 / 縫寬：優先取**板型定義**（BoardSpec.seam_width /
+        # corner_radius，模型 JSON 可寫）；沒寫則退回與方形同款的舊口徑
+        # （gap_width / _slider_corner_radius）。
         #
-        # 舊實現這裡是 depth=0（完全不削角），理由是「碎三角邊貼邊無縫隙，
-        # 逐塊削角會在每個頂點咬出缺口（6 塊交會處就是小黑洞）」。那個理由
-        # 成立的前提是「塊貼邊」，而方形/三角/米字**都有 gap_width 的縫**，
-        # 圓角正好藏在縫裡——所以問題不是削角，是通用通道原先沒有縫。
-        # 現在下面先把塊內縮半個縫寬、並鋪 gap 色底（見 _offset_polygon_px），
-        # 削角的缺口落進縫帶裡，於是四種形態同一套畫風。
-        radius = self._slider_corner_radius()
-        # 縫寬的口徑：**按塊尺寸取比例**，不是固定像素。
-        #
-        # 方形棋盤的縫是格子之外的 4px（`_board_px`），塊 60px → 6.7%。通用
-        # 通道的塊尺寸由板型決定：三角單元 ×cell_size 是 91px，碎三角的單元
-        # 只有半個邊長、螢幕上 30px。若一律給 4px，碎三角的縫就佔到塊寬的
-        # 13%——整盤每個頂點都糊成一團灰斑，遠看是「撒滿星星」（2026-10-24
-        # 整盤截圖實測，4 倍放大看局部反而正常）。
-        # 用「最短邊 × (gap_width / cell_size)」換算：塊 60px 得 4px（與方形
-        # 一致）、91px 得 6px（與三角原有 gap*zoom 一致）、30px 得 2px。
-        _gap = float(getattr(self, 'gap_width', 0.0) or 0.0)
-        gap_ratio = (_gap / float(self.cell_size)) if (self.cell_size and _gap) else 0.0
-        # 沒有縫就沒有地方藏圓角的缺口 → 退回尖角（否則頂點咬出黑洞）
-        if gap_ratio <= 0:
-            radius = 0
+        # 這兩個是幾何屬性：碎三角是 60° 密鋪，圓角半徑必須 ≤ 縫半寬，否則
+        # 削圓角的弧會越過縫、在頂點戳出尖刺——所以放進板型定義、讓每種
+        # 板型自定，比在渲染器裡按比例硬算更合適（2026-10-24 用戶定）。
+        _spec = getattr(self.game.board, 'spec', None)
+        _sw_field = getattr(_spec, 'seam_width', None)
+        _cr_field = getattr(_spec, 'corner_radius', None)
+        _z = self.zoom
+        # 設計像素（zoom=1 世界單位）；顯式值套用時乘 zoom，縮放才跟手。
+        seam_width_screen = (float(_sw_field) * _z) if _sw_field is not None \
+            else float(getattr(self, 'gap_width', 0.0) or 0.0)
+        corner_cap_screen = (float(_cr_field) * _z) if _cr_field is not None \
+            else self._slider_corner_radius()
+        _explicit_corner = _cr_field is not None
         # 邊框反餽三件套（每帧只算一次；helper 本身形態中立）
         _sel_anim = self._sel_anim_border()
         _play_head = self._play_head_border()
@@ -990,18 +981,28 @@ class RendererMixin:
             _geo.append((block, pts))
 
         for block, pts in _geo:
-            # 縫寬按**這一塊的尺寸**取（見 gap_ratio 的說明）：同一盤裡的塊
-            # 大小可以差一倍（碎三角的正三角與等腰三角），用統一像素會讓小
-            # 塊的縫粗得離譜。
-            shortest = self._shortest_edge(pts)
-            seam_half = (max(1.0, shortest * gap_ratio / 2.0)
-                         if gap_ratio > 0 else 0.0)
-            # 縫帶底 = 精確形狀（外擴 1px 蓋斜邊柵格縫）；
-            # 塊 = 精確形狀內縮半個縫寬後削圓角。
-            base = (self._offset_polygon_px(pts, 1.0) if seam_half > 0 else pts)
+            # 縫寬取**統一像素值**（不隨塊大小變）：碎三角有等邊 + 等腰兩
+            # 種塊，若按「最短邊 × 比例」內縮，相鄰大小塊的縫寬不一致，頂點
+            # 處就會戳出放射狀星刺（「毛毛糙糙」的元兇）。統一縫寬後頂點只
+            # 剩圓角削出的乾淨小孔——正是「縫延長構成的晶格」節點。（優先取
+            # 板型定義 seam_width，否則退回 gap_width。）
+            seam_half = (max(1.0, seam_width_screen / 2.0)
+                         if seam_width_screen > 0 else 0.0)
+            # 縫帶底 = 精確形狀（**不**外擴）：外擴會在 6 塊交會頂點把 gap 色
+            # 戳成放射狀尖刺（「星芒」偽影）；精確形狀並集本就等於盤面 + 縫
+            # 帶，塊內縮半個縫寬畫上去、露出的就是均勻縫。
+            base = pts
+            # 圓角半徑不得超過縫半寬（否則弧越過縫、在頂點戳出尖刺）。
+            # 顯式設定 corner_radius 時直接取該值（只受縫半寬硬約束）；舊口徑
+            # 則再受最短邊比例約束（避免小塊被削掉三分之一）。
+            if _explicit_corner:
+                _r = (min(corner_cap_screen, seam_half) if seam_half > 0 else 0)
+            else:
+                _r = (min(self._corner_radius_for(pts, corner_cap_screen), seam_half)
+                      if seam_half > 0 else 0)
             rpoly = self._rounded_polygon_points(
                 self._offset_polygon_px(pts, -seam_half) if seam_half > 0 else pts,
-                self._corner_radius_for(pts, radius) if seam_half > 0 else 0)
+                _r)
             fill = (self.colors['block_selected'] if getattr(
                 block, 'be_opted', False) else self.colors['block'])
             loc = tuple(block.location)
@@ -1045,25 +1046,36 @@ class RendererMixin:
                 cy = sum(p[1] for p in pts) / len(pts)
                 self.screen.blit(text, text.get_rect(center=(int(cx), int(cy))))
 
-        # 三趟落地：①縫帶底（gap 色）②塊填色 ③描邊。
-        # 共用邊因此只被描一次、寬度均勻，頂點處也不會出現「後畫的填色啃掉
-        # 前畫的邊」的缺口。
+        # 三趟落地：①晶格線 ②塊填色 ③描邊（僅特殊態）。
         #
-        # 縫帶底放在最前：它是普通塊外擴半個縫寬的聯集，鋪成 colors['gap']，
-        # 塊畫上去之後露出的那條邊就是縫——與方形棋盤格「先鋪縫帶再畫塊」
-        # 同一套做法（方形那條路在 draw_board 開頭畫 band）。
-        if gap_ratio > 0:
+        # ①為什麼是「畫線」不是「填縫帶」：舊做法把每塊的精確多邊形整塊鋪成
+        #   colors['gap']，塊再內縮半個縫寬畫上去，露出來的就是一條**實心灰
+        #   帶**——「沒有滑塊的地方」全是一片灰，縫一寬整盤就發灰
+        #   （2026-10-25 用戶：「灰色按理來說只是縫隙畫線才對」）。
+        #   現在縫帶讓它**露出背景**，灰色只用來沿格子的真實邊界描一條細線：
+        #   相鄰兩塊各內縮半個縫寬、精確邊界正好落在縫帶正中，故這條線就是
+        #   「縫延長構成的晶格」，線在頂點處交會＝晶格節點。
+        if seam_width_screen > 0:
+            _lw = max(1, int(round(1.5 * self.zoom)))
             for base, _r, _f, _bc, _bw in _paint:
-                pygame.draw.polygon(self.screen, self.colors['gap'], base)
-        #
-        # 描邊後再疊一次 aalines：三角密鋪的邊幾乎全是 30°/60° 斜線，硬描邊
-        # 在斜線上必然是像素階梯，遠看就是「每條線都歪歪扭扭」。線寬與顏色
-        # 不變（仍走 colors['border'] 與原版 2px 口徑），只把斜邊柵格化平滑。
+                pygame.draw.polygon(self.screen, self.colors['gap'], base, _lw)
+        # ②塊填色：填色**分趟**做（先全部填、再全部描邊），相鄰塊共用的邊才
+        #   只被描一次、寬度均勻；逐塊「填+描」會讓後畫那塊的填色啃掉前畫那
+        #   塊的半條邊（2026-10-24 實測每條邊寬窄不一）。
+        #   註：曾試過描邊後再疊 `aalines` 平滑斜邊，結果密鋪頂點處每條線的
+        #   交點被重描一遍、反而堆出星芒，已廢棄（與三角/米字手畫路徑同口徑，
+        #   它們也不走 aalines）。
         for _base, rpoly, fill, _bc, _bw in _paint:
             pygame.draw.polygon(self.screen, fill, rpoly)
         for _base, rpoly, _fill, border_color, border_w in _paint:
+            # 普通塊**不描灰邊**：晶格線已經把塊界畫清楚了，再給每塊描一圈灰
+            # 等於一條縫上並排三條灰線（塊邊+晶格線+塊邊），正是「整盤發灰」。
+            # 只保留特殊態（選中/撞牆/分組/演示）的描邊——它們稀疏、是反餽。
+            if border_w <= 0:
+                continue
+            if border_color == self.colors['border']:
+                continue
             pygame.draw.polygon(self.screen, border_color, rpoly, border_w)
-            pygame.draw.aalines(self.screen, border_color, True, rpoly)
 
         # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**
         # ——放在循環前會被後畫的普通塊連同邊框一起蓋掉（三角實測過）。
@@ -1103,7 +1115,7 @@ class RendererMixin:
                 pts = [self.world_to_screen(x, y) for (x, y) in poly]
                 self._draw_hint_overlay(
                     self._rounded_polygon_points(
-                        pts, self._corner_radius_for(pts, radius)),
+                        pts, self._corner_radius_for(pts, corner_cap_screen)),
                                         tuple(pos) == hint_hover)
 
         # 宏基準位置標記（固定座標，無論該格有無滑块；方形特性）
@@ -1113,7 +1125,7 @@ class RendererMixin:
             poly = view.world_polygon(pp, oo, origin)
             pts = [self.world_to_screen(x, y) for (x, y) in poly]
             hl = self._rounded_polygon_points(
-                pts, self._corner_radius_for(pts, radius))
+                pts, self._corner_radius_for(pts, corner_cap_screen))
             pygame.draw.polygon(self.screen, (255, 200, 50), hl,
                                 max(1, int(3 * self.zoom)))
 

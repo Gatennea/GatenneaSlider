@@ -14,6 +14,15 @@
 本檔案用**像素**判定：把四種形態各渲染一幀，取所有塊多邊形的凸包（內縮
 3px 避開抗鋸齒邊），凸包內除塊色/縫色/描邊色/提示色以外的像素必須少於
 閾值。既抓住黑點，也抓住「塊被削太狠以致縫帶斷開」。
+
+**兩種縫的畫法（2026-10-25 起，`seam_style`）**：
+  - `fill`（方形/三角/米字，用戶認可的既有畫風）：縫帶**填滿** gap 灰，
+    故盤內不得露出背景色——露了就是頂點黑點。
+  - `line`（碎三角等模型板型）：用戶改的畫風——「沒有滑塊的地方別全部填充
+    灰色，灰色按理來說只是縫隙畫線」。縫帶**露出背景**，灰色只沿格子真實
+    邊界畫一條細線（＝縫延長構成的晶格）。此處露出背景是**故意**的，
+    所以判據要反過來：每個內部頂點附近必須能採到那條晶格線（gap 色），
+    抓的是「晶格線沒畫到頂點 / 縫帶塌掉」這類回歸。
 """
 
 import os
@@ -135,10 +144,13 @@ def _interior_vertices(polys):
     return {k for k, a in ang.items() if a >= 2.0 * math.pi - 0.08}
 
 
-def _audit(tag, setup, expect_interior=True):
-    """渲染一幀，在**盤內部頂點**周圍檢查有沒有露出背景色。
+def _audit(tag, setup, expect_interior=True, seam_style='fill'):
+    """渲染一幀，在**盤內部頂點**周圍檢查縫的畫法對不對。
 
-    為什麼不用「凸包內背景像素佔比」：方形盤最外圈的圓角本來就露背景色
+    seam_style='fill' → 檢查「不露背景色」；'line' → 檢查「採得到晶格線」。
+    兩種畫法下要抓的回歸不同，見檔案開頭說明。
+
+    為什麼不看「凸包內背景像素佔比」：方形盤最外圈的圓角本來就露背景色
     （那是方形既有畫風，用戶也認可），佔比 0.48% 會被誤判。真正要抓的是
     「內部頂點交會處的梅花黑點」——塊內縮 + 削圓角後若縫帶底沒鋪夠，那裡
     露出的背景 (30) 比縫色 (80) 暗得多。
@@ -156,25 +168,48 @@ def _audit(tag, setup, expect_interior=True):
     if expect_interior:
         inner_v = _interior_vertices(polys)
         check(bool(inner_v), f'{tag}：存在盤內部頂點（{len(inner_v)} 個）')
-        holes = []
-        for (x, y) in inner_v:
-            for dy in range(-5, 6):
+        if seam_style == 'line':
+            # 縫帶露出背景是**故意**的；要抓的是晶格線沒畫到頂點。
+            missing = []
+            for (x, y) in inner_v:
                 hit = False
-                for dx in range(-5, 6):
-                    px, py = x + dx, y + dy
-                    if not (0 <= px < g.screen_width
-                            and 0 <= py < g.screen_height):
-                        continue
-                    if tuple(g.screen.get_at((px, py))[:3]) == bg:
-                        holes.append((x, y))
-                        hit = True
+                for dy in range(-5, 6):
+                    for dx in range(-5, 6):
+                        px, py = x + dx, y + dy
+                        if not (0 <= px < g.screen_width
+                                and 0 <= py < g.screen_height):
+                            continue
+                        if tuple(g.screen.get_at((px, py))[:3]) == gap:
+                            hit = True
+                            break
+                    if hit:
                         break
-                if hit:
-                    break
-        check(not holes,
-              f'{tag}：內部頂點不露背景色（{len(inner_v)} 個頂點，'
-              f'{len(holes)} 個有黑洞）',
-              str(holes[:3]))
+                if not hit:
+                    missing.append((x, y))
+            check(not missing,
+                  f'{tag}：內部頂點附近採得到晶格線（{len(inner_v)} 個頂點，'
+                  f'{len(missing)} 個採不到）',
+                  str(missing[:3]))
+        else:
+            holes = []
+            for (x, y) in inner_v:
+                for dy in range(-5, 6):
+                    hit = False
+                    for dx in range(-5, 6):
+                        px, py = x + dx, y + dy
+                        if not (0 <= px < g.screen_width
+                                and 0 <= py < g.screen_height):
+                            continue
+                        if tuple(g.screen.get_at((px, py))[:3]) == bg:
+                            holes.append((x, y))
+                            hit = True
+                            break
+                    if hit:
+                        break
+            check(not holes,
+                  f'{tag}：內部頂點不露背景色（{len(inner_v)} 個頂點，'
+                  f'{len(holes)} 個有黑洞）',
+                  str(holes[:3]))
     else:
         # 方形棋盤的塊之間隔著 gap，頂點本來就不重合；它沒有這種黑洞風險，
         # 只作為「縫帶存在」的對照組
@@ -213,9 +248,12 @@ def test_four_forms_same_style():
     _audit('矩形', lambda g: g.new_puzzle(6, 6, 2), expect_interior=False)
     _audit('數字', lambda g: g.new_puzzle(6, 6, 2, numbered=True),
            expect_interior=False)
-    _audit('米字', lambda g: g.new_mi_puzzle(4, 4, 2))
-    _audit('三角', lambda g: g.new_triangle_puzzle(6, 2))
-    _audit('碎三角', lambda g: g.new_shatter_puzzle(1))
+    # 米字/三角自 2026-10-25 起也改成 line：縫帶不再整片鋪灰（移除舊 _seal），
+    # 灰色只沿縫畫線；頂點交會處露出背景是**故意**的（用戶拍板「就這樣」）——
+    # 曾在頂點補灰圓「節點」被用戶判畫蛇添足，已刪，勿再加回。
+    _audit('米字', lambda g: g.new_mi_puzzle(4, 4, 2), seam_style='line')
+    _audit('三角', lambda g: g.new_triangle_puzzle(6, 2), seam_style='line')
+    _audit('碎三角', lambda g: g.new_shatter_puzzle(1), seam_style='line')
 
 
 def test_corner_radius_proportional():

@@ -16,6 +16,8 @@
  "pos_scale": 3,
  "shapes_ref": "shapes.json",
  "solved": "exact",
+ "seam_width": 6,
+ "corner_radius": 3,
  "orientations": {
   "6": {
    "shape": "tri",
