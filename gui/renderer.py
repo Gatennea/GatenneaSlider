@@ -51,35 +51,35 @@ class RendererMixin:
         return cell, gap, cell + gap
 
     def _slider_corner_radius(self):
-        """方形滑塊圓角半徑（像素），三形態統一取值。
+        """圓角半徑的**上限**（像素），方形直接用這個值。
 
-        三角/米字的多邊形圓角與此對齊的**不是字面半徑**，而是「視覺削進深度」
-        （見 _slider_corner_depth）——因 pygame 的 rect border_radius 只把角
-        削進 R·(√2−1)，而三角尖角若給同檔 R 會被削進 R·1.73（約 4 倍），
-        觀感會「圓得過頭」。故三形態統一以方形的削進深度為準。改半徑只動這裡。
+        方形是 `pygame.draw.rect(border_radius=R)`，弧半徑就是 R，與塊的
+        60px 邊長之比約 8.3%。多邊形（三角/米字/碎三角）不用這個固定值，
+        而是走 `_corner_radius_for`：**按塊的最短邊給同一個比例**——它們的
+        塊小得多（碎三角最短邊只有 30px），照抄固定像素會被削掉三分之一。
+
+        歷史上這裡統一的是「削進深度」（R·(√2−1) ≈ 2px），同樣 2px 削進下
+        90° 角弧半徑 4.8px、45° 只有 1.2px、30° 只有 0.7px——角越尖越尖，
+        這正是「方形跟三角/碎三角像兩種畫風」的根。改為統一弧半徑（2026-10-24）。
         """
         return max(1, int(round(5 * self.zoom)))
 
-    def _slider_corner_depth(self):
-        """方形 border_radius=R 時角頂被削進的實際距離（像素）。
+    def _rounded_polygon_points(self, pts, radius):
+        """把凸多邊形每個頂點削成**固定弧半徑 radius** 的圓角（像素）。
 
-        等於 R·(√2−1)；三角/米字多邊形圓角以此深度為準，三形態削進一致。
-        """
-        return max(1, int(round(self._slider_corner_radius() * (math.sqrt(2) - 1))))
+        口徑（2026-10-24 統一畫風時修正）：統一的是**弧半徑**，不是削進深度。
+        舊實現按「削進深度」統一，同樣 2px 削進下，90° 角的弧半徑是 4.8px、
+        60° 是 2px、45° 只有 1.2px、30° 只有 0.7px——角越尖看起來越尖，
+        於是方形（pygame border_radius=5，弧半徑就是 5）跟三角/米字站成了
+        兩種畫風。改成直接給弧半徑後，任意角度的圓角都與方形同尺寸。
 
-    def _rounded_polygon_points(self, pts, depth):
-        """把凸多邊形每個頂點削進固定像素深度 depth（與方形 border_radius 同觀感）。
-
-        對頂角 θ：弧半徑 r = depth·sin(θ/2)/(1−sin(θ/2))，沿兩邊各回退
-        cut = r·tan(θ/2) 得切點，再以「內角平分線方向、距頂點 r/sin(θ/2)」定圓心，
-        採短弧採樣。如此**任意頂角的削進深度都 = depth**，與方形對齊，
-        不會再出現「同檔 R 下三角被削 4 倍」的過圓現象。
+        對頂角 θ：沿兩邊各回退 cut = radius·tan(θ/2) 得切點，再以「內角
+        平分線方向、距頂點 radius/sin(θ/2)」定圓心，採短弧採樣。
         退化保護：邊太短使 cut 超過半邊長時自動縮小有效半徑；近乎平角 /
         退化頂點保留原樣；圓心若落在外側則翻轉（凸多邊形保險，正常不觸發）。
-        三角/米字滑塊皆為三角形（凸），適用。
         """
         n = len(pts)
-        if n < 3 or depth <= 0:
+        if n < 3 or radius <= 0:
             return [tuple(p) for p in pts]
         out = []
         SEG = 5
@@ -101,12 +101,9 @@ class RendererMixin:
             if ang < 1e-3 or ang > math.pi - 1e-3:
                 out.append(tuple(cur))
                 continue
-            sin_h = math.sin(ang / 2.0)
-            denom = 1.0 / sin_h - 1.0
-            if denom < 1e-9:
-                out.append(tuple(cur))
-                continue
-            r_eff = depth / denom
+            # 弧半徑直接取 radius（不再由削進深度反推——那正是「角越尖越尖」
+            # 的來源）。邊太短時 cut 會被鉗到半邊長，r_eff 隨之縮小。
+            r_eff = radius
             cut = r_eff * math.tan(ang / 2.0)
             cut = min(cut, l1 / 2.0, l2 / 2.0)
             if cut < 1e-6:
@@ -145,6 +142,89 @@ class RendererMixin:
                 a = a1 + da * (s / float(SEG))
                 out.append((ox + r_eff * math.cos(a), oy + r_eff * math.sin(a)))
             out.append(tuple(p2))
+        return out
+
+    @staticmethod
+    def _border_width_for(pts, cap):
+        """按滑塊**最小邊長**給普通塊的描邊寬度（像素），與方形同比例。
+
+        方形 60px 塊配 2px 邊（3.3%），而碎三角的塊最短邊只有 30px，照抄
+        2px 就等於 6.7%——放大看每條邊都比縫還搶眼，整盤發髒。按比例給寬
+        之後四種形態的「線條重量」才一致。
+        """
+        n = len(pts)
+        if n < 3:
+            return 1
+        shortest = min(math.hypot(pts[(k + 1) % n][0] - pts[k][0],
+                                  pts[(k + 1) % n][1] - pts[k][1])
+                       for k in range(n))
+        return max(1, min(int(round(cap)), int(round(shortest * 0.033))))
+
+    @staticmethod
+    def _corner_radius_for(pts, cap):
+        """按滑塊**最小邊長**給圓角半徑，比例與方形一致（5/60 ≈ 8.3%）。
+
+        為什麼不能全盤用一個固定像素值：碎三角的塊邊長只有 30px、米字的
+        三角形短邊 83px、三角 91px，同給 10px 圓角時碎三角等於被削掉三分
+        之一，圓角弧上的描邊會在每個頂點伸出一圈「羽毛」（2026-10-24 放大
+        實測）。按最小邊的比例給，四種形態的「圓鈍感」才真的一致——方形
+        border_radius=5 對 60px 塊正好是 8.3%，本函數沿用同一個比例。
+        """
+        n = len(pts)
+        if n < 3:
+            return 0.0
+        shortest = min(math.hypot(pts[(k + 1) % n][0] - pts[k][0],
+                                  pts[(k + 1) % n][1] - pts[k][1])
+                       for k in range(n))
+        return max(1.5, min(float(cap), shortest * 0.083))
+
+    @staticmethod
+    def _offset_polygon_px(pts, d):
+        """把凸多邊形的每條邊沿法線平移 d 像素（螢幕座標）。d>0 外擴、d<0 內縮。
+
+        頂點沿內角平分線的反方向外移 d/sin(θ/2)，這樣平移後每條邊到原邊的
+        距離都嚴格等於 |d|，與「向質心縮放」的近似不同（後者在不等邊三角形上
+        各邊內移量不等，縫會一寬一窄）。
+
+        用途：通用多邊形通道把塊**內縮半個縫寬**，讓縫帶露出來（方形/三角/
+        米字都是這個畫法，通用通道原先塊貼邊，所以看起來是另一套畫風）。
+        """
+        if abs(d) < 1e-9 or len(pts) < 3:
+            return [tuple(p) for p in pts]
+        n = len(pts)
+        out = []
+        for k in range(n):
+            prev = pts[(k - 1) % n]
+            cur = pts[k]
+            nxt = pts[(k + 1) % n]
+            vin_x, vin_y = prev[0] - cur[0], prev[1] - cur[1]
+            vout_x, vout_y = nxt[0] - cur[0], nxt[1] - cur[1]
+            l1 = math.hypot(vin_x, vin_y)
+            l2 = math.hypot(vout_x, vout_y)
+            if l1 < 1e-9 or l2 < 1e-9:
+                out.append(tuple(cur))
+                continue
+            ux, uy = vin_x / l1, vin_y / l1
+            vx, vy = vout_x / l2, vout_y / l2
+            dot = max(-1.0, min(1.0, ux * vx + uy * vy))
+            ang = math.acos(dot)
+            sin_h = math.sin(ang / 2.0)
+            if sin_h < 1e-6:
+                out.append(tuple(cur))
+                continue
+            # 內角平分線 = 兩條邊方向之和；外側取其反方向
+            bx, by = -(ux + vx), -(uy + vy)
+            bl = math.hypot(bx, by)
+            if bl < 1e-9:
+                out.append(tuple(cur))
+                continue
+            # 退化保護：近平角時 sin(θ/2)→1 不會爆炸，但極窄夾角（<1°）的
+            # 頂點移動距離會很大，直接保留原頂點（這種形狀本身也不合法）。
+            step = d / sin_h
+            if abs(step) > 8.0 * abs(d):
+                out.append(tuple(cur))
+                continue
+            out.append((cur[0] + bx / bl * step, cur[1] + by / bl * step))
         return out
 
     # 米字/三角滑块在缩得较小时，斜边切割像素出现明显阶梯锯齿（方形是
@@ -286,10 +366,30 @@ class RendererMixin:
         cells = self.game.positions()
         hull = view.board_hull(cells)
         self._draw_triangle_gaps(view, cells, hull)
+
+        # 縫帶底：用**未內縮**的精確形狀鋪 gap 色。
+        # 三角是 60° 六塊交會，每塊各內縮半個縫寬後，頂點周圍必然留下一個
+        # 小六邊形；`_draw_triangle_gaps` 沿各條縫畫的是矩形帶，蓋不到那個
+        # 六邊形的楔形角，於是露出背景色——比縫色 (80) 暗得多的 (30)，放大
+        # 看就是每個頂點的「梅花黑點」（用戶 2026-10-24 投訴畫風不統一，
+        # 這是三角與方形的第二處差異；方形是 90° 四塊交會、恰好填滿一圈）。
+        # 精確形狀的並集恰好等於「盤面 + 縫帶」，鋪一層就乾淨了。
+        # 必須在 selected_gap 之前鋪，否則紅線被蓋掉。
+        if getattr(self, 'gap_width', 0) > 0:
+            _seal = self.colors['gap']
+            for block in self.game.blocks:
+                i, j, up = tri_key(block)
+                pts = [self.world_to_screen(*p)
+                       for p in view.piece_polygon(i, j, up, inset=False)]
+                # 外擴 1px：斜邊的柵格化在相鄰塊之間會留 1px 亞像素縫，
+                # 不補就會在縫裡數到背景色（像素測試抓到的就是這些）
+                pygame.draw.polygon(
+                    self.screen, _seal, self._offset_polygon_px(pts, 1.0))
+
         self._draw_triangle_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
-        depth = self._slider_corner_depth()  # 三形態統一圓角削進深度
+        radius = self._slider_corner_radius()  # 全形態統一圓角**半徑**
         # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）
         follow_map = {}
         if self.drag_following:
@@ -369,7 +469,8 @@ class RendererMixin:
                         ring_color = self._group_color_for((i, j))
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                rpoly = self._rounded_polygon_points(poly, depth)
+                rpoly = self._rounded_polygon_points(
+                    poly, self._corner_radius_for(poly, radius))
                 if self._slider_aa_on(scaled_cell):
                     self._draw_aa_polygon(rpoly, fill, border_color, border_w)
                 else:
@@ -414,7 +515,9 @@ class RendererMixin:
             for (i, j, up) in sorted(hint_empty):
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                self._draw_hint_overlay(self._rounded_polygon_points(poly, depth),
+                self._draw_hint_overlay(
+                    self._rounded_polygon_points(
+                        poly, self._corner_radius_for(poly, radius)),
                                        (i, j, up) == hint_hover)
 
         # 调试面板打开时：先画目标框（并把同一结果存到 self._target_region），
@@ -492,10 +595,25 @@ class RendererMixin:
                              self.world_to_screen(*p1),
                              self.world_to_screen(*p2),
                              max(1, int(self.gap_width * self.zoom * 0.35)))
+
+        # 縫帶底：與三角同一手法——用**未內縮**的精確形狀鋪 gap 色，讓塊
+        # 內縮後露出的縫、以及頂點交會處的空隙，全部落在縫色上而不是背景色。
+        # 米字每格 4 個三角形，一格的頂點是 4 塊＋相鄰格共 8 塊交會，圓角
+        # 削角後露黑的範圍比三角更大（實測放大圖是羽毛狀黑角）。
+        # 鋪在 selected_gap 之前，否則紅線被蓋掉。
+        if getattr(self, 'gap_width', 0) > 0:
+            _seal = self.colors['gap']
+            for block in self.game.blocks:
+                r, c, q = mi_key(block)
+                pts = [self.world_to_screen(*p)
+                       for p in view.piece_polygon(r, c, q, inset=False)]
+                pygame.draw.polygon(
+                    self.screen, _seal, self._offset_polygon_px(pts, 1.0))
+
         self._draw_mi_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
-        depth = self._slider_corner_depth()  # 三形態統一圓角削進深度
+        radius = self._slider_corner_radius()  # 全形態統一圓角**半徑**
         selected = []
         normal = []
         for block in self.game.blocks:
@@ -540,7 +658,8 @@ class RendererMixin:
                     border_color, border_w = _play_head
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                rpoly = self._rounded_polygon_points(poly, depth)
+                rpoly = self._rounded_polygon_points(
+                    poly, self._corner_radius_for(poly, radius))
                 if self._slider_aa_on(scaled_cell):
                     self._draw_aa_polygon(rpoly, fill, border_color, border_w)
                 else:
@@ -573,7 +692,9 @@ class RendererMixin:
             for (r, c, q) in sorted(hint_empty):
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                self._draw_hint_overlay(self._rounded_polygon_points(poly, depth),
+                self._draw_hint_overlay(
+                    self._rounded_polygon_points(
+                        poly, self._corner_radius_for(poly, radius)),
                                        (r, c, q) == hint_hover)
 
         # 调试面板打开时：先画目标框（同一结果存进 self._target_region），
@@ -785,14 +906,22 @@ class RendererMixin:
         # 實測「沒有選中縫隙的效果」）。故通用通道改為壓在塊之上畫。
         gap = getattr(self, 'selected_gap', None)
 
-        # 圓角削進深度：通用通道**不削角**（depth=0）。
+        # 圓角半徑：與方形/三角/米字取同一個值（`_slider_corner_radius`）。
         #
-        # 方形棋盤格與格之間有 gap_width，圓角藏在縫隙裡看不出來；碎三角是
-        # 邊貼邊無縫隙的密鋪，逐塊削角會在每個頂點咬出缺口（6 塊交會處就是
-        # 小黑洞），相鄰兩塊又各削各的 → 每條直線在端點處「斷一下、鼓一下」，
-        # 整盤看起來歪歪扭扭（用戶 2026-10-24 實測投訴）。故通用通道一律尖角
-        # 貼合；顏色語言仍與原版一致（綠填=選中、灰邊=普通、3px 紅=選中縫）。
-        depth = 0
+        # 舊實現這裡是 depth=0（完全不削角），理由是「碎三角邊貼邊無縫隙，
+        # 逐塊削角會在每個頂點咬出缺口（6 塊交會處就是小黑洞）」。那個理由
+        # 成立的前提是「塊貼邊」，而方形/三角/米字**都有 gap_width 的縫**，
+        # 圓角正好藏在縫裡——所以問題不是削角，是通用通道原先沒有縫。
+        # 現在下面先把塊內縮半個縫寬、並鋪 gap 色底（見 _offset_polygon_px），
+        # 削角的缺口落進縫帶裡，於是四種形態同一套畫風。
+        radius = self._slider_corner_radius()
+        # 半個縫寬（螢幕像素）：內縮量與鋪底的擴張量用同一個值，縫寬才嚴格等於
+        # gap_width（與方形棋盤格的口徑一致，見 _board_px）。
+        seam_half = (max(1.0, float(getattr(self, 'gap_width', 0.0)) * self.zoom / 2.0)
+                     if getattr(self, 'gap_width', 0) else 0.0)
+        # 沒有縫就沒有地方藏圓角的缺口 → 退回尖角（否則頂點咬出黑洞）
+        if seam_half <= 0:
+            radius = 0
         # 邊框反餽三件套（每帧只算一次；helper 本身形態中立）
         _sel_anim = self._sel_anim_border()
         _play_head = self._play_head_border()
@@ -819,12 +948,21 @@ class RendererMixin:
         _coloring = (getattr(self, 'coloring_enabled', False)
                      and self.current_step > 1)
 
-        # 兩趟繪製：先全部填色、再全部描邊。
+        # 三趟繪製：縫帶底 → 全部填色 → 全部描邊。
         # 逐塊「填+描」時，後畫那塊的填色會蓋掉前畫那塊的半條描邊（相鄰兩塊
         # 共用同一條邊），結果每條邊的可見寬度都不一樣：有的只剩 1px、有的
         # 2px，接頭處還是圓角咬出的缺口——遠看就是一堆歪歪扭扭的線。
-        # 兩趟分開後每條邊只被描一次、寬度均勻，接頭處嚴絲合縫。
-        _paint = []  # (rpoly, fill, border_color, border_w)
+        # 分趟之後每條邊只被描一次、寬度均勻，接頭處嚴絲合縫。
+        _paint = []  # (base_poly, rpoly, fill, border_color, border_w)
+
+        # 先算一遍所有塊的螢幕多邊形。縫帶底直接用**精確形狀**（不內縮不
+        # 外擴）鋪成 gap 色：若干塊的精確形狀並集 = 整個盤面（含縫帶區域），
+        # 塊本身再內縮半個縫寬畫上去，露出來的那條就是縫。
+        #
+        # 曾試過「每塊外擴半個縫寬」當底，結果尖角處 miter 距離達 |d|/sin(θ/2)
+        # （30° 角 3.86 倍），盤邊界的尖頂直接戳出星刺；內部又因各塊外擴在
+        # 頂點互相咬合，留下梅花狀黑點。精確形狀沒有這兩個毛病。
+        _geo = []
         for block in getattr(self.game, 'blocks', ()):
             key = self._visual_key(block)
             point, orient = self._poly_key_parts(key)
@@ -832,7 +970,15 @@ class RendererMixin:
             pts = [self.world_to_screen(x, y) for (x, y) in poly]
             if id(block) in _shake_ids and (_sox or _soy):
                 pts = [(x + _sox, y + _soy) for (x, y) in pts]
-            rpoly = self._rounded_polygon_points(pts, depth)
+            _geo.append((block, pts))
+
+        for block, pts in _geo:
+            # 縫帶底 = 精確形狀；塊 = 精確形狀內縮半個縫寬後削圓角。
+            # 外擴 1px 蓋住斜邊柵格縫（見三角同理）
+            base = (self._offset_polygon_px(pts, 1.0) if seam_half > 0 else pts)
+            rpoly = self._rounded_polygon_points(
+                self._offset_polygon_px(pts, -seam_half) if seam_half > 0 else pts,
+                self._corner_radius_for(pts, radius))
             fill = (self.colors['block_selected'] if getattr(
                 block, 'be_opted', False) else self.colors['block'])
             loc = tuple(block.location)
@@ -852,8 +998,9 @@ class RendererMixin:
                 # 手畫路徑同一口徑；曾誤用 colors['line']（純紅）把所有塊描成
                 # 紅邊，看起来像錯誤態（用戶投訴「詭異紅色描線」）。紅色只留給
                 # 選中縫（selected_gap，三形態通用約定）。
-                border_color, border_w = self.colors['border'], max(1, int(2 * self.zoom))
-            _paint.append((rpoly, fill, border_color, border_w))
+                border_color = self.colors['border']
+                border_w = self._border_width_for(pts, max(2, int(2 * self.zoom)))
+            _paint.append((base, rpoly, fill, border_color, border_w))
 
             # 連鎖提示：同類已佔用格疊半透明白（與舊三形態同一套語言）
             if hint_occ is not None and loc in hint_occ:
@@ -875,15 +1022,23 @@ class RendererMixin:
                 cy = sum(p[1] for p in pts) / len(pts)
                 self.screen.blit(text, text.get_rect(center=(int(cx), int(cy))))
 
-        # 兩趟落地：①全部填色 ②全部描邊。共用邊因此只被描一次、寬度均勻，
-        # 頂點處也不會出現「後畫的填色啃掉前畫的邊」的缺口。
+        # 三趟落地：①縫帶底（gap 色）②塊填色 ③描邊。
+        # 共用邊因此只被描一次、寬度均勻，頂點處也不會出現「後畫的填色啃掉
+        # 前畫的邊」的缺口。
+        #
+        # 縫帶底放在最前：它是普通塊外擴半個縫寬的聯集，鋪成 colors['gap']，
+        # 塊畫上去之後露出的那條邊就是縫——與方形棋盤格「先鋪縫帶再畫塊」
+        # 同一套做法（方形那條路在 draw_board 開頭畫 band）。
+        if seam_half > 0:
+            for base, _r, _f, _bc, _bw in _paint:
+                pygame.draw.polygon(self.screen, self.colors['gap'], base)
         #
         # 描邊後再疊一次 aalines：三角密鋪的邊幾乎全是 30°/60° 斜線，硬描邊
         # 在斜線上必然是像素階梯，遠看就是「每條線都歪歪扭扭」。線寬與顏色
         # 不變（仍走 colors['border'] 與原版 2px 口徑），只把斜邊柵格化平滑。
-        for rpoly, fill, _bc, _bw in _paint:
+        for _base, rpoly, fill, _bc, _bw in _paint:
             pygame.draw.polygon(self.screen, fill, rpoly)
-        for rpoly, _fill, border_color, border_w in _paint:
+        for _base, rpoly, _fill, border_color, border_w in _paint:
             pygame.draw.polygon(self.screen, border_color, rpoly, border_w)
             pygame.draw.aalines(self.screen, border_color, True, rpoly)
 
@@ -923,7 +1078,9 @@ class RendererMixin:
                 pp, oo = self._poly_key_parts(tuple(pos))
                 poly = view.world_polygon(pp, oo, origin)
                 pts = [self.world_to_screen(x, y) for (x, y) in poly]
-                self._draw_hint_overlay(self._rounded_polygon_points(pts, depth),
+                self._draw_hint_overlay(
+                    self._rounded_polygon_points(
+                        pts, self._corner_radius_for(pts, radius)),
                                         tuple(pos) == hint_hover)
 
         # 宏基準位置標記（固定座標，無論該格有無滑块；方形特性）
@@ -932,7 +1089,8 @@ class RendererMixin:
             pp, oo = self._poly_key_parts(tuple(base))
             poly = view.world_polygon(pp, oo, origin)
             pts = [self.world_to_screen(x, y) for (x, y) in poly]
-            hl = self._rounded_polygon_points(pts, depth)
+            hl = self._rounded_polygon_points(
+                pts, self._corner_radius_for(pts, radius))
             pygame.draw.polygon(self.screen, (255, 200, 50), hl,
                                 max(1, int(3 * self.zoom)))
 
