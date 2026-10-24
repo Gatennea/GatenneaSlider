@@ -145,6 +145,16 @@ class RendererMixin:
         return out
 
     @staticmethod
+    def _shortest_edge(pts):
+        """凸多邊形的最短邊長（像素）。所有「按塊比例」的口徑共用它。"""
+        n = len(pts)
+        if n < 3:
+            return 0.0
+        return min(math.hypot(pts[(k + 1) % n][0] - pts[k][0],
+                              pts[(k + 1) % n][1] - pts[k][1])
+                   for k in range(n))
+
+    @staticmethod
     def _border_width_for(pts, cap):
         """按滑塊**最小邊長**給普通塊的描邊寬度（像素），與方形同比例。
 
@@ -915,12 +925,19 @@ class RendererMixin:
         # 現在下面先把塊內縮半個縫寬、並鋪 gap 色底（見 _offset_polygon_px），
         # 削角的缺口落進縫帶裡，於是四種形態同一套畫風。
         radius = self._slider_corner_radius()
-        # 半個縫寬（螢幕像素）：內縮量與鋪底的擴張量用同一個值，縫寬才嚴格等於
-        # gap_width（與方形棋盤格的口徑一致，見 _board_px）。
-        seam_half = (max(1.0, float(getattr(self, 'gap_width', 0.0)) * self.zoom / 2.0)
-                     if getattr(self, 'gap_width', 0) else 0.0)
+        # 縫寬的口徑：**按塊尺寸取比例**，不是固定像素。
+        #
+        # 方形棋盤的縫是格子之外的 4px（`_board_px`），塊 60px → 6.7%。通用
+        # 通道的塊尺寸由板型決定：三角單元 ×cell_size 是 91px，碎三角的單元
+        # 只有半個邊長、螢幕上 30px。若一律給 4px，碎三角的縫就佔到塊寬的
+        # 13%——整盤每個頂點都糊成一團灰斑，遠看是「撒滿星星」（2026-10-24
+        # 整盤截圖實測，4 倍放大看局部反而正常）。
+        # 用「最短邊 × (gap_width / cell_size)」換算：塊 60px 得 4px（與方形
+        # 一致）、91px 得 6px（與三角原有 gap*zoom 一致）、30px 得 2px。
+        _gap = float(getattr(self, 'gap_width', 0.0) or 0.0)
+        gap_ratio = (_gap / float(self.cell_size)) if (self.cell_size and _gap) else 0.0
         # 沒有縫就沒有地方藏圓角的缺口 → 退回尖角（否則頂點咬出黑洞）
-        if seam_half <= 0:
+        if gap_ratio <= 0:
             radius = 0
         # 邊框反餽三件套（每帧只算一次；helper 本身形態中立）
         _sel_anim = self._sel_anim_border()
@@ -973,12 +990,18 @@ class RendererMixin:
             _geo.append((block, pts))
 
         for block, pts in _geo:
-            # 縫帶底 = 精確形狀；塊 = 精確形狀內縮半個縫寬後削圓角。
-            # 外擴 1px 蓋住斜邊柵格縫（見三角同理）
+            # 縫寬按**這一塊的尺寸**取（見 gap_ratio 的說明）：同一盤裡的塊
+            # 大小可以差一倍（碎三角的正三角與等腰三角），用統一像素會讓小
+            # 塊的縫粗得離譜。
+            shortest = self._shortest_edge(pts)
+            seam_half = (max(1.0, shortest * gap_ratio / 2.0)
+                         if gap_ratio > 0 else 0.0)
+            # 縫帶底 = 精確形狀（外擴 1px 蓋斜邊柵格縫）；
+            # 塊 = 精確形狀內縮半個縫寬後削圓角。
             base = (self._offset_polygon_px(pts, 1.0) if seam_half > 0 else pts)
             rpoly = self._rounded_polygon_points(
                 self._offset_polygon_px(pts, -seam_half) if seam_half > 0 else pts,
-                self._corner_radius_for(pts, radius))
+                self._corner_radius_for(pts, radius) if seam_half > 0 else 0)
             fill = (self.colors['block_selected'] if getattr(
                 block, 'be_opted', False) else self.colors['block'])
             loc = tuple(block.location)
@@ -1029,7 +1052,7 @@ class RendererMixin:
         # 縫帶底放在最前：它是普通塊外擴半個縫寬的聯集，鋪成 colors['gap']，
         # 塊畫上去之後露出的那條邊就是縫——與方形棋盤格「先鋪縫帶再畫塊」
         # 同一套做法（方形那條路在 draw_board 開頭畫 band）。
-        if seam_half > 0:
+        if gap_ratio > 0:
             for base, _r, _f, _bc, _bw in _paint:
                 pygame.draw.polygon(self.screen, self.colors['gap'], base)
         #
