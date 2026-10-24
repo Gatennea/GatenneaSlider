@@ -67,6 +67,19 @@ class SpeedrunMixin:
             self.macro_notify_msg = "计时中无法切换模式"
             self.macro_notify_timer = 90
             return False
+        # 碎三角（几何引擎新板型）暂不进竞速/创造：
+        # · 竞速：export_map 的方形分支会把 24 种朝向压成 '#'（21×31 的
+        #   「朝向下标+1」矩阵没有字符编码），初始局面存下来也还原不回
+        #   同一题，成绩没有意义——明确拒绝，不静默存一份丢朝向的串。
+        # · 创造：随机生成/手动构造/设计画布都是方形/三角语义，进去会把
+        #   48 块碎三角静默换成另一形态的盘面。
+        if mode in ('timed', 'create') and self._current_kind() == 'shatter':
+            if mode == 'timed':
+                self.macro_notify_msg = "碎三角暂不支持竞速模式（初始局面无字符编码）"
+            else:
+                self.macro_notify_msg = "碎三角暂不支持创造模式（画布为方形/三角语义）"
+            self.macro_notify_timer = 120
+            return False
         if mode == self.game_mode:
             return True
         # 高级选项设计画布：切模式 = 放弃未保存的编辑（先把盘面还原回进入前）

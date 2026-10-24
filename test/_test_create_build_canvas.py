@@ -16,6 +16,7 @@ r"""手动构造画布 headless 集成测试（dummy video，不开窗口）— 
 """
 
 import os
+import random
 import sys
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
@@ -57,6 +58,7 @@ def _enter_create(gui, shape, shuffle_steps=20):
     else:
         assert gui.new_puzzle(6, 6, 2)
     if shuffle_steps:
+        random.seed(20261025)     # 确定性：无种子时每轮局面不同（flake 源）
         gui.game.shuffle(shuffle_steps, gui.current_step)
     gui._ann_btn_manual_build()
     assert gui._ann_view == 'build', f"view={gui._ann_view}"
@@ -65,6 +67,24 @@ def _enter_create(gui, shape, shuffle_steps=20):
 
 def _param(gui):
     return gui._ann_build_param()
+
+
+def _in_build_range(gui, pos):
+    """pos 是否在可构造范围内（与 _ann_build_toggle 的范围守卫同口径）。
+
+    打乱后滑块会滑出大三角/棋盘（滑块本就可滑出界），范围外的格产品
+    故意不接受点选。冒烟测试要测的是「点选增/删」，选格必须落在可构造
+    范围内——2026-10-24 修 flake：旧写法取 sorted(cells) 第一个，随机
+    打乱把它甩出范围时 toggle 拒动，「集合少一」假红（实测约 1/25）。
+    """
+    m, n, step = gui._ann_build_param()
+    if gui.triangle_mode:
+        lo_i, hi_i, lo_j, hi_j, s_up, s_down = gui._ann_build_tri_range(m)
+        s_bound = s_up if pos[2] else s_down
+        return (lo_i <= pos[0] <= hi_i and lo_j <= pos[1] <= hi_j
+                and pos[0] + pos[1] <= s_bound)
+    lo_r, hi_r, lo_c, hi_c = gui._ann_build_grid(m, n)
+    return lo_r <= pos[0] <= hi_r and lo_c <= pos[1] <= hi_c
 
 
 def _same_class_spot(kind, step, pos, cells):
@@ -103,11 +123,16 @@ def test_canvas_smoke():
         m, n, step = _param(gui)
         cells = set(gui._ann_build_coords)
         n0 = len(cells)
-        pos = next(iter(sorted(cells)))
+        inside = [c for c in sorted(cells) if _in_build_range(gui, c)]
+        if not inside:
+            print(f"     （{shape} 本局面没有可构造范围内的格，跳过增删）")
+            continue
+        pos = inside[0]
         # 增/删一个位置
         gui._ann_build_toggle(pos)
         check(f"{shape} 移除一块：集合少一", pos not in gui._ann_build_coords
-              and len(gui._ann_build_coords) == n0 - 1)
+              and len(gui._ann_build_coords) == n0 - 1,
+              f'pos={pos} err={gui._ann_build_error!r}')
         gui._ann_build_toggle(pos)
         check(f"{shape} 放回：集合复原", pos in gui._ann_build_coords
               and len(gui._ann_build_coords) == n0)

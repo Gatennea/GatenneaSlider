@@ -240,11 +240,19 @@ class MetricsPanelMixin:
     _MP_SUPPORTED = ('square', 'triangle', 'mi')
 
     def _mp_kind(self):
-        """当前棋形标识：'square' / 'triangle' / 'mi' / 其它。"""
+        """当前棋形标识：'square' / 'triangle' / 'mi' / 其它。
+
+        碎三角（几何引擎新板型）没有旗标，按逻辑对象自带的 game.kind 判
+        （与 session._current_kind 同源）——不判会把 48 块碎三角当成
+        方形，面板用矩形公式在质心晶格上画出无意义的 0.0%。
+        """
         if getattr(self, 'triangle_mode', False):
             return 'triangle'
         if getattr(self, 'mi_mode', False):
             return 'mi'
+        kind = getattr(self.game, 'kind', '')
+        if kind and kind not in ('square', 'numbered', 'triangle', 'mi'):
+            return kind
         return 'square'
 
     def _mp_unsupported_rows(self):
@@ -257,8 +265,10 @@ class MetricsPanelMixin:
                 ("形态", "米字格（mi）"),
                 ("调试面板", "已实装，但未识别到 mi 棋盘"),
             ]
+        # 形态键 → 人话名：面板是给玩家看的，别把内部键（shatter）直接怼上去
+        names = {'shatter': '碎三角'}
         return [
-            ("形态", k or "未知"),
+            ("形态", names.get(k, k or "未知")),
             ("调试面板", "本形态尚未实装"),
         ]
 

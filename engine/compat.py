@@ -38,6 +38,8 @@ engine 对话，桥自己不能反向依赖旧引擎（方形字母表在此重�
 from .board import Board, Move, _add, _dot  # noqa: F401  （_add/_dot 供本模块复用）
 from .mi_geometry import MI_DIRECTIONS  # noqa: E402  （米字字母表随 P2 板型落地）
 from .tri_geometry import TRI_DIRECTIONS  # noqa: E402  （三角字母表随 P2 板型落地）
+from .shatter_geometry import (SHATTER_DIRECTIONS,  # noqa: E402  （碎三角字母表）
+                               SHATTER_LATTICE_DIRECTIONS)
 
 
 # ----------------------------------------------------------------------
@@ -382,3 +384,9 @@ register_direction_vocab('mi', MI_DIRECTIONS)
 # 三角字母表（斜坐标单位位移，与 game_triangle.DIRECTIONS 逐项一致，
 # 等价性由 M 节差分钉死）
 register_direction_vocab('tri', TRI_DIRECTIONS)
+# 碎三角两张表（全谜题 12 字母 / 晶格谜题 6 字母）。碎三角没有旧引擎
+# 可对拍——字母↔spec 各族 parallel 的一一对应由 _test_shatter 的
+# 「move_to_action 双射」断言钉死（每个合法 Move 都能转成动作 dict，
+# 且转回来是同一条 Move）。
+register_direction_vocab('shatter', SHATTER_DIRECTIONS)
+register_direction_vocab('shatter_lattice', SHATTER_LATTICE_DIRECTIONS)

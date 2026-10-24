@@ -402,6 +402,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 渲染与「当前✓」比对逻辑完全复用。
         # 难度定位：矩形等级1 最低（无教程也能过）、等级2 最经典（教程教学目标）、
         # 等级3+ 复杂；异形难度升序：三角形 < 米字格（米字格奇偶等级难度有波动）。
+        # 碎三角是几何引擎解释器路线的首个新板型（实验性，暂无难度定位），
+        # 列在异形子菜单末尾。
         self.puzzle_sub_presets = {
             'rect': [
                 ('__group__', '等级1 · 入门'),
@@ -429,6 +431,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 ('4×4 等级2', 4, 4, 2, 'mi'),
                 ('6×6 等级2', 6, 6, 2, 'mi'),
                 ('8×8 等级2', 8, 8, 2, 'mi'),
+                ('__group__', '碎三角（几何引擎新形态：48 块，实验）'),
+                # 碎三角固定 48 块、无尺寸维度：m/n 只是占位（键与打勾
+                # 都不看它们，puzzle_key 的 shatter 分支只记等级），
+                # 真正生效的只有 step——分发处对 shatter 只传 ps。
+                ('等级1', 4, 4, 1, 'shatter'),
+                ('等级2', 4, 4, 2, 'shatter'),
                 ('__group__', '数字谜题（矩形+编号）'),
                 ('4×4 等级2', 4, 4, 2, 'numbered'),
                 ('6×6 等级2', 6, 6, 2, 'numbered'),
@@ -789,6 +797,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         elif kind == 'numbered':
             if not self.new_puzzle(m, n, step, numbered=True):
                 raise ValueError(f"无效的谜题参数：m={m}, n={n}, step={step}（需 step<max）")
+        elif kind == 'shatter':
+            # 碎三角固定 48 块：m/n 被忽略，只认 step（与菜单条目同口径）
+            if not self.new_shatter_puzzle(step):
+                raise ValueError(f"无效的碎三角参数：step={step}")
 
         # 一轮调试的起点标记（日志开着才有这一行，否则什么都不会写）
         op_log.log('session_start', form=type(self.game).__name__,
@@ -1092,6 +1104,96 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.macro_notify_timer = 150
         return True
 
+    def new_shatter_puzzle(self, step: int = 1) -> bool:
+        """创建碎三角谜题（几何引擎解释器路线的首个新板型）。
+
+        与 square / triangle / mi 三个手写入口不同：本方法**不写任何形状
+        相关的分支**——盘面、形状、缝族全部来自 BoardSpec 的定义，绘制由
+        通用渲染通道（``spec.cell_polygon``）完成。这里只做建局与状态重置。
+
+        碎三角没有 game_shatter.py 之类的旧实现，只能走 EngineGame，故直接
+        调 ``create_adapter_puzzle``，**不依赖全局引擎开关**（避免为建一个
+        新形态而拨动影响其它形态的全局状态）。
+
+        固定 48 块（4 单元拼盘），因此无 m / n 参数。
+        """
+        if self._tut_board_locked():
+            return False
+        self._stop_gradient_pipeline()
+        self._gap_anchor_world = None
+        self._stop_continuous_undo_redo()
+        self._last_timed_result = None
+        self._ann_cancel_session('切换谜题')
+
+        if self.timer_state == 'running':
+            self.macro_notify_msg = "计时中无法切换谜题"
+            self.macro_notify_timer = 90
+            return False
+        self._timer_cancel()
+        detached = self._detach_readonly_save()
+
+        # 竞速/创造对碎三角不可用（见 gui/speedrun.py set_game_mode 的拦截）：
+        # 带着 timed 进碎三角，打乱后会走到 _timer_enter_ready 的 lossy
+        # export_map（24 种朝向压成 '#'），成绩是一份丢朝向的串。这里主动
+        # 退回练习模式并说明，不把谜题换成一静默错的模式组合。
+        mode_note = ''
+        if self.game_mode in ('timed', 'create'):
+            prev = self._mode_name()
+            self.set_game_mode('practice')
+            mode_note = f"（碎三角不支持{prev}模式，已切回练习）"
+
+        self.current_step = step
+        # 碎三角是独立形态：既不是米字也不是三角（两者都有各自手画渲染，
+        # 走了会画错）。形状交给通用通道，故两个旗标都关。
+        self.mi_mode = False
+        self.triangle_mode = False
+        self.numbered = False
+        self.current_m = 4
+        self.current_n = 4
+        self._ann_style_goal = None
+        self.solver_algorithm = 'gather'   # 异形统一走聚拢入口（与 mi/tri 同）
+        self._pick_fill = None
+
+        # 幾何引擎板型只保留「箭頭 + 兩次觸控」兩種操作（用戶 2026-10-24 定）：
+        # 鍵鼠方向鍵、單次觸控（拖拽角度猜縫）、虛擬鍵盤（鍵位按形狀排布）
+        # 都與形狀強相關，新板型不做這層適配，直接關掉而不是留一個半壞的入口。
+        self.control_two_touch = True
+        self.control_single_touch = False
+        self.control_mouse_kb = False
+        self.show_virtual_keyboard = False
+
+        from engine.adapter import create_adapter_puzzle
+        self.game = create_adapter_puzzle('shatter', 4, 4, step)
+
+        self.zoom = 1.0
+        self.selected_gap = None
+        self.selected_block = None
+        self.step_count = 0
+        self.animating = False
+        self.anim_blocks = []
+        for block in self.game.blocks:
+            block.number = None
+
+        self.game_history.reset()
+        self._mp_reset_target_region()
+        self.center_map()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+
+        self.macro_notify_msg = (
+            f"切换谜题：碎三角 等级{step}（48 块）{mode_note}")
+        self.macro_notify_timer = 150
+        return True
+
+    def _generic_controls_locked(self) -> bool:
+        """几何引擎板型：只允许「箭头 + 两次触控」这两种操作。
+
+        键鼠方向键、单次触控（拖拽角度猜缝）、虚拟键盘（键位按形状排布）都与
+        形状强相关——每个板型的缝族方向、屏幕落向、字母表都不同，新板型不做
+        这层适配（用户 2026-10-24 定）。返回 True 时相关开关一律拒绝改动。
+        """
+        return self._generic_spec() is not None
+
     def _mi_blocked(self, action: str, hint: str = '') -> bool:
         """米字格模式下不可用的操作：给出一致提示并拦截。
 
@@ -1216,8 +1318,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 return True
         return False
 
-    def ensure_blocks_visible(self):
-        """确保所有滑块都在可视区域内，超出时自动调整相机"""
+    def ensure_blocks_visible(self, only_if_invisible: bool = False):
+        """确保所有滑块都在可视区域内，超出时自动调整相机。
+
+        ``only_if_invisible=True``：只在**整盘完全不在视口里**时才平移。
+        走一步棋之后用这个口径——碎三角没有盘面边界，滑动会让拼盘逐格外扩，
+        按「碰到边缘就拉回」的旧口径几乎每一步都会平移相机，玩家刚点过的
+        位置立刻跑掉（2026-10-24 用户实测「每次滑動都調整相機，體驗非常差」）。
+        兜底仍保留：真滑到整盘看不见了，至少还能拉回来。
+        """
         if not self.game.blocks:
             return
 
@@ -1246,6 +1355,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             min_x, min_y, max_x, max_y = view.bounding_box(self.game.positions())
             min_screen_x, min_screen_y = self.world_to_screen(min_x, min_y)
             max_screen_x, max_screen_y = self.world_to_screen(max_x, max_y)
+        elif self._poly_world_bbox() is not None:
+            # 通用通道：盤面世界包圍盒恆從零起點（origin 對齊左上角），
+            # 直接過 world_to_screen——**不能**套方形那套
+            # ``location[1]*(cell+gap)``：碎三角的 location 是 P 空間
+            # （3× 質心，各向異性），乘出來的「屏幕座標」與真實幾何差著
+            # √3/6 的比例，相機被推到宇宙外（實測 camera=(-1203,-1628)）
+            _bx, _by, _mx, _my = self._poly_world_bbox()
+            min_screen_x, min_screen_y = self.world_to_screen(_bx, _by)
+            max_screen_x, max_screen_y = self.world_to_screen(_mx, _my)
         else:
             scaled_gap = self.gap_width * self.zoom
 
@@ -1282,6 +1400,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             dy = (view_bottom - margin) - max_screen_y
             need_adjust = True
 
+        if need_adjust and only_if_invisible:
+            # 只要还有一角和视口相交就不动相机：局部出界是正常游玩状态，
+            # 玩家自己拖 / 按「居中」即可，不该被系统代劳。
+            still_visible = (max_screen_x > view_left
+                             and min_screen_x < view_right
+                             and max_screen_y > view_top
+                             and min_screen_y < view_bottom)
+            if still_visible:
+                return
+
         if need_adjust:
             self.camera_x += dx
             self.camera_y += dy
@@ -1293,6 +1421,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             return
         if getattr(self, 'mi_mode', False):
             self._center_mi()
+            return
+        bbox = self._poly_world_bbox()
+        if bbox is not None:
+            # 通用通道：原點按板型固定（不再隨局面歸零），包圍盒是**真實
+            # 角點** (min_x, min_y, max_x, max_y)，居中取兩端中點。
+            game_center_x = (self.screen_width - self.right_panel_width) / 2
+            game_center_y = self.menu_bar_height + (
+                self.screen_height - self.menu_bar_height - self.status_bar_height) / 2
+            _cx = (bbox[0] + bbox[2]) / 2.0
+            _cy = (bbox[1] + bbox[3]) / 2.0
+            self.camera_x = game_center_x - _cx * self.zoom
+            self.camera_y = game_center_y - _cy * self.zoom
             return
         bounds = self.game.get_boundaries()
         min_row, max_row = bounds['min_row'], bounds['max_row']
@@ -1319,6 +1459,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """检查当前 camera 位置是否能让滑塊在视口内可见"""
         if not self.game.blocks:
             return True
+        bbox = self._poly_world_bbox()
+        if bbox is not None:
+            # 通用通道：世界包圍盒過 world_to_screen（zoom+camera 只一次）
+            left, top = self.world_to_screen(bbox[0], bbox[1])
+            right, bottom = self.world_to_screen(bbox[2], bbox[3])
+            view_left = 0
+            view_right = self.screen_width - self.right_panel_width
+            view_top = self.menu_bar_height
+            view_bottom = self.screen_height - self.status_bar_height
+            return not (right < view_left or left > view_right or
+                        bottom < view_top or top > view_bottom)
         bounds = self.game.get_boundaries()
         min_row, max_row = bounds['min_row'], bounds['max_row']
         min_col, max_col = bounds['min_col'], bounds['max_col']
@@ -1348,6 +1499,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         """屏幕坐标转换为世界坐标"""
         return (screen_x - self.camera_x) / self.zoom, (screen_y - self.camera_y) / self.zoom
 
+    def _generic_gap_live(self, gap) -> bool:
+        """通用通道的縫活性：推不動就選不中（引擎適配器 is_live_gap）。
+
+        與 is_valid_gap 的分工：後者只問「縫是否切出非空兩側」，前者追問
+        「至少一側真能沿這條縫滑動」——碎三角有 12 條接觸邊不被任何活縫
+        覆蓋（綠底三族恆死），只查 is_valid 會選中一條推不動的縫。
+        舊形態無此方法，getattr 兜底回 True（舊路徑不經過本函式）。
+        """
+        fn = getattr(self.game, 'is_live_gap', None)
+        if not callable(fn):
+            return True
+        return bool(fn(gap[0], gap[1]))
+
     def get_block_at_pos(self, screen_x: int, screen_y: int) -> Block:
         """根据屏幕坐标获取滑块对象"""
         try:
@@ -1369,6 +1533,23 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     return None
                 for block in self.game.blocks:
                     if mi_key(block) == key:
+                        return block
+                return None
+
+            if self._generic_spec() is not None:
+                # 通用通道：多邊形命中（origin 與渲染/箭頭同源），
+                # 再按 (point, orient) 找回塊對象——鍵是扁平的。
+                view = self._polygon_view()
+                origin = self._poly_view_origin(view)
+                key = view.hit(world_x, world_y, self.game.board, origin)
+                if key is None:
+                    return None
+                point, orient = key
+                point = tuple(point)
+                for block in self.game.blocks:
+                    loc = tuple(block.location)
+                    if loc[:2] == point and (
+                            len(loc) < 3 or loc[2] == orient):
                         return block
                 return None
 
@@ -1421,6 +1602,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 if not self.game.is_valid_gap(*gap):
                     return None
                 return gap
+
+            if self._generic_spec() is not None:
+                # 通用通道：候選縫按「到接觸邊足跡的距離」排序，逐條過
+                # is_valid_gap + is_live_gap，第一條活縫即選中——一條邊可
+                # 被多條候選縫共享（實測 1~4 條），歧義就按距離+族序決勝。
+                view = self._polygon_view()
+                origin = self._poly_view_origin(view)
+                for gap_type, line, _dist in view.gap_candidates(
+                        world_x, world_y, self.game.board, origin):
+                    if self.game.is_valid_gap(gap_type, line) and \
+                            self._generic_gap_live((gap_type, line)):
+                        return (gap_type, line)
+                return None
 
             bounds = self.game.get_boundaries()
             for kind, idx in self.board_view.candidate_gaps(world_x, world_y, bounds):

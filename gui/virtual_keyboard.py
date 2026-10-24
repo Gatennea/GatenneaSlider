@@ -382,10 +382,12 @@ class VirtualKeyboardMixin:
                         'move_ul', 'move_ur', 'move_l', 'move_r',
                         'move_dl', 'move_dr'):
             mi = getattr(self, 'mi_mode', False)
-            if mi:
-                # 米字格八向與三角形六向的按鍵朝向相同、晶格方向字母不同：
-                # ↖ 在米字格是 q（d1 族），三角版才是 w。用錯表的症狀是
-                # 選著對角縫按 ↖ 報「方向不匹配」，選著豎直縫則默默走上。
+            gen = self._generic_spec() is not None
+            if mi or gen:
+                # 米字格八向與碎三角通用通道共用這張表：↖ 是 q（不是三角
+                # 版的 w）。碎三角 12 個字母裡活躍的 8 個（d/a/w/s/e/q/z/x）
+                # 落屏方向與米字八向完全一致（S2c 實測），死族的 4 個字母
+                # （r/t/f/g）沒有按鍵——按了也不會被 allowed 放行。
                 direction = {
                     'move_up': 'w', 'move_down': 's',
                     'move_left': 'a', 'move_right': 'd',
@@ -422,10 +424,13 @@ class VirtualKeyboardMixin:
             gap_type, _ = self.selected_gap
             # 方向必须与选中缝隙平行：方形 h→a/d、v→w/s；
             # 三角形 h→a/d、p→e/z、n→w/x；米字格 h→a/d、v→w/s、
-            # d1→q/x、d2→e/z（全部表驱动，换形态只改表）
+            # d1→q/x、d2→e/z；通用通道（碎三角等）問板型數據反查的
+            # 字母表（_gap_dir_letters，與渲染器/註解同一源）
             if mi:
                 from game_mi import GAP_DIRECTIONS as MI_GAP_DIRECTIONS
                 allowed = MI_GAP_DIRECTIONS.get(gap_type, ())
+            elif gen:
+                allowed = self._gap_dir_letters(gap_type)
             elif getattr(self, 'triangle_mode', False):
                 from game_triangle import GAP_DIRECTIONS
                 allowed = GAP_DIRECTIONS.get(gap_type, ())

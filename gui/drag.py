@@ -68,6 +68,9 @@ class DragMixin:
         # 三角形密铺：手勢向量投影吸附到 6 個晶格方向（B2）
         if getattr(self, 'triangle_mode', False):
             return self._init_triangle_drag_follow(block, dx, dy)
+        # 通用通道（碎三角等）：投影吸附 + resolve_drag，幾何全部泛型算
+        if self._generic_spec() is not None:
+            return self._init_generic_drag_follow(block, dx, dy)
 
         gap = self.selected_gap
         if gap is None:
@@ -267,6 +270,84 @@ class DragMixin:
         self.drag_follow_max_cells = self._probe_max_cells(best_letter)
         return True
 
+    def _init_generic_drag_follow(self, block, dx, dy):
+        """通用通道（碎三角等）的拖拽跟隨：**兩次觸控**（先選縫，再拖塊）。
+
+        幾何引擎板型只支持「箭頭 + 兩次觸控」：方向吸附用
+        ``_letter_screen_vec`` 讓形態自己的幾何回答屏幕方向（不查硬編表），
+        縫由第一次觸控鎖定、拖拽只決定沿縫的正反方向。
+        單次觸控（拖拽角度猜縫）與鍵鼠方向鍵與形狀強相關，新板型不支持。
+        """
+        from engine.compat import direction_table
+
+        spec = self._generic_spec()
+        if spec is None:
+            return False
+        key = tuple(block.location)
+
+        # 通用通道（幾何引擎板型）**只支持兩次觸控**：單次觸控靠「拖拽角度
+        # 猜縫」、鍵鼠靠字母方向表，兩者都與形狀強相關（各板型的縫族方向、
+        # 屏幕落向都不同），新板型不做這層適配（用戶 2026-10-24 定）。
+        # 沒有預選縫就當場退出並提示，不猜、不換縫。
+        gap = getattr(self, 'selected_gap', None)
+        if gap is None:
+            self.macro_notify_msg = "先点选缝隙，再按住滑块拖动（两次触控）"
+            self.macro_notify_timer = 120
+            return False
+        if not getattr(self, 'control_two_touch', True):
+            return False
+        # 縫由第一次觸控鎖定，方向只能在**該縫的平行字母**裡挑
+        allowed = set(self._gap_dir_letters(gap[0]) or ())
+
+        # 方向吸附：逐字母算一步的屏幕位移，取點積最大者
+        best_letter = None
+        best_dot = 0.0
+        for letter in direction_table(spec):
+            if letter not in allowed:
+                continue
+            vx, vy = self._letter_screen_vec(letter, key)
+            if vx is None:
+                continue
+            n2 = vx * vx + vy * vy
+            if n2 <= 1e-9:
+                continue
+            dot = (dx * vx + dy * vy) / n2 ** 0.5
+            if dot > best_dot:
+                best_dot = dot
+                best_letter = letter
+        if best_letter is None:
+            return False
+
+        # ⚠️ 這裡**不得**調 resolve_drag 挑縫：舊實現用第二根手指的拖拽方向
+        # 重新挑縫，第一次觸控選中的縫等於白選（2026-10-24 實測：預選
+        # ('h',17)，拖一手向上變成 ('v',11)）。兩次觸控的語義是
+        # 「縫不變，只決定方向」。
+        self.game.opt(gap[0], gap[1], block)
+        if not any(b.be_opted for b in self.game.blocks):
+            self.macro_notify_msg = "这个方向滑不动（被其它滑块挡住或会断开）"
+            self.macro_notify_timer = 90
+            return False
+        gap_type, line = gap
+        self.selected_block = block
+
+        self.drag_following = True
+        self.drag_follow_block = block
+        self.drag_follow_start_pos = list(block.location)
+        self.drag_follow_start_screen = None  # 由 events.py 传入
+        # 跟隨偏移以恆等空間位移 t·d 記錄（_visual_key 直接加到 location
+        # 前兩分量）；t = 步數（可小數），d = 該字母的晶格步向量
+        self.drag_follow_offset = (0.0, 0.0)
+        self.drag_follow_gap = (gap_type, line)
+        self.drag_follow_direction = best_letter
+        self.drag_follow_step = 0
+        self.drag_follow_invalid = False
+        # 兩次觸控：鬆手後保留選中（縫還在，可以接著拖）
+        self.drag_follow_auto_deselect = False
+        self.drag_follow_max_cells = self._probe_max_cells(best_letter)
+        op_log.log('generic_drag_start', gap=[gap_type, line],
+                   dir=best_letter, max_cells=self.drag_follow_max_cells)
+        return True
+
     def _probe_max_cells(self, direction: str) -> int:
         """探测沿 direction 可连续推进的最大格数，向下取整到 current_step 的整数倍。
 
@@ -305,6 +386,12 @@ class DragMixin:
             # 按分量記，還原成格數要除掉它（不除的話斜向拖一格只能走半程）
             dr_u, dc_u = MI_DIRECTIONS[self.drag_follow_direction]
             cells /= max(abs(dr_u), abs(dc_u))
+        elif self._generic_spec() is not None and self.drag_follow_direction:
+            # 通用通道：偏移按恆等空間位移 t·d 記錄，除掉步向量的最大分量
+            # 還原步數（與米字同一手法——斜向一步兩個分量都等於 t）
+            from engine.compat import direction_table
+            d = direction_table(self._generic_spec())[self.drag_follow_direction]
+            cells /= max(abs(d[0]), abs(d[1]))
         # 取整用 int(x + 0.5)（等价 floor），规避 round() 的银行家舍入；再量化到 current_step 整数倍
         step_size = max(1, self.current_step)
         step = int(cells / step_size + 0.5) * step_size
@@ -358,6 +445,10 @@ class DragMixin:
         三角形密铺同样不合并：合并快照的逐步重播（expand_snapshot_moves /
         cells_to_snapshot）按方形 2-tuple 格 + 0/1 矩陣寫死，三角的 2-bit
         菱形胞沒有對應實作；不合并則每步一條快照，撤回/重做按步進行。
+        通用带朝向板型（碎三角等）同理：矩阵值是 orientations 下标+1，
+        同样没有合并重播的實作——判据取 spec.orientations 非空（三角/米字
+        的 EngineGame 也落在这一条，与既有的 triangle_mode/mi_mode 早退
+        一致；经典 game*.py 没有 spec 属性，不受影响）。
         """
         if getattr(self, 'macro_executing', False):
             return None
@@ -366,6 +457,9 @@ class DragMixin:
         if getattr(self, 'triangle_mode', False):
             return None
         if getattr(self, 'mi_mode', False):
+            return None
+        game = getattr(self, 'game', None)
+        if getattr(game, 'spec', None) is not None and game.spec.orientations:
             return None
         return getattr(self, '_move_session_id', 0)
 
@@ -398,6 +492,11 @@ class DragMixin:
         # 上这两个方法根本不存在。跟随没起来时（方向滑不动）回退到这里，
         # 只会崩或凭空移一步
         if getattr(self, 'triangle_mode', False):
+            return False
+        # 通用通道同理：這條路按 `r, c = block.location` 兩座標解包，碎三角
+        # 的 location 是三元組，走到這裡只會解包崩潰；它的拖拽走
+        # _init_generic_drag_follow（投影吸附 + resolve_drag）
+        if self._generic_spec() is not None:
             return False
         gap = self.selected_gap
         if gap is None:

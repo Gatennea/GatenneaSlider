@@ -136,7 +136,8 @@ class AnimationMixin:
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
             self._pending_move_info = None
-            self.ensure_blocks_visible()
+            # 与无动画路径同口径：走一步不动相机（只在整盘全看不见时兜底）。
+            self.ensure_blocks_visible(only_if_invisible=True)
             self._maybe_show_solved_popup()
 
         self._mark_file_dirty()

@@ -626,8 +626,453 @@ class RendererMixin:
                          self.world_to_screen(*seg[0]),
                          self.world_to_screen(*seg[1]), 3)
 
+    # ------------------------------------------------------------------
+    # S1b 通用渲染通道
+    # 几何引擎＝解释器：凡把形状写成数据（spec.cell_polygon）的板型，一律
+    # 由同一份代码绘制，判据是「有没有形状数据」而不是「是哪个形态」。
+    # ------------------------------------------------------------------
+    def _generic_spec(self):
+        """當前局面走通用渲染通道所需的 spec（與 _polygon_view 同門）。
+
+        判據 = spec 帶 cell_polygon。來源有二：
+          · 引擎遊戲（含碎三角）自帶 ``.spec`` → 直接用；
+          · 舊引擎遊戲（game.py / game_triangle.py / game_mi.py，無
+            ``.spec``）→ **選項 A 兜底**：按類型分派到註冊表 spec 構造器，
+            讓通用通道也能畫它們；舊引擎遊戲本身一行不動（求解器 / 安全
+            打亂 / 存檔照跑，幾何引擎只當渲染層，不接管原版其它功能）。
+
+        效果：刪掉三個手畫渲染路徑後，默認配置（引擎開關關＝舊引擎遊戲）
+        依然有 spec 可渲染——開關自此形同虛設（可保留控件或日後靜默退役）。
+        """
+        game = getattr(self, 'game', None)
+        if game is None:
+            return None
+        # 通用通道強依賴 game.board（bounds_of / origin_of / 塊遍歷都以 board
+        # 為入口）。舊引擎遊戲（game.py 等）**沒有 .board**——它們仍走既有手
+        # 畫路徑渲染；兜底 _spec_for_old_game 只在「有 board 但無 spec」時接管。
+        # 此閘門讓 _generic_spec() 與 _polygon_view() 保持一致：兩者同時為
+        # None/非 None，共享的 _key_center 等才不會進通用分支卻拿到空 view。
+        if getattr(game, 'board', None) is None:
+            return None
+        spec = getattr(game, 'spec', None)
+        if spec is not None and callable(getattr(spec, 'cell_polygon', None)):
+            return spec
+        # 選項 A：有 board 但無 spec → 按類型兜底（舊引擎遊戲無 board，不會到這）。
+        fb = self._spec_for_old_game(game)
+        if fb is not None and callable(getattr(fb, 'cell_polygon', None)):
+            return fb
+        return None
+
+    @staticmethod
+    def _spec_for_old_game(game):
+        """選項 A 兜底：舊三形態遊戲對象 → 註冊表 spec。
+
+        按**類型**分派，不依賴 ``game.kind`` 字符串（SliderMatrix 根本
+        不設 kind）。尺寸從遊戲對象自身取（m/n/k），與 EngineGame 走同一
+        套註冊表 spec，故與舊引擎塊位置嚴格對齊（S0 引擎差分已證）。
+        """
+        from engine.registry import square_spec, tri_spec, mi_spec
+        from game import SliderMatrix
+        from game_triangle import TriangleSliderMatrix
+        from game_mi import MiSliderMatrix
+        if isinstance(game, TriangleSliderMatrix):
+            return tri_spec(getattr(game, 'k', 4))
+        if isinstance(game, MiSliderMatrix):
+            return mi_spec(getattr(game, 'm', 4), getattr(game, 'n', 4))
+        if isinstance(game, SliderMatrix):
+            return square_spec(getattr(game, 'm', 4), getattr(game, 'n', 4))
+        return None
+
+    def _polygon_view(self):
+        """当前局面能否通用渲染：有 cell_polygon 就能画，否则回既有手画路径。
+
+        默认**只给旧路径不认识的板型**用：旧三形态（square/tri/mi）继续走
+        各自的手画实现，一行不动 → 零回归风险；待 S1c 用 oracle 逐个对照
+        验证通过后，再按用户指示删掉那些专属实现（终态是替换，不是并存）。
+
+        环境变量 ``GATENNEA_POLY_RENDER=1`` 可强制旧形态也走通用路径，
+        专供 oracle 对照（新通道 vs 旧手画路径的位置比对）使用。
+        """
+        spec = self._generic_spec()
+        if spec is None:
+            return None
+        if not hasattr(self.game, 'board'):
+            return None
+        try:
+            from gui.board_view import SpecPolygonView
+        except Exception:
+            return None
+        # 世界座標 = 幾何單位 × **未縮放** cell_size；縮放在 world_to_screen
+        # 裡統一發生。舊代碼取 _board_px()[0]（含 zoom）又疊 world+camera，
+        # zoom≠1 時整條鏈路錯位——世界座標約定由此收口到一處。
+        # gap_width 只影響捆綁組的 inset 形狀（見 world_polygon inset）。
+        return SpecPolygonView(spec, cell_size=float(self.cell_size),
+                               gap_width=float(getattr(self, 'gap_width', 0.0)))
+
+    def _poly_view_origin(self, view):
+        """通用視圖的佈局原點（世界座標）——**按板型固定，不隨局面變化**。
+
+        舊實現把 origin 定義成「當前塊集合包圍盒的左上角」（`origin_of(board)`），
+        於是每滑一步、塊集合一變、包圍盒一變、**原點就變**：移動的那一半
+        因為原點補償原地不動，沒動的那一半整體平移一格——玩家眼裡就是
+        「每走一步相機都在動」（2026-10-24 用戶實測投訴；實測一步 origin
+        從 (0,0) 跳到 (-103.9,0)，而 camera_x/y 根本沒變）。
+
+        現改為按**還原態**（``spec.goal_blocks``）定原點：世界座標系在一局
+        之內恆定，滑動只移動塊，不再移動整盤。渲染 / 命中 / 箭頭錨點仍舊
+        共用這一個 origin（三處各算一遍是「zoom≠1 全鏈路錯位」的舊病根）。
+        """
+        board = self.game.board
+        spec = getattr(board, 'spec', None)
+        cache = getattr(self, '_poly_origin_cache', None)
+        if cache is not None and cache[0] is spec:
+            return cache[1]
+        ref = getattr(spec, 'goal_blocks', ()) or board.blocks
+        minx, miny, _mx, _my = view.bounds_of(ref)
+        s = view.cell_size
+        origin = (-minx * s, -miny * s)   # 還原態左上角對齊世界 (0,0)
+        self._poly_origin_cache = (spec, origin)
+        return origin
+
+    def _poly_key_parts(self, key):
+        """扁平 location／視覺鍵 → (point, orient)（SpecPolygonView 的入參）。
+
+        GUI 側的鍵一律是**扁平**的（方形 (r,c) / 碎三角 (P_x,P_y,角色)），
+        而 SpecPolygonView 要的是嵌套的 (point, orient)——在這裡轉一次，
+        三個消費端（繪製 / 質心 / 外接半徑）共用同一換算。
+        """
+        if len(key) > 2:
+            return (key[0], key[1]), key[2]
+        return (key[0], key[1]), ''
+
+    def _poly_world_bbox(self):
+        """通用通道**當前盤面**的世界包圍盒 (min_x, min_y, max_x, max_y)。
+
+        非通用形態回 None。原點按板型固定（見 ``_poly_view_origin``），
+        所以這裡必須回**真實角點**，不能再假設從 (0,0) 起——舊寫法
+        「(0,0,W,H)」是建立在「origin 隨包圍盒歸零」之上的，那條假設
+        正是「每步滑動整盤平移」的病根。
+        """
+        view = self._polygon_view()
+        if view is None:
+            return None
+        minx, miny, maxx, maxy = view.bounds_of(self.game.board.blocks)
+        s = view.cell_size
+        ox, oy = self._poly_view_origin(view)
+        return (minx * s + ox, miny * s + oy, maxx * s + ox, maxy * s + oy)
+
+    def _draw_polygon_board(self, view):
+        """通用多边形绘制：一份代码画所有形状，方法体内无任何形态分支。
+
+        世界座標約定：``world = 幾何單位 × cell_size``（未縮放），
+        ``screen = world_to_screen(world)``（×zoom + camera）——與米字/
+        三角手畫路徑同一套，縮放與平移只發生一次。
+        視覺位置走 ``_visual_key``（拖拽跟隨 / 移動動畫偏移，與舊三形態
+        同源）；選中縫畫**一條直線**（足跡合併，見 `_merge_seam_line`）。
+
+        **功能層對舊三形態對齊（Port 1，2026-10-24）**：本方法原先只畫
+        「背景 + 縫 + 塊」，舊手畫路徑有的功能層在此補齊，刪舊路徑的前置
+        條件（計劃 S6 對賬表）：
+          - 塊循環：拖拽無效變暗+橙框 / 撞牆抖動 / 撤銷重做冷暖邊 /
+            求解演示光邊 / 分組著色描邊 / 連鎖提示 / 編號字；
+          - 塊循環後：捆綁組整組渲染（複用 _draw_bandaged_groups_poly，
+            回調走通用視圖與引擎晶格鄰接）、連鎖提示空位、宏基準點金框；
+          - epilogue：指標標記（目標框+洞/缺口/凸起）、選塊填空金標、
+            方向箭頭按鍵——與三個 draw_*_board 末尾同一套鐵律。
+        """
+        self.screen.fill(self.colors['background'])
+        board = self.game.board
+        origin = self._poly_view_origin(view)
+
+        # 選中縫足跡的繪製**移到塊循環之後**（見本方法末段）：碎三角多邊形
+        # 邊貼邊、無縫隙（gap_width=0），若沿用方形「先畫縫再畫塊」的舊序，
+        # 塊會把整條紅縫蓋掉——玩家點中縫卻看不到任何紅線（2026-10-24 用戶
+        # 實測「沒有選中縫隙的效果」）。故通用通道改為壓在塊之上畫。
+        gap = getattr(self, 'selected_gap', None)
+
+        # 圓角削進深度：通用通道**不削角**（depth=0）。
+        #
+        # 方形棋盤格與格之間有 gap_width，圓角藏在縫隙裡看不出來；碎三角是
+        # 邊貼邊無縫隙的密鋪，逐塊削角會在每個頂點咬出缺口（6 塊交會處就是
+        # 小黑洞），相鄰兩塊又各削各的 → 每條直線在端點處「斷一下、鼓一下」，
+        # 整盤看起來歪歪扭扭（用戶 2026-10-24 實測投訴）。故通用通道一律尖角
+        # 貼合；顏色語言仍與原版一致（綠填=選中、灰邊=普通、3px 紅=選中縫）。
+        depth = 0
+        # 邊框反餽三件套（每帧只算一次；helper 本身形態中立）
+        _sel_anim = self._sel_anim_border()
+        _play_head = self._play_head_border()
+        _play_keys = self._play_head_keys() if _play_head is not None else ()
+        # 拖拽無效（碰撞/斷開）變暗集合：與舊方形路徑同口徑——偏移非零的
+        # 被選中塊（follow_map 的等價物；此處塊循環內無需逐塊建映射）
+        follow_ids = set()
+        if (getattr(self, 'drag_following', False)
+                and getattr(self, 'drag_follow_invalid', False)):
+            dr, dc = getattr(self, 'drag_follow_offset', (0.0, 0.0))
+            if abs(dr) > 1e-9 or abs(dc) > 1e-9:
+                follow_ids = {id(b) for b in self.game.blocks
+                              if getattr(b, 'be_opted', False)}
+        # 撞牆抖動（S1-3）：drag.py 對所有形態統一置位，舊路徑只有方形畫；
+        # 通用通道一併畫上（反餽本身是形態中立的像素位移）
+        _shaking = getattr(self, '_shake_t', 0) > 0
+        _shake_ids = getattr(self, '_shake_blocks', set()) if _shaking else set()
+        _sox = _soy = 0
+        if _shaking:
+            _sox, _soy = self._shake_offset()
+        # 懸停連鎖提示（helper 三形態通用；碎三角下落方形分支、自然空轉）
+        hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
+        # 分組著色開關（與舊路徑同條件：增強模式著色開 + 多級）
+        _coloring = (getattr(self, 'coloring_enabled', False)
+                     and self.current_step > 1)
+
+        # 兩趟繪製：先全部填色、再全部描邊。
+        # 逐塊「填+描」時，後畫那塊的填色會蓋掉前畫那塊的半條描邊（相鄰兩塊
+        # 共用同一條邊），結果每條邊的可見寬度都不一樣：有的只剩 1px、有的
+        # 2px，接頭處還是圓角咬出的缺口——遠看就是一堆歪歪扭扭的線。
+        # 兩趟分開後每條邊只被描一次、寬度均勻，接頭處嚴絲合縫。
+        _paint = []  # (rpoly, fill, border_color, border_w)
+        for block in getattr(self.game, 'blocks', ()):
+            key = self._visual_key(block)
+            point, orient = self._poly_key_parts(key)
+            poly = view.world_polygon(point, orient, origin)
+            pts = [self.world_to_screen(x, y) for (x, y) in poly]
+            if id(block) in _shake_ids and (_sox or _soy):
+                pts = [(x + _sox, y + _soy) for (x, y) in pts]
+            rpoly = self._rounded_polygon_points(pts, depth)
+            fill = (self.colors['block_selected'] if getattr(
+                block, 'be_opted', False) else self.colors['block'])
+            loc = tuple(block.location)
+            if id(block) in follow_ids or id(block) in _shake_ids:
+                # 拖拽無效 / 撞牆：變暗 + 橙色邊框（同一套反餽）
+                fill = tuple(int(ch * 0.45) for ch in fill[:3])
+                border_color, border_w = (220, 80, 40), max(1, int(3 * self.zoom))
+            elif _sel_anim is not None and block.be_opted:
+                border_color, border_w = _sel_anim
+            elif _play_head is not None and loc in _play_keys:
+                border_color, border_w = _play_head
+            elif _coloring:
+                border_color = self._group_color_for(loc[:2])
+                border_w = max(2, int(7 * self.zoom))  # 暫定7,不要改
+            else:
+                # 普通塊描邊走灰邊（colors['border']），與方形/三角/米字三條
+                # 手畫路徑同一口徑；曾誤用 colors['line']（純紅）把所有塊描成
+                # 紅邊，看起来像錯誤態（用戶投訴「詭異紅色描線」）。紅色只留給
+                # 選中縫（selected_gap，三形態通用約定）。
+                border_color, border_w = self.colors['border'], max(1, int(2 * self.zoom))
+            _paint.append((rpoly, fill, border_color, border_w))
+
+            # 連鎖提示：同類已佔用格疊半透明白（與舊三形態同一套語言）
+            if hint_occ is not None and loc in hint_occ:
+                self._draw_hint_overlay(rpoly, loc == hint_hover)
+
+            # 編號字（numbered）：畫在塊質心（與舊路徑同字體缓存/同色）
+            if getattr(self, 'numbered', False) and getattr(block, 'number', None):
+                font_size = max(12, int(self.cell_size * self.zoom * 0.45))
+                if not hasattr(self, '_num_font_cache'):
+                    self._num_font_cache = {}
+                font = self._num_font_cache.get(font_size)
+                if font is None:
+                    # 延遲導入：GUI 模組在 import 期尚未定義 _gui_safe_font
+                    from GUI import _gui_safe_font
+                    font = _gui_safe_font('SimHei', font_size)
+                    self._num_font_cache[font_size] = font
+                text = font.render(str(block.number), True, (0, 0, 0))
+                cx = sum(p[0] for p in pts) / len(pts)
+                cy = sum(p[1] for p in pts) / len(pts)
+                self.screen.blit(text, text.get_rect(center=(int(cx), int(cy))))
+
+        # 兩趟落地：①全部填色 ②全部描邊。共用邊因此只被描一次、寬度均勻，
+        # 頂點處也不會出現「後畫的填色啃掉前畫的邊」的缺口。
+        #
+        # 描邊後再疊一次 aalines：三角密鋪的邊幾乎全是 30°/60° 斜線，硬描邊
+        # 在斜線上必然是像素階梯，遠看就是「每條線都歪歪扭扭」。線寬與顏色
+        # 不變（仍走 colors['border'] 與原版 2px 口徑），只把斜邊柵格化平滑。
+        for rpoly, fill, _bc, _bw in _paint:
+            pygame.draw.polygon(self.screen, fill, rpoly)
+        for rpoly, _fill, border_color, border_w in _paint:
+            pygame.draw.polygon(self.screen, border_color, rpoly, border_w)
+            pygame.draw.aalines(self.screen, border_color, True, rpoly)
+
+        # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**
+        # ——放在循環前會被後畫的普通塊連同邊框一起蓋掉（三角實測過）。
+        # 複用三角/米字那份多邊形實現，回調改走通用視圖 + 引擎晶格鄰接：
+        # 形狀由 cell_polygon 回答，鄰接由 spec.lattice 回答，均形態中立。
+        self._draw_bandaged_groups_poly(
+            lambda b: self._visual_key(b),
+            lambda key, inset: view.world_polygon(
+                *self._poly_key_parts(tuple(key)), origin, inset=inset),
+            self._poly_neighbors_of(view))
+
+        # 選中縫（通用通道**壓在塊之上**）：碎三角多邊形邊貼邊、無縫隙，
+        # 若沿用方形「先畫縫再畫塊」，塊會把整條紅縫蓋光——用戶實測「點了縫
+        # 沒有任何效果」。方形的縫靠格間縫隙透出，碎三角沒有縫隙，故必須後畫。
+        #
+        # 樣式**照搬原版方形**：`colors['line']`、線寬 3px，不加粗、不加光暈、
+        # 不改色。足跡在幾何縫線板型下必然共線，合併成一段只是為了不留下
+        # 1px 斷口（視覺上仍是一條同規格的紅線）。
+        if gap:
+            segs = self._poly_seam_segments(view, gap[0], gap[1], origin)
+            merged = self._merge_seam_line(segs)
+            if merged is not None:
+                sa = self.world_to_screen(*merged[0])
+                sb = self.world_to_screen(*merged[1])
+                pygame.draw.line(self.screen, self.colors['line'], sa, sb, 3)
+                pygame.draw.aaline(self.screen, self.colors['line'], sa, sb)
+            else:
+                for (a, b) in segs:
+                    pygame.draw.line(self.screen, self.colors['line'],
+                                     self.world_to_screen(*a),
+                                     self.world_to_screen(*b), 3)
+
+        # 連鎖提示：同類空位疊半透明白（空位沒有塊，多邊形由格子身份直接算）
+        if hint_empty:
+            for pos in sorted(hint_empty):
+                pp, oo = self._poly_key_parts(tuple(pos))
+                poly = view.world_polygon(pp, oo, origin)
+                pts = [self.world_to_screen(x, y) for (x, y) in poly]
+                self._draw_hint_overlay(self._rounded_polygon_points(pts, depth),
+                                        tuple(pos) == hint_hover)
+
+        # 宏基準位置標記（固定座標，無論該格有無滑块；方形特性）
+        base = getattr(self, 'macro_record_base_point', None)
+        if base is not None:
+            pp, oo = self._poly_key_parts(tuple(base))
+            poly = view.world_polygon(pp, oo, origin)
+            pts = [self.world_to_screen(x, y) for (x, y) in poly]
+            hl = self._rounded_polygon_points(pts, depth)
+            pygame.draw.polygon(self.screen, (255, 200, 50), hl,
+                                max(1, int(3 * self.zoom)))
+
+        # 調試面板/標記開關：先算 region（面板與記號共用同一基準），
+        # 記號只在記號開關開時畫。與三個 draw_*_board 末尾同一套鐵律；
+        # 碎三角下 _mp_kind 不在受支持清單，兩個 draw 自行空轉。
+        _panel_on = getattr(self, 'show_metrics_panel', False)
+        _marks_on = getattr(self, 'board_marks_enabled', False)
+        if _panel_on or _marks_on:
+            self._compute_target_region()
+            if _marks_on:
+                self._draw_target_window()
+                self._draw_debug_holes()
+
+        # 選塊填空選取態的金色高亮：跟隨選取態本身，與面板/標記開關無關
+        self._draw_pick_fill_marks()
+
+        # S1-4：方向標注必須畫在**滑块之後**（最上層）
+        self._draw_gap_direction_annotation()
+
+    def _poly_neighbors_of(self, view):
+        """通用通道的鄰接回調（餵給 _draw_bandaged_groups_poly）。
+
+        GUI 扁平鍵 → 同輩扁平鄰鍵。兩件事在本回調裡一次做完：
+          · **座標系**：米字 GUI (r,c) 是引擎點的 1/scale（B 晶格是半
+            整數），引擎鄰接表的偏移是引擎單位——經 compat._norm_keys /
+            _keys_to_positions 兩座橋換算，不自己乘除；
+          · **朝向**：GUI 三角朝向是布爾（up=True/False）、引擎是
+            'up'/'down' 字符串，orient_steps 表按後者索引——直接餵布爾
+            會**靜默取空**（捆綁組的內部橋接全丟；2026-10-24 §6 oracle
+            抓出來的第一個真 bug）。
+
+        拖拽期間顯示鍵帶小數偏移：先吸附到 GUI 格點（步長 1/scale），
+        鄰居算出後**把殘差原樣加回**——同組塊共享同一偏移，加回後鄰居鍵
+        與其它成員的顯示鍵逐個對上（舊三角/米字純函數鄰接的等變性）。
+        點級鄰接（顯式鄰接模式，碎三角）回落 '' 時，直接回那一格上**實際
+        那塊的顯示鍵**——48 塊位置兩兩不同點，同點只會有一塊，顯示鍵才
+        與 disp_key（3-tuple）對得上。
+        """
+        from engine.compat import _keys_to_positions, _norm_keys
+
+        def _nbrs(key):
+            key = tuple(key)
+            dim = view.spec.lattice.dim
+            scale = view.spec.lattice.scale
+            # 吸附到格點（殘差隨後加回，故吸附誤差無害——只要落在格上）。
+            # scale=1 時必須給 **int**：_real_to_point 對 scale=1 原樣透傳，
+            # 而 lattice.valid 只要 int（0.0 會被判「不在板型格上」）。
+            def _snap(v):
+                n = int(round(v * scale))
+                return n if scale == 1 else n / scale
+            snapped = tuple(_snap(v) for v in key[:dim])
+            resid = tuple(key[i] - snapped[i] for i in range(dim))
+            try:
+                _keys = _norm_keys([snapped + key[dim:]],
+                                   view.spec, 'poly_neighbors')
+                ekey = _keys[0]
+            except Exception as _e:
+                # 渲染路徑不拋：鍵不在格上（理論上不會，吸附已保證）→ 視作
+                # 無鄰居，組退化成各塊分別畫，不崩。但把真實錯誤打到 stderr，
+                # 避免像 2026-10-24 那樣靜默吞掉 bug（當時 _norm_keys 抛
+                # 解包錯誤被 except 吃掉，捆綁組鄰接全空還查不出原因）。
+                import sys, traceback as _tb
+                print("[_poly_neighbors_of] 鄰接鍵轉換失敗：", repr(_e),
+                      file=sys.stderr)
+                _tb.print_exc()
+                return []
+            out = []
+            for p, o in view.spec.lattice.neighbors_of(ekey[0], ekey[1]):
+                if o:
+                    pos, = _keys_to_positions([(p, o)], view.spec)
+                    out.append(tuple(pos[i] + resid[i] for i in range(dim))
+                               + (pos[dim],))
+                    continue
+                # 點級鄰接：回那一格上實際那塊的**顯示鍵**
+                pos, = _keys_to_positions([(p, '')], view.spec)
+                for b in self.game.blocks:
+                    if tuple(b.location)[:dim] == tuple(pos):
+                        out.append(tuple(self._visual_key(b)))
+                        break
+                else:
+                    out.append(tuple(pos[i] + resid[i] for i in range(dim)))
+            return out
+        return _nbrs
+
+    def _poly_seam_segments(self, view, gap_type, line, origin):
+        """一條縫的接觸邊足跡（世界座標），按 (局面, 縫) 簽名緩存。
+
+        每幀重算是 O(n²) 容差匹配（48 塊 ≈ 1128 對）；簽名 = 塊鍵集合 +
+        縫——拖拽/動畫期間鍵不變，直接命中緩存。
+        """
+        board = self.game.board
+        sig = (board.keys, gap_type, line)
+        cache = getattr(self, '_poly_seam_cache', None)
+        if cache is not None and cache[0] == sig:
+            return cache[1]
+        segs = view.seam_segments(board, gap_type, line, origin)
+        self._poly_seam_cache = (sig, segs)
+        return segs
+
+    @staticmethod
+    def _merge_seam_line(segs):
+        """把一條縫的足跡合併成**一條**線段；不共線則回 None（退回逐段畫）。
+
+        幾何縫線板型（碎三角）的縫是直線，足跡只是這條線被塊邊切成的若干
+        段；逐段畫會在接頭留下 1px 斷口，看起來像虛線。合併成一條連續段
+        才像「一刀切開」。判據是垂直偏移 < 1e-3 個世界單位（cell_size≈40
+        時約 0.04px），共線才合併。
+        """
+        if not segs:
+            return None
+        pts = [p for seg in segs for p in seg]
+        if len(pts) < 2:
+            return None
+        x0, y0 = pts[0]
+        far = max(pts, key=lambda p: (p[0] - x0) ** 2 + (p[1] - y0) ** 2)
+        dx, dy = far[0] - x0, far[1] - y0
+        length = (dx * dx + dy * dy) ** 0.5
+        if length < 1e-9:
+            return None
+        ux, uy = dx / length, dy / length
+        off = max(abs(-(p[0] - x0) * uy + (p[1] - y0) * ux) for p in pts)
+        if off > 1e-3 * max(1.0, length):
+            return None
+        along = [(p[0] - x0) * ux + (p[1] - y0) * uy for p in pts]
+        lo, hi = min(along), max(along)
+        return ((x0 + ux * lo, y0 + uy * lo), (x0 + ux * hi, y0 + uy * hi))
+
     def draw_board(self):
         """绘制游戏主界面"""
+        _pv = self._polygon_view()
+        if _pv is not None:
+            self._draw_polygon_board(_pv)
+            return
         if getattr(self, 'triangle_mode', False):
             self.draw_triangle_board()
             return
@@ -1125,6 +1570,10 @@ class RendererMixin:
         方形（`_pick_fill_form_blocked` 入口闸门 + 建局清空），所以另两个
         形态走到这里直接返回——留着调用点是给「将来找块填空支援异形」
         预留的挂载位，也防止形态切换瞬间的陈旧状态画出错位几何。
+
+        **通用通道分支（Port 1）**：金框貼那一個格子的**多邊形外接框**，
+        與通用渲染同源；不借舊方格的 cell_step 整數像素——兩套世界座標
+        在 zoom≠1 下會差半條縫。舊手畫路徑的整數像素數學原樣不動。
         """
         pf = getattr(self, '_pick_fill', None)
         if not pf:
@@ -1132,9 +1581,45 @@ class RendererMixin:
         if getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False):
             return
         gold = self.PICK_FILL_GOLD
+        scaled_cell, scaled_gap, cell_step = self._board_px()   # 与主棋盘同一套整数像素
+
+        spec = self._generic_spec()
+        if spec is not None:
+            view = self._polygon_view()
+            if view is not None:
+                origin = self._poly_view_origin(view)
+
+                def _bbox_rect(pos):
+                    pp, oo = self._poly_key_parts((pos[0], pos[1]))
+                    pts = [self.world_to_screen(x, y) for (x, y) in
+                           view.world_polygon(pp, oo, origin)]
+                    xs = [q[0] for q in pts]
+                    ys = [q[1] for q in pts]
+                    return pygame.Rect(int(min(xs) - 3), int(min(ys) - 3),
+                                       int(max(xs) - min(xs) + 6),
+                                       int(max(ys) - min(ys) + 6))
+
+                p = pf.get('block')
+                if p is not None:
+                    pygame.draw.rect(self.screen, gold, _bbox_rect(p),
+                                     max(1, int(3 * self.zoom)),
+                                     border_radius=self._slider_corner_radius())
+                hole = pf.get('hole')
+                if hole:
+                    radius = max(3, int(scaled_cell * 0.35))
+                    line_w = max(2, int(2 * self.zoom))
+                    for r, c in hole.get('cells', []):
+                        pp, oo = self._poly_key_parts((r, c))
+                        pts = [self.world_to_screen(x, y) for (x, y) in
+                               view.world_polygon(pp, oo, origin)]
+                        cx = sum(q[0] for q in pts) / len(pts)
+                        cy = sum(q[1] for q in pts) / len(pts)
+                        pygame.draw.circle(self.screen, gold, (int(cx), int(cy)),
+                                           radius, line_w)
+                return
+
         board_x = getattr(self, '_board_x', 0)
         board_y = getattr(self, '_board_y', 0)
-        scaled_cell, _, cell_step = self._board_px()   # 与主棋盘同一套整数像素
         cam_x = int(round(self.camera_x))
         cam_y = int(round(self.camera_y))
         p = pf.get('block')
@@ -1164,6 +1649,17 @@ class RendererMixin:
 
     def _key_center(self, key):
         """形态中立的 key → 屏幕中心。"""
+        spec = self._generic_spec()
+        if spec is not None:
+            # 通用通道：多邊形質心（世界）→ 屏幕。origin 與渲染/命中
+            # 同源（_poly_view_origin），箭頭錨點才不會漂。
+            view = self._polygon_view()
+            point, orient = self._poly_key_parts(key)
+            poly = view.world_polygon(point, orient,
+                                      self._poly_view_origin(view))
+            cx = sum(p[0] for p in poly) / len(poly)
+            cy = sum(p[1] for p in poly) / len(poly)
+            return self.world_to_screen(cx, cy)
         if getattr(self, 'triangle_mode', False):
             view = self._tri_view()
             return self.world_to_screen(
@@ -1176,6 +1672,48 @@ class RendererMixin:
         return (key[1] * step_px + step_px / 2.0 + int(round(self.camera_x)),
                 key[0] * step_px + step_px / 2.0 + int(round(self.camera_y)))
 
+    def _spec_gap_letters(self, spec):
+        """板型 → {縫族名: (方向字母, 方向字母)}（引擎 parallel 反查字母表）。
+
+        與 adapter._gap_directions 同源：``SeamFamily.parallel`` 存的是
+        **方向向量**不是字母，必須經 compat.direction_table 反查（直接拿
+        parallel 當字母餵給 try_move 會全判 bad_direction——方形打亂 0 步
+        就是这么來的）。字母按字典序，兩端各一個。
+        """
+        from engine.compat import direction_table
+        table = direction_table(spec)
+        out = {}
+        for fam in spec.seam_families:
+            out[fam.name] = tuple(sorted(
+                letter for letter, vec in table.items() if vec in fam.parallel))
+        return out
+
+    def _gap_dir_letters(self, gap_type):
+        """選中縫族的兩個方向字母（通用通道；舊形態走 _game_dir_tables）。"""
+        spec = self._generic_spec()
+        if spec is None:
+            return ()
+        return self._spec_gap_letters(spec).get(gap_type, ())
+
+    def _letter_screen_vec(self, letter, key):
+        """從 key 出發走一步 letter 的**屏幕**位移向量（泛型算，不查字母表）。
+
+        一步的屏幕向量 = 塊多邊形質心在 K+d 與 K 處的屏幕差——讓形態自己
+        的幾何回答方向，與 _get_gap_direction_annotation 的位移軸同一手法
+        （'w' 在三角是左上、在米字是正左，字母表回答不了；碎三角的恆等
+        空間各向異性更要靠這個）。
+        """
+        spec = self._generic_spec()
+        if spec is None:
+            return None
+        from engine.compat import direction_table
+        d = direction_table(spec).get(letter)
+        if d is None:
+            return None
+        c0 = self._key_center(key)
+        c1 = self._key_center(self._advance_key(key, d))
+        return (c1[0] - c0[0], c1[1] - c0[1])
+
     def _game_dir_tables(self):
         """该形态的 (DIRECTIONS, GAP_DIRECTIONS)。
 
@@ -1184,6 +1722,10 @@ class RendererMixin:
         退化成「什么都不画」（2026-10-05 踩：三形态全返回 None）。
         方形没有模块级 GAP_DIRECTIONS，缝族只有 h/v，这里内置兜底。
         """
+        spec = self._generic_spec()
+        if spec is not None:
+            from engine.compat import direction_table
+            return direction_table(spec), self._spec_gap_letters(spec)
         if getattr(self, 'triangle_mode', False):
             return TRI_DIRECTIONS, TRI_GAP_DIRECTIONS
         if getattr(self, 'mi_mode', False):
@@ -1202,7 +1744,14 @@ class RendererMixin:
                 continue
             key = tuple(b.location)
             cx, cy = self._key_center(key)
-            if getattr(self, 'triangle_mode', False):
+            spec = self._generic_spec()
+            if spec is not None:
+                view = self._polygon_view()
+                point, orient = self._poly_key_parts(key)
+                pts = [self.world_to_screen(*p) for p in
+                       view.world_polygon(point, orient,
+                                          self._poly_view_origin(view))]
+            elif getattr(self, 'triangle_mode', False):
                 view = self._tri_view()
                 pts = [self.world_to_screen(*p)
                        for p in view.piece_polygon(
@@ -1283,12 +1832,24 @@ class RendererMixin:
     def _visual_key(self, block):
         """块的「视觉」key（含拖拽/动画偏移）。
 
-        三形态 key 长度不同（方形 2 / 三角·米字 3），偏移一律落在前两分量上，
-        与各自 draw_board 里的 follow_map / anim_map 同源。
+        偏移**只作用在正在移动的那些块上**：拖拽 = 选中组（be_opted），
+        动画 = ``anim_blocks``。旧实现无条件加到所有块上——于是碎三角一播
+        重做动画，整盘跟着平移一格（用户 2026-10-24 报「重做动画完全错误」），
+        拖拽时也会整盘跟着走。方形路径用 follow_map / anim_map 按 id 分发，
+        本来就没有这个毛病；这里是通用通道漏掉的那道过滤。
         """
         key = tuple(block.location)
         dr, dc = self._visual_offset()
         if abs(dr) < 1e-9 and abs(dc) < 1e-9:
+            return key
+        if getattr(self, 'drag_following', False):
+            if not getattr(block, 'be_opted', False):
+                return key
+        elif getattr(self, 'animating', False):
+            if not any(b is block
+                       for b in (getattr(self, 'anim_blocks', None) or ())):
+                return key
+        else:
             return key
         if len(key) == 2:
             return (key[0] + dr, key[1] + dc)
@@ -2256,6 +2817,16 @@ class RendererMixin:
         同一套語言）。方形兩集合的併集與舊版單集合語義一致。
         """
         if not getattr(self, 'chain_hint_enabled', False):
+            return None, None, None
+        # 板型門（Port 1）：連鎖提示的「類」是對方/三角/米字三個形態分別
+        # 寫的（鍵結構與朝向語義各不同），其它板型沒有對應定義。帶朝向的
+        # 新板型（碎三角等）若落進下面的方形分支，hint_empty 會产出 2-tuple
+        # 位置，通用通道拿它問 cell_polygon(point, '') 直接 KeyError
+        # （_LOCAL_POLY['']）——明說不支援，不靜默算無意義高亮。
+        # 判據與 _generic_spec 同源；spec 為 None（舊引擎遊戲）不觸發。
+        _spec = self._generic_spec()
+        if _spec is not None and getattr(_spec, 'name', '') not in (
+                'square', 'tri', 'mi'):
             return None, None, None
         cell = getattr(self, 'hover_cell', None)
         if not cell:

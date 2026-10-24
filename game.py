@@ -711,16 +711,26 @@ class SliderMatrix:
         """当前盘面是否存在至少一步合法移动（step=1 即可动性检测）。
 
         设计态保存样式前必须校验——「缺格小形状可能在单一连通约束下
-        完全冻住」（如 3×3 的 L 形：任何移动都会把某块甩成孤立）。
-        冻形不是 bug（捆绑魔方精神的极端：Bicube 也只有特定角能转），
-        但作为可玩谜题无意义，保存/启用时由 GUI 拦截提示。
+        完全冻住」（如一格宽横条 1×3：每条缝的任一侧滑动都会把该侧
+        甩成孤立）。冻形不是 bug（捆绑魔方精神的极端：Bicube 也只有
+        特定角能转），但作为可玩谜题无意义，保存/启用时由 GUI 拦截提示。
+
+        注意（2026-10-24）：滑块可滑出棋盘外，所以「边界盒填满」不等于
+        冻形——2×2 满块中缝两侧都能合法外滑（4 颗可动）。旧版候选线
+        从 min_row+1 起枚举，漏掉每条缝族的头一条内部线，曾把 2×2 与
+        3×3 L 形误判成冻形；已修，与引擎版（legal_moves 全枚举）对齐。
         """
         if len(self.blocks) < 2:
             return False
         bounds = self.get_boundaries()
-        h_lines = [i for i in range(bounds['min_row'] + 1, bounds['max_row'])
+        # 候选线从 min_row / min_col 起：is_valid_*_line 的门就是
+        # min <= line < max，头一条内部线合法。2026-10-24 修 off-by-one
+        #（与 gui/annotation._ann_all_valid_gaps 同源）——旧写法漏掉每条
+        # 缝族的第一个内部线，2 行盘面会被误判成冻形，且与引擎版
+        # has_legal_move（legal_moves 全枚举，无此问题）差分不一致。
+        h_lines = [i for i in range(bounds['min_row'], bounds['max_row'])
                    if self.is_valid_h_line(i)]
-        v_lines = [j for j in range(bounds['min_col'] + 1, bounds['max_col'])
+        v_lines = [j for j in range(bounds['min_col'], bounds['max_col'])
                    if self.is_valid_v_line(j)]
         for gt, lines in (('h', h_lines), ('v', v_lines)):
             dirs = ('a', 'd') if gt == 'h' else ('w', 's')

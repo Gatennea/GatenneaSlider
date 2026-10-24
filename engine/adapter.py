@@ -46,8 +46,8 @@ import math
 import random
 
 from .board import Board, _connected_components, _group_closure
-from .compat import (_keys_to_positions, _norm_keys, action_to_move,
-                     direction_table)
+from .compat import (_keys_to_positions, _norm_keys, _real_to_point,
+                     action_to_move, direction_table)
 from . import mi_geometry, tri_geometry
 
 #: 米字象限位（与 game_mi.Q_ORDER / _Q_BITS 同义；engine 侧自持一份，
@@ -307,6 +307,46 @@ class EngineGame:
             return False
         sides = {0 if fam.rank_of(k[0], k[1]) < t else 1 for k in keys}
         return sides == {0, 1}
+
+    def is_live_gap(self, gap_type: str, line, step: int = 1) -> bool:
+        """這條縫「選得動」嗎：任一一側存在合法移動（與 legal_moves 同判據）。
+
+        與 is_valid_gap 的分工：後者只問「線兩側都有塊」（幾何有效），
+        本方法問「選了能不能真滑」——鎖死縫（seam_clear 否決）、兩側都
+        焊死（任何分量任何方向都滑不動）都算死。GUI 的「選不動」提示、
+        點擊選縫的歧義決勝、拖拽方向探測都走這裡。
+
+        判據逐項復刻 ``Board.legal_moves`` 的單縫循環（鎖死縫 → 兩側
+        非空 → 逐側逐連通分量 → 組閉包 → 拒全員選中 → 平行方向逐步
+        校驗），活縫首成立即返回；死縫要跑完整循環（實測 ~10–30ms），
+        只在點擊附近的 1–5 個候選上呼叫，暫不加緩存。
+        """
+        if not any(f.name == gap_type for f in self.spec.seam_families):
+            return False
+        board = self.board          # property：先把塊位置同步回引擎
+        keys = board.keys
+        if not keys:
+            return False
+        fam = next(f for f in self.spec.seam_families if f.name == gap_type)
+        t = self._line_to_t(gap_type, line)
+        if self.spec.seam_clear is not None and \
+                not self.spec.seam_clear(fam, t, board):
+            return False
+        side_lo = frozenset(k for k in keys if fam.rank_of(k[0], k[1]) < t)
+        side_hi = keys - side_lo
+        if not side_lo or not side_hi:
+            return False
+        bmap = board.block_map
+        for side_set in (side_lo, side_hi):
+            for comp in _connected_components(side_set, self.spec):
+                moved = _group_closure(comp, bmap)
+                if len(moved) == len(keys):
+                    continue  # 全員選中 = 整體平移，拒絕
+                rest = keys - moved
+                for d in fam.parallel:
+                    if board._slide_ok(moved, rest, d, step, self.spec):
+                        return True
+        return False
 
     def is_valid_h_line(self, line: int) -> bool:
         """横向分割线是否在边界盒内（方形，``min_row <= line < max_row``）。"""
@@ -645,19 +685,53 @@ class EngineGame:
         self.set_goal_pattern(None)
 
     def apply_pattern(self, cells, groups=None) -> None:
-        """设计态：按给定格集合（+ 捆绑组）重建局面。"""
+        """设计态：按给定格集合（+ 捆绑组）重建局面。
+
+        ``groups`` 的键可以是**位置**（方形/三角/米字的老口径），也可以是
+        **块键**（坐标 + 朝向）。带朝向的板型（碎三角等）**必须用块键**：
+        同一位置可以有多块（朝向不同），位置不足以标识块——旧实现只会走
+        位置口径，于是这类板型永远抛「未知朝向 ''」，等于造不出带捆绑的盘
+        （2026-10-24 实测定位）。
+        """
         norm = [tuple(c) for c in cells]
         keys = _norm_keys(norm, self.spec, 'apply_pattern')
+        key_set = frozenset(keys)
         gmap = {}
         if groups:
             for pos, gid in groups.items():
-                k = _norm_keys([tuple(pos)], self.spec, 'apply_pattern')[0]
-                gmap[k] = gid
-        self._board = Board.from_keys(self.spec, frozenset(keys),
+                gmap[self._pattern_group_key(pos, key_set)] = gid
+        self._board = Board.from_keys(self.spec, key_set,
                                       groups=gmap or None)
         self._opted_keys = frozenset()
         self._opted_t = None
         self._rebuild_blocks()
+
+    def _pattern_group_key(self, pos, keys):
+        """把捆绑组的一个键（位置或块键）解析成局面里真实存在的块键。
+
+        位置口径在带朝向板型上有歧义，故：唯一命中 → 取它；多块同位置 →
+        明确要求改用块键（不猜）；无命中 → 报该位置没有块。
+        """
+        raw = tuple(pos)
+        dim = self.spec.lattice.dim
+        if len(raw) == dim + 1:
+            k = _norm_keys([raw], self.spec, 'apply_pattern')[0]
+            if k not in keys:
+                raise ValueError(f"捆绑组块键 {raw!r} 不在本局面里")
+            return k
+        if len(raw) != dim:
+            raise ValueError(
+                f"捆绑组键 {raw!r} 长度须为 {dim}（位置）或 {dim + 1}"
+                f"（坐标 + 朝向）")
+        pt = _real_to_point(self.spec, raw, 'apply_pattern')
+        hits = [k for k in keys if k[0] == pt]
+        if not hits:
+            raise ValueError(f"捆绑组位置 {raw!r} 上没有块")
+        if len(hits) > 1:
+            raise ValueError(
+                f"捆绑组位置 {raw!r} 上有 {len(hits)} 块（朝向不同），"
+                f"请改用「坐标 + 朝向」指定")
+        return hits[0]
 
     # ------------------------------------------------------------------
     # 捆绑（自由捆绑，docs/spec/bandaged_mode.md）
@@ -721,6 +795,7 @@ class EngineGame:
         方形：0=空、1=有块；编号谜题「值即编号」（与 game.SliderMatrix 同）。
         三角：菱形胞 2-bit（bit0=▲、bit1=▼）。
         米字：每格 8-bit（bit0~3 = A 晶格四象限、bit4~7 = B 晶格）。
+        通用带朝向板型（碎三角等）：值 = spec.orientations 下标+1。
         """
         if not self._blocks:
             self.matrix = []
@@ -747,6 +822,16 @@ class EngineGame:
                 # B 晶格 = 半整数坐标（2r 为奇数）
                 lat = 0 if (2 * loc[0]) % 2 == 0 else 1
                 self.matrix[r][c] |= _MI_Q_BITS[q] << (4 * lat)
+            elif (self.spec.orientations
+                  and len(loc) == self.spec.lattice.dim + 1):
+                # 通用带朝向板型（碎三角等）：值 = orientations 下标+1。
+                # 与 history.restore_snapshot 的通用分支互为编解码——
+                # 丢失朝向 = 撤销/重做/读档后块的角色全变（还原判定直接
+                # 错）。三角/米字有位打包专用分支，走不到这里；方形/立方的
+                # orientations 为空元组，落到下面 else。
+                # ⚠️ 同格多块（不同朝向）在几何上必重叠（overlap 钩子），
+                #    可达局面不存在，故一格一值不会串。
+                self.matrix[r][c] = self.spec.orientations.index(loc[2]) + 1
             else:
                 # 方形：编号谜题整数矩阵「值即编号」
                 # ⚠️ getattr：history.restore_snapshot 塞进来的是 game.Block，
@@ -1230,6 +1315,14 @@ def create_adapter_puzzle(kind: str, m: int, n: int, step: int = 2,
         from .registry import mi_board
         board = mi_board(m, n)
         return EngineGame(board, m=m, n=n, kind='mi')
+    # 注册表里的新板型（形状已写成数据的那一类，如碎三角）：无需 GUI 侧
+    # 新增形态分支——这是「几何引擎＝解释器」的入口侧落点。
+    if kind not in ('square', 'numbered'):
+        from .registry import board_types
+        if kind in board_types():
+            from .registry import make_board
+            board = make_board(kind)
+            return EngineGame(board, kind=kind)
     # square / numbered
     from .registry import square_board
     board = square_board(m, n)

@@ -48,6 +48,21 @@ class SessionMixin:
             self.macro_notify_timer = 90
             return
 
+        # 冻形预检（P2 产品化预检，2026-10-24）：一条能选中的缝都没有
+        # （每条缝线都切进滑块内部、或只剩一侧有滑块）时 game.shuffle
+        # 一步也走不了——与其让玩家按了打乱却毫无变化，不如说清楚。
+        # 可达性：正常对局每步可逆 ⇒ 恒有合法移动，官方预设更不在话下；
+        # 这条拦的是手工改坏的存档/老样式之类的非常规盘面。枚举自身
+        # 抛异常时不拦（fail-open），别让预检把正常打乱挡掉。
+        try:
+            gaps = self._ann_all_valid_gaps()
+        except Exception:
+            gaps = None
+        if gaps is not None and not gaps:
+            self.macro_notify_msg = "无法打乱：这个盘面没有能选中的缝，滑块滑不动"
+            self.macro_notify_timer = 90
+            return
+
         # 取消当前动画 / 打乱演示
         self._abort_shuffle_demo()
         if self.animating:
@@ -145,10 +160,15 @@ class SessionMixin:
         # 按当前形态重建：只分「三角 / 其它」会让米字格被当成矩形重建
         # （Ctrl+R 之后米字格变矩形，尺寸等级还正好是初始预设），
         # 带序号重建后编号也一起丢掉——两者都是这里漏了分支。
+        # 碎三角同理：没有旗标，按 game.kind 判（与 _current_kind 同源），
+        # 漏了它 Ctrl+R 会把 48 块碎三角静默换成 4×4 矩形。
+        kind = self._current_kind()
         if getattr(self, 'triangle_mode', False):
             self.new_triangle_puzzle(self.triangle_side, self.current_step)
         elif getattr(self, 'mi_mode', False):
             self.new_mi_puzzle(self.current_m, self.current_n, self.current_step)
+        elif kind == 'shatter':
+            self.new_shatter_puzzle(self.current_step)
         elif getattr(self, 'numbered', False):
             self.new_puzzle(self.current_m, self.current_n, self.current_step,
                             numbered=True)
@@ -168,13 +188,22 @@ class SessionMixin:
     # ==================== 计时器 ====================
 
     def _current_kind(self) -> str:
-        """当前谜题形态键（puzzle_key / 成绩分榜共用）。"""
+        """当前谜题形态键（puzzle_key / 成绩分榜共用）。
+
+        旧四形态走旗标（triangle_mode/mi_mode/numbered）；几何引擎的新板型
+        （碎三角等）没有旗标——形态挂在逻辑对象自带的 ``game.kind`` 上
+        （EngineGame 建局即带），与 solver.game_form 同源。新板型登记进
+        engine.registry 即自动在此可见，不必再改这里。
+        """
         if getattr(self, 'triangle_mode', False):
             return 'triangle'
         if getattr(self, 'mi_mode', False):
             return 'mi'
         if getattr(self, 'numbered', False):
             return 'numbered'
+        kind = getattr(self.game, 'kind', '')
+        if kind and kind not in ('square', 'numbered', 'triangle', 'mi'):
+            return kind
         return 'square'
 
     def _current_puzzle_key(self) -> str:
@@ -227,6 +256,9 @@ class SessionMixin:
             return f'三角形 边长{k} 等级{self.current_step}'
         if getattr(self, 'mi_mode', False):
             return f'米字格 {self.current_m}×{self.current_n} 等级{self.current_step}'
+        if self._current_kind() == 'shatter':
+            # 碎三角固定 48 块、无尺寸维度，标签只报等级
+            return f'碎三角 等级{self.current_step}'
         name = '数字' if getattr(self, 'numbered', False) else '矩形'
         return f'{name} {self.current_m}×{self.current_n} 等级{self.current_step}'
 

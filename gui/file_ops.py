@@ -468,10 +468,14 @@ class FileOpsMixin:
     def _build_save_data(self) -> dict:
         """构建当前游戏状态的保存数据"""
         self.game.update_matrix()
+        # 碎三角：matrix 是 21×31 的「朝向下标+1」编码（质心晶格），压缩
+        # 存档的方形公式（0/1 + (r,c) 二元组 canonicalize）一概不适用
+        shatter = self._current_kind() == 'shatter'
         # 矩形谜题 + 开启压缩：直接生成 replay 压缩格式
         # （初始+末态+步骤原语+哈希校验点），异形不受此开关影响
         if getattr(self, 'use_compressed_save', False) and not (
-                getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False)):
+                getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False)
+                or shatter):
             try:
                 return compress_from_game(self)
             except Exception as e:
@@ -505,8 +509,9 @@ class FileOpsMixin:
         triangle = bool(getattr(self, 'triangle_mode', False))
         mi = bool(getattr(self, 'mi_mode', False))
         data = {
-            # 带序号/三角形/米字格谜题写 v2（puzzle.type 标明形态）；普通方形保持 v1 不变
-            'version': 2 if (numbered or triangle or mi) else 1,
+            # 带序号/三角形/米字格/碎三角谜题写 v2（puzzle.type 标明形态）；
+            # 普通方形保持 v1 不变
+            'version': 2 if (numbered or triangle or mi or shatter) else 1,
             'puzzle': {
                 'm': self.current_m,
                 'n': self.current_n,
@@ -522,6 +527,11 @@ class FileOpsMixin:
             data['puzzle']['triangle_side'] = self.game.k
         if mi:
             data['puzzle']['type'] = 'mi'
+        if shatter:
+            # 不写 type 的碎三角存档会被 v1 口径读成「方形 4×4」——
+            # 载入即静默换形态（48 块变 16 块）。matrix 的值域校验走
+            # validate_snapshot 的 else 分支（非负整数），0..24 合法。
+            data['puzzle']['type'] = 'shatter'
         # 高级选项自定义样式局：只记预设名（不内嵌样式），导入时按名查
         # config/design_styles/<名>.json 恢复还原目标（D4）。官方预设为 None。
         _preset = getattr(self, '_ann_style_goal', None)
@@ -634,12 +644,18 @@ class FileOpsMixin:
         # 步数以历史累计值为准（合并快照一条覆盖多步，不能再按索引算）
         self.step_count = self.game_history.current_step_total()
 
-        # 从快照重建游戏状态（依版本/形態分派）
+        # 从快照重建游戏状态（依版本/形態分派）。
+        # create_puzzle 对碎三角直接走 EngineGame 适配器（puzzle_types 的
+        # shatter 分支，不依赖全局引擎开关）——没有「落回方形」的回退。
         self.game = create_puzzle(m, n, step, kind=kind, triangle_side=triangle_side)
         # 形态标记同步到逻辑对象：编号谜题的整数矩阵靠 numbered 还原编号；
         # 三角/米字为独立矩阵编码，其逻辑类 __slots__ 不含 numbered，跳过
         if kind in ('square', 'numbered'):
             self.game.numbered = self.numbered
+        if kind == 'shatter':
+            # 相机按通用通道包围盒居中（与建局同式；存档不保存 zoom）
+            self.zoom = 1.0
+            self.center_map()
         if kind == 'triangle':
             self.current_m = self.current_n = self.game.k
             # 载入后按当前棋盘大小重新适配缩放并居中（存档不保存 zoom）
@@ -673,7 +689,8 @@ class FileOpsMixin:
     def _default_save_name(self) -> str:
         """自动命名：形态标记-step-m-n-日期时间.json（24小时制），
         如 mi-1-2-2-20260922-112821.json；矩形不加标记（保持旧名 2-6-6-…），
-        米字格 mi、三角形 tri、带序号 num 按序追加（可叠加，如 tri-num-…）。
+        米字格 mi、三角形 tri、带序号 num、碎三角 shat 按序追加（可叠加，
+        如 tri-num-…）。
 
         标记放最前面：四种形态的 step-m-n 完全同形（都是 1-6-6 这种），
         放在中段会被尺寸数字淹没，扫一眼分不出是哪一局。
@@ -687,6 +704,8 @@ class FileOpsMixin:
             marks.append('tri')
         if getattr(self, 'numbered', False):
             marks.append('num')
+        if self._current_kind() == 'shatter':
+            marks.append('shat')
         tag = ('-'.join(marks) + '-') if marks else ''
         return f"{tag}{self.current_step}-{self.current_m}-{self.current_n}-{ts}.json"
 

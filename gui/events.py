@@ -432,10 +432,14 @@ class EventsMixin:
                             self._start_auto_solve()
                         # 允许开关悬浮面板（只读，不修改滑块）
                         elif self._is_action_triggered(event, 'virtual_keyboard'):
-                            self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
-                            status = '开' if self.show_virtual_keyboard else '关'
-                            self.macro_notify_msg = f"虚拟键盘：{status}"
-                            self.macro_notify_timer = 90
+                            if self._generic_controls_locked():
+                                self.macro_notify_msg = "几何引擎板型不支持虚拟键盘（键位按形状排布）"
+                                self.macro_notify_timer = 120
+                            else:
+                                self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
+                                status = '开' if self.show_virtual_keyboard else '关'
+                                self.macro_notify_msg = f"虚拟键盘：{status}"
+                                self.macro_notify_timer = 90
                         elif self._is_action_triggered(event, 'metrics_panel'):
                             self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
                             # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
@@ -646,6 +650,26 @@ class EventsMixin:
                                                            dc_u * clamped)
                                 # 触点越过可达上限 → 提示不可继续（容差同上）
                                 self.drag_follow_invalid = (cells > max_cells + 0.05)
+                            elif self._generic_spec() is not None:
+                                # 通用通道：屏幕位移投影到锁定字母一步的屏幕
+                                # 向量上，折成步數；偏移按恆等空間位移 t·d
+                                # 記錄（_visual_key 加到 location 前兩分量）。
+                                # 步長直接取 _letter_screen_vec 的模長——zoom
+                                # 與各向異性座標都含在裡面，不另設格長常數。
+                                key = tuple(self.drag_follow_block.location)
+                                vx, vy = self._letter_screen_vec(
+                                    self.drag_follow_direction, key)
+                                n2 = vx * vx + vy * vy
+                                steps = ((px_dx * vx + px_dy * vy) / n2
+                                         if n2 > 1e-9 else 0.0)
+                                clamped = max(0.0, min(steps, float(max_cells)))
+                                from engine.compat import direction_table
+                                d = direction_table(self._generic_spec())[
+                                    self.drag_follow_direction]
+                                self.drag_follow_offset = (d[0] * clamped,
+                                                           d[1] * clamped)
+                                # 触点越过可达上限 → 提示不可继续（容差同上）
+                                self.drag_follow_invalid = (steps > max_cells + 0.05)
                             else:
                                 dc = px_dx / (cell_px * self.zoom)
                                 dr = px_dy / (cell_px * self.zoom)
@@ -745,6 +769,11 @@ class EventsMixin:
                                                 self.new_triangle_puzzle(pm, ps)
                                             elif kind == 'mi':
                                                 self.new_mi_puzzle(pm, pn, ps)
+                                            elif kind == 'shatter':
+                                                # 碎三角固定 48 块：m/n 是菜单
+                                                # 占位，只传等级（见 GUI.py
+                                                # puzzle_sub_presets 注释）
+                                                self.new_shatter_puzzle(ps)
                                             elif kind == 'numbered':
                                                 self.new_puzzle(pm, pn, ps, numbered=True)
                                             else:
@@ -803,6 +832,11 @@ class EventsMixin:
                                                 self.new_triangle_puzzle(pm, ps)
                                             elif kind == 'mi':
                                                 self.new_mi_puzzle(pm, pn, ps)
+                                            elif kind == 'shatter':
+                                                # 碎三角固定 48 块：m/n 是菜单
+                                                # 占位，只传等级（见 GUI.py
+                                                # puzzle_sub_presets 注释）
+                                                self.new_shatter_puzzle(ps)
                                             elif kind == 'numbered':
                                                 self.new_puzzle(pm, pn, ps, numbered=True)
                                             else:
@@ -1208,10 +1242,14 @@ class EventsMixin:
                             self._start_macro_recording()
                     
                     elif self._is_action_triggered(event, 'virtual_keyboard'):
-                        self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
-                        status = '开' if self.show_virtual_keyboard else '关'
-                        self.macro_notify_msg = f"虚拟键盘：{status}"
-                        self.macro_notify_timer = 90
+                        if self._generic_controls_locked():
+                            self.macro_notify_msg = "几何引擎板型不支持虚拟键盘（键位按形状排布）"
+                            self.macro_notify_timer = 120
+                        else:
+                            self.show_virtual_keyboard = not getattr(self, 'show_virtual_keyboard', False)
+                            status = '开' if self.show_virtual_keyboard else '关'
+                            self.macro_notify_msg = f"虚拟键盘：{status}"
+                            self.macro_notify_timer = 90
                     
                     elif self._is_action_triggered(event, 'metrics_panel'):
                         self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
@@ -1309,6 +1347,9 @@ class EventsMixin:
         step = self.current_step
         tri = getattr(self, 'triangle_mode', False)
         mi = getattr(self, 'mi_mode', False)
+        # 形态键走统一入口：碎三角这类无旗标的新板型挂在 game.kind 上
+        # （与 session._current_kind 同源），旧四形态与旗标口径一致
+        kind = self._current_kind()
         # 打乱演示播放中：blocks / matrix / solved / solver_state 都按打乱
         # 终态回答（视觉上棋盘还在重演打乱前状态，见 _demo_logic_positions）
         with self._demo_logic_positions():
@@ -1338,14 +1379,13 @@ class EventsMixin:
                     # 半整/B），它是错位态唯一稳定的分组依据（规划表 20）
                     blk['lat'] = ('A', 'B')[lattice_of(b.location)]
                     del blk['mod']
-        if mi:
-            kind = 'mi'
-        elif tri:
-            kind = 'triangle'
-        elif getattr(self, 'numbered', False):
-            kind = 'numbered'
-        else:
-            kind = 'square'
+            if kind == 'shatter':
+                # 碎三角：第三分量是 24 角色朝向串（'1'..'12'/'r1'..'r12'），
+                # 同格多块靠它区分。mod 余数在质心晶格上没有分组语义，删掉
+                # 免得调用方按方形不变量误读
+                for blk, b in zip(blocks, self.game.blocks):
+                    blk['orient'] = b.location[2] if len(b.location) >= 3 else None
+                    del blk['mod']
         return {
             "puzzle": puzzle_key(step, self.current_m, self.current_n, kind=kind,
                                  triangle_side=self.game.k if tri else None),
@@ -1920,13 +1960,57 @@ class EventsMixin:
                 elif action == 'move':
                     tri = getattr(self, 'triangle_mode', False)
                     mi = getattr(self, 'mi_mode', False)
+                    gen_spec = self._generic_spec()
                     if len(parts) < 2:
-                        usage = ("用法: move w/e/a/d/z/x" if tri
-                                 else "用法: move w/s/a/d/e/z/q/x" if mi
-                                 else "用法: move w/s/a/d")
+                        if gen_spec is not None:
+                            from engine.compat import direction_table
+                            letters = sorted(direction_table(gen_spec))
+                            usage = "用法: move " + "/".join(letters)
+                        else:
+                            usage = ("用法: move w/e/a/d/z/x" if tri
+                                     else "用法: move w/s/a/d/e/z/q/x" if mi
+                                     else "用法: move w/s/a/d")
                         self._cmd_reply(resp_q, False, usage)
                         continue
                     direction = parts[1].lower()
+                    if gen_spec is not None:
+                        # 通用通道（碎三角等）：12 字母中活躍的 8 個
+                        # （d/a/w/s/e/q/z/x）；方向須平行於已選縫——
+                        # allowed 由板型數據反查（_gap_dir_letters）。
+                        from engine.compat import direction_table
+                        letters = direction_table(gen_spec)
+                        if direction not in letters:
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"方向必须是 {'/'.join(sorted(letters))}")
+                            continue
+                        if not (self.selected_gap and self.selected_block):
+                            self._cmd_reply(resp_q, False, "未选中缝隙和滑块",
+                                            {'reason': 'not_selected'})
+                            continue
+                        gap_type, _line = self.selected_gap
+                        if direction not in self._gap_dir_letters(gap_type):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"当前缝隙不允许 {direction} 方向移动",
+                                {'reason': 'wrong_direction'})
+                            continue
+                        # 只读存档 / 计时就绪态禁止滑动
+                        if self._readonly_blocked() or (
+                                self.game_mode == 'timed'
+                                and self.timer_state == 'ready'):
+                            self._cmd_reply(
+                                resp_q, False,
+                                "当前状态禁止滑动（计时就绪态或只读存档）",
+                                {'reason': 'timer_blocked'})
+                            continue
+                        moved = self.move_selected_blocks(direction)
+                        if moved:
+                            self._cmd_reply(resp_q, True, f"已移动 {direction}")
+                        else:
+                            self._cmd_reply(resp_q, False, "移动未生效",
+                                            {'reason': 'no_move'})
+                        continue
                     if mi:
                         # 米字格：8 向（q/w/e/a/d/z/s/x）。方向必须平行于已选
                         # 缝隙（GAP_DIRECTIONS 四族）；滑块参考块没点过时
@@ -2098,17 +2182,39 @@ class EventsMixin:
                 elif action == 'select_gap':
                     tri = getattr(self, 'triangle_mode', False)
                     mi = getattr(self, 'mi_mode', False)
+                    gen_spec = self._generic_spec()
                     if len(parts) < 3:
-                        self._cmd_reply(
-                            resp_q, False,
-                            "用法: select_gap h/p/n line" if tri
-                            else "用法: select_gap h/v/d1/d2 line" if mi
-                            else "用法: select_gap h/v line")
+                        if gen_spec is not None:
+                            fams = "/".join(
+                                f.name for f in gen_spec.seam_families)
+                            self._cmd_reply(
+                                resp_q, False, f"用法: select_gap {fams} line")
+                        elif tri:
+                            self._cmd_reply(
+                                resp_q, False, "用法: select_gap h/p/n line")
+                        elif mi:
+                            self._cmd_reply(
+                                resp_q, False, "用法: select_gap h/v/d1/d2 line")
+                        else:
+                            self._cmd_reply(resp_q, False, "用法: select_gap h/v line")
                         continue
                     gap_type = parts[1].lower()
+                    if gen_spec is not None and gap_type not in \
+                            [f.name for f in gen_spec.seam_families]:
+                        # 族名大小寫不敏感（外部常寫小寫 l_v）
+                        low = {f.name.lower(): f.name
+                               for f in gen_spec.seam_families}
+                        gap_type = low.get(gap_type, gap_type)
                     if mi:
                         # 錯位態的絳線號是半整數（如 h 1.5），這裡要放寬到 float
                         line = parse_mi_coord(parts[2])
+                    elif gen_spec is not None:
+                        # 通用通道：4× 線分辨率的族會出現 ¼ 線，必須收 float
+                        try:
+                            line = float(parts[2])
+                            line = int(line) if line == int(line) else line
+                        except ValueError:
+                            line = None
                     else:
                         try:
                             line = int(parts[2])
@@ -2147,6 +2253,29 @@ class EventsMixin:
                                 f"{self._gap_type_name(gap_type)}缝隙 {line} 不合法"
                                 f"（该线处切不出可移动的滑块片：线两侧都要有滑块，"
                                 f"且线号需落在棋盘范围内）")
+                            continue
+                    elif gen_spec is not None:
+                        # 通用通道：族名直接來自板型數據（seam_families），
+                        # 不認識的名字一律拒；合法還要活（is_live_gap），
+                        # 死縫選中了也推不動——與點擊選縫同一套判據。
+                        fams = [f.name for f in gen_spec.seam_families]
+                        if gap_type not in fams:
+                            self._cmd_reply(
+                                resp_q, False,
+                                "类型必须是 " + "、".join(fams))
+                            continue
+                        if not self.game.is_valid_gap(gap_type, line):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"{gap_type} 缝隙 {line} 不合法"
+                                f"（该线处切不出可移动的滑块片：线两侧都要有滑块，"
+                                f"且线号需落在棋盘范围内）")
+                            continue
+                        if not self._generic_gap_live((gap_type, line)):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"{gap_type} 缝隙 {line} 选不动"
+                                f"（该线两侧滑块都推不动，选它也无法移动）")
                             continue
                     else:
                         if gap_type not in ('h', 'v'):
@@ -3217,6 +3346,10 @@ class EventsMixin:
             # 控制 Tab：三种模式开关（独立布尔，可任意组合）
             if self.settings_active_tab == 'control':
                 if hasattr(self, '_settings_ctrl_single_rect') and self._settings_ctrl_single_rect.collidepoint(mx, my):
+                    if self._generic_controls_locked():
+                        self.macro_notify_msg = "几何引擎板型只支持箭头 + 两次触控（单次触控不可用）"
+                        self.macro_notify_timer = 120
+                        return
                     if getattr(self, 'mi_mode', False) and not self.control_single_touch:
                         # 米字格按冻结决策只做两次触控 + 虚拟键盘：不许打开
                         self.macro_notify_msg = "米字格不使用单次触控（请用两次触控 + 虚拟键盘）"
@@ -3228,12 +3361,20 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
                 if hasattr(self, '_settings_ctrl_two_rect') and self._settings_ctrl_two_rect.collidepoint(mx, my):
+                    if self._generic_controls_locked() and self.control_two_touch:
+                        self.macro_notify_msg = "几何引擎板型靠两次触控操作，不能关闭"
+                        self.macro_notify_timer = 120
+                        return
                     self.control_two_touch = not self.control_two_touch
                     status = '开' if self.control_two_touch else '关'
                     self.macro_notify_msg = f"两次触控：{status}"
                     self.macro_notify_timer = 90
                     return
                 if hasattr(self, '_settings_ctrl_kb_rect') and self._settings_ctrl_kb_rect.collidepoint(mx, my):
+                    if self._generic_controls_locked():
+                        self.macro_notify_msg = "几何引擎板型不支持鼠标键盘方向键"
+                        self.macro_notify_timer = 120
+                        return
                     self.control_mouse_kb = not self.control_mouse_kb
                     status = '开' if self.control_mouse_kb else '关'
                     self.macro_notify_msg = f"鼠标键盘：{status}"
@@ -3241,6 +3382,10 @@ class EventsMixin:
                     return
                 # 虚拟键盘（F1 的纯鼠标入口）
                 if hasattr(self, '_settings_ctrl_vk_rect') and self._settings_ctrl_vk_rect.collidepoint(mx, my):
+                    if self._generic_controls_locked():
+                        self.macro_notify_msg = "几何引擎板型不支持虚拟键盘（键位按形状排布）"
+                        self.macro_notify_timer = 120
+                        return
                     if getattr(self, 'mi_mode', False) and getattr(self, 'show_virtual_keyboard', False):
                         # 米字格定方向全靠它：关掉等于没法玩，直接说明原因
                         self.macro_notify_msg = "米字格需要虚拟键盘定方向（不能关闭）"

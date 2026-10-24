@@ -38,6 +38,7 @@ import pygame
 
 from game import Block
 from game_mi import blocks_from_cells as mi_blocks_from_cells  # noqa: E402
+from game_mi import any_overlap as mi_any_overlap  # noqa: E402
 from game_triangle import blocks_from_cells as tri_blocks_from_cells  # noqa: E402
 from history import GameHistory, expand_snapshot_moves  # noqa: F401  （语义参照，不直接实例化）
 
@@ -666,8 +667,11 @@ class AnnotationMixin:
 
         创造模式下生成完直接成为当前谜题；标注模式下则进入选目标。
         三角形/米字格没有随机生成：任何入口只给提示、不开参数对话框。
+        碎三角（几何引擎新板型）同理：生成器是方形挖洞语义，进去会把
+        48 块碎三角静默换成另一形态的盘面。
         """
-        if self.triangle_mode or self.mi_mode:
+        if self.triangle_mode or self.mi_mode or \
+                self._current_kind() == 'shatter':
             self._ann_notify('该谜题没有随机生成功能')
             return
         saved = self._ann_saved('gen')
@@ -696,7 +700,14 @@ class AnnotationMixin:
         设计画布：还原态形状完全自定义，保存前过连通性 + 可打乱两道判定
         （见 _ann_validate_connected / _ann_validate_shuffleable）。异形开局
         时按 cells 摆回形状并设 goal_pattern（_ann_design_start_style）。
+
+        碎三角不走这里：画布重建走 create_puzzle 的方形分支，进去会把
+        48 块碎三角静默换成 4×4 矩形——明确拒绝（GUI 侧通用渲染/命中
+        已由 SpecPolygonView 承担，设计画布是另一条尚未解释器化的链路）。
         """
+        if self._current_kind() == 'shatter':
+            self._ann_notify('碎三角暂不支持高级选项（设计画布为方形/三角语义）')
+            return
         if self._ann_view == 'design':
             # 重复进入会把「进入前备份」覆盖成编辑中的盘面，退出就回不去了
             self._ann_notify('已在设计画布中（ESC 或[退出]返回）')
@@ -797,7 +808,13 @@ class AnnotationMixin:
         点已有滑块移除它；改 m/n/step 后按 Enter 重排画布范围。
         底部工具条实时校验并给出「应用（并开始）/ 还原 m×n / 清空 / 退出」。
         创造模式下应用完直接成为当前谜题；标注模式下则进入选目标。
+
+        碎三角不进这里：重建走方形 create_puzzle，48 块会被静默换成
+        4×4 矩形（同 _ann_btn_design 的拦截理由）。
         """
+        if self._current_kind() == 'shatter':
+            self._ann_notify('碎三角暂不支持手动构造（画布为方形/三角语义）')
+            return
         # 初始 m/n/step 一律取当前谜题，避免沿用上次构造的旧尺寸
         m = self.current_m
         n = self.current_n
@@ -924,6 +941,10 @@ class AnnotationMixin:
 
         数字谜题走编号栈：取下一块（移除）把编号压栈，放一块（添加）弹栈顶
         编号写给它；栈空时不允许放。
+
+        米字格追加前过**重叠闸门**（双层晶格，2026-10-23）：B 层位置与 A 层
+        位置 key 不同却能几何重叠，「集合不相交」挡不住——不放这道闸，点选
+        就能把两块叠在一起。删除不可能造成重叠，不设闸门。
         """
         pos = self._ann_normalize_build_pos(pos)
         try:
@@ -952,6 +973,17 @@ class AnnotationMixin:
                 if num is not None:
                     self._ann_build_num_stack.append(num)
         else:
+            # 米字格雙層晶格重疊閘門（2026-10-23）：B 層位置與 A 層位置 key
+            # 不同卻能幾何重疊（引擎 any_overlap 判定），「集合不相交」擋不住
+            # ——不放這道閘，點選就能把兩塊疊在一起（過去只有 apply 時的
+            # validate_shape 攔得住，畫布上早就疊上了；設計態連那道都沒有）。
+            # 米字的雙層晶格是這種局面的唯一來源（方形/三角沒有）。放之前先
+            # 問引擎：會重疊就拒絕並說明，畫布上永遠不出現重疊的方塊。
+            # 必須排在編號彈棧之前：拒絕放置不該吃掉一個編號。
+            if self.mi_mode and mi_any_overlap(self._ann_build_coords | {pos}):
+                self._ann_build_error = ('会与已有的滑块重叠'
+                                         '（米字格双层晶格相叠），请换个位置放')
+                return
             if self._ann_build_numbered:
                 if not self._ann_build_num_stack:
                     self._ann_build_error = '没有可用的编号：先取下一个滑块'
@@ -960,6 +992,29 @@ class AnnotationMixin:
             self._ann_build_coords.add(pos)
         self._ann_build_error = ''
         self._ann_rebuild_game_from_coords()
+
+    def _ann_mi_canvas_pick(self, x, y):
+        """米字构造画布落点 → 单位块 key；点不到回 None。
+
+        **两段式解析**（2026-10-23，修「点方块反而叠一块」）：A/B 两层晶格
+        的三角形几何上互相重叠，裸 world_to_cell 的「就近取用」在重叠区会把
+        点在已有方块上的点击解析成另一层的空位——实测满盘上点 A(0,0,'E') 靠
+        格心的一角返回 B 层 key (0.5,0.5,'N')，「点方块删它」于是变成「在它
+        上面再放一块」，直接重叠（本 bug 的触发路径）。现在先在构造集里挑
+        （点到已有方块就删），挑不到才裸解析空位（点放新块）。
+
+        混合态摆 B 层块的能力不变：B 块也在构造集里，点它照样删；空位上
+        没有已有方块可挑，裸解析照旧返回 B 层 key（2026-10-03 的
+        「就近取用」修复不受影响）。只传 cells 也不行——过滤后空位返回
+        None，只能删不能加（实测 A/B 两层 + cells 过滤时命中 128/128，
+        但空位返回 None）。
+        """
+        wx, wy = self.screen_to_world(x, y)
+        view = self._mi_view()
+        hit = view.world_to_cell(wx, wy, cells=self._ann_build_coords)
+        if hit is not None:
+            return hit
+        return view.world_to_cell(wx, wy)
 
     def _ann_build_restore_backup(self):
         """把进入构造/设计前备份的局面与历史原样恢复。"""
@@ -2350,15 +2405,11 @@ class AnnotationMixin:
         if self._ann_view == 'design':
             return self._ann_design_board_click(x, y)
         #
-        # 三角/米字用各自 view 的 world_to_cell（不带 cells，空位也给身份）；
-        # 方形照旧用 get_cell_at_pos。
-        #
-        # 米字這裡**不能傳 cells**：本模式的語義是「點空位新增 / 點已有塊刪除」，
-        # 傳了構造集過濾後空位就點不中、只能刪不能加（實測 A/B 兩層 + cells
-        # 過濾時命中 128/128，但空位返回 None）。MiBoardView.world_to_cell 已
-        # 改成「就近取用」（2026-10-03），裸調用即可同時命中 A/B 兩層——
-        # 舊版「按清單次序取第一個命中者」會讓 B 層塊被 A 層搶走，這才是
-        # 創造模式擺不出混合態的根因。
+        # 三角用各自 view 的 world_to_cell（空位也给身份）；方形照旧用
+        # get_cell_at_pos；米字走两段式 _ann_mi_canvas_pick（先挑已有方块
+        # ＝删，挑不到再解析空位＝放）——原因见该 helper 的 docstring：
+        # A/B 两层几何重叠，裸解析在重叠区会把「点方块」误判成「在它上面
+        # 放一块」，直接重疊（2026-10-23 修的 bug）。
         if self.triangle_mode:
             wx, wy = self.screen_to_world(x, y)
             cell = self._tri_view().world_to_cell(wx, wy)
@@ -2366,8 +2417,7 @@ class AnnotationMixin:
                 self._ann_build_toggle(cell)
             return True
         elif self.mi_mode:
-            wx, wy = self.screen_to_world(x, y)
-            cell = self._mi_view().world_to_cell(wx, wy)
+            cell = self._ann_mi_canvas_pick(x, y)
             if cell is not None:
                 self._ann_build_toggle(cell)
             return True
@@ -2404,10 +2454,17 @@ class AnnotationMixin:
         if gap is not None:
             self._ann_design_seam_click(gap, x, y)
             return True
-        if self.triangle_mode or self.mi_mode:
+        if self.mi_mode:
+            # 与手动构造同一条解析路径：先挑已有方块（删），挑不到再解析
+            # 空位（放）——A/B 两层几何重叠，裸解析会把「点方块」误判成
+            # 「在它上面放一块」直接重疊（见 _ann_mi_canvas_pick）。
+            cell = self._ann_mi_canvas_pick(x, y)
+            if cell is not None:
+                self._ann_build_toggle(cell)
+            return True
+        if self.triangle_mode:
             wx, wy = self.screen_to_world(x, y)
-            view = self._tri_view() if self.triangle_mode else self._mi_view()
-            cell = view.world_to_cell(wx, wy)
+            cell = self._tri_view().world_to_cell(wx, wy)
             if cell is not None:
                 self._ann_build_toggle(cell)
             return True
@@ -2669,9 +2726,21 @@ class AnnotationMixin:
         """当前盘面上所有可选的缝 [(gap_type, line), ...]（三形态通用）。
 
         三角/米字直接问 game.all_gaps()（各族候选线已按 side_of 算好）；
-        方形没有这个接口，沿用「边界盒内逐条线问 is_valid_*_line」。
+        方形没有这个接口，沿用「边界盒内逐条线问 is_valid_*_line」；
+        通用通道（碎三角等）用 SpecPolygonView 的 distinct rank 边界——
+        all_gaps 逐整數 t 枚舉會把同分區別名重複計數（碎三角 390 vs
+        121），玩家只認「分區邊界」，況且這裡每個候選都要試一遍移動，
+        多報的 3 倍候選全是要跑 try_move 的。
         """
         game = self.game
+        if self._generic_spec() is not None:
+            try:
+                view = self._polygon_view()
+                origin = self._poly_view_origin(view)
+                return [(gt, ln) for gt, ln in view.seam_candidates(game.board)
+                        if game.is_valid_gap(gt, ln)]
+            except Exception:
+                return []
         if hasattr(game, 'all_gaps'):
             try:
                 return [(gt, ln) for (gt, ln) in game.all_gaps()
@@ -2680,16 +2749,26 @@ class AnnotationMixin:
                 return []
         bounds = game.get_boundaries()
         out = []
-        for i in range(bounds['min_row'] + 1, bounds['max_row']):
+        # 候选线 = 边界盒内整条线：is_valid_h_line 的门就是
+        # min_row <= line < max_row，头一条内部线（line=min_row）是候选。
+        # 2026-10-24 修 off-by-one：旧写法从 min_row+1 起，把每条缝族的
+        # 第一个内部线全漏掉——2 行盘面（只剩一条横中缝）直接枚举成空，
+        # 保存门 0 缝诊断与打乱拦截都会误判（2×2 满块被说成「没有缝」，
+        # 实际只是滑动出界）。
+        for i in range(bounds['min_row'], bounds['max_row']):
             if game.is_valid_h_line(i):
                 out.append(('h', i))
-        for j in range(bounds['min_col'] + 1, bounds['max_col']):
+        for j in range(bounds['min_col'], bounds['max_col']):
             if game.is_valid_v_line(j):
                 out.append(('v', j))
         return out
 
     def _ann_dirs_for_gap(self, gap_type: str) -> tuple:
         """该缝族允许的移动方向（平行于缝）。"""
+        if self._generic_spec() is not None:
+            # 通用通道：字母表由板型數據反查（引擎 parallel → compat 表），
+            # 與渲染器/虛擬鍵盤同一源
+            return self._gap_dir_letters(gap_type)
         if self.triangle_mode:
             from game_triangle import GAP_DIRECTIONS
             return GAP_DIRECTIONS.get(gap_type, ())
@@ -2799,6 +2878,10 @@ class AnnotationMixin:
         通过共用缝相连（边相邻），保证局面是一个可被打乱的整体，而非冻形
         或互不相连的两盘。bandage 组视为刚体，组内任一可达即整组可达。
 
+        一颗都滑不动时再分病因（2026-10-24）：一条能选的缝都没有（每条
+        缝线都切进滑块内部、或只剩一侧有滑块）→ 给「至少留一条干净缝」
+        的可操作提示；有缝但每步都被拒 → 归入上面的计数消息。
+
         邻接问 game.neighbors_of（三形态各自的边相邻表），方形退回 4-邻域。
 
         返回 (ok, err_msg)。
@@ -2810,6 +2893,15 @@ class AnnotationMixin:
         if not ok:
             return False, err
         movable = self._ann_find_movable_blocks()
+        if not movable and not self._ann_all_valid_gaps():
+            # 一颗都滑不动时分两种病因：一条能选的缝都没有（软锁死——
+            # 异形造型的典型死法）vs 有缝但每步都被合法性拒绝（理论
+            # 上几乎不出现）。前者必须给「该怎么办」，否则只看到
+            # 「0 颗能滑动」，不知道该去动缝。
+            return False, (
+                '没有可选中的缝：每条缝线都切进了滑块内部，或只剩一侧'
+                '有滑块——存出来的样式会滑不动。请调整形状，至少留一条'
+                '整条贴在滑块边上、两侧都有滑块的缝')
         if len(movable) < 2:
             return False, (f'当前只有 {len(movable)} 颗能滑动，'
                            f'至少要有 2 颗能滑的滑块（否则无法打乱）')

@@ -74,6 +74,16 @@ class RecordsPanelMixin:
         """该成绩是否三角形谜题（key 形如 {step}~tri{k}；方形/序号记录不含 ~tri）"""
         return '~tri' in str(rec.get('puzzle_key', ''))
 
+    @staticmethod
+    def _rp_is_shatter(rec) -> bool:
+        """该成绩是否碎三角（key 形如 {step}~shatter，无尺寸维度）。
+
+        碎三角的 initial_matrix 是 21×31 的「朝向下标+1」整数矩阵，没有
+        #/_ 字符编码：载入练习/另存为的两条路都按方形 import_map 还原，
+        会把 48 块静默拆成另一形态——一律明拒。
+        """
+        return '~shatter' in str(rec.get('puzzle_key', ''))
+
     def _rp_detail_record(self):
         """返回当前展开详情的记录，不存在则置空返回 None"""
         if not self.rp_detail_id:
@@ -514,6 +524,10 @@ class RecordsPanelMixin:
 
     def _rp_save_as_puzzle(self, rec) -> str:
         """把该打乱另存为 .json 存档（结构同普通存档，可直接「文件-打开」载入）"""
+        if self._rp_is_shatter(rec):
+            # 碎三角无字符地图编码（见 _rp_is_shatter）：另存为只能产出
+            # 一份读回来会变形的存档，不如不做
+            return ''
         try:
             numbered = bool(rec.get('numbered')) or str(rec.get('puzzle_key', '')).endswith('#num')
             triangle = self._rp_is_triangle(rec)
@@ -570,6 +584,12 @@ class RecordsPanelMixin:
 
     def _rp_load_into_practice(self, rec):
         """把该打乱载入为当前谜题（练习模式），立即复现"""
+        if self._rp_is_shatter(rec):
+            # 碎三角成绩没有 #/_ 字符地图（21×31 朝向下标矩阵），按方形
+            # import_map 会把 48 块静默拆成另一形态——明拒（见 _rp_is_shatter）
+            self.macro_notify_msg = "碎三角成绩暂不支持载入练习"
+            self.macro_notify_timer = 120
+            return
         if self.animating:
             self.cancel_animation()
         numbered = bool(rec.get('numbered')) or str(rec.get('puzzle_key', '')).endswith('#num')

@@ -52,9 +52,39 @@ def _connected_components(keys, spec):
 
     邻接的唯一来源 = spec.lattice.neighbors_of：无朝向板型走点级偏移
     （方形/立方），带朝向板型按联合键查 orient_steps 表（米字 5 邻）。
+
+    显式邻接模式（spec.lattice.adjacency 非空，如碎三角双形状密铺）：
+    邻接由邻接表按**点**定义，连通性也按点判定（orient 不参与——同一
+    位置至多一块，形状随块走、不随位置定）。实现上把键映射到点做 BFS，
+    再把点分量还原成 (point, orient) 键。
     """
-    remaining = set(keys)
     lat = spec.lattice
+    hook = getattr(spec, 'components', None)
+    if hook is not None:
+        # 板型自带连通性判定（显式邻接 + 块可离开折叠基本域的情形）：
+        # 走几何共边，与「坐标是否落在残差表内」解耦。
+        return list(hook(frozenset(keys)))
+    if getattr(lat, 'adjacency', None) is not None:
+        pt_to_key = {}
+        remaining = set()
+        for k in keys:
+            pt_to_key.setdefault(k[0], k)
+            remaining.add(k[0])
+        comps = []
+        while remaining:
+            seed = remaining.pop()
+            comp_pts = {seed}
+            stack = [seed]
+            while stack:
+                p = stack.pop()
+                for q, _o in lat.neighbors_of(p, ''):
+                    if q in remaining:
+                        remaining.discard(q)
+                        comp_pts.add(q)
+                        stack.append(q)
+            comps.append(frozenset(pt_to_key[pp] for pp in comp_pts))
+        return comps
+    remaining = set(keys)
     comps = []
     while remaining:
         seed = remaining.pop()
@@ -240,9 +270,17 @@ class BoardSpec:
         cell_polygon: 可选钩子 (point, orient) -> 多边形顶点元组。
             纯几何、零 pygame——GUI 绘制层据此画格子（「GUI 上绘制」
             的数据接口；方形给单位方格，米字给直角等腰三角）。
-
-    ⚠️ 三角板型尚未落地：它需要 D3 显式对称表（lattice.symmetry 当前
-    仅 hyperoctahedral）与还原态轨道 solved_check，属 P2 剩余件。
+        components: 可选钩子 (keys) -> 连通分量元组。覆盖默认的格点邻接
+            连通判定。**显式邻接板型在块可能离开折叠基本域时**必须挂它：
+            查表式邻接按「折叠残差」取邻居，块一落到残差表外就查不到邻居
+            （碎三角按 1 个边长平移后 34–38 块落到残差集外，被误判成孤立
+            → 只能退化成整周期步长，缝被迫走锯齿）。几何共边判定与坐标
+            是否在基本域无关。
+        seam_lines: 可选钩子 (board, family) -> ((t, line), ...)，该族在
+            **当前局面**下的真实缝线（t = 引擎缝号，line = 外部线号）。
+            默认实现是「t 逐整数枚举 + seam_clear 过滤」，只适用于缝坐标
+            连续可分的板型；显式邻接板型的缝必须落在真实块边上，由几何
+            直接给出（见 engine/shatter_geometry 的 _seam_lines）。
     """
 
     name: str
@@ -256,6 +294,8 @@ class BoardSpec:
     solved_check: object = None
     overlap: object = None
     cell_polygon: object = None
+    components: object = None
+    seam_lines: object = None
 
     def __post_init__(self):
         if not isinstance(self.lattice, Lattice):
@@ -267,7 +307,7 @@ class BoardSpec:
         if not self.seam_families:
             raise ValueError(f"板型 {self.name!r} 的缝族为空（永冻板型）")
         for hook_name in ('seam_clear', 'solved_check', 'overlap',
-                          'cell_polygon'):
+                          'cell_polygon', 'components', 'seam_lines'):
             hook = getattr(self, hook_name)
             if hook is not None and not callable(hook):
                 raise TypeError(
@@ -327,7 +367,7 @@ class BoardSpec:
                         f"朝向 {o!r} 的方向向量 {d!r} 非法：须为长度 {dim}、"
                         f"至少一个非零分量的整数元组")
             table_orients = {o for o, _ in lat.orient_steps}
-            if table_orients != set(self.orientations):
+            if lat.adjacency is None and table_orients != set(self.orientations):
                 raise ValueError(
                     f"板型 {self.name!r} 的 lattice.orient_steps 朝向集 "
                     f"{sorted(table_orients)} 与 orientations "
@@ -549,7 +589,13 @@ class Board:
             lo, hi = min(vals.values()), max(vals.values())
             # t ∈ (lo, hi]：下侧必含 rank=lo 的块、上侧必含 rank=hi 的块，
             # 两端非空由取值范围保证（无需再查空侧）。
-            for t in range(lo + 1, hi + 1):
+            if spec.seam_lines is not None:
+                # 板型自带缝线表（显式邻接板型：缝必须落在真实块边上）。
+                cand_t = [t for t, _line in spec.seam_lines(self, fam)
+                          if lo < t <= hi]
+            else:
+                cand_t = range(lo + 1, hi + 1)
+            for t in cand_t:
                 # 锁死缝（米字 span 判据的落点）：几何上切不动
                 if spec.seam_clear is not None and not spec.seam_clear(fam, t, self):
                     continue

@@ -64,6 +64,20 @@ class Lattice:
     parity_linear: tuple = None
     symmetry: str = 'hyperoctahedral'
     orient_steps: tuple = ()
+    # 显式邻接表（非正则密铺专用，如碎三角双形状 / 阿基米德混铺）：
+    #   point -> 该点的全部邻点元组（整数坐标）。非空时，**邻接不再走
+    #   offset 表**，整张图由这张表定义；neighbor_steps/orient_steps
+    #   此时可空（与 offset 表二选一的约束被本字段覆盖）。坐标仍是整数
+    #   元组（几何坐标 ×scale），valid 放行任意整数点（表即合法性来源）。
+    #   这是「邻接结构不同（真混合密铺）」泛化的最小落地：把固定偏移表
+    #   换成「邻居函数 / 显式边表」，核心移动 / 缝 / 规范化逻辑零改动。
+    adjacency: object = None
+    # 显式邻接的「折叠周期」（仅 adjacency 非空时需要）：2 个 dim 维整数
+    # 向量构成的晶格基。碎三角这类非正则密铺的邻接是周期的，折叠后用
+    # 极小基 + 还原归约即可在任意可达位置查邻接（无需有限大表）。
+    # 约定：两个向量中一个 y 分量为 0（x 轴周期）、另一个 y 分量非零
+    # （y 轴周期）；碎三角 = ((4,0),(2,6))。
+    adj_periods: object = None
 
     def __post_init__(self):
         # 邻接记忆化缓存（不是 dataclass 字段：不参与 eq/repr，纯加速件）。
@@ -74,6 +88,8 @@ class Lattice:
         #    无限膨胀（超上限即退化成不缓存，行为不变，只慢）。
         object.__setattr__(self, '_nbr_cache', {})
         object.__setattr__(self, '_orient_table', dict(self.orient_steps))
+        object.__setattr__(self, '_adjacency', self.adjacency)
+        object.__setattr__(self, '_adj_periods', self.adj_periods)
         if type(self.dim) is not int or self.dim < 1:
             raise ValueError(f"Lattice.dim 须为正整数，收到 {self.dim!r}")
         if type(self.scale) is not int or self.scale < 1:
@@ -98,12 +114,49 @@ class Lattice:
                 raise ValueError(
                     f"parity_linear 只支持全同系数（如 (1,1)），收到 "
                     f"{self.parity_linear!r}（混合系数对自同构群不封闭）")
-        if self.symmetry not in ('hyperoctahedral', 'central_inversion'):
+        if self.symmetry not in ('hyperoctahedral', 'central_inversion', 'trivial'):
             raise ValueError(
                 f"不支持的自同构群: {self.symmetry!r}"
-                f"（当前仅 'hyperoctahedral' / 'central_inversion'）")
+                f"（当前仅 'hyperoctahedral' / 'central_inversion' / 'trivial'）")
+        # ---- 显式邻接表（非正则密铺）----
+        if self.adjacency is not None:
+            if not isinstance(self.adjacency, dict):
+                raise ValueError(f"adjacency 须为 dict，收到 {type(self.adjacency).__name__}")
+            if self.adj_periods is None:
+                raise ValueError(
+                    "adjacency 非空时必须同时给出 adj_periods（折叠周期基）")
+            if (not isinstance(self.adj_periods, tuple)
+                    or len(self.adj_periods) != 2
+                    or not all(isinstance(p, tuple) and len(p) == self.dim
+                                and all(type(x) is int for x in p)
+                                for p in self.adj_periods)):
+                raise ValueError(
+                    f"adj_periods 须为 2 个长度 {self.dim} 的整数向量，"
+                    f"收到 {self.adj_periods!r}")
+            u, v = self.adj_periods
+            if u[1] != 0 and v[1] == 0:
+                u, v = v, u  # 归一：u 取 y 分量为 0 者
+            if u[1] != 0 or v[1] == 0 or u[0] == 0:
+                raise ValueError(
+                    f"adj_periods 须为一个 y 分量为 0、另一个 y 分量非零且 x"
+                    f"分量非零（碎三角 ((4,0),(2,6)) 同构），收到 "
+                    f"{self.adj_periods!r}")
+            for k, vs in self.adjacency.items():
+                if (not isinstance(k, tuple) or len(k) != self.dim
+                        or not all(type(x) is int for x in k)):
+                    raise ValueError(f"adjacency 的键须为长度 {self.dim} 的整数元组，收到 {k!r}")
+                if (not isinstance(vs, tuple)
+                        or not all(isinstance(d, tuple) and len(d) == self.dim
+                                    and all(type(x) is int for x in d)
+                                    for d in vs)):
+                    raise ValueError(
+                        f"adjacency[{k!r}] 的值须为整数位移元组，收到 {vs!r}")
         # ---- orient_steps：带朝向邻接表（米字 5 邻）----
-        if self.orient_steps:
+        # 显式邻接模式（adjacency 非空）下，offset 表可全空：邻接改由
+        # adjacency 定义，不再要求 neighbor_steps/orient_steps 二选一。
+        if self.adjacency is not None:
+            pass
+        elif self.orient_steps:
             if self.neighbor_steps:
                 raise ValueError(
                     "orient_steps 与 neighbor_steps 二选一：带朝向板型的"
@@ -135,11 +188,17 @@ class Lattice:
     # 坐标合法性
     # ------------------------------------------------------------------
     def valid(self, point) -> bool:
-        """点是否落在格上（维度 + 整数 + 奇偶约束）。"""
+        """点是否落在格上（维度 + 整数 + 奇偶约束）。
+
+        显式邻接模式（adjacency 非空）下，合法性完全由邻接表定义：
+        任意整数点坐标都视为合法（坐标仍是整数元组、长度=dim）。
+        """
         if not isinstance(point, tuple) or len(point) != self.dim:
             return False
         if not all(isinstance(x, int) for x in point):
             return False
+        if self.adjacency is not None:
+            return True
         if self.parity_linear is not None:
             acc = 0
             for c, x in zip(self.parity_linear, point):
@@ -178,7 +237,15 @@ class Lattice:
         hit = cache.get(key)
         if hit is not None:
             return hit
-        if self._orient_table:
+        if self._adjacency is not None:
+            # 显式邻接模式：邻接由「折叠后的基残差 → 位移集」定义，orient
+            # 不参与（连通性按点）。任意可达位置先还原到基本域残差，再叠加
+            # 位移，无需有限大表（碎三角等周期密铺即此）。
+            # 返回 (邻点, '')——下游连通性在显式模式下按点匹配，orient 无关。
+            ref = self._reduce_adj(point)
+            out = tuple((tuple(point[i] + d[i] for i in range(self.dim)), '')
+                        for d in self._adjacency.get(ref, ()))
+        elif self._orient_table:
             out = tuple((tuple(point[i] + dpoint[i]
                                for i in range(self.dim)), dorient)
                         for dpoint, dorient in self._orient_table.get(orient, ()))
@@ -187,6 +254,23 @@ class Lattice:
         if len(cache) < _NBR_CACHE_CAP:
             cache[key] = out
         return out
+
+    def _reduce_adj(self, point):
+        """把任意点还原到显式邻接的基本域残差（adj_periods 折叠）。
+
+        约定 adj_periods=(u, v)：u 的 y 分量为 0（x 轴周期），v 的 y 分量
+        非零（y 轴周期）。先按 v 把 y 归到 [0, v_y)，再按 u 把 x 归到
+        [0, u_x)——纯整数地板除法（无浮点），碎三角 ((4,0),(2,6)) 经实测
+        与直接枚举一致。返回 (r_x, r_y) 残差。
+        """
+        u, v = self._adj_periods
+        if u[1] != 0 and v[1] == 0:
+            u, v = v, u
+        b = point[1] // v[1]
+        r_y = point[1] - b * v[1]
+        a = (point[0] - b * v[0]) // u[0]
+        r_x = point[0] - a * u[0] - b * v[0]
+        return (r_x, r_y)
 
     # ------------------------------------------------------------------
     # 自同构群（规范化的对称来源）
@@ -213,6 +297,13 @@ class Lattice:
 
             yield _id
             yield _neg
+            return
+        if self.symmetry == 'trivial':
+            # 仅恒等：用于显式邻接板型（碎三角等——还原态=精确拼合，
+            # 无平移/旋转等效；is_solved 走 solved_check 钩子，不依赖本群）。
+            def _id(p):
+                return p
+            yield _id
             return
         for perm in permutations(range(self.dim)):
             for signs in product((1, -1), repeat=self.dim):

@@ -459,6 +459,20 @@ class GameHistory:
                             game.blocks.append(
                                 Block([min_row + row_idx + 0.5,
                                        min_col + col_idx + 0.5, q]))
+        elif getattr(game, 'spec', None) is not None and game.spec.orientations:
+            # 通用带朝向板型（碎三角等）：matrix 值 = orientations 下标+1
+            # （与 adapter.update_matrix 的通用分支互为编解码）。落到这里
+            # 的旧代码是方形 2-tuple 分支，朝向整段丢失——撤销/重做/读档
+            # 后块的角色全变、还原判定必错。三角/米字有位打包专用分支在
+            # 上面；方形/立方 orientations 为空元组，落到 else。
+            game.blocks = []
+            orients = game.spec.orientations
+            for row_idx, row in enumerate(matrix):
+                for col_idx, val in enumerate(row):
+                    if val:
+                        game.blocks.append(Block([min_row + row_idx,
+                                                  min_col + col_idx,
+                                                  orients[val - 1]]))
         else:
             # 根據矩陣重建滑塊列表；编号谜题的整数矩阵「值即编号」，直接取用
             game.blocks = []

@@ -15,6 +15,11 @@ GUI 绘制层（P3）将直接消费 spec.cell_polygon 等钩子把板型画出�
   · 'tri'     三角密铺（斜坐标 Z²、up/down 朝向 3 邻接、3 缝族 h/p/n、
     中心反演对称 + 还原态 120° 轨道 solved_check）——P2 落地，与
     game_triangle.TriangleSliderMatrix 差分对拍见测试 M 节。
+  · 'shatter' 碎三角（双形状非正则密铺：红=边长1正三角 / 绿=30-30-120
+    等腰；48 块 = 4 单元；显式邻接 Lattice + 几何 SAT overlap + 精确拼合
+    solved_check；6 缝族全开）。首个「显式邻接」泛化的真实受益板型——
+    边邻接图不规则（18 种邻接签名），固定偏移表表达不了。
+  · 'shatter_lattice' 碎三角·晶格（同几何，仅 3 条晶格缝，绿底缝关闭）。
 
 三角 preset 的还原态 120° 旋转轨道走 solved_check 钩子（凸包）；其 6 折
 旋转群不闭合于「朝向=方向向量」机制，故对称群用最小合法的 C2（中心反演），
@@ -27,6 +32,43 @@ from . import mi_geometry
 from . import tri_geometry
 from .board import Block, Board, BoardSpec, SeamFamily
 from .lattice import Lattice, cubic_lattice, square_lattice
+from .shatter_geometry import shatter_spec
+
+
+# ----------------------------------------------------------------------
+# cell_polygon：把「每个形态长什么样」写成数据（P3b 通用渲染的数据源头）
+#
+# 这三个函数是解释器路线的第一步：GUI 不该知道 square/tri/mi 各自怎么画，
+# 只该调用 spec.cell_polygon(point, orient) 拿到多边形。纯绘制用途，
+# 引擎逻辑（移动/邻接/连通）完全不看它们，故补它们无回归风险。
+#   · square：无现成函数，自写单位方格；
+#   · tri：复用 tri_geometry.tri_vertices 的斜坐标，**必须**乘以单位三角基
+#     转成平面（斜坐标直接当笛卡尔会铺成平行四边形网，不是正三角）；
+#   · mi：mi_geometry.mi_vertices 已是平面 (x=列, y=行)、且与 game_mi 顶点
+#     公式同源（×2），直接透传。
+# ----------------------------------------------------------------------
+def _square_cell_polygon(point, orient=''):
+    """方形块的平面多边形：单位方格（point=(行, 列) → 平面 x=列、y=行）。"""
+    r, c = point
+    return ((c, r), (c + 1, r), (c + 1, r + 1), (c, r + 1))
+
+
+# 单位正三角的斜坐标基：斜坐标 (i, j) 的平面位置 = i·e1 + j·e2，
+# e1·e2 = cos 60°，故三点张成正三角形而非平行四边形。
+_TRI_PLANE_BASIS = ((1.0, 0.0), (0.5, 0.8660254037844386))
+
+
+def _tri_cell_polygon(point, orient=''):
+    """三角块的平面多边形：tri_vertices 的斜坐标乘单位三角基转真平面坐标。"""
+    i, j = point
+    e1, e2 = _TRI_PLANE_BASIS
+    return tuple((a * e1[0] + b * e2[0], a * e1[1] + b * e2[1])
+                 for (a, b) in tri_geometry.tri_vertices(i, j, orient))
+
+
+def _mi_cell_polygon(point, orient=''):
+    """米字块的平面多边形：mi_vertices 已是平面 (x=列, y=行)，直接透传。"""
+    return mi_geometry.mi_vertices(point, orient)
 
 _REGISTRY = {}
 
@@ -86,6 +128,7 @@ def square_spec(m: int, n: int, name: str = 'square') -> BoardSpec:
             SeamFamily('v', (0, 1), ((1, 0), (-1, 0))),
         ),
         goal_blocks=tuple(Block((i, j)) for i in range(m) for j in range(n)),
+        cell_polygon=_square_cell_polygon,
     )
     return spec
 
@@ -179,6 +222,7 @@ def mi_spec(m: int, n: int, name: str = 'mi') -> BoardSpec:
         # seam_clear 契约 = True 表示「可用」；seam_locked 是「锁死」，取反接入
         seam_clear=lambda fam, t, board: not mi_geometry.seam_locked(fam, t, board),
         overlap=mi_geometry.has_overlap,
+        cell_polygon=_mi_cell_polygon,
     )
 
 
@@ -279,6 +323,7 @@ def tri_spec(k: int, name: str = 'tri', default_shape: bool = True) -> BoardSpec
                           for o in tri_geometry.TRI_ORIENTATIONS),
         goal_blocks=_tri_goal_blocks(k),
         solved_check=_solved,
+        cell_polygon=_tri_cell_polygon,
     )
 
 
@@ -293,3 +338,9 @@ register_board_type('square', square_spec)
 register_board_type('cubic', cubic_spec)
 register_board_type('mi', mi_spec)
 register_board_type('tri', tri_spec)
+# 碎三角（双形状非正则密铺，显式邻接板型的首个真实受益者）：
+#   'shatter'    = 碎三角（全）：6 缝族全开；
+#   'shatter_lattice' = 碎三角·晶格：仅 3 条晶格缝（绿底缝关闭）。
+register_board_type('shatter', lambda **kw: shatter_spec(full=True, **kw))
+register_board_type('shatter_lattice',
+                    lambda **kw: shatter_spec(full=False, **kw))

@@ -189,13 +189,19 @@ check('D1g 点格增删分支可用',
 # ---------------------------------------------------------------- 可打乱门
 print('\n--- D2 可打乱判定（保存门） ---')
 enter_advanced()
-# 留一个 2×2 满块（边界盒正好填满，任何移动都碰撞 → 0 可动 → 不可打乱）
-gui._ann_build_coords = {(0, 0), (0, 1), (1, 0), (1, 1)}
+# 留一格宽横条（1×3）：每条缝的任一侧滑动都会把该侧甩成孤立
+# → 0 可动 → 不可打乱。
+# 2026-10-24 修正例子：旧用例用 2×2 满块，前提是错的——滑块可以滑出
+# 棋盘外（玩家指南明说），中缝两侧都能合法外滑，2×2 实测 4 颗可动。
+# 旧判据从 min_row+1 起枚举候选线，漏掉每条缝族的头一条内部线，才把
+# 2×2 误判成 0 可动；同源 bug 也影响 has_legal_move（其 docstring 里的
+# 3×3 L 例子同样不再冻，已同步更正）。冻形换成真正冻住的 1×3 横条。
+gui._ann_build_coords = {(0, 0), (0, 1), (0, 2)}
 gui._ann_design_groups = {}
 gui._ann_rebuild_game_from_coords()
 gui._ann_design_style_name = UNAME
 gui._ann_design_save_style()
-check('D2a 不可打乱（2×2 满块，0 可动）拒绝保存',
+check('D2a 不可打乱（1×3 横条，0 可动）拒绝保存',
       design_styles.load_style(gui.config_dir, UNAME) is None
       and gui._ann_build_error
       and '滑动' in gui._ann_build_error, f'err={gui._ann_build_error!r}')

@@ -155,6 +155,21 @@ class MoveMixin:
                 return False
 
         # 构建移动元数据
+        #
+        # `delta` 是**实际位移向量**（按块坐标分量），不是字母换算出来的格数。
+        # 动画层（animation._move_delta）优先吃它：引擎板型的块坐标是 P 空间
+        # （碎三角一步是 (12,0) 这种量级），而字母方向表只有方形四向/三角
+        # 六向/米字八向那几张**方格**表——拿方形的 'd'→(0,1) 去插值，撤销时
+        # 按错位移找不到块（直接跳过动画），重做时朝错方向爬一格（动画错乱）。
+        _delta = None
+        if selected and final_positions and len(selected) == len(final_positions):
+            d0 = (final_positions[0][0] - selected[0].location[0],
+                  final_positions[0][1] - selected[0].location[1])
+            # 只接受「整组同一位移」的动作（滑动必然如此）。顺序万一没对齐就能
+            # 立刻发现，退回旧的按字母换算，不拿错误位移去插值。
+            if all((fp[0] - sb.location[0], fp[1] - sb.location[1]) == d0
+                   for sb, fp in zip(selected, final_positions)):
+                _delta = d0
         move_info = {
             'gap_type': self.selected_gap[0] if self.selected_gap else None,
             'gap_line': self.selected_gap[1] if self.selected_gap else None,
@@ -162,6 +177,8 @@ class MoveMixin:
             'step': move_step,
             'moved_positions': [list(b.location) for b in selected],
         }
+        if _delta is not None:
+            move_info['delta'] = _delta
         self._pending_move_info = move_info
 
         # 录制模式：记录这一步到宏
@@ -188,7 +205,9 @@ class MoveMixin:
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
             self._pending_move_info = None
-            self.ensure_blocks_visible()
+            # 走一步后**不主动拽相机**：只在整盘滑到完全看不见时兜底拉回。
+            # 旧口径「有一块碰到边缘就平移」会让碎三角每步都动镜头。
+            self.ensure_blocks_visible(only_if_invisible=True)
             # 操作提示先于过关判定：过关/教程播报优先级更高，不应被“向X移动”覆盖
             self.macro_notify_msg = f"向{self._dir_name(direction)}移动 {move_step}步"
             self.macro_notify_timer = 120
@@ -218,8 +237,26 @@ class MoveMixin:
         给 select_gap 的成功/失败消息带「有效范围」用（外部 AI 反馈：
         line 的有效范围不公开，全靠试错）。方形 = 边界盒内；三角用
         game_triangle.gap_index_range（保证两侧非空的候选域）；米字
-        的半整数线号由 is_valid_gap 自判，不给范围提示。
+        的半整数线号由 is_valid_gap 自判，不给范围提示；通用通道直接
+        问 SpecPolygonView 的 distinct rank 边界（与点击选缝同源）。
         """
+        if getattr(self, 'triangle_mode', False) is False and \
+                getattr(self, 'mi_mode', False) is False and \
+                self._generic_spec() is not None:
+            try:
+                spec = self._generic_spec()
+                fam = next((f for f in spec.seam_families
+                            if f.name == gap_type), None)
+                if fam is None:
+                    return None
+                view = self._polygon_view()
+                pts = view._family_candidates(self.game.board, fam)
+                if not pts:
+                    return None
+                lines = [ln for _t, ln in pts]
+                return (min(lines), max(lines))
+            except Exception:
+                return None
         if gap_type not in ('h', 'v'):
             return None
         try:
@@ -418,6 +455,20 @@ class MoveMixin:
                     if not self.game.is_valid_gap(*cand):
                         return cand
                 return None
+            if self._generic_spec() is not None:
+                # 通用通道：候選縫按距離序，保留被引擎否決的第一條——要麼
+                # 一側沒有塊（is_valid 否），要麼兩側都推不動（live 否）。
+                # 碎三角實測 12 條接觸邊不被任何活縫覆蓋，點它們要給提示
+                # 而不是一聲不吭。
+                view = self._polygon_view()
+                origin = self._poly_view_origin(view)
+                for gap_type, line, _dist in view.gap_candidates(
+                        wx, wy, self.game.board, origin, tolerance=6.0):
+                    if not self.game.is_valid_gap(gap_type, line):
+                        return (gap_type, line)
+                    if not self._generic_gap_live((gap_type, line)):
+                        return (gap_type, line)
+                return None
             bounds = self.game.get_boundaries()
             for kind, idx in self.board_view.candidate_gaps(
                     wx, wy, bounds, tolerance=3.0):
@@ -478,6 +529,15 @@ class MoveMixin:
         """
         gap = self.get_gap_at_pos(screen_x, screen_y)
         block = self.get_block_at_pos(screen_x, screen_y)
+        if (getattr(self, '_pick_fill', None) is None
+                and self._generic_spec() is not None
+                and gap is None and block is not None):
+            # 通用通道多邊形密鋪無縫隙：共享邊的中點對兩相鄰塊都在
+            # 「邊界內」（射線法對邊界點不設防），點縫時塊命中是假陽性。
+            # 先問這附近有沒有被引擎否決的縫——有就當點縫處理（塊命中
+            # 作廢），好讓下面的「選不動」提示有機會說句話。
+            if self._rejected_seam_at(screen_x, screen_y) is not None:
+                block = None
         # 选块填空的两下点击语义是「选哪块、填哪个坑」，不是滑动，
         # 此时别插嘴说缝选不动
         if (gap is None and block is None
@@ -486,11 +546,20 @@ class MoveMixin:
             if seam is not None:
                 # 排障日誌：與米字格的 mi_seam_reject 對位，事後能看出
                 # 玩家說的「點了沒反應」到底落在哪條外沿縫上
+                generic = self._generic_spec() is not None
                 op_log.log('sq_seam_reject', gap=list(seam),
-                           form='tri' if getattr(self, 'triangle_mode', False)
-                           else 'sq')
-                self.macro_notify_msg = ("这条缝选不动（棋盘外沿，外侧没有滑块）："
-                                         "请选里面的缝")
+                           form='generic' if generic
+                           else ('tri' if getattr(self, 'triangle_mode', False)
+                                 else 'sq'))
+                if generic:
+                    # 通用通道的否決原因有兩種，分開說（外沿 vs 焊死）
+                    self.macro_notify_msg = (
+                        "这条缝选不动（两侧滑块都推不动）：请选旁边的缝"
+                        if self.game.is_valid_gap(*seam)
+                        else "这条缝选不动（一侧没有滑块）：请选里面的缝")
+                else:
+                    self.macro_notify_msg = ("这条缝选不动（棋盘外沿，外侧没有滑块）："
+                                             "请选里面的缝")
                 self.macro_notify_timer = 120
         return gap, block
 
