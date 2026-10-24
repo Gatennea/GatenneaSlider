@@ -461,3 +461,24 @@ def load_dir(model_dir=None):
             raise ModelError(f'模型名重复：{loaded.name!r}（{fname}）')
         out[loaded.name] = loaded
     return out
+
+
+def load_shapes(model_dir=None):
+    """读形状库（models/shapes.json）→ {名字: 整数顶点 tuple}。
+
+    搭积木编辑器的调色盘数据源：库里只放**原子形状**（不可再分）；
+    组合形状（60° 菱形 = 2 正三角）用捆绑表达，不进库。
+    文件缺失/损坏时返回 {}（编辑器退化为空调色盘并提示）。
+    """
+    path = os.path.join(model_dir or DEFAULT_MODEL_DIR, 'shapes.json')
+    if not os.path.exists(path):
+        return {}
+    doc = read_json(path)
+    if doc.get('schema') != SCHEMA_SHAPES:
+        raise ModelError(f'形状库 {path} 的 schema 未识别')
+    out = {}
+    for name, verts in (doc.get('shapes') or {}).items():
+        if not isinstance(verts, (list, tuple)) or len(verts) < 3:
+            raise ModelError(f'形状库 {path} 的形状 {name!r} 须为 ≥3 个顶点')
+        out[name] = tuple(tuple(v) for v in verts)
+    return out

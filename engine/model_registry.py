@@ -116,3 +116,81 @@ def errors():
 
 def clear_errors():
     _ERRORS.clear()
+
+
+def reload(name=None, model_dir=None):
+    """热重载模型板型（搭积木编辑器保存后立刻能用，不用重启）。
+
+    ``name`` 给了只重载那一个（编辑器保存路径）；否则整目录重扫：新文件
+    装上、内容变的重装、文件没了的卸载。重装 = 先 ``unregister_board_type``
+    再 ``register_board_type``（register 拒绝静默覆盖，先卸后装是唯一路）。
+    加载/校验失败的保留旧注册不动，并把原因追加进 errors()。
+    """
+    global _INSTALLED
+    from .model_loader import DEFAULT_MODEL_DIR, ModelError, load_file
+    from .model_validate import validate
+    from .registry import board_types, register_board_type, unregister_board_type
+
+    model_dir = model_dir or DEFAULT_MODEL_DIR
+
+    def _register(model):
+        register_board_type(model.name, _spec_factory(model))
+        _LOADED[model.name] = model
+
+    if name is not None:
+        path = os.path.join(model_dir, f'{name}.json')
+        if not os.path.exists(path):
+            raise ModelError(f'模型文件不存在：{path}')
+        try:
+            model = load_file(path)
+        except (ModelError, ValueError, TypeError, KeyError, OSError) as exc:
+            _ERRORS.append(f'{name}.json 热重载失败：{exc}')
+            raise
+        problems = [p for p in validate(model, deep=False) if p.level == 'error']
+        if problems:
+            msg = (f'模型 {name!r} 未通过物理公理，拒绝热重载：'
+                   + '；'.join(str(p) for p in problems[:3]))
+            _ERRORS.append(msg)
+            raise ModelError(msg)
+        if name in _LOADED and name in board_types():
+            unregister_board_type(name)
+        _register(model)
+        _INSTALLED = True
+        return {name: model}
+
+    # 整目录重扫
+    fresh = {}
+    seen = set()
+    if os.path.isdir(model_dir):
+        for fname in sorted(os.listdir(model_dir)):
+            if not fname.endswith('.json') or fname == 'shapes.json':
+                continue
+            try:
+                model = load_file(os.path.join(model_dir, fname))
+            except (ModelError, ValueError, TypeError, KeyError, OSError) as exc:
+                _ERRORS.append(f'{fname} 热重载失败：{exc}')
+                continue
+            seen.add(model.name)
+            if model.name in _LOADED and _LOADED[model.name].hash() == model.hash():
+                continue     # 内容没变，跳过
+            problems = [p for p in validate(model, deep=False)
+                        if p.level == 'error']
+            if problems:
+                _ERRORS.append(
+                    f'模型 {model.name!r} 未通过物理公理，拒绝热重载：'
+                    + '；'.join(str(p) for p in problems[:3]))
+                continue
+            if model.name in board_types():
+                unregister_board_type(model.name)
+            _register(model)
+            fresh[model.name] = model
+    # 文件没了的模型：卸载（内置板型永不躺枪——它们不在 _LOADED 里）
+    for gone in [n for n in _LOADED if n not in seen]:
+        if gone in board_types():
+            try:
+                unregister_board_type(gone)
+            except (KeyError, ValueError):
+                continue
+        del _LOADED[gone]
+    _INSTALLED = True
+    return fresh

@@ -262,6 +262,10 @@ class SessionMixin:
 
     def _current_puzzle_label(self) -> str:
         """当前谜题的人话描述（谜题菜单底部状态行用）。"""
+        if getattr(self, '_med_active', False):
+            # 搭积木编辑器会话：self.game 是预览局（kind='__editor__'），
+            # 落到下面的模型分支会显示成一个不存在的板型名
+            return '搭积木编辑器（未保存）'
         style = getattr(self, '_ann_style_goal', None)
         if style:
             # 高级选项样式局不是任何一个官方档位：尺寸/等级可能刚好撞上

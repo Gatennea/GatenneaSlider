@@ -97,6 +97,27 @@ def get_board_type(name: str):
     return _REGISTRY[name]
 
 
+# 内置板型（写死在 registry.py 里的四个）：热替换/卸载一律拒绝，免得把
+# 原版谜题的板型卸成「未注册」。模型文件板型不受此限。
+_BUILTIN_BOARD_TYPES = ('square', 'cubic', 'mi', 'tri')
+
+
+def unregister_board_type(name: str, *, force: bool = False):
+    """移除一种板型注册。未注册 → KeyError；内置板型需 force=True。
+
+    存在理由：搭积木编辑器保存/覆盖模型后要**热替换**旧注册（同一盘型
+    的 spec 随文件变），而 register_board_type 拒绝静默覆盖——先卸后装
+    是唯一路径。GUI 侧配套 model_registry.reload。
+    """
+    if name not in _REGISTRY:
+        raise KeyError(
+            f"板型 {name!r} 未注册，无从移除（已注册: {sorted(_REGISTRY)}）")
+    if name in _BUILTIN_BOARD_TYPES and not force:
+        raise ValueError(
+            f"板型 {name!r} 是内置板型，拒绝卸载（真要卸请显式 force=True）")
+    del _REGISTRY[name]
+
+
 def board_types():
     """全部已注册板型名（排序）。"""
     return tuple(sorted(_REGISTRY))

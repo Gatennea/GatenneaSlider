@@ -45,6 +45,19 @@ def to_plane(v):
             i * TRI_BASIS[0][1] + j * TRI_BASIS[1][1])
 
 
+def to_lattice(xy):
+    """平面坐标 → 实数格坐标（to_plane 的逆；不取整）。
+
+    自由放置时用：点一下空白处，先求真实格坐标，再取最近整数点。
+    基 TRI_BASIS = [[1,0],[0.5,√3/2]] 的逆是
+        j = y / (√3/2),   i = x - j/2
+    """
+    x, y = xy
+    j = y / TRI_BASIS[1][1]
+    i = x - 0.5 * j
+    return (i, j)
+
+
 def rot60(v):
     """平面 60° 旋转（该基下是整系数线性自同构）。"""
     i, j = v
@@ -88,6 +101,11 @@ def _norm(verts):
     bx = min(v[0] for v in vs)
     by = min(v[1] for v in vs)
     return _canon_cycle([(x - bx, y - by) for x, y in vs])
+
+
+def normalize(verts):
+    """``_norm`` 的公开版（编辑器 Mixin 查「旋转/镜像后是哪個像」要用）。"""
+    return _norm(verts)
 
 
 def d6_images(verts):
@@ -270,6 +288,45 @@ def can_place(images, idx, p, placed):
     return True
 
 
+def shared_edge_segments(placed):
+    """相邻块对的共享边**线段**：``[(key_a, key_b, (平面端点, 平面端点)), ...]``。
+
+    判据与 ``gops.components`` 同源（共边 = 两块共享一条完整的边），
+    复用它而不是自己写一遍「找公共顶点」——两处判据不一致会出现
+    「渲染上说相邻、引擎上说不连通」的怪事。
+
+    边表必须用**物理整数顶点**（见 ``snap_candidates`` 的同类注释）。
+    """
+    vmap = {}
+    for k, offs in placed.items():
+        pt = k[0]
+        vmap[k] = tuple((pt[0] + ox, pt[1] + oy) for ox, oy in offs)
+    out = []
+    seen = set()
+    for (a, b), owners in gops.shared_edge_owners(vmap).items():
+        seg = (to_plane(a), to_plane(b))
+        for i in range(len(owners)):
+            for j in range(i + 1, len(owners)):
+                ka, kb = owners[i], owners[j]
+                pair = (ka, kb) if ka <= kb else (kb, ka)
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                out.append((pair[0], pair[1], seg))
+    out.sort(key=lambda t: (t[2][0][0], t[2][0][1], str(t[0]), str(t[1])))
+    return out
+
+
+def shared_edges(placed):
+    """相邻块对的共享边：``[(key_a, key_b, 边中点平面坐标), ...]``。
+
+    编辑器「点缝捆绑/解绑」的命中源（与设计态同一交互）；要线段本身
+    （画组内缝）用 ``shared_edge_segments``。
+    """
+    return [(ka, kb, ((s[0][0] + s[1][0]) / 2.0, (s[0][1] + s[1][1]) / 2.0))
+            for ka, kb, s in shared_edge_segments(placed)]
+
+
 # ----------------------------------------------------------------------
 # 缝族推导
 # ----------------------------------------------------------------------
@@ -377,11 +434,56 @@ def legal_move_count(blocks, orientations, families):
     return len(board.legal_moves(1))
 
 
+def move_stats(blocks, orientations, families):
+    """(合法移动数, 可动块数)（families 同 legal_move_count，4 元组也收）。
+
+    为什么要可动块数：保存门要求「≥2 颗滑块动得了」。只数移动条数不够——
+    一条移动可能只搬动一颗滑块（存出来是个一步就没的残局），而玩家想存的是
+    「真能玩起来」的盘。
+
+    ⚠️ 必须像本函数这样**按给定族另造一个 spec** 来数：编辑器的预览 spec
+    收的是形状库全部方向的族（渲染用，会话期恒定），拿它数移动会让「关掉
+    某条缝族」的开关完全失效（Mixin 2026-10-25 实测踩到）。
+    """
+    if not blocks or not families:
+        return 0, 0
+    fams = [(f[0], f[1], f[2]) for f in families]
+    doc = {
+        'schema': SCHEMA_BOARD,
+        'name': '_editor_stats',
+        'basis': [list(r) for r in TRI_BASIS],
+        'pos_scale': 1,
+        'orientations': {lb: {'shape': 'x', 'off': [list(v) for v in offs]}
+                         for lb, offs in orientations.items()},
+        'tiles': [{'p': list(b.point), 'o': b.orient,
+                   'g': int(getattr(b, 'group', 0) or 0)} for b in blocks],
+        'seams': [{'name': nm, 'coeffs': list(cf), 'step': list(st),
+                   'rank': 'centroid'}
+                  for nm, cf, st in fams],
+    }
+    model = load_model(doc)
+    board = Board(model.spec, model.spec.goal_blocks)
+    moves = board.legal_moves(1)
+    movable = set()
+    for mv in moves:
+        movable |= set(mv.moved)
+    return len(moves), len(movable)
+
+
 def is_connected(blocks, orientations):
-    """整盘是否单一连通（共边连通；A0 的用户侧实时版）。"""
+    """整盘是否单一连通（共边连通；A0 的用户侧实时版）。
+
+    ⚠️ 必须用**物理整数顶点**（point + offs），不能拿锚点相对的 offs：
+    两块锚点不同而 offs 相同的话，共边判定会把它们当成同一块的两个副本
+    ——不连通的盘被判成连通（2026-10-25 测试抓到：相距 (0,0)/(3,9) 的
+    两块 is_connected 恒 True，保存门的连通检查整个失效）。这与
+    ``snap_candidates`` 边表那次是同一类错误，见那里的注释。
+    """
     if not blocks:
         return False
-    placed = {(b.point, b.orient): _offs_of(orientations, b.orient)
-              for b in blocks}
-    return gops.is_connected(frozenset(placed),
-                             lambda k: placed[k])
+    placed = {}
+    for b in blocks:
+        offs = _offs_of(orientations, b.orient)
+        placed[(b.point, b.orient)] = tuple(
+            (b.point[0] + ox, b.point[1] + oy) for ox, oy in offs)
+    return gops.is_connected(frozenset(placed), lambda k: placed[k])

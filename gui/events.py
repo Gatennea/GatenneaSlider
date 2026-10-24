@@ -244,6 +244,11 @@ class EventsMixin:
                 if self.handle_annotation_event(event):
                     continue
 
+                # 搭积木编辑器会话（模态：吞掉棋盘/键盘事件；顶栏与已展开
+                # 下拉放行，模态对话框开着时不抢——与标注画布同口径）
+                if self._med_handle_event(event):
+                    continue
+
                 # 文件对话框事件（最高优先级）
                 if self.file_dialog.active:
                     self.file_dialog.handle_event(event)
@@ -762,6 +767,12 @@ class EventsMixin:
                                                     and preset[0] == '---')):
                                             # 分组标题和分隔线：点了不该关掉菜单
                                             puzzle_keep_open = True
+                                        elif (len(preset) == 3
+                                              and preset[1] == '__editor__'):
+                                            # 搭积木编辑器：不写模型 JSON，
+                                            # 像搭积木一样摆出新板型
+                                            self._med_open()
+                                            puzzle_clicked = True
                                         elif len(preset) >= 4:
                                             _, pm, pn, ps = preset[:4]
                                             kind = preset[4] if len(preset) > 4 else 'square'

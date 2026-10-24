@@ -184,6 +184,21 @@ differential('5 块簇（preset 4 移）', imgs, labels,
              [(0.75, 0.4330127018922193), (1.0, 0.8660254037844386),
               (0.75, 1.299038105676658), (1.25, 0.4330127018922193)], 5)
 
+print('== 连通判定必须用物理顶点 ==')
+# 2026-10-25 真 bug 的护栏：is_connected 曾拿锚点相对的 offs 当顶点，
+# 于是「两块锚点不同、offs 相同」被误判成同一块的两个副本 → 不连通的盘
+# 恒判连通，编辑器保存门的连通检查整个失效。
+_imgs_tri = eg.d6_images([(0, 0), (1, 0), (0, 1)])
+_lbl = {f'x:{i}': im for i, im in enumerate(_imgs_tri)}
+_one = [Block((0, 0), 'x:0')]
+_two_far = [Block((0, 0), 'x:0'), Block((3, 9), 'x:0')]
+_two_adj = [Block((0, 0), 'x:0'), Block((0, 0), 'x:1')]
+check(eg.is_connected(_one, _lbl), '单块应判连通')
+check(eg.is_connected(_two_adj, _lbl), '共边相邻两块应判连通')
+check(not eg.is_connected(_two_far, _lbl),
+      '相距 (0,0)/(3,9) 的两块必须判不连通（锚点相对顶点曾让它恒真）')
+check(not eg.is_connected([], _lbl), '空盘应判不连通')
+
 print('== 30-60-90 十二朝向 ==')
 imgs_half = eg.d6_images([(0, 0), (2, 0), (1, 1)])
 best = 0

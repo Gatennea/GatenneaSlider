@@ -37,6 +37,7 @@ from gui.virtual_keyboard import VirtualKeyboardMixin
 from gui.metrics_panel import MetricsPanelMixin
 from gui.records_panel import RecordsPanelMixin
 from gui.annotation import AnnotationMixin
+from gui.model_editor import ModelEditorMixin
 from gui.tutorial import TutorialMixin
 from gui.palette import PaletteMixin
 from gui.board_view import SquareBoardView
@@ -95,7 +96,7 @@ def _gui_get_resource_path(relative_path):
     return os.path.join(base, relative_path)
 
 
-class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, TutorialMixin, PaletteMixin, UpdateMixin, HistoryMixin, SpeedrunMixin, ExternalMixin, SessionMixin, PickFillMixin, AutoSolveMixin, MoveMixin, DragMixin):
+class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, ModelEditorMixin, TutorialMixin, PaletteMixin, UpdateMixin, HistoryMixin, SpeedrunMixin, ExternalMixin, SessionMixin, PickFillMixin, AutoSolveMixin, MoveMixin, DragMixin):
     """
     滑块游戏图形界面类
     """
@@ -771,6 +772,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 标注模式状态
         self._ann_init_state()
 
+        # 搭积木编辑器状态（gui/model_editor.py；会话期外全部为空）
+        self._med_init_state()
+
         # 教程模式状态
         self._tut_init_state()
 
@@ -830,14 +834,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 进目录，菜单里就多一项，这里一行都不用改。
         from engine import model_registry
         models = model_registry.loaded()
-        items = [('__group__', '模型文件（几何引擎，实验）')]
+        items = [('＋ 搭建新模型...', '__editor__', 'model'),
+                 ('__group__', '模型文件（几何引擎，实验）')]
         for name in sorted(models):
             m = models[name]
             n_blocks = len(m.spec.goal_blocks)
             items.append((f'{m.title}（{n_blocks} 块）', 4, 4, 1, name))
             items.append((f'{m.title} 等级2', 4, 4, 2, name))
-        if len(items) == 1:
-            items = [('（models/ 下暂无可用模型）',)]
+        if len(items) == 2:
+            # 只有「搭建新模型」入口 + 分组标题：没有任何可用模型文件。
+            # 分组标题留着会显得像「有内容但列不出来」，换成一句人话。
+            items.append(('（models/ 下暂无可用模型，先用上面搭一个）',))
         self.puzzle_sub_presets['models'] = items
         styles = design_styles.list_styles(self.config_dir)
         if styles:
@@ -1876,6 +1883,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.draw_records_panel()
                 # 标注模式（工具栏 + 跟踪标记 + 子对话框）
                 self.draw_annotation_mode()
+
+                # 搭积木编辑器浮层（调色盘 + 工具栏 + 幽灵预览；
+                # 块本体走上面的通用多边形通道，这里只画编辑器专属 UI）
+                self._med_draw_overlay()
 
                 # 菜单栏 + 下拉菜单：非模态最上层（下拉菜单盖住浮动面板）
                 self.draw_menu_bar()
