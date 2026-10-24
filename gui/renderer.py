@@ -235,11 +235,14 @@ class RendererMixin:
                 pygame.draw.line(self.screen, color, p1, p2, 1)
 
     def _draw_triangle_selected_gap(self, view: TriangleBoardView, hull):
-        """繪製選中的縫隙線（三族之一），只畫在棋形範圍內。
+        """繪製選中的縫隙線（三族之一）：貫穿整個視窗，與方形同口徑。
 
-        方形版的紅線貫穿整個視窗、由滑塊蓋住；三角版的棋形是三角形，
-        畫到形狀外的線段只是雜訊，故裁剪到棋形凸包。裁剪只看凸包、不看
-        「縫隙兩側是否都有相鄰塊」，所以洞裡紅線仍然連續，與原版一致。
+        舊版只畫到棋形凸包（理由是「畫到形狀外的線段只是雜訊」），但同一個
+        交互在方形裡是「一刀切開整個地圖」，三角裡卻只剩一小段——用戶
+        2026-10-24 指出這一點。現在統一：紅線沿縫方向延長到螢幕外，盤面
+        外的部分是**背景**上的直線，恰好提示「這是整條縫，不是局部缺口」。
+        裁剪與否只影響視覺，縫的號與可滑性完全不變。
+
         沒有這條線時，選中縫隙只有右下角文字提示，玩家看不到選了哪條。
         """
         gap = getattr(self, 'selected_gap', None)
@@ -249,11 +252,7 @@ class RendererMixin:
         if gap_type not in ('h', 'p', 'n'):
             return
         seg = view.gap_line_segment(gap_type, line, hull)
-        if seg is None:
-            return
-        pygame.draw.line(self.screen, self.colors['line'],
-                         self.world_to_screen(*seg[0]),
-                         self.world_to_screen(*seg[1]), 3)
+        self._draw_seam_through_screen(seg)
 
     def _draw_triangle_gaps(self, view: TriangleBoardView, cells, hull):
         """繪製未選中的縫隙（灰色），與方形版一致：選中那條改畫紅線。
@@ -606,12 +605,12 @@ class RendererMixin:
         self._draw_gap_direction_annotation()
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
-        """繪製米字格選中的縫隙線（四族之一），只畫在棋形範圍內。
+        """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。
 
         米字紋理本身就是「方格 + 每格兩條對角線」，選中哪條縫在背景裡
-        看不出來，必須疊一條紅線（與方形/三角版同一套視覺語言）。對角族
-        的縫是整條對角線鏈（同一條 r−c 或 r+c 上的全部格子），所以線會
-        貫穿整塊棋盤，這正是「一條鏈一條縫」的機制所要求的。
+        看不出來，必須疊一條紅線（與方形/三角版同一套視覺語言）。舊版只
+        畫到棋形凸包，用戶 2026-10-24 指出「縫隙沒有貫穿整個地圖」——
+        改為沿縫方向延長到螢幕外（只動渲染，不動幾何）。
         """
         gap = getattr(self, 'selected_gap', None)
         if not gap:
@@ -620,11 +619,7 @@ class RendererMixin:
         if gap_type not in ('h', 'v', 'd1', 'd2'):
             return
         seg = view.gap_segment(gap_type, line, hull)
-        if seg is None:
-            return
-        pygame.draw.line(self.screen, self.colors['line'],
-                         self.world_to_screen(*seg[0]),
-                         self.world_to_screen(*seg[1]), 3)
+        self._draw_seam_through_screen(seg)
 
     # ------------------------------------------------------------------
     # S1b 通用渲染通道
@@ -907,16 +902,15 @@ class RendererMixin:
         # 沒有任何效果」。方形的縫靠格間縫隙透出，碎三角沒有縫隙，故必須後畫。
         #
         # 樣式**照搬原版方形**：`colors['line']`、線寬 3px，不加粗、不加光暈、
-        # 不改色。足跡在幾何縫線板型下必然共線，合併成一段只是為了不留下
-        # 1px 斷口（視覺上仍是一條同規格的紅線）。
+        # 不改色，且**延長到螢幕外**（方形是貫穿整個視窗的直線，另外幾種
+        # 形態此前只畫盤面內那一段，同一交互長得不一樣——用戶 2026-10-24
+        # 指出）。足跡在幾何縫線板型下必然共線，合併成一段只是為了不留下
+        # 1px 斷口；合併失敗時逐段畫，不做延長（那不是一條直線縫）。
         if gap:
             segs = self._poly_seam_segments(view, gap[0], gap[1], origin)
             merged = self._merge_seam_line(segs)
             if merged is not None:
-                sa = self.world_to_screen(*merged[0])
-                sb = self.world_to_screen(*merged[1])
-                pygame.draw.line(self.screen, self.colors['line'], sa, sb, 3)
-                pygame.draw.aaline(self.screen, self.colors['line'], sa, sb)
+                self._draw_seam_through_screen(merged, antialias=True)
             else:
                 for (a, b) in segs:
                     pygame.draw.line(self.screen, self.colors['line'],
@@ -1066,6 +1060,39 @@ class RendererMixin:
         along = [(p[0] - x0) * ux + (p[1] - y0) * uy for p in pts]
         lo, hi = min(along), max(along)
         return ((x0 + ux * lo, y0 + uy * lo), (x0 + ux * hi, y0 + uy * hi))
+
+    def _draw_seam_through_screen(self, seg, width=3, antialias=False):
+        """把縫線沿自身方向延長到畫面外再畫（與方形同一套視覺語言）。
+
+        方形原版把選中縫畫成**貫穿整個視窗**的直線（`(0,y)-(W,y)` /
+        `(x,0)-(x,H)`）；三角、米字、通用多邊形通道都只畫棋形內部那一段，
+        同一個交互在幾種形態下長得完全不一樣——用戶 2026-10-24 指出
+        「縫隙沒有貫穿整個地圖」。
+
+        這裡**只改渲染**：線的幾何定義、縫號、可滑性一律不動，只把已經
+        算出來的線段兩端延長到螢幕外（超出部分 pygame 自己裁掉）。延長量
+        取 2×(W+H)，任何角度都足以穿出視窗。
+
+        `seg` 是**世界座標**兩端點（各 view 的 gap_line_segment /
+        seam_segments 產物），None 直接跳過。
+        """
+        if seg is None:
+            return
+        x0, y0 = self.world_to_screen(*seg[0])
+        x1, y1 = self.world_to_screen(*seg[1])
+        dx, dy = x1 - x0, y1 - y0
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            # 退化成一個點（這條縫在本局面只剩一個頂點那麼長）——沒有方向
+            # 可延長，畫上去只是一個雜點，不如不畫
+            return
+        ux, uy = dx / length, dy / length
+        span = 2.0 * (self.screen_width + self.screen_height)
+        a = (x0 - ux * span, y0 - uy * span)
+        b = (x1 + ux * span, y1 + uy * span)
+        pygame.draw.line(self.screen, self.colors['line'], a, b, width)
+        if antialias:
+            pygame.draw.aaline(self.screen, self.colors['line'], a, b)
 
     def draw_board(self):
         """绘制游戏主界面"""

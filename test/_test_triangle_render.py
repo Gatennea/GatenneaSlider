@@ -173,10 +173,10 @@ check(grays_after < grays,
       f"选中后该缝隙不再画灰线（灰像素 {grays} → {grays_after}）")
 check(reds > 0, f"选中后画出红线（{reds} 个红像素）")
 
-# ---- 2b. 缝隙线段必须落在棋形凸包内：不画到三角形外面的空白处 ----
-# 方形版把缝隙线裁到棋盤矩形；三角版的棋形不是矩形，裁到棋形凸包。
-# 原版先画线、后画滑块盖住，洞里也留一条直线，所以每条缝隙只画一段：
-# 线段端点可以落在洞里（那里没有滑块），但整段都不能越出凸包。
+# ---- 2b. 縫隙線段：灰縫裁到棋形凸包，**選中紅線必須貫穿出去** ----
+# 方形版把選中縫畫成貫穿整個視窗的直線；三角版原先連紅線也裁到凸包，同一
+# 交互在兩種形態下長得不一樣（用戶 2026-10-24 指出「縫隙沒有貫穿整個地圖」）。
+# 現在：灰縫仍按凸包裁剪（棋形外的空白不畫縫），紅線沿縫方向延長到螢幕外。
 import pygame as _pg  # noqa: E402
 _orig_line = _pg.draw.line
 _drawn = []
@@ -211,14 +211,23 @@ finally:
 gap_c = gui.colors['gap'][:3]
 line_c = gui.colors['line'][:3]
 hull = view.board_hull(cells)
-outside = [d for d in _drawn
-           if d[0] in (gap_c, line_c)
-           and not (_in_hull(gui.screen_to_world(*d[1]), hull)
-                    and _in_hull(gui.screen_to_world(*d[2]), hull))]
-check(not outside,
-      f"缝隙线段全部落在棋形凸包内（越界 {len(outside)} 条）")
-for color, p1, p2 in outside[:3]:
-    print(f"      越界线段 {color} {p1}→{p2}")
+
+
+def _outside(color):
+    return [d for d in _drawn
+            if d[0] == color
+            and not (_in_hull(gui.screen_to_world(*d[1]), hull)
+                     and _in_hull(gui.screen_to_world(*d[2]), hull))]
+
+
+outside_gap = _outside(gap_c)
+check(not outside_gap,
+      f"未選中的灰縫仍裁剪在棋形凸包內（越界 {len(outside_gap)} 條）")
+outside_line = _outside(line_c)
+check(bool(outside_line),
+      f"選中紅線貫穿到棋形之外（越界 {len(outside_line)} 條＝設計如此）")
+for color, p1, p2 in outside_gap[:3]:
+    print(f"      越界灰線 {color} {p1}→{p2}")
 reds = [d for d in _drawn if d[0] == line_c]
 check(len(reds) == 1,
       f"选中的缝隙只画一段红线（洞里也不断）：实际 {len(reds)} 段")
