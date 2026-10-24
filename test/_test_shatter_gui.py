@@ -412,15 +412,21 @@ from puzzle_types import create_puzzle, puzzle_key  # noqa: E402
 
 gui6 = _gui_shatter(2)
 
-# —— 菜單條目：異形子菜單裡的碎三角分組（與三角/米字/數字並列）——
-exotic = gui6.puzzle_sub_presets['exotic']
-shatter_items = [p for p in exotic if len(p) >= 5 and p[4] == 'shatter']
+# —— 菜單條目：模型子菜單裡的碎三角檔位（由 models/*.json 决定）——
+# 碎三角原本在「異形」子菜單硬編碼；改成文件驅動後搬到「模型謎題」子菜單，
+# 條目由註冊表生成——丟一個 json 就多一項，GUI 一行不用改。
+gui6._refresh_puzzle_presets()
+models_menu = gui6.puzzle_sub_presets['models']
+shatter_items = [p for p in models_menu if len(p) >= 5 and p[4] == 'shatter']
 check(len(shatter_items) >= 2,
-      f'異形子菜單有 {len(shatter_items)} 個碎三角檔位（實測 {shatter_items}）')
+      f'模型子菜單有 {len(shatter_items)} 個碎三角檔位（實測 {shatter_items}）')
 if shatter_items:
-    i0 = exotic.index(shatter_items[0])
-    check(exotic[i0 - 1][0] == '__group__' and '碎三角' in exotic[i0 - 1][1],
-          f'碎三角檔位自成一個分組（{exotic[i0 - 1][1]!r}）')
+    i0 = models_menu.index(shatter_items[0])
+    check(models_menu[i0 - 1][0] == '__group__',
+          f'模型檔位自成一個分組（{models_menu[i0 - 1][1]!r}）')
+leftover = [p for p in gui6.puzzle_sub_presets['exotic']
+            if len(p) >= 5 and p[4] == 'shatter']
+check(not leftover, '異形子菜單裡不再有硬編碼的碎三角條目（避免兩處入口）')
 
 # —— 分榜鍵：與矩形 4×4 不混榜（矩陣 21×31 vs 4×4，串味即成績全錯）——
 check(puzzle_key(1, 4, 4, kind='shatter') == '1~shatter',

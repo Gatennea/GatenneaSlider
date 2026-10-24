@@ -774,6 +774,13 @@ class EventsMixin:
                                                 # 占位，只传等级（见 GUI.py
                                                 # puzzle_sub_presets 注释）
                                                 self.new_shatter_puzzle(ps)
+                                            elif kind not in ('triangle', 'mi',
+                                                              'numbered', 'square',
+                                                              'rect'):
+                                                # 模型文件板型（任意
+                                                # models/<name>.json）：同样固定
+                                                # 块数，m/n 是占位，只传等级。
+                                                self.new_model_puzzle(kind, ps)
                                             elif kind == 'numbered':
                                                 self.new_puzzle(pm, pn, ps, numbered=True)
                                             else:
@@ -837,6 +844,13 @@ class EventsMixin:
                                                 # 占位，只传等级（见 GUI.py
                                                 # puzzle_sub_presets 注释）
                                                 self.new_shatter_puzzle(ps)
+                                            elif kind not in ('triangle', 'mi',
+                                                              'numbered', 'square',
+                                                              'rect'):
+                                                # 模型文件板型（任意
+                                                # models/<name>.json）：同样固定
+                                                # 块数，m/n 是占位，只传等级。
+                                                self.new_model_puzzle(kind, ps)
                                             elif kind == 'numbered':
                                                 self.new_puzzle(pm, pn, ps, numbered=True)
                                             else:
@@ -1379,8 +1393,8 @@ class EventsMixin:
                     # 半整/B），它是错位态唯一稳定的分组依据（规划表 20）
                     blk['lat'] = ('A', 'B')[lattice_of(b.location)]
                     del blk['mod']
-            if kind == 'shatter':
-                # 碎三角：第三分量是 24 角色朝向串（'1'..'12'/'r1'..'r12'），
+            if kind not in ('square', 'numbered', 'triangle', 'mi'):
+                # 模型文件板型：第三分量是朝向标签串（'1'..'12'/'r1'..'r12'），
                 # 同格多块靠它区分。mod 余数在质心晶格上没有分组语义，删掉
                 # 免得调用方按方形不变量误读
                 for blk, b in zip(blocks, self.game.blocks):

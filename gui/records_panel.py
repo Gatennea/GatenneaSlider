@@ -76,13 +76,25 @@ class RecordsPanelMixin:
 
     @staticmethod
     def _rp_is_shatter(rec) -> bool:
-        """该成绩是否碎三角（key 形如 {step}~shatter，无尺寸维度）。
+        """该成绩是否**模型文件板型**（key 形如 `{step}~{模型名}`，无尺寸维度）。
 
-        碎三角的 initial_matrix 是 21×31 的「朝向下标+1」整数矩阵，没有
-        #/_ 字符编码：载入练习/另存为的两条路都按方形 import_map 还原，
-        会把 48 块静默拆成另一形态——一律明拒。
+        模型局的 initial_matrix 是「朝向下标+1」整数矩阵，没有 #/_ 字符编码：
+        载入练习/另存为两条路都按方形 import_map 还原，会把 48 块静默拆成
+        另一形态——一律明拒。
+
+        判据不用 `'~shatter' in key`（那只能认碎三角，换个模型名就漏），
+        改看「~ 后面不是尺寸」：方形 `4*4` / 三角形 `tri6` / 米字 `mi4*4` /
+        编号 `4*4#num` 之外的都算模型局。
         """
-        return '~shatter' in str(rec.get('puzzle_key', ''))
+        key = str(rec.get('puzzle_key', ''))
+        if '~' not in key:
+            return False
+        tail = key.split('~')[-1]
+        if not tail or tail.endswith('#num'):
+            return False
+        if tail.startswith('tri') or tail.startswith('mi'):
+            return False
+        return not tail.split('*')[0].isdigit()
 
     def _rp_detail_record(self):
         """返回当前展开详情的记录，不存在则置空返回 None"""
@@ -587,7 +599,7 @@ class RecordsPanelMixin:
         if self._rp_is_shatter(rec):
             # 碎三角成绩没有 #/_ 字符地图（21×31 朝向下标矩阵），按方形
             # import_map 会把 48 块静默拆成另一形态——明拒（见 _rp_is_shatter）
-            self.macro_notify_msg = "碎三角成绩暂不支持载入练习"
+            self.macro_notify_msg = "模型局成绩暂不支持载入练习（无字符地图编码）"
             self.macro_notify_timer = 120
             return
         if self.animating:

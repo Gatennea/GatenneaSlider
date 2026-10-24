@@ -338,9 +338,18 @@ register_board_type('square', square_spec)
 register_board_type('cubic', cubic_spec)
 register_board_type('mi', mi_spec)
 register_board_type('tri', tri_spec)
-# 碎三角（双形状非正则密铺，显式邻接板型的首个真实受益者）：
-#   'shatter'    = 碎三角（全）：6 缝族全开；
-#   'shatter_lattice' = 碎三角·晶格：仅 3 条晶格缝（绿底缝关闭）。
-register_board_type('shatter', lambda **kw: shatter_spec(full=True, **kw))
-register_board_type('shatter_lattice',
-                    lambda **kw: shatter_spec(full=False, **kw))
+# 碎三角（'shatter' / 'shatter_lattice'）**不再在此硬编码**：改由
+# `models/*.json` 在文件末尾的 install() 里注册。同一盘型只能有一个来源，
+# 否则 update_matrix 的朝向编码会两套并存、存档互换时角色错位。
+# 代码版 shatter_spec 仍保留（生成器与差分测试要用），只是不再进注册表。
+
+
+# ----------------------------------------------------------------------
+# 模型文件注册（models/*.json → 板型）
+# ----------------------------------------------------------------------
+# 放在最后：此时内置四板型都已注册，重名判定才有意义。
+# 失败不静默：坏模型不注册，原因进 engine.model_registry.errors()，
+# 玩家点到它会拿到「未注册的板型」而不是一个悄悄换形的错盘。
+from .model_registry import install as _install_models  # noqa: E402
+
+_install_models()

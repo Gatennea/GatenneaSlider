@@ -465,12 +465,38 @@ class FileOpsMixin:
         self.game_history.save_snapshot(self.game)
         self._reset_file_dirty()
 
+    def _check_saved_model_identity(self, kind, info):
+        """模型局存档：认出「模型缺失」与「模型已变更」。
+
+        缺失 → **明确抛错**（绝不回退成方形：48 块变 16 块那条旧坑）。
+        变更 → 提示后继续（旧档仍尽量读出来，但快照 matrix 的朝向编码是
+        按 `orientations` 顺序写的，顺序一变块的角色就会错位）。
+        """
+        from engine import model_registry
+        try:
+            m = model_registry.loaded(kind)
+        except KeyError:
+            errs = model_registry.errors()
+            raise ValueError(
+                f'存档需要模型 {kind!r}，但它没有安装（或被物理公理校验拒绝）。'
+                f'请确认 models/{kind}.json 存在。'
+                f'（加载期记录：{"；".join(errs) if errs else "无"}）') from None
+        want = info.get('hash')
+        if want and want != m.hash():
+            self.macro_notify_msg = (
+                f'模型 {kind} 与存档时不一致（内容已改动），旧档的朝向可能有偏移')
+            self.macro_notify_timer = 240
+
     def _build_save_data(self) -> dict:
         """构建当前游戏状态的保存数据"""
         self.game.update_matrix()
-        # 碎三角：matrix 是 21×31 的「朝向下标+1」编码（质心晶格），压缩
-        # 存档的方形公式（0/1 + (r,c) 二元组 canonicalize）一概不适用
-        shatter = self._current_kind() == 'shatter'
+        # 模型文件板型（碎三角等）：matrix 是「朝向下标+1」编码（质心晶格），
+        # 压缩存档的方形公式（0/1 + (r,c) 二元组 canonicalize）一概不适用。
+        # 判据是「形态名不在旧四种里」，不是硬编码 'shatter'——否则换一个
+        # models/<name>.json 就会被静默当成方形存下去。
+        kind_now = self._current_kind()
+        is_model = kind_now not in ('square', 'numbered', 'triangle', 'mi')
+        shatter = is_model
         # 矩形谜题 + 开启压缩：直接生成 replay 压缩格式
         # （初始+末态+步骤原语+哈希校验点），异形不受此开关影响
         if getattr(self, 'use_compressed_save', False) and not (
@@ -528,10 +554,20 @@ class FileOpsMixin:
         if mi:
             data['puzzle']['type'] = 'mi'
         if shatter:
-            # 不写 type 的碎三角存档会被 v1 口径读成「方形 4×4」——
-            # 载入即静默换形态（48 块变 16 块）。matrix 的值域校验走
-            # validate_snapshot 的 else 分支（非负整数），0..24 合法。
-            data['puzzle']['type'] = 'shatter'
+            # 不写 type 的模型局存档会被 v1 口径读成「方形 4×4」——载入即
+            # 静默换形态（48 块变 16 块）。type = 模型名，载入时据此
+            # 重新注册表取板型。matrix 的值域校验走 validate_snapshot 的
+            # else 分支（非负整数），0..24 合法。
+            data['puzzle']['type'] = kind_now
+            # 模型身份：改名/改几何后旧档还能认出「是哪个盘、什么时候的版本」。
+            # hash 不一致不拒绝打开（只提示），模型缺失才拒绝——见 _load_save_data。
+            try:
+                from engine import model_registry
+                m = model_registry.loaded(kind_now)
+                data['puzzle']['model'] = {'name': m.name,
+                                           'hash': m.hash()}
+            except (KeyError, ImportError):
+                pass
         # 高级选项自定义样式局：只记预设名（不内嵌样式），导入时按名查
         # config/design_styles/<名>.json 恢复还原目标（D4）。官方预设为 None。
         _preset = getattr(self, '_ann_style_goal', None)
@@ -645,15 +681,18 @@ class FileOpsMixin:
         self.step_count = self.game_history.current_step_total()
 
         # 从快照重建游戏状态（依版本/形態分派）。
-        # create_puzzle 对碎三角直接走 EngineGame 适配器（puzzle_types 的
-        # shatter 分支，不依赖全局引擎开关）——没有「落回方形」的回退。
+        # create_puzzle 对模型板型直接走 EngineGame 适配器（puzzle_types 的
+        # 模型分支，不依赖全局引擎开关）——没有「落回方形」的回退。
+        if kind not in ('square', 'numbered', 'triangle', 'mi'):
+            self._check_saved_model_identity(kind, puzzle.get('model') or {})
         self.game = create_puzzle(m, n, step, kind=kind, triangle_side=triangle_side)
         # 形态标记同步到逻辑对象：编号谜题的整数矩阵靠 numbered 还原编号；
         # 三角/米字为独立矩阵编码，其逻辑类 __slots__ 不含 numbered，跳过
         if kind in ('square', 'numbered'):
             self.game.numbered = self.numbered
-        if kind == 'shatter':
-            # 相机按通用通道包围盒居中（与建局同式；存档不保存 zoom）
+        if kind not in ('square', 'numbered', 'triangle', 'mi'):
+            # 模型文件板型：相机按通用通道包围盒居中（与建局同式；
+            # 存档不保存 zoom）
             self.zoom = 1.0
             self.center_map()
         if kind == 'triangle':
@@ -704,8 +743,9 @@ class FileOpsMixin:
             marks.append('tri')
         if getattr(self, 'numbered', False):
             marks.append('num')
-        if self._current_kind() == 'shatter':
-            marks.append('shat')
+        if self._current_kind() not in ('square', 'numbered', 'triangle', 'mi'):
+            # 模型局：文件名带模型名（截 8 字符，免得碎三角之外的长名撑爆）
+            marks.append(self._current_kind()[:8])
         tag = ('-'.join(marks) + '-') if marks else ''
         return f"{tag}{self.current_step}-{self.current_m}-{self.current_n}-{ts}.json"
 

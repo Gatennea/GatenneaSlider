@@ -265,10 +265,15 @@ class MetricsPanelMixin:
                 ("形态", "米字格（mi）"),
                 ("调试面板", "已实装，但未识别到 mi 棋盘"),
             ]
-        # 形态键 → 人话名：面板是给玩家看的，别把内部键（shatter）直接怼上去
-        names = {'shatter': '碎三角'}
+        # 形态键 → 人话名：面板是给玩家看的，别把内部键直接怼上去。
+        # 模型板型的名字取文件里的 title（丢一个新 json 就自动有名字）。
+        try:
+            from engine import model_registry
+            label = model_registry.loaded(k).title
+        except (KeyError, ImportError):
+            label = k or "未知"
         return [
-            ("形态", names.get(k, k or "未知")),
+            ("形态", label),
             ("调试面板", "本形态尚未实装"),
         ]
 

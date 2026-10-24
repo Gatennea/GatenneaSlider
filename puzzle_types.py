@@ -18,6 +18,10 @@ from __future__ import annotations
 
 from game import SliderMatrix
 
+#: 旧四种形态（有各自的旧引擎实现与形状分支）。
+#: 不在此列 = 模型文件板型（块数与形状来自 models/<name>.json）。
+_NATIVE_KINDS = ('square', 'numbered', 'triangle', 'mi')
+
 
 def puzzle_key(
     step: int,
@@ -44,8 +48,11 @@ def puzzle_key(
         return f'{step}~tri{k}'
     if kind == 'mi':
         return f'{step}~mi{m}*{n}'
-    if kind == 'shatter':
-        return f'{step}~shatter'
+    if kind not in _NATIVE_KINDS:
+        # 模型文件板型（shatter / shatter_lattice / 以后任何 <name>.json）：
+        # 固定块数、无尺寸维度，键里不能含 m/n——否则会与矩形同尺寸分榜
+        # 相撞，成绩/存档识别全部串味。
+        return f'{step}~{kind}'
     base = f'{step}~{m}*{n}'
     if kind == 'numbered' or numbered:
         return f'{base}#num'
@@ -99,12 +106,20 @@ def create_puzzle(
         except ImportError:
             # 三角形尚未實作時，回退到方形避免引入未支援型態
             pass
-    if kind == 'shatter':
-        # 碎三角（几何引擎新板型）：无旧实现，直接走 EngineGame 适配器，
-        # **不依赖全局引擎开关**（与 GUI.new_shatter_puzzle 同一建路口）。
-        # 引擎缺失时让 ImportError 直接抛——回退方形=48块变16块的静默兜底。
+    if kind not in _NATIVE_KINDS:
+        # 模型文件板型（碎三角及以后任何 models/<name>.json）：无旧实现，
+        # 直接走 EngineGame 适配器，**不依赖全局引擎开关**（与 GUI
+        # new_model_puzzle 同一建路口）。既然文件里已经有形状与缝族，
+        # 这里就不该再出现「是哪个形态」的分支。
+        # 未注册就**明确抛 KeyError**——回退方形 = 48 块变 16 块的静默兜底。
+        from engine.registry import board_types
+        if kind not in board_types():
+            raise KeyError(
+                f'未注册的模型板型 {kind!r}（已注册: {board_types()}）。'
+                f'检查 models/{kind}.json 是否存在、是否通过 A0/A1 校验'
+                f'（详见 engine.model_registry.errors()）')
         from engine.adapter import create_adapter_puzzle
-        return create_adapter_puzzle('shatter', m, n, step,
+        return create_adapter_puzzle(kind, m, n, step,
                                      triangle_side=triangle_side)
     if kind == 'mi':
         try:

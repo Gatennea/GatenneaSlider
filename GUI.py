@@ -392,6 +392,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             ('快速开始：矩形 6×6 等级2', 6, 6, 2),
             ('矩形谜题 ▸', '__sub__', 'rect'),
             ('异形谜题 ▸', '__sub__', 'exotic'),
+            ('模型谜题 ▸', '__sub__', 'models'),
             ('---',),
             ('自定义...',),
             ('高级选项...',),
@@ -431,17 +432,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 ('4×4 等级2', 4, 4, 2, 'mi'),
                 ('6×6 等级2', 6, 6, 2, 'mi'),
                 ('8×8 等级2', 8, 8, 2, 'mi'),
-                ('__group__', '碎三角（几何引擎新形态：48 块，实验）'),
-                # 碎三角固定 48 块、无尺寸维度：m/n 只是占位（键与打勾
-                # 都不看它们，puzzle_key 的 shatter 分支只记等级），
-                # 真正生效的只有 step——分发处对 shatter 只传 ps。
-                ('等级1', 4, 4, 1, 'shatter'),
-                ('等级2', 4, 4, 2, 'shatter'),
                 ('__group__', '数字谜题（矩形+编号）'),
                 ('4×4 等级2', 4, 4, 2, 'numbered'),
                 ('6×6 等级2', 6, 6, 2, 'numbered'),
                 ('8×8 等级2', 8, 8, 2, 'numbered'),
             ],
+            # 模型文件板型：条目由 models/*.json 决定（_refresh_puzzle_presets
+            # 每次重建菜单时填充），这里给个空壳，免得菜单渲染先于刷新报 KeyError。
+            'models': [],
         }
 
         # 谜题菜单二级交互状态：当前展开的 subkey、条目矩形、悬停项
@@ -797,10 +795,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         elif kind == 'numbered':
             if not self.new_puzzle(m, n, step, numbered=True):
                 raise ValueError(f"无效的谜题参数：m={m}, n={n}, step={step}（需 step<max）")
-        elif kind == 'shatter':
-            # 碎三角固定 48 块：m/n 被忽略，只认 step（与菜单条目同口径）
-            if not self.new_shatter_puzzle(step):
-                raise ValueError(f"无效的碎三角参数：step={step}")
+        elif kind not in ('square', 'triangle', 'mi', 'numbered'):
+            # 模型文件板型（任意 models/<name>.json）：m/n 被忽略，只认 step
+            # （与菜单条目同口径）
+            if not self.new_model_puzzle(kind, step):
+                raise ValueError(f"无效的模型板型参数：kind={kind}, step={step}")
 
         # 一轮调试的起点标记（日志开着才有这一行，否则什么都不会写）
         op_log.log('session_start', form=type(self.game).__name__,
@@ -822,10 +821,24 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             ('快速开始：矩形 6×6 等级2', 6, 6, 2),
             ('矩形谜题 ▸', '__sub__', 'rect'),
             ('异形谜题 ▸', '__sub__', 'exotic'),
+            ('模型谜题 ▸', '__sub__', 'models'),
             ('---',),
             ('自定义...',),
             ('高级选项...',),
         ]
+        # 模型文件板型：条目完全由注册表决定——丢一个 models/<name>.json
+        # 进目录，菜单里就多一项，这里一行都不用改。
+        from engine import model_registry
+        models = model_registry.loaded()
+        items = [('__group__', '模型文件（几何引擎，实验）')]
+        for name in sorted(models):
+            m = models[name]
+            n_blocks = len(m.spec.goal_blocks)
+            items.append((f'{m.title}（{n_blocks} 块）', 4, 4, 1, name))
+            items.append((f'{m.title} 等级2', 4, 4, 2, name))
+        if len(items) == 1:
+            items = [('（models/ 下暂无可用模型）',)]
+        self.puzzle_sub_presets['models'] = items
         styles = design_styles.list_styles(self.config_dir)
         if styles:
             base.append(('---',))  # 预设分隔线
@@ -1105,18 +1118,27 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         return True
 
     def new_shatter_puzzle(self, step: int = 1) -> bool:
-        """创建碎三角谜题（几何引擎解释器路线的首个新板型）。
+        """创建碎三角谜题（保留旧调用点，等价于 new_model_puzzle('shatter')）。"""
+        return self.new_model_puzzle('shatter', step)
+
+    def new_model_puzzle(self, model_name: str, step: int = 1) -> bool:
+        """按模型文件开局（几何引擎解释器路线的通用入口）。
 
         与 square / triangle / mi 三个手写入口不同：本方法**不写任何形状
-        相关的分支**——盘面、形状、缝族全部来自 BoardSpec 的定义，绘制由
-        通用渲染通道（``spec.cell_polygon``）完成。这里只做建局与状态重置。
+        相关的分支**——盘面、形状、缝族全部来自 ``models/<name>.json``，
+        绘制由通用渲染通道（``spec.cell_polygon``）完成。这里只做建局与
+        状态重置。换一个 json 就多一个板型，本方法不用改。
 
-        碎三角没有 game_shatter.py 之类的旧实现，只能走 EngineGame，故直接
-        调 ``create_adapter_puzzle``，**不依赖全局引擎开关**（避免为建一个
-        新形态而拨动影响其它形态的全局状态）。
-
-        固定 48 块（4 单元拼盘），因此无 m / n 参数。
+        模型板型没有旧实现，只能走 EngineGame，故直接调
+        ``create_adapter_puzzle``，**不依赖全局引擎开关**。
         """
+        from engine import model_registry
+        try:
+            model = model_registry.loaded(model_name)
+        except KeyError as exc:
+            self.macro_notify_msg = f'模型不可用：{exc}'
+            self.macro_notify_timer = 200
+            return False
         if self._tut_board_locked():
             return False
         self._stop_gradient_pipeline()
@@ -1132,18 +1154,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._timer_cancel()
         detached = self._detach_readonly_save()
 
-        # 竞速/创造对碎三角不可用（见 gui/speedrun.py set_game_mode 的拦截）：
-        # 带着 timed 进碎三角，打乱后会走到 _timer_enter_ready 的 lossy
+        # 竞速/创造对模型板型不可用（见 gui/speedrun.py set_game_mode 的拦截）：
+        # 带着 timed 进模型局，打乱后会走到 _timer_enter_ready 的 lossy
         # export_map（24 种朝向压成 '#'），成绩是一份丢朝向的串。这里主动
         # 退回练习模式并说明，不把谜题换成一静默错的模式组合。
         mode_note = ''
         if self.game_mode in ('timed', 'create'):
             prev = self._mode_name()
             self.set_game_mode('practice')
-            mode_note = f"（碎三角不支持{prev}模式，已切回练习）"
+            mode_note = f"（{model.title}不支持{prev}模式，已切回练习）"
 
         self.current_step = step
-        # 碎三角是独立形态：既不是米字也不是三角（两者都有各自手画渲染，
+        # 模型板型是独立形态：既不是米字也不是三角（两者都有各自手画渲染，
         # 走了会画错）。形状交给通用通道，故两个旗标都关。
         self.mi_mode = False
         self.triangle_mode = False
@@ -1163,7 +1185,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.show_virtual_keyboard = False
 
         from engine.adapter import create_adapter_puzzle
-        self.game = create_adapter_puzzle('shatter', 4, 4, step)
+        self.game = create_adapter_puzzle(model_name, 4, 4, step)
 
         self.zoom = 1.0
         self.selected_gap = None
@@ -1181,7 +1203,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._mark_file_dirty()
 
         self.macro_notify_msg = (
-            f"切换谜题：碎三角 等级{step}（48 块）{mode_note}")
+            f"切换谜题：{model.title} 等级{step}"
+            f"（{len(model.spec.goal_blocks)} 块）{mode_note}")
         self.macro_notify_timer = 150
         return True
 

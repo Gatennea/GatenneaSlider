@@ -671,7 +671,7 @@ class AnnotationMixin:
         48 块碎三角静默换成另一形态的盘面。
         """
         if self.triangle_mode or self.mi_mode or \
-                self._current_kind() == 'shatter':
+                self._is_model_kind():
             self._ann_notify('该谜题没有随机生成功能')
             return
         saved = self._ann_saved('gen')
@@ -705,7 +705,7 @@ class AnnotationMixin:
         48 块碎三角静默换成 4×4 矩形——明确拒绝（GUI 侧通用渲染/命中
         已由 SpecPolygonView 承担，设计画布是另一条尚未解释器化的链路）。
         """
-        if self._current_kind() == 'shatter':
+        if self._is_model_kind():
             self._ann_notify('碎三角暂不支持高级选项（设计画布为方形/三角语义）')
             return
         if self._ann_view == 'design':
@@ -812,7 +812,7 @@ class AnnotationMixin:
         碎三角不进这里：重建走方形 create_puzzle，48 块会被静默换成
         4×4 矩形（同 _ann_btn_design 的拦截理由）。
         """
-        if self._current_kind() == 'shatter':
+        if self._is_model_kind():
             self._ann_notify('碎三角暂不支持手动构造（画布为方形/三角语义）')
             return
         # 初始 m/n/step 一律取当前谜题，避免沿用上次构造的旧尺寸

@@ -167,8 +167,11 @@ class SessionMixin:
             self.new_triangle_puzzle(self.triangle_side, self.current_step)
         elif getattr(self, 'mi_mode', False):
             self.new_mi_puzzle(self.current_m, self.current_n, self.current_step)
-        elif kind == 'shatter':
-            self.new_shatter_puzzle(self.current_step)
+        elif kind not in ('square', 'triangle', 'mi', 'numbered'):
+            # 模型文件板型（碎三角及任何 models/<name>.json）：固定块数，
+            # 只有等级可重建。漏了这条 Ctrl+R 会把 48 块碎三角静默换成
+            # 4×4 矩形——那正是本项目明令禁止的静默兜底。
+            self.new_model_puzzle(kind, self.current_step)
         elif getattr(self, 'numbered', False):
             self.new_puzzle(self.current_m, self.current_n, self.current_step,
                             numbered=True)
@@ -205,6 +208,15 @@ class SessionMixin:
         if kind and kind not in ('square', 'numbered', 'triangle', 'mi'):
             return kind
         return 'square'
+
+    def _is_model_kind(self) -> bool:
+        """当前是否为模型文件板型（碎三角及任何 models/<name>.json）。
+
+        各处拦截（竞速/创造/设计画布/随机生成/手动构造）都该用这个判据，
+        而不是 `== 'shatter'`——否则丢一个新模型进目录，那些入口会静默
+        把模型局换来换去。
+        """
+        return self._current_kind() not in ('square', 'numbered', 'triangle', 'mi')
 
     def _current_puzzle_key(self) -> str:
         """当前谜题完整标识：方形 2~4*4 / 带序号 2~4*4#num / 三角 2~tri6。"""
@@ -256,9 +268,15 @@ class SessionMixin:
             return f'三角形 边长{k} 等级{self.current_step}'
         if getattr(self, 'mi_mode', False):
             return f'米字格 {self.current_m}×{self.current_n} 等级{self.current_step}'
-        if self._current_kind() == 'shatter':
-            # 碎三角固定 48 块、无尺寸维度，标签只报等级
-            return f'碎三角 等级{self.current_step}'
+        _kind = self._current_kind()
+        if _kind not in ('square', 'numbered', 'triangle', 'mi'):
+            # 模型文件板型：固定块数、无尺寸维度，标签只报等级（名字取文件里的 title）
+            try:
+                from engine import model_registry
+                _title = model_registry.loaded(_kind).title
+            except (KeyError, ImportError):
+                _title = _kind
+            return f'{_title} 等级{self.current_step}'
         name = '数字' if getattr(self, 'numbered', False) else '矩形'
         return f'{name} {self.current_m}×{self.current_n} 等级{self.current_step}'
 
