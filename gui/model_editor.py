@@ -17,17 +17,27 @@
 4. **保存门**（比高级选项更严）：≥1 块 + 单一连通 + **至少 2 颗可动**
    （冻形拒存——紧凑 4 块几乎必冻，见 engine/editor_geom 的冻形真值）。
 
-操作
-----
-* 左键点已有块 = 删除；点空白 = 放置当前朝向（优先贴边吸附，吸附不到
-  就自由落在最近格点）；点**两块之间的缝** = 捆绑/解绑（同组整组滑动）。
-* R 旋转 / F 镜像：改的是**将要放置**的朝向（已有块不能原地转——换了
-  朝向多边形就变，必然重叠；删了重放即可，有撤销）。
-* 滚轮缩放（Ctrl+滚轮亦可）、中键拖动平移；ESC 退出。
+操作（2026-10-25 用户定案：左右键分工，拖动移动）
+--------------------------------------------------
+* **左键点空白** = 放置当前朝向（优先贴边吸附，吸附不到就自由落在最近
+  格点）。按下没移动才算「点击」，移动超过 4px 就变成「拖空白 = 平移画布」。
+* **左键按住已有块拖动** = 移动它（在捆绑组里就整组一起动）。整组按**整数
+  格**平移，所以只要拖到相邻就自动贴合——「坐标差一点自动拼上」是晶格
+  对齐的自然结果，不靠额外的吸附半径。与组外块重叠时不应用（块停在最后
+  一个合法位置）。
+* **右键点块** = 删除；**右键点两块之间的缝** = 捆绑/解绑（同组整组滑动）。
+  左键只负责「放」和「拖」——以前左键点块是删、点缝是捆，想贴着已有块
+  放一块时常常变成删除或捆绑，看着像「点了没反应」（2026-10-25 用户实测）。
+* **R 旋转 / F 镜像**：鼠标悬停在某块上 → 转**那一块**（绕自身重心，找
+  最近的无重叠落点）；悬空 → 转**将要放置**的朝向。
+* 滚轮缩放、中键（或左键拖空白）平移；ESC 退出。
 * U / Ctrl+Z 撤销；Enter 激活名字框、再回车保存；[试玩] 存完直接开局。
 * 侧栏「盘面」：**打开模型…** 把已保存的模型读回来续编（朝向按几何
   匹配，label 名不要求同款）；**清空捆绑** 一键解掉所有组（「全捆再
   逐缝剪」会留下无缝相连的余组，UI 上无缝可点，只能在这里清）。
+* 保存门只在**保存时**检查（整片连通 + ≥2 颗可动）：玩家自己一眼能看出
+  摆得对不对，不必边摆边拦。
+
 """
 import json
 import math
@@ -125,6 +135,8 @@ class ModelEditorMixin:
             'cnt_sig': None,
             'move_info': (0, 0),              # (合法移动数, 可动块数)
             'ghost': None,                    # (世界多边形, 是否放得下)
+            'hover': None,                    # 鼠标下的块键（高亮 + R/F 作用对象）
+            'press': None,                    # 左键按下中的手势（见 _med_press_down）
             'undo': [],
             'redo': [],
             'panel_items': [],
@@ -179,8 +191,9 @@ class ModelEditorMixin:
         med['game'] = preview
         self.game = preview
         self._med_sync_after_edit(center=True)
-        self._med_notify('搭积木编辑器：左键放置/删除，点缝捆绑/解绑，'
-                         'R 旋转 F 镜像，U 撤销，命名后回车保存（ESC 退出）')
+        self._med_notify('搭积木：左键放、按住拖块移动；右键删块、'
+                         '右键点缝＝捆绑；R/F 转向（悬停某块＝转那块），'
+                         'U 撤销，命名后回车保存（ESC 退出）')
 
     def _med_close(self):
         """退出编辑器，原样还原进入前的局面与相机。"""
@@ -371,22 +384,33 @@ class ModelEditorMixin:
     # ==================================================================
     # 放置 / 删除 / 整形
     # ==================================================================
-    def _med_place_at(self, wx, wy):
-        """在世界坐标 (wx, wy) 处放置当前朝向；返回 True=放上了。"""
+    def _med_place_at(self, gx, gy):
+        """在几何坐标 (gx, gy) 处放置当前朝向；返回 True=放上了。
+
+        ⚠️ 参数是**几何单位**（1 = 一格），不是屏幕/世界像素——换算在
+        事件入口（``_med_screen_to_geom``）统一做掉。
+        """
         med = self._med
-        img = med['images'][med['shape']][med['cursor']]
+        imgs = med['images'][med['shape']]
+        idx = med['cursor']
+        img = imgs[idx]
         placed = med['placed']
         p = None
-        cands = eg.snap_candidates((img,), placed, (wx, wy))
+        # ⚠️ 贴边吸附要试**形状的全部朝向**，不能只试当前朝向：三角晶格上
+        # 同朝向的两块只共享顶点不共享边（▲(0,0) 与 ▲(1,0)），拿单一朝向
+        # 去贴永远拼不成连通的一片（2026-10-25 实测「块是散的」）。贴哪条
+        # 边决定朝向，本来就该由几何选，玩家按 R 只影响**自由落点**那块。
+        cands = eg.snap_candidates(imgs, placed, (gx, gy))
         if cands and cands[0][3] <= _SNAP_TOL:
-            p = cands[0][0]          # 贴边吸附：整条边贴上，取最近候选
+            p, idx = cands[0][0], cands[0][1]
+            img = imgs[idx]
         else:
-            p = self._med_free_point(img, (wx, wy), placed)
+            p = self._med_free_point(img, (gx, gy), placed)
         if p is None:
             self._med_notify('这里放不下（与已有块重叠）')
             return False
         self._med_undo_push()
-        med['placed'][(p, med['shape'], med['cursor'])] = img
+        med['placed'][(p, med['shape'], idx)] = img
         self._med_sync_after_edit()
         return True
 
@@ -428,16 +452,143 @@ class ModelEditorMixin:
                     best = (d, p)
         return None if best is None else best[1]
 
-    def _med_delete_at(self, wx, wy):
-        hit = eg.block_at(self._med['placed'], (wx, wy))
+    def _med_delete_at(self, gx, gy):
+        hit = eg.block_at(self._med['placed'], (gx, gy))
         if hit is None:
             return False
         med = self._med
         self._med_undo_push()
         del med['placed'][hit]
         med['groups'].pop(hit, None)
+        if med.get('hover') == hit:
+            med['hover'] = None
         self._med_sync_after_edit()
         return True
+
+    # ---- 左键手势：点放 / 拖块 / 拖空白平移 ------------------------------
+    # 按下时只**记账**，松手才判定是「点击」还是「拖动」：同一颗左键
+    # 既要放、又要拖，靠位移阈值分流（4px）。
+    _PRESS_SLOP = 4.0
+
+    def _med_press_down(self, gx, gy, sx, sy):
+        """左键按下：登记手势（拖块 / 待放置）。"""
+        med = self._med
+        med['ghost'] = None
+        key = eg.block_at(med['placed'], (gx, gy))
+        if key is not None:
+            med['press'] = self._med_move_press(key, gx, gy, sx, sy)
+            return
+        med['press'] = {'kind': 'place', 'grab': (gx, gy),
+                        'screen': (sx, sy), 'moved': False,
+                        'cam': (self.camera_x, self.camera_y)}
+
+    def _med_move_press(self, key, gx, gy, sx, sy, moved=False):
+        """构造「拖块」手势（组内则整组）。``grab`` 记按下点，位移从它算。
+
+        ``items`` 是 ``[(当前键, 按下时的锚点, 顶点)]``：拖动会改键，旧键
+        作废，所以基准（按下时的锚点）与块身份必须分开存——每次 apply 都
+        从基准 + 位移重算，块不会被越拖越偏。
+        """
+        med = self._med
+        gid = med['groups'].get(key, 0)
+        keys = ([k for k in med['placed']
+                 if gid and med['groups'].get(k, 0) == gid] if gid else [])
+        if key not in keys:
+            keys = [key]
+        return {'kind': 'move', 'key': key, 'keys': keys,
+                'items': [(k, tuple(k[0]), med['placed'][k]) for k in keys],
+                'grab': (gx, gy), 'screen': (sx, sy),
+                'moved': moved, 'pushed': False, 'delta': (0, 0)}
+
+    def _med_press_move(self, sx, sy, gx, gy):
+        """左键移动：超阈值后分派成拖动块 / 平移画布。"""
+        med = self._med
+        pr = med.get('press')
+        if pr is None:
+            return False
+        if not pr['moved']:
+            dx = sx - pr['screen'][0]
+            dy = sy - pr['screen'][1]
+            if dx * dx + dy * dy < self._PRESS_SLOP ** 2:
+                return True
+            pr['moved'] = True
+            if pr['kind'] == 'place':
+                pr['kind'] = 'pan'      # 空白处拖动 = 平移画布（不放置）
+        if pr['kind'] == 'pan':
+            self.camera_x = pr['cam'][0] + (sx - pr['screen'][0])
+            self.camera_y = pr['cam'][1] + (sy - pr['screen'][1])
+            return True
+        if pr['kind'] == 'move':
+            self._med_drag_to(gx, gy)
+        return True
+
+    def _med_press_up(self, gx, gy):
+        """左键松开：按手势种类收尾。
+
+        单击（无论落在空白还是**已有块里**）都是「放一块」——点在块里就是
+        「接着这块搭」，贴边吸附把新块放到最近空位；只有拖起来过的手势才
+        算移动，不会误放。
+        """
+        med = self._med
+        pr = med.pop('press', None)
+        if pr is None:
+            return
+        if pr['kind'] in ('place', 'move') and not pr['moved']:
+            self._med_place_at(gx, gy)
+        elif pr['kind'] == 'move':
+            # 拖出去又拖回原位：撤销栈里那条等于空操作，摘掉
+            if pr['pushed'] and all(p0 == k[0] for k, p0, _o in pr['items']):
+                if med['undo']:
+                    med['undo'].pop()
+            med['hover'] = eg.block_at(med['placed'], (gx, gy))
+
+    def _med_drag_to(self, gx, gy):
+        """拖动中：整组按**整数格**平移（同晶格 ⇒ 自动贴合，无需再吸附）。
+
+        位移取整是关键——块锚点永远落在整数格上，两块只要相邻就共享整条
+        边，「坐标差一点自动拼上」是这么来的，不是靠额外的吸附半径。
+
+        目标位置与组外块重叠 / 键冲突时**不应用**：块停在最后一个合法位置，
+        松手即定格（不会把盘面拖成重叠状态）。
+        """
+        med = self._med
+        pr = med['press']
+        di = int(round(gx - pr['grab'][0]))
+        dj = int(round(gy - pr['grab'][1]))
+        if (di, dj) == pr['delta']:
+            return
+        items = pr['items']
+        cur_keys = [it[0] for it in items]
+        others = {k: v for k, v in med['placed'].items() if k not in cur_keys}
+        moves = {}
+        for k, p0, offs in items:
+            p = (p0[0] + di, p0[1] + dj)
+            nk = (p, k[1], k[2])
+            if nk in others or nk in moves:
+                return
+            if not eg.can_place((offs,), 0, p, others):
+                return
+            moves[k] = nk
+        if not pr['pushed']:
+            self._med_undo_push()
+            pr['pushed'] = True
+        gmap = {k: med['groups'].pop(k) for k in cur_keys if k in med['groups']}
+        offs_by_key = {k: offs for k, _p0, offs in items}
+        for k in cur_keys:
+            med['placed'].pop(k, None)
+        for k, nk in moves.items():
+            med['placed'][nk] = offs_by_key[k]
+        for k, g in gmap.items():
+            med['groups'][moves[k]] = g
+        # 键换了：基准仍绑定「按下时的锚点」，下一帧从它重算（不会累积漂移）
+        pr['items'] = [(moves[k], p0, offs) for k, p0, offs in items]
+        pr['keys'] = list(moves.values())
+        pr['delta'] = (di, dj)
+        # 轻量收尾：拖动中不居中（中心会跟着块跑，手感像甩镜头）
+        self._med_rebuild()
+        med['fam_sig'] = None
+        med['cnt_sig'] = None
+        med['hover'] = None
 
     # ---- 捆绑 / 解绑（点缝；与设计态同一交互）----
     def _med_seam_at(self, wx, wy, tol=0.22):
@@ -596,6 +747,10 @@ class ModelEditorMixin:
         return None
 
     def _med_rotate(self, step=1):
+        key = self._med.get('hover')
+        if key is not None and key in self._med['placed']:
+            self._med_turn_block(key, mirror=False)
+            return
         med = self._med
         imgs = med['images'][med['shape']]
         cur = imgs[med['cursor']]
@@ -607,6 +762,10 @@ class ModelEditorMixin:
         self._med_notify(f'朝向 {nxt + 1}/{len(imgs)}')
 
     def _med_mirror(self):
+        key = self._med.get('hover')
+        if key is not None and key in self._med['placed']:
+            self._med_turn_block(key, mirror=True)
+            return
         med = self._med
         imgs = med['images'][med['shape']]
         cur = imgs[med['cursor']]
@@ -617,6 +776,61 @@ class ModelEditorMixin:
         med['ghost'] = None
         self._med_notify(f'朝向 {nxt + 1}/{len(imgs)}（镜像）')
 
+    def _med_turn_block(self, key, mirror=False):
+        """原地转/镜像**已有的一块**（鼠标悬停在那块上按 R / F）。
+
+        锚点重算：保持「块的重心」不动（``p + 顶点均值``），再取最近的无
+        重叠位置。晶格旋转是整系数变换，重心未必落回格点，所以只能取整后
+        在 ±2 格里找最接近原重心且不重叠的落点——找不到就拒绝（提示「转不
+        开」），绝不把两块叠在一起。
+        """
+        med = self._med
+        offs = med['placed'][key]
+        shape, old_idx = key[1], key[2]
+        xform = eg.mirror if mirror else eg.rot60
+        new = eg.normalize(tuple(xform(v) for v in offs))
+        try:
+            idx = med['images'][shape].index(new)
+        except ValueError:
+            self._med_notify('这个形状没有镜像/旋转后的像')
+            return
+        if idx == old_idx:
+            self._med_notify('这块是对称的，转过去还是它自己')
+            return
+        # 原重心（格坐标，含锚点）
+        cx = sum(key[0][0] + o[0] for o in offs) / len(offs)
+        cy = sum(key[0][1] + o[1] for o in offs) / len(offs)
+        ncx = sum(o[0] for o in new) / len(new)
+        ncy = sum(o[1] for o in new) / len(new)
+        base = (int(round(cx - ncx)), int(round(cy - ncy)))
+        others = {k: v for k, v in med['placed'].items() if k != key}
+        best = None
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                q = (base[0] + di, base[1] + dj)
+                nk = (q, shape, idx)
+                if nk in others:
+                    continue
+                if not eg.can_place((new,), 0, q, others):
+                    continue
+                d = (q[0] + ncx - cx) ** 2 + (q[1] + ncy - cy) ** 2
+                if best is None or d < best[0]:
+                    best = (d, nk)
+        if best is None:
+            self._med_notify('这块转不开（新朝向在附近放不下）')
+            return
+        self._med_undo_push()
+        g = med['groups'].pop(key, 0)
+        del med['placed'][key]
+        med['placed'][best[1]] = new
+        if g:
+            med['groups'][best[1]] = g
+        med['hover'] = best[1]
+        self._med_sync_after_edit()
+        self._med_notify(f'已{"镜像" if mirror else "旋转"}这块'
+                         f'（{best[1][1]}:{best[1][2]}）')
+
+
     def _med_clear(self):
         med = self._med
         if not med['placed']:
@@ -624,6 +838,7 @@ class ModelEditorMixin:
         self._med_undo_push()
         med['placed'].clear()
         med['groups'].clear()
+        med['hover'] = None
         self._med_sync_after_edit()
         self._med_notify('已清空（U 可撤销）')
 
@@ -790,6 +1005,29 @@ class ModelEditorMixin:
     # ==================================================================
     # 布局几何（绘制与命中共用同一套矩形）
     # ==================================================================
+    def _med_screen_to_geom(self, sx, sy):
+        """屏幕 → **几何单位**（1 = 一格）。
+
+        渲染通道的世界坐标约定是 ``world = 几何 × cell_size``（见
+        ``renderer._polygon_view``：cell_size 只在这里乘一次，缩放由
+        ``world_to_screen`` 负责）。编辑器所有的几何量（吸附、落点、
+        命中、缝的中点、幽灵多边形）都以**几何单位**为准，所以事件入口
+        必须在 ``screen_to_world`` 之后**再除以 cell_size**。
+
+        ⚠️ 漏这步的后果（2026-10-25 用户实测「只显示一个滑块」）：点击
+        位置被当成几何坐标（相当于放大 60 倍），第二块直接落到屏幕外，
+        画面上永远只剩种子那一块；同时点块删除、点缝捆绑、幽灵预览全部
+        失配（它们拿世界坐标去比几何多边形）。
+        """
+        wx, wy = self.screen_to_world(sx, sy)
+        s = float(self.cell_size) or 1.0
+        return wx / s, wy / s
+
+    def _med_geom_to_screen(self, gx, gy):
+        """几何单位 → 屏幕（``_med_screen_to_geom`` 的逆）。"""
+        s = float(self.cell_size) or 1.0
+        return self.world_to_screen(gx * s, gy * s)
+
     def _med_panel_rect(self):
         return pygame.Rect(_PANEL_X, self.menu_bar_height + 10,
                            _PANEL_W, self._med_panel_height())
@@ -842,6 +1080,9 @@ class ModelEditorMixin:
             if event.button == 2:
                 self._med_panning = False
                 self._med_pan_origin = None
+            elif event.button == 1 and med.get('press') is not None:
+                gx, gy = self._med_screen_to_geom(*event.pos)
+                self._med_press_up(gx, gy)
             return True
         if event.type == pygame.MOUSEMOTION:
             return self._med_mouse_motion(event)
@@ -902,6 +1143,7 @@ class ModelEditorMixin:
         return True
 
     def _med_mouse_down(self, event) -> bool:
+        """左键＝点放/拖块、右键＝删、中键＝平移（见 _med_press_down）。"""
         med = self._med
         x, y = event.pos
         if med.get('open_list') is not None:
@@ -915,16 +1157,22 @@ class ModelEditorMixin:
             self._med_panning = True
             self._med_pan_origin = (x, y)
             return True
+        gx, gy = self._med_screen_to_geom(x, y)
+        if event.button == 3:
+            # 右键 = 「缝 / 块」：点缝捆绑（解绑），点块删除。放在右键上
+            # 是为了让左键**只**管放和拖——否则想贴着已有块放一块时，落点
+            # 正好压在缝上就变成捆绑，看着像「点了没放上」（2026-10-25 实测）。
+            med['ghost'] = None
+            seam = self._med_seam_at(gx, gy)
+            if seam is not None:
+                self._med_toggle_bundle(*seam)
+            else:
+                self._med_delete_at(gx, gy)
+            return True
         if event.button != 1:
             med['ghost'] = None
             return True
-        wx, wy = self.screen_to_world(x, y)
-        seam = self._med_seam_at(wx, wy)
-        if seam is not None:
-            self._med_toggle_bundle(*seam)
-            return True
-        if not self._med_delete_at(wx, wy):
-            self._med_place_at(wx, wy)
+        self._med_press_down(gx, gy, x, y)
         return True
 
     def _med_mouse_motion(self, event) -> bool:
@@ -939,19 +1187,26 @@ class ModelEditorMixin:
             self._med_pan_origin = event.pos
             return True
         x, y = event.pos
+        gx, gy = self._med_screen_to_geom(x, y)
+        if med.get('press') is not None:
+            self._med_press_move(x, y, gx, gy)
+            return True
         if y < self.menu_bar_height or self._med_panel_rect().collidepoint(x, y) \
                 or self._med_bar_rect().collidepoint(x, y):
             med['ghost'] = None
+            med['hover'] = None
             return True
-        wx, wy = self.screen_to_world(x, y)
-        img = med['images'][med['shape']][med['cursor']]
+        # 悬停高亮（R/F 转的就是这一块）
+        med['hover'] = eg.block_at(med['placed'], (gx, gy))
+        imgs = med['images'][med['shape']]
         placed = med['placed']
-        cands = eg.snap_candidates((img,), placed, (wx, wy))
+        # 预览必须与放置同口径：试**全部朝向**（贴哪条边决定朝向）
+        cands = eg.snap_candidates(imgs, placed, (gx, gy))
         if cands and cands[0][3] <= _SNAP_TOL:
             poly = cands[0][2]
         else:
-            p = self._med_free_point(img, (wx, wy), placed)
-            poly = None if p is None else eg.poly_of(p, img)
+            p = self._med_free_point(imgs[med['cursor']], (gx, gy), placed)
+            poly = None if p is None else eg.poly_of(p, imgs[med['cursor']])
         med['ghost'] = None if poly is None else tuple(poly)
         return True
 
@@ -1030,6 +1285,7 @@ class ModelEditorMixin:
             return
         self._med_draw_ghost()
         self._med_draw_groups()
+        self._med_draw_hover()
         self._med_draw_panel()
         self._med_draw_bar()
         self._med_draw_open_list()
@@ -1083,28 +1339,42 @@ class ModelEditorMixin:
         for _gid, keys in sorted(by_gid.items()):
             sub = {k: med['placed'][k] for k in keys}
             for k in keys:
-                pts = [self.world_to_screen(x, y)
+                pts = [self._med_geom_to_screen(x, y)
                        for (x, y) in eg.poly_of(k[0], med['placed'][k])]
                 pygame.draw.polygon(self.screen, color, pts, lw)
             # 组内共享边加粗：剪断某条缝，那条线就消失——「这族还连着吗」
             # 的直接反馈
             for _ka, _kb, seg in eg.shared_edge_segments(sub):
                 pygame.draw.line(self.screen, color,
-                                 self.world_to_screen(*seg[0]),
-                                 self.world_to_screen(*seg[1]), lw + 1)
+                                 self._med_geom_to_screen(*seg[0]),
+                                 self._med_geom_to_screen(*seg[1]), lw + 1)
 
     def _med_draw_ghost(self):
         med = self._med
         poly = med.get('ghost')
         if not poly:
             return
-        pts = [self.world_to_screen(x, y) for (x, y) in poly]
+        pts = [self._med_geom_to_screen(x, y) for (x, y) in poly]
         if len(pts) < 3:
             return
         surf = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
         pygame.draw.polygon(surf, (120, 200, 255, 90), pts)
         pygame.draw.polygon(surf, (200, 230, 255, 220), pts, 2)
         self.screen.blit(surf, (0, 0))
+
+    def _med_draw_hover(self):
+        """悬停块高亮：R/F 转的是它，拖动/右键删也从这里看出「选中的是哪块」。"""
+        med = self._med
+        key = med.get('hover')
+        if key is None or key not in med['placed']:
+            return
+        if med.get('press') is not None:
+            return                       # 拖动/按压中不画，免得跟目标位置打架
+        pts = [self._med_geom_to_screen(x, y)
+               for (x, y) in eg.poly_of(key[0], med['placed'][key])]
+        if len(pts) < 3:
+            return
+        pygame.draw.polygon(self.screen, (255, 210, 90), pts, 2)
 
     def _med_draw_panel(self):
         med = self._med
@@ -1145,7 +1415,7 @@ class ModelEditorMixin:
             y += 30
         y += 8
         # ---- 朝向 ----
-        _text('朝向（R 旋转 / F 镜像）', f_sec, c['menu_selected'], x0, y)
+        _text('朝向（R/F；悬停某块＝转那块）', f_sec, c['menu_selected'], x0, y)
         y += 20
         imgs = med['images'][med['shape']]
         cur = imgs[med['cursor']]
@@ -1170,7 +1440,7 @@ class ModelEditorMixin:
             on = nm not in med['fam_off']
             if on:
                 pygame.draw.rect(self.screen, c['selection_bg'], row)
-            mark = '✓' if on else '✗'
+            mark = '[开]' if on else '[关]'
             _text(f'{mark} {nm}', f_item,
                   c['menu_text'] if on else c['status_text'], row.x + 6, row.y + 3)
             _text(f'{n_mv} 移', f_small, c['status_text'],
@@ -1323,7 +1593,7 @@ class ModelEditorMixin:
             bx = br.right + 8
 
         # ---- 第 2 行左侧：操作提示（空间不够就不画，别糊成一团）----
-        hint = '左键放/删 · 点缝捆绑 · R 转 · F 镜像'
+        hint = '左键放 · 拖块移动 · 右键删/缝 · R/F 转向 · 滚轮缩放'
         hs = f_small.render(hint, True, c['status_text'])
         if hs.get_width() <= rx - (bar.x + 12) - 8:
             self.screen.blit(hs, (bar.x + 12, row2 + 6))

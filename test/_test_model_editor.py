@@ -91,6 +91,36 @@ def _med_free_r():
     return me._FREE_R
 
 
+def _center_screen(gui, key):
+    """块重心 → 屏幕坐标（点击/拖动的落点都用它）。"""
+    pts = eg.poly_of(key[0], gui._med['placed'][key])
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    return gui._med_geom_to_screen(cx, cy)
+
+
+def _gui_click(gui, sx, sy, button=1):
+    """真实鼠标点击：down + up（放置与缝合都在 up 时结算）。"""
+    for typ in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+        gui._med_handle_event(pygame.event.Event(
+            typ, {'button': button, 'pos': (float(sx), float(sy))}))
+
+
+def _gui_drag(gui, x0, y0, x1, y1, button=1):
+    """真实鼠标拖动：down → 三个 motion → up（超 4px 阈值才成拖）。"""
+    gui._med_handle_event(pygame.event.Event(
+        pygame.MOUSEBUTTONDOWN, {'button': button,
+                                 'pos': (float(x0), float(y0))}))
+    for t in (0.3, 0.7, 1.0):
+        gui._med_handle_event(pygame.event.Event(
+            pygame.MOUSEMOTION,
+            {'pos': (float(x0 + (x1 - x0) * t), float(y0 + (y1 - y0) * t)),
+             'rel': (0, 0), 'buttons': (1, 0, 0)}))
+    gui._med_handle_event(pygame.event.Event(
+        pygame.MOUSEBUTTONUP, {'button': button,
+                               'pos': (float(x1), float(y1))}))
+
+
 # ----------------------------------------------------------------------
 # 1. 打开 / 退出
 # ----------------------------------------------------------------------
@@ -214,31 +244,111 @@ def t_place():
         gui._med_close()
 
 
-def t_click_inside_block_deletes():
-    """点已有块内部 = 删除（真实点击路径，不走 _med_place_at 直调）。"""
+def t_click_inside_block_places():
+    """左键单击（含点在块内部）= 接着这块放一块（2026-10-25 用户定案）。
+
+    以前左键点块是删除，手一抖就把刚放好的块删了；现在删除只在右键，
+    左键单击永远是「放」——点在块里就是「接着它搭」，贴边吸附选最近空位。
+    """
     gui = _make_gui()
     gui._med_open()
     try:
         gui._med_clear()
         gui._med_place_at(0.4, 0.3)
         check(len(gui._med['placed']) == 1, '应先有 1 块')
-        # 点这颗块的几何重心（重心必在块内部）。⚠️ event.pos 必须给**浮
-        # 点**：int() 取整后 screen_to_world 会 round-trip 回 (0,0)（锚
-        # 点），落点跑到块外/顶点上，删/放分支全乱（2026-10-25 踩过）。
+        # ⚠️ event.pos 必须给浮点：int() 取整后 screen_to_world 会
+        # round-trip 回 (0,0)（锚点），落点全偏（2026-10-25 踩过）。
         key = next(iter(gui._med['placed']))
-        pts = eg.poly_of(key[0], gui._med['placed'][key])
-        cx = sum(p[0] for p in pts) / len(pts)
-        cy = sum(p[1] for p in pts) / len(pts)
-        # 把相机挪到棋盘中右部，保证落点不在顶栏也不在左侧调色盘里
         gui.camera_x = 400.0
         gui.camera_y = 200.0
         gui.zoom = 1.0
-        sx, sy = gui.world_to_screen(cx, cy)
+        sx, sy = _center_screen(gui, key)
         check(32 < sy < gui.screen_height - 66, f'测试落点应落在棋盘区：{sx},{sy}')
-        ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                                {'button': 1, 'pos': (sx, sy)})
-        check(gui._med_handle_event(ev) is True, '块内点击应被编辑器消费')
-        check(len(gui._med['placed']) == 0, '点块内部应删除而不是放置')
+        _gui_click(gui, sx, sy)
+        check(len(gui._med['placed']) == 2,
+              f'点块内部应接着放一块（实得 {len(gui._med["placed"])}）')
+    finally:
+        gui._med_close()
+
+
+def t_right_click_delete():
+    """右键删块（左键不再兼任删除）。"""
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        gui._med_clear()
+        gui._med_place_at(0.4, 0.3)
+        gui._med_place_at(3.4, 0.3)
+        check(len(gui._med['placed']) == 2, '应先有 2 块')
+        key = next(iter(gui._med['placed']))
+        gui.camera_x, gui.camera_y, gui.zoom = 400.0, 200.0, 1.0
+        sx, sy = _center_screen(gui, key)
+        _gui_click(gui, sx, sy, button=3)
+        check(len(gui._med['placed']) == 1,
+              f'右键应删掉一块（实得 {len(gui._med["placed"])}）')
+        check(key not in gui._med['placed'], '删的应是右键点中的那块')
+    finally:
+        gui._med_close()
+
+
+def t_drag_move_block():
+    """按住左键拖块 = 移动（整数格平移 ⇒ 天然贴合）。"""
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        gui._med_clear()
+        gui._med_place_at(0.4, 0.3)
+        key = next(iter(gui._med['placed']))
+        n0 = len(gui._med['placed'])
+        gui.camera_x, gui.camera_y, gui.zoom = 400.0, 250.0, 1.0
+        sx, sy = _center_screen(gui, key)
+        step = gui.cell_size * gui.zoom          # 拖整整 2 格
+        _gui_drag(gui, sx, sy, sx, sy + 2 * step)
+        keys = list(gui._med['placed'])
+        check(len(keys) == n0, f'拖动不应增减块（{n0} -> {len(keys)}）')
+        check(keys != [key], f'拖动后键应改变（仍 {keys}）')
+        # 位移必须是**整数格**（同晶格才谈得上自动贴合）
+        d = (keys[0][0][0] - key[0][0], keys[0][0][1] - key[0][0])
+        check(all(isinstance(v, int) for v in d), f'锚点仍应是整数：{d}')
+        check(d != (0, 0), f'锚点应真的挪了：{d}')
+    finally:
+        gui._med_close()
+
+
+def t_drag_empty_pans():
+    """空白处按住左键拖动 = 平移画布，不放置。"""
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        n0 = len(gui._med['placed'])
+        cam = (gui.camera_x, gui.camera_y)
+        _gui_drag(gui, 860, 180, 930, 250)
+        check(len(gui._med['placed']) == n0, '拖空白不应放置')
+        check((gui.camera_x, gui.camera_y) != cam, '拖空白应平移画布')
+    finally:
+        gui._med_close()
+
+
+def t_turn_block_hover():
+    """悬停某块按 R = 只转那一块。"""
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        gui._med_clear()
+        gui._med_place_at(0.4, 0.3)
+        key = next(iter(gui._med['placed']))
+        gui.camera_x, gui.camera_y, gui.zoom = 400.0, 200.0, 1.0
+        sx, sy = _center_screen(gui, key)
+        gui._med_handle_event(pygame.event.Event(
+            pygame.MOUSEMOTION, {'pos': (float(sx), float(sy)),
+                                 'rel': (0, 0), 'buttons': (0, 0, 0)}))
+        check(gui._med['hover'] == key,
+              f'悬停应命中这块（hover={gui._med["hover"]}）')
+        gui._med_handle_event(pygame.event.Event(
+            pygame.KEYDOWN, {'key': pygame.K_r, 'mod': 0, 'unicode': 'r'}))
+        keys = list(gui._med['placed'])
+        check(len(keys) == 1, f'转单块不应增减块（实得 {len(keys)}）')
+        check(keys != [key], f'R 应转掉那一块（仍是 {key}）')
     finally:
         gui._med_close()
 
@@ -626,7 +736,7 @@ def t_bundle_toggle():
 
 
 def t_bundle_seam_click_routes():
-    """点缝的点击优先级：先判缝，再判块删除，最后放置。"""
+    """右键点缝 = 捆绑（右键点块才是删除）；左键只管放和拖。"""
     gui = _make_gui()
     gui._med_open()
     try:
@@ -636,11 +746,13 @@ def t_bundle_seam_click_routes():
         gui._med_rebuild()
         _ka, _kb, mid = eg.shared_edges(gui._med['placed'])[0]
         gui.camera_x, gui.camera_y, gui.zoom = 400.0, 200.0, 1.0
-        sx, sy = gui.world_to_screen(*mid)
+        sx, sy = gui._med_geom_to_screen(*mid)
         # ⚠️ pos 必须浮点：取整后 screen_to_world 会回到 (0,0)（两块锚
         # 点），于是缝没判中、反把块删了（2026-10-25 踩过）
+        # 缝归右键管：左键点缝会被当成「在这里放一块」，所以缝合必须
+        # 走右键（2026-10-25 实测：左键点缝导致「想放一块却变成了捆绑」）。
         ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                                {'button': 1, 'pos': (sx, sy)})
+                                {'button': 3, 'pos': (sx, sy)})
         check(gui._med_handle_event(ev) is True, '点缝应被编辑器消费')
         n_grp = len({g for g in gui._med['groups'].values() if g})
         check(n_grp == 1, f'点缝应捆出一组，实得 {n_grp}')
@@ -846,8 +958,8 @@ def t_free_point_reach():
         # 数倍——种子块自身的顶点跨度也占几格，不能拿单个 _FREE_R 卡死。
         for pos in [(gui.screen_width - 5, 40), (gui.screen_width - 5, 640),
                     (5, 640), (500, gui.screen_height - 5)]:
-            wx, wy = gui.screen_to_world(*pos)
-            p = gui._med_free_point(img, (wx, wy), gui._med['placed'])
+            gx, gy = gui._med_screen_to_geom(*pos)
+            p = gui._med_free_point(img, (gx, gy), gui._med['placed'])
             check(p is not None, f'边缘点击也应给落点：{pos}')
             check(max(abs(p[0]), abs(p[1])) <= _med_free_r() * 4,
                   f'落点必须在盘面邻域：{p}')
@@ -857,8 +969,8 @@ def t_free_point_reach():
         # 这里只锁「不爆量级」（几百 = 已能建巨大 matrix）。
         for pos in [(990, 40), (990, 640), (10, 640), (500, 650), (140, 660),
                     (870, 60)]:
-            wx, wy = gui.screen_to_world(*pos)
-            gui._med_place_at(wx, wy)
+            gx, gy = gui._med_screen_to_geom(*pos)
+            gui._med_place_at(gx, gy)
         for k in gui._med['placed']:
             check(max(abs(k[0][0]), abs(k[0][1])) <= 120,
                   f'放置后锚点量级不应爆（实得 {k[0]}）')
@@ -899,7 +1011,9 @@ def t_rebuild_guard():
 def main():
     cases = [t_open_close, t_second_open_refused, t_spec_stable,
              t_render, t_ghost,
-             t_place, t_click_inside_block_deletes, t_delete,
+             t_place, t_click_inside_block_places, t_delete,
+             t_right_click_delete, t_drag_move_block,
+             t_drag_empty_pans, t_turn_block_hover,
              t_rotate_mirror, t_undo_redo,
              t_bundle_toggle, t_bundle_seam_click_routes,
              t_family_toggle, t_gate,
