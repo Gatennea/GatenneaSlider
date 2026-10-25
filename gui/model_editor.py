@@ -68,6 +68,13 @@ _FREE_R = 4
 # 正常编辑永远到不了（自由落点被 _FREE_R 管着）；这是给「打开模型」读入
 # 手写文件、或未来新路径兜底的，防的仍是那种巨大 matrix。
 _MED_MAX_REACH = 64
+# 预览局的形态名。**这是个哨兵，不是一个模型名**：它没有 models/*.json，
+# 也不该出现在任何存档里——``save_config``（退出自动存）与 ``save_to_file``
+# 都要按它跳过/拦下，载入端遇到它按「上次退出停在编辑器里」安静忽略。
+# 2026-10-25 用户实测：编辑器里退出 → temp_history 写下
+# ``type: '__editor__'`` → 下次启动报「存档需要模型 '__editor__'，但它没有
+# 安装」，每次启动都弹一次，且所有从 temp_history 恢复的测试跟着连锁假红。
+PREVIEW_KIND = '__editor__'
 
 
 class ModelEditorMixin:
@@ -103,25 +110,43 @@ class ModelEditorMixin:
         if self.timer_state == 'running':
             self._med_notify('计时进行中无法进入搭积木编辑器')
             return
-        from engine.model_loader import load_shapes
-        shapes = load_shapes()
-        if not shapes:
+        from engine.model_loader import load_shape_lib
+        lib = load_shape_lib()
+        if not lib:
             self._med_notify('models/shapes.json 里没有可用形状，编辑器无从搭起')
             return
-        # ---- 会话数据 ----
-        images = {}
-        for sname, verts in shapes.items():
-            imgs = eg.d6_images(verts)
+        bad = sorted({it['lattice'] for it in lib.values()
+                      if it['lattice'] not in eg.LATTICES})
+        if bad:
+            self._med_notify(f'形状库里有未知晶格族 {bad}，'
+                             f'可用：{sorted(eg.LATTICES)}（改 shapes.json 的 '
+                             'lattice 字段）')
+            return
+        # 每形状按**自己声明的族**生成朝向像（三角 D6 / 方形 D4）
+        opts = {}
+        for sname, item in lib.items():
+            imgs = eg.images_of(item['verts'], item['lattice'])
             if imgs:
-                images[sname] = imgs
-        if not images:
+                opts[sname] = imgs
+        if not opts:
             self._med_notify('形状库全是空形状，编辑器无从搭起')
             return
+        # 默认族：有三角就用三角（老习惯），否则取字典序第一族
+        avail = sorted({lib[s]['lattice'] for s in opts})
+        lattice = 'tri' if 'tri' in avail else avail[0]
+        info = eg.lattice_info(lattice)
+        images = {s: opts[s] for s in opts if lib[s]['lattice'] == lattice}
         med = {
-            'images': images,                 # {形状名: 像元组}
+            'lib': opts,                      # 全库 {形状名: 像元组}
+            'lib_lattice': {s: lib[s]['lattice'] for s in opts},
+            'lattice': lattice,               # 当前晶格族（tri / square）
+            'basis': info['basis'],           # 族基（会话期恒定）
+            'deg': info['deg'],               # 缝族命名角粒度
+            'lat_rows': [],                   # 面板「晶格」节热区
+            'images': images,                 # 当前族的 {形状名: 像元组}
             # 默认形状优先 'tri'（单位等边三角，最「搭积木」的那块）；
             # 库里没有才退回字典序第一个
-            'shape': 'tri' if 'tri' in images else sorted(images)[0],
+            'shape': self._med_default_shape(images),
             'cursor': 0,                      # 当前朝向索引
             'placed': {},                     # {(p, shape, idx): offs}
             'groups': {},                     # {(p, shape, idx): gid}
@@ -187,7 +212,7 @@ class ModelEditorMixin:
         spec = self._med_spec()
         seed_shape = med['shape']
         med['placed'][((0, 0), seed_shape, 0)] = med['images'][seed_shape][0]
-        preview = EngineGame(Board(spec, self._med_blocks()), kind='__editor__')
+        preview = EngineGame(Board(spec, self._med_blocks()), kind=PREVIEW_KIND)
         med['game'] = preview
         self.game = preview
         self._med_sync_after_edit(center=True)
@@ -271,7 +296,7 @@ class ModelEditorMixin:
                     dirs.add(eg._primitive(d))
         seams, seen_names = [], set()
         for d in sorted(dirs):
-            nm = eg.direction_name(d)
+            nm = eg.direction_name(d, med['basis'], med['deg'])
             if nm in seen_names:
                 continue
             seen_names.add(nm)
@@ -281,7 +306,7 @@ class ModelEditorMixin:
         doc = {
             'schema': SCHEMA_BOARD,
             'name': '__editor_preview__',
-            'basis': [[1.0, 0.0], [0.5, math.sqrt(3.0) / 2.0]],
+            'basis': [list(r) for r in med['basis']],
             'pos_scale': 1,
             'solved': 'exact',
             'orientations': {lb: {'shape': 'x', 'off': [list(v) for v in offs]}
@@ -400,7 +425,7 @@ class ModelEditorMixin:
         # 同朝向的两块只共享顶点不共享边（▲(0,0) 与 ▲(1,0)），拿单一朝向
         # 去贴永远拼不成连通的一片（2026-10-25 实测「块是散的」）。贴哪条
         # 边决定朝向，本来就该由几何选，玩家按 R 只影响**自由落点**那块。
-        cands = eg.snap_candidates(imgs, placed, (gx, gy))
+        cands = eg.snap_candidates(imgs, placed, (gx, gy), basis=self._med['basis'])
         if cands and cands[0][3] <= _SNAP_TOL:
             p, idx = cands[0][0], cands[0][1]
             img = imgs[idx]
@@ -423,7 +448,7 @@ class ModelEditorMixin:
         matrix——先卡半分钟再 MemoryError（2026-10-25 用户实测复现）。
         滑块盘面是整体，想摆到别处请中键拖动镜头，块始终长在积木旁。
         """
-        li, lj = eg.to_lattice(click_xy)
+        li, lj = eg.to_lattice(click_xy, self._med['basis'])
         cx = sum(v[0] for v in img) / len(img)
         cy = sum(v[1] for v in img) / len(img)
         # 盘面物理顶点 bbox（空盘 = 原点一个点）
@@ -445,7 +470,7 @@ class ModelEditorMixin:
         for di in range(-_FREE_R, _FREE_R + 1):
             for dj in range(-_FREE_R, _FREE_R + 1):
                 p = (bi + di, bj + dj)
-                if not eg.can_place((img,), 0, p, placed):
+                if not eg.can_place((img,), 0, p, placed, self._med['basis']):
                     continue
                 d = ((p[0] + cx - li) ** 2 + (p[1] + cy - lj) ** 2)
                 if best is None or d < best[0]:
@@ -453,7 +478,7 @@ class ModelEditorMixin:
         return None if best is None else best[1]
 
     def _med_delete_at(self, gx, gy):
-        hit = eg.block_at(self._med['placed'], (gx, gy))
+        hit = eg.block_at(self._med['placed'], (gx, gy), self._med['basis'])
         if hit is None:
             return False
         med = self._med
@@ -474,7 +499,7 @@ class ModelEditorMixin:
         """左键按下：登记手势（拖块 / 待放置）。"""
         med = self._med
         med['ghost'] = None
-        key = eg.block_at(med['placed'], (gx, gy))
+        key = eg.block_at(med['placed'], (gx, gy), self._med['basis'])
         if key is not None:
             med['press'] = self._med_move_press(key, gx, gy, sx, sy)
             return
@@ -540,7 +565,7 @@ class ModelEditorMixin:
             if pr['pushed'] and all(p0 == k[0] for k, p0, _o in pr['items']):
                 if med['undo']:
                     med['undo'].pop()
-            med['hover'] = eg.block_at(med['placed'], (gx, gy))
+            med['hover'] = eg.block_at(med['placed'], (gx, gy), self._med['basis'])
 
     def _med_drag_to(self, gx, gy):
         """拖动中：整组按**整数格**平移（同晶格 ⇒ 自动贴合，无需再吸附）。
@@ -566,7 +591,7 @@ class ModelEditorMixin:
             nk = (p, k[1], k[2])
             if nk in others or nk in moves:
                 return
-            if not eg.can_place((offs,), 0, p, others):
+            if not eg.can_place((offs,), 0, p, others, self._med['basis']):
                 return
             moves[k] = nk
         if not pr['pushed']:
@@ -598,7 +623,7 @@ class ModelEditorMixin:
         给太宽会和「点块删除」抢事件。
         """
         best = None
-        for ka, kb, mid in eg.shared_edges(self._med['placed']):
+        for ka, kb, mid in eg.shared_edges(self._med['placed'], self._med['basis']):
             d = ((mid[0] - wx) ** 2 + (mid[1] - wy) ** 2) ** 0.5
             if d <= tol and (best is None or d < best[0]):
                 best = (d, ka, kb)
@@ -651,7 +676,6 @@ class ModelEditorMixin:
     # ---- 打开既有模型续编 ----
     # 编辑器预览 spec 的坐标基（三角晶格）；basis/pos_scale 不同的模型
     # 读回来会按另一套几何画，直接拒载并说明，不留一个错位的盘。
-    _MED_BASIS = [[1.0, 0.0], [0.5, math.sqrt(3.0) / 2.0]]
 
     def _med_open_model_list(self):
         """弹出「打开模型」列表（models/ 下已注册的模型，续编用）。"""
@@ -685,13 +709,22 @@ class ModelEditorMixin:
             return False
         doc = m.doc or {}
         basis = doc.get('basis')
-        if (not isinstance(basis, (list, tuple)) or len(basis) != 2
-                or any(abs(float(a) - float(b)) > 1e-9
-                       for ra, rb in zip(basis, self._MED_BASIS)
-                       for a, b in zip(ra, rb))):
-            self._med_notify(f'「{name}」的坐标基与编辑器（三角晶格）不同，'
-                             '暂不支持续编')
+        lat = None
+        if isinstance(basis, (list, tuple)) and len(basis) == 2:
+            lat = eg.lattice_of_basis(basis)
+        if lat is None:
+            self._med_notify(f'「{name}」的坐标基认不出属于哪个晶格'
+                             f'（{basis!r}），暂不支持续编')
             return False
+        if lat != self._med['lattice']:
+            # 文件是另一族：盘面还有东西就不能换（换族要清盘）
+            if len(self._med['placed']) > 1:
+                self._med_notify(
+                    f'「{name}」属于{eg.lattice_info(lat)["label"]}晶格，'
+                    f'当前盘面是{eg.lattice_info(self._med["lattice"])["label"]}'
+                    '——先[清空]（或切晶格）再打开')
+                return False
+            self._med_set_lattice(lat)
         if int(doc.get('pos_scale', 1)) != 1:
             self._med_notify(f'「{name}」的 pos_scale 不是 1，暂不支持续编')
             return False
@@ -738,6 +771,80 @@ class ModelEditorMixin:
         self._med_notify(msg + '）')
         return True
 
+    @staticmethod
+    def _med_default_shape(images):
+        """默认形状：三角族用 tri、方形族用 square，其余取字典序第一。
+
+        不能一律取 sorted()[0]：方形族里 'rt45' 排在 'square' 前，一进编辑
+        器手里就攥着半个正方形，用户第一块就懵。
+        """
+        for want in ('tri', 'square'):
+            if want in images:
+                return want
+        return sorted(images)[0]
+
+    def _med_rot_v(self, v):
+        """格坐标的「转一次」（三角 60° / 方形 90°）。
+
+        名字带 _v（vertex）是必须的：``_med_mirror`` 已经是「F 键镜像」
+        的方法名，用同名会把它盖掉，F 键一按就 TypeError。
+        """
+        return eg.rot90(v) if self._med['lattice'] == 'square' else eg.rot60(v)
+
+    def _med_mirror_v(self, v):
+        """格坐标的 x 轴反射（按族选，与 basis 一致才跑不坏晶格）。"""
+        return (eg.mirror_sq(v) if self._med['lattice'] == 'square'
+                else eg.mirror(v))
+
+    def _med_set_lattice(self, name):
+        """切晶格族（三角 ↔ 方形）。只有空盘（或只剩种子）才允许。
+
+        为什么必须清盘：一个模型文件只有一个 ``basis``，方形块和三角块
+        的坐标系根本不可比（单位长度、基向量夹角都不同），同一盘面混放
+        没有合法 basis——这不是 UI 限制，是格式约束。所以换族 = 重开
+        一张空盘。
+        """
+        med = self._med
+        if name == med['lattice']:
+            return
+        avail = sorted({med['lib_lattice'][s] for s in med['lib']})
+        if name not in avail:
+            self._med_notify(f'形状库里没有 {name} 族（可用：{avail}）')
+            return
+        if len(med['placed']) > 1:
+            self._med_notify(
+                f'盘上已有 {len(med["placed"])} 块——换晶格得先[清空]：'
+                '两族的坐标基不同，不能混在一个盘面里')
+            return
+        info = eg.lattice_info(name)
+        med['lattice'] = name
+        med['basis'] = info['basis']
+        med['deg'] = info['deg']
+        med['images'] = {s: med['lib'][s] for s in med['lib']
+                         if med['lib_lattice'][s] == name}
+        med['placed'].clear()
+        med['groups'].clear()
+        med['undo'].clear()
+        med['redo'].clear()
+        med['hover'] = None
+        med['ghost'] = None
+        med['press'] = None
+        med['fam_sig'] = None
+        med['cnt_sig'] = None
+        med['spec'] = None            # basis 变了，预览 spec 必须重建
+        med['shape'] = self._med_default_shape(med['images'])
+        med['cursor'] = 0
+        seed = med['shape']
+        med['placed'][((0, 0), seed, 0)] = med['images'][seed][0]
+        preview = EngineGame(Board(self._med_spec(), self._med_blocks()),
+                             kind=PREVIEW_KIND)
+        med['game'] = preview
+        self.game = preview
+        self._med_sync_after_edit(center=True)
+        self._med_notify(
+            f'已切到{info["label"]}晶格（{len(med["images"])} 种形状：'
+            f'{"、".join(sorted(med["images"]))}）')
+
     def _med_image_index(self, verts):
         """一组顶点（已归一化）在像元组里的下标；找不到回 None。"""
         target = eg.normalize(verts)
@@ -754,7 +861,8 @@ class ModelEditorMixin:
         med = self._med
         imgs = med['images'][med['shape']]
         cur = imgs[med['cursor']]
-        nxt = self._med_image_index(tuple(eg.rot60(v) for v in cur))
+        nxt = self._med_image_index(
+            tuple(self._med_rot_v(v) for v in cur))
         if nxt is None:
             nxt = (med['cursor'] + step) % len(imgs)
         med['cursor'] = nxt
@@ -769,7 +877,8 @@ class ModelEditorMixin:
         med = self._med
         imgs = med['images'][med['shape']]
         cur = imgs[med['cursor']]
-        nxt = self._med_image_index(tuple(eg.mirror(v) for v in cur))
+        nxt = self._med_image_index(
+            tuple(self._med_mirror_v(v) for v in cur))
         if nxt is None:
             return
         med['cursor'] = nxt
@@ -787,7 +896,7 @@ class ModelEditorMixin:
         med = self._med
         offs = med['placed'][key]
         shape, old_idx = key[1], key[2]
-        xform = eg.mirror if mirror else eg.rot60
+        xform = self._med_mirror_v if mirror else self._med_rot_v
         new = eg.normalize(tuple(xform(v) for v in offs))
         try:
             idx = med['images'][shape].index(new)
@@ -811,7 +920,7 @@ class ModelEditorMixin:
                 nk = (q, shape, idx)
                 if nk in others:
                     continue
-                if not eg.can_place((new,), 0, q, others):
+                if not eg.can_place((new,), 0, q, others, self._med['basis']):
                     continue
                 d = (q[0] + ncx - cx) ** 2 + (q[1] + ncy - cy) ** 2
                 if best is None or d < best[0]:
@@ -851,7 +960,8 @@ class ModelEditorMixin:
         sig = frozenset(med['placed'])
         if med['fam_sig'] != sig:
             blocks = self._med_blocks()
-            med['families'] = eg.derive_families(blocks, self._med_orientations())
+            med['families'] = eg.derive_families(blocks, self._med_orientations(),
+                                                 med['basis'])
             med['fam_sig'] = sig
         return med['families']
 
@@ -871,7 +981,8 @@ class ModelEditorMixin:
         sig = (frozenset(med['placed']), frozenset(f[0] for f in fams))
         if med['cnt_sig'] != sig:
             med['move_info'] = eg.move_stats(
-                self._med_blocks(), self._med_orientations(), fams)
+                self._med_blocks(), self._med_orientations(), fams,
+                med['basis'])
             med['cnt_sig'] = sig
         return med['move_info']
 
@@ -926,7 +1037,7 @@ class ModelEditorMixin:
             'schema': SCHEMA_BOARD,
             'name': name,
             'title': name,
-            'basis': [[1.0, 0.0], [0.5, math.sqrt(3.0) / 2.0]],
+            'basis': [list(r) for r in med['basis']],
             'pos_scale': 1,
             'solved': 'exact',
             'shapes_ref': 'shapes.json',
@@ -1035,6 +1146,7 @@ class ModelEditorMixin:
     def _med_panel_height(self):
         med = self._med
         h = 30                                    # 标题
+        h += 22 + 32                              # 晶格节（一行按钮）
         h += 22 + 30 * len(med['images'])         # 形状区
         h += 22 + 66                              # 朝向预览
         h += 22 + 24 * max(1, len(self._med_families()))  # 缝族
@@ -1197,16 +1309,16 @@ class ModelEditorMixin:
             med['hover'] = None
             return True
         # 悬停高亮（R/F 转的就是这一块）
-        med['hover'] = eg.block_at(med['placed'], (gx, gy))
+        med['hover'] = eg.block_at(med['placed'], (gx, gy), self._med['basis'])
         imgs = med['images'][med['shape']]
         placed = med['placed']
         # 预览必须与放置同口径：试**全部朝向**（贴哪条边决定朝向）
-        cands = eg.snap_candidates(imgs, placed, (gx, gy))
+        cands = eg.snap_candidates(imgs, placed, (gx, gy), basis=self._med['basis'])
         if cands and cands[0][3] <= _SNAP_TOL:
             poly = cands[0][2]
         else:
             p = self._med_free_point(imgs[med['cursor']], (gx, gy), placed)
-            poly = None if p is None else eg.poly_of(p, imgs[med['cursor']])
+            poly = None if p is None else eg.poly_of(p, imgs[med['cursor']], self._med['basis'])
         med['ghost'] = None if poly is None else tuple(poly)
         return True
 
@@ -1224,6 +1336,10 @@ class ModelEditorMixin:
     # ---- 面板 / 工具栏点击 ----
     def _med_panel_click(self, x, y) -> bool:
         med = self._med
+        for rect, lname in med['lat_rows']:
+            if rect.collidepoint(x, y):
+                self._med_set_lattice(lname)
+                return True
         for rect, shape in med['shape_rows']:
             if rect.collidepoint(x, y):
                 if shape == med['shape']:
@@ -1305,8 +1421,8 @@ class ModelEditorMixin:
 
     def _med_mini_pts(self, offs, box, origin):
         """形状 → 面板里的小预览多边形（等比缩放进 box 内）。"""
-        xs = [eg.to_plane(v)[0] for v in offs]
-        ys = [eg.to_plane(v)[1] for v in offs]
+        xs = [eg.to_plane(v, self._med['basis'])[0] for v in offs]
+        ys = [eg.to_plane(v, self._med['basis'])[1] for v in offs]
         w = max(max(xs) - min(xs), 1e-6)
         h = max(max(ys) - min(ys), 1e-6)
         s = min(box[0] / w, box[1] / h) * 0.82
@@ -1314,7 +1430,7 @@ class ModelEditorMixin:
         mx, my = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
         out = []
         for v in offs:
-            px, py = eg.to_plane(v)
+            px, py = eg.to_plane(v, self._med['basis'])
             out.append((cx + (px - mx) * s, cy + (py - my) * s))
         return out
 
@@ -1340,11 +1456,11 @@ class ModelEditorMixin:
             sub = {k: med['placed'][k] for k in keys}
             for k in keys:
                 pts = [self._med_geom_to_screen(x, y)
-                       for (x, y) in eg.poly_of(k[0], med['placed'][k])]
+                       for (x, y) in eg.poly_of(k[0], med['placed'][k], self._med['basis'])]
                 pygame.draw.polygon(self.screen, color, pts, lw)
             # 组内共享边加粗：剪断某条缝，那条线就消失——「这族还连着吗」
             # 的直接反馈
-            for _ka, _kb, seg in eg.shared_edge_segments(sub):
+            for _ka, _kb, seg in eg.shared_edge_segments(sub, self._med['basis']):
                 pygame.draw.line(self.screen, color,
                                  self._med_geom_to_screen(*seg[0]),
                                  self._med_geom_to_screen(*seg[1]), lw + 1)
@@ -1371,7 +1487,7 @@ class ModelEditorMixin:
         if med.get('press') is not None:
             return                       # 拖动/按压中不画，免得跟目标位置打架
         pts = [self._med_geom_to_screen(x, y)
-               for (x, y) in eg.poly_of(key[0], med['placed'][key])]
+               for (x, y) in eg.poly_of(key[0], med['placed'][key], self._med['basis'])]
         if len(pts) < 3:
             return
         pygame.draw.polygon(self.screen, (255, 210, 90), pts, 2)
@@ -1397,11 +1513,33 @@ class ModelEditorMixin:
 
         _text('搭积木编辑器', f_title, c['dialog_title'], x0, y)
         y += 26
+        # ---- 晶格 ----
+        _text('晶格（空盘可切）', f_sec, c['menu_selected'], x0, y)
+        y += 20
+        med['lat_rows'] = []
+        avail = [n for n in eg.LATTICES
+                 if n in {med['lib_lattice'][s] for s in med['lib']}]
+        bw = max(1, (rect.width - 16) // max(1, len(avail)))
+        for i, lname in enumerate(avail):
+            row = pygame.Rect(rect.x + 6 + i * bw, y - 2, bw - 4, 26)
+            med['lat_rows'].append((row, lname))
+            on = lname == med['lattice']
+            hover = row.collidepoint(*pygame.mouse.get_pos())
+            pygame.draw.rect(
+                self.screen,
+                c['selection_bg'] if on
+                else (c['button_hover'] if hover else c['button_bg']), row)
+            pygame.draw.rect(self.screen,
+                             c['border'] if on else c['dialog_border'], row,
+                             2 if on else 1)
+            _text(eg.lattice_info(lname)['label'], f_item,
+                  c['dialog_title'], row.x + 10, row.y + 4)
+        y += 32
         # ---- 形状 ----
         _text('形状（点一下切换）', f_sec, c['menu_selected'], x0, y)
         y += 20
         med['shape_rows'] = []
-        for shape in sorted(med['images']):
+        for shape in med['images']:
             row = pygame.Rect(rect.x + 6, y - 3, rect.width - 12, 30)
             med['shape_rows'].append((row, shape))
             if shape == med['shape']:

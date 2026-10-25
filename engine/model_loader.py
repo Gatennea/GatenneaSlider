@@ -463,12 +463,17 @@ def load_dir(model_dir=None):
     return out
 
 
-def load_shapes(model_dir=None):
-    """读形状库（models/shapes.json）→ {名字: 整数顶点 tuple}。
+def load_shape_lib(model_dir=None):
+    """读形状库 → ``{名字: {'lattice': 族名, 'verts': 整数顶点}}``。
 
-    搭积木编辑器的调色盘数据源：库里只放**原子形状**（不可再分）；
-    组合形状（60° 菱形 = 2 正三角）用捆绑表达，不进库。
-    文件缺失/损坏时返回 {}（编辑器退化为空调色盘并提示）。
+    两种写法都收：
+
+    * 新格式 ``{"lattice": "square", "verts": [[0,0], [1,0], ...]}``
+    * 旧格式直接给顶点数组（一律当三角族 —— 那是 v1 唯一存在的晶格）
+
+    lattice 字段在这里只校验「非空字符串」：族名是否真存在由
+    ``engine.editor_geom.LATTICES`` 判（本模块不能反向 import，editor_geom
+    依赖本模块）。编辑器发现未知族名会明确报错，不静默当三角。
     """
     path = os.path.join(model_dir or DEFAULT_MODEL_DIR, 'shapes.json')
     if not os.path.exists(path):
@@ -477,8 +482,27 @@ def load_shapes(model_dir=None):
     if doc.get('schema') != SCHEMA_SHAPES:
         raise ModelError(f'形状库 {path} 的 schema 未识别')
     out = {}
-    for name, verts in (doc.get('shapes') or {}).items():
+    for name, item in (doc.get('shapes') or {}).items():
+        if isinstance(item, dict):
+            lat = item.get('lattice', 'tri')
+            verts = item.get('verts')
+            if not isinstance(lat, str) or not lat:
+                raise ModelError(
+                    f'形状库 {path} 的形状 {name!r} 的 lattice 须为非空字符串')
+        else:
+            lat, verts = 'tri', item
         if not isinstance(verts, (list, tuple)) or len(verts) < 3:
             raise ModelError(f'形状库 {path} 的形状 {name!r} 须为 ≥3 个顶点')
-        out[name] = tuple(tuple(v) for v in verts)
+        out[name] = {'lattice': lat,
+                     'verts': tuple(tuple(v) for v in verts)}
     return out
+
+
+def load_shapes(model_dir=None):
+    """读形状库 → ``{名字: 整数顶点 tuple}``（不要族信息的老口径）。
+
+    搭积木编辑器的调色盘数据源：库里只放**原子形状**（不可再分）；
+    组合形状（60° 菱形 = 2 正三角、正方形 = 2 等腰直角三角）用捆绑表达，
+    不进库。文件缺失/损坏时返回 {}（编辑器退化为空调色盘并提示）。
+    """
+    return {k: v['verts'] for k, v in load_shape_lib(model_dir).items()}

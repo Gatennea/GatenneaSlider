@@ -1,10 +1,21 @@
 # -*- coding: utf-8 -*-
 """搭积木编辑器的几何纯逻辑（零 pygame，可单测；GUI 只做绘制与事件）。
 
-晶格（v1 固定）——标准三角晶格：整数坐标 (i,j) 经基
-    basis = [[1, 0], [0.5, √3/2]]   （e1=(1,0)、e2=(0.5,√3/2)）
-映到平面。选它是因为 **60° 旋转是该基下的整系数线性自同构**：
-    R60(i,j) = (-j, i+j)，  镜像 M(i,j) = (i+j, -j)
+晶格——两族（形状库里每个形状声明自己属于哪一族）：
+
+* ``tri``（三角，默认）：标准三角晶格
+      basis = [[1, 0], [0.5, √3/2]]   （e1=(1,0)、e2=(0.5,√3/2)）
+  选它是因为 **60° 旋转是该基下的整系数线性自同构**：
+      R60(i,j) = (-j, i+j)，  镜像 M(i,j) = (i+j, -j)
+* ``square``（方形）：直角多边形（正方形、等腰直角三角形）
+      basis = [[1, 0], [0, 1]]
+      R90(i,j) = (-j, i)，  镜像 M(i,j) = (i, -j)
+
+两族的共同点（也是本模块只做「加一族」而不是重写的原因）：**顶点坐标
+恒为整数、朝向像恒为整数顶点**。于是加载器/校验器/存档的「整数坐标判
+身份」口径、引擎的整数格移动语义，一行都不用改。族之间**不能混**——一
+个模型文件只有一个 basis，方形块和三角块放不进同一盘面（这是模型格式
+的硬约束，不是 UI 限制）。
 ——库形状的全部朝向 therefore 都是整数顶点，加载器/校验器/存档的
 「整数坐标判身份」口径原样成立（碎三角那套 (kx,my) 基的旋转封闭性
 要靠挑子格，这里天然封闭）。
@@ -30,44 +41,112 @@ from .model_loader import SCHEMA_BOARD, load_model
 
 # 标准三角晶格基（与 docs/spec/模型文件_2026-10-24.md 的示例一致）
 TRI_BASIS = ((1.0, 0.0), (0.5, sqrt(3.0) / 2.0))
+# 方形晶格基：直角多边形的家（正方形、等腰直角三角形）。三角基里
+# **不存在**这两种形状——正方形要求 90° 旋转是格自同构，而 Eisenstein
+# 整数（p²+pq+q² 型长度）里没有 √2，故 45° 边长与 90° 旋转都落不到格上。
+# 换基是唯一出路，不是实现偷懒。
+SQUARE_BASIS = ((1.0, 0.0), (0.0, 1.0))
 
-# 缝族名 ↔ 落屏方向（step 的平面角 mod 180 取最近 30° 倍数）
+# 可用晶格族：basis=平面映射、sym=对称群（朝向像的生成方式）、
+# deg=缝族命名的角粒度（三角 60°/方形 90° ⇒ 30°/45°）
+LATTICES = {
+    'tri': {'basis': TRI_BASIS, 'sym': 'd6', 'deg': 30, 'label': '三角'},
+    'square': {'basis': SQUARE_BASIS, 'sym': 'd4', 'deg': 45, 'label': '方形'},
+}
+
+# 缝族名 ↔ 落屏方向（step 的平面角 mod 180 取最近「角粒度」倍数）
 _DIR_NAMES = {0: 'h', 30: 'd30', 60: 'd60', 90: 'v', 120: 'd120', 150: 'd150'}
+_DIR_NAMES_45 = {0: 'h', 45: 'd45', 90: 'v', 135: 'd135'}
+
+
+# ----------------------------------------------------------------------
+# 晶格族
+# ----------------------------------------------------------------------
+def lattice_info(name):
+    """族名 → {basis, sym, deg, label}；未知族名抛 ValueError 带清单。"""
+    try:
+        return LATTICES[name]
+    except KeyError:
+        raise ValueError(
+            f'未知晶格族 {name!r}（可用：{sorted(LATTICES)}）') from None
+
+
+def basis_of(name='tri'):
+    """族名 → 2×2 基（行 = e1/e2）。"""
+    return lattice_info(name)['basis']
+
+
+def lattice_of_basis(basis, tol=1e-6):
+    """基 → 族名（认不出返回 None）。
+
+    判据用**几何不变量**（两基向量的长度比 + 夹角余弦），不用分量逐项比
+    ——手写文件里 basis 常带浮点噪声，逐项比会把同一个三角基判成「不同
+    晶格」而拒绝续编。
+    """
+    try:
+        (ax, ay), (bx, by) = [(float(r[0]), float(r[1])) for r in basis]
+    except (TypeError, ValueError, IndexError):
+        return None
+    la, lb = sqrt(ax * ax + ay * ay), sqrt(bx * bx + by * by)
+    if la <= 0 or lb <= 0:
+        return None
+    cos = (ax * bx + ay * by) / (la * lb)
+    ratio = lb / la
+    for name, info in LATTICES.items():
+        (cx, cy), (dx, dy) = info['basis']
+        lc, ld = sqrt(cx * cx + cy * cy), sqrt(dx * dx + dy * dy)
+        if abs(cos - (cx * dx + cy * dy) / (lc * ld)) <= tol \
+                and abs(ratio - ld / lc) <= tol:
+            return name
+    return None
 
 
 # ----------------------------------------------------------------------
 # 坐标与对称
 # ----------------------------------------------------------------------
-def to_plane(v):
-    """整数格坐标 → 平面坐标。"""
+def to_plane(v, basis=None):
+    """整数格坐标 → 平面坐标（basis 缺省 = 三角基）。"""
+    b = basis or TRI_BASIS
     i, j = v
-    return (i * TRI_BASIS[0][0] + j * TRI_BASIS[1][0],
-            i * TRI_BASIS[0][1] + j * TRI_BASIS[1][1])
+    return (i * b[0][0] + j * b[1][0],
+            i * b[0][1] + j * b[1][1])
 
 
-def to_lattice(xy):
+def to_lattice(xy, basis=None):
     """平面坐标 → 实数格坐标（to_plane 的逆；不取整）。
 
-    自由放置时用：点一下空白处，先求真实格坐标，再取最近整数点。
-    基 TRI_BASIS = [[1,0],[0.5,√3/2]] 的逆是
-        j = y / (√3/2),   i = x - j/2
+    自由放置时用：点一下空白处，先求真实格坐标，再取最近整数点。走通用
+    2×2 逆（基的两行是 e1/e2），换任何非退化基都成立。
     """
+    b = basis or TRI_BASIS
+    det = b[0][0] * b[1][1] - b[0][1] * b[1][0]
     x, y = xy
-    j = y / TRI_BASIS[1][1]
-    i = x - 0.5 * j
-    return (i, j)
+    return ((b[1][1] * x - b[1][0] * y) / det,
+            (-b[0][1] * x + b[0][0] * y) / det)
 
 
 def rot60(v):
-    """平面 60° 旋转（该基下是整系数线性自同构）。"""
+    """平面 60° 旋转（三角基下是整系数线性自同构）。"""
     i, j = v
     return (-j, i + j)
 
 
 def mirror(v):
-    """平面 x 轴反射。"""
+    """三角基下的平面 x 轴反射。"""
     i, j = v
     return (i + j, -j)
+
+
+def rot90(v):
+    """平面 90° 旋转（方形基下是整系数线性自同构）。"""
+    i, j = v
+    return (-j, i)
+
+
+def mirror_sq(v):
+    """方形基下的平面 x 轴反射。"""
+    i, j = v
+    return (i, -j)
 
 
 def _canon_cycle(verts):
@@ -109,7 +188,7 @@ def normalize(verts):
 
 
 def d6_images(verts):
-    """形状顶点 → D6 全部像（去重、规范化、稳定排序）。
+    """形状顶点 → D6 全部像（三角族：6 旋转 × 镜像，去重、规范化、排序）。
 
     顺序确定：6 个旋转各先自身后镜像（k=0..5）。对称形状自动去重
     （单位等边三角形 → 2 个像：▲/▼）。
@@ -127,6 +206,31 @@ def d6_images(verts):
     return tuple(out)
 
 
+def d4_images(verts):
+    """形状顶点 → D4 全部像（方形族：4 旋转 × 镜像，去重、规范化、排序）。
+
+    对称形状自动去重：正方形 → 1 个像；等腰直角三角形 → 4 个像（直角分
+    别朝四个角）；非对称直角多边形更多。
+    """
+    out = []
+    seen = set()
+    cur = tuple(tuple(v) for v in verts)
+    for _ in range(4):
+        for m in (False, True):
+            img = _norm(tuple(mirror_sq(v) if m else v for v in cur))
+            if img not in seen:
+                seen.add(img)
+                out.append(img)
+        cur = tuple(rot90(v) for v in cur)
+    return tuple(out)
+
+
+def images_of(verts, lattice='tri'):
+    """按族生成朝向像（tri → D6 / square → D4）。"""
+    sym = lattice_info(lattice)['sym']
+    return d4_images(verts) if sym == 'd4' else d6_images(verts)
+
+
 def _primitive(d):
     """边向量 → primitive 方向（除 gcd、规范符号：首个非零分量为正）。"""
     g = gcd(abs(d[0]), abs(d[1])) or 1
@@ -142,13 +246,22 @@ def _normal_of(d):
     return _primitive(n)
 
 
-def direction_name(step):
-    """步长向量 → 缝族名（按落屏方向；step 与 -step 同族，角取 mod 180）。"""
-    x, y = to_plane(step)
+def direction_name(step, basis=None, deg=None):
+    """步长向量 → 缝族名（按落屏方向；step 与 -step 同族，角取 mod 180）。
+
+    ``deg`` 是命名角粒度（三角族 30°、方形族 45°）。缺省按 basis 反查族
+    推粒度，认不出就退回 30°。方形族的 45° 斜边（等腰直角三角形的斜边）
+    只有 45° 表才叫得出名字，30° 表会把它四舍五入成 d30/d60 而不稳定。
+    """
+    if deg is None:
+        nm = lattice_of_basis(basis or TRI_BASIS)
+        deg = LATTICES[nm]['deg'] if nm else 30
+    names = _DIR_NAMES_45 if deg == 45 else _DIR_NAMES
+    x, y = to_plane(step, basis)
     ang = degrees(atan2(y, x)) % 180.0
-    best = min(_DIR_NAMES, key=lambda a: min(abs(ang - a), abs(ang - a + 180),
-                                             abs(ang - a - 180)))
-    return _DIR_NAMES[best]
+    best = min(names, key=lambda a: min(abs(ang - a), abs(ang - a + 180),
+                                        abs(ang - a - 180)))
+    return names[best]
 
 
 # ----------------------------------------------------------------------
@@ -197,15 +310,16 @@ def dist_point_poly(p, poly):
                for i in range(n))
 
 
-def poly_of(point, offs):
+def poly_of(point, offs, basis=None):
     """(位置, 顶点偏移) → 平面多边形。"""
-    return tuple(to_plane((point[0] + ox, point[1] + oy)) for ox, oy in offs)
+    return tuple(to_plane((point[0] + ox, point[1] + oy), basis)
+                 for ox, oy in offs)
 
 
 # ----------------------------------------------------------------------
 # 贴边吸附
 # ----------------------------------------------------------------------
-def snap_candidates(images, placed, click_xy, *, max_dist=None):
+def snap_candidates(images, placed, click_xy, *, max_dist=None, basis=None):
     """贴边吸附候选。
 
     参数
@@ -221,10 +335,15 @@ def snap_candidates(images, placed, click_xy, *, max_dist=None):
     候选生成：新块的某条边两端点**恰好等于**已有块某条边两端点
     （整条边贴上，不是只碰一个角）；首次放置（placed 空）时每朝向
     给 p=(0,0)。与已有块正面积重叠的候选滤掉（共边相切保留）。
+
+    「两端点分别相等」这条判据自带**等长要求**：方形族里等腰直角三角的
+    斜边（长 √2）接不上正方形的边（长 1），只能与另一条斜边配。这正是
+    想要的行为——「不同长度的边不能拼」不是额外规则，是整条边贴合的定义。
     """
     cands = {}
     if placed:
-        placed_polys = {k: poly_of(k[0], offs) for k, offs in placed.items()}
+        placed_polys = {k: poly_of(k[0], offs, basis)
+                        for k, offs in placed.items()}
         edges = []
         # ⚠️ 边表必须是**物理整数顶点**（point + offs），不能拿局部 offs：
         # 局部边表等于假设所有块都锚在原点——贴到非原点块时会凭空造出/
@@ -250,14 +369,14 @@ def snap_candidates(images, placed, click_xy, *, max_dist=None):
                         p = (ec[0] - ea[0], ec[1] - ea[1])
                         if (p[0] + eb[0], p[1] + eb[1]) != ed:
                             continue
-                        poly = poly_of(p, img)
+                        poly = poly_of(p, img, basis)
                         if any(gops.convex_overlap(poly, pp)
                                for pp in placed_polys.values()):
                             continue
                         cands[(p, idx)] = poly
     else:
         for idx, img in enumerate(images):
-            cands[((0, 0), idx)] = poly_of((0, 0), img)
+            cands[((0, 0), idx)] = poly_of((0, 0), img, basis)
     out = []
     for (p, idx), poly in cands.items():
         dist = dist_point_poly(click_xy, poly)
@@ -268,27 +387,27 @@ def snap_candidates(images, placed, click_xy, *, max_dist=None):
     return out
 
 
-def block_at(placed, click_xy):
+def block_at(placed, click_xy, basis=None):
     """点击命中哪个已放置块（最上面的小索引块优先；返回 key 或 None）。"""
     hits = []
     for k, offs in placed.items():
-        if point_in_poly(click_xy, poly_of(k[0], offs)):
+        if point_in_poly(click_xy, poly_of(k[0], offs, basis)):
             hits.append(k)
     if not hits:
         return None
     return sorted(hits)[0]
 
 
-def can_place(images, idx, p, placed):
+def can_place(images, idx, p, placed, basis=None):
     """(朝向, 位置) 放上去是否与已有块无重叠。"""
-    poly = poly_of(p, images[idx])
+    poly = poly_of(p, images[idx], basis)
     for k, offs in placed.items():
-        if gops.convex_overlap(poly, poly_of(k[0], offs)):
+        if gops.convex_overlap(poly, poly_of(k[0], offs, basis)):
             return False
     return True
 
 
-def shared_edge_segments(placed):
+def shared_edge_segments(placed, basis=None):
     """相邻块对的共享边**线段**：``[(key_a, key_b, (平面端点, 平面端点)), ...]``。
 
     判据与 ``gops.components`` 同源（共边 = 两块共享一条完整的边），
@@ -304,7 +423,7 @@ def shared_edge_segments(placed):
     out = []
     seen = set()
     for (a, b), owners in gops.shared_edge_owners(vmap).items():
-        seg = (to_plane(a), to_plane(b))
+        seg = (to_plane(a, basis), to_plane(b, basis))
         for i in range(len(owners)):
             for j in range(i + 1, len(owners)):
                 ka, kb = owners[i], owners[j]
@@ -317,14 +436,14 @@ def shared_edge_segments(placed):
     return out
 
 
-def shared_edges(placed):
+def shared_edges(placed, basis=None):
     """相邻块对的共享边：``[(key_a, key_b, 边中点平面坐标), ...]``。
 
     编辑器「点缝捆绑/解绑」的命中源（与设计态同一交互）；要线段本身
     （画组内缝）用 ``shared_edge_segments``。
     """
     return [(ka, kb, ((s[0][0] + s[1][0]) / 2.0, (s[0][1] + s[1][1]) / 2.0))
-            for ka, kb, s in shared_edge_segments(placed)]
+            for ka, kb, s in shared_edge_segments(placed, basis)]
 
 
 # ----------------------------------------------------------------------
@@ -343,7 +462,7 @@ def edge_directions(placed):
     return sorted(dirs)
 
 
-def _trial_family_live(blocks, orientations, coeffs, step):
+def _trial_family_live(blocks, orientations, coeffs, step, basis=None):
     """造「只有这一族」的 spec，问引擎有没有合法移动（有 → 活）。
 
     一律挂 ``rank: 'centroid'``（质心分侧）：锚点 rank 对 bbox 角不是
@@ -352,7 +471,7 @@ def _trial_family_live(blocks, orientations, coeffs, step):
     doc = {
         'schema': SCHEMA_BOARD,
         'name': '_editor_trial',
-        'basis': [list(r) for r in TRI_BASIS],
+        'basis': [list(r) for r in (basis or TRI_BASIS)],
         'pos_scale': 1,
         'orientations': {lb: {'shape': 'x', 'off': [list(v) for v in offs]}
                          for lb, offs in orientations.items()},
@@ -369,7 +488,7 @@ def _trial_family_live(blocks, orientations, coeffs, step):
     return len(board.legal_moves(1))
 
 
-def derive_families(blocks, orientations):
+def derive_families(blocks, orientations, basis=None):
     """从当前摆放推导缝族。
 
     参数
@@ -398,9 +517,9 @@ def derive_families(blocks, orientations):
     fams = []
     for d in edge_directions(placed):
         coeffs = _normal_of(d)
-        n = _trial_family_live(blocks, orientations, coeffs, d)
+        n = _trial_family_live(blocks, orientations, coeffs, d, basis)
         if n:
-            fams.append((direction_name(d), coeffs, d, n))
+            fams.append((direction_name(d, basis), coeffs, d, n))
     fams.sort(key=lambda t: t[0])
     return fams
 
@@ -409,7 +528,7 @@ def _offs_of(orientations, label):
     return tuple(tuple(v) for v in orientations[label])
 
 
-def legal_move_count(blocks, orientations, families):
+def legal_move_count(blocks, orientations, families, basis=None):
     """按给定缝族集合数合法移动（ families = [(name, coeffs, step), ...] ）。
 
     与 derive_families 同口径：一律挂 centroid rank。
@@ -419,7 +538,7 @@ def legal_move_count(blocks, orientations, families):
     doc = {
         'schema': SCHEMA_BOARD,
         'name': '_editor_count',
-        'basis': [list(r) for r in TRI_BASIS],
+        'basis': [list(r) for r in (basis or TRI_BASIS)],
         'pos_scale': 1,
         'orientations': {lb: {'shape': 'x', 'off': [list(v) for v in offs]}
                          for lb, offs in orientations.items()},
@@ -434,7 +553,7 @@ def legal_move_count(blocks, orientations, families):
     return len(board.legal_moves(1))
 
 
-def move_stats(blocks, orientations, families):
+def move_stats(blocks, orientations, families, basis=None):
     """(合法移动数, 可动块数)（families 同 legal_move_count，4 元组也收）。
 
     为什么要可动块数：保存门要求「≥2 颗滑块动得了」。只数移动条数不够——
@@ -451,7 +570,7 @@ def move_stats(blocks, orientations, families):
     doc = {
         'schema': SCHEMA_BOARD,
         'name': '_editor_stats',
-        'basis': [list(r) for r in TRI_BASIS],
+        'basis': [list(r) for r in (basis or TRI_BASIS)],
         'pos_scale': 1,
         'orientations': {lb: {'shape': 'x', 'off': [list(v) for v in offs]}
                          for lb, offs in orientations.items()},

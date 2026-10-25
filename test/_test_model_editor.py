@@ -93,7 +93,7 @@ def _med_free_r():
 
 def _center_screen(gui, key):
     """块重心 → 屏幕坐标（点击/拖动的落点都用它）。"""
-    pts = eg.poly_of(key[0], gui._med['placed'][key])
+    pts = eg.poly_of(key[0], gui._med['placed'][key], gui._med['basis'])
     cx = sum(p[0] for p in pts) / len(pts)
     cy = sum(p[1] for p in pts) / len(pts)
     return gui._med_geom_to_screen(cx, cy)
@@ -138,8 +138,13 @@ def t_open_close():
     check(gui.game.spec.name == '__editor_preview__',
           f'预览 spec 名错：{gui.game.spec.name}')
     shapes = load_shapes()
-    check(len(med['images']) == len(shapes),
-          f'形状库快照应等于 shapes.json（{len(med["images"])} vs {len(shapes)}）')
+    # 形状库现在按晶格族分组：lib 装全库，images 只装**当前族**（三角）
+    check(len(med['lib']) == len(shapes),
+          f'形状库快照应等于 shapes.json（{len(med["lib"])} vs {len(shapes)}）')
+    check(set(med['images']) <= set(shapes),
+          '当前族形状应是形状库子集')
+    check(all(med['lib_lattice'][s] == med['lattice'] for s in med['images']),
+          '当前族形状的 lattice 应一致')
     check(len(med['placed']) == 1, '开局应自带一块')
     check(len(gui.game.spec.goal_blocks) == 1,
           '预览 spec 的还原态应只有一颗种子（原点锚）')
@@ -798,6 +803,258 @@ def t_playtest():
         gui._med_close()
 
 
+def t_playtest_playable():
+    """试玩后这盘**真的能滑**（模型板型没有预注册字母表，靠几何派生）。
+
+    2026-10-25 用户实测的三连报错都在这一条里：
+    ① 试玩后点块选组 → `KeyError: 板型 '222' 未注册方向词汇表`
+       （`opt` 先查方向表而不是先认缝族名）；
+    ② 真的滑动时 `_build_action` 查字母表 → 动作恒为 None（滑不动）；
+    ③ 编辑器里退出 → temp_history 被写成 `type: '__editor__'` →
+       下次启动「存档需要模型 '__editor__'，但它没有安装」。
+    """
+    import engine.model_loader as ml
+    from engine.compat import direction_table as _dir_table
+    from engine.registry import unregister_board_type as _unreg
+    gui = _make_gui()
+    old_dir = ml.DEFAULT_MODEL_DIR
+    tmp = tempfile.mkdtemp(prefix='med_play2_')
+    ml.DEFAULT_MODEL_DIR = tmp
+    shutil.copy(os.path.join(old_dir, 'shapes.json'),
+                os.path.join(tmp, 'shapes.json'))
+    # 自动存盘 / 手动存盘都指向临时目录，别碰真 config 与 models
+    # ⚠️ config_path 是 __init__ 里按 config_dir 算好并存下的，单改
+    # config_dir 不够——漏改它会把「last_file_path → 临时目录」写进工作区
+    # 的真 config.json（2026-10-25 实测踩过一次）。
+    gui.config_dir = tmp
+    hist = os.path.join(tmp, 'temp_history.json')
+    gui.temp_history_path = hist
+    old_cfg_path = getattr(gui, 'config_path', None)
+    gui.config_path = os.path.join(tmp, 'config.json')
+    try:
+        gui._med_open()
+        _big_triangle(gui)
+        gui._med_rebuild()
+
+        # ① 会话中的自动存盘：预览哨兵绝不能写进 temp_history
+        sentinel = '{"sentinel": 1}'
+        with open(hist, 'w', encoding='utf-8') as f:
+            f.write(sentinel)
+        gui.save_config()
+        with open(hist, encoding='utf-8') as f:
+            check(f.read() == sentinel,
+                  '编辑器会话中自动存盘不该写 temp_history（预览局无模型文件）')
+
+        # ② 会话中的手动存盘：直接拒绝（那份文件永远载不回来）
+        manual = os.path.join(tmp, 'manual.json')
+        gui._save_to_path(manual)
+        check(not os.path.exists(manual),
+              '编辑器会话中 Ctrl+S/另存为 应被拒（预览哨兵不是可载入的存档）')
+
+        gui._med['name'] = 'play_probe2'
+        gui._med_playtest()
+        check(not gui.med_active, '试玩后编辑器应收摊')
+        check(gui.game.kind == 'play_probe2',
+              f'试玩后 kind 错：{gui.game.kind}')
+        spec = gui.game.spec
+
+        # ③ 字母表由几何派生：非空，且每个字母都指向某族的可滑方向
+        tbl = _dir_table(spec)
+        check(bool(tbl), '模型板型应派生方向字母表（否则选组/移动全废）')
+        check(all(any(d in f.parallel for f in spec.seam_families)
+                  for d in tbl.values()),
+              f'派生字母应只在缝族 parallel 里：{tbl}')
+        check(all(len(k) == 1 and k.isupper() for k in tbl),
+              f'派生字母用大写单字符（避开小写族名）：{sorted(tbl)}')
+
+        # ④ all_gaps 不能炸（centroid rank 是浮点，旧实现 range() 直接 TypeError）
+        gaps = gui.game.all_gaps()
+        check(bool(gaps), f'模型局 all_gaps 应非空（实得 {gaps}）')
+
+        # ⑤ 至少有一条缝 + 一组块真能滑一步
+        moved = False
+        for (gf, line) in gaps:
+            fam = next(f for f in spec.seam_families if f.name == gf)
+            for letter, d in tbl.items():
+                if d not in fam.parallel:
+                    continue
+                for b in gui.game.blocks:
+                    gui.game.opt(gf, line, b)
+                    pos, reason = gui.game.try_move_ex(letter, 1)
+                    if reason == '':
+                        gui.game.commit_move(pos)
+                        moved = True
+                        break
+                if moved:
+                    break
+            if moved:
+                break
+        check(moved, '模型局应至少能滑一步（否则「试玩」只是看不能动）')
+
+        # ⑥ 预览哨兵存档：显式识别，不冒充「模型未安装」
+        from gui.file_ops import StaleEditorSave
+        try:
+            gui._load_save_data({
+                'version': 2,
+                'puzzle': {'m': 4, 'n': 4, 'step': 1, 'type': '__editor__'},
+                'step_count': 0,
+                'history': {'snapshots': []},
+            })
+            check(False, '预览哨兵存档应抛 StaleEditorSave，不该静默当方形载入')
+        except StaleEditorSave:
+            check(True, '预览哨兵存档 → StaleEditorSave（启动时安静忽略）')
+    finally:
+        if 'play_probe2' in board_types():
+            _unreg('play_probe2')
+        if old_cfg_path is not None:
+            gui.config_path = old_cfg_path
+        ml.DEFAULT_MODEL_DIR = old_dir
+        gui._med_close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def t_lattice_switch():
+    """晶格族切换：默认三角、有块时拒切、空盘可切、方形族形状集独立。"""
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        med = gui._med
+        check(med['lattice'] == 'tri',
+              f'默认应是三角族（实得 {med["lattice"]}）')
+        check('square' not in med['images'], '三角族不该含直角形状')
+        check(len(med['placed']) == 1, '进编辑器应有一颗种子')
+        _gui_click(gui, *_center_screen(gui, next(iter(med['placed']))))
+        n0 = len(med['placed'])
+        check(n0 == 2, f'应已放上第二块（实得 {n0}）')
+        gui._med_set_lattice('square')
+        check(med['lattice'] == 'tri', '盘上有块时不该换族（会破坏 basis）')
+        check(len(med['placed']) == n0, '被拒时不该清盘')
+        gui._med_clear()
+        gui._med_set_lattice('square')
+        check(med['lattice'] == 'square', '空盘应能切到方形族')
+        check(sorted(med['images']) == ['rt45', 'square'],
+              f'方形族形状集（实得 {sorted(med["images"])}）')
+        check(med['shape'] == 'square',
+              f'方形族默认形状应是正方形（实得 {med["shape"]}）')
+        seed = next(iter(med['placed']))
+        check(len(med['placed']) == 1 and seed[1] == 'square',
+              f'切族后应有一颗正方形种子（{seed}）')
+        check(tuple(med['basis']) == eg.SQUARE_BASIS,
+              f'basis 应换成方形基（{med["basis"]}）')
+        check(gui.game is med['game'],
+              '切族后预览局应已重建并接管 self.game')
+    finally:
+        gui._med_close()
+
+
+def t_square_lattice_build():
+    """方形族能搭出连通片、过保存门，并推出 45° 斜边族。"""
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        gui._med_clear()
+        gui._med_set_lattice('square')
+        gui._med_clear()      # 切族会重播一颗种子，点格子前先清掉
+        med = gui._med
+
+        def click_cell(gi, gj, shape=None):
+            if shape:
+                med['shape'] = shape
+                med['cursor'] = 0
+            _gui_click(gui, *gui._med_geom_to_screen(gi + 0.5, gj + 0.5))
+
+        for cell in [(0, 0), (1, 0), (0, 1), (1, 1)]:
+            click_cell(*cell)
+        check(len(med['placed']) == 4,
+              f'应放上 4 块（实得 {len(med["placed"])}）')
+        check(eg.is_connected(gui._med_blocks(), gui._med_orientations()),
+              '2×2 正方形应连通')
+        n_mv, n_movable = gui._med_move_info()
+        check(n_mv > 0 and n_movable >= 2,
+              f'应有合法移动且 ≥2 可动（实得 {n_mv}/{n_movable}）')
+        ok, why = gui._med_gate()
+        check(ok, f'2×2 应过保存门（{why}）')
+        # 两块 rt45 同锚点另一朝向 = 拼成一个正方形，斜边族才会出现
+        click_cell(2, 0, shape='rt45')
+        med['cursor'] = 0
+        click_cell(2, 0, shape='rt45')
+        check(len(med['placed']) == 6,
+              f'应共 6 块（实得 {len(med["placed"])}）')
+        fams = [f[0] for f in gui._med_families()]
+        check('d135' in fams, f'应推出 45° 斜边族（实得 {fams}）')
+        check(eg.is_connected(gui._med_blocks(), gui._med_orientations()),
+              '拼上直角三角后仍应连通')
+    finally:
+        gui._med_close()
+
+
+def t_square_lattice_save_open():
+    """方形族全链：保存 → 方形 basis → 跨族续编被拦 → 切族可续编 → 能开局。"""
+    import engine.model_loader as ml
+    from engine.compat import direction_table
+    gui = _make_gui()
+    gui._med_open()
+    tmp = tempfile.mkdtemp(prefix='med_sq_')
+    shutil.copy(os.path.join(_PROJECT, 'models', 'shapes.json'),
+                os.path.join(tmp, 'shapes.json'))
+    old = ml.DEFAULT_MODEL_DIR
+    ml.DEFAULT_MODEL_DIR = tmp
+    try:
+        gui._med_clear()
+        gui._med_set_lattice('square')
+        gui._med_clear()      # 同上：清掉切族时播的种子
+        med = gui._med
+        for cell in [(0, 0), (1, 0), (0, 1), (1, 1), (2, 0), (2, 1)]:
+            _gui_click(gui, *gui._med_geom_to_screen(cell[0] + 0.5,
+                                                    cell[1] + 0.5))
+        med['name'] = 'sq_by_test'
+        check(gui._med_save(), f'方形盘应存得下（{gui.macro_notify_msg}）')
+        doc = json.load(open(os.path.join(tmp, 'sq_by_test.json'),
+                             encoding='utf-8'))
+        check(eg.lattice_of_basis(doc['basis']) == 'square',
+              f'落盘 basis 应是方形基（{doc["basis"]}）')
+        check(len(doc['tiles']) == 6,
+              f'落盘块数应 6（实得 {len(doc["tiles"])}）')
+
+        # 回三角会话：盘上有块时打开方形模型 → 拒（不能悄悄混基）
+        gui._med_close()
+        gui._med_open()
+        med = gui._med
+        check(med['lattice'] == 'tri', '重开应回到三角族')
+        _gui_click(gui, *_center_screen(gui, next(iter(med['placed']))))
+        check(len(med['placed']) == 2, '应有两块')
+        check(gui._med_load_model('sq_by_test') is False,
+              '三角盘面上打开方形模型应被拒')
+        check('晶格' in gui.macro_notify_msg,
+              f'拒绝理由应说明晶格不同（{gui.macro_notify_msg}）')
+
+        # 清空后再打开 → 自动切族并载入 6 块
+        gui._med_clear()
+        check(gui._med_load_model('sq_by_test') is True,
+              f'清空后应能打开方形模型（{gui.macro_notify_msg}）')
+        check(med['lattice'] == 'square', '载入后应自动切到方形族')
+        check(len(med['placed']) == 6,
+              f'应载入 6 块（实得 {len(med["placed"])}）')
+        check(eg.is_connected(gui._med_blocks(), gui._med_orientations()),
+              '载入的方形盘应连通')
+
+        # 开局（GUI 层换局 → 编辑器收摊）
+        check(gui.new_model_puzzle('sq_by_test', 1),
+              f'方形模型应能开局（{gui.macro_notify_msg}）')
+        tbl = direction_table(gui.game.spec)
+        check(len(tbl) >= 2,
+              f'模型板型应派得出方向字母（实得 {sorted(tbl)}）')
+        check(len(gui.game.all_gaps()) > 0, '开局后应推得出缝线')
+        check(gui.game.has_legal_move(1), '开局后应真的能滑')
+    finally:
+        if 'sq_by_test' in board_types():
+            unregister_board_type('sq_by_test')
+        ml.DEFAULT_MODEL_DIR = old
+        if gui._med_active:
+            gui._med_close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def t_unbundle_all():
     """「清空捆绑」：一键解掉所有组（块不动、U 可撤销）。"""
     gui = _make_gui()
@@ -1018,6 +1275,9 @@ def main():
              t_bundle_toggle, t_bundle_seam_click_routes,
              t_family_toggle, t_gate,
              t_save_hot_reload, t_build_doc_loadable, t_playtest,
+             t_lattice_switch, t_square_lattice_build,
+             t_square_lattice_save_open,
+             t_playtest_playable,
              t_event_routing, t_abandon_on_swap, t_menu_entry,
              t_unbundle_all, t_open_model,
              t_free_point_reach, t_rebuild_guard]

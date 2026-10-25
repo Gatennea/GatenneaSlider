@@ -218,6 +218,40 @@ for start in range(len(imgs_half)):
     best = max(best, len(pl))
 check(best == 4, f'每个起始朝向都能贴出 4 块（实际最多 {best}）')
 
+print('== 方形晶格（D4）==')
+SQ = ((0, 0), (1, 0), (1, 1), (0, 1))
+RT = ((0, 0), (1, 0), (0, 1))
+img_sq = eg.d4_images(SQ)
+img_rt = eg.d4_images(RT)
+check(len(img_sq) == 1, f'正方形 D4 去重后应 1 个像（实际 {len(img_sq)}）')
+check(len(img_rt) == 4, f'等腰直角三角应 4 个像（实际 {len(img_rt)}）')
+check(eg.lattice_of_basis(eg.SQUARE_BASIS) == 'square', '方形基应认出 square')
+check(eg.lattice_of_basis(eg.TRI_BASIS) == 'tri', '三角基应认出 tri')
+check(eg.lattice_of_basis(((1, 0), (0.5, 0.8660254037844387))) == 'tri',
+      '手写基带浮点噪声也应认出 tri（不吃逐项比）')
+check(eg.to_lattice((3.0, 4.0), eg.SQUARE_BASIS) == (3.0, 4.0),
+      '通用逆：方形基下平面坐标应原样回格坐标')
+check(eg.direction_name((1, -1), eg.SQUARE_BASIS) == 'd135',
+      f'方形族斜边应叫 d135（实得 {eg.direction_name((1, -1), eg.SQUARE_BASIS)}）')
+
+# 正方形贴正方形：整条边贴合 → 必有 (1,0) 候选
+pl = {((0, 0), 0): SQ}
+cands = eg.snap_candidates(img_sq, pl, (1.5, 0.5), basis=eg.SQUARE_BASIS)
+check(any(c[0] == (1, 0) for c in cands),
+      f'正方形应能贴到 (1,0)（候选 {[c[0] for c in cands]}）')
+
+# 两块 rt45 同锚点另一个朝向 = 拼成一个正方形（斜边对斜边）
+pl = {((0, 0), 0): RT}
+cands = eg.snap_candidates(img_rt, pl, (0.6, 0.4), basis=eg.SQUARE_BASIS)
+check(any(c[0] == (0, 0) and c[1] != 0 for c in cands),
+      f'斜边对斜边应在同锚点给出另一朝向（候选 {[(c[0], c[1]) for c in cands]}）')
+# 拼上之后连通（共整条斜边），且不重叠
+pl[((0, 0), 1)] = img_rt[1]
+check(eg.is_connected([__import__('engine.board', fromlist=['Block']).Block(
+          (0, 0), 0, 0), __import__('engine.board', fromlist=['Block']).Block(
+          (0, 0), 1, 0)], {0: RT, 1: img_rt[1]}),
+      '两块 rt45 拼成的正方形应连通')
+
 print()
 print('FAILED:', len(fails)) if fails else print('全部通过')
 sys.exit(1 if fails else 0)
