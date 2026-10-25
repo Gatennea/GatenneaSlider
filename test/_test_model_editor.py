@@ -16,6 +16,7 @@ r"""搭积木编辑器 GUI 集成测试（dummy video，不开窗口）。
 
 跑法：D:/python/python.exe test/_test_model_editor.py
 """
+import json
 import os
 import shutil
 import sys
@@ -640,6 +641,148 @@ def t_playtest():
         gui._med_close()
 
 
+def t_unbundle_all():
+    """「清空捆绑」：一键解掉所有组（块不动、U 可撤销）。"""
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        # 无组时：只提示，不推进 undo 栈
+        n_undo = len(gui._med['undo'])
+        gui._med_unbundle_all()
+        check(len(gui._med['undo']) == n_undo, '无组时清空不应进 undo 栈')
+        # 菱形：捆上再一键清
+        i_up, i_dn = _tri_indices(gui)
+        _put_tri(gui, (0, 0), i_up)
+        _put_tri(gui, (0, 0), i_dn)
+        gui._med_rebuild()
+        ka, kb, _mid = eg.shared_edges(gui._med['placed'])[0]
+        gui._med_toggle_bundle(ka, kb)
+        check(any(gui._med['groups'].values()), '应先有捆绑组')
+        gui._med_unbundle_all()
+        check(not any(gui._med['groups'].values()), '清空后不应有捆绑组')
+        check(len(gui._med['placed']) == 2, '清空捆绑不动块')
+        gui._med_undo()
+        check(gui._med['groups'].get(ka) == gui._med['groups'].get(kb) != 0,
+              'U 应撤销回捆绑态')
+        # 大盘：全捆 0 移 → 一键清 → 计数复原
+        gui._med_clear()
+        _big_triangle(gui)
+        gui._med_rebuild()
+        base = gui._med_move_info()
+        for ka, kb, _m in eg.shared_edges(gui._med['placed']):
+            ga = gui._med['groups'].get(ka, 0)
+            gb = gui._med['groups'].get(kb, 0)
+            if ga and gb and ga == gb:
+                continue          # 开关语义：已同组再点就是剪开
+            gui._med_toggle_bundle(ka, kb)
+        check(gui._med_move_info()[0] == 0, '全捆应 0 移')
+        gui._med_unbundle_all()
+        check(gui._med_move_info() == base,
+              f'一键清捆绑后计数应复原：{base} vs {gui._med_move_info()}')
+    finally:
+        gui._med_close()
+
+
+def t_open_model():
+    """「打开模型…」：把已保存的模型读回编辑器续编（含捆绑组）。"""
+    import engine.model_loader as ml
+    from engine import model_registry
+    from engine.model_loader import load_model
+    gui = _make_gui()
+    gui._med_open()
+    tmp = tempfile.mkdtemp(prefix='med_open_')
+    old = ml.DEFAULT_MODEL_DIR
+    ml.DEFAULT_MODEL_DIR = tmp
+    # 形状库也读 DEFAULT_MODEL_DIR/shapes.json，临时目录补一份
+    shutil.copy(os.path.join(old, 'shapes.json'),
+                os.path.join(tmp, 'shapes.json'))
+    try:
+        # ① 保存一个带捆绑组的模型（名字排在 'shatter' 前，列表第一项就是它）
+        _big_triangle(gui)
+        gui._med_rebuild()
+        ka, kb, _mid = eg.shared_edges(gui._med['placed'])[0]
+        gui._med_toggle_bundle(ka, kb)
+        gui._med['name'] = 'reopen_probe'
+        check(gui._med_save(), '先保存一个模型')
+        n_before = len(gui._med['placed'])
+        move_before = gui._med_move_info()
+        gid_before = {g for g in gui._med['groups'].values() if g}
+        check(len(gid_before) == 1, f'保存前应恰有 1 个捆绑组：{gid_before}')
+        gui._med_clear()
+        check(len(gui._med['placed']) == 0, '清空后 0 块')
+        # ② 弹列表：已有注册模型都应列出来
+        gui._med_open_model_list()
+        check(gui._med['open_list'] is not None, '有模型时应弹出列表')
+        gui._med_draw_open_list()                     # 生成点击热区
+        rects = gui._med['open_list']['rects']
+        names = [n for _r, n in rects]
+        check('reopen_probe' in names, f'列表应含刚保存的模型：{names}')
+        # 点棋盘空白处 = 取消，不载入（别点顶栏区：那里事件钩子直接放行，
+        # 压根进不到编辑器，2026-10-25 踩过）
+        ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN,
+                                {'button': 1, 'pos': (10, gui.screen_height - 10)})
+        check(gui._med_handle_event(ev) is True, '列表点击应被编辑器消费')
+        check(gui._med['open_list'] is None, '点外面应取消列表')
+        check(len(gui._med['placed']) == 0, '取消不应载入任何块')
+        # ESC 同样取消
+        gui._med_open_model_list()
+        ev = pygame.event.Event(pygame.KEYDOWN,
+                                {'key': pygame.K_ESCAPE, 'mod': 0, 'unicode': ''})
+        check(gui._med_handle_event(ev) is True, 'ESC 应被编辑器消费')
+        check(gui._med['open_list'] is None, 'ESC 应取消列表')
+        # ③ 点第一项载入（续编）：块数/移动统计/捆绑组都读得回
+        gui._med_open_model_list()
+        gui._med_draw_open_list()
+        rect, name = next((r, n) for r, n in gui._med['open_list']['rects']
+                          if n == 'reopen_probe')
+        cx, cy = rect.center
+        ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN,
+                                {'button': 1, 'pos': (cx, cy)})
+        check(gui._med_handle_event(ev) is True, '点模型项应被消费')
+        check(gui._med['open_list'] is None, '载入后列表应关闭')
+        check(len(gui._med['placed']) == n_before,
+              f'读回应还原 {n_before} 块，实得 {len(gui._med["placed"])}')
+        check(gui._med['name'] == 'reopen_probe', '名字应随模型名')
+        check(gui._med_move_info() == move_before,
+              f'读回后移动统计应与保存时一致：{move_before} vs '
+              f'{gui._med_move_info()}')
+        check({g for g in gui._med['groups'].values() if g} == gid_before,
+              f'捆绑组应读得回：{gui._med["groups"]}')
+        check(gui._med_gate()[0], '读回后的模型应过保存门')
+        # ④ basis / pos_scale 与编辑器（三角晶格、scale 1）不同的模型拒载，
+        #    且不动当前盘面——碎三角（basis (0.866,0)/(0,0.5)、scale 3）
+        #    就是现成样本
+        n_now = len(gui._med['placed'])
+        if 'shatter' in model_registry.loaded():
+            check(not gui._med_load_model('shatter'),
+                  '碎三角 basis/scale 不同，应拒载')
+            check(len(gui._med['placed']) == n_now, '拒载不应动盘面')
+        # ⑤ 顶点对不上形状库的模型：载入失败（一块都放不下）
+        doc = load_model(json.load(open(
+            os.path.join(tmp, 'reopen_probe.json'), encoding='utf-8'))).doc
+        doc = dict(doc)
+        doc['name'] = 'alien_shape'
+        doc['orientations'] = {'x:0': {'shape': 'x',
+                                       'off': [[0, 0], [3, 0], [0, 3]]}}
+        doc['tiles'] = [{'p': [0, 0], 'o': 'x:0'}]
+        model_registry._LOADED['alien_shape'] = load_model(doc)
+        try:
+            check(not gui._med_load_model('alien_shape'),
+                  '形状库里没有的顶点应载入失败')
+            check(len(gui._med['placed']) == n_now, '失败不应动盘面')
+        finally:
+            model_registry._LOADED.pop('alien_shape', None)
+        # ⑥ 不存在的名字：明确失败
+        check(not gui._med_load_model('no_such_model'), '不存在的模型应拒载')
+    finally:
+        for nm in ('reopen_probe', 'alien_shape'):
+            model_registry._LOADED.pop(nm, None)
+            if nm in board_types():
+                unregister_board_type(nm)
+        ml.DEFAULT_MODEL_DIR = old
+        gui._med_close()
+
+
 # ----------------------------------------------------------------------
 def main():
     cases = [t_open_close, t_second_open_refused, t_spec_stable,
@@ -649,7 +792,8 @@ def main():
              t_bundle_toggle, t_bundle_seam_click_routes,
              t_family_toggle, t_gate,
              t_save_hot_reload, t_build_doc_loadable, t_playtest,
-             t_event_routing, t_abandon_on_swap, t_menu_entry]
+             t_event_routing, t_abandon_on_swap, t_menu_entry,
+             t_unbundle_all, t_open_model]
     for fn in cases:
         print(f'--- {fn.__name__} ---')
         try:

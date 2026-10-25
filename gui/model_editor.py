@@ -25,6 +25,9 @@
   朝向多边形就变，必然重叠；删了重放即可，有撤销）。
 * 滚轮缩放（Ctrl+滚轮亦可）、中键拖动平移；ESC 退出。
 * U / Ctrl+Z 撤销；Enter 激活名字框、再回车保存；[试玩] 存完直接开局。
+* 侧栏「盘面」：**打开模型…** 把已保存的模型读回来续编（朝向按几何
+  匹配，label 名不要求同款）；**清空捆绑** 一键解掉所有组（「全捆再
+  逐缝剪」会留下无缝相连的余组，UI 上无缝可点，只能在这里清）。
 """
 import json
 import math
@@ -121,6 +124,8 @@ class ModelEditorMixin:
             'name_rect': None,
             'backup': None,
             'game': None,                   # 预览局（判「是否被中途换掉」）
+            'open_list': None,              # 「打开模型」模态列表（None=关）
+            'act_rows': [],                 # 面板「盘面」节按钮热区
         }
         # ---- 备份原局（退出时原样还原）----
         med['backup'] = {
@@ -412,6 +417,112 @@ class ModelEditorMixin:
             self._med_notify(f'已捆绑：{len(members)} 块现在整组滑动')
         self._med_sync_after_edit()
 
+    def _med_unbundle_all(self):
+        """清空全部捆绑组（块不动）。
+
+        存在的理由：「全捆 → 逐缝剪」会留下**无缝相连**的余组（剪开只摘
+        ``ka`` 侧、``kb`` 保留旧组号），那些组在 UI 上没有任何缝可点，
+        玩家会被卡死。给一个一键清空，U 可撤销。
+        """
+        med = self._med
+        if not any(med['groups'].values()):
+            self._med_notify('当前没有捆绑组')
+            return
+        self._med_undo_push()
+        med['groups'] = {}
+        self._med_sync_after_edit()
+        self._med_notify('已清空全部捆绑（U 可撤销）')
+
+    # ---- 打开既有模型续编 ----
+    # 编辑器预览 spec 的坐标基（三角晶格）；basis/pos_scale 不同的模型
+    # 读回来会按另一套几何画，直接拒载并说明，不留一个错位的盘。
+    _MED_BASIS = [[1.0, 0.0], [0.5, math.sqrt(3.0) / 2.0]]
+
+    def _med_open_model_list(self):
+        """弹出「打开模型」列表（models/ 下已注册的模型，续编用）。"""
+        from engine import model_registry
+        try:
+            loaded = model_registry.loaded()
+        except Exception as exc:           # noqa: BLE001 —— 通知要带原因
+            self._med_notify(f'读不到模型列表：{exc}')
+            return
+        items = sorted((nm, m.title, len(m.spec.goal_blocks))
+                       for nm, m in loaded.items())
+        if not items:
+            self._med_notify('models/ 下还没有可打开的模型（先保存一个）')
+            return
+        self._med['name_active'] = False     # 弹列表 = 名字框失焦
+        self._med['open_list'] = {'items': items, 'rects': []}
+
+    def _med_load_model(self, name):
+        """把已注册模型读回编辑器（续编）。返回 True=载入成功。
+
+        朝向按**几何**匹配而不是 label 字符串：模型文件的 label 是文件
+        自带的（编辑器自己写的才是 ``'shape:idx'``），手写文件可能叫任何
+        名字——``normalize(off)`` 与形状库的像相等即同一个朝向，对不上
+        的块跳过并计数。
+        """
+        from engine import model_registry
+        try:
+            m = model_registry.loaded(name)
+        except KeyError:
+            self._med_notify(f'模型 {name!r} 不可用')
+            return False
+        doc = m.doc or {}
+        basis = doc.get('basis')
+        if (not isinstance(basis, (list, tuple)) or len(basis) != 2
+                or any(abs(float(a) - float(b)) > 1e-9
+                       for ra, rb in zip(basis, self._MED_BASIS)
+                       for a, b in zip(ra, rb))):
+            self._med_notify(f'「{name}」的坐标基与编辑器（三角晶格）不同，'
+                             '暂不支持续编')
+            return False
+        if int(doc.get('pos_scale', 1)) != 1:
+            self._med_notify(f'「{name}」的 pos_scale 不是 1，暂不支持续编')
+            return False
+        orients = doc.get('orientations') or {}
+        index = {}
+        for shape, imgs in self._med['images'].items():
+            for idx, offs in enumerate(imgs):
+                index[offs] = (shape, idx)
+        placed, groups, skipped = {}, {}, 0
+        for t in doc.get('tiles') or []:
+            try:
+                p = (int(t['p'][0]), int(t['p'][1]))
+                off = orients[t['o']]['off']
+            except (KeyError, TypeError, ValueError, IndexError):
+                skipped += 1
+                continue
+            hit = index.get(eg.normalize(off))
+            if hit is None or (p, hit[0], hit[1]) in placed:
+                skipped += 1
+                continue
+            placed[(p, hit[0], hit[1])] = self._med['images'][hit[0]][hit[1]]
+            gid = int(t.get('g', 0) or 0)
+            if gid:
+                groups[(p, hit[0], hit[1])] = gid
+        if not placed:
+            self._med_notify(f'「{name}」里没有一块能对上形状库，载入失败')
+            return False
+        med = self._med
+        self._med_undo_push()
+        med['placed'] = placed
+        med['groups'] = groups
+        med['next_gid'] = max(list(groups.values()) + [0]) + 1
+        med['name'] = name
+        med['name_active'] = False
+        # 缝族开关按文件里写了的族（续编语义：推导出但文件没有的族默认关）
+        on = {s.get('name') for s in (doc.get('seams') or []) if s.get('name')}
+        med['fam_off'] = {f[0] for f in self._med_families() if f[0] not in on}
+        self._med_sync_after_edit(center=True)
+        msg = f'已载入「{name}」（{len(placed)} 块'
+        if groups:
+            msg += f'、{len(set(groups.values()))} 个捆绑组'
+        if skipped:
+            msg += f'；{skipped} 块对不上形状库被跳过'
+        self._med_notify(msg + '）')
+        return True
+
     def _med_image_index(self, verts):
         """一组顶点（已归一化）在像元组里的下标；找不到回 None。"""
         target = eg.normalize(verts)
@@ -624,8 +735,9 @@ class ModelEditorMixin:
         h = 30                                    # 标题
         h += 22 + 30 * len(med['images'])         # 形状区
         h += 22 + 66                              # 朝向预览
-        h += 22 + 24 * max(1, len(self._med_families()))
+        h += 22 + 24 * max(1, len(self._med_families()))  # 缝族
         h += 22 + 5 * 18                          # 状态区
+        h += 8 + 20 + 2 * 30                      # 盘面节（打开/清捆绑）
         return h + 12
 
     def _med_bar_rect(self):
@@ -674,9 +786,28 @@ class ModelEditorMixin:
             return self._med_wheel(event)
         return True     # 模态会话：其余事件一并吞掉
 
+    def _med_open_list_click(self, x, y) -> bool:
+        """「打开模型」列表的点击：命中一项载入，点外面取消。"""
+        med = self._med
+        lst = med.get('open_list')
+        if lst is None:
+            return False
+        for rect, name in lst['rects']:
+            if rect.collidepoint(x, y):
+                med['open_list'] = None
+                self._med_load_model(name)
+                return True
+        med['open_list'] = None            # 点外面 = 取消
+        return True
+
     def _med_key(self, event) -> bool:
         med = self._med
         k = event.key
+        if med.get('open_list') is not None:
+            # 列表模态：只认 ESC（取消），其余键一并吞掉
+            if k == pygame.K_ESCAPE:
+                med['open_list'] = None
+            return True
         if med['name_active']:
             if k in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 med['name_active'] = False
@@ -710,6 +841,9 @@ class ModelEditorMixin:
     def _med_mouse_down(self, event) -> bool:
         med = self._med
         x, y = event.pos
+        if med.get('open_list') is not None:
+            # 「打开模型」列表模态中：一切点击只归列表（命中/取消）
+            return self._med_open_list_click(x, y)
         if self._med_bar_rect().collidepoint(x, y):
             return self._med_bar_click(x, y)
         if self._med_panel_rect().collidepoint(x, y):
@@ -732,6 +866,9 @@ class ModelEditorMixin:
 
     def _med_mouse_motion(self, event) -> bool:
         med = self._med
+        if med.get('open_list') is not None:
+            med['ghost'] = None            # 列表模态中不产幽灵预览
+            return True
         if self._med_panning and self._med_pan_origin is not None:
             ox, oy = self._med_pan_origin
             self.camera_x += event.pos[0] - ox
@@ -787,6 +924,13 @@ class ModelEditorMixin:
                     med['fam_off'].add(fname)
                 med['cnt_sig'] = None
                 return True
+        for rect, action in med.get('act_rows') or []:
+            if rect.collidepoint(x, y):
+                if action == 'open':
+                    self._med_open_model_list()
+                elif action == 'unbundle':
+                    self._med_unbundle_all()
+                return True
         return True
 
     def _med_bar_click(self, x, y) -> bool:
@@ -825,6 +969,7 @@ class ModelEditorMixin:
         self._med_draw_groups()
         self._med_draw_panel()
         self._med_draw_bar()
+        self._med_draw_open_list()
 
     # ---- 小工具 ----
     def _med_font(self, size):
@@ -987,6 +1132,60 @@ class ModelEditorMixin:
         for t in rows:
             _text(t, f_small, c['status_text'], x0, y)
             y += 18
+        y += 8
+        # ---- 盘面 ----
+        _text('盘面', f_sec, c['menu_selected'], x0, y)
+        y += 20
+        med['act_rows'] = []
+        for caption, action in (('打开模型…', 'open'), ('清空捆绑', 'unbundle')):
+            row = pygame.Rect(rect.x + 6, y - 2, rect.width - 12, 26)
+            med['act_rows'].append((row, action))
+            hover = row.collidepoint(*pygame.mouse.get_pos())
+            pygame.draw.rect(self.screen,
+                             c['button_hover'] if hover else c['button_bg'], row)
+            pygame.draw.rect(self.screen, c['dialog_border'], row, 1)
+            _text(caption, f_item, c['dialog_title'], row.x + 10, row.y + 4)
+            y += 30
+
+    def _med_draw_open_list(self):
+        """「打开模型」模态列表（编辑器内自绘，不另开对话框）。"""
+        med = self._med
+        lst = med.get('open_list')
+        if lst is None:
+            return
+        c = self.colors
+        f_title = self._med_font(17)
+        f_item = self._med_font(15)
+        f_small = self._med_font(12)
+        items = lst['items']
+        w, rh = 380, 30
+        h = 40 + len(items) * rh + 30
+        panel = pygame.Rect(0, 0, w, h)
+        panel.center = (self.screen_width // 2, self.screen_height // 2)
+        shade = pygame.Surface((self.screen_width, self.screen_height),
+                               pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 90))
+        self.screen.blit(shade, (0, 0))
+        pygame.draw.rect(self.screen, c['menu_bg'], panel)
+        pygame.draw.rect(self.screen, c['dialog_border'], panel, 1)
+        t = f_title.render('打开模型（载入续编）', True, c['dialog_title'])
+        self.screen.blit(t, (panel.x + 14, panel.y + 10))
+        y = panel.y + 40
+        lst['rects'] = []
+        for name, title, n in items:
+            row = pygame.Rect(panel.x + 8, y, panel.width - 16, rh - 4)
+            lst['rects'].append((row, name))
+            hover = row.collidepoint(*pygame.mouse.get_pos())
+            if hover:
+                pygame.draw.rect(self.screen, c['selection_bg'], row)
+            s = f_item.render(f'{title}（{n} 块）', True, c['menu_text'])
+            self.screen.blit(s, (row.x + 8, row.y + 4))
+            s2 = f_small.render(name, True, c['status_text'])
+            self.screen.blit(s2, (row.right - s2.get_width() - 8, row.y + 7))
+            y += rh
+        hint = f_small.render('点一项载入；点外面或 ESC 取消', True,
+                              c['status_text'])
+        self.screen.blit(hint, (panel.x + 14, panel.bottom - 24))
 
     def _med_draw_bar(self):
         med = self._med
