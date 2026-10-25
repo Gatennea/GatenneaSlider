@@ -601,6 +601,18 @@ class MoveMixin:
             # 作廢），好讓下面的「選不動」提示有機會說句話。
             if self._rejected_seam_at(screen_x, screen_y) is not None:
                 block = None
+            elif getattr(self, 'selected_gap', None) is None:
+                # 說明都沒選中時，點擊滑塊不會觸發任何滑動（no-op），
+                # 所以「落進相鄰塊、但離一條活縫很近」的點優先當成點縫
+                # 是安全的——把判定帶從 ±10 放大到 ±22 世界單位，細縫更
+                # 好選（修 2026-10-26：「該選的縫選不上、也沒提示」）。
+                # 已選中縫之後的第二步（點塊選哪側滑）不走這裡，以免把
+                # 點滑塊誤判成「取消選縫」。
+                near = self.get_gap_at_pos(screen_x, screen_y,
+                                          tolerance=22.0)
+                if near is not None:
+                    gap = near
+                    block = None
         # 选块填空的两下点击语义是「选哪块、填哪个坑」，不是滑动，
         # 此时别插嘴说缝选不动
         if (gap is None and block is None

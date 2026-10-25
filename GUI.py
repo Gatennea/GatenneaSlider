@@ -1614,8 +1614,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             print(f"get_cell_at_pos error: {e}")
         return None
 
-    def get_gap_at_pos(self, screen_x: int, screen_y: int) -> tuple:
-        """根据屏幕坐标获取缝隙位置"""
+    def get_gap_at_pos(self, screen_x: int, screen_y: int,
+                       tolerance: float = None) -> tuple:
+        """根据屏幕坐标获取缝隙位置
+
+        tolerance 仅对通用通道（多边形密铺）生效：放大它即放大「点缝的
+        可选命中带」。None 走默认 10 世界单位（≈12px@zoom1.21）——这是第一
+        击选缝的精准带；放大值只用于「没选中缝时、点偏进相邻块」的兜底检索，
+        绝不改变已选中缝后的第二步交互（见 _sq_click_query）。
+        """
         try:
             world_x, world_y = self.screen_to_world(screen_x, screen_y)
 
@@ -1644,8 +1651,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 被多條候選縫共享（實測 1~4 條），歧義就按距離+族序決勝。
                 view = self._polygon_view()
                 origin = self._poly_view_origin(view)
+                tol = 10.0 if tolerance is None else float(tolerance)
                 for gap_type, line, _dist in view.gap_candidates(
-                        world_x, world_y, self.game.board, origin):
+                        world_x, world_y, self.game.board, origin,
+                        tolerance=tol):
                     if self.game.is_valid_gap(gap_type, line) and \
                             self._generic_gap_live((gap_type, line)):
                         return (gap_type, line)
