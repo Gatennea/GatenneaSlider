@@ -268,6 +268,14 @@ class EngineGame:
         口径与 game.all_gaps 一致：每族 rank 的 [lo, hi] 区间内，t=line+1
         （米字 h/v 是 4× 线分辨率，line=(t-1)/4）两侧都非空即有效；米字
         span 锁死缝走 spec.seam_clear 钩子跳过。
+
+        ⚠️ **候选 t 的来源必须与 ``Board.legal_moves`` 同路**：板型带
+        ``seam_lines`` 钩子时只认真实块边给出的 t，否则才退回整数区间枚举。
+        原来这里无条件 ``range(lo+1, hi+1)``，而 centroid rank 板的缝坐标是
+        **浮点**（质心 rank，三角块均值带 ⅓）→ ``TypeError: 'float' object
+        cannot be interpreted as an integer``（2026-10-25 搭积木试玩实测：
+        编辑器产出的模型一律 centroid，于是模型局里任何依赖 all_gaps 的
+        功能——缝高亮、随机打乱、求解器——全部当场抛错）。
         """
         keys = self.board.keys
         if not keys:
@@ -276,7 +284,12 @@ class EngineGame:
         for fam in self.spec.seam_families:
             vals = {k: fam.rank_of(k[0], k[1]) for k in keys}
             lo, hi = min(vals.values()), max(vals.values())
-            for t in range(lo + 1, hi + 1):
+            if self.spec.seam_lines is not None:
+                cand_t = [t for t, _line in self.spec.seam_lines(self._board, fam)
+                          if lo < t <= hi]
+            else:
+                cand_t = range(lo + 1, hi + 1)
+            for t in cand_t:
                 if self.spec.seam_clear is not None and \
                         not self.spec.seam_clear(fam, t, self._board):
                     continue
@@ -426,16 +439,31 @@ class EngineGame:
 
         兼容方形 game.opt(direction, line, block) 与三角/米字
         game.opt(gap_type, line, block) 两种调用约定。
+
+        ⚠️ **先认缝族名，再查方向字母表**（2026-10-25 用户实测）：方向
+        字母表是**字母 → 方向**的映射，只有内置四形态注册过（compat 的
+        `_VOCAB`）；模型文件板型（`models/<名>.json`）从来没有字母表，
+        GUI 侧也只会传缝族名。原来的顺序是「先 direction_table」，于是
+        模型局里任何一次点块选组都在这里抛 KeyError，表现为「试玩打开
+        了，但点什么都不动」（`events.py` 的 opt 调用点，错误被吞成
+        `Event error (non-fatal)`）。查表失败退化成 ValueError 更贴切：
+        模型板型只支持缝族名。
         """
-        table = direction_table(self.spec)
+        if any(f.name == gap_or_dir for f in self.spec.seam_families):
+            return gap_or_dir
+        try:
+            table = direction_table(self.spec)
+        except KeyError:
+            raise ValueError(
+                f"板型 {self.spec.name!r} 未注册方向字母表，只能用缝族名"
+                f"（已有: {[f.name for f in self.spec.seam_families]}）；"
+                f"收到 {gap_or_dir!r}") from None
         if gap_or_dir in table:
             d = table[gap_or_dir]
             for fam in self.spec.seam_families:
                 if d in fam.parallel:
                     return fam.name
             raise ValueError(f"方向 {gap_or_dir!r} 不属于任何缝族")
-        if any(f.name == gap_or_dir for f in self.spec.seam_families):
-            return gap_or_dir
         raise ValueError(f"未知缝族/方向: {gap_or_dir!r}")
 
     def _key_of(self, selected_block):

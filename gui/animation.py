@@ -224,11 +224,25 @@ class AnimationMixin:
         （六向），米字格走 game_mi.DIRECTIONS（八向，斜族的整格在表里），
         方形走四向表；位移只作用在前兩個分量，第三分量（▲/▼、縫向）沿縫平行
         滑動時不變。
+
+        ⚠️ 模型文件板型（通用通道）**没有** 'w/a/s/d'：它的字母由
+        `compat.direction_table` 从几何派生（大写 A/B/C…）。落进方形的四向表
+        查不到 → 位移 (0,0) → 动画原地闪一下、块"跳"到终点（2026-10-25
+        试玩实测）。所以这里先问板型自己的字母表，再按 lattice.scale 折回
+        真实坐标（块 location 是真实坐标，方向元组是点坐标）。
         """
         delta = move_info.get('delta')
         if delta is not None:
             return delta[0], delta[1]
         step = move_info.get('step', self.current_step)
+        _spec = self._generic_spec() if hasattr(self, '_generic_spec') else None
+        if _spec is not None:
+            from engine.compat import direction_table
+            d = direction_table(_spec).get(move_info.get('direction'))
+            if d is None:
+                return 0, 0
+            _sc = _spec.lattice.scale
+            return d[0] * step / _sc, d[1] * step / _sc
         if getattr(self, 'triangle_mode', False):
             from game_triangle import DIRECTIONS
             d = DIRECTIONS.get(move_info.get('direction'), (0, 0))

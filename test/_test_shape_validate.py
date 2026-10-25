@@ -181,7 +181,17 @@ for kind, params, step in CASES:
     # 挖一塊放異類鄰位 → 類計數被拒
     bad = _break_class(kind, cells, step, params)
     if bad is None:
-        check(f"{kind} 找到類計數錯的構造", False, '輔助枚舉失敗')
+        # 打亂是隨機的（`_shuffle_cells` 走各形態的 shuffle），某些局面裡
+        # 找不到「同塊數、同連通、只把一塊挪到異類鄰位」的構造。換幾個打亂
+        # 再找——**不放寬斷言**，只把「這把沒摸到」和「判據真的漏了」分開
+        # （2026-10-25 全套裡 1/3 概率假紅）。
+        for _ in range(8):
+            alt = _shuffle_cells(kind, params, step)
+            bad = _break_class(kind, alt, step, params)
+            if bad is not None:
+                break
+    if bad is None:
+        check(f"{kind} 找到類計數錯的構造", False, '輔助枚舉失敗（換 8 次打亂仍沒找到）')
     else:
         ok, msg, _a = validate_shape(kind, bad, params, step)
         check(f"{kind} 類計數錯被拒", not ok and '類計數' in msg, f"msg={msg}")

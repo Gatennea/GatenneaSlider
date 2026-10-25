@@ -27,6 +27,28 @@ def _compute_checksum(data: dict) -> str:
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+def _preview_kind() -> str:
+    """搭积木编辑器预览局的哨兵形态名（单一真源在 gui/model_editor.py）。
+
+    延迟导入：file_ops 是 Mixin，GUI 启动时先于编辑器模块被导入；这里
+    只为了拿一个常量，不值得让两个模块在导入期互相牵扯。
+    """
+    from gui.model_editor import PREVIEW_KIND
+    return PREVIEW_KIND
+
+
+class StaleEditorSave(ValueError):
+    """上次退出时停在搭积木编辑器里：存档里的形态是预览哨兵，不可载入。
+
+    这类存档**不是损坏，也不该报「模型未安装」**——编辑器预览局从来没有
+    对应的 models/*.json，载入端要把它当「无事发生」（安静回落到默认局）。
+
+    继承 ValueError：`_do_load_from_path` 的「打开失败：…」分支只捕
+    (JSONDecodeError, KeyError, ValueError)，用户真去文件对话框点开一份
+    `__editor__` 存档时要落到那条提示里，而不是冒到事件循环变成
+    「Event error (non-fatal)」。
+    """
+
 # 已从注册表移除的**形态专用入口** → 现行统一入口。
 # 2026-10-05 起三形态共用 `'gather'`，`tri_gather` / `mi_gather` 两个 key 已删除；
 # 但老 config.json 里仍写着这些值（用户机器上实测就是 `'mi_gather'`）。
@@ -156,16 +178,24 @@ class FileOpsMixin:
     """文件操作相关方法 Mixin"""
 
     def save_config(self):
-        """保存配置到 config/config.json，历史记录到 config/temp_history.json，快捷键到 keyboard_shortcut.json"""
+        """保存配置到 config/config.json，历史记录到 config/temp_history.json，快捷键到 keyboard_shortcut.json
+
+        ⚠️ **搭积木编辑器会话中不写历史**（2026-10-25 用户实测）：那时候
+        ``self.game`` 是预览局（``kind = PREVIEW_KIND``），写下去就是一条
+        ``type: '__editor__'`` 的存档——它没有模型文件，下次启动必然
+        「存档需要模型 '__editor__'，但它没有安装」。temp_history 保留进入
+        编辑器之前的那个真实局面（退出/崩溃都不丢东西），配置照写。
+        """
         os.makedirs(self.config_dir, exist_ok=True)
 
-        # 保存历史记录到 temp_history.json
-        save_data = self._build_save_data()
-        try:
-            with open(self.temp_history_path, 'w', encoding='utf-8') as f:
-                f.write(_compact_json_dumps(save_data))
-        except Exception as e:
-            print(f"保存临时历史记录失败: {e}")
+        # 保存历史记录到 temp_history.json（编辑器预览局跳过，见 docstring）
+        if not getattr(self, '_med_active', False):
+            save_data = self._build_save_data()
+            try:
+                with open(self.temp_history_path, 'w', encoding='utf-8') as f:
+                    f.write(_compact_json_dumps(save_data))
+            except Exception as e:
+                print(f"保存临时历史记录失败: {e}")
 
         # 始终以 temp_history_path 作为 last_file_path
         # 这样重启时必定加载退出瞬间的最新状态
@@ -457,6 +487,9 @@ class FileOpsMixin:
                     print(f"已从文件恢复: {last_path}")
                     self._reset_file_dirty()
                     return
+            except StaleEditorSave as e:
+                # 编辑器预览局不是「坏存档」：安静退回默认局，不吓人
+                print(f"忽略上次状态（{e}）")
             except Exception as e:
                 print(f"加载上次状态失败: {e}")
 
@@ -617,6 +650,12 @@ class FileOpsMixin:
         kind = 'square'
         if version >= 2:
             kind = puzzle.get('type', 'square')
+        if kind == _preview_kind():
+            # 编辑器预览局（旧版本退出时被自动存档写下的）。没有 models/
+            # 文件，也不该有——按「上次退出停在编辑器里」安静略过，
+            # 不冒充「模型缺失」报错（2026-10-25 用户实测每次启动都弹）。
+            raise StaleEditorSave(
+                f'上次退出时停在搭积木编辑器里（预览局面不存档）')
 
         history_data = save_data.get('history', {})
         snapshots = history_data.get('snapshots', [])
@@ -749,8 +788,27 @@ class FileOpsMixin:
         tag = ('-'.join(marks) + '-') if marks else ''
         return f"{tag}{self.current_step}-{self.current_m}-{self.current_n}-{ts}.json"
 
+    def _med_save_blocked(self) -> bool:
+        """搭积木编辑器会话中禁止「存档」类操作（Ctrl+S / 另存为）。
+
+        理由同 `StaleEditorSave`：那时候 `self.game` 是预览局，存成 json
+        的话 `puzzle.type` 会写成 `__editor__`，那份文件永远载不回来。编辑器
+        自己的落盘口是左侧 [存样式]（写 `models/<名>.json`）。
+
+        放在 FileOpsMixin 而不是 model_editor：`save_to_file` / `_save_to_path`
+        的调用方不一定带 ModelEditorMixin（测试里有只继承 FileOps 的桩 GUI）。
+        """
+        if not getattr(self, '_med_active', False):
+            return False
+        self.macro_notify_msg = ('搭积木编辑器里的摆放不能存成谜题存档：'
+                                 '请用左侧 [存样式] 存成模型，或先退出编辑器')
+        self.macro_notify_timer = 200
+        return True
+
     def save_as(self):
         """另存为：弹出 pygame 文件对话框（默认名自动生成）"""
+        if self._med_save_blocked():
+            return
         self.file_dialog.show(
             mode='save',
             title='另存为',
@@ -762,6 +820,8 @@ class FileOpsMixin:
 
     def _save_to_path(self, path: str):
         """将当前状态保存到指定路径"""
+        if self._med_save_blocked():
+            return
         # 文件名校验：Windows 非法字符（如 * ? : 等）写盘必抛异常，先拦截并明确提示
         illegal = _find_illegal_filename_chars(os.path.basename(path))
         if illegal:

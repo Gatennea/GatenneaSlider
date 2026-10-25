@@ -203,6 +203,50 @@ class ScriptTestFile(pytest.File):
         yield ScriptTestItem.from_parent(self, name=self.path.stem)
 
 
+# ----------------------------------------------------------------------
+# 跨进程运行态隔离（2026-10-25）
+# ----------------------------------------------------------------------
+# 这两个文件是**磁盘上的运行态**，不是测试数据：
+#   · config/engine.json      全局引擎开关（几何引擎测试会打开并留在盘上）
+#   · config/temp_history.json 自动存档（只读类测试会留下 readonly: true）
+# 脚本型测试各自是新进程，唯一的共享通道就是磁盘，于是出现「顺序相关假红」：
+# 前面的测试把引擎开了 / 留下只读存档，后面的梯度与求解测试就静默不启动，
+# 在「启动后状态非空」处失败——单跑全绿、全套红（2026-10-25 反复踩）。
+#
+# 做法：每个脚本测试开跑前清空这两个文件、跑完丢弃它自己写的、再复原。
+# 于是每个测试都从「干净初始态」起步，套件结果与执行顺序无关；用户真实的
+# config 也不会被测试改写。
+_RUNTIME_FILES = ('engine.json', 'temp_history.json')
+
+
+def _runtime_paths():
+    cfg = os.path.join(ROOT, 'config')
+    return [os.path.join(cfg, n) for n in _RUNTIME_FILES]
+
+
+def _snapshot_runtime():
+    saved = {}
+    for path in _runtime_paths():
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                saved[path] = f.read()
+    return saved
+
+
+def _clear_runtime():
+    for path in _runtime_paths():
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
+def _restore_runtime(saved):
+    for path, blob in saved.items():
+        with open(path, 'wb') as f:
+            f.write(blob)
+
+
 class ScriptTestItem(pytest.Item):
     def runtest(self):
         if self.path.name in _SKIP:
@@ -211,6 +255,8 @@ class ScriptTestItem(pytest.Item):
         env = dict(os.environ)
         env.setdefault('SDL_VIDEODRIVER', 'dummy')
         env.setdefault('SDL_AUDIODRIVER', 'dummy')
+        saved = _snapshot_runtime()       # 让每个测试都从干净运行态起步
+        _clear_runtime()
         try:
             proc = subprocess.run(
                 [PYTHON, '-u', str(self.path)],
@@ -223,6 +269,9 @@ class ScriptTestItem(pytest.Item):
                 out = out.decode('utf-8', 'replace')
             raise AssertionError(
                 f'脚本超过 {timeout}s 未退出（疑似卡死）\n{out}') from None
+        finally:
+            _clear_runtime()              # 丢掉它写的运行态，别传给下一个
+            _restore_runtime(saved)
         if proc.returncode != 0:
             raise AssertionError(
                 f'退出码 {proc.returncode}\n'

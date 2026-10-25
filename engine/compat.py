@@ -85,13 +85,60 @@ def register_direction_vocab(name: str, table: dict):
 
 
 def direction_table(spec):
-    """取板型的方向字母表 {字母: 方向元组}；未注册 → KeyError 带清单。"""
-    try:
-        return _VOCAB[spec.name]
-    except KeyError:
+    """取板型的方向字母表 {字母: 方向元组}。
+
+    两级来源：
+    1. **显式注册**（`register_direction_vocab`）：四个内置形态 + 两张碎三角
+       表。名字对得上的永远用注册的那份，字母表是盘型身份的一部分。
+    2. **从几何派生**：模型文件板型（`models/<名>.json`，含搭积木编辑器现
+       场搭出来的）不可能预注册——名字是玩家起的。它们的缝族 `parallel`
+       已经写清了「这块盘允许往哪滑」，字母表按方向元组**规范排序**逐个
+       分配大写字母即可（见 `_derived_direction_table`）。
+
+    ⚠️ 派生必须**确定性**：历史动作 dict 里存的就是这个字母
+    （`{'direction': 'A', ...}`），换一次分配就把旧存档的回放全打偏。
+    所以排序键是方向元组本身，与模型文件的书写顺序无关。
+    """
+    table = _VOCAB.get(spec.name)
+    if table is not None:
+        return table
+    return _derived_direction_table(spec)
+
+
+#: 派生字母表的上限（大写字母数）。
+_MAX_DERIVED_LETTERS = 26
+_DERIVED = {}      # {(板型名, 方向元组们): {字母: 方向}}
+
+
+def _derived_direction_table(spec):
+    """未注册字母表的板型：从缝族几何派生 {字母: 方向}。
+
+    集合 = 各缝族 ``parallel`` 的并（就是这块盘**能滑**的方向，不是
+    `spec.directions` 全集：后者可能含不平行于任何缝的占位方向，拿去做
+    `_build_action` 会 StopIteration）。
+
+    字母用**大写**：族名是小写的（'h'/'v'/'n'/'d60'/'d120'），
+    `_gap_family_of` 先认族名再查字母表，若派生出小写 'h' 就会互相顶掉。
+
+    缓存键带方向元组：模型热重载改了几何 → 键变了 → 自动重算，不会沿用
+    旧盘的方向表。
+    """
+    dirs = tuple(sorted({d for fam in spec.seam_families
+                         for d in fam.parallel}))
+    if not dirs:
         raise KeyError(
-            f"板型 {spec.name!r} 未注册方向词汇表（已注册: {sorted(_VOCAB)}）"
-            f"——映射层只支持显式注册过字母表的板型，不静默猜") from None
+            f"板型 {spec.name!r} 没有缝族平行方向，派不出字母表"
+            f"（已注册: {sorted(_VOCAB)}）")
+    if len(dirs) > _MAX_DERIVED_LETTERS:
+        raise KeyError(
+            f"板型 {spec.name!r} 有 {len(dirs)} 个滑动方向，超过字母表上限"
+            f"{_MAX_DERIVED_LETTERS}——请显式注册方向词汇表")
+    key = (spec.name, dirs)
+    table = _DERIVED.get(key)
+    if table is None:
+        table = {chr(ord('A') + i): d for i, d in enumerate(dirs)}
+        _DERIVED[key] = table
+    return table
 
 
 # ----------------------------------------------------------------------

@@ -421,9 +421,14 @@ shatter_items = [p for p in models_menu if len(p) >= 5 and p[4] == 'shatter']
 check(len(shatter_items) >= 2,
       f'模型子菜單有 {len(shatter_items)} 個碎三角檔位（實測 {shatter_items}）')
 if shatter_items:
-    i0 = models_menu.index(shatter_items[0])
-    check(models_menu[i0 - 1][0] == '__group__',
-          f'模型檔位自成一個分組（{models_menu[i0 - 1][1]!r}）')
+    # 模型條目全部落在「模型文件」那個分組標題之下——分組標題只出現在
+    # 子菜單第 0 項（條目按模型名排序，碎三角不一定排第一；用戶自己
+    # 搭出來的模型（models/222.json 這類）隨時會插到前面）。
+    check(models_menu and models_menu[0][0] == '__group__',
+          f'模型子菜單應以分組標題開頭（實得 {models_menu[:1]}）')
+    first_group = models_menu.index(models_menu[0])
+    check(first_group == 0 and models_menu.index(shatter_items[0]) > 0,
+          '碎三角檔位在「模型文件」分組內（不是散在子菜單外）')
 leftover = [p for p in gui6.puzzle_sub_presets['exotic']
             if len(p) >= 5 and p[4] == 'shatter']
 check(not leftover, '異形子菜單裡不再有硬編碼的碎三角條目（避免兩處入口）')

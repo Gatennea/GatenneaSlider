@@ -215,14 +215,42 @@ class MoveMixin:
             self._mark_file_dirty()
         return True
 
-    @staticmethod
-    def _dir_name(direction: str) -> str:
-        """方向字母 → 中文方向名（方形四向 + 三角六向）。"""
+    def _dir_name(self, direction: str) -> str:
+        """方向字母 → 中文方向名（方形四向 + 三角六向；模型板型按几何算）。"""
         names = {
             'w': '上', 's': '下', 'a': '左', 'd': '右',
             'e': '右上', 'z': '左下', 'x': '右下',
         }
-        return names.get(direction, direction)
+        if direction in names:
+            return names[direction]
+        # 模型文件板型（通用通道）：字母是**从几何派生的**（compat 的
+        # A/B/C…），没有语义名。直接把 'A' 写进「向A移动」玩家看不懂，
+        # 所以按这块盘自己的几何把方向折成屏幕八向名（用任一在盘块做参考
+        # 点算一步的屏幕位移——方向与参考块无关，只取决于晶格与缩放）。
+        spec = self._generic_spec() if hasattr(self, '_generic_spec') else None
+        if spec is not None:
+            from engine.compat import direction_table
+            if direction_table(spec).get(direction) is not None:
+                key = None
+                for b in self.game.blocks:
+                    key = tuple(b.location)
+                    break
+                if key is not None:
+                    try:
+                        vec = self._letter_screen_vec(direction, key)
+                    except Exception:
+                        vec = None
+                    if vec:
+                        vx, vy = vec
+                        sx = '右' if vx > abs(vy) * 0.4 else (
+                            '左' if vx < -abs(vy) * 0.4 else '')
+                        sy = '下' if vy > abs(vx) * 0.4 else (
+                            '上' if vy < -abs(vx) * 0.4 else '')
+                        label = sy + sx
+                        if label:
+                            return label
+                return f'缝向{direction}'
+        return direction
 
     @staticmethod
     def _gap_type_name(gap_type: str) -> str:

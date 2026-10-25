@@ -621,8 +621,24 @@ _expect_raise(lambda: apply_action(
     b42, {'gap_type': 'h', 'gap_line': 0, 'direction': 'a', 'step': 1,
           'moved_positions': [(0, 0)]}),
     "结构合法但非本局合法移动（单块切开走）")
-_expect_raise(lambda: direction_table(replace(spec42, name='no_such')),
-              "未注册词汇表的板型")
+# 未注册字母表的板型：**从缝族几何派生**（2026-10-25 起，模型文件板型
+# 与搭积木编辑器产出的板型都走这条路——名字是玩家起的，不可能预注册）。
+# 派生必须确定性（历史动作里存的是字母），且恰好覆盖「能滑」的方向。
+_derived = direction_table(replace(spec42, name='no_such'))
+check(sorted(_derived) == ['A', 'B', 'C', 'D'],
+      f"派生字母表用大写规范序（实得 {sorted(_derived)}）")
+check(set(_derived.values()) ==
+      {d for f in spec42.seam_families for d in f.parallel},
+      "派生字母表恰好覆盖各缝族 parallel 的并")
+check(direction_table(replace(spec42, name='another_name')) == _derived,
+      "派生与板型名无关（同一几何 → 同一字母表）")
+class _NoFamSpec:      # 只带 direction_table 要的两个字段（BoardSpec 本身
+    name = 'no_fam'     # 拒绝空缝族，构造不出来）
+    seam_families = ()
+
+
+_expect_raise(lambda: direction_table(_NoFamSpec()),
+              "没有缝族就派不出字母表")
 _expect_raise(lambda: register_direction_vocab('square', {'x': (1, 0)}),
               "同名词汇表重复注册")
 check(direction_table(spec42) == GAME_DIRECTIONS,

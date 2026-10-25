@@ -9,6 +9,15 @@ os.chdir(_PROJ)
 
 import solver.ml.gather_solver as gs_mod
 
+# ⚠️ 引擎开关是**全局磁盘配置**（config/engine.json）：全套里跑在前面的几何引擎
+# 测试会把它打开并留在磁盘上，于是本测试的 `new_puzzle(4,4,2)` 建出 EngineGame，
+# `_start_auto_solve` 直接不启动（几何通道只认 'gather'），在「启动后状态非空且
+# 后台忙」处假红。本测试要的是经典引擎 + gather_gradient，显式关掉，别依赖
+# 「跑之前有人删过 engine.json」这种外部前提。
+from engine import config as _ecfg  # noqa: E402
+
+_ecfg.set_enabled(False)
+
 # 收敛测试速度：每阶段给很小的参数，保证几步内结束且稳定
 _FAST = {'max_steps': 40, 'patience': 10, 'max_wait_time': 3,
          'target_gather_score': 1.0, 'aggressiveness': 0.0}
@@ -20,6 +29,13 @@ from GUI import SliderGUI
 gui = SliderGUI(m=4, n=4, step=2)
 gui.game_mode = 'practice'
 gui.new_puzzle(4, 4, 2)
+# ⚠️ 只读标记是**从 config/temp_history.json 恢复**的会话状态：全套里前面的
+# 只读/防覆盖类测试会留下 `readonly: true` 的自动存档，于是这里的
+# `_start_auto_solve` 撞 `_readonly_blocked()` 静默返回，在「启动后状态非空
+# 且后台忙」处假红（2026-10-25 全套实测，主因不是引擎开关）。本测试要的是
+# 一个可写的普通局面，显式清掉，别依赖外部残留。
+gui._readonly = False
+gui.save_readonly_flag = False
 gui.solver_algorithm = 'gather_gradient'
 gui.animation_duration = 60   # 每步动画 60ms，便于观察并行窗口
 gui.animation_enabled = True

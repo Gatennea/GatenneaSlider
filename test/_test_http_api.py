@@ -403,7 +403,14 @@ code, r = api('POST', '/select_gap', {'type': 'h', 'line': -15})
 check("IL8 select_gap 越界 line 失败且 message 带有效范围",
       code == 200 and not r.get('ok') and '有效范围' in (r.get('message') or ''),
       r.get('message', ''))
-code, r = api('POST', '/select_gap', {'type': 'h', 'line': 1})
+# ⚠️ 线号不能硬编：本测试前面把局面**随机打乱**过，哪条缝还活着因局面而异
+# （硬编 line:1 在「两块落在第 3/4 行」那种局面里必然不合法 → 假红，2026-10-25
+# 全套里约 1/3 概率撞到）。从 actions 里取一条**当前局面真活着**的缝。
+_acts = (api('GET', '/analysis/actions')[1].get('actions') or [])
+_mov = [a for a in _acts if a.get('movable')] or _acts
+_g0 = _mov[0] if _mov else {'gap_type': 'h', 'gap_line': 1}
+code, r = api('POST', '/select_gap',
+              {'type': _g0['gap_type'], 'line': _g0['gap_line']})
 check("IL9 select_gap 成功 message 也带有效范围",
       code == 200 and r.get('ok') and '有效范围' in (r.get('message') or ''),
       r.get('message', ''))
