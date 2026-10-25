@@ -1,14 +1,23 @@
 # -*- coding: utf-8 -*-
-"""回归：几何引擎板型的操作方式（用户 2026-10-24 定）。
+"""回归：几何引擎板型的操作方式（用户 2026-10-24 定，2026-10-25 修正）。
 
-规则：**只支持「箭头 + 两次触控」**。键鼠方向键、单次触控（拖拽角度猜缝）、
+原始规则：**只支持「箭头 + 两次触控」**。键鼠方向键、单次触控（拖拽角度猜缝）、
 虚拟键盘（键位按形状排布）都与形状强相关，新板型一律不支持。
 
-本测试钉住四件事：
+2026-10-25 修正：模型板型的方向字母表是从几何**派生**的（compat.direction_table
+第二级来源，大写 A/B/C…），盘与盘不同，没有「上/下/左/右」语义可映射；但键盘
+移动与虚拟键盘都直接吃这张派生表，于是两者对通用通道**重新开放**：
+  · 键盘移动：按派生字母键（如 A/B）沿该方向推一步；
+  · F1 虚拟键盘：按派生字母表渲染，照常开/关。
+两者与「箭头 + 两次触控」并存，不再有「GUI 能开、快捷键开不了」的缺口。
+
+本测试钉住：
   A. 建局后控制开关的状态（两次触控开，其余关）；
   B. 两次触控：先选缝，再拖块——**缝必须保持不变**（旧实现会按拖拽方向改判）；
   C. 没有预选缝时拖拽 → 拒绝并提示（不再自动猜缝）；
-  D. 箭头按键可点，走的还是那条缝、方向正确。
+  D. 箭头按键可点，走的还是那条缝、方向正确；
+  E. 键盘字母键（派生字母表）能推动滑块；
+  F. F1 虚拟键盘对通用通道可正常开/关。
 """
 import os
 import queue
@@ -132,6 +141,12 @@ def main():
         check(gui.selected_gap == (fam, line), '点箭头后缝仍在（可继续点）',
               f'{gui.selected_gap}')
 
+    # E. 键盘字母键（派生字母表）能推动滑块
+    t_keyboard_letters_move()
+
+    # F. F1 虚拟键盘对通用通道可正常开/关（2026-10-25 修）
+    t_virtual_keyboard_opens_for_generic()
+
     print(f'\n通过 {_ok[0]} 项，失败 {len(_fail)} 项')
     if _fail:
         for m in _fail:
@@ -139,6 +154,134 @@ def main():
         print('FAILED')
         sys.exit(1)
     print('ALL PASS')
+
+
+
+
+def _first_movable(gui):
+    """返回第一个引擎层面真能推动的 (缝族, line, 块, 字母)。"""
+    from engine.compat import direction_table
+    g = gui.game
+    tbl = direction_table(g.spec)
+    for (gf, line) in list(g.all_gaps()):
+        fam = next(f for f in g.spec.seam_families if f.name == gf)
+        for letter, d in sorted(tbl.items()):
+            if d not in fam.parallel:
+                continue
+            for b in g.blocks:
+                g.opt(gf, line, b)
+                pos, reason = g.try_move_ex(letter, 1)
+                if reason == '':
+                    return (gf, line, b, letter)
+    return None
+
+
+def t_keyboard_letters_move():
+    """通用通道的键盘方向：按派生字母键能推一步（2026-10-25 修）。
+
+    修之前，事件链只有 mi / triangle / WASD 三支，**通用通道一支都没有**；
+    而 WASD 那支又被 new_model_puzzle 强制关掉（control_mouse_kb=False），
+    于是自定义谜题载入后键盘完全推不动滑块，只有 GUI 的箭头按键 /
+    两次触控能用。这里钉住「字母键 = 该盘派生的方向字母」这条新路。
+    """
+    gui = make(5160)
+    g = gui.game
+
+    from engine.compat import direction_table
+    tbl = direction_table(g.spec)
+    check(bool(tbl), f'模型板型应派得出方向字母表（实得 {sorted(tbl)}）')
+
+    found = _first_movable(gui)
+    check(found is not None, '应至少有一个能推动的方向')
+    if found is None:
+        return
+    gf, line, blk, letter = found
+
+    g.opt(gf, line, blk)
+    gui.selected_gap = (gf, line)
+    gui.selected_block = blk
+    before = [tuple(b.location) for b in g.blocks]
+    step0 = gui.step_count
+
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {
+        'key': getattr(pygame, 'K_' + letter.lower()), 'mod': 0, 'unicode': letter}))
+    gui.handle_events()
+
+    check([tuple(b.location) for b in g.blocks] != before,
+          f'按字母键 {letter!r} 应真的推动滑块')
+    check(gui.step_count == step0 + 1,
+          f'步数应 +1（{step0} → {gui.step_count}）')
+
+    # 方向必须平行于选中的缝：换个不相干的字母不应生效
+    other = next((L for L in sorted(tbl)
+                  if L not in (gui._gap_dir_letters(gf) or ())), None)
+    if other is not None:
+        g.opt(gf, line, blk)
+        gui.selected_gap = (gf, line)
+        gui.selected_block = blk
+        before = [tuple(b.location) for b in g.blocks]
+        step0 = gui.step_count
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {
+            'key': getattr(pygame, 'K_' + other.lower()), 'mod': 0, 'unicode': other}))
+        gui.handle_events()
+        check([tuple(b.location) for b in g.blocks] == before
+              and gui.step_count == step0,
+              f'字母 {other!r} 不平行于缝隙 {gf}，不应生效')
+
+
+def t_virtual_keyboard_opens_for_generic():
+    """F1 虚拟键盘在模型板型下应正常开/关（2026-10-25 修）。
+
+    修之前 _generic_controls_locked() 把虚拟键盘一并拦了，于是自定义谜题里
+    F1 这个快捷键失效（面板其实渲染得动，按派生字母表走，与新增的键盘移动
+    同源）。现在通用通道的虚拟键盘照常切换。
+    """
+    gui = make(5160)
+    check(getattr(gui, 'show_virtual_keyboard', False) is False, '初始虚拟键盘关')
+
+    kb = gui.keybindings['virtual_keyboard']
+    k = kb['key']
+    # 与 events._is_action_triggered 同款映射（'f1' → K_F1 等）
+    _keymap = {
+        'space': pygame.K_SPACE, 'up': pygame.K_UP, 'down': pygame.K_DOWN,
+        'left': pygame.K_LEFT, 'right': pygame.K_RIGHT,
+        'return': pygame.K_RETURN, 'escape': pygame.K_ESCAPE,
+        'tab': pygame.K_TAB, 'backspace': pygame.K_BACKSPACE,
+        'delete': pygame.K_DELETE, 'home': pygame.K_HOME, 'end': pygame.K_END,
+        'pageup': pygame.K_PAGEUP, 'pagedown': pygame.K_PAGEDOWN,
+        'insert': pygame.K_INSERT,
+        'f1': pygame.K_F1, 'f2': pygame.K_F2, 'f3': pygame.K_F3, 'f4': pygame.K_F4,
+        'f5': pygame.K_F5, 'f6': pygame.K_F6, 'f7': pygame.K_F7, 'f8': pygame.K_F8,
+        'f9': pygame.K_F9, 'f10': pygame.K_F10, 'f11': pygame.K_F11, 'f12': pygame.K_F12,
+    }
+    key = getattr(pygame, 'K_' + k) if len(k) == 1 else _keymap.get(k)
+    check(key is not None, f'虚拟键盘快捷键 {k!r} 可映射到 pygame 键')
+
+    # F1 打开
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN,
+        {'key': key, 'mod': 0, 'unicode': k}))
+    gui.handle_events()
+    check(getattr(gui, 'show_virtual_keyboard', False) is True, 'F1 打开虚拟键盘')
+
+    # 面板按派生字母表渲染，不崩（选定缝隙 + 块后 draw_board 触发）
+    fam, line, blk = pick_gap(gui)
+    if fam is not None:
+        gui.selected_gap = (fam, line)
+        gui.selected_block = blk
+        gui.game.opt(fam, line, blk)
+        try:
+            gui.draw_board()
+            check(True, '虚拟键盘（派生字母表）渲染不崩溃')
+        except Exception as e:  # noqa: BLE001
+            check(False, f'虚拟键盘渲染异常：{e}')
+    else:
+        check(True, '无可拾取缝，跳过渲染（不影响开关）')
+
+    # F1 再关
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN,
+        {'key': key, 'mod': 0, 'unicode': k}))
+    gui.handle_events()
+    check(getattr(gui, 'show_virtual_keyboard', False) is False, 'F1 再次关闭虚拟键盘')
 
 
 if __name__ == '__main__':

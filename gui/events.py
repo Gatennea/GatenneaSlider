@@ -1254,7 +1254,19 @@ class EventsMixin:
                             self._start_macro_recording()
                     
                     elif self._is_action_triggered(event, 'virtual_keyboard'):
-                        if self._generic_controls_locked():
+                        if self._generic_spec() is not None:
+                            # 通用通道（模型文件板型）：虚拟键盘按派生的字母表
+                            # （A/B/C…，renderer._gap_dir_letters 同源）渲染，本身
+                            # 就是这套键盘映射的 GUI 形式——F1 照常开/关。
+                            # 2026-10-25 修：此前被 _generic_controls_locked 一并
+                            # 拦掉，导致自定义谜题里「F1 开虚拟键盘」这个快捷键
+                            # 失效（面板其实渲染得动，与新增的键盘移动同源）。
+                            self.show_virtual_keyboard = not getattr(
+                                self, 'show_virtual_keyboard', False)
+                            status = '开' if self.show_virtual_keyboard else '关'
+                            self.macro_notify_msg = f"虚拟键盘：{status}"
+                            self.macro_notify_timer = 90
+                        elif self._generic_controls_locked():
                             self.macro_notify_msg = "几何引擎板型不支持虚拟键盘（键位按形状排布）"
                             self.macro_notify_timer = 120
                         else:
@@ -1299,6 +1311,15 @@ class EventsMixin:
                         if getattr(self, 'triangle_mode', False):
                             self._triangle_keyboard_move(event)
                             continue
+                        # 通用通道（模型文件板型）：方向字母是**从几何派生的**
+                        # （compat.direction_table 第二级来源，大写 A/B/C…），盘与盘
+                        # 不同，没有「上/下/左/右」的语义可映射 —— 故键位直接
+                        # 跟字母表走：按到哪个字母键就沿那个方向推一步。
+                        # （2026-10-25 修：此前这一支缺失，导致自定义谜题载入后
+                        #  键盘完全无法推动滑块，只剩 GUI 的箭头按键/两次触控。）
+                        if self._generic_spec() is not None:
+                            if self._generic_keyboard_move(event):
+                                continue
                         # 方向键移动（需要匹配配置且无修饰键冲突；由 control_mouse_kb 开关控制）
                         if getattr(self, 'control_mouse_kb', True):
                             move_actions = {

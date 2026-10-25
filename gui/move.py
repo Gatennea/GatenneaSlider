@@ -7,6 +7,8 @@ move_selected_blocks 是方形/通用的移动入口，三角/米字各有 prepa
 _bump_move_session 管「同一选中会话的连续移动并入同一快照」（撤销/历史
 也依赖它，故留名不变）。依赖 tri_key 与 op_log，均为模块级 import。
 """
+import pygame
+
 from game_mi import mi_key
 from game_triangle import tri_key
 
@@ -340,6 +342,39 @@ class MoveMixin:
         for action_name, direction in self.TRI_MOVE_KEYS.items():
             if self._is_action_triggered(event, action_name):
                 self.move_selected_blocks(direction)
+                return True
+        return False
+
+    def _generic_keyboard_move(self, event) -> bool:
+        """通用通道（模型文件板型）的键盘方向：**按派生的字母键**推一步。
+
+        方形 / 三角 / 米字能写死键位（W/A/S/D、W/E/A/D/Z/X、八向），因为
+        它们的缝族方向是**已知常数**——「上」永远是那个向量。模型文件板型
+        做不到：缝族 ``parallel`` 是从玩家搭出来的几何算的，方向字母在
+        加载时按方向元组规范排序**派生**（``compat.direction_table`` 的
+        第二级来源），盘与盘不同，根本没有「上/下/左/右」的语义可映射。
+
+        所以通用通道的键位只能**跟着派生字母表走**：按到哪个字母键，就沿
+        那个方向推一步。方向是否与当前选中缝隙平行由 ``try_move_ex`` 判定
+        （不平行会给提示），与虚拟键盘按钮、HTTP ``move`` 接口同源。
+
+        返回 True = 这个按键已被消费。
+        """
+        spec = self._generic_spec()
+        if spec is None:
+            return False
+        # Ctrl / Alt 组合留给系统快捷键（求解 / 保存 / 撤销…），不抢
+        if event.mod & (pygame.KMOD_CTRL | pygame.KMOD_ALT):
+            return False
+        from engine.compat import direction_table
+        for letter in direction_table(spec):
+            key = getattr(pygame, 'K_' + letter.lower(), None)
+            if key is not None and event.key == key:
+                if self.selected_gap and self.selected_block:
+                    self.move_selected_blocks(letter)
+                else:
+                    self.macro_notify_msg = "请先选中缝隙和滑块"
+                    self.macro_notify_timer = 90
                 return True
         return False
 
