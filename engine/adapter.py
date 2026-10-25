@@ -873,6 +873,57 @@ class EngineGame:
         return self.matrix
 
     # ------------------------------------------------------------------
+    # 无损快照（给 GameHistory 用，保留朝向；矩阵编码会丢同格多块）
+    # ------------------------------------------------------------------
+    def snapshot_state(self) -> dict:
+        """无损局面快照（供 GameHistory 撤销/重做，保留朝向）。
+
+        通用引擎板型允许同一 2D 格点上叠多块（不同朝向，如 shield.json 有 11
+        对「同 (r,c)、异朝向」的瓦片）。history 的矩阵编码按 2D 格聚合，会把
+        同格的多块压成一格 → 撤销时静默丢块 → 盘面碎成多个连通分量、所有选中
+        被拒、动画与打乱全废。本方法把每块的完整键（点 + 朝向下标 + 捆绑组）
+        逐一记下，还原零丢失。
+        """
+        self._sync()
+        bmap = self._board.block_map
+        keys = []
+        for key in sorted(self._board.keys):
+            point = list(key[0])
+            oi = self.spec.orientations.index(key[1])
+            gid = bmap[key].group
+            keys.append([*point, oi, gid])
+        return {'keys': keys}
+
+    def restore_state(self, state: dict) -> None:
+        """从 snapshot_state 无损还原（见 snapshot_state 的 docstring）。
+
+        复用既有块对象（保住 GUI 持有的引用），朝向与捆绑组一并还原，清空选中
+        态；矩阵/边界由 update_matrix 据真实块重算，不再读 lossy 的 matrix。
+        """
+        raw = state.get('keys') or []
+        if not raw:
+            self._board = Board(self.spec, ())
+        else:
+            keys = set()
+            groups = {}
+            for item in raw:
+                point = tuple(item[:-2])
+                oi = item[-2]
+                gid = item[-1]
+                orient = self.spec.orientations[oi]
+                key = (point, orient)
+                keys.add(key)
+                if gid:
+                    groups[key] = gid
+            self._board = Board.from_keys(self.spec, keys,
+                                          groups=groups or None)
+        self._pending_board = None
+        self._pending_updates = None
+        self._opted_keys = frozenset()
+        self._opted_t = None
+        self._rebuild_blocks()
+
+    # ------------------------------------------------------------------
     # 散度 / 聚拢度（打乱门槛与指标面板）
     # ------------------------------------------------------------------
     def compute_score(self) -> float:

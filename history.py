@@ -366,6 +366,24 @@ class GameHistory:
         # 更新矩阵
         game.update_matrix()
 
+        # 引擎板型（通用带朝向模型）携带无损键表快照：矩阵编码会把同格多块
+        # 压成一格，撤销时丢块。restore_snapshot 优先用它还原。其他形态忽略。
+        # ⚠️ 只在「會走通用分支」时计算：三角(self.k→2-bit 专属分支)、米字
+        # (self.Q_ORDER→8-bit 专属分支) 的块朝向不在 spec.orientations 里，
+        # 调用 snapshot_state 会因 index 找不到朝向而崩；且二者位打包已无损，
+        # 也不需要 engine_state。模型板型(shield/shatter…)才走通用分支、矩阵
+        # 编码丢同格多块，才有必要算。
+        _spec = getattr(game, 'spec', None)
+        _engine_generic = (
+            _spec is not None
+            and _spec.orientations
+            and not hasattr(game, 'k')
+            and not hasattr(game, 'Q_ORDER')
+        )
+        engine_state = (game.snapshot_state()
+                        if (_engine_generic
+                            and hasattr(game, 'snapshot_state')) else None)
+
         # 如果当前不在历史末尾，截断后续记录
         if self.history_index < len(self.history) - 1:
             self.history = self.history[:self.history_index + 1]
@@ -383,6 +401,7 @@ class GameHistory:
             # 捆绑状态随快照更新（自由捆绑；无组时 None 省空间）
             snap['groups'] = (game.groups_as_positions()
                               if hasattr(game, 'groups_as_positions') else None)
+            snap['engine_state'] = engine_state
             # 编号直接存在 matrix（整数矩阵，值即编号），无需并行 numbers 字段
             return
 
@@ -399,6 +418,8 @@ class GameHistory:
             # 捆绑状态（自由捆绑模式）：{位置: gid}；无组为 None
             'groups': (game.groups_as_positions()
                        if hasattr(game, 'groups_as_positions') else None),
+            # 引擎板型无损键表（矩阵编码丢同格多块；还原优先用它）
+            'engine_state': engine_state,
         }
         # 编号直接存在 matrix（整数矩阵，值即编号），无需并行 numbers 字段
 
@@ -460,11 +481,16 @@ class GameHistory:
                                 Block([min_row + row_idx + 0.5,
                                        min_col + col_idx + 0.5, q]))
         elif getattr(game, 'spec', None) is not None and game.spec.orientations:
-            # 通用带朝向板型（碎三角等）：matrix 值 = orientations 下标+1
-            # （与 adapter.update_matrix 的通用分支互为编解码）。落到这里
-            # 的旧代码是方形 2-tuple 分支，朝向整段丢失——撤销/重做/读档
-            # 后块的角色全变、还原判定必错。三角/米字有位打包专用分支在
-            # 上面；方形/立方 orientations 为空元组，落到 else。
+            # 通用带朝向板型（shield 等）：matrix 值 = orientations 下标+1。
+            # 但同 2D 格可叠多块（不同朝向），matrix 会把它们压成一格 →
+            # 丢块。若带无损键表快照（EngineGame.snapshot_state），直接用它
+            # 还原并 return，跳过下面的 lossy 重建与末尾矩阵覆写。
+            if hasattr(game, 'restore_state') and snapshot.get('engine_state'):
+                game.restore_state(snapshot['engine_state'])
+                return
+            # 回退（非 EngineGame 的带朝向板型）：matrix 值 = orientations 下标+1
+            # （与 adapter.update_matrix 的通用分支互为编解码）。三角/米字有位
+            # 打包专用分支在上面；方形/立方 orientations 为空元组，落到 else。
             game.blocks = []
             orients = game.spec.orientations
             for row_idx, row in enumerate(matrix):
