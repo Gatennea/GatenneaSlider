@@ -40,6 +40,7 @@ from game import Block
 from game_mi import blocks_from_cells as mi_blocks_from_cells  # noqa: E402
 from game_mi import any_overlap as mi_any_overlap  # noqa: E402
 from game_triangle import blocks_from_cells as tri_blocks_from_cells  # noqa: E402
+from gui import editor_chrome as chrome  # noqa: E402
 from history import GameHistory, expand_snapshot_moves  # noqa: F401  （语义参照，不直接实例化）
 
 # ---------------------------------------------------------------------------
@@ -326,6 +327,7 @@ class AnnotationMixin:
         self.annotation_mode = False        # 模式总开关
         self._ann_entry_keys = set()        # 已按下的隐藏入口键（B/Z/M/S 判定）
         self._ann_view = 'home'             # home/target/recording
+        self._ann_home_sub = None           # 创造首页展开的二级：None/shuffle/restore
         self._ann_msg = ''
         self._ann_msg_timer = 0
         # 子对话框
@@ -358,6 +360,9 @@ class AnnotationMixin:
         self._ann_design_style_name = ''    # 保存样式的名字
         self._ann_design_name_active = False  # 名字输入态
         self._ann_design_style_menu = None  # 样式库下拉（开时为选项列表）
+        # 模型库下拉（与样式库对称：还原态设计二级里各自列出已保存产物）
+        self._ann_model_menu = None
+        self._ann_model_menu_items = []     # [(name, title, rect)]（每帧重建）
         self._ann_style_goal = None         # 当前局的还原目标样式名（样式局）
         # 高级选项画布会话：玩家可从谜题菜单进入，与隐藏的标注模式相互独立
         # （进入/退出都保持原本的模式，不把玩家丢进 B/Z/M/S 的开发者界面）
@@ -486,6 +491,13 @@ class AnnotationMixin:
         if not active:
             return self._ann_track_toggle_keys(event)
 
+        # 搭积木编辑器会话（模式开关 → 创造 → 还原态设计 → 搭积木）：
+        # 模态独占，标注画布整体放行——ESC 也放行，编辑器自己收
+        # （见 gui/model_editor.py::_med_key）。不放行的话这个钩子排在
+        # _med_handle_event 前面，会把点击/键盘全吞掉。
+        if getattr(self, '_med_active', False):
+            return False
+
         # 标注模式下：隐藏入口仍可再触发（开启/关闭）
         if getattr(self, 'annotation_mode', False) and self._ann_track_toggle_keys(event):
             return True
@@ -551,6 +563,10 @@ class AnnotationMixin:
             if (self._ann_view == 'home'
                     and self._ann_design_style_menu is not None):
                 return self._ann_style_menu_click(x, y)
+            # 首页模型库下拉（同口径）
+            if (self._ann_view == 'home'
+                    and getattr(self, '_ann_model_menu', None) is not None):
+                return self._ann_model_menu_click(x, y)
             if self._ann_sub_dialog == 'gen':
                 return self._ann_gen_dialog_click(x, y)
             if self._ann_sub_dialog in ('build', 'design'):
@@ -581,9 +597,19 @@ class AnnotationMixin:
         elif self._ann_view == 'target':
             self._ann_abort('已取消本次标注（ESC）')
         elif self.create_mode:
-            self._ann_exit_create()
+            # 创造模式：ESC 逐级退——先收下拉，再收二级展开（打乱/还原），
+            # 最后退创造
+            if (self._ann_design_style_menu is not None
+                    or getattr(self, '_ann_model_menu', None) is not None):
+                self._ann_design_style_menu = None
+                self._ann_model_menu = None
+            elif getattr(self, '_ann_home_sub', None) is not None:
+                self._ann_home_sub = None
+            else:
+                self._ann_exit_create()
         elif getattr(self, '_ann_design_session', False):
-            # 高级选项画布：ESC = 退出设计并还原进入前局面
+            # 格子画布（原「高级选项」入口已废止，仅内部/测试路径）：
+            # ESC = 退出设计并还原进入前局面
             self._ann_design_cancel()
         else:
             self.annotation_mode = False
@@ -604,6 +630,29 @@ class AnnotationMixin:
     def _ann_btn_exit_mode(self):
         self.annotation_mode = False
         self._ann_notify('标注模式已关闭')
+
+    # ------------------------------------------------------------------
+    # 创造模式首页：打乱 / 还原两个一级入口（2026-10-25 重组）
+    # ------------------------------------------------------------------
+    def _ann_btn_home_shuffle(self):
+        """一级① 打乱状态设计：展开随机生成 / 手动构造（造打乱局面）。"""
+        self._ann_home_sub = 'shuffle'
+
+    def _ann_btn_home_restore(self):
+        """一级② 还原状态设计：展开格子画布 / 搭积木 / 样式库。"""
+        self._ann_home_sub = 'restore'
+
+    def _ann_btn_home_back(self):
+        """二级 › 返回一级。"""
+        self._ann_home_sub = None
+
+    def _ann_btn_blocks(self):
+        """还原态设计 → 搭积木（自由板型）：打开搭积木编辑器。
+
+        入口原在「谜题 → 模型谜题 ▸ → ＋ 搭建新模型...」（2026-10-25 前），
+        两层嵌套太深；现统一到模式开关 → 创造 → 还原状态设计 下。
+        """
+        self._med_open()
 
     def _ann_exit_create(self):
         """退出创造模式（模式开关回到练习模式）；入口只有 ESC 与切模式。"""
@@ -706,7 +755,7 @@ class AnnotationMixin:
         已由 SpecPolygonView 承担，设计画布是另一条尚未解释器化的链路）。
         """
         if self._is_model_kind():
-            self._ann_notify('碎三角暂不支持高级选项（设计画布为方形/三角语义）')
+            self._ann_notify('格子画布暂不支持模型板型（画布为方形/三角语义）')
             return
         if self._ann_view == 'design':
             # 重复进入会把「进入前备份」覆盖成编辑中的盘面，退出就回不去了
@@ -714,7 +763,7 @@ class AnnotationMixin:
             return
         if self.timer_state == 'running':
             # 画布会重建盘面（退出才还原）：竞速计时中进来等于改题目
-            self._ann_notify('计时进行中无法进入高级选项')
+            self._ann_notify('计时进行中无法进入格子画布')
             return
         if not self.create_mode:
             # 玩家入口：保持练习模式原状，仅标记「画布会话」以接管事件与绘制
@@ -769,7 +818,7 @@ class AnnotationMixin:
         self._ann_view = 'design'
         self.center_map()
         if self.triangle_mode or self.mi_mode:
-            self._ann_notify('高级选项：还原态形状可自定义（点格增删滑块，'
+            self._ann_notify('格子画布：还原态形状可自定义（点格增删滑块，'
                              '需保持连通）；点缝捆绑/解绑，命名后[存样式]'
                              '（ESC/退出 回到原局）')
         else:
@@ -777,12 +826,11 @@ class AnnotationMixin:
                              '命名后[存样式]（ESC/退出 回到原局）')
 
     def _ann_open_advanced(self):
-        """高级选项入口：从谜题菜单（练习模式）打开设计还原态画布。
+        """格子画布入口（内部路径；原谜题菜单「高级选项...」已废止）。
 
-        「高级选项」是普通自定义的超集——同样的画布（形状增删 + 自由捆绑），
-        但保存前不做滑块数量 / mod 不变量校验，只过「可打乱」判定。语义与
-        创造模式手动构造无关（那个改的是当前局面，本方法改的是还原目标），
-        故直接进入同一套设计视图，由 _ann_btn_design 完成画布初始化。
+        2026-10-25 前这是谜题菜单的玩家入口；现在玩家入口统一为
+        「模式开关 → 创造 → ② 还原状态设计 → 格子画布」，本方法退为内部
+        路径（无头测试与 _ann_btn_blocks 之类桥接仍可用）。
         """
         self._ann_btn_design()
 
@@ -790,6 +838,46 @@ class AnnotationMixin:
         """首页样式库下拉开关：选样式直接开局（样式 = 还原目标）。"""
         self._ann_design_style_menu = (
             None if self._ann_design_style_menu is not None else True)
+        self._ann_model_menu = None     # 两个下拉互斥，别叠在一起
+
+    def _ann_btn_model_lib(self):
+        """首页模型库下拉开关：列出 models/ 里已保存的板型，点一项开局。
+
+        与「样式库▾」对称：搭积木存进 ``models/<name>.json`` 的模型，就地
+        能开局，不必绕回谜题菜单的「模型谜题▾」（入口已统一到创造模式）。
+        """
+        self._ann_model_menu = (
+            None if self._ann_model_menu is not None else True)
+        self._ann_design_style_menu = None
+
+    def _ann_model_menu_click(self, x, y):
+        """模型库下拉点击：点项开局；点他处收起。返回 True=已消费。"""
+        for nm, _title, r in getattr(self, '_ann_model_menu_items', []):
+            if r.collidepoint(x, y):
+                self._ann_model_menu = None
+                self._ann_design_start_model(nm)
+                return True
+        self._ann_model_menu = None
+        return True
+
+    def _ann_design_start_model(self, name: str):
+        """用已存模型开局：盘面就是模型文件里的还原态，**不自动打乱**。
+
+        与样式库开局同口径（``_ann_design_start_style``）：会话级重置统一
+        复用建局函数，不另起一套账。模型板型本身带形状与捆绑，所以没有
+        「套 groups」这一步——建局即完整还原态。
+        """
+        from engine import model_registry
+        models = model_registry.loaded()
+        if name not in models:
+            self._ann_notify(f'模型「{name}」不在注册表里（文件被删了？）')
+            return
+        self._ann_design_reset()
+        self._ann_build_backup = None
+        if not self.new_model_puzzle(name, 1):
+            self._ann_notify(f'模型「{name}」无法开局')
+            return
+        self._ann_notify(f'已用模型「{models[name].title}」开局（还原态）')
 
     def _ann_style_menu_click(self, x, y):
         """首页样式库下拉点击：点项开局；点他处收起。返回 True=已消费。"""
@@ -1100,6 +1188,7 @@ class AnnotationMixin:
         self._ann_design_bind_active = False
         self._ann_design_bind_first = None
         self._ann_design_style_menu = None
+        self._ann_model_menu = None
         self._ann_design_frozen = False
 
     def _ann_btn_from_current(self):
@@ -1221,6 +1310,9 @@ class AnnotationMixin:
     def _ann_leave_to_home(self):
         self._ann_view = 'home'
         self._ann_sub_dialog = None
+        self._ann_home_sub = None           # 回一级首页（二级展开态作废）
+        self._ann_design_style_menu = None  # 两个下拉一并收起
+        self._ann_model_menu = None
         # 画布会话只在设计视图内有效：回首页即作废（防止退出后仍被判定为画布态）
         self._ann_design_session = False
         self._ann_recording = False
@@ -1866,6 +1958,10 @@ class AnnotationMixin:
         """标注/创造/设计会话渲染入口（run 循环里、浮动面板之后调用）。"""
         if not self.ann_canvas_active:
             return
+        # 编辑器会话：工具条/画布全让位给搭积木编辑器浮层——
+        # 两个工具条会重叠；事件侧同样放行（见 handle_annotation_event）
+        if getattr(self, '_med_active', False):
+            return
         if self._ann_view in ('build', 'design'):
             self._ann_draw_build_canvas()
         elif self._ann_view in ('target', 'recording'):
@@ -1924,11 +2020,9 @@ class AnnotationMixin:
         self._ann_bar_rect = pygame.Rect(x, y, w, h)
         self._ann_btn_rects = {}
 
-        bg = pygame.Surface((w, h), pygame.SRCALPHA)
-        bg.fill((35, 35, 48, 235))
-        self.screen.blit(bg, (x, y))
-        pygame.draw.rect(self.screen, (110, 110, 130), self._ann_bar_rect, 1,
-                         border_radius=8)
+        # 条底走共用骨架（gui/editor_chrome）：搭积木编辑器的工具条用同一函数，
+        # 两个还原态编辑器切换时外观不跳。
+        chrome.shell(self, self._ann_bar_rect)
 
         btn_y = y + 8
         btn_h = h - 16
@@ -1938,30 +2032,37 @@ class AnnotationMixin:
             tw = self.menu_font.size(text)[0] + 22
             rect = pygame.Rect(x + 8, btn_y, tw, btn_h)
             x = rect.right
-            col = color or self.colors['button_bg']
-            hover = rect.collidepoint(pygame.mouse.get_pos())
-            fill = (min(255, col[0] + 25), min(255, col[1] + 25),
-                    min(255, col[2] + 25)) if hover else col
-            pygame.draw.rect(self.screen, fill, rect, border_radius=6)
-            srf = self.menu_font.render(text, True, (255, 255, 255))
-            self.screen.blit(srf, srf.get_rect(center=rect.center))
+            chrome.btn(self, rect, text, color, font=self.menu_font)
             self._ann_btn_rects[name] = rect
 
         if self._ann_view == 'home':
             if self.create_mode:
-                add('manual_build', '手动构造', (70, 120, 180))
-                # 随机生成只对方形开放（三角/米字没有随机生成）
-                if not self.triangle_mode and not self.mi_mode:
-                    add('random_gen', '随机生成', (70, 120, 180))
-                    # 设计还原态（自定义谜题）已迁至谜题菜单「高级选项」，
-                    # 与造打乱局面的手动构造语义分开，避免混淆。
+                # 创造模式首页（2026-10-25 重组）：一级两钮——打乱状态设计 /
+                # 还原状态设计；各展开自己的二级。原「手动构造/随机生成」平铺
+                # 与谜题菜单「高级选项」并存的结构废止，统一到这个入口。
+                sub = getattr(self, '_ann_home_sub', None)
+                if sub is None:
+                    add('home_shuffle', '① 打乱状态设计', (70, 120, 180))
+                    add('home_restore', '② 还原状态设计', (60, 150, 90))
+                    title_text = ('创造模式：设计你的谜题 · ① 造打乱局面 '
+                                  '② 造还原目标 · ESC 退出')
+                elif sub == 'shuffle':
+                    add('home_back', '‹ 返回')
+                    add('manual_build', '手动构造', (70, 120, 180))
+                    # 随机生成只对方形开放（三角/米字/模型板型没有随机生成）
+                    if not self.triangle_mode and not self.mi_mode \
+                            and not self._is_model_kind():
+                        add('random_gen', '随机生成', (70, 120, 180))
+                    title_text = ('打乱状态设计：造一个打乱局面，造好即成为'
+                                  '当前谜题 · ESC 返回')
+                else:      # 'restore'
+                    add('home_back', '‹ 返回')
+                    add('design', '格子画布（方/三角/米字）', (70, 120, 180))
+                    add('blocks', '搭积木（自由板型）', (60, 150, 90))
                     add('style_lib', '样式库▾', (70, 120, 180))
-                if self.triangle_mode or self.mi_mode:
-                    title_text = ('创造模式：请用[手动构造]造题 · '
-                                  '造好即成为当前谜题 · ESC 退出')
-                else:
-                    title_text = ('创造模式：随机生成/手动构造 造打乱局面 · '
-                                  'ESC 退出（自定义还原态走菜单「高级选项」）')
+                    add('model_lib', '模型库▾', (60, 150, 90))
+                    title_text = ('还原状态设计：设计「还原成什么样」· 格子'
+                                  '画布存样式 / 搭积木存模型文件 · ESC 返回')
             else:
                 add('exit_mode', '退出标注', (120, 90, 90))
                 add('from_current', '④ 当前状态', (70, 120, 180))
@@ -1974,6 +2075,9 @@ class AnnotationMixin:
             # 首页样式库下拉（开时画在工具条上方，定位用工具条左缘）
             if self._ann_design_style_menu is not None:
                 self._ann_draw_style_menu(bar_x, y, w)
+            # 首页模型库下拉（与样式库同位置同画法）
+            if self._ann_model_menu is not None:
+                self._ann_draw_model_menu(bar_x, y, w)
         elif self._ann_view == 'build':
             # 参数输入直接内嵌在底部工具条，主棋盘用于点格增删滑块
             self._ann_draw_build_toolbar(x, y, w, h)
@@ -2042,13 +2146,7 @@ class AnnotationMixin:
 
         # 按钮行（右上对齐，状态文字留左侧空间）
         def toolbar_btn(rect, text, color=None):
-            c = color or self.colors['button_bg']
-            if rect.collidepoint(pygame.mouse.get_pos()):
-                c = (min(255, c[0] + 25), min(255, c[1] + 25),
-                     min(255, c[2] + 25))
-            pygame.draw.rect(self.screen, c, rect, border_radius=6)
-            s = self.status_font.render(text, True, (255, 255, 255))
-            self.screen.blit(s, s.get_rect(center=rect.center))
+            chrome.btn(self, rect, text, color, font=self.status_font)
 
         bx = x + w - 10
         bh = 26
@@ -2150,20 +2248,14 @@ class AnnotationMixin:
             nonlocal bx
             tw = self.status_font.size(text)[0] + w_pad
             rect = pygame.Rect(bx, row1, tw, fh)
-            c = color or self.colors['button_bg']
-            if rect.collidepoint(pygame.mouse.get_pos()):
-                c = (min(255, c[0] + 25), min(255, c[1] + 25),
-                     min(255, c[2] + 25))
-            pygame.draw.rect(self.screen, c, rect, border_radius=6)
-            s = self.status_font.render(text, True, (255, 255, 255))
-            self.screen.blit(s, s.get_rect(center=rect.center))
+            chrome.btn(self, rect, text, color, font=self.status_font)
             self._ann_design_btn_rects[name] = rect
             bx = rect.right + 8
             return rect
 
-        dbtn('save', '存样式', (60, 120, 90))
+        # 第 1 行次要操作：清捆绑（与搭积木的[撤销]同位——都是「不改盘面
+        # 形状、只改状态」的辅助动作用）＋ 捆绑组统计
         dbtn('unbind_all', '清捆绑', (120, 90, 60), w_pad=10)
-        # 捆绑组统计
         gsum = self._ann_design_groups
         if gsum:
             gtxt = f'捆绑 {len(set(gsum.values()))} 组 / ' \
@@ -2171,29 +2263,32 @@ class AnnotationMixin:
             gs = self.status_font.render(gtxt, True, (255, 210, 120))
             self.screen.blit(gs, (bx + 2, row1 + 5))
 
-        # 右侧按钮：清空 / 退出（复用构造按钮矩形名，点击分发共用）
+        # 第 2 行右侧：主操作。**与搭积木同一顺序**（从右往左）：
+        #   退出 / ▶ 试玩 / 清空 / 存样式 —— 两个编辑器切换时手指记得住位置。
         def toolbar_btn(rect, text, color=None):
-            c = color or self.colors['button_bg']
-            if rect.collidepoint(pygame.mouse.get_pos()):
-                c = (min(255, c[0] + 25), min(255, c[1] + 25),
-                     min(255, c[2] + 25))
-            pygame.draw.rect(self.screen, c, rect, border_radius=6)
-            s = self.status_font.render(text, True, (255, 255, 255))
-            self.screen.blit(s, s.get_rect(center=rect.center))
+            chrome.btn(self, rect, text, color, font=self.status_font)
 
         rbx = x + w - 10
         bh = 26
 
-        def place_right(text, color=None):
+        def place_right(name, text, color=None, record=True):
+            """从右往左摆一个按钮；``record`` 决定是否进设计按钮表
+            （退出/清空走构造按钮表，不进设计表，免得被 _ann_design_btn 吞掉）。"""
             nonlocal rbx
             tw = self.status_font.size(text)[0] + 18
             rect = pygame.Rect(rbx - tw, row2, tw, bh)
             toolbar_btn(rect, text, color)
+            if record:
+                self._ann_design_btn_rects[name] = rect
             rbx = rect.left - 8
             return rect
 
-        self._ann_build_cancel_btn = place_right('退出', (120, 90, 90))
-        self._ann_build_clear_btn = place_right('清空')
+        self._ann_build_cancel_btn = place_right('exit', '退出',
+                                                 (120, 90, 90), record=False)
+        self._ann_build_playtest_btn = place_right('playtest', '▶ 试玩',
+                                                   (60, 150, 90))
+        self._ann_build_clear_btn = place_right('clear', '清空', record=False)
+        place_right('save', '存样式', (60, 120, 90))
         self._ann_build_dialog_rect = self._ann_bar_rect
 
         # 即时状态：块数 / 组数 / 可打乱（缓存于重建时，不逐帧算）
@@ -2211,7 +2306,7 @@ class AnnotationMixin:
         if self._ann_build_error:
             msg, is_ok = self._ann_build_error, False
         color = (150, 230, 160) if is_ok else (255, 150, 140)
-        st = self.status_font.render('高级选项  ' + msg, True, color)
+        st = self.status_font.render('格子画布  ' + msg, True, color)
         self.screen.blit(st, (x + 10, row2 + 3))
 
     def _ann_draw_style_menu(self, x, y, w):
@@ -2241,6 +2336,42 @@ class AnnotationMixin:
         if not names:
             s = self.status_font.render('（没有已存样式）', True,
                                         (180, 180, 190))
+            self.screen.blit(s, (mrect.x + 10, mrect.y + 3))
+
+    def _ann_draw_model_menu(self, x, y, w):
+        """模型库下拉（首页用）：与样式库下拉同位置、同画法。
+
+        条目 = ``models/`` 下已注册的模型文件（``model_registry.loaded()``），
+        文案「标题（N 块）」。空库给一句人话，指向搭积木入口。
+        """
+        from engine import model_registry
+        models = model_registry.loaded()
+        names = sorted(models)
+        mh = 24
+        menu_h = max(len(names) * mh, 26)
+        mrect = pygame.Rect(x + 10, y - menu_h - 4,
+                            min(240, w - 20), menu_h)
+        bg = pygame.Surface(mrect.size, pygame.SRCALPHA)
+        bg.fill((45, 45, 60, 245))
+        self.screen.blit(bg, mrect)
+        pygame.draw.rect(self.screen, (110, 110, 130), mrect, 1,
+                         border_radius=6)
+        self._ann_model_menu_items = []
+        for i, nm in enumerate(names):
+            r = pygame.Rect(mrect.x + 4, mrect.y + i * mh + 2,
+                            mrect.w - 8, mh - 4)
+            m = models[nm]
+            self._ann_model_menu_items.append((nm, m.title, r))
+            if r.collidepoint(pygame.mouse.get_pos()):
+                pygame.draw.rect(self.screen, (70, 90, 130), r,
+                                 border_radius=4)
+            s = self.status_font.render(
+                f'{m.title}（{len(m.spec.goal_blocks)} 块）', True,
+                (230, 230, 240))
+            self.screen.blit(s, (r.x + 8, r.y + 3))
+        if not names:
+            s = self.status_font.render('（没有已存模型，先用[搭积木]造一个）',
+                                        True, (180, 180, 190))
             self.screen.blit(s, (mrect.x + 10, mrect.y + 3))
 
     # ---- 状态提示（工具条右下方小字） ----
@@ -2639,11 +2770,35 @@ class AnnotationMixin:
         """设计态工具条按钮分发。"""
         if name == 'save':
             self._ann_design_save_style()
+        elif name == 'playtest':
+            self._ann_design_playtest()
         elif name == 'unbind_all':
             self._ann_design_clear_groups()
         elif name == 'styles':
             self._ann_design_style_menu = (
                 None if self._ann_design_style_menu is not None else True)
+
+    def _ann_design_playtest(self):
+        """[▶ 试玩]：存样式 → 当场用这份样式开局（与搭积木[试玩]同语义）。
+
+        保存是前置：试玩的是**已保存**的东西，不是内存里的临时盘面（这样
+        「试玩看到的」与「以后从样式库开局的」永远是同一份数据）。
+
+        收摊顺序有讲究：先存（还在设计视图、game 是设计盘面），再**丢弃
+        进入前备份**（``_ann_build_backup = None``）——若走「[退出]」的还原
+        路径，刚开的新局会被旧局覆盖回去。
+        """
+        name = (self._ann_design_style_name or '').strip()
+        if not name:
+            self._ann_build_error = '试玩前先给样式起个名字'
+            self._ann_design_name_active = True
+            return
+        if not self._ann_design_save_style():
+            return
+        self._ann_build_backup = None
+        self._ann_design_reset()
+        self._ann_leave_to_home()
+        self._ann_design_start_style(name)
 
     def _ann_design_clear_groups(self):
         """清空全部捆绑组。"""
@@ -2676,18 +2831,18 @@ class AnnotationMixin:
         if not name:
             self._ann_build_error = '请先输入样式名字'
             self._ann_design_name_active = True
-            return
+            return False
         cells = sorted(self._ann_build_coords)
         if not cells:
             self._ann_build_error = '空盘面无法保存为样式'
-            return
+            return False
         # 实时同步 game 后做「可打乱」检测（高级选项不做滑块数量 / mod 不变量
         # 校验，只要求至少两个能滑动且相连的刚体，保证能真正打乱成谜题）
         self._ann_rebuild_game_from_coords()
         ok, err = self._ann_validate_shuffleable()
         if not ok:
             self._ann_build_error = err
-            return
+            return False
         exotic = self.triangle_mode or self.mi_mode
         if exotic:
             data = {
@@ -2719,8 +2874,9 @@ class AnnotationMixin:
             n_groups = len(set(self._ann_design_groups.values()))
             self._ann_notify(f'已保存样式「{name}」（{len(cells)} 颗'
                              f'{n_groups} 组捆绑）')
-        else:
-            self._ann_build_error = '保存失败（磁盘写入错误）'
+            return True
+        self._ann_build_error = '保存失败（磁盘写入错误）'
+        return False
 
     def _ann_all_valid_gaps(self) -> list:
         """当前盘面上所有可选的缝 [(gap_type, line), ...]（三形态通用）。

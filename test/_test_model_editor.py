@@ -85,6 +85,12 @@ def _big_triangle(gui, k=3):
             _put_tri(gui, (i, j), i_dn)
 
 
+def _med_free_r():
+    """编辑器自由落点搜索半径（从源码读，免得测试里抄一份常量）。"""
+    from gui import model_editor as me
+    return me._FREE_R
+
+
 # ----------------------------------------------------------------------
 # 1. 打开 / 退出
 # ----------------------------------------------------------------------
@@ -379,8 +385,8 @@ def t_save_hot_reload():
         check(b.has_legal_move(1), '建局应有合法移动')
         gui._refresh_puzzle_presets()
         items = gui.puzzle_sub_presets['models']
-        check(('＋ 搭建新模型...', '__editor__', 'model') in items,
-              '菜单应有「搭建新模型」入口')
+        check(not any(len(p) == 3 and p[1] == '__editor__' for p in items),
+              '模型子菜单只列开局项，不再带编辑器新建入口（2026-10-25）')
         check(any(len(p) >= 5 and p[4] == 'built_by_test' for p in items),
               '菜单应出现刚保存的模型')
         gui._med_save()
@@ -461,12 +467,21 @@ def t_abandon_on_swap():
 
 
 def t_menu_entry():
-    """菜单入口在子菜单里、且渲染/点击路径安全。"""
+    """入口结构（2026-10-25 创造模式重组后）：
+
+    玩家入口 = 右下角「模式」开关 → 创造 → ② 还原状态设计 → 搭积木。
+    谜题菜单不再有新建入口（「高级选项...」「＋ 搭建新模型...」均废止），
+    「模型谜题 ▸」只列已存模型的开局项。
+    """
     gui = _make_gui()
     gui._refresh_puzzle_presets()
+    names = [p[0] for p in gui.puzzle_presets]
+    check('高级选项...' not in names, '谜题菜单不应再有「高级选项...」')
     items = gui.puzzle_sub_presets['models']
-    check(('＋ 搭建新模型...', '__editor__', 'model') in items,
-          '子菜单应有「搭建新模型」入口')
+    check(not any(len(p) == 3 and p[1] == '__editor__' for p in items),
+          '「模型谜题 ▸」不应再有编辑器新建入口（统一走模式开关）')
+    check(items and items[0][0] == '__group__', '子菜单首项应是分组标题')
+    # 渲染路径仍安全（无 3 元组编辑器条目了，但分组标题/占位文案要能画）
     gui.puzzle_sub_open = 'models'
     gui.puzzle_sub_rects = [pygame.Rect(0, 0, 10, 10)]
     gui.puzzle_sub_hovered = -1
@@ -475,11 +490,41 @@ def t_menu_entry():
         check(True, '')
     except Exception:
         traceback.print_exc()
-        check(False, '画子菜单抛异常（3 元组条目渲染）')
-    gui._med_open()
-    check(gui.med_active, '点入口应能开会话')
+        check(False, '画子菜单抛异常')
+    # 真实入口：模式开关 → 创造 → 还原态设计 → 搭积木
+    gui.set_game_mode('create')
+    gui._ann_btn_home_restore()
+    gui._ann_draw_bar()
+    check('blocks' in gui._ann_btn_rects,
+          '还原态二级应有「搭积木」按钮')
+    gui._ann_btn_blocks()
+    check(gui.med_active, '点「搭积木」应能开会话')
     gui._med_close()
     check(not gui.med_active, '退出后应离开会话')
+    check(gui.create_mode, '退出编辑器不应掉出创造模式')
+    check(gui._ann_home_sub == 'restore',
+          '退出编辑器应回到「还原态设计」二级（从那儿进来的）')
+
+    # 工具条与格子画布**同一套外观**（gui/editor_chrome）：右下悬浮条、
+    # 贴状态栏上沿 8px、主操作从右往左「退出 / 试玩 / 保存」
+    gui2 = _make_gui()
+    gui2.set_game_mode('create')
+    gui2._ann_btn_home_restore()
+    gui2._ann_btn_blocks()
+    bar = gui2._med_bar_rect()
+    check(bar.bottom == gui2.screen_height - gui2.status_bar_height - 8,
+          f'工具条应贴状态栏上沿 8px：bottom={bar.bottom}')
+    check(bar.x >= gui2._med_panel_rect().right,
+          f'工具条不应压到左面板：bar.x={bar.x} panel.right={gui2._med_panel_rect().right}')
+    gui2._med_draw_bar()
+    acts = {a for _r, a in gui2._med['bar_btns']}
+    check(acts == {'exit', 'play', 'save', 'undo', 'clear'},
+          f'按钮集合应完整：{sorted(acts)}')
+    pos = {a: r for r, a in gui2._med['bar_btns']}
+    check(pos['exit'].x > pos['play'].x > pos['save'].x,
+          f'主操作应从右往左：退出 / 试玩 / 保存（{pos["exit"].x}, '
+          f'{pos["play"].x}, {pos["save"].x}）')
+    gui2._med_close()
 
 
 def t_bundle_toggle():
@@ -783,6 +828,73 @@ def t_open_model():
         gui._med_close()
 
 
+def t_free_point_reach():
+    """自由落点必须长在盘面旁（防几千格外锚点 → 巨大 matrix → MemoryError）。
+
+    2026-10-25 用户实测：最小缩放下点屏幕边缘，旧逻辑以点击处为圆心搜
+    索，锚点放到 (7398, -3107)，预览局据此建 7000×4000 matrix——先卡半分
+    钟再 MemoryError。现在搜索圆心是盘面 bbox 中心，边缘点击也必须落在
+    盘面 ±_FREE_R 格内。
+    """
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        img = gui._med['images'][gui._med['shape']][gui._med['cursor']]
+        gui.zoom = gui.min_zoom          # 最缩：屏幕边缘的世界坐标数千格外
+        # 落点 = 「按点击方向算的锚点」夹到「盘面 bbox 外扩 _FREE_R」内：
+        # 既有界（不建巨大 matrix），又朝用户点的方向长。上界取 _FREE_R 的
+        # 数倍——种子块自身的顶点跨度也占几格，不能拿单个 _FREE_R 卡死。
+        for pos in [(gui.screen_width - 5, 40), (gui.screen_width - 5, 640),
+                    (5, 640), (500, gui.screen_height - 5)]:
+            wx, wy = gui.screen_to_world(*pos)
+            p = gui._med_free_point(img, (wx, wy), gui._med['placed'])
+            check(p is not None, f'边缘点击也应给落点：{pos}')
+            check(max(abs(p[0]), abs(p[1])) <= _med_free_r() * 4,
+                  f'落点必须在盘面邻域：{p}')
+        # 完整放置路径：连点边缘 6 次，块数照涨、锚点量级不爆。
+        # ⚠️ 连续往同一侧点会**沿该方向一格格长**（每次顶到 bbox 外扩边界，
+        # 落下后 bbox 又扩 _FREE_R）——这是有意的：像「往那边继续搭」。
+        # 这里只锁「不爆量级」（几百 = 已能建巨大 matrix）。
+        for pos in [(990, 40), (990, 640), (10, 640), (500, 650), (140, 660),
+                    (870, 60)]:
+            wx, wy = gui.screen_to_world(*pos)
+            gui._med_place_at(wx, wy)
+        for k in gui._med['placed']:
+            check(max(abs(k[0][0]), abs(k[0][1])) <= 120,
+                  f'放置后锚点量级不应爆（实得 {k[0]}）')
+        check(len(gui._med['placed']) >= 2, '边缘点击也应能放置')
+    finally:
+        gui._med_close()
+
+
+def t_rebuild_guard():
+    """sanity 护栏：离盘面 > _MED_MAX_REACH 的锚点拒绝刷新预览局。
+
+    正常编辑到不了（自由落点被 _FREE_R 管着）；这是给「打开模型」读入
+    手写文件兜底的——预览局 update_matrix 按坐标跨度建 matrix，坏锚点能
+    让主循环卡死（用户实测 MemoryError）。宁可拒收也不卡死。
+    """
+    from gui import model_editor as me
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        board_before = gui.game.board
+        img = gui._med['images'][gui._med['shape']][gui._med['cursor']]
+        # 手工塞一个几千格外的锚点（模拟坏文件读入）
+        gui._med['placed'][((5000, 5000), gui._med['shape'],
+                            gui._med['cursor'])] = img
+        msgs = []
+        gui._med_notify = lambda t: msgs.append(t)
+        gui._med_rebuild()
+        check(gui.game.board is board_before,
+              '坏锚点应被护栏拒收（board 不重建）')
+        check(any('太远' in m for m in msgs),
+              f'护栏应通知原因：{msgs}')
+        check(me._MED_MAX_REACH == 64, '护栏阈值应保持 64 格')
+    finally:
+        gui._med_close()
+
+
 # ----------------------------------------------------------------------
 def main():
     cases = [t_open_close, t_second_open_refused, t_spec_stable,
@@ -793,7 +905,8 @@ def main():
              t_family_toggle, t_gate,
              t_save_hot_reload, t_build_doc_loadable, t_playtest,
              t_event_routing, t_abandon_on_swap, t_menu_entry,
-             t_unbundle_all, t_open_model]
+             t_unbundle_all, t_open_model,
+             t_free_point_reach, t_rebuild_guard]
     for fn in cases:
         print(f'--- {fn.__name__} ---')
         try:

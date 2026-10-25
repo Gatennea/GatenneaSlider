@@ -813,8 +813,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._tut_check_first_launch()
 
     def _refresh_puzzle_presets(self):
-        """重建谜题菜单：在静态条目后动态并入「高级选项」保存的自定义预设。
+        """重建谜题菜单：静态开局项 + 自定义预设（还原态样式，见 design_styles）。
 
+        2026-10-25 前还有「高级选项...」（新建还原态样式）与「＋ 搭建新
+        模型...」（新建模型文件）两个新建入口，现统一为「模式开关 → 创造 →
+        ② 还原状态设计」，本菜单只留**开局**入口。
         自定义预设条目格式 ('预设名', '__custom__', name)：len==3 且 preset[1]
         == '__custom__'，渲染为可点击项、点击走 _ann_design_start_style 开局。
         官方预设（矩形/三角/米字/数字）由 (m,n,step[,kind]) 元组标识，不带
@@ -828,23 +831,25 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             ('模型谜题 ▸', '__sub__', 'models'),
             ('---',),
             ('自定义...',),
-            ('高级选项...',),
         ]
         # 模型文件板型：条目完全由注册表决定——丢一个 models/<name>.json
         # 进目录，菜单里就多一项，这里一行都不用改。
+        # ⚠️ 2026-10-25：原「＋ 搭建新模型...」首项与「高级选项...」已废止——
+        # 新建模型/样式统一走「模式开关 → 创造 → ② 还原状态设计」，本菜单
+        # 只列已存板型的开局入口。
         from engine import model_registry
         models = model_registry.loaded()
-        items = [('＋ 搭建新模型...', '__editor__', 'model'),
-                 ('__group__', '模型文件（几何引擎，实验）')]
+        items = [('__group__', '模型文件（几何引擎，实验）')]
         for name in sorted(models):
             m = models[name]
             n_blocks = len(m.spec.goal_blocks)
             items.append((f'{m.title}（{n_blocks} 块）', 4, 4, 1, name))
             items.append((f'{m.title} 等级2', 4, 4, 2, name))
-        if len(items) == 2:
-            # 只有「搭建新模型」入口 + 分组标题：没有任何可用模型文件。
-            # 分组标题留着会显得像「有内容但列不出来」，换成一句人话。
-            items.append(('（models/ 下暂无可用模型，先用上面搭一个）',))
+        if not models:
+            # 没有任何可用模型文件：分组标题留着会显得像「有内容但列不出
+            # 来」，换成一句人话（并指路新建入口）。
+            items.append(('（models/ 下暂无可用模型：模式开关 → 创造 → '
+                          '还原状态设计 → 搭积木）',))
         self.puzzle_sub_presets['models'] = items
         styles = design_styles.list_styles(self.config_dir)
         if styles:

@@ -767,12 +767,6 @@ class EventsMixin:
                                                     and preset[0] == '---')):
                                             # 分组标题和分隔线：点了不该关掉菜单
                                             puzzle_keep_open = True
-                                        elif (len(preset) == 3
-                                              and preset[1] == '__editor__'):
-                                            # 搭积木编辑器：不写模型 JSON，
-                                            # 像搭积木一样摆出新板型
-                                            self._med_open()
-                                            puzzle_clicked = True
                                         elif len(preset) >= 4:
                                             _, pm, pn, ps = preset[:4]
                                             kind = preset[4] if len(preset) > 4 else 'square'
@@ -831,13 +825,6 @@ class EventsMixin:
                                             }
                                             self.custom_active_field = 'm'
                                             self.custom_error = ''
-                                            puzzle_clicked = True
-                                        elif len(preset) == 1 and preset[0] == '高级选项...':
-                                            # 高级选项 = 设计还原态画布（自定义谜题
-                                            # 的超集：选尺寸 + 自由捆绑/解绑 + 点格增删）。
-                                            # 三形态都支持；异形形状固定为标准形，
-                                            # 只做点缝绑解（v4）。
-                                            self._ann_open_advanced()
                                             puzzle_clicked = True
                                         elif len(preset) == 3 and preset[1] == '__custom__':
                                             # 自定义预设：用保存的还原态样式开局

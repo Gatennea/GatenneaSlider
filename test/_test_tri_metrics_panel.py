@@ -469,7 +469,11 @@ def h9_unsupported_kind_not_silent():
     # 注意：**SliderGUI(m=4,n=4,step=2) 的默认形态是 mi**（保存了上次
     # 关闭时的形态），方形要显式 new_puzzle(..., kind='square') 之外的
     # 方式构造 —— 这里直接改标志位即可，_mp_kind 只看这两个 bool。
+    # ⚠️ 显式建方形：SliderGUI() 会从 config/temp_history.json 恢复「上次那局」，
+    # 若那是模型板型（shatter 等），旗标清空后 _mp_kind 仍回落到 game.kind，
+    # 这条断言就会假失败（测试对环境的隐含依赖，2026-10-25 实测踩到）。
     g2 = SliderGUI(m=4, n=4, step=2)
+    g2.new_puzzle(4, 4, 2)
     g2.mi_mode = False
     g2.triangle_mode = False
     check('H9i 方形仍受支持', g2._mp_kind() in g2._MP_SUPPORTED,

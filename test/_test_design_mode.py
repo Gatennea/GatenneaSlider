@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""高级选项 / 设计还原态（自定义样式）无头测试。
+"""格子画布 / 设计还原态（自定义样式）无头测试。
 
-锁的事（2026-10-20 重做）：
-  · 入口分离：创造模式首页不再有「设计还原态」按钮；设计改由谜题-自定义
-    下的「高级选项」进入（_ann_open_advanced，练习模式），仍是造还原态样式。
-    与手动构造（造打乱局面）语义分开，互不冲突。
+锁的事（2026-10-25 创造模式重组）：
+  · 入口统一：模式开关 → 创造 → ② 还原状态设计 → 格子画布（原谜题菜单
+    「高级选项...」废止，_ann_open_advanced 退为内部路径）。仍是造还原态
+    样式，与打乱态设计（手动构造造打乱局面）语义分开，互不冲突。
   · 捆绑/解绑改走点缝：点两滑块之间的缝 = 合并两侧整组；点捆绑块内部缝 =
     沿整条缝解绑（贯穿整个捆绑块，不能只解一段长度为 1 的缝）。
   · 保存样式：JSON 落盘 + 「可打乱」判定（≥2 颗能滑且共用缝相连），
@@ -44,7 +44,7 @@ def enter_design():
 
 
 def enter_advanced():
-    """谜题菜单「高级选项」入口（练习模式真实路径）。"""
+    """格子画布入口（练习模式；原谜题菜单「高级选项」已废止）。"""
     gui.game_mode = 'practice'
     gui._ann_open_advanced()
 
@@ -99,20 +99,42 @@ SNAME = design_styles.sanitize_name('_测试样式')
 UNAME = design_styles.sanitize_name('_不可打乱')
 
 # ---------------------------------------------------------------- 入口分离
-print('--- D0 入口分离：设计改由高级选项进入，与手动构造分离 ---')
+print('--- D0 入口结构（2026-10-25 创造模式重组）---')
 gui.game_mode = 'create'
 gui._ann_view = 'home'
 gui._ann_draw_bar()
 home_btns = set(gui._ann_btn_rects)
-check('D0a 创造模式首页不再有[设计还原态]按钮', 'design' not in home_btns,
-      f'{sorted(home_btns)}')
-check('D0b 首页仍有[手动构造][随机生成]',
-      'manual_build' in home_btns and 'random_gen' in home_btns)
+check('D0a 创造首页一级 = [打乱状态设计][还原状态设计]两钮',
+      home_btns == {'home_shuffle', 'home_restore'}, f'{sorted(home_btns)}')
+# 打乱态二级：手动构造/随机生成（原来平铺在首页，现收进二级）
+gui._ann_btn_home_shuffle()
+gui._ann_draw_bar()
+sh_btns = set(gui._ann_btn_rects)
+check('D0b 打乱态二级有[手动构造][随机生成]',
+      'manual_build' in sh_btns and 'random_gen' in sh_btns, f'{sorted(sh_btns)}')
+# 还原态二级：格子画布/搭积木/样式库
+gui._ann_btn_home_back()
+gui._ann_btn_home_restore()
+gui._ann_draw_bar()
+rs_btns = set(gui._ann_btn_rects)
+check('D0b2 还原态二级有[格子画布][搭积木][样式库]',
+      {'design', 'blocks', 'style_lib'} <= rs_btns, f'{sorted(rs_btns)}')
+gui._ann_btn_home_back()
+# 谜题菜单不再有「高级选项...」新建入口（改建模式开关内）
+names = [p[0] for p in gui.puzzle_presets]
+check('D0b3 谜题菜单无「高级选项...」', '高级选项...' not in names, f'{names}')
 
-enter_advanced()
-check('D0c 高级选项进入设计视图', gui._ann_view == 'design'
+gui._ann_open_advanced()
+check('D0c 格子画布进入设计视图', gui._ann_view == 'design'
       and gui._ann_sub_dialog == 'design')
-check('D0d 高级选项不进隐藏标注模式（只开画布会话）',
+check('D0c2 创造态内进画布不需要隐藏会话标记（本就在创造模式里）',
+      gui._ann_design_session is False, f'sess={gui._ann_design_session}')
+gui._ann_design_cancel()
+# 练习模式内部路径（旧谜题菜单入口废止后的兼容路径，无头测试/桥接用）：
+# 只开画布会话标记、不进隐藏标注模式
+gui.set_game_mode('practice')
+enter_advanced()
+check('D0d 练习模式路径只开画布会话不进标注',
       gui.annotation_mode is False and gui._ann_design_session is True
       and gui.game_mode == 'practice',
       f'ann={gui.annotation_mode} sess={gui._ann_design_session} '
@@ -311,7 +333,7 @@ check('D6c 复原回到样式还原态', gui.game.is_solved()
       f'goal={gui._ann_style_goal!r}')
 
 # ---------------------------------------------------------------- 入场/退出
-print('\n--- D7 高级选项入场 = 进入前盘面；[退出]按钮不残留标注模式 ---')
+print('\n--- D7 格子画布入场 = 进入前盘面；[退出]按钮不残留标注模式 ---')
 GNAME = design_styles.sanitize_name('_带捆绑样式')
 design_styles.delete_style(gui.config_dir, GNAME)
 _c7 = [[r, c] for r in range(3) for c in range(3) if (r, c) != (2, 2)]
@@ -346,6 +368,63 @@ check('D7f [退出]后盘面与捆绑与进入前一致',
       after_cells == before_cells and after_groups == before_groups
       and gui.game.is_solved(), f'{len(after_cells)}/{after_groups}')
 design_styles.delete_style(gui.config_dir, GNAME)
+
+# ----------------------------------------------- 两个还原态编辑器「同一套 UI」
+print('\n--- D8 画布工具条与搭积木同构 + 试玩/模型库对称 ---')
+_g8 = SliderGUI()
+_g8.config_dir = gui.config_dir
+_g8.new_puzzle(4, 4, 1)
+_g8.set_game_mode('create')
+_g8._ann_view = 'home'
+_g8._ann_home_sub = 'restore'
+_g8._ann_draw_bar()
+check('D8a 还原态二级并列四个入口（画布/搭积木/样式库/模型库）',
+      {'design', 'blocks', 'style_lib', 'model_lib'}
+      <= set(_g8._ann_btn_rects), f'{sorted(_g8._ann_btn_rects)}')
+
+_g8._ann_btn_design()
+_g8._ann_draw_bar()
+_btn8 = _g8._ann_design_btn_rects
+check('D8b 画布工具条有 存样式/试玩/清捆绑 三键',
+      {'save', 'playtest', 'unbind_all'} == set(_btn8), f'{sorted(_btn8)}')
+check('D8c 主操作从右往左 退出/试玩/清空/存样式',
+      _g8._ann_build_cancel_btn.x > _g8._ann_build_playtest_btn.x
+      > _g8._ann_build_clear_btn.x > _btn8['save'].x,
+      f'{_g8._ann_build_cancel_btn.x}/{_g8._ann_build_playtest_btn.x}/'
+      f'{_g8._ann_build_clear_btn.x}/{_btn8["save"].x}')
+
+# 试玩 = 存样式 + 立刻按该名字开局（与搭积木[试玩]同语义）
+G8 = '_测试_ui_sym'
+_g8._ann_design_style_name = G8
+_g8._ann_build_coords = {(r, c) for r in range(3) for c in range(3)}
+_g8._ann_design_groups = {(0, 0): 1, (0, 1): 1, (1, 0): 2, (1, 1): 2}
+_g8._ann_design_playtest()
+# 注意：落盘名会被 design_styles 清洗（前导下划线等），比对要宽松
+_saved8 = next((n for n in design_styles.list_styles(_g8.config_dir)
+                if 'ui_sym' in n), None)
+check('D8d 试玩后样式已落盘', _saved8 is not None,
+      f'{design_styles.list_styles(_g8.config_dir)}')
+check('D8e 试玩后进入该样式局（还原态）',
+      _g8._ann_style_goal == G8 and _g8.game.is_solved(),
+      f'goal={_g8._ann_style_goal}')
+if _saved8:
+    design_styles.delete_style(_g8.config_dir, _saved8)
+
+# 模型库：与样式库对称的入口，点项即开局
+_g8.set_game_mode('create')
+_g8._ann_view = 'home'
+_g8._ann_home_sub = 'restore'
+_g8._ann_btn_model_lib()
+_g8._ann_draw_bar()
+check('D8f 模型库下拉可开', _g8._ann_model_menu is not None)
+if _g8._ann_model_menu_items:
+    _nm8, _t8, _r8 = _g8._ann_model_menu_items[0]
+    _g8._ann_model_menu_click(_r8.centerx, _r8.centery)
+    check('D8g 点模型库项即开局（模型板型）',
+          _g8._current_kind() not in ('square', 'numbered', 'triangle', 'mi'),
+          f'kind={_g8._current_kind()}')
+else:
+    print('[SKIP] models/ 下没有模型，跳过 D8g')
 
 # ---------------------------------------------------------------- 清理
 for nm in ('_测试样式', '_不可打乱'):

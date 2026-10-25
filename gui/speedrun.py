@@ -67,21 +67,19 @@ class SpeedrunMixin:
             self.macro_notify_msg = "计时中无法切换模式"
             self.macro_notify_timer = 90
             return False
-        # 模型文件板型（碎三角及以后任何 models/<name>.json）暂不进竞速/创造：
-        # · 竞速：export_map 的方形分支会把 24 种朝向压成 '#'（质心晶格的
-        #   「朝向下标+1」矩阵没有字符编码），初始局面存下来也还原不回
-        #   同一题，成绩没有意义——明确拒绝，不静默存一份丢朝向的串。
-        # · 创造：随机生成/手动构造/设计画布都是方形/三角语义，进去会把
-        #   48 块碎三角静默换成另一形态的盘面。
+        # 模型文件板型（碎三角及以后任何 models/<name>.json）不进竞速：
+        # export_map 的方形分支会把 24 种朝向压成 '#'（质心晶格的
+        # 「朝向下标+1」矩阵没有字符编码），初始局面存下来也还原不回
+        # 同一题，成绩没有意义——明确拒绝，不静默存一份丢朝向的串。
         # 判据用「形态名不在旧四种里」，与建局/存档同源（不硬编码 'shatter'）。
+        # ⚠️ 创造模式（2026-10-25 起）不再据此拒入：模式开关 → 创造 →
+        # ② 还原态设计 → 搭积木 不依赖当前盘面形态（编辑器自建预览局）；
+        # 打乱态设计/格子画布两个子入口各自有 _is_model_kind 拒绝。
         _kind = self._current_kind()
-        if mode in ('timed', 'create') and _kind not in (
+        if mode == 'timed' and _kind not in (
                 'square', 'numbered', 'triangle', 'mi'):
             _label = {'shatter': '碎三角'}.get(_kind, _kind)
-            if mode == 'timed':
-                self.macro_notify_msg = f"{_label}暂不支持竞速模式（初始局面无字符编码）"
-            else:
-                self.macro_notify_msg = f"{_label}暂不支持创造模式（画布为方形/三角语义）"
+            self.macro_notify_msg = f"{_label}暂不支持竞速模式（初始局面无字符编码）"
             self.macro_notify_timer = 120
             return False
         if mode == self.game_mode:
@@ -101,10 +99,8 @@ class SpeedrunMixin:
         if mode == 'timed':
             self.macro_notify_msg = "竞速模式：打乱后需按空格开始计时"
         elif mode == 'create':
-            if self.triangle_mode or self.mi_mode:
-                self.macro_notify_msg = "创造模式：请用[手动构造]造题"
-            else:
-                self.macro_notify_msg = "创造模式：随机挖洞/缺口 或 手动构造，造好即成为当前谜题"
+            self.macro_notify_msg = ("创造模式：① 打乱状态设计 ② 还原状态设计"
+                                     "（ESC 退出）")
         else:
             self.macro_notify_msg = "练习模式：可自由滑动，不计时"
         self.macro_notify_timer = 120

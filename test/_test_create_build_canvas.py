@@ -339,10 +339,14 @@ def test_random_gen_gate():
         check(f"{shape} random_gen 只给提示",
               '没有随机生成' in gui.macro_notify_msg,
               f"msg={gui.macro_notify_msg}")
+        # 2026-10-25 创造首页改版：一级只有[打乱状态设计][还原状态设计]，
+        # 随机生成/手动构造挪进「打乱状态设计」二级——故先下钻再断言
+        gui._ann_btn_home_shuffle()
         gui._ann_draw_bar()
-        check(f"{shape} 创造模式首页无 random_gen 按钮",
+        check(f"{shape} 打乱态二级无 random_gen 按钮",
               'random_gen' not in gui._ann_btn_rects
-              and 'manual_build' in gui._ann_btn_rects)
+              and 'manual_build' in gui._ann_btn_rects,
+              f'btns={sorted(gui._ann_btn_rects)}')
 
 
 def test_annotation_reject():

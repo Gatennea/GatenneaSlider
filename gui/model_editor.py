@@ -39,15 +39,25 @@ from engine import editor_geom as eg
 from engine.adapter import EngineGame
 from engine.board import Block, Board
 from engine.model_loader import SCHEMA_BOARD, load_model
+from gui import editor_chrome as chrome
 
 # 布局常量（设计像素）
 _PANEL_W = 218
 _PANEL_X = 10
-_BAR_H = 58
+# 工具条高：与格子画布（gui/annotation.py 的 design 视图，82）同高，
+# 两个编辑器切换时工具条不上下跳（用户要求「同一套 UI」）。
+_BAR_H = 82
 # 贴边吸附的命中容差（晶格单位）：点得离候选块够近才吸附，否则自由落点
 _SNAP_TOL = 0.75
-# 自由落点的搜索半径（格）
-_FREE_R = 2
+# 自由落点的搜索半径（格）——以**盘面 bbox 中心**为圆心，不是以点击处为
+# 圆心：滑块游戏的盘面是一个整体，新块只能长在已有积木旁边。若以点击处
+# 为圆心，用户缩得太小点屏幕边缘就会把锚点放到几千格外，Board 据此建出
+# 7000×4000 的 matrix——先卡半分钟再 MemoryError（2026-10-25 用户实测）。
+_FREE_R = 4
+# 锚点 sanity 护栏（格）：距盘面 bbox 中心超过这个距离的块拒绝进预览局。
+# 正常编辑永远到不了（自由落点被 _FREE_R 管着）；这是给「打开模型」读入
+# 手写文件、或未来新路径兜底的，防的仍是那种巨大 matrix。
+_MED_MAX_REACH = 64
 
 
 class ModelEditorMixin:
@@ -138,7 +148,20 @@ class ModelEditorMixin:
             'numbered': getattr(self, 'numbered', False),
             'selected_gap': getattr(self, 'selected_gap', None),
             'selected_block': getattr(self, 'selected_block', None),
+            'ann_home_sub': getattr(self, '_ann_home_sub', None),
         }
+        # ---- 与标注/设计画布互斥（2026-10-25 创造模式重组后从创造首页进）----
+        # 玩家入口：模式开关 → 创造 → ② 还原态设计 → 搭积木。此时
+        # annotation_mode/create_mode 可能都开着（创造首页工具条），工具条
+        # 与事件由 _med_active 闸门让路（annotation.py 的
+        # handle_annotation_event / draw_annotation_mode 开头两处放行）；
+        # 这里只收掉可能残留的**子对话框/设计会话**，防两个模态状态机叠加。
+        # game_mode 不动——退出编辑器后 draw_annotation_mode 依 create_mode
+        # 自动恢复创造首页，体验连贯。
+        if getattr(self, '_ann_design_session', False):
+            self._ann_design_cancel()
+        self._ann_sub_dialog = None
+        self._ann_home_sub = None
         self._med = med
         self._med_active = True
         # 会话期清掉旧局的选中/拖拽态（块对象马上被换掉）
@@ -175,6 +198,8 @@ class ModelEditorMixin:
         self.numbered = bak.get('numbered', False)
         self.selected_gap = bak.get('selected_gap')
         self.selected_block = bak.get('selected_block')
+        # 创造首页的展开态还原（从「② 还原态设计」二级进来的，退出回到那一级）
+        self._ann_home_sub = bak.get('ann_home_sub')
         self.drag_following = False
         self._med_active = False
         self._med = None
@@ -279,6 +304,24 @@ class ModelEditorMixin:
         # 清掉已删除块的捆绑记录（否则 next_gid 会白白上涨、存档里留噪声）
         med['groups'] = {k: g for k, g in med['groups'].items()
                          if k in med['placed']}
+        # sanity 护栏：锚点离盘面 bbox 中心太远就拒绝重建。正常编辑到不了
+        # （自由落点被 _FREE_R 管着、吸附受已有块约束）；这是给「打开模型」
+        # 读入手写文件等路径兜底——PreviewBoard.update_matrix 会按坐标跨度
+        # 建 matrix，几千格外的锚点能建出 7000×4000（先卡死再 MemoryError，
+        # 2026-10-25 用户实测）。宁可拒收也不让主循环卡死。
+        if med['placed']:
+            vs = [v for k, offs in med['placed'].items() for v in
+                  ((k[0][0] + o[0], k[0][1] + o[1]) for o in offs)]
+            ci = (min(v[0] for v in vs) + max(v[0] for v in vs)) / 2.0
+            cj = (min(v[1] for v in vs) + max(v[1] for v in vs)) / 2.0
+            far = [k[0] for k in med['placed']
+                   if abs(k[0][0] - ci) > _MED_MAX_REACH
+                   or abs(k[0][1] - cj) > _MED_MAX_REACH]
+            if far:
+                self._med_notify(
+                    f'有 {len(far)} 个块离盘面太远（>{_MED_MAX_REACH} 格），'
+                    '已拒绝刷新——撤销或删掉它们')
+                return
         self.game.board = Board(self._med_spec(), self._med_blocks())
 
     def _med_sync_after_edit(self, center=False):
@@ -348,11 +391,32 @@ class ModelEditorMixin:
         return True
 
     def _med_free_point(self, img, click_xy, placed):
-        """自由落点：点击的最近整数格，重叠则在小窗里找最近的空格。"""
+        """自由落点：盘面 bbox 中心附近最近的非重叠格（见 _FREE_R 注释）。
+
+        ⚠️ 搜索圆心必须是**盘面中心**（已有块物理顶点的 bbox 中心；空盘回
+        原点），不能是点击处：以点击处为圆心时，最小缩放下点一下屏幕边缘
+        就能把锚点放到 (7398, -3107) 这种几千格外，预览局据此建 7000×4000
+        matrix——先卡半分钟再 MemoryError（2026-10-25 用户实测复现）。
+        滑块盘面是整体，想摆到别处请中键拖动镜头，块始终长在积木旁。
+        """
         li, lj = eg.to_lattice(click_xy)
         cx = sum(v[0] for v in img) / len(img)
         cy = sum(v[1] for v in img) / len(img)
-        bi, bj = int(round(li - cx)), int(round(lj - cy))
+        # 盘面物理顶点 bbox（空盘 = 原点一个点）
+        if placed:
+            vs = [v for k, offs in placed.items() for v in
+                  ((k[0][0] + o[0], k[0][1] + o[1]) for o in offs)]
+            imin, imax = min(v[0] for v in vs), max(v[0] for v in vs)
+            jmin, jmax = min(v[1] for v in vs), max(v[1] for v in vs)
+        else:
+            imin = imax = jmin = jmax = 0
+        # 先按点击处算锚点（让**形状中心**落在点击格），再把它夹到
+        # 「盘面 bbox 外扩 _FREE_R」——既有界（不建巨大 matrix），又尽量
+        # 贴近用户点的方向（点在右边就长在右边，不是甩回盘面中心）。
+        bi = int(round(li - cx))
+        bj = int(round(lj - cy))
+        bi = max(imin - _FREE_R, min(bi, imax + _FREE_R))
+        bj = max(jmin - _FREE_R, min(bj, jmax + _FREE_R))
         best = None
         for di in range(-_FREE_R, _FREE_R + 1):
             for dj in range(-_FREE_R, _FREE_R + 1):
@@ -741,9 +805,8 @@ class ModelEditorMixin:
         return h + 12
 
     def _med_bar_rect(self):
-        w = self.screen_width - self.right_panel_width
-        return pygame.Rect(0, self.screen_height - self.status_bar_height
-                           - 8 - _BAR_H, w, _BAR_H)
+        """工具条矩形：走共用骨架，让出左面板（格子画布那边没有左面板）。"""
+        return chrome.bar_rect(self, _BAR_H, left=_PANEL_X + _PANEL_W + 8)
 
     # ==================================================================
     # 事件
@@ -1188,20 +1251,55 @@ class ModelEditorMixin:
         self.screen.blit(hint, (panel.x + 14, panel.bottom - 24))
 
     def _med_draw_bar(self):
+        """工具条：右对齐悬浮圆角条，与格子画布**同一套外观**。
+
+        外观走 ``gui/editor_chrome``（两个还原态编辑器共用骨架），两行布局
+        与画布 design 视图对齐：
+
+          第 1 行  名字输入 + [撤销 U] [清空]
+          第 2 行  操作提示（左） + [退出] [试玩 ▶] [保存 ↵]（右）
+
+        命中矩形仍记在 ``med['bar_btns']`` / ``med['name_rect']``，事件侧
+        （``_med_bar_click`` / ``_med_mouse_down``）不用跟着改。
+        """
         med = self._med
         c = self.colors
         bar = self._med_bar_rect()
-        pygame.draw.rect(self.screen, c['status_bg'], bar)
-        pygame.draw.line(self.screen, c['separator'],
-                         (bar.x, bar.y), (bar.right, bar.y), 1)
         f = self._med_font(15)
         f_small = self._med_font(12)
-        cy = bar.y + 12
-        # 名字输入框
+        n = len(med['placed'])
+        n_moves, n_movable = self._med_move_info()
+
+        # 条上方的小标题：身份 + 关键计数（与画布的标题行同位置同字号）
+        title = (f'搭积木 · 还原状态设计（自由板型） · {n} 块 · '
+                 f'可动 {n_movable} · 合法移动 {n_moves}')
+        if med['confirm_overwrite']:
+            title += ' · 再按一次[保存]覆盖'
+        chrome.shell(self, bar, title, font=f_small)
+
+        row1 = bar.y + 8
+        row2 = bar.y + 48
+        bh = 26
+        med['bar_btns'] = []
+
+        # ---- 第 2 行右侧：主操作（从右往左：退出 / 试玩 / 保存）----
+        rx = bar.right - 8
+        for caption, action in (('退出 ESC', 'exit'), ('试玩 ▶', 'play'),
+                                ('保存 ↵', 'save')):
+            w = max(56, chrome.btn_width(caption, f, 20))
+            br = pygame.Rect(rx - w, row2, w, bh)
+            rx = br.left - 8
+            chrome.btn(self, br, caption, font=f)
+            med['bar_btns'].append((br, action))
+
+        # ---- 第 1 行：名字输入 + [撤销][清空]（窄窗口下名字框让位）----
         label = f.render('名字', True, c['status_text'])
-        self.screen.blit(label, (bar.x + 12, cy + 6))
+        self.screen.blit(label, (bar.x + 12, row1 + 6))
         nx = bar.x + 12 + label.get_width() + 8
-        nr = pygame.Rect(nx, cy + 2, 170, 26)
+        tail = 16 + max(56, chrome.btn_width('撤销 U', f, 20)) + 8 \
+            + max(56, chrome.btn_width('清空', f, 20))
+        name_w = max(96, min(170, bar.right - 8 - nx - tail))
+        nr = pygame.Rect(nx, row1, name_w, bh)
         med['name_rect'] = nr
         pygame.draw.rect(self.screen,
                          c['input_active'] if med['name_active'] else c['input_bg'], nr)
@@ -1213,33 +1311,19 @@ class ModelEditorMixin:
         if med['name_active']:
             tw = f.size(nm)[0]
             if pygame.time.get_ticks() % 1000 < 550:
+                cx = min(nr.right - 4, nr.x + 6 + tw)
                 pygame.draw.line(self.screen, c['input_text'],
-                                 (nr.x + 6 + tw, nr.y + 5),
-                                 (nr.x + 6 + tw, nr.y + 21), 1)
-        # 按钮
-        med['bar_btns'] = []
-        bx = nr.right + 16
-        for caption, action in (('退出 ESC', 'exit'), ('清空', 'clear'),
-                                ('撤销 U', 'undo'), ('保存 ↵', 'save'),
-                                ('试玩 ▶', 'play')):
-            w = max(64, f.size(caption)[0] + 22)
-            br = pygame.Rect(bx, cy + 2, w, 26)
+                                 (cx, nr.y + 5), (cx, nr.y + 21), 1)
+        bx = nr.right + 12
+        for caption, action in (('撤销 U', 'undo'), ('清空', 'clear')):
+            w = max(56, chrome.btn_width(caption, f, 20))
+            br = pygame.Rect(bx, row1, w, bh)
+            chrome.btn(self, br, caption, font=f)
             med['bar_btns'].append((br, action))
-            hover = br.collidepoint(*pygame.mouse.get_pos())
-            pygame.draw.rect(self.screen,
-                             c['button_hover'] if hover else c['button_bg'], br)
-            pygame.draw.rect(self.screen, c['dialog_border'], br, 1)
-            self.screen.blit(f.render(caption, True, c['dialog_title']),
-                             (br.x + 11, br.y + 4))
-            bx += w + 8
-        # 右侧状态
-        n = len(med['placed'])
-        n_moves, n_movable = self._med_move_info()
-        txt = f'{n} 块 · 可动 {n_movable} · 合法移动 {n_moves}'
-        if med['confirm_overwrite']:
-            txt += ' · 再按一次[保存]覆盖'
-        s = f_small.render(txt, True, c['status_text'])
-        self.screen.blit(s, (bar.right - s.get_width() - 12, bar.y + 30))
-        hint = '左键放置/删除 · 点缝捆绑/解绑 · R 旋转 · F 镜像 · 滚轮缩放 · 中键拖动'
-        s2 = f_small.render(hint, True, c['status_text'])
-        self.screen.blit(s2, (bar.right - s2.get_width() - 12, cy + 6))
+            bx = br.right + 8
+
+        # ---- 第 2 行左侧：操作提示（空间不够就不画，别糊成一团）----
+        hint = '左键放/删 · 点缝捆绑 · R 转 · F 镜像'
+        hs = f_small.render(hint, True, c['status_text'])
+        if hs.get_width() <= rx - (bar.x + 12) - 8:
+            self.screen.blit(hs, (bar.x + 12, row2 + 6))

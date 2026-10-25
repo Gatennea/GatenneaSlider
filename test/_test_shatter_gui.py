@@ -466,15 +466,23 @@ check(_positions(gui7.game) == _positions(gui6.game),
 check(gui7.current_step == 2 and gui7._current_kind() == 'shatter',
       '載入後等級/形態鍵正確')
 
-# —— 模式攔截：競速/創造對碎三角明拒（export_map/畫布都是方形語義）——
+# —— 模式攔截（2026-10-25 細化）——
+# · 競速：碎三角仍明拒（export_map 的方形分支把 24 朝向壓成 '#'，成績無意義）
+# · 創造：**放行**——創造模式裡的「搭積木（自由板型）」不依賴當前盤面形態
+#   （編輯器自建預覽局）；形態限制下沉到「格子畫布」「打亂狀態設計」兩個
+#   子入口各自攔。
 ok_t = gui6.set_game_mode('timed')
 check(not ok_t and gui6.game_mode == 'practice',
       f'set_game_mode(timed) 被拒且留在練習（ok={ok_t} '
       f'mode={gui6.game_mode!r}）')
 ok_c = gui6.set_game_mode('create')
-check(not ok_c and gui6.game_mode == 'practice',
-      f'set_game_mode(create) 被拒且留在練習（ok={ok_c} '
+check(ok_c and gui6.game_mode == 'create',
+      f'set_game_mode(create) 對模型板型放行（搭積木不挑形態，ok={ok_c} '
       f'mode={gui6.game_mode!r}）')
+gui6._ann_btn_home_restore()
+gui6._ann_btn_design()
+check(gui6._ann_view != 'design',
+      f'格子畫布仍對模型板型明拒（view={gui6._ann_view!r}）')
 
 # 帶著 timed 進碎三角：建局自動退回練習並說明（不留丟朝向的競速局）
 gui6.game_mode = 'timed'
