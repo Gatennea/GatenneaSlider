@@ -13,6 +13,7 @@ from game_mi import mi_key
 from game_triangle import tri_key
 
 from gui import op_log
+from gui.board_view import _seg_dist
 
 
 class MoveMixin:
@@ -498,7 +499,8 @@ class MoveMixin:
         return any(lo < line < hi
                    for (lo, hi) in (span(gap_type, k) for k in cells))
 
-    def _rejected_seam_at(self, screen_x: int, screen_y: int):
+    def _rejected_seam_at(self, screen_x: int, screen_y: int,
+                          tolerance: float = None):
         """這次點擊附近有沒有一條「畫得出、點得到、選不動」的縫；有就回它。
 
         幾何與 get_gap_at_pos 同源（都走視圖的 candidate_gaps），差別只在
@@ -512,9 +514,11 @@ class MoveMixin:
         """
         try:
             wx, wy = self.screen_to_world(screen_x, screen_y)
+            _tol = None if tolerance is None else float(tolerance)
             if getattr(self, 'triangle_mode', False):
+                tri_tol = 6.0 if _tol is None else _tol
                 for cand in self._tri_view().candidate_gaps(
-                        wx, wy, self.game.positions(), tolerance=6.0):
+                        wx, wy, self.game.positions(), tolerance=tri_tol):
                     if not self.game.is_valid_gap(*cand):
                         return cand
                 return None
@@ -523,18 +527,23 @@ class MoveMixin:
                 # 一側沒有塊（is_valid 否），要麼兩側都推不動（live 否）。
                 # 碎三角實測 12 條接觸邊不被任何活縫覆蓋，點它們要給提示
                 # 而不是一聲不吭。
+                # 呼叫方放大 tolerance 時，提示帶也一起放大到與選縫帶一致：
+                # 否則「點偏進相鄰塊」的死縫（離縫 6~28）既不選、也不提示，
+                # 正是玩家說的「縫選不中又沒提示」。
+                gen_tol = 6.0 if _tol is None else _tol
                 view = self._polygon_view()
                 origin = self._poly_view_origin(view)
                 for gap_type, line, _dist in view.gap_candidates(
-                        wx, wy, self.game.board, origin, tolerance=6.0):
+                        wx, wy, self.game.board, origin, tolerance=gen_tol):
                     if not self.game.is_valid_gap(gap_type, line):
                         return (gap_type, line)
                     if not self._generic_gap_live((gap_type, line)):
                         return (gap_type, line)
                 return None
             bounds = self.game.get_boundaries()
+            sq_tol = 3.0 if _tol is None else _tol
             for kind, idx in self.board_view.candidate_gaps(
-                    wx, wy, bounds, tolerance=3.0):
+                    wx, wy, bounds, tolerance=sq_tol):
                 if kind == 'h' and not self.game.is_valid_h_line(idx):
                     return ('h', idx)
                 if kind == 'v' and not self.game.is_valid_v_line(idx):
@@ -542,6 +551,40 @@ class MoveMixin:
         except Exception as e:
             print(f"_rejected_seam_at error: {e}")
         return None
+
+    def _click_on_nonplayable_edge(self, block, screen_x: int, screen_y: int,
+                                   tolerance: float = 8.0) -> bool:
+        """這次點擊是否壓在此塊某條邊線上，而那條邊不是可選縫。
+
+        通用通道把每塊多邊形**整圈**描一條灰線當「縫線」（見 renderer 的三趟
+        落地：只畫線、不填縫帶）。但可選縫只認「兩塊共享的完整邊、且落在縫族
+        線上」——棋盤外沿、以及走位後錯位形成的 T 接切口，也畫成同樣的灰線，
+        卻切不開。玩家點它們時 gap=None、塊命中，事件層當成普通點塊而靜默
+        （正是「縫選不中又沒提示」）。
+
+        這裡只判「點夠不夠貼近這塊的某條邊線」。能走到这一步，呼叫方已先確認
+        附近沒有活縫（±28 都沒有），所以近邊即非可選縫。
+        """
+        try:
+            view = self._polygon_view()
+            if view is None:
+                return False
+            origin = self._poly_view_origin(view)
+            loc = tuple(block.location)
+            pt = loc[:2]
+            oo = loc[2] if len(loc) > 2 else ''
+            poly = view.world_polygon(pt, oo, origin)
+            wx, wy = self.screen_to_world(screen_x, screen_y)
+            n = len(poly)
+            for i in range(n):
+                ax, ay = poly[i]
+                bx, by = poly[(i + 1) % n]
+                if _seg_dist(wx, wy, ax, ay, bx, by) <= tolerance:
+                    return True
+            return False
+        except Exception as e:
+            print(f"_click_on_nonplayable_edge error: {e}")
+            return False
 
     def _bandage_group_block_near(self, wx: float, wy: float):
         """世界座標附近最近的「已捆綁」滑塊；沒有捆綁塊回 None。
@@ -581,43 +624,66 @@ class MoveMixin:
         return best
 
     def _sq_click_query(self, screen_x: int, screen_y: int) -> tuple:
-        """方形/三角一次點擊的命中結果 (縫隙, 滑塊)，選不動的縫改走提示。
+        """方形/三角一次點擊的命中結果 (縫隙, 滑塊)，選不動/切不開的線改走提示。
 
-        棋盤最外沿那一圈縫是畫出來的（縫線比棋盤寬 20px，且整條沿外邊
-        走），也點得到，但只有一側有塊——選不動。舊代碼對這種點擊一聲不
-        響，玩家只覺得「點了沒反應」；米字格對錯位態鎖死的縫早就會說清楚
-        （_mi_click_query），這裡對齊同一句話式：「這條縫選不動（為什麼）：
-        該怎麼辦」。只在這一下既沒點中縫、也沒點中塊時才說，正常的選縫/
-        選塊流程一字不變。
+        三種「畫得出、卻沒反應」都要說清楚，不再靜默：
+          ① 死在縫上（外沿、兩側都推不動）：_rejected_seam_at 找回那條縫並
+             說明原因；
+          ② 走位後多出來的塊邊灰線（外沿、T 接切口）：它不是可選縫，
+             提示換一條；
+          ③ 已選中縫後的第二步（點塊定哪側滑）一字不變——那一步要靠塊命中，
+             不能被誤判成「取消選縫」。
+        通用通道的決策帶依次是：精準死縫 ±6 → 活縫 ±28 → 死縫 ±28 →
+        貼邊灰線 ±8（±28 仍小於半格 30，不會跨格誤選對側縫）。
         """
         gap = self.get_gap_at_pos(screen_x, screen_y)
         block = self.get_block_at_pos(screen_x, screen_y)
+        # 寬帶命中的死縫：塊被它收掉時記在這裡，供下面提示分支直接用——
+        # 提示分支自己的查詢帶是窄的（6），不能重查一次就算了，否則寬帶
+        # 收回來的死縫（6~28）會被「再查一次」漏掉，又變成靜默。
+        _dead_seam = None
+        _edge_hint = None
         if (getattr(self, '_pick_fill', None) is None
                 and self._generic_spec() is not None
-                and gap is None and block is not None):
+                and gap is None and block is not None
+                and getattr(self, 'selected_gap', None) is None):
             # 通用通道多邊形密鋪無縫隙：共享邊的中點對兩相鄰塊都在
             # 「邊界內」（射線法對邊界點不設防），點縫時塊命中是假陽性。
-            # 先問這附近有沒有被引擎否決的縫——有就當點縫處理（塊命中
-            # 作廢），好讓下面的「選不動」提示有機會說句話。
-            if self._rejected_seam_at(screen_x, screen_y) is not None:
+            # 「未選中縫時單獨點塊」本來就是 no-op（要選完縫才點塊定哪側
+            # 滑），所以這種點一律優先當點縫處理，且判定帶放大到 28
+            # （cell=60、半格 30，28 仍不跨格誤選對側縫）：
+            #   ① 精準壓在死縫上（±6）→ 收掉塊命中，下面提示說原因；
+            #   ② 附近有活縫（±28）→ 直接選中（細縫更好選）；
+            #   ③ 只有死縫（±28）→ 收掉塊命中並記下，走提示，絕不靜默。
+            # 已選中縫後的第二步（點塊選哪側滑）不進這裡，以免把點滑塊
+            # 誤判成「取消選縫」。
+            dead_near = self._rejected_seam_at(screen_x, screen_y)
+            if dead_near is not None:
                 block = None
-            elif getattr(self, 'selected_gap', None) is None:
-                # 說明都沒選中時，點擊滑塊不會觸發任何滑動（no-op），
-                # 所以「落進相鄰塊、但離一條活縫很近」的點優先當成點縫
-                # 是安全的——把判定帶從 ±10 放大到 ±22 世界單位，細縫更
-                # 好選（修 2026-10-26：「該選的縫選不上、也沒提示」）。
-                # 已選中縫之後的第二步（點塊選哪側滑）不走這裡，以免把
-                # 點滑塊誤判成「取消選縫」。
+                _dead_seam = dead_near
+            else:
                 near = self.get_gap_at_pos(screen_x, screen_y,
-                                          tolerance=22.0)
+                                           tolerance=28.0)
                 if near is not None:
                     gap = near
                     block = None
+                else:
+                    dead_wide = self._rejected_seam_at(
+                        screen_x, screen_y, tolerance=28.0)
+                    if dead_wide is not None:
+                        block = None
+                        _dead_seam = dead_wide
+                    elif self._click_on_nonplayable_edge(
+                            block, screen_x, screen_y):
+                        # 畫得出、卻不是可選縫的邊線（外沿 / 走位後的 T 接
+                        # 切口）：收掉塊命中，走下面的提示，絕不靜默。
+                        _edge_hint = block
+                        block = None
         # 选块填空的两下点击语义是「选哪块、填哪个坑」，不是滑动，
         # 此时别插嘴说缝选不动
         if (gap is None and block is None
                 and getattr(self, '_pick_fill', None) is None):
-            seam = self._rejected_seam_at(screen_x, screen_y)
+            seam = _dead_seam or self._rejected_seam_at(screen_x, screen_y)
             if seam is not None:
                 # 排障日誌：與米字格的 mi_seam_reject 對位，事後能看出
                 # 玩家說的「點了沒反應」到底落在哪條外沿縫上
@@ -635,6 +701,16 @@ class MoveMixin:
                 else:
                     self.macro_notify_msg = ("这条缝选不动（棋盘外沿，外侧没有滑块）："
                                              "请选里面的缝")
+                self.macro_notify_timer = 120
+            elif _edge_hint is not None:
+                # 點在「看得到、卻不是可選縫」的邊線上（棋盤外沿，或走位後
+                # 錯位形成的 T 接切口）。舊代碼這裡 block 非空、gap 為空，
+                # 事件層當成普通點塊而靜默——正是「選不中又沒提示」。
+                op_log.log('sq_seam_reject', gap=None, form='generic',
+                           reason='nonplayable_edge')
+                self.macro_notify_msg = (
+                    "这条线切不开（棋盘外沿或错位接缝）："
+                    "请点两块滑块之间的缝线")
                 self.macro_notify_timer = 120
         return gap, block
 
