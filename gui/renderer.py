@@ -2357,7 +2357,7 @@ class RendererMixin:
         pygame.draw.rect(self.screen, self.colors['menu_bg'], dropdown_rect)
         pygame.draw.rect(self.screen, self.colors['border'], dropdown_rect, 1)
         # 记住一级菜单的外框：二级菜单的悬停预览默认放它右侧，右侧塞不下
-        # 时改放一级菜单**左侧**（见 _draw_model_hover_preview）
+        # 时改放一级菜单**左侧**（见 _draw_hover_preview）
         self.puzzle_menu_rect = dropdown_rect
 
         self.puzzle_menu_rects = []
@@ -2504,31 +2504,47 @@ class RendererMixin:
                 check_rect.centery = center_y
                 self.screen.blit(check_surface, check_rect)
 
-        # 悬停模型条目 → 旁边补一张「这题长什么样」的预览（用户 2026-10-26 要
+        # 悬停谜题条目 → 旁边补一张「这题长什么样」的预览（用户 2026-10-26 要
         # 的「查」）。放在循环之后画，压住菜单右侧空白，不参与任何命中判定。
-        self._draw_model_hover_preview(menu_x + menu_width + 4, menu_y)
+        self._draw_hover_preview(menu_x + menu_width + 4, menu_y)
 
-    # 模型悬停预览的版式（px）。104 的缩图 + 8 的间隙 + 8 的留白 = 232 宽，
+    # 悬停预览的版式（px）。104 的缩图 + 8 的间隙 + 8 的留白 = 232 宽，
     # 正好塞在二级菜单右边而不会顶到屏幕边（1080p 下二级菜单右边界约 700）。
     _PREVIEW_THUMB = 104
     _PREVIEW_GAP = 8
     _PREVIEW_PAD = 8
     _PREVIEW_LABEL_H = 16
 
+    def _preview_targets(self):
+        """菜单里所有可预览的目标（预热用，每帧算一次也不贵）。
+
+        从**菜单本身**推出来，而不是在预览模块里另写一份档位表：菜单是
+        「有哪些谜题」的唯一真相，加一个档位就自动有预览，不会漏也不会歪。
+        """
+        from gui import model_preview
+
+        out = []
+        for items in (getattr(self, 'puzzle_sub_presets', None) or {}).values():
+            for item in items or []:
+                target = model_preview.target_of_item(item)
+                if target is not None:
+                    out.append(target)
+        return out
+
     def _preview_pump(self):
-        """每帧一次的模型预览预热（启动后把各模型缩图挨个算好落盘）。
+        """每帧一次的预览预热（启动后把各档位的缩图挨个算好落盘）。
 
         放在主循环里而不是悬停时：悬停只剩「读图」这一步，零等待也零风险。
         本身不抛异常（失败只是没有预览），这里再兜一层是防 import 级别的意外。
         """
         try:
             from gui import model_preview
-            model_preview.pump(self.colors)
+            model_preview.pump(self.colors, targets=self._preview_targets())
         except Exception:      # noqa: BLE001 —— 见 docstring
             pass
 
-    def _draw_model_hover_preview(self, panel_x, panel_y):
-        """悬停模型条目时的预览面板。
+    def _draw_hover_preview(self, panel_x, panel_y):
+        """悬停谜题条目时的预览面板。
 
         这里是**外层兜底**：预览是纯装饰的可选功能，算不出来 / 画不出来
         最多是「没有预览」，绝不能把整帧拖下水（AGENTS.md §4：每帧调用的
@@ -2536,7 +2552,7 @@ class RendererMixin:
         色键写错，悬停当场打断主循环。
         """
         try:
-            self._draw_model_hover_preview_impl(panel_x, panel_y)
+            self._draw_hover_preview_impl(panel_x, panel_y)
         except Exception:      # noqa: BLE001 —— 见上面 docstring
             import traceback
             tb = traceback.format_exc()
@@ -2547,20 +2563,24 @@ class RendererMixin:
             if tag not in seen and len(seen) < 20:    # 每帧都会走这里，只记一次
                 seen.add(tag)
                 from gui.log_writer import write as _log_write
-                _log_write('模型悬停预览绘制失败（已跳过该面板）',
+                _log_write('悬停预览绘制失败（已跳过该面板）',
                            trace=tb.splitlines())
 
-    def _draw_model_hover_preview_impl(self, panel_x, panel_y):
-        """二级菜单里悬停「模型谜题」条目时，在旁边显示复原态 + 一种打乱态。
+    def _draw_hover_preview_impl(self, panel_x, panel_y):
+        """二级菜单里悬停任意谜题条目时，在旁边显示复原态 + 一种打乱态。
 
-        为什么只有模型文件板型有预览：方形/三角/米字都是「规规矩矩的整块
-        网格」，菜单标题（6×6 等级2 / 三角 k=4）已经说清了长什么样；模型
-        板型的块形状由 JSON 决定，名字里那个「（28 块）」完全看不出形状。
-        条目恰好带模型名（len==5 且 preset[4] 是字符串），据此判据入手。
+        哪些条目有预览由 `model_preview.target_of_item()` 决定：内置档位
+        （矩形/三角/米字/数字）与模型文件档位都有，分组标题 / 分隔线 /
+        当前行 / 自定义样式没有。
 
-        取图走 `model_preview.request()`（异步）：首算最坏 ~500ms（引擎要
-        懒建几何缓存），同步算会让悬停卡半秒。没算好这一帧就画「预览生成
-        中…」，算好了下一帧自然出现。
+        ⚠️ 2026-10-26 的教训：早先判据是「len==5 且第 5 项是字符串」，于是
+        异形档位 `('边长4 等级1', 4, 4, 1, 'triangle')` 被当成模型名去查注册表，
+        悬停就写「预览不可用：'triangle'」。现在白名单判定，未知 kind 直接
+        不给预览。
+
+        取图走 `model_preview.request()`（异步）：首算要真跑一遍打乱，同步
+        算会让悬停卡顿。没算好这一帧就画「预览生成中…」，算好了下一帧自然
+        出现。
         """
         from gui import model_preview
 
@@ -2569,9 +2589,9 @@ class RendererMixin:
             getattr(self, 'puzzle_sub_open', '')) or []
         if idx < 0 or idx >= len(items):
             return
-        item = items[idx]
-        if len(item) < 5 or not isinstance(item[4], str):
-            return          # 分组标题 / 分隔线 / 非模型条目：没有预览可言
+        target = model_preview.target_of_item(items[idx])
+        if target is None:
+            return          # 分组标题 / 分隔线 / 当前行 / 自定义样式：没有预览可言
 
         thumb = self._PREVIEW_THUMB
         gap = self._PREVIEW_GAP
@@ -2595,8 +2615,8 @@ class RendererMixin:
         pygame.draw.rect(self.screen, self.colors['border'],
                          pygame.Rect(px, py, panel_w, panel_h), 1)
 
-        goal, scr, state = model_preview.request(item[4], thumb, self.colors)
-        err = model_preview.last_error(item[4])
+        goal, scr, state = model_preview.request(target, thumb, self.colors)
+        err = model_preview.last_error(target)
         if state == 'pending' or (goal is None and scr is None and err is None):
             msg = '预览生成中…'
             surf = self.status_font.render(msg, True, self.colors['menu_text'])

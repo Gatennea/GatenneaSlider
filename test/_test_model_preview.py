@@ -19,6 +19,8 @@ _test_model_style）。
      （2026-10-26 一碰预览就崩的根因就是写错键名）。
   I. 预览失败不许连累整帧：假模型名 → 菜单照常画、原因记日志。
   J. 磁盘缓存：空闲预热落盘、清内存后仍能立刻取图、签名带内容哈希。
+  K. 所有预设都有预览：内置板型（矩形/三角/米字/数字）+ 模型；
+     分组标题/分隔线/自定义样式不给；换图版本失效；打乱态≠复原态。
 
 跑法：D:/python/python.exe test/_test_model_preview.py
 """
@@ -190,7 +192,7 @@ def main():
     # 两种时序都被这条断言覆盖：①清得早 → 旧结果被世代检查丢弃；
     # ②算得比清还快 → 清本身把那条删掉了。任一时序下缓存都不该有它。
     model_preview.clear_cache()
-    key = ('shield', 104, model_preview._palette(None))
+    key = (model_preview.as_target('shield'), 104, model_preview._palette(None))
     model_preview.request('shield', 104)     # 起一个后台线程
     model_preview.clear_cache()              # 立刻作废（模型刚被改写）
     time.sleep(1.0)                          # 等后台线程跑完
@@ -289,10 +291,29 @@ def main():
           str(sorted(set(missing))[:8]))
 
     # ---- I. 预览失败不许连累整帧 ------------------------------------
+    # 「模型文件坏掉」这类失败：target 合法（过得去白名单），但算图时炸。
+    # 这时必须 ①菜单照画 ②面板写「预览不可用」 ③错误留日志。
+    # ⚠️ 不再用「不存在的模型名」造失败：现在它压根不给预览（K6），
+    # 也就没有「预览不可用」可言——那才是对的（不存在的模型画不出图）。
     model_preview.clear_cache()
-    gui.puzzle_sub_presets['models'] = list(gui.puzzle_sub_presets['models']) + [
-        ('假模型（0 块）', 4, 4, 1, '__no_such_model__')]
-    gui.puzzle_sub_hovered = len(gui.puzzle_sub_presets['models']) - 1
+    real_spec_of = model_preview._spec_of
+    real_load_disk = model_preview._load_disk
+
+    def _broken_spec(target):
+        if target[0] == 'model' and target[1] == 'shield':
+            raise RuntimeError('模拟模型文件坏掉')
+        return real_spec_of(target)
+
+    model_preview._spec_of = _broken_spec
+    # 磁盘缓存会直接命中（上次预热存的图），那样根本不会去算，也就没有「失败」。
+    # 真实场景里模型文件坏掉 → 内容哈希变 → 签名不同 → 本来就不会命中；
+    # 这里为了造出「算图失败」这一幕，明确把读盘挡住。
+    model_preview._load_disk = lambda _key: None
+    broken = model_preview.as_target('shield', step=1)
+    gui._refresh_puzzle_presets()
+    gui.show_puzzle_menu = True          # _refresh_puzzle_presets 会把子菜单收起
+    gui.puzzle_sub_open = 'models'
+    gui.puzzle_sub_hovered = _model_items(gui, 'shield')
     gui.screen = pygame.display.get_surface()
     # 边画边等：request() 由绘制触发（首帧 pending，线程算完才留下失败原因）
     deadline = time.time() + 10.0
@@ -304,7 +325,7 @@ def main():
         except Exception as exc:      # noqa: BLE001
             draw_err = exc
             break
-        if model_preview.last_error('__no_such_model__'):
+        if model_preview.last_error(broken):
             break
         time.sleep(0.02)
     try:
@@ -314,9 +335,9 @@ def main():
         draw_err = draw_err or exc
     check(draw_err is None, 'I1 预览算不出来时菜单照常绘制（不再中断主循环）',
           repr(draw_err))
-    check(bool(model_preview.last_error('__no_such_model__')),
+    check(bool(model_preview.last_error(broken)),
           'I2 失败原因被记下（面板画「预览不可用：…」而不是假装没这功能）',
-          repr(model_preview.last_error('__no_such_model__')))
+          repr(model_preview.last_error(broken)))
 
     # I3：失败也要留在错误日志里（真因不能只活在内存里）
     try:
@@ -328,11 +349,16 @@ def main():
         logged = False
     check(logged, 'I3 预览失败写进了 error_log.jsonl（带 traceback）')
 
+    model_preview._spec_of = real_spec_of     # 复原，后面的组要用真实现
+    model_preview._load_disk = real_load_disk
+    model_preview.clear_cache()
+
     # ---- J. 磁盘缓存：空闲预热落盘 + 下次启动零计算 ------------------
     # 用户 2026-10-26 的方案：开局后空闲时把每个模型的两张图都算好导出，
     # 悬停只读图。这里钉住「能落盘」「清内存后仍立刻有图」「签名带模型内容哈希」。
     model_preview.clear_cache()
-    key = ('shield', 104, model_preview._palette(gui.colors))
+    key = (model_preview.as_target('shield'), 104,
+           model_preview._palette(gui.colors))
     for _f in range(400):
         model_preview.pump(gui.colors)
         if model_preview._disk_ok(key):
@@ -346,6 +372,69 @@ def main():
     check(model_registry.loaded('shield').hash() in model_preview._disk_sig(key),
           'J3 磁盘签名含模型内容哈希（改了形状自动失效，不会用旧图）',
           model_preview._disk_sig(key))
+
+    # ---- K. 所有预设都有预览 ----------------------------------------
+    # 用户 2026-10-26 晚：「预览现在确实可用了，问题在于没给所有预设生成预览，
+    # 而且有一些打乱明显不乱，甚至有些就是复原态」。两条都在这里钉住。
+    gui._refresh_puzzle_presets()
+    targets = gui._preview_targets()
+    check(len(targets) >= 10, 'K1 菜单能扫出可预览的预设（内置 + 模型）',
+          str(len(targets)))
+    kinds = {t[1] for t in targets if t[0] == 'board'}
+    check({'square', 'triangle', 'mi', 'numbered'} <= kinds,
+          'K2 内置板型（矩形/三角/米字/数字）都进了预览目标', str(sorted(kinds)))
+    check(any(t[0] == 'model' for t in targets), 'K3 模型板型也在其中')
+
+    bad_items = [('__group__', '分组'), ('---',), ('__current__',),
+                 ('自定义...',), ('样式', '__custom__', 'x')]
+    check(all(model_preview.target_of_item(it) is None for it in bad_items),
+          'K4 非谜题条目（分组/分隔线/当前行/自定义）不给预览')
+    tri_item = ('边长4 等级1', 4, 4, 1, 'triangle')
+    check(model_preview.target_of_item(tri_item) == ('board', 'triangle', 4, 4, 1),
+          'K5 异形档位识别成内置板型（不再当模型名查表）',
+          str(model_preview.target_of_item(tri_item)))
+    check(model_preview.target_of_item(
+              ('假模型（0 块）', 4, 4, 1, '__no_such_model__')) is None,
+          'K6 不存在的模型名 → 不给预览（不画错的）')
+
+    # K7 全量巡检：每个预设都要出图，且打乱态与复原态明显不同
+    model_preview.clear_cache()
+    bad = []
+    for t in targets:
+        tg, ts = model_preview.thumbs(t, 104, gui.colors)
+        if tg is None or ts is None:
+            bad.append((t, model_preview.last_error(t) or '无图'))
+        elif _diff_ratio(tg, ts) < 0.10:
+            bad.append((t, f'diff={_diff_ratio(tg, ts):.3f}'))
+    check(not bad, f'K7 {len(targets)} 个预设全部出图，且打乱态≠复原态',
+          str(bad[:4]))
+
+    # K8 反向护栏：「滑不动」的板 → 明说预览不可用，不许拿复原态冒充
+    spec_sh = model_registry.loaded('shield').spec
+    goal_sh = model_preview._polys_goal(spec_sh)
+    old_attempts = model_preview._attempts_for
+    model_preview._attempts_for = lambda _t: 0
+    try:
+        model_preview._polys_scrambled(model_preview.as_target('shield'), goal_sh)
+        raised = False
+    except ValueError as exc:
+        raised = '一样' in str(exc)
+    finally:
+        model_preview._attempts_for = old_attempts
+    check(raised, 'K8 打乱后与复原态相同 → 明确报错（不冒充打乱态）')
+
+    check(f'.v{model_preview._CACHE_VER}.' in model_preview._disk_sig(key),
+          'K9 磁盘签名带算法版本号（改了算图方式，旧图自动失效）',
+          model_preview._disk_sig(key))
+
+    # K10 旧世代（命名里没有版本号）的缩图要被清掉
+    ddir = model_preview._disk_dir()
+    os.makedirs(ddir, exist_ok=True)
+    stale = os.path.join(ddir, 'legacy.abc.104.deadbeef.goal.png')
+    with open(stale, 'wb') as fh:
+        fh.write(b'x')
+    model_preview._purge_stale()
+    check(not os.path.exists(stale), 'K10 旧版本缩图被清掉（不会留着冒充新图）')
 
     return _report()
 

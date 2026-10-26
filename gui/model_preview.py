@@ -1,9 +1,20 @@
 # -*- coding: utf-8 -*-
-"""谜题菜单悬停预览：从模型文件离屏算出「复原态 / 一种打乱态」两张缩图。
+"""谜题菜单悬停预览：离屏算出「复原态 / 一种打乱态」两张缩图。
 
 用户 2026-10-26 提的「查」：菜單裡選謎題時，懸停就顯示它的復原態和一種
 打亂態。模型谜题的块形状千奇百怪（三角 / 等腰直角 / 半块），列表里那行
 「shield（28 块）」根本看不出這題長什麼樣，所以需要圖。
+
+2026-10-26 晚补：**所有预设都要预览**（用户报「没给所有预设生成预览」）。
+早先只做了模型板型，内置板型（矩形/三角/米字/数字）悬停要么没反应、要么
+撞上「预览不可用：'triangle'」——因为判据是「条目 len==5 且第 5 项是字符串」，
+而异形档位 `('边长4 等级1', 4, 4, 1, 'triangle')` 恰好也满足。现在统一走
+`target_of_item()`：模型名要在注册表里、内置 kind 要在白名单里，其余一律
+不给预览（宁可不画，也不画一个错的）。
+
+「打乱态」一律**真跑引擎打乱**（与 `session.shuffle_puzzle` 同口径：
+bias 0.3 / min_score 0.75），不是随手把块挪一挪——模型板型的合法形态由缝族
+与朝向邻接表决定，随手挪出来的是**这题根本走不到**的局面，预览就成了骗人。
 
 为什么**不**复用 `renderer._draw_polygon_board`
 ---------------------------------------------
@@ -48,6 +59,32 @@ THUMB_SIZE = 104
 # 缩图内边距：留一点白边，块不贴着框
 _PAD = 5
 
+# 缩图算法版本，**进了磁盘签名**。改了算图方式就 +1：否则 preview_cache 里
+# 上一版算法写的图会被一直复用（预热只看 `_disk_ok`）。
+# 2026-10-26 用户报「打乱态就是复原态」，根因之一就是这里：当时签名只有
+# 「模型内容 + 尺寸 + 配色」，算法换了签名没换，旧图原封不动留在盘上。
+_CACHE_VER = 2
+
+# 打乱口径：与 GUI 真打乱同源（gui/session.py 的 shuffle_puzzle 用
+# bias=0.3 / min_score=0.75）。缩图必须画玩家真会遇到的局面。
+_BIAS = 0.3
+# 「够乱了」的判据不再看「多少块离开原位」——整体平移能让 100% 的块离开
+# 原位却完全没打散（三角局就会这样）。改成**跑满步数**，只留一个时间兜底：
+# mi 8×8 每步 ~13ms，240 步要 3s，而 0.9s 之后再多走几步，104px 上也看不出
+# 差别了。
+_TIME_BUDGET = 0.6
+# 单张缩图最多打乱多少步（真打乱是 m*n*10，10×10 要 1000 步 ≈ 1s，太多）
+_MAX_ATTEMPTS = 120
+# 每片打乱步数：片间 sleep 让出 GIL。否则后台线程一口气跑几百步，
+# 主循环一段时间完全抢不到解释器锁，表现为持续掉帧。
+_MOVE_SLICE = 10
+_SLICE_YIELD = 0.003
+# 打乱「看起来没变」时换一局重打的次数（见 _polys_scrambled）
+_SCRAMBLE_TRIES = 3
+
+# 内置板型（引擎 registry 里的 kind）。'square' 是「不带 kind 的档位」缺省。
+BUILTIN_KINDS = ('square', 'triangle', 'mi', 'numbered')
+
 # 两级缓存，分工不能混：
 #   _pics  = 纯 Python 的「像素多边形」(model_name, size, palette) -> (goal, scr)
 #   _surfs = pygame.Surface 同上 key -> (goal_surf, scr_surf)
@@ -56,6 +93,9 @@ _PAD = 5
 # 真实显示下与主线程的绘制/flip 撞车，会被 SDL 拒（或被吞成「预览不可用」）。
 _pics = {}
 _surfs = {}
+# 目标 → 磁盘签名用的内容哈希。算法/几何一变就会重算；不缓存的话每次
+# `_disk_ok()` 都要现造一局内置板型（悬停每帧都会问到）。
+_hash_cache = {}
 _lock = threading.Lock()
 # 正在后台算的 key：同一张图不重复起线程（悬停项每帧都会来问一次）
 _inflight = set()
@@ -74,16 +114,32 @@ def clear_cache():
         _gen[0] += 1
         _pics.clear()
         _surfs.clear()
+        _hash_cache.clear()
         _warm_started[0] = False
         _pump_t0[0] = 0.0      # 重新计时，还是等一秒再开始预热
 
 
-def last_error(model_name):
-    """缓存里该模型上次失败的原因；没失败过返回 None。"""
+def _target_matches(target, wanted):
+    """`wanted`（目标元组 / 模型名 / 板型名）是否指同一个目标。
+
+    传字符串时按「目标里前两项之一相等」比：这样 `last_error('shield')`
+    能命中 ('model', 'shield', 1) 与 ('model', 'shield', 2) 两条（等级1/2），
+    调用方不必知道档位。
+    """
+    if isinstance(wanted, str):
+        return wanted in target[:2]
+    return tuple(wanted) == tuple(target)
+
+
+def last_error(wanted):
+    """该目标上次失败的原因；没失败过返回 None。
+
+    `wanted` 可以是目标元组、模型名或内置板型名（见 `_target_matches`）。
+    """
     with _lock:
         items = list(_pics.items()) + list(_surfs.items())
-    for (name, _size, _pal), val in items:
-        if name == model_name and isinstance(val, Exception):
+    for (target, _size, _pal), val in items:
+        if isinstance(val, Exception) and _target_matches(target, wanted):
             return str(val)
     return None
 
@@ -119,6 +175,101 @@ def _palette(colors):
     )
 
 
+# ----------------------------------------------------------------------
+# 预览目标：一个元组唯一标识「哪个谜题」
+#    ('model', 模型名, step)           —— models/*.json 声明的不规则板型
+#    ('board', kind, m, n, step)       —— 内置板型（kind 见 BUILTIN_KINDS）
+# 早先整条链路只认「模型名字符串」，于是内置预设要么没预览、要么把
+# 'triangle' 当模型名去查注册表（KeyError → 面板写「预览不可用：'triangle'」）。
+# ----------------------------------------------------------------------
+def as_target(x, step=2):
+    """把「模型名字符串」或元组统一成 target（字符串按模型 step=2 处理）。"""
+    if isinstance(x, str):
+        return ('model', x, int(step))
+    return tuple(x)
+
+
+def target_of_item(item):
+    """菜单条目 → 预览目标；不是「可预览的谜题」时返回 None。
+
+    条目形态（见 GUI._refresh_puzzle_presets / puzzle_sub_presets）：
+      模型档位   ('shield（28 块）', 4, 4, 1, 'shield')
+      内置档位   ('6×6 等级2', 6, 6, 2)  /  ('边长4 等级1', 4, 4, 1, 'triangle')
+      分组标题 / 分隔线 / 当前行 / 自定义预设 —— 第 2~4 项不是三个整数，
+      自然落空，不会误判。
+
+    ⚠️ 判据必须「白名单」而不是「第 5 项是字符串」：异形档位的第 5 项
+    也是字符串（kind），曾据此把它当模型名。未知 kind / 不存在的模型名
+    一律返回 None —— 宁可不给预览，也不要画一个错的。
+    """
+    if not isinstance(item, (tuple, list)) or len(item) < 4:
+        return None
+    if not all(isinstance(v, int) and not isinstance(v, bool)
+               for v in item[1:4]):
+        return None
+    m, n, step = int(item[1]), int(item[2]), int(item[3])
+    kind = item[4] if len(item) >= 5 and isinstance(item[4], str) else 'square'
+    if kind in BUILTIN_KINDS:
+        return ('board', kind, m, n, step)
+    from engine import model_registry
+    if kind in model_registry.loaded():
+        return ('model', kind, step)
+    return None
+
+
+def _target_tag(target):
+    """目标 → 磁盘文件名前缀（也当失败日志里的可读标识）。
+
+    文件名要过 Windows 的非法字符关（模型名是用户起的，可能带冒号/空格）。
+    """
+    if target[0] == 'model':
+        raw = f'model_{target[1]}'
+    else:
+        _, kind, m, n, step = target
+        raw = f'board_{kind}_{m}x{n}s{step}'
+    return ''.join(ch if ch.isalnum() or ch in '-_.' else '_' for ch in raw)
+
+
+def _new_game(target):
+    """按目标造一局（引擎侧只读用，不碰 GUI）。"""
+    from engine.adapter import create_adapter_puzzle
+
+    if target[0] == 'model':
+        _, name, step = target
+        # 模型局固定 4×4（与菜单条目、GUI.new_model_puzzle 同口径）
+        return create_adapter_puzzle(name, 4, 4, int(step))
+    _, kind, m, n, step = target
+    return create_adapter_puzzle(kind, int(m), int(n), int(step))
+
+
+def _spec_of(target):
+    """目标的板型 spec（模型取注册表里的那份，内置取现造的棋盘）。"""
+    from engine import model_registry
+
+    if target[0] == 'model':
+        return model_registry.loaded(target[1]).spec
+    return _new_game(target).board.spec
+
+
+def _attempts_for(target):
+    """该目标打乱多少步：真打乱口径 m*n*10，但封顶 _MAX_ATTEMPTS。
+
+    封顶是为了让「预热全部预设」这件事有界：10×10 真打乱要 1000 步（≈1s），
+    而缩图 104px 上 240 步与 1000 步看不出差别。
+    """
+    if target[0] == 'model':
+        m = n = 4
+    else:
+        _, _kind, m, n, _step = target
+    return max(40, min(int(m) * int(n) * 10, _MAX_ATTEMPTS))
+
+
+def _shape_set(polys):
+    """多边形集合的规范形（画出来一样 ⟺ 集合一样），用于「打乱没打乱」判据。"""
+    return {tuple(sorted((round(x, 2), round(y, 2)) for x, y in poly))
+            for poly, _idx in polys}
+
+
 def _polys_goal(spec):
     """复原态：直接取板型声明的 S₀ 每一块的平面多边形。
 
@@ -150,24 +301,46 @@ def _polygons_of_board(board):
     return out
 
 
-def _polys_scrambled(model_name, step=2, attempts=None):
+def _polys_scrambled(target, goal_polys=None, size=THUMB_SIZE):
     """一种打乱态：真跑一遍引擎的打乱，再取各块当前位置的多边形。
 
     走真引擎而不是「把块随机挪一挪」：模型板型的合法形态由缝族与朝向
     邻接表决定，随手挪出来的是**这题根本走不到的局面**，预览就成了骗人。
 
-    attempts 取 GUI 打乱口径（m*n*10 = 160）的 **1/4**：缩图只有 104px，
-    160 步和 40 步看起来一样散，但 222 那盘实测 160 步要 625ms（悬停时
-    同步算会明显卡一下），40 步降到 ~160ms。难度门槛（min_score）整段
-    跳过：缩图不在乎难度，只在乎看得出散开了。
-    """
-    from engine.adapter import create_adapter_puzzle
+    参数与 GUI 真打乱同源（bias 0.3），步数取 m*n*10（封顶 _MAX_ATTEMPTS），
+    但**分片**执行：每片 `_MOVE_SLICE` 步之间 sleep 一下让出 GIL。一口气
+    跑完时（mi 8×8 要 3s）主循环会被后台线程饿着，玩家看到的是持续掉帧。
 
-    if attempts is None:
-        attempts = 4 * 4 * 10 // 4
-    game = create_adapter_puzzle(model_name, 4, 4, step)
-    game.shuffle(attempts, step, bias=0.0, min_score=None, record=[])
-    return _polygons_of_board(game.board)
+    ⚠️「打乱没打乱」必须在**拟合之后**比，不能比原始坐标：两张缩图各自
+    按包围盒居中缩放（见 `_fit`），所以「整块图形平移了一点」在缩图上跟
+    复原态**像素级相同**——2026-10-26 用户看到的「打乱态就是复原态」有一半
+    就是这么来的（另一半是磁盘旧图，见 `_CACHE_VER`）。
+    归一化后仍与复原态一样 → 换一局重打，连试 `_SCRAMBLE_TRIES` 次都不行
+    才报错，让面板写「预览不可用：…」，绝不拿复原态冒充打乱态。
+    """
+    goal_sig = None
+    if goal_polys is not None:
+        goal_sig = _shape_set(_fit(goal_polys, int(size)))
+
+    for _try in range(_SCRAMBLE_TRIES):
+        game = _new_game(target)
+        step = int(target[-1])
+        budget = _attempts_for(target)
+        done = 0
+        t0 = time.time()
+        while done < budget:
+            n = min(_MOVE_SLICE, budget - done)
+            game.shuffle(n, step, bias=_BIAS, min_score=None, record=[])
+            done += n
+            if time.time() - t0 >= _TIME_BUDGET:
+                break
+            time.sleep(_SLICE_YIELD)
+
+        out = _polygons_of_board(game.board)
+        if goal_sig is None or _shape_set(_fit(out, int(size))) != goal_sig:
+            return out
+
+    raise ValueError('这块板打乱后与复原态一样（几乎滑不动）')
 
 
 def _fit(polys, size, pad=_PAD):
@@ -222,21 +395,19 @@ def _build_pics(key):
 
     失败时把异常本身留在缓存里（见模块头「失败不静默」），并记日志。
     """
-    from engine import model_registry
-
     with _lock:
         gen = _gen[0]
-    model_name, size, _pal = key
+    target, size, _pal = key
     try:
-        model = model_registry.loaded(model_name)
-        spec = model.spec
+        spec = _spec_of(target)
         if not spec.goal_blocks or spec.cell_polygon is None:
             raise ValueError('该板型没有声明 goal_blocks / cell_polygon')
-        val = (_fit(_polys_goal(spec), int(size)),
-               _fit(_polys_scrambled(model_name), int(size)))
+        goal = _polys_goal(spec)
+        val = (_fit(goal, int(size)),
+               _fit(_polys_scrambled(target, goal, int(size)), int(size)))
     except Exception as exc:      # noqa: BLE001 —— 见模块头「失败不静默」
         val = exc
-        _log_failure(model_name, exc)
+        _log_failure(_target_tag(target), exc)
     with _lock:
         if _gen[0] == gen:        # 算的途中被 clear_cache() 过 → 作废，不写回
             _pics[key] = val
@@ -255,27 +426,48 @@ def _surfaces(key, pics):
         val = (_paint(pics[0], size, pal), _paint(pics[1], size, pal))
     except Exception as exc:      # noqa: BLE001 —— 画不出来也只是没有预览
         val = exc
-        _log_failure(key[0], exc)
+        _log_failure(_target_tag(key[0]), exc)
     with _lock:
         if _gen[0] == gen:
             _surfs[key] = val
     return val
 
 
-def _disk_sig(key):
-    """该缩图在磁盘上的身份串：模型内容哈希 + 尺寸 + 配色。
+def _target_hash(target):
+    """目标的内容哈希：模型取 `LoadedModel.hash()`，内置板型取 S₀ 几何哈希。
 
-    为什么要模型**内容哈希**而不是文件 mtime：编辑器存盘会重写文件（mtime
-    必变），但内容没变时没必要重算；反过来拷机器/回滚代码会让 mtime 倒退而
-    内容其实变了。`LoadedModel.hash()` 就是模型身份哈希（存档头也用同一个），
-    内容一变即失配，天然自愈。
+    为什么不用文件 mtime：编辑器存盘会重写文件（mtime 必变）但内容可能没变；
+    反过来拷机器/回滚代码会让 mtime 倒退而内容真变了。
+    内置板型的形状由代码产生，改用「复原态各块 (point, orient)」的哈希——
+    板型定义一改，哈希就变，旧缩图自动失效。
     """
+    with _lock:
+        hit = _hash_cache.get(target)
+    if hit is not None:
+        return hit
     from engine import model_registry
 
-    name, size, pal = key
-    model = model_registry.loaded(name)
+    if target[0] == 'model':
+        got = model_registry.loaded(target[1]).hash()
+    else:
+        spec = _spec_of(target)
+        raw = repr(sorted((tuple(b.point), b.orient) for b in spec.goal_blocks))
+        got = hashlib.sha1(raw.encode('utf-8')).hexdigest()[:8]
+    with _lock:
+        _hash_cache[target] = got
+    return got
+
+
+def _disk_sig(key):
+    """该缩图在磁盘上的身份串：目标名 + 内容哈希 + **算法版本** + 尺寸 + 配色。
+
+    版本号必须在内：算法换了（比如改了打乱口径、去掉彩虹渐变）而签名不变
+    时，预热会以为「盘上已有」而跳过，错的旧图就一直留在预览里。
+    """
+    target, size, pal = key
     ph = hashlib.sha1(repr(pal).encode('utf-8')).hexdigest()[:8]
-    return f'{name}.{model.hash()}.{int(size)}.{ph}'
+    return (f'{_target_tag(target)}.{_target_hash(target)}.v{_CACHE_VER}'
+            f'.{int(size)}.{ph}')
 
 
 def _disk_dir():
@@ -299,6 +491,26 @@ def _disk_paths(key):
     return base + '.goal.png', base + '.scr.png'
 
 
+def _purge_stale():
+    """删掉版本号对不上的旧缩图（命名规则/算法换代时清一次）。
+
+    2026-10-26 用户报「打乱态就是复原态」：磁盘里留着上一版算法写的图，
+    而当时的签名只含「内容 + 尺寸 + 配色」→ 预热看到文件就跳过，错的图
+    一直留着。现在版本号进签名，顺手把旧世代清掉，directory 也不会长草。
+    """
+    d = _disk_dir()
+    if not os.path.isdir(d):
+        return
+    marker = f'.v{_CACHE_VER}.'
+    for fn in os.listdir(d):
+        if not fn.endswith('.png') or marker in fn:
+            continue
+        try:
+            os.remove(os.path.join(d, fn))
+        except OSError:
+            pass
+
+
 def _load_disk(key):
     """从磁盘读回两张缩图；没有/坏了返回 None（坏了不留残图，下次重算覆盖）。"""
     gp, sp = _disk_paths(key)
@@ -308,7 +520,7 @@ def _load_disk(key):
         goal = pygame.image.load(gp)
         scr = pygame.image.load(sp)
     except Exception as exc:      # noqa: BLE001
-        _log_failure(key[0], exc)
+        _log_failure(_target_tag(key[0]), exc)
         return None
     with _lock:
         _surfs[key] = (goal, scr)
@@ -325,14 +537,14 @@ def _save_disk(key, surfs):
         pygame.image.save(surfs[0], gp)
         pygame.image.save(surfs[1], sp)
     except Exception as exc:      # noqa: BLE001 —— 存盘失败只是下次要重算
-        _log_failure(key[0], exc)
+        _log_failure(_target_tag(key[0]), exc)
         return
-    # 同一模型的历史世代（改过形状/尺寸/配色）顺手清掉，别让缓存目录长草
-    name, size, pal = key
+    # 同一目标的历史世代（改过形状/尺寸/配色/算法版本）顺手清掉，别让目录长草
+    prefix = _target_tag(key[0]) + '.'
     keep = os.path.basename(gp)[:-len('.goal.png')]
     try:
         for fn in os.listdir(_disk_dir()):
-            if fn.startswith(f'{name}.') and fn.endswith('.png') \
+            if fn.startswith(prefix) and fn.endswith('.png') \
                     and not fn.startswith(keep):
                 os.remove(os.path.join(_disk_dir(), fn))
     except OSError:
@@ -350,11 +562,12 @@ def _lookup(key):
 def thumbs(model_name, size=THUMB_SIZE, colors=None):
     """**同步**返回 (复原态 Surface, 打乱态 Surface)；算不出来时 (None, None)。
 
-    结果按 (模型名, 尺寸, 配色) 缓存——菜单每帧都会调用，重算一次要真跑
+    第一个参数可以是模型名（按 step=2 处理）或 `as_target()` 造的目标元组。
+    结果按 (目标, 尺寸, 配色) 缓存——菜单每帧都会调用，重算一次要真跑
     一遍打乱（首算最坏 ~500ms），悬停时逐帧重算必然卡。
     菜单渲染请用 `request()`（异步版），这里留给测试与需要确定结果的场合。
     """
-    key = (model_name, int(size), _palette(colors))
+    key = (as_target(model_name), int(size), _palette(colors))
     hit, val = _lookup(key)
     if not hit:
         val = _build_pics(key)
@@ -371,10 +584,11 @@ def request(model_name, size=THUMB_SIZE, colors=None):
       - `'ready'`   图已就绪（失败时两图为 None，原因见 `last_error`）
       - `'pending'` 正在后台算，下一帧再问
 
+    第一个参数可以是模型名或 `as_target()` 造的目标元组（内置板型）。
     后台线程只算像素多边形（纯 Python），Surface 由**本函数在主线程**创建，
     见模块头「两级缓存」。
     """
-    key = (model_name, int(size), _palette(colors))
+    key = (as_target(model_name), int(size), _palette(colors))
     hit, val = _lookup(key)
     if hit:
         if isinstance(val, Exception):
@@ -404,32 +618,49 @@ def request(model_name, size=THUMB_SIZE, colors=None):
 
 
 # ----------------------------------------------------------------------
-# 空闲预热：启动后把**所有**模型的两张缩图都算一遍并落盘
+# 空闲预热：启动后把**菜单里每个预设**的两张缩图都算一遍并落盘
 # ----------------------------------------------------------------------
 # 用户 2026-10-26 提的做法：与其悬停时现算，不如开局后空闲时挨个算好导出。
 # 比「悬停现算」好在三处：①悬停零等待（只读盘）②不用在游戏进行中起
 # 线程算几何 ③第二次启动连算都不算。
+# 预热对象由 GUI 传进来（renderer._preview_targets 扫自己菜单），这样
+# 「菜单里有哪些档位」只有一处真相；`warm_targets()` 只是无 GUI 时的兜底。
 _warm_started = [False]
 # 预热起点：第一次 pump 的时刻。预热要错开开局那一下——后台跑打乱是纯 Python
 # 重活，会抢 GIL，实测单模型能把某一帧顶到 ~128ms（掉 7 帧）。等一秒再开始，
 # 用户已经看清盘面了，卡顿也落在「还没动手」的时候。
 _pump_t0 = [0.0]
 _WARM_DELAY = 1.0
-# 模型之间让路：每个模型之间睡一下，把长卡顿摊成几次短卡顿
+# 目标之间让路：每个目标之间睡一下，把长卡顿摊成几次短卡顿
 _WARM_GAP = 0.12
 
 
-def warm_names():
-    """预热对象：注册表里所有已装模型的等级1/等级2 都画同一张缩图，故只需名字。"""
+def warm_targets():
+    """兜底预热清单：注册表里所有模型的等级1/等级2。
+
+    GUI 会传自己的菜单目标（见 `renderer._preview_targets`），这里只是让
+    「没有 GUI 入口」的场合（测试、脚本）也能预热出东西来。
+    """
     from engine import model_registry
-    return sorted(model_registry.loaded())
+    out = []
+    for name in sorted(model_registry.loaded()):
+        out.append(('model', name, 1))
+        out.append(('model', name, 2))
+    return out
 
 
-def _warm_worker(names, size, pal):
+def _warm_worker(targets, size, pal):
     """后台：逐个算像素多边形（纯 Python）。已落盘且签名一致的直接跳过。"""
-    for i, name in enumerate(names):
-        key = (name, int(size), pal)
-        if _disk_ok(key):
+    try:
+        _purge_stale()
+    except Exception:      # noqa: BLE001 —— 清旧图失败不影响预热
+        pass
+    for i, target in enumerate(targets):
+        key = (target, int(size), pal)
+        try:
+            if _disk_ok(key):
+                continue
+        except Exception:      # noqa: BLE001 —— 签名算不出来的目标直接跳过
             continue
         if i:
             time.sleep(_WARM_GAP)
@@ -441,12 +672,12 @@ def _disk_ok(key):
     return gp is not None and os.path.exists(gp) and os.path.exists(sp)
 
 
-def pump(colors=None, size=THUMB_SIZE, budget=1):
+def pump(colors=None, size=THUMB_SIZE, budget=1, targets=None):
     """**每帧调一次**：启动预热 + 把后台算好的图在主线程画出来并存盘。
 
-    budget 限制单帧最多处理几个模型：画一张 0.4ms、存两张 PNG 约 2~5ms，
-    一个模型 ~6ms 已够小；设上限是防止「第一次启动同时收到 5 个模型」把
-    某一帧撑到 30ms 掉帧。返回本帧实际处理的数量（给测试用）。
+    budget 限制单帧最多处理几个目标：画一张 0.4ms、存两张 PNG 约 2~5ms，
+    一个目标 ~6ms 已够小；设上限是防止「第一次启动同时收到一批」把某一帧
+    撑到 30ms 掉帧。返回本帧实际处理的数量（给测试用）。
 
     失败一律不抛：预热是纯锦上添花，绝不许影响主循环。
     """
@@ -457,8 +688,9 @@ def pump(colors=None, size=THUMB_SIZE, budget=1):
             _pump_t0[0] = time.time()
         if not _warm_started[0] and time.time() - _pump_t0[0] >= _WARM_DELAY:
             _warm_started[0] = True
+            want = warm_targets() if targets is None else list(targets)
             threading.Thread(target=_warm_worker,
-                             args=(warm_names(), int(size), pal),
+                             args=(want, int(size), pal),
                              name='model-preview-warm', daemon=True).start()
         with _lock:
             pending = [(k, v) for k, v in _pics.items()
