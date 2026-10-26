@@ -436,6 +436,18 @@ def main():
     model_preview._purge_stale()
     check(not os.path.exists(stale), 'K10 旧版本缩图被清掉（不会留着冒充新图）')
 
+    # K11 每个目标的磁盘签名必须唯一：等级1/等级2 是同一块板的两种打乱，
+    # 内容哈希相同，签名里若漏了 step 就会互相覆盖（预览随机显示其中一级）。
+    pal = model_preview._palette(gui.colors)
+    seen = {}
+    dup = []
+    for t in targets:
+        sig = model_preview._disk_sig((t, 104, pal))
+        if sig in seen:
+            dup.append((seen[sig], t))
+        seen[sig] = t
+    check(not dup, f'K11 {len(targets)} 个目标的磁盘签名互不冲突', str(dup[:2]))
+
     return _report()
 
 

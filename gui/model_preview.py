@@ -63,7 +63,8 @@ _PAD = 5
 # 上一版算法写的图会被一直复用（预热只看 `_disk_ok`）。
 # 2026-10-26 用户报「打乱态就是复原态」，根因之一就是这里：当时签名只有
 # 「模型内容 + 尺寸 + 配色」，算法换了签名没换，旧图原封不动留在盘上。
-_CACHE_VER = 2
+# v3：文件名加 step（等级1/2 曾共用一个缓存文件互相覆盖），旧命名一律清掉。
+_CACHE_VER = 3
 
 # 打乱口径：与 GUI 真打乱同源（gui/session.py 的 shuffle_puzzle 用
 # bias=0.3 / min_score=0.75）。缩图必须画玩家真会遇到的局面。
@@ -220,10 +221,13 @@ def target_of_item(item):
 def _target_tag(target):
     """目标 → 磁盘文件名前缀（也当失败日志里的可读标识）。
 
-    文件名要过 Windows 的非法字符关（模型名是用户起的，可能带冒号/空格）。
+    ⚠️ **step 必须在内**：等级1/等级2 是同一块板的两种打乱口径，出的图不一样，
+    但内容哈希相同（都是同一个模型文件）。曾经漏了 step，两级共用一个文件名
+    互相覆盖 —— 预览只好随机显示其中一级的打乱。
+    文件名还要过 Windows 的非法字符关（模型名是用户起的，可能带冒号/空格）。
     """
     if target[0] == 'model':
-        raw = f'model_{target[1]}'
+        raw = f'model_{target[1]}_s{target[2]}'
     else:
         _, kind, m, n, step = target
         raw = f'board_{kind}_{m}x{n}s{step}'
