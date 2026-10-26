@@ -1168,6 +1168,8 @@ class ModelEditorMixin:
         seams = [{'name': nm, 'coeffs': [int(cf[0]), int(cf[1])],
                   'step': [int(st[0]), int(st[1])], 'rank': 'centroid'}
                  for (nm, cf, st, _n) in self._med_enabled_families()]
+        from engine.model_loader import (DEFAULT_CORNER_RADIUS,
+                                         DEFAULT_SEAM_WIDTH)
         return {
             'schema': SCHEMA_BOARD,
             'name': name,
@@ -1176,6 +1178,11 @@ class ModelEditorMixin:
             'pos_scale': 1,
             'solved': 'exact',
             'shapes_ref': 'shapes.json',
+            # 显式写死画风参数：与碎三角同款（6 / 3），这样文件自解释，
+            # 不依赖 loader 的缺省值将来怎么改（用户 2026-10-26 要「和碎三角
+            # 完全一致」）。
+            'seam_width': DEFAULT_SEAM_WIDTH,
+            'corner_radius': DEFAULT_CORNER_RADIUS,
             'orientations': orients,
             'tiles': tiles,
             'seams': seams,

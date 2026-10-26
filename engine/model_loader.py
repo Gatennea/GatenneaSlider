@@ -28,6 +28,18 @@ SCHEMA_SHAPES = 'gatenna.shapes/1'
 DEFAULT_MODEL_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models')
 
+# 板型渲染参数的缺省值（设计像素，zoom=1 时为像素）。
+#
+# 为什么要有缺省而不是「没写就退回方形旧口径」：模型板型全走通用多边形通道，
+# 画风本应一模一样；但碎三角是手写文件、显式写了 6/3，而编辑器存出来的模型
+# （shield、222…）没写这两个字段，于是回退到方形的 gap_width + 圆角比例——
+# 同一通道两种长相：碎三角有 6px 缝带 + 圆角，自造模型是「块贴块 + 一条黑
+# 细线」，用户 2026-10-26 报「自造謎題和原先畫風不一致，理論上應該和碎三角形
+# 完全一致才對」。故把碎三角的 6/3 定为**模型板型缺省**：文件不写就是这个值，
+# 与碎三角逐像素同款。
+DEFAULT_SEAM_WIDTH = 6.0
+DEFAULT_CORNER_RADIUS = 3.0
+
 
 class ModelError(ValueError):
     """模型文件不合法（结构 / 语义 / 物理公理）。"""
@@ -423,8 +435,8 @@ def _assemble(name, doc, basis, scale, offsets, goal, families, shapes, path):
         cell_polygon=cell_polygon,
         components=components,
         seam_lines=seam_lines,
-        seam_width=doc.get('seam_width'),
-        corner_radius=doc.get('corner_radius'),
+        seam_width=doc.get('seam_width', DEFAULT_SEAM_WIDTH),
+        corner_radius=doc.get('corner_radius', DEFAULT_CORNER_RADIUS),
         basis=basis,
         pos_scale=scale,
     )
