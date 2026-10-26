@@ -32,6 +32,14 @@ class AutoSolveMixin:
         if self._readonly_blocked():
             return
 
+        # 自造谜题（模型文件板型）：求解器只有方形 / 三角 / 米字三套语义，
+        # 模型板型的缝族、朝向表、晶格都是 per-model 的，没有可用的求解器
+        # ——明说「没有这个功能」，不要落到下面按算法名报一句含糊的拒绝。
+        # 正在求解时放行（那条路径是「取消」，不能被拦）。
+        if not getattr(self, '_auto_solve_running', False) and \
+                self._model_blocked('求解器', '求解器只认方形/三角/米字'):
+            return
+
         # 当前谜题形态不支持所选算法 → **明确告知并拒绝启动**。
         #
         # 旧行为是「静默自动切到 tri_gather / mi_gather」：用户看不到自己选的

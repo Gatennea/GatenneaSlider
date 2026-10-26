@@ -1166,15 +1166,20 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._timer_cancel()
         detached = self._detach_readonly_save()
 
-        # 竞速/创造对模型板型不可用（见 gui/speedrun.py set_game_mode 的拦截）：
+        # 竞速对模型板型不可用（见 gui/speedrun.py set_game_mode 的拦截）：
         # 带着 timed 进模型局，打乱后会走到 _timer_enter_ready 的 lossy
         # export_map（24 种朝向压成 '#'），成绩是一份丢朝向的串。这里主动
         # 退回练习模式并说明，不把谜题换成一静默错的模式组合。
+        #
+        # 创造模式**不再退回**（2026-10-26 用户定）：创造首页的两个子入口都
+        # 自建局面——「① 打乱状态设计 / 格子画布」各自有 _is_model_kind 拒绝，
+        # 「② 还原态设计 → 搭积木」用编辑器自己的预览局——与当前盘面形态
+        # 无关。此前连创造也一并退回练习，等于让自造谜题永远进不了创造
+        # 模式（用户报「不能竞速是次要的，但影響是無法進入創造模式」）。
         mode_note = ''
-        if self.game_mode in ('timed', 'create'):
-            prev = self._mode_name()
+        if self.game_mode == 'timed':
             self.set_game_mode('practice')
-            mode_note = f"（{model.title}不支持{prev}模式，已切回练习）"
+            mode_note = f"（{model.title}不支持竞速模式，已切回练习）"
 
         self.current_step = step
         # 模型板型是独立形态：既不是米字也不是三角（两者都有各自手画渲染，
@@ -1237,6 +1242,28 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if not getattr(self, 'mi_mode', False):
             return False
         msg = f"米字格：{action}不可用"
+        if hint:
+            msg += f"（{hint}）"
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = 120
+        return True
+
+    def _model_blocked(self, action: str, hint: str = '') -> bool:
+        """模型文件板型（自造谜题 / 碎三角等）暂不支持的入口：提示并拦截。
+
+        分组着色、悬停连锁、复原提示标记、宏、求解器这五类是**按方形四邻 /
+        三角三邻 / 米字八向手写语义**实现的：它们默认「相邻」有全局统一的
+        定义、默认朝向集是全局那一套。模型板型的缝族、朝向表、晶格都是
+        per-model 的（同一 2D 格还能叠不同朝向的块），套用会给出**错误**的
+        着色/连锁/标记，而不是没有信息。用户 2026-10-26 定：宁可明说
+        「自造谜题没这个功能」，也不留一个按得下去、反馈是错的入口。
+
+        判据用 `_is_model_kind()`（形态键不在旧四形态里），与竞速/打乱/
+        设计画布各处拦截同源，不硬编码 ``'shatter'``。
+        """
+        if not self._is_model_kind():
+            return False
+        msg = f"自造谜题：{action}暂不支持"
         if hint:
             msg += f"（{hint}）"
         self.macro_notify_msg = msg

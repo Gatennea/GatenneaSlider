@@ -306,6 +306,12 @@ class BoardSpec:
     seam_lines: object = None
     seam_width: object = None        # 渲染：缝宽（设计像素；None=退回渲染器 gap_width 旧口径）
     corner_radius: object = None    # 渲染：圆角半径上限（设计像素；None=退回 _slider_corner_radius）
+    # 板型的晶格基与坐标缩放（模型文件自带；手写板型可为 None/1）。
+    # 用途：让「晶格族」这件事随板型数据走，而不是只藏在 model_loader 的闭包里
+    # ——编辑器要把一个模型局导入搭积木（改谜题）时必须知道它是三角族还是
+    # 方形族，以及整数坐标要怎么除回格坐标（2026-10-26）。
+    basis: object = None             # ((ax,ay),(bx,by))；平面 = basis·(整数/pos_scale)
+    pos_scale: float = 1.0           # 整数顶点 = pos_scale × 格坐标
 
     def __post_init__(self):
         if not isinstance(self.lattice, Lattice):

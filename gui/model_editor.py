@@ -102,8 +102,13 @@ class ModelEditorMixin:
     # ==================================================================
     # 打开 / 退出
     # ==================================================================
-    def _med_open(self):
-        """从「谜题 → 模型谜题 ▸ → ＋ 搭建新模型...」进入编辑器。"""
+    def _med_open(self, seed_current: bool = False):
+        """打开搭积木编辑器。
+
+        ``seed_current=True`` 是「改谜题」入口（用户 2026-10-26 定）：把**当前
+        模型谜题的盘面**原样导入编辑器接着改，而不是从一颗空块开始。导入不成
+        （不是模型板型 / 形状标签无法识别 / 晶格族认不出）就退回空盘并说明。
+        """
         if self._med_active:
             self._med_notify('已在搭积木编辑器中（ESC 或[退出]返回）')
             return
@@ -208,17 +213,147 @@ class ModelEditorMixin:
         self.triangle_mode = False
         self.mi_mode = False
         self.numbered = False
-        # ---- 预览 spec + 首块 ----
+        # ---- 预览 spec + 首块（或导入当前盘面）----
+        seeded = self._med_seed_from_model(med) if seed_current else False
+        note = ''
+        if not seeded:
+            if seed_current:
+                # 提示要能活到会话里：下面那句操作说明会覆盖通知，所以拼进去
+                note = ('当前盘面无法导入编辑器（不是模型板型，或形状/晶格族'
+                        '与编辑器不相容），已按空盘打开 · ')
+            seed_shape = med['shape']
+            med['placed'][((0, 0), seed_shape, 0)] = med['images'][seed_shape][0]
         spec = self._med_spec()
-        seed_shape = med['shape']
-        med['placed'][((0, 0), seed_shape, 0)] = med['images'][seed_shape][0]
         preview = EngineGame(Board(spec, self._med_blocks()), kind=PREVIEW_KIND)
         med['game'] = preview
         self.game = preview
         self._med_sync_after_edit(center=True)
-        self._med_notify('搭积木：左键放、按住拖块移动；右键删块、'
-                         '右键点缝＝捆绑；R/F 转向（悬停某块＝转那块），'
-                         'U 撤销，命名后回车保存（ESC 退出）')
+        if seeded:
+            self._med_notify(
+                f'已导入当前盘面（{len(med["placed"])} 块，含原有捆绑）：'
+                '左键放、拖块移动；右键删块/点缝捆绑；R/F 转向；U 撤销；'
+                '命名后回车另存为新模型（ESC 退出）')
+        else:
+            self._med_notify(note + '搭积木：左键放、按住拖块移动；右键删块、'
+                             '右键点缝＝捆绑；R/F 转向（悬停某块＝转那块），'
+                             'U 撤销，命名后回车保存（ESC 退出）')
+
+    def _med_seed_from_model(self, med) -> bool:
+        """把**当前模型谜题的盘面**灌进编辑器会话（「改谜题」用）。
+
+        为什么这么绕：编辑器的会话 spec 是从「形状库 + 晶格族」现搭的
+        （``_med_spec``），朝向标签一律重排成 ``形状:序号``。模型文件里的标签
+        也是这个格式（``tri:0`` / ``half:9``），但序号集可能带空洞（只存被用到
+        的像），所以这里按形状把序号**压缩重排**，同时记住「旧标签 → 新序号」
+        的映射，块才落得回原位。
+
+        只做转换、不校验棋形：块数、连通、可动由保存门在保存时判（编辑器
+        全程允许半成品）。返回 False 表示这批块没法导入（标签不是
+        ``形状:序号`` / 晶格族认不出 / 有重复键），调用方退回空盘。
+
+        几何保证：``spec.orientations`` 只存**标签**，偏移藏在 model_loader
+        的闭包里；公开可拿的是 ``spec.cell_polygon(point, orient)``（平面
+        坐标）。这里用 ``spec.basis`` 的逆矩阵把它解回格坐标，再按
+        ``pos_scale`` 除回整数格（除不尽就放弃导入，绝不四舍五入——半格
+        偏移会把整盘悄悄挪位）。这样不依赖 loader 内部结构。
+        """
+        game = getattr(self, 'game', None)
+        spec = getattr(game, 'spec', None)
+        orients = getattr(spec, 'orientations', None) if spec is not None else None
+        if not orients:
+            return False
+        basis = getattr(spec, 'basis', None)
+        if not basis or len(basis) != 2:
+            return False
+        try:
+            scale = float(getattr(spec, 'pos_scale', 1.0) or 1.0)
+        except (TypeError, ValueError):
+            return False
+        if scale <= 0:
+            return False
+        b00, b01 = float(basis[0][0]), float(basis[0][1])
+        b10, b11 = float(basis[1][0]), float(basis[1][1])
+        det = b00 * b11 - b10 * b01
+        if abs(det) < 1e-12:
+            return False
+
+        def _poly_to_grid(poly):
+            """平面顶点 → 整数格偏移（int_verts = point + offs）。"""
+            out = []
+            for px, py in poly:
+                a = (px * b11 - py * b10) / det * scale
+                c = (b00 * py - b01 * px) / det * scale
+                ia, ic = int(round(a)), int(round(c))
+                if abs(a - ia) > 1e-6 or abs(c - ic) > 1e-6:
+                    raise ValueError((a, c))
+                out.append((ia, ic))
+            return tuple(out)
+
+        try:
+            lattice = eg.lattice_of_basis(basis)
+        except Exception:
+            return False
+        if lattice not in eg.LATTICES:
+            return False
+        # 「形状:序号」→ {形状: {序号: 格偏移}}
+        buckets = {}
+        try:
+            for label in orients:
+                shape, sep, idx = str(label).rpartition(':')
+                if not sep or not shape or not idx.isdigit():
+                    return False
+                buckets.setdefault(shape, {})[int(idx)] = _poly_to_grid(
+                    spec.cell_polygon((0, 0), label))
+        except Exception:                   # noqa: BLE001 —— 任何几何异常都退回空盘
+            return False
+        if not buckets:
+            return False
+        order = {s: sorted(m) for s, m in buckets.items()}
+        images = {s: tuple(buckets[s][i] for i in order[s]) for s in buckets}
+        new_index = {f'{s}:{i}': k for s in buckets
+                     for k, i in enumerate(order[s])}
+        # 块源：用引擎局面的 Board.blocks（真正的 engine Block），不是 GUI 的
+        # 适配层列表——_AdapterBlock 只有 .location 列表，没有 .point/.orient。
+        board = getattr(game, 'board', None)
+        placed, groups, gid_map = {}, {}, {}
+        for b in (getattr(board, 'blocks', ()) if board is not None else ()):
+            label = str(getattr(b, 'orient', ''))
+            if label not in new_index:
+                return False
+            shape = label.rpartition(':')[0]
+            # 块坐标本身已是整数格（Board 校验 Lattice.valid(point)），
+            # 不能按 pos_scale 再除一次——那是顶点偏移的单位，不是锚点。
+            try:
+                if any(float(v) != int(v) for v in b.point):
+                    return False
+                p = tuple(int(v) for v in b.point)
+            except (TypeError, ValueError):
+                return False
+            key = (p, shape, new_index[label])
+            if key in placed:
+                return False
+            placed[key] = images[shape][new_index[label]]
+            g = getattr(b, 'group', 0) or 0
+            if g:
+                if g not in gid_map:
+                    gid_map[g] = len(gid_map) + 1
+                groups[key] = gid_map[g]
+        if not placed:
+            return False
+        info = eg.lattice_info(lattice)
+        med['lattice'] = lattice
+        med['basis'] = info['basis']
+        med['deg'] = info['deg']
+        med['lib'].update(images)
+        for s in images:
+            med['lib_lattice'][s] = lattice
+        med['images'] = images
+        med['placed'] = placed
+        med['groups'] = groups
+        med['next_gid'] = len(gid_map) + 1
+        med['shape'] = self._med_default_shape(images)
+        med['cursor'] = 0
+        return True
 
     def _med_close(self):
         """退出编辑器，原样还原进入前的局面与相机。"""

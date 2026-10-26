@@ -1699,6 +1699,10 @@ class EventsMixin:
                 return False, "计时模式中无法使用求解器"
             if self._readonly_blocked():
                 return False, "只读存档无法使用求解器"
+            # 自造谜题：没有对应求解器语义（缝族/朝向表 per-model），
+            # 直接报「没有这个功能」，不落到按算法名的含糊拒绝
+            if self._model_blocked('求解器', '求解器只认方形/三角/米字'):
+                return False, self.macro_notify_msg
             if getattr(self, '_ann_recording', False):
                 return False, "标注录制中无法使用求解器"
             # 当前谜题形态不支持所选算法 → 明确反馈「没有这个功能」。
@@ -1737,6 +1741,9 @@ class EventsMixin:
             return False, "正在执行其他宏"
         # 米字格：宏按方形 h/v 缝隙语义录制，四族缝隙/八向的米字局面回放无意义
         if self._mi_blocked('宏执行'):
+            return False, self.macro_notify_msg
+        # 自造谜题同理（缝族/朝向表 per-model，方形 h/v 回放对不上）
+        if self._model_blocked('宏执行', '宏按方形缝隙语义录制'):
             return False, self.macro_notify_msg
         self._start_macro_execute(name, reverse=bool(reverse))
         if getattr(self, 'macro_executing', False) and getattr(self, 'macro_selecting_base', False):
@@ -3649,6 +3656,17 @@ class EventsMixin:
 
     def _handle_right_panel_switch(self, key: str):
         """处理右侧面板快捷开关点击（滑动动画/选中动画/着色/连锁/模式/逆序）"""
+        # 自造谜题（模型文件板型）：这三个开关背后的语义都按旧四形态手写，
+        # 模型板型套用会给出**错的**着色/连锁/标记（不是「没信息」）。按用户
+        # 2026-10-26 的决定，按一下就明确说「没有这个功能」，不留哑开关。
+        _model_switch_labels = {
+            'coloring_enabled': '分组着色',
+            'chain_hint_enabled': '悬停连锁提示',
+            'board_marks_enabled': '复原提示标记',
+        }
+        if key in _model_switch_labels and self._model_blocked(
+                _model_switch_labels[key], '该功能按方形/三角/米字语义手写'):
+            return
         if key == 'animation_enabled':
             self.animation_enabled = not self.animation_enabled
             if not self.animation_enabled and self.animating:
@@ -3878,6 +3896,9 @@ class EventsMixin:
         # 米字格：录下的动作与四族缝隙/八向不对应，禁止录制
         if self._mi_blocked('宏录制'):
             return
+        # 自造谜题：缝族/朝向表 per-model，录下来的 h/v 步无法在其他局面解释
+        if self._model_blocked('宏录制', '宏按方形缝隙语义录制'):
+            return
         self.macro_recording = True
         self.macro_recording_steps = []
         self.macro_record_base_point = None
@@ -3969,6 +3990,10 @@ class EventsMixin:
         if self._timer_blocked():
             self.macro_notify_msg = "计时中无法使用宏"
             self.macro_notify_timer = 90
+            return
+        # 自造谜题：宏按方形 h/v 缝隙语义录制 → 回放无意义（在此拦截，
+        # 菜单点名字/快捷键/HTTP 三条入口共用这一个闸门）
+        if self._model_blocked('宏执行', '宏按方形缝隙语义录制'):
             return
         macro = self.macro_manager.get_macro(macro_name)
         if macro is None:
