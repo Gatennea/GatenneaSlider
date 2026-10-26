@@ -15,6 +15,10 @@ _test_model_style）。
   F. 菜单接线：悬停模型条目才画面板、悬停分组标题不画、右侧塞不下时
      翻到一级菜单左侧。
   G. 反向护栏：方形局没有被这套预览牵连（菜单照旧能画）。
+  H. 调色板键护栏：渲染层引用的 `self.colors[...]` 键必须真存在
+     （2026-10-26 一碰预览就崩的根因就是写错键名）。
+  I. 预览失败不许连累整帧：假模型名 → 菜单照常画、原因记日志。
+  J. 磁盘缓存：空闲预热落盘、清内存后仍能立刻取图、签名带内容哈希。
 
 跑法：D:/python/python.exe test/_test_model_preview.py
 """
@@ -101,6 +105,8 @@ def _model_items(gui, name='shield'):
 
 def main():
     model_preview.clear_cache()
+    # 调色板直接取真 GUI 的（C 组要比「缩图块色 == 真盘块色」）
+    gui = make_gui('shield', 2)
 
     # ---- A. 基本可用 ------------------------------------------------
     goal, scr = model_preview.thumbs('shield', 104)
@@ -142,14 +148,19 @@ def main():
     check(max(fw, fh) <= 104 - 2 * model_preview._PAD + 0.01,
           'B4 拟合结果不超出缩图内边距', f'{fw:.1f}x{fh:.1f}')
 
-    # ---- C. 按块序上色 ----------------------------------------------
-    n = len(spec.goal_blocks)
-    c0 = model_preview._block_color(0, n)
-    cl = model_preview._block_color(n - 1, n)
-    check(c0 != cl, 'C1 首块与末块颜色不同（打乱才看得出来）', f'{c0} vs {cl}')
-    check(c0[2] > c0[0] + 30 and cl[2] > cl[0] + 30,
-          'C2 两端色都在青→紫段（B 分量明显高于 R，不是彩虹）',
-          f'{c0} {cl}')
+    # ---- C. 画风一致：缩图块色 = 真盘块色（不搞彩虹） ----------------
+    # 2026-10-26 用户质疑「为什么这么多颜色的滑块」。实测单色下两张缩图
+    # 像素差就有 26~37%，彩色渐变没换来可读性，反而和真盘画风不一致。
+    pal = model_preview._palette(gui.colors)
+    g_c, s_c = model_preview.thumbs('shield', 104, gui.colors)
+    cnt = set()
+    for y in range(0, 104, 2):
+        for x in range(0, 104, 2):
+            cnt.add(tuple(g_c.get_at((x, y))[:3]))
+    check(len(cnt) <= 3, 'C1 缩图只用「底色 / 块色 / 缝线」三种颜色',
+          f'{sorted(cnt)}')
+    check(pal[1] in cnt, 'C2 块色 = 真盘滑块色（与碎三角同一套画风）',
+          f'block={pal[1]} 实际={sorted(cnt)}')
 
     # ---- D. 缓存与异步 ----------------------------------------------
     t0 = time.perf_counter()
@@ -197,7 +208,6 @@ def main():
     # ---- F. 菜单接线 ------------------------------------------------
     model_preview.clear_cache()
     model_preview.thumbs('shield', 104)          # 先热身，避免悬停那帧还在 pending
-    gui = make_gui('shield', 2)
     gui._refresh_puzzle_presets()
     idx = _model_items(gui, 'shield')
     check(idx >= 0, 'F0 菜单的模型子菜单里能定位 shield 条目')
@@ -257,6 +267,85 @@ def main():
         drew = False
         print('   方形菜单异常:', exc)
     check(drew, 'G1 方形局菜单绘制不受影响（悬停 -1 时不碰预览）')
+
+    # ---- H. 调色板键护栏（2026-10-26 事故） -------------------------
+    # 事故：失败提示分支写了 self.colors['unsolvable']，实际键名是
+    # 'unsolved' → 悬停任何「预览算不出来」的条目就 KeyError，打断主循环，
+    # 表现成「一碰预览就崩」。这里静态扫一遍所有 self.colors['x'] 字面量。
+    import re
+    pat = re.compile(r"self\.colors\[\s*['\"]([a-z_]+)['\"]\s*\]")
+    files = [os.path.join(_PROJ, 'GUI.py')]
+    files += [os.path.join(_PROJ, 'gui', n)
+              for n in sorted(os.listdir(os.path.join(_PROJ, 'gui')))
+              if n.endswith('.py')]
+    missing = []
+    for path in files:
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        for mt in pat.finditer(src):
+            if mt.group(1) not in gui.colors:
+                missing.append(f'{os.path.basename(path)}: {mt.group(1)}')
+    check(not missing, 'H1 渲染层引用的调色板键全部存在于 GUI.colors',
+          str(sorted(set(missing))[:8]))
+
+    # ---- I. 预览失败不许连累整帧 ------------------------------------
+    model_preview.clear_cache()
+    gui.puzzle_sub_presets['models'] = list(gui.puzzle_sub_presets['models']) + [
+        ('假模型（0 块）', 4, 4, 1, '__no_such_model__')]
+    gui.puzzle_sub_hovered = len(gui.puzzle_sub_presets['models']) - 1
+    gui.screen = pygame.display.get_surface()
+    # 边画边等：request() 由绘制触发（首帧 pending，线程算完才留下失败原因）
+    deadline = time.time() + 10.0
+    draw_err = None
+    while time.time() < deadline:
+        try:
+            gui.draw_board()
+            gui.draw_menu_bar()
+        except Exception as exc:      # noqa: BLE001
+            draw_err = exc
+            break
+        if model_preview.last_error('__no_such_model__'):
+            break
+        time.sleep(0.02)
+    try:
+        gui.draw_board()               # 再画一帧：这一帧走的是「预览不可用」分支
+        gui.draw_menu_bar()
+    except Exception as exc:          # noqa: BLE001
+        draw_err = draw_err or exc
+    check(draw_err is None, 'I1 预览算不出来时菜单照常绘制（不再中断主循环）',
+          repr(draw_err))
+    check(bool(model_preview.last_error('__no_such_model__')),
+          'I2 失败原因被记下（面板画「预览不可用：…」而不是假装没这功能）',
+          repr(model_preview.last_error('__no_such_model__')))
+
+    # I3：失败也要留在错误日志里（真因不能只活在内存里）
+    try:
+        with open(os.path.join(_PROJ, 'config', 'error_log.jsonl'),
+                  encoding='utf-8') as fh:
+            tail = fh.read()[-20000:]
+        logged = '模型预览生成失败' in tail
+    except OSError:
+        logged = False
+    check(logged, 'I3 预览失败写进了 error_log.jsonl（带 traceback）')
+
+    # ---- J. 磁盘缓存：空闲预热落盘 + 下次启动零计算 ------------------
+    # 用户 2026-10-26 的方案：开局后空闲时把每个模型的两张图都算好导出，
+    # 悬停只读图。这里钉住「能落盘」「清内存后仍立刻有图」「签名带模型内容哈希」。
+    model_preview.clear_cache()
+    key = ('shield', 104, model_preview._palette(gui.colors))
+    for _f in range(400):
+        model_preview.pump(gui.colors)
+        if model_preview._disk_ok(key):
+            break
+        time.sleep(0.02)
+    check(model_preview._disk_ok(key), 'J1 空闲预热把缩图存到本地（下次启动零计算）')
+    model_preview.clear_cache()          # 只清内存，磁盘仍在
+    g4, s4, st4 = model_preview.request('shield', 104, gui.colors)
+    check(st4 == 'ready' and g4 is not None and s4 is not None,
+          'J2 内存清空后仍能从磁盘立刻取图（悬停零等待）', f'state={st4}')
+    check(model_registry.loaded('shield').hash() in model_preview._disk_sig(key),
+          'J3 磁盘签名含模型内容哈希（改了形状自动失效，不会用旧图）',
+          model_preview._disk_sig(key))
 
     return _report()
 

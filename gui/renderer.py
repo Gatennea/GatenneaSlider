@@ -2515,7 +2515,42 @@ class RendererMixin:
     _PREVIEW_PAD = 8
     _PREVIEW_LABEL_H = 16
 
+    def _preview_pump(self):
+        """每帧一次的模型预览预热（启动后把各模型缩图挨个算好落盘）。
+
+        放在主循环里而不是悬停时：悬停只剩「读图」这一步，零等待也零风险。
+        本身不抛异常（失败只是没有预览），这里再兜一层是防 import 级别的意外。
+        """
+        try:
+            from gui import model_preview
+            model_preview.pump(self.colors)
+        except Exception:      # noqa: BLE001 —— 见 docstring
+            pass
+
     def _draw_model_hover_preview(self, panel_x, panel_y):
+        """悬停模型条目时的预览面板。
+
+        这里是**外层兜底**：预览是纯装饰的可选功能，算不出来 / 画不出来
+        最多是「没有预览」，绝不能把整帧拖下水（AGENTS.md §4：每帧调用的
+        可选功能必须能力检测）。2026-10-26 事故就是这层缺失——面板里一处
+        色键写错，悬停当场打断主循环。
+        """
+        try:
+            self._draw_model_hover_preview_impl(panel_x, panel_y)
+        except Exception:      # noqa: BLE001 —— 见上面 docstring
+            import traceback
+            tb = traceback.format_exc()
+            tag = tb.strip().splitlines()[-1]
+            seen = getattr(self, '_preview_fail_seen', None)
+            if seen is None:
+                seen = self._preview_fail_seen = set()
+            if tag not in seen and len(seen) < 20:    # 每帧都会走这里，只记一次
+                seen.add(tag)
+                from gui.log_writer import write as _log_write
+                _log_write('模型悬停预览绘制失败（已跳过该面板）',
+                           trace=tb.splitlines())
+
+    def _draw_model_hover_preview_impl(self, panel_x, panel_y):
         """二级菜单里悬停「模型谜题」条目时，在旁边显示复原态 + 一种打乱态。
 
         为什么只有模型文件板型有预览：方形/三角/米字都是「规规矩矩的整块
@@ -2561,8 +2596,8 @@ class RendererMixin:
                          pygame.Rect(px, py, panel_w, panel_h), 1)
 
         goal, scr, state = model_preview.request(item[4], thumb, self.colors)
-        if state == 'pending' or (goal is None and scr is None
-                                  and model_preview.last_error(item[4]) is None):
+        err = model_preview.last_error(item[4])
+        if state == 'pending' or (goal is None and scr is None and err is None):
             msg = '预览生成中…'
             surf = self.status_font.render(msg, True, self.colors['menu_text'])
             self.screen.blit(surf, surf.get_rect(center=(
@@ -2570,9 +2605,11 @@ class RendererMixin:
             return
         if goal is None or scr is None:
             # 算不出来（模型文件坏了 / 打乱抛异常）：说出来，不假装没这功能
-            err = model_preview.last_error(item[4]) or '未知原因'
-            msg = '预览不可用：' + err
-            surf = self.status_font.render(msg[:40], True, self.colors['unsolvable'])
+            msg = '预览不可用：' + (err or '未知原因')
+            # 色键必须用调色板里真有的那个（'unsolved'）；这里再兜一层
+            # .get，免得以后调色板改名又变成「悬停即崩」
+            warn = self.colors.get('unsolved') or self.colors['menu_text']
+            surf = self.status_font.render(msg[:40], True, warn)
             self.screen.blit(surf, surf.get_rect(center=(
                 px + panel_w // 2, py + pad + thumb // 2)))
             return

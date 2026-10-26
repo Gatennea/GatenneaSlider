@@ -1929,6 +1929,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 块本体走上面的通用多边形通道，这里只画编辑器专属 UI）
                 self._med_draw_overlay()
 
+                # 模型悬停预览的空闲预热：每帧最多画+存一个模型（见 gui/model_preview）
+                self._preview_pump()
+
                 # 菜单栏 + 下拉菜单：非模态最上层（下拉菜单盖住浮动面板）
                 self.draw_menu_bar()
 
