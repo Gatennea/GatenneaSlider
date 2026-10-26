@@ -99,6 +99,15 @@ def _spec_factory(model):
     return factory
 
 
+def has(name):
+    """该模型是否已注册。
+
+    专供「每帧都会问一次」的调用方（菜单行是否画删除键）：``loaded()`` 不带
+    参数会 ``dict(_LOADED)`` 整个复制一遍，菜单里 10 行 × 60 帧白拷 600 次。
+    """
+    return name in _LOADED
+
+
 def loaded(name=None):
     """已装模型：给了名字返回该 LoadedModel（未装 → KeyError），
     否则返回 {名字: LoadedModel}。"""
@@ -107,6 +116,29 @@ def loaded(name=None):
     if name not in _LOADED:
         raise KeyError(f'模型 {name!r} 未安装（已装: {sorted(_LOADED)}）')
     return _LOADED[name]
+
+
+def unregister(name):
+    """把一个模型板型从注册表摘掉（删除模型文件之后必须调）。
+
+    为什么不能只 ``os.remove`` 了事：``_LOADED`` 是**启动期装进内存**的，
+    文件没了它不知道，菜单会继续列着那道题，点开就是
+    ``KeyError: 模型未安装`` ——一个点了没反应的死条目。所以删除流程是
+    「删文件 → unregister」，单一入口在 ``gui/menu_delete.py``。
+
+    ``reload()`` 整目录重扫也能达到同样效果（它会卸载「文件没了」的模型），
+    但那要重读重验全部模型；删除一次只动一个，用这个更轻。
+
+    内置板型不受影响：它们不在 ``_LOADED`` 里，名字也不该传进来。
+    """
+    from .registry import board_types, unregister_board_type
+
+    if name in board_types():
+        try:
+            unregister_board_type(name)
+        except (KeyError, ValueError):
+            pass
+    _LOADED.pop(name, None)
 
 
 def errors():

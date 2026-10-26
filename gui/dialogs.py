@@ -849,22 +849,38 @@ class DialogsMixin:
             self.screen.blit(error_surface, (label_x, y_offset))
             y_offset += 25
 
-        btn_width = 80
+        # 三个按钮一行：[高级选项…] [确定] [取消]
+        # 「高级选项…」= 按上面的形态/尺寸/等级开一局，然后直接进设计画布
+        # （用户 2026-10-26 要的入口；实现只有 _ann_btn_design 这一个，
+        # 这里只是转发，避免与创造模式的入口变成两套账）。
         btn_height = 32
-        btn_x = dialog_x + dialog_width // 2 - btn_width - 10
-        # 按钮位置固定：字段数随形态变（三角少一个列数），按钮不跟着上下跳
         btn_y = dialog_y + 272
-        self.custom_ok_btn = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+        adv_w, ok_w = 112, 80
+        gap = 8
+        row_w = adv_w + ok_w * 2 + gap * 2
+        row_x = dialog_x + (dialog_width - row_w) // 2
 
+        self.custom_adv_btn = pygame.Rect(row_x, btn_y, adv_w, btn_height)
         mouse_pos = pygame.mouse.get_pos()
+        btn_color = (self.colors['button_hover']
+                     if self.custom_adv_btn.collidepoint(mouse_pos)
+                     else self.colors['button_bg'])
+        pygame.draw.rect(self.screen, btn_color, self.custom_adv_btn, border_radius=4)
+        adv_text = self.input_font.render("高级选项…", True, (255, 255, 255))
+        self.screen.blit(adv_text, adv_text.get_rect(center=self.custom_adv_btn.center))
+
+        btn_x = row_x + adv_w + gap
+        # 按钮位置固定：字段数随形态变（三角少一个列数），按钮不跟着上下跳
+        self.custom_ok_btn = pygame.Rect(btn_x, btn_y, ok_w, btn_height)
+
         btn_color = self.colors['button_hover'] if self.custom_ok_btn.collidepoint(mouse_pos) else self.colors['button_bg']
         pygame.draw.rect(self.screen, btn_color, self.custom_ok_btn, border_radius=4)
         ok_text = self.input_font.render("确定", True, (255, 255, 255))
         ok_rect = ok_text.get_rect(center=self.custom_ok_btn.center)
         self.screen.blit(ok_text, ok_rect)
 
-        cancel_x = dialog_x + dialog_width // 2 + 10
-        self.custom_cancel_btn = pygame.Rect(cancel_x, btn_y, btn_width, btn_height)
+        cancel_x = btn_x + ok_w + gap
+        self.custom_cancel_btn = pygame.Rect(cancel_x, btn_y, ok_w, btn_height)
 
         btn_color = self.colors['button_hover'] if self.custom_cancel_btn.collidepoint(mouse_pos) else self.colors['button_bg']
         pygame.draw.rect(self.screen, btn_color, self.custom_cancel_btn, border_radius=4)
@@ -875,6 +891,186 @@ class DialogsMixin:
         #hint_text = self.status_font.render("等级必须小于行列数的较大值，否则", True, (150, 150, 150))
         #hint_rect = hint_text.get_rect(center=(self.screen_width // 2, dialog_y + dialog_height - 15))
         #self.screen.blit(hint_text, hint_rect)
+
+    # ------------------------------------------------------------------
+    # 通用确认弹窗（破坏性操作用；目前只有「删除预设」）
+    # ------------------------------------------------------------------
+    def draw_confirm_dialog(self):
+        """画确认弹窗：标题 + 若干行人话 + [取消][确定]。
+
+        为什么单独做一个通用弹窗而不是把确认塞进菜单条目里（点两次 ✕ 之类）：
+        删除是**不可恢复**的（用户 2026-10-26 定：直删，不做回收站），必须让
+        玩家在按下去之前看清「删的是哪一题、删完什么会没了」。做成一行的
+        「再点一次确认」既看不清文字，也容易和「点开这一题」混起来。
+        """
+        lines = list(getattr(self, 'confirm_lines', ()) or ())
+        title = getattr(self, 'confirm_title', '确认')
+        ok_text = getattr(self, 'confirm_ok_text', '确定')
+
+        pad = 22
+        width = 440
+        text_w = width - pad * 2
+        wrapped = []
+        for line in lines:
+            wrapped.extend(self._wrap_text(line, self.dialog_font, text_w))
+        height = pad + 34 + 10 + len(wrapped) * 24 + 16 + 36 + pad
+
+        x = (self.screen_width - width) // 2
+        y = (self.screen_height - height) // 2
+
+        overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        self.screen.blit(overlay, (0, 0))
+
+        rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self.screen, self.colors['dialog_bg'], rect, border_radius=8)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'], rect, 2, border_radius=8)
+
+        # 标题：危险操作用缝的线色（palette 里唯一的红），不新造颜色
+        title_color = (self.colors['line']
+                       if getattr(self, 'confirm_danger', False)
+                       else self.colors['dialog_title'])
+        surf = self.dialog_title_font.render(title, True, title_color)
+        self.screen.blit(surf, (x + pad, y + pad))
+
+        ty = y + pad + 34 + 10
+        for line in wrapped:
+            s = self.dialog_font.render(line, True, self.colors['dialog_text'])
+            self.screen.blit(s, (x + pad, ty))
+            ty += 24
+
+        btn_w, btn_h = 88, 34
+        btn_y = y + height - pad - btn_h
+        mouse_pos = pygame.mouse.get_pos()
+
+        # 取消（左）/ 确定（右）：与其它对话框一致，确定在右
+        self.confirm_cancel_btn = pygame.Rect(
+            x + width - pad - btn_w * 2 - 10, btn_y, btn_w, btn_h)
+        self.confirm_ok_btn = pygame.Rect(
+            x + width - pad - btn_w, btn_y, btn_w, btn_h)
+
+        c = (self.colors['button_hover']
+             if self.confirm_cancel_btn.collidepoint(mouse_pos)
+             else self.colors['button_bg'])
+        pygame.draw.rect(self.screen, c, self.confirm_cancel_btn, border_radius=4)
+        s = self.dialog_font.render('取消', True, (255, 255, 255))
+        self.screen.blit(s, s.get_rect(center=self.confirm_cancel_btn.center))
+
+        if getattr(self, 'confirm_danger', False):
+            # 危险按钮：dialog_bg 与红线色混出暗红，悬停再亮一档
+            r, g, b = self.colors['line']
+            d = self.colors['dialog_bg']
+            mix = (0.55 if self.confirm_ok_btn.collidepoint(mouse_pos) else 0.40)
+            c = tuple(int(rr * mix + dd * (1 - mix)) for rr, dd in zip((r, g, b), d))
+        else:
+            c = (self.colors['button_hover']
+                 if self.confirm_ok_btn.collidepoint(mouse_pos)
+                 else self.colors['button_bg'])
+        pygame.draw.rect(self.screen, c, self.confirm_ok_btn, border_radius=4)
+        s = self.dialog_font.render(ok_text, True, (255, 255, 255))
+        self.screen.blit(s, s.get_rect(center=self.confirm_ok_btn.center))
+
+    def handle_confirm_dialog_events(self, event) -> bool:
+        """确认弹窗事件（模态：吞掉一切，只有 [取消]/[确定]/ESC/回车有效）。
+
+        §16 纪律：底部按钮**最先判定**，命中即返回；否则「点外面关掉」
+        之类的外层判定会先吃掉落在按钮上的点击。
+        """
+        if not getattr(self, 'show_confirm_dialog', False):
+            return False
+
+        def _close():
+            self.show_confirm_dialog = False
+            self.confirm_action = None
+            self.confirm_lines = []
+
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                _close()
+            elif event.key == pygame.K_RETURN:
+                act = getattr(self, 'confirm_action', None)
+                _close()
+                if callable(act):
+                    act()
+            return True
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            ok_btn = getattr(self, 'confirm_ok_btn', None)
+            cancel_btn = getattr(self, 'confirm_cancel_btn', None)
+            if ok_btn is None:
+                return True      # 还没画过一帧：没有可点区域，先吞掉
+            if ok_btn.collidepoint(event.pos):
+                act = getattr(self, 'confirm_action', None)
+                _close()
+                if callable(act):
+                    act()
+                return True
+            if cancel_btn is not None and cancel_btn.collidepoint(event.pos):
+                _close()
+                return True
+            # 点外部 = 取消（破坏性操作绝不在「点外面」时执行）
+            _close()
+            return True
+
+        return True
+
+    def _custom_apply_fields(self) -> bool:
+        """按对话框里的形态 / 尺寸 / 等级建局。成功返回 True（并关掉对话框）。
+
+        「确定」与「高级选项…」共用这一份：两条路必须过**同一套门槛**，
+        各写一份必然分叉（同一个数字在一个按钮上过、另一个不过）。
+
+        值域约束与各 new_*_puzzle 同源，不在这里另立一套：
+        - 三角形存在任何合法移动 ⟺ k − step ≥ 2（贴合边长时一步都动不了，
+          打乱会恒回还原态，故建局前就挡）；
+        - 方形/米字要求 step < max(m, n)。
+        """
+        try:
+            m = int(self.custom_fields['m'])
+            step = int(self.custom_fields['step'])
+        except (KeyError, ValueError):
+            self.custom_error = "请输入有效的整数"
+            return False
+
+        if step < 1:
+            self.custom_error = "等级必须 >= 1"
+            return False
+
+        if getattr(self, 'custom_kind', 'rect') == 'triangle':
+            if m < 3:
+                self.custom_error = "三角形边长必须 >= 3"
+                return False
+            if step > m - 2:
+                self.custom_error = f"三角形等级必须 <= {m - 2}"
+                return False
+            self.new_triangle_puzzle(m, step)
+            self.show_custom_dialog = False
+            self.custom_error = ''
+            return True
+
+        try:
+            n = int(self.custom_fields['n'])
+        except (KeyError, ValueError):
+            self.custom_error = "请输入有效的整数"
+            return False
+        if m < 2 or n < 2:
+            self.custom_error = "行数和列数必须 >= 2"
+            return False
+        if step >= max(m, n):
+            self.custom_error = f"等级必须 < {max(m, n)}"
+            return False
+
+        if getattr(self, 'custom_kind', 'rect') == 'mi':
+            self.new_mi_puzzle(m, n, step)
+            self.show_custom_dialog = False
+            self.custom_error = ''
+            return True
+
+        numbered = getattr(self, 'custom_kind', 'rect') == 'numbered'
+        self.new_puzzle(m, n, step, numbered=numbered)
+        self.show_custom_dialog = False
+        self.custom_error = ''
+        return True
 
     def _custom_field_order(self) -> list:
         """自定义对话框当前可见的输入字段（三角形态没有列数）。"""
@@ -915,51 +1111,17 @@ class DialogsMixin:
                     return True
 
             if self.custom_ok_btn.collidepoint(x, y):
-                try:
-                    m = int(self.custom_fields['m'])
-                    step = int(self.custom_fields['step'])
+                self._custom_apply_fields()
+                return True
 
-                    if step < 1:
-                        self.custom_error = "等级必须 >= 1"
-                        return True
-
-                    if getattr(self, 'custom_kind', 'rect') == 'triangle':
-                        # 门槛同上：三角形存在任何合法移动 ⟺ k − step ≥ 2。
-                        # 等级贴着边长（step = k−1）时一步都动不了，打乱会
-                        # 恒回还原态，故在建局前就挡掉。
-                        if m < 3:
-                            self.custom_error = "三角形边长必须 >= 3"
-                            return True
-                        if step > m - 2:
-                            self.custom_error = f"三角形等级必须 <= {m - 2}"
-                            return True
-                        self.new_triangle_puzzle(m, step)
-                        self.show_custom_dialog = False
-                        self.custom_error = ''
-                        return True
-
-                    n = int(self.custom_fields['n'])
-                    if m < 2 or n < 2:
-                        self.custom_error = "行数和列数必须 >= 2"
-                        return True
-                    if step >= max(m, n):
-                        self.custom_error = f"等级必须 < {max(m, n)}"
-                        return True
-
-                    if getattr(self, 'custom_kind', 'rect') == 'mi':
-                        self.new_mi_puzzle(m, n, step)
-                        self.show_custom_dialog = False
-                        self.custom_error = ''
-                        return True
-
-                    numbered = getattr(self, 'custom_kind', 'rect') == 'numbered'
-                    self.new_puzzle(m, n, step, numbered=numbered)
-                    self.show_custom_dialog = False
-                    self.custom_error = ''
-                    return True
-                except ValueError:
-                    self.custom_error = "请输入有效的整数"
-                    return True
+            adv_btn = getattr(self, 'custom_adv_btn', None)
+            if adv_btn is not None and adv_btn.collidepoint(x, y):
+                # 先按对话框参数开一局（= 确定），成了再进设计画布。
+                # 语义：设计的是**还原态**，所以从刚开出来的干净盘面进，
+                # 而不是从玩家眼前可能已经打乱的盘面进。
+                if self._custom_apply_fields():
+                    self._ann_btn_design()
+                return True
 
             if self.custom_cancel_btn.collidepoint(x, y):
                 self.show_custom_dialog = False

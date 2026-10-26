@@ -314,6 +314,11 @@ class EventsMixin:
                             continue
                     continue
                 
+                # 确认弹窗（删除预设等破坏性操作）：模态，最先消费点击
+                if getattr(self, 'show_confirm_dialog', False):
+                    self.handle_confirm_dialog_events(event)
+                    continue
+
                 # 自定义对话框事件
                 if self.show_custom_dialog:
                     self.handle_custom_dialog_events(event)
@@ -756,6 +761,23 @@ class EventsMixin:
                         if self.show_puzzle_menu:
                             puzzle_clicked = False
                             puzzle_keep_open = False
+                            # 行尾删除键（✕）优先于整行点击：✕ 落在条目矩形内部，
+                            # 先判整行就会把「删除」误当「开局」（§16 同一条纪律）。
+                            _del_hit = None
+                            for _drect, _ditem in getattr(
+                                    self, 'puzzle_sub_delete_hits', ()):
+                                if _drect.collidepoint(x, y):
+                                    _del_hit = _ditem
+                                    break
+                            if _del_hit is None:
+                                for _drect, _ditem in getattr(
+                                        self, 'puzzle_menu_delete_hits', ()):
+                                    if _drect.collidepoint(x, y):
+                                        _del_hit = _ditem
+                                        break
+                            if _del_hit is not None:
+                                if self._request_delete_preset(_del_hit):
+                                    continue
                             # 二级子菜单优先：点中的是二级条目
                             if self.puzzle_sub_open and self.puzzle_sub_rects:
                                 sub_items = self.puzzle_sub_presets[self.puzzle_sub_open]
@@ -802,6 +824,9 @@ class EventsMixin:
                                         if (len(preset) == 1
                                                 and preset[0] == '__current__'):
                                             # 底部状态行：点了不该关掉菜单
+                                            puzzle_keep_open = True
+                                        elif len(preset) == 2 and preset[0] == '__group__':
+                                            # 分组标题（「捆绑谜题」等）：不可点、点了不关
                                             puzzle_keep_open = True
                                         elif len(preset) == 3 and preset[1] == '__sub__':
                                             # 可展开项：点击切换子菜单开合，菜单保持打开
@@ -4520,6 +4545,57 @@ class EventsMixin:
             return True
         
         return False
+
+    # ------------------------------------------------------------------
+    # 谜题菜单 · 删除预设（用户 2026-10-26 定：模型谜题 + 自定义预设可删，
+    # 内置档位不可删——它们连文件都没有；直删 + 确认弹窗）
+    # ------------------------------------------------------------------
+    def _menu_item_deletable(self, item):
+        """条目能删 → 返回删除目标；不能删（无文件 / 正在玩）返回 None。
+
+        ⚠️ 「当前局不许删」必须在这里判，不能只靠渲染时不画 ✕：绘制与事件
+        分发是两条路，少画一个键不代表那条路走不到（2026-10-26「API 能进、
+        界面进不去」就是两套判据的直接后果）。
+        """
+        from gui import menu_delete
+        tgt = menu_delete.item_target(item)
+        if tgt is None:
+            return None
+        if tgt['kind'] == 'model' and self._current_kind() == tgt['key']:
+            return None
+        if (tgt['kind'] == 'style'
+                and getattr(self, '_ann_style_goal', None) == tgt['key']):
+            return None
+        return tgt
+
+    def _request_delete_preset(self, item):
+        """点行尾 ✕：先弹确认。返回是否真的开了确认框。
+
+        确认通过才删（`_do_delete_preset`）；这里不直接动手，破坏性操作
+        必须让玩家看清删的是哪一题。
+        """
+        from gui import menu_delete
+        tgt = self._menu_item_deletable(item)
+        if tgt is None:
+            return False
+        self.close_all_menus()
+        self.show_confirm_dialog = True
+        self.confirm_title = '删除预设'
+        self.confirm_lines = menu_delete.describe(tgt)
+        self.confirm_ok_text = '删除'
+        self.confirm_danger = True
+        self.confirm_action = (lambda t=tgt: self._do_delete_preset(t))
+        return True
+
+    def _do_delete_preset(self, target):
+        """确认后真正删：删文件 → 摘板型 → 清缩图，然后菜单立刻刷新。"""
+        from gui import menu_delete
+        ok, msg = menu_delete.remove(target, self.config_dir)
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = 240
+        # 菜单要立刻跟上：模型板型已被摘掉，重扫一遍就少两行；样式直接少一行
+        self._refresh_puzzle_presets()
+        return ok
 
     def _arrow_button_click(self, direction):
         """S1-4：点箭头按键 —— 与虚拟键盘同方向的按钮**完全同效果**（走 1 格）。

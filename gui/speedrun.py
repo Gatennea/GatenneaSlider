@@ -71,15 +71,34 @@ class SpeedrunMixin:
         ② 还原态设计 → 搭积木 不依赖当前盘面形态（编辑器自建预览局）；
         打乱态设计/格子画布两个子入口各自有 _is_model_kind 拒绝。
 
+        带粘连（捆绑组）的局也拒竞速，理由见下面的 _board_has_bundles 分支。
+
         2026-10-26 从 set_game_mode 内联判据提出来，供循环开关跳档共用
         ——两处各写一份，就会出现「开关按了没反应」而 set 能进的不一致。
         """
         if mode not in ('practice', 'timed', 'create'):
             return False
         if mode == 'timed':
-            return self._current_kind() in (
-                'square', 'numbered', 'triangle', 'mi')
+            if self._current_kind() not in ('square', 'numbered', 'triangle', 'mi'):
+                return False
+            # 带粘连（捆绑）的局同样不进竞速：竞速的初始局面只记「哪些格子
+            # 有块」（export_map 是 0/1 或 #/_），不记谁和谁粘着 —— 成绩存
+            # 下来还原出的是另一道题。这与模型板型被拒是同一类问题（那边丢
+            # 的是朝向，这边丢的是捆绑组），所以同样明确拒绝、不静默存。
+            return not self._board_has_bundles()
         return True
+
+    def _board_has_bundles(self) -> bool:
+        """当前盘面是否有粘连滑块（捆绑组）。
+
+        判据直接看局面里的块，不看「这是不是样式局」：样式局也可能没粘连
+        （用户可以只改形状不粘），官方档位打乱后也可能带粘连（编辑器里绑过）。
+        """
+        try:
+            return any(int(getattr(b, 'group', 0) or 0)
+                       for b in self.game.blocks)
+        except Exception:      # noqa: BLE001 —— 拿不到就当没有，别把模式切换搞崩
+            return False
 
     def set_game_mode(self, mode: str) -> bool:
         """设置模式：'practice' 练习 / 'timed' 竞速 / 'create' 创造（幂等）。
@@ -94,9 +113,14 @@ class SpeedrunMixin:
             self.macro_notify_timer = 90
             return False
         if not self.mode_allowed(mode):
-            _kind = self._current_kind()
-            _label = {'shatter': '碎三角'}.get(_kind, _kind)
-            self.macro_notify_msg = f"{_label}暂不支持竞速模式（初始局面无字符编码）"
+            if mode == 'timed' and self._board_has_bundles():
+                self.macro_notify_msg = (
+                    "这道题有粘连滑块，暂不支持竞速"
+                    "（竞速只记录哪些格子有块，还原不出同一题）")
+            else:
+                _kind = self._current_kind()
+                _label = {'shatter': '碎三角'}.get(_kind, _kind)
+                self.macro_notify_msg = f"{_label}暂不支持竞速模式（初始局面无字符编码）"
             self.macro_notify_timer = 120
             return False
         if mode == self.game_mode:

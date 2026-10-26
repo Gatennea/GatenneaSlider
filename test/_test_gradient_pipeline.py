@@ -65,8 +65,15 @@ gui.game_history.reset()
 gui.game_history.save_snapshot(gui.game)
 gui.step_count = 0
 check("启动前状态为空", gui._gradient_state is None)
+_gen_before = gui._gradient_gen
 gui._start_auto_solve()
-check("启动后状态非空且后台忙", gui._gradient_state is not None and gui._gradient_busy)
+# 竞态安全：本场景谜题极简单（4x4 仅打乱 6 步 + _FAST 参数），后台线程
+# 可能在 _start_auto_solve() 返回、主线程跑到这条断言之前就已算完并把
+# _gradient_state 清空、_gradient_busy 置 False —— 旧断言因此偶发假红。
+# 改用同步自增的世代计数器 `_gradient_gen` 证明「梯度流水线确实被启动」
+# （早返回被闸门拦住则不会递增，照样能抓真回归）；它只增不减，不受线程
+# 完成时序影响。
+check("启动后梯度流水线已启动（世代自增）", gui._gradient_gen > _gen_before)
 
 concurrency_seen = False
 done = pump_until(lambda: gui._gradient_state is None and not gui.macro_executing and not gui._gradient_busy, 30)

@@ -49,6 +49,7 @@ display 初始化之前创建，所以单元测试里无头就能跑。
 """
 import hashlib
 import os
+import re
 import threading
 import time
 
@@ -118,6 +119,50 @@ def clear_cache():
         _hash_cache.clear()
         _warm_started[0] = False
         _pump_t0[0] = 0.0      # 重新计时，还是等一秒再开始预热
+
+
+def forget_model(name):
+    """模型文件被删除后：清掉它的内存缓存与磁盘缩图（等级1/2 一起）。
+
+    用户 2026-10-26 的删除规则是「直接删模型文件」，但不收拾缩图会留下
+    永远不会再被命中的孤儿 png（``_purge_stale`` 只按算法版本清，不管
+    目标还在不在）。删除入口在 ``gui/menu_delete.py``，它调这里。
+
+    命名知识只在本模块有一份：按 ``model_<安全名>_s<等级>.`` 精确匹配，
+    不用「前缀包含」——模型名互为前缀时（``a`` / ``a_b``）会误删别人的图。
+    """
+    with _lock:
+        _gen[0] += 1           # 在途的后台线程算完发现世代变了就不写回
+        # 三个缓存的键形状不同：_pics/_surfs 是 (target, size, pal)，
+        # _hash_cache 直接就是 target。用取键函数区分，别拿 k[0] 一律当 target。
+        for cache, pick in ((_pics, lambda k: k[0]),
+                            (_surfs, lambda k: k[0]),
+                            (_hash_cache, lambda k: k)):
+            for k in [k for k in cache
+                      if isinstance(pick(k), tuple)
+                      and _target_matches(pick(k), name)]:
+                cache.pop(k, None)
+        for k in [k for k in _inflight
+                  if isinstance(k, tuple) and k and _target_matches(k[0], name)]:
+            _inflight.discard(k)
+
+    d = _disk_dir()
+    if not os.path.isdir(d):
+        return 0
+    # _target_tag 的等级位是 _s<step>：拿 step=0 凑出「..._s0」再削掉末位，
+    # 得到与等级无关的前缀，避免在这里重复一遍文件名清洗规则。
+    prefix = _target_tag(('model', name, 0))[:-1]
+    pat = re.compile(rf'^{re.escape(prefix)}\d+\.')
+    n = 0
+    for fn in os.listdir(d):
+        if not fn.endswith('.png') or not pat.match(fn):
+            continue
+        try:
+            os.remove(os.path.join(d, fn))
+            n += 1
+        except OSError:
+            pass
+    return n
 
 
 def _target_matches(target, wanted):

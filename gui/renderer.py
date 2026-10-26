@@ -2346,6 +2346,10 @@ class RendererMixin:
                 continue
             if len(p) == 1 and p[0] == '__current__':
                 w = self.status_font.size('当前：' + self._current_puzzle_label())[0]
+            elif len(p) == 2 and p[0] == '__group__':
+                # 分组标题（「捆绑谜题」「自定义还原态」）比一般条目长，
+                # 按 p[0] 量会量到 '__group__' 这个占位串，框就窄了。
+                w = self.menu_font.size(p[1])[0]
             else:
                 w = self.menu_font.size(p[0])[0]
             menu_width = max(menu_width, w + 40)
@@ -2361,6 +2365,9 @@ class RendererMixin:
         self.puzzle_menu_rect = dropdown_rect
 
         self.puzzle_menu_rects = []
+        # 行尾删除键的命中区（每帧重建，事件分发读上一帧的结果，
+        # 与 puzzle_menu_rects 同一套机制）。见 _draw_row_delete_mark。
+        self.puzzle_menu_delete_hits = []
         current_key = self._current_puzzle_key()
         for i, preset in enumerate(self.puzzle_presets):
             y_pos = menu_y + i * item_height
@@ -2399,18 +2406,21 @@ class RendererMixin:
                 if i == self.puzzle_menu_hovered or sub_open:
                     pygame.draw.rect(self.screen, self.colors['menu_hover'], item_rect)
 
-                text_surface = self.menu_font.render(preset[0], True, self.colors['menu_text'])
+                # 条目名里的 '▸' 只是给帮助 / 命令面板那些**纯文本**场合留的
+                # （feature_index 里就是照这个写「谜题 → 矩形谜题 ▸」）；
+                # 菜单里不画它——箭头统一由 _draw_sub_arrow 用三角形画，
+                # 否则同一行会出现「方框 + 箭头」两个标记（实测 SimHei 回退
+                # 字体没有 ▸ 字形）。
+                label = preset[0]
+                if label.endswith('▸'):
+                    label = label[:-1].rstrip()
+                text_surface = self.menu_font.render(label, True, self.colors['menu_text'])
                 text_rect = text_surface.get_rect()
                 text_rect.x = menu_x + 12
                 text_rect.centery = center_y
                 self.screen.blit(text_surface, text_rect)
 
-                arrow_surface = self.menu_font.render('▸', True, self.colors['menu_text'])
-                arrow_rect = arrow_surface.get_rect()
-                arrow_rect.right = menu_x + menu_width - 10
-                arrow_rect.centery = center_y
-                self.screen.blit(arrow_surface, arrow_rect)
-
+                self._draw_sub_arrow(menu_x + menu_width - 10, center_y)
                 if sub_open:
                     self.draw_puzzle_sub_menu(preset[2], menu_x + menu_width + 2)
                 continue
@@ -2429,11 +2439,61 @@ class RendererMixin:
             self.screen.blit(text_surface, text_rect)
 
             if is_current:
-                check_surface = self.menu_font.render('✓', True, self.colors['menu_selected'])
-                check_rect = check_surface.get_rect()
-                check_rect.right = menu_x + menu_width - 10
-                check_rect.centery = center_y
-                self.screen.blit(check_surface, check_rect)
+                self._draw_check_mark(menu_x + menu_width - 10, center_y)
+            else:
+                self._draw_row_delete_mark(preset, item_rect, center_y,
+                                           i == self.puzzle_menu_hovered,
+                                           self.puzzle_menu_delete_hits,
+                                           menu_x + menu_width - 10)
+
+    def _draw_check_mark(self, right_x, center_y):
+        """「当前就是这一档」的 ✓（线条画，不依赖字体字形）。
+
+        ⚠️ 与删除键同一个理由：'✓' 在中文字体缺字形时会变成一个空心方框，
+        玩家看到的是「这里有个不许点的方框」而不是「你正在玩这一档」。
+        """
+        cx, cy = right_x - 5, center_y
+        col = self.colors['menu_selected']
+        pygame.draw.lines(self.screen, col, False,
+                          [(cx - 4, cy), (cx - 1, cy + 4), (cx + 5, cy - 4)], 2)
+
+    def _draw_sub_arrow(self, right_x, center_y):
+        """可展开子菜单项行尾的 ▸（三角，线条画）。理由同 _draw_check_mark。"""
+        cx, cy = right_x - 4, center_y
+        pygame.draw.polygon(self.screen, self.colors['menu_text'],
+                            [(cx - 3, cy - 5), (cx - 3, cy + 5), (cx + 4, cy)])
+
+    def _draw_row_delete_mark(self, preset, item_rect, center_y, hovered, hits,
+                              right_x):
+        """菜单条目行尾的删除键（✕）。
+
+        用户 2026-10-26 定：删除放在**条目行尾**而不是悬停预览面板里。
+        两条理由：
+        1. 预览面板是刻意「不参与任何命中判定」的纯装饰（每帧 try 兜底、
+           算不出来就写「预览不可用」），把它变成可点控件会与「鼠标移向
+           按钮 → 离开条目 → 面板消失」直接打结；
+        2. 自定义预设**没有预览**（预览只覆盖能算出缩图的档位），挂在
+           预览上等于那类永远删不掉——而它恰恰是最该删的自造产物。
+
+        当前局不画 ✕（画的是 ✓）：删掉正在玩的模型，当前盘面、存档、
+        预览都会指向一个不存在的名字。判据见 EventsMixin._menu_item_deletable。
+        """
+        if self._menu_item_deletable(preset) is None:
+            return
+        btn = pygame.Rect(0, 0, 18, 18)
+        btn.right = right_x + 4
+        btn.centery = center_y
+        # 常态用分隔线的灰（有形状、不抢眼）；悬停这一行才变红（缝的线色，
+        # 不引入新颜色），表示「点这里是删」。
+        color = self.colors['line'] if hovered else self.colors['separator']
+        # ⚠️ 用线条画叉，不用 '✕' 字符：中文字体里 ✓/✕ 这类符号经常缺字形，
+        # 缺了就是一个空心方框（实测 SimHei 回退字体就没有 ✕），
+        # 而「一个方框」在菜单里既看不懂也不像删除键。
+        cx, cy = btn.centerx, btn.centery
+        k = 5
+        pygame.draw.line(self.screen, color, (cx - k, cy - k), (cx + k, cy + k), 2)
+        pygame.draw.line(self.screen, color, (cx - k, cy + k), (cx + k, cy - k), 2)
+        hits.append((btn, preset))
 
     def draw_puzzle_sub_menu(self, subkey, sub_x):
         """绘制谜题二级子菜单（画在一级项右侧）。
@@ -2461,6 +2521,7 @@ class RendererMixin:
         pygame.draw.rect(self.screen, self.colors['border'], dropdown_rect, 1)
 
         self.puzzle_sub_rects = []
+        self.puzzle_sub_delete_hits = []
         current_key = self._current_puzzle_key()
         for i, preset in enumerate(items):
             y_pos = menu_y + i * item_height
@@ -2498,11 +2559,12 @@ class RendererMixin:
             self.screen.blit(text_surface, text_rect)
 
             if is_current:
-                check_surface = self.menu_font.render('✓', True, self.colors['menu_selected'])
-                check_rect = check_surface.get_rect()
-                check_rect.right = menu_x + menu_width - 10
-                check_rect.centery = center_y
-                self.screen.blit(check_surface, check_rect)
+                self._draw_check_mark(menu_x + menu_width - 10, center_y)
+            else:
+                self._draw_row_delete_mark(preset, item_rect, center_y,
+                                           i == self.puzzle_sub_hovered,
+                                           self.puzzle_sub_delete_hits,
+                                           menu_x + menu_width - 10)
 
         # 悬停谜题条目 → 旁边补一张「这题长什么样」的预览（用户 2026-10-26 要
         # 的「查」）。放在循环之后画，压住菜单右侧空白，不参与任何命中判定。

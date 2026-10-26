@@ -559,6 +559,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.custom_error = ''
         self.custom_kind = 'rect'       # 'rect' 矩形 / 'triangle' 三角 / 'mi' 米字 / 'numbered' 数字
 
+        # 通用确认弹窗（破坏性操作；目前只有谜题菜单的「删除预设」）
+        # 见 gui/dialogs.py draw_confirm_dialog / handle_confirm_dialog_events
+        self.show_confirm_dialog = False
+        self.confirm_title = ''
+        self.confirm_lines = []
+        self.confirm_ok_text = '确定'
+        self.confirm_danger = False
+        self.confirm_action = None      # 无参可调用对象；确认后执行
+
         # 三角形密铺模式（Stage B）：self.game 为 TriangleSliderMatrix 时为 True
         self.triangle_mode = False
         self.triangle_side = 6
@@ -853,8 +862,26 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.puzzle_sub_presets['models'] = items
         styles = design_styles.list_styles(self.config_dir)
         if styles:
-            base.append(('---',))  # 预设分隔线
-            base += [(name, '__custom__', name) for name in styles]
+            # 「捆绑谜题」不是一个平行于矩形/异形/模型的新维度（那会变成
+            # 板型 × 是否粘连的组合爆炸，同一档在两处各出现一次），而是
+            # **菜单里的一段分组**：只把确实带粘连的样式归到一起，其余留在
+            # 「自定义还原态」。分组标题的渲染与子菜单同一套（('__group__', 名)），
+            # 条目格式不变 —— 预览、当前✓、存档识别都不用改。
+            #
+            # 用户 2026-10-26 定：捆绑谜题的来源是「从原版四形态派生」或
+            # 「从模型谜题派生」，产物一律是样式文件（画布上点缝粘出来的）。
+            bundled, plain = [], []
+            for name in styles:
+                data = design_styles.load_style(self.config_dir, name)
+                groups = design_styles.groups_from_data(data) if data else {}
+                (bundled if groups else plain).append(name)
+            base.append(('---',))
+            if bundled:
+                base.append(('__group__', '捆绑谜题'))
+                base += [(name, '__custom__', name) for name in bundled]
+            if plain:
+                base.append(('__group__', '自定义还原态'))
+                base += [(name, '__custom__', name) for name in plain]
         base.append(('__current__',))   # 底部当前状态行
         self.puzzle_presets = base
 
@@ -1958,6 +1985,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     self.draw_macro_manager_dialog()
                 if getattr(self, 'show_macro_name_dialog', False):
                     self.draw_macro_name_dialog()
+                # 确认弹窗（删除预设）：盖在这些对话框之上——它是模态中的模态
+                if getattr(self, 'show_confirm_dialog', False):
+                    self.draw_confirm_dialog()
                 # 命令面板：画在所有模态之上（事件分发里同样最先消费，两者必须一致）
                 if getattr(self, 'palette_active', False):
                     self.draw_command_palette()
