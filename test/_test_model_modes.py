@@ -16,6 +16,8 @@
   F. 宏录制 / 宏执行被拦并提示；
   G. 求解器被拦并提示（ok=False）；
   H. 反向护栏：方形局这些开关照旧可用（不要误伤旧四形态）。
+  J. 「模式」开关**循环**：模型局按一次直接到创造，跳档要点名说明；
+     计时中不许越过闸门；方形局循环顺序不变。
 
 跑法：D:/python/python.exe test/_test_model_modes.py
 """
@@ -228,6 +230,59 @@ def main():
     check(ok, 'H3 方形局求解器照常启动（不被模型闸门误拦）', f'msg={msg!r}')
     if ok:
         gui._do_cancel_solve()
+
+    # ---- J. 「模式」开关循环：模型局必须真的走得到创造 ------------
+    # 用户 2026-10-26 二次报的 bug：set_game_mode('create') 本身放行（A1 绿），
+    # 但右侧那枚开关是**循环**的（练习→竞速→创造），模型局卡在竞速被拒那一步
+    # 原地不动，于是点多少下都进不了创造——A 组测的是 API，没测到开关。
+    gui.new_model_puzzle('shield', 1)
+    gui.set_game_mode('practice')
+    _set_msg(gui)
+    check(gui.game_mode == 'practice' and gui._is_model_kind(),
+          'J0 前置：模型局在练习模式', f'mode={gui.game_mode}')
+    check(not gui.mode_allowed('timed') and gui.mode_allowed('create')
+          and gui.mode_allowed('practice'),
+          'J1 mode_allowed：模型局只有竞速被拒')
+    gui.toggle_game_mode()
+    check(gui.game_mode == 'create' and gui.create_mode,
+          'J2 模型局按一次「模式」开关直达创造（跳过不支持的竞速）',
+          f'mode={gui.game_mode} msg={gui.macro_notify_msg!r}')
+    check('跳过' in gui.macro_notify_msg and '竞速' in gui.macro_notify_msg,
+          'J3 跳档时点名「竞速已跳过」，不是静默跳',
+          f'msg={gui.macro_notify_msg!r}')
+    _set_msg(gui)
+    gui.toggle_game_mode()
+    check(gui.game_mode == 'practice',
+          'J4 创造再按一次回到练习（也不落进竞速）',
+          f'mode={gui.game_mode} msg={gui.macro_notify_msg!r}')
+    seen = []
+    for _ in range(4):
+        gui.toggle_game_mode()
+        seen.append(gui.game_mode)
+    check('timed' not in seen, f'J5 模型局连按 4 次从不落进竞速（{seen}）',
+          f'seen={seen}')
+
+    # 计时中仍应拒绝（跳档逻辑不许越过计时闸门）
+    gui.new_puzzle(4, 4, 1)
+    gui.set_game_mode('timed')
+    gui.timer_state = 'running'
+    _set_msg(gui)
+    gui.toggle_game_mode()
+    check(gui.game_mode == 'timed' and '计时' in gui.macro_notify_msg,
+          'J6 计时中按「模式」开关被拒并说明（跳档不越过计时闸门）',
+          f'mode={gui.game_mode} msg={gui.macro_notify_msg!r}')
+    gui.timer_state = 'idle'
+
+    # 反向护栏：方形局循环顺序不变
+    gui.set_game_mode('practice')
+    check(gui.mode_allowed('timed'),
+          'J7a 方形局 mode_allowed("timed") 仍为真（别误伤旧四形态）')
+    seq = []
+    for _ in range(3):
+        gui.toggle_game_mode()
+        seq.append(gui.game_mode)
+    check(seq == ['timed', 'create', 'practice'],
+          f'J7 方形局循环仍是 练习→竞速→创造→练习（{seq}）', f'seq={seq}')
 
     print(f"\n结果：{'全部通过' if not _fail else str(len(_fail)) + ' 项失败'} "
           f"（{_ok[0]} 项通过）")

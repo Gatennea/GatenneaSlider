@@ -157,6 +157,10 @@ print("\n--- 4 一键到位接线 ---")
 gui = SliderGUI(m=6, n=6, step=2)
 gui.animation_enabled = False
 gui.save_readonly_flag = False
+# 会话恢复若把「上次关窗时的模型文件板型」读回来，着色/连锁/复原标记三个
+# 开关会按设计被拦（b0c0d2a），下面「切换生效」那几项就会假红。
+# 本节验的是「一键到位接线」，与盘型无关 → 强制方形局。
+gui.new_puzzle(6, 6, 2)
 
 _opened_urls = []
 _tutorial_starts = []

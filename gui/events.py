@@ -1880,7 +1880,10 @@ class EventsMixin:
         if self.timer_state == 'running':
             return False, "计时中无法切换模式"
         if not self.set_game_mode(mode):
-            return False, "模式切换失败"
+            # 拒绝理由由 set_game_mode 写进 macro_notify_msg（计时中 / 该盘型
+            # 不支持竞速…），原样转给调用方——旧实现一律回「模式切换失败」，
+            # 外部调用（HTTP / CLI）看不到真因，和玩家侧一样只能瞎猜。
+            return False, (self.macro_notify_msg or "模式切换失败")
         return True, f"已切换为{names[mode]}模式"
 
     def _dispatch_payload_action(self, action, payload, resp_q):

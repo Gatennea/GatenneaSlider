@@ -52,6 +52,10 @@ gui = SliderGUI(m=3, n=3, step=1, cmd_queue=queue.Queue(),
                 ext_state={'enabled': True, 'token': 'T', 'port': 5050})
 gui.tut_show_prompt = False
 gui.tutorial_active = False
+# 会话恢复会读 config/temp_history.json：若上次关窗时停在**模型文件板型**，
+# 这里拿到的就是模型局，而模型局按设计会拦下「着色/连锁/复原标记」等开关
+# （b0c0d2a），P4b/P4d 会假红。本测试只验面板执行链路，强制回到方形局。
+gui.new_puzzle(3, 3, 1)
 
 CTRL = pygame.KMOD_CTRL
 

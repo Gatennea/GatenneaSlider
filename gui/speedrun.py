@@ -52,14 +52,40 @@ class SpeedrunMixin:
         self.timer_state = 'idle'
         self.timer_elapsed = 0.0
 
+    def _mode_label(self, mode: str) -> str:
+        """模式键的中文名（不读当前状态；_mode_name 是它的当前态特例）。"""
+        return {'timed': '竞速', 'create': '创造'}.get(mode, '练习')
+
     def _mode_name(self) -> str:
         """当前模式的中文名（练习 / 竞速 / 创造）。"""
-        return {'timed': '竞速', 'create': '创造'}.get(self.game_mode, '练习')
+        return self._mode_label(getattr(self, 'game_mode', 'practice'))
+
+    def mode_allowed(self, mode: str) -> bool:
+        """该模式在当前盘面形态下能不能进（**只判形态，不看计时状态**）。
+
+        模型文件板型（碎三角及以后任何 models/<name>.json）不进竞速：
+        export_map 的方形分支会把 24 种朝向压成 '#'（质心晶格的「朝向下标+1」
+        矩阵没有字符编码），初始局面存下来也还原不回同一题，成绩没有意义。
+        判据用「形态名不在旧四种里」，与建局/存档同源（不硬编码 'shatter'）。
+        ⚠️ 创造模式（2026-10-25 起）不再据此拒入：模式开关 → 创造 →
+        ② 还原态设计 → 搭积木 不依赖当前盘面形态（编辑器自建预览局）；
+        打乱态设计/格子画布两个子入口各自有 _is_model_kind 拒绝。
+
+        2026-10-26 从 set_game_mode 内联判据提出来，供循环开关跳档共用
+        ——两处各写一份，就会出现「开关按了没反应」而 set 能进的不一致。
+        """
+        if mode not in ('practice', 'timed', 'create'):
+            return False
+        if mode == 'timed':
+            return self._current_kind() in (
+                'square', 'numbered', 'triangle', 'mi')
+        return True
 
     def set_game_mode(self, mode: str) -> bool:
         """设置模式：'practice' 练习 / 'timed' 竞速 / 'create' 创造（幂等）。
 
-        返回是否成功（计时进行中拒绝切换）。
+        返回是否成功（计时进行中拒绝切换；当前盘型不支持该模式也拒绝，
+        理由写在 macro_notify_msg 里）。形态判据见 mode_allowed()。
         """
         if mode not in ('practice', 'timed', 'create'):
             return False
@@ -67,17 +93,8 @@ class SpeedrunMixin:
             self.macro_notify_msg = "计时中无法切换模式"
             self.macro_notify_timer = 90
             return False
-        # 模型文件板型（碎三角及以后任何 models/<name>.json）不进竞速：
-        # export_map 的方形分支会把 24 种朝向压成 '#'（质心晶格的
-        # 「朝向下标+1」矩阵没有字符编码），初始局面存下来也还原不回
-        # 同一题，成绩没有意义——明确拒绝，不静默存一份丢朝向的串。
-        # 判据用「形态名不在旧四种里」，与建局/存档同源（不硬编码 'shatter'）。
-        # ⚠️ 创造模式（2026-10-25 起）不再据此拒入：模式开关 → 创造 →
-        # ② 还原态设计 → 搭积木 不依赖当前盘面形态（编辑器自建预览局）；
-        # 打乱态设计/格子画布两个子入口各自有 _is_model_kind 拒绝。
-        _kind = self._current_kind()
-        if mode == 'timed' and _kind not in (
-                'square', 'numbered', 'triangle', 'mi'):
+        if not self.mode_allowed(mode):
+            _kind = self._current_kind()
             _label = {'shatter': '碎三角'}.get(_kind, _kind)
             self.macro_notify_msg = f"{_label}暂不支持竞速模式（初始局面无字符编码）"
             self.macro_notify_timer = 120
@@ -107,13 +124,36 @@ class SpeedrunMixin:
         return True
 
     def toggle_game_mode(self):
-        """循环切换 练习 → 竞速 → 创造 → 练习（「模式」开关 / 谜题菜单入口）"""
+        """循环切换 练习 → 竞速 → 创造 → 练习（「模式」开关 / 谜题菜单入口）
+
+        ⚠️ 跳过当前盘型进不去的档位（2026-10-26 用户报的真 bug）：模型文件
+        板型不支持竞速，旧实现「练习 → 竞速」被拒后就原地不动，于是模式开关
+        永远走不到创造——从玩家视角看就是「自造谜题进不了创造模式」，尽管
+        set_game_mode('create') 本身是放行的。现在只把**允许的**下一档交出去，
+        并在提示里点名跳过了谁，免得又是一次「按了没反应」。
+        """
         order = ('practice', 'timed', 'create')
         try:
             idx = order.index(self.game_mode)
         except ValueError:
             idx = 0
-        self.set_game_mode(order[(idx + 1) % len(order)])
+        skipped = []
+        for k in range(1, len(order) + 1):
+            nxt = order[(idx + k) % len(order)]
+            if not self.mode_allowed(nxt):
+                skipped.append(self._mode_label(nxt))
+                continue
+            ok = self.set_game_mode(nxt)
+            if ok and skipped:
+                # set_game_mode 已写好「创造模式：…」这类正文，这里补一句
+                # 跳档原因。失败时它自己已给理由（如计时中），别覆盖。
+                self.macro_notify_msg += (
+                    f"（本盘型不支持{'/'.join(skipped)}，已跳过）")
+                self.macro_notify_timer = 150
+            return ok
+        # 三个模式全被拒：练习恒可用，走不到这里（留个兜底提示）
+        self.macro_notify_msg = "当前盘型没有可切换的模式"
+        self.macro_notify_timer = 120
 
     def _timer_start(self):
         """开始计时"""
