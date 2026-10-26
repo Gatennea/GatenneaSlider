@@ -244,9 +244,12 @@ if data:
 # ---------------------------------------------------------------- 菜单与开局
 print('\n--- D3 预设列入谜题菜单 + 样式开局 + D4 判定 ---')
 gui._refresh_puzzle_presets()
-listed = [p for p in gui.puzzle_presets if len(p) == 3 and p[1] == '__custom__']
+# 2026-10-27 起样式收进二级子菜单（无粘连的在「自定义还原态」，带粘连的在
+# 「捆绑谜题」），一级菜单里不再平铺 → 用摊平视图问「在不在菜单里」。
+_listed = gui._all_puzzle_items()
+listed = [p for p in _listed if len(p) == 3 and p[1] == '__custom__']
 check('D3a 自定义预设列入谜题菜单', (SNAME, '__custom__', SNAME)
-      in gui.puzzle_presets, f'{listed}')
+      in _listed, f'{listed}')
 
 gui._ann_design_start_style(SNAME)
 check('D3b 开局后设置 goal_pattern', gui.game.goal_pattern is not None)

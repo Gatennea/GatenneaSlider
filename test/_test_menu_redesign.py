@@ -6,8 +6,10 @@
      碎三角）与**自定义预设**（design_styles/*.json）；内置档位没有文件，
      所以不画删除键。直删 + 确认弹窗。
   2. 自定义对话框加「高级选项…」：按对话框参数开一局，然后进设计画布。
-  3. 「捆绑谜题」不做成第四个平行子菜单，而是菜单里的**一段分组**：
-     带粘连的样式归到「捆绑谜题」，其余留在「自定义还原态」。
+  3. 「捆绑谜题」不做成第四个平行子菜单，也不做成一级菜单里的一段分组，
+     而是**两个并列的二级子菜单**（用户 2026-10-27 定，位置在「自定义...」
+     上方）：带粘连的样式进「捆绑谜题」，其余进「自定义还原态」；空的那个
+     不出现（不点开一个空白目录）。
 
 本测试钉住：
   A. 可删判定：模型条目按「模型名」认（不是显示文本「碎三角（48 块）」）、
@@ -15,9 +17,11 @@
   B. 当前局不许删（模型局的那道模型、样式局的那个样式）。
   C. 删除必须先过确认：点 ✕ 只弹框、不删；取消不删；确认才删，且菜单立刻少一行。
   D. 删模型是「删文件 → 摘板型 → 清缩图」三步，少一步就是死条目 / 孤儿图。
-  E. 分组：带 groups 的样式在「捆绑谜题」下，不带的在「自定义还原态」下。
+  E. 两个子菜单：有/无粘连各自归位、位置在「自定义...」上方、一级菜单
+     长度恒定（样式再多也不把一级菜单撑出屏幕）、空的那个不出现。
   F. 自定义对话框的「高级选项…」：按钮在、点了进设计视图、原「确定」不受影响。
   G. 带粘连的局不进竞速（竞速只记哪些格子有块，还原不出同一题）。
+  H. 真点一遍：✕ 优先于整行点击（在子菜单里同样成立）。
 
 跑法：D:/python/python.exe test/_test_menu_redesign.py
 """
@@ -163,12 +167,14 @@ gui._refresh_puzzle_presets()
 path_b = os.path.join(STYLES, 'zz_bundled.json')
 check(os.path.exists(path_b), 'C1 前置：样式文件存在')
 
-draw_menu(gui)
-names = [p[0] for p in gui.puzzle_presets
-         if len(p) == 3 and p[1] == '__custom__']
-check('zz_bundled' in names and 'zz_plain' in names, 'C2 两个样式都进了菜单')
+# 样式 2026-10-27 起收进二级子菜单，一级菜单里不再平铺
+sub = gui.puzzle_sub_presets
+names = [p[0] for p in sub.get('bundled', []) + sub.get('custom', [])]
+check('zz_bundled' in names and 'zz_plain' in names, 'C2 两个样式都进了菜单',
+      f'{names}')
 
-hits = gui.puzzle_menu_delete_hits
+draw_menu(gui, sub='bundled')
+hits = gui.puzzle_sub_delete_hits
 hit_names = [p[2] for _r, p in hits if len(p) == 3 and p[1] == '__custom__']
 check('zz_bundled' in hit_names, 'C3 样式条目行尾有删除键（✕）', f'{hit_names}')
 check(all(r.width <= 20 for r, _p in hits), 'C4 ✕ 的命中区是小方块，不是整行')
@@ -187,8 +193,8 @@ draw_confirm(gui)
 click(gui, gui.confirm_ok_btn)
 check(not os.path.exists(path_b), 'C9 确认 → 文件真的删了')
 check(gui.show_confirm_dialog is False, 'C10 确认后确认框关闭')
-after = [p[0] for p in gui.puzzle_presets
-         if len(p) == 3 and p[1] == '__custom__']
+after = [p[0] for p in gui.puzzle_sub_presets.get('bundled', [])
+         + gui.puzzle_sub_presets.get('custom', [])]
 check('zz_bundled' not in after and 'zz_plain' in after,
       'C11 菜单立刻少一行（不用重开游戏）', f'{after}')
 check('已删除' in (gui.macro_notify_msg or ''), 'C12 有给玩家看的删除说明',
@@ -229,24 +235,50 @@ check('zz_fake' not in model_registry.loaded(),
       'D4 unregister 真能把板型从内存里摘掉')
 
 print('=' * 60)
-print('E. 捆绑谜题 = 菜单里的一段分组')
+print('E. 捆绑谜题 / 自定义还原态 = 两个二级子菜单（在「自定义...」上方）')
 # ---------------------------------------------------------------- E
 put_style('zz_bundled2', CELLS4, {'1,1': 1, '1,2': 1})
 gui.new_puzzle(4, 4, 1)
 gui._refresh_puzzle_presets()
-seq = [(p[0], p[1] if len(p) == 2 and p[0] == '__group__' else None)
-       for p in gui.puzzle_presets]
-titles = [t for _n, t in seq if t]
-check('捆绑谜题' in titles, 'E1 有「捆绑谜题」分组标题', f'{titles}')
-check('自定义还原态' in titles, 'E2 有「自定义还原态」分组标题', f'{titles}')
 
-idx_b = next(i for i, (n, t) in enumerate(seq) if t == '捆绑谜题')
-idx_p = next(i for i, (n, t) in enumerate(seq) if t == '自定义还原态')
-bundle_rows = [n for n, t in seq[idx_b + 1:idx_p] if n and t is None]
-plain_rows = [n for n, t in seq[idx_p + 1:] if n and t is None]
-check('zz_bundled2' in bundle_rows, 'E3 带粘连的样式在「捆绑谜题」下', f'{bundle_rows}')
-check('zz_plain' in plain_rows and 'zz_bundled2' not in plain_rows,
-      'E4 不带粘连的样式在「自定义还原态」下', f'{plain_rows}')
+subs = gui.puzzle_sub_presets
+b_names = [p[0] for p in subs.get('bundled', [])]
+c_names = [p[0] for p in subs.get('custom', [])]
+check('zz_bundled2' in b_names and 'zz_plain' not in b_names,
+      'E1 带粘连的样式在「捆绑谜题」子菜单里', f'{b_names}')
+check('zz_plain' in c_names and 'zz_bundled2' not in c_names,
+      'E2 不带粘连的样式在「自定义还原态」子菜单里', f'{c_names}')
+
+top = gui.puzzle_presets
+sub_keys = [p[2] for p in top if len(p) == 3 and p[1] == '__sub__']
+check('bundled' in sub_keys and 'custom' in sub_keys,
+      'E3 一级菜单里两个子菜单入口都在', f'{sub_keys}')
+
+idx_dlg = next((i for i, p in enumerate(top)
+                if len(p) == 1 and p[0] == '自定义...'), -1)
+idx_subs = [i for i, p in enumerate(top) if len(p) == 3 and p[1] == '__sub__']
+check(idx_dlg > 0 and all(i < idx_dlg for i in idx_subs),
+      'E4 两个入口都在「自定义...」上方', f'subs={idx_subs} dlg={idx_dlg}')
+check(not any(len(p) == 2 and p[0] == '__group__' for p in top),
+      'E5 一级菜单里不再平铺样式分组标题')
+
+# 一级菜单长度恒定：再塞 5 个样式，条目数一个都不多
+_before = len(top)
+for i in range(5):
+    put_style(f'zz_many{i}', CELLS4, {})
+gui._refresh_puzzle_presets()
+check(len(gui.puzzle_presets) == _before,
+      'E6 样式再多，一级菜单长度不变（只长在子菜单里）',
+      f'{_before} -> {len(gui.puzzle_presets)}')
+
+# 空的那个不出现：把无粘连的清光 → 「自定义还原态」入口消失
+for i in range(5):
+    os.remove(os.path.join(STYLES, f'zz_many{i}.json'))
+os.remove(os.path.join(STYLES, 'zz_plain.json'))
+gui._refresh_puzzle_presets()
+_keys = [p[2] for p in gui.puzzle_presets if len(p) == 3 and p[1] == '__sub__']
+check('custom' not in _keys and 'bundled' in _keys,
+      'E7 空的子菜单不出现（不点开一个空白目录）', f'{_keys}')
 
 print('=' * 60)
 print('F. 自定义对话框的「高级选项…」')
@@ -305,16 +337,17 @@ print('H. 真点一遍：✕ 优先于整行点击')
 gui.new_puzzle(4, 4, 1)
 put_style('zz_click', CELLS4, {'2,0': 1, '2,1': 1})
 gui._refresh_puzzle_presets()
-draw_menu(gui)
+draw_menu(gui, sub='bundled')
 
-hit = next(((r, p) for r, p in gui.puzzle_menu_delete_hits
+hit = next(((r, p) for r, p in gui.puzzle_sub_delete_hits
             if len(p) == 3 and p[2] == 'zz_click'), None)
 check(hit is not None, 'H1 前置：找到 zz_click 的 ✕ 命中区')
 
 row_rect = None
-for i, p in enumerate(gui.puzzle_presets):
+sub_items = gui.puzzle_sub_presets['bundled']
+for i, p in enumerate(sub_items):
     if len(p) == 3 and p[2] == 'zz_click':
-        row_rect = gui.puzzle_menu_rects[i]
+        row_rect = gui.puzzle_sub_rects[i]
 check(row_rect is not None, 'H2 前置：找到该行矩形')
 check(hit[0].width < row_rect.width / 4,
       'H3 ✕ 命中区远小于整行（不会把整行变成删除键）')
@@ -334,11 +367,12 @@ draw_confirm(gui)
 click(gui, gui.confirm_cancel_btn)
 
 # 取消后菜单是关着的（弹确认前主动收了），重新展开再点整行
-draw_menu(gui)
+draw_menu(gui, sub='bundled')
 row_rect = None
-for i, p in enumerate(gui.puzzle_presets):
+sub_items = gui.puzzle_sub_presets['bundled']
+for i, p in enumerate(sub_items):
     if len(p) == 3 and p[2] == 'zz_click':
-        row_rect = gui.puzzle_menu_rects[i]
+        row_rect = gui.puzzle_sub_rects[i]
 check(row_rect is not None, 'H7 取消后菜单能重新展开')
 
 # 点整行左侧文字区：应当正常开局，不弹确认

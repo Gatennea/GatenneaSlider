@@ -789,6 +789,14 @@ class EventsMixin:
                                                     and preset[0] == '---')):
                                             # 分组标题和分隔线：点了不该关掉菜单
                                             puzzle_keep_open = True
+                                        elif len(preset) == 3 and preset[1] == '__custom__':
+                                            # 自定义预设（捆绑谜题 / 自定义还原态两个
+                                            # 子菜单都走这里）：按保存的还原态样式开局。
+                                            # 2026-10-27 起样式从一级平铺改为子菜单，
+                                            # 这条分支必须跟着搬进来，否则子菜单里点
+                                            # 条目毫无反应。
+                                            self._ann_design_start_style(preset[2])
+                                            puzzle_clicked = True
                                         elif len(preset) >= 4:
                                             _, pm, pn, ps = preset[:4]
                                             kind = preset[4] if len(preset) > 4 else 'square'
@@ -826,7 +834,7 @@ class EventsMixin:
                                             # 底部状态行：点了不该关掉菜单
                                             puzzle_keep_open = True
                                         elif len(preset) == 2 and preset[0] == '__group__':
-                                            # 分组标题（「捆绑谜题」等）：不可点、点了不关
+                                            # 分组标题（「等级1 · 入门」这类）：不可点、点了不关
                                             puzzle_keep_open = True
                                         elif len(preset) == 3 and preset[1] == '__sub__':
                                             # 可展开项：点击切换子菜单开合，菜单保持打开
@@ -4593,8 +4601,10 @@ class EventsMixin:
         ok, msg = menu_delete.remove(target, self.config_dir)
         self.macro_notify_msg = msg
         self.macro_notify_timer = 240
-        # 菜单要立刻跟上：模型板型已被摘掉，重扫一遍就少两行；样式直接少一行
-        self._refresh_puzzle_presets()
+        # 菜单要立刻跟上：模型板型已被摘掉，重扫一遍就少两行；样式直接少一行。
+        # keep_sub：删的若是子菜单里的条目，删完别把那个子菜单一起收起来
+        # ——玩家通常还要接着删下一个，收起来等于每次都要重新展开。
+        self._refresh_puzzle_presets(keep_sub=True)
         return ok
 
     def _arrow_button_click(self, direction):

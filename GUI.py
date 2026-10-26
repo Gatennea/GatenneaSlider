@@ -388,17 +388,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         #   ('名字 ▸', '__sub__', subkey)     可展开的二级子菜单项
         #   ('---',) / ('自定义...',) / ('__current__',)  同旧语义
         # 「当前是哪一档」由 _preset_puzzle_key() 和 _current_puzzle_key() 比对，
-        # 以后再加形态也不用改渲染分支。模式切换已移到主窗口右下角，故不再放这里
-        self.puzzle_presets = [
-            ('快速开始：矩形 6×6 等级2', 6, 6, 2),
-            ('矩形谜题 ▸', '__sub__', 'rect'),
-            ('异形谜题 ▸', '__sub__', 'exotic'),
-            ('模型谜题 ▸', '__sub__', 'models'),
-            ('---',),
-            ('自定义...',),
-            ('高级选项...',),
-            ('__current__',),   # 底部「当前：矩形 6×6 等级2」状态行
-        ]
+        # 以后再加形态也不用改渲染分支。模式切换已移到主窗口右下角，故不再放这里。
+        #
+        # ⚠️ 这里**不写字面量**：菜单内容由 _refresh_puzzle_presets() 生成（模型
+        # 文件、自定义预设都是运行期扫描出来的）。以前两边各写一份，字面量那份
+        # 长期留着已废止的「高级选项...」，而测试断言它不存在 —— 白读一份错清单。
+        self.puzzle_presets = []
 
         # 二级子菜单：条目与旧 puzzle_presets 同格式（分组标题/分隔线/谜题档位），
         # 渲染与「当前✓」比对逻辑完全复用。
@@ -441,6 +436,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             # 模型文件板型：条目由 models/*.json 决定（_refresh_puzzle_presets
             # 每次重建菜单时填充），这里给个空壳，免得菜单渲染先于刷新报 KeyError。
             'models': [],
+            # 自定义预设（config/design_styles/*.json）按「有没有粘连」拆成两个
+            # 二级子菜单（用户 2026-10-27 定：和矩形/异形/模型并列，放在
+            # 「自定义...」上方）。同样只留空壳，条目在刷新时扫目录填。
+            'bundled': [],
+            'custom': [],
         }
 
         # 谜题菜单二级交互状态：当前展开的 subkey、条目矩形、悬停项
@@ -821,7 +821,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 首次启动：弹出新手教程引导
         self._tut_check_first_launch()
 
-    def _refresh_puzzle_presets(self):
+    def _refresh_puzzle_presets(self, keep_sub: bool = False):
         """重建谜题菜单：静态开局项 + 自定义预设（还原态样式，见 design_styles）。
 
         2026-10-25 前还有「高级选项...」（新建还原态样式）与「＋ 搭建新
@@ -831,15 +831,22 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         == '__custom__'，渲染为可点击项、点击走 _ann_design_start_style 开局。
         官方预设（矩形/三角/米字/数字）由 (m,n,step[,kind]) 元组标识，不带
         __custom__ 标记，载入存档时据此区分。
+
+        一级菜单的长度是**恒定**的：快速开始 + 至多五个目录（矩形 / 异形 /
+        模型 / 捆绑谜题 / 自定义还原态，后两个没内容就不出现）+ 分隔线 +
+        自定义... + 当前行。条目再多也只长在子菜单里，不会把一级菜单撑出
+        屏幕（这也是 2026-10-27 把样式从平铺改成子菜单的直接动机）。
         """
         from gui import design_styles
+        # 重建前记下「当前展开的子菜单」，重建后原样恢复（只有它还有内容时）。
+        # 用 keep_sub 区分两种调用：删条目要保留（连着删几个不必反复展开），
+        # 开局 / 点菜单栏要收起（菜单每次打开都该是收拢状态）。
+        _prev_sub = getattr(self, 'puzzle_sub_open', '') if keep_sub else ''
         base = [
             ('快速开始：矩形 6×6 等级2', 6, 6, 2),
             ('矩形谜题 ▸', '__sub__', 'rect'),
             ('异形谜题 ▸', '__sub__', 'exotic'),
             ('模型谜题 ▸', '__sub__', 'models'),
-            ('---',),
-            ('自定义...',),
         ]
         # 模型文件板型：条目完全由注册表决定——丢一个 models/<name>.json
         # 进目录，菜单里就多一项，这里一行都不用改。
@@ -860,35 +867,63 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             items.append(('（models/ 下暂无可用模型：模式开关 → 创造 → '
                           '还原状态设计 → 搭积木）',))
         self.puzzle_sub_presets['models'] = items
+
+        # 自定义预设：按「有没有粘连」拆成两个并列的二级子菜单。
+        #
+        # 用户 2026-10-27 定：这两个和矩形 / 异形 / 模型一样是**二级子菜单**，
+        # 位置在「自定义...」上方。原先做的是把它们当分组标题塞进一级菜单
+        # 底部（所有样式平铺），用户看过后否掉：「放这里不合适，至少应该是
+        # 在『自定义』上方的二级菜单」。拉开成子菜单后，一级菜单恒定只有
+        # 「5 个目录 + 分隔线 + 自定义... + 当前行」，样式再多也不撑长。
+        #
+        # 名称分工：捆绑谜题 = 带 groups 的样式（滑块粘成整体）；自定义还原态
+        # = 不带 groups 的样式。两者都是「已存的还原态样式」，区别只在粘连，
+        # 所以派生来源（内置四形态 / 模型谜题）不体现在这一层。
+        #
+        # 空的子菜单**不出现**（不画一个点进去空白的目录）：这与「本菜单只列
+        # 已存的开局入口」一致，也避免放一句长提示把菜单撑宽。没有样式时的
+        # 新建路径由紧邻的「自定义...」与创造模式承担。
         styles = design_styles.list_styles(self.config_dir)
-        if styles:
-            # 「捆绑谜题」不是一个平行于矩形/异形/模型的新维度（那会变成
-            # 板型 × 是否粘连的组合爆炸，同一档在两处各出现一次），而是
-            # **菜单里的一段分组**：只把确实带粘连的样式归到一起，其余留在
-            # 「自定义还原态」。分组标题的渲染与子菜单同一套（('__group__', 名)），
-            # 条目格式不变 —— 预览、当前✓、存档识别都不用改。
-            #
-            # 用户 2026-10-26 定：捆绑谜题的来源是「从原版四形态派生」或
-            # 「从模型谜题派生」，产物一律是样式文件（画布上点缝粘出来的）。
-            bundled, plain = [], []
-            for name in styles:
-                data = design_styles.load_style(self.config_dir, name)
-                groups = design_styles.groups_from_data(data) if data else {}
-                (bundled if groups else plain).append(name)
-            base.append(('---',))
-            if bundled:
-                base.append(('__group__', '捆绑谜题'))
-                base += [(name, '__custom__', name) for name in bundled]
-            if plain:
-                base.append(('__group__', '自定义还原态'))
-                base += [(name, '__custom__', name) for name in plain]
+        bundled, plain = [], []
+        for name in styles:
+            data = design_styles.load_style(self.config_dir, name)
+            groups = design_styles.groups_from_data(data) if data else {}
+            (bundled if groups else plain).append(name)
+        self.puzzle_sub_presets['bundled'] = [
+            (name, '__custom__', name) for name in bundled]
+        self.puzzle_sub_presets['custom'] = [
+            (name, '__custom__', name) for name in plain]
+        if bundled:
+            base.append(('捆绑谜题 ▸', '__sub__', 'bundled'))
+        if plain:
+            base.append(('自定义还原态 ▸', '__sub__', 'custom'))
+
+        base.append(('---',))
+        base.append(('自定义...',))
         base.append(('__current__',))   # 底部当前状态行
         self.puzzle_presets = base
 
-        # 二级子菜单交互状态：当前展开的 subkey（''=无）、条目矩形、悬停项
-        self.puzzle_sub_open = ''
+        # 二级子菜单交互状态：当前展开的 subkey（''=无）、条目矩形、悬停项。
+        # 恢复 _prev_sub 时要求「这个子菜单还在、且还有条目」——它刚刚被删空
+        # 的话留着会画出一个没有内容的空框。
+        subs = self.puzzle_sub_presets
+        self.puzzle_sub_open = (
+            _prev_sub if _prev_sub in subs and subs[_prev_sub] else '')
         self.puzzle_sub_rects = []
         self.puzzle_sub_hovered = -1
+
+    def _all_puzzle_items(self):
+        """菜单里**所有**条目（一级 + 每个子菜单），按显示顺序摊平。
+
+        只给「问『某道题在不在菜单里』」用（自检、测试、命令面板）。判定
+        「当前玩的是哪一档」不要走它——那条路是同层比对（`_preset_is_current`），
+        摊平会把「同一档在两处出现」的旧问题带回来。
+        """
+        out = list(self.puzzle_presets)
+        for subkey in ('rect', 'exotic', 'models', 'bundled', 'custom'):
+            out.extend((getattr(self, 'puzzle_sub_presets', None) or {}).get(
+                subkey) or [])
+        return out
 
 
     def new_puzzle(self, m: int, n: int, step: int = 1, numbered: bool = False):

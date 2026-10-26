@@ -273,7 +273,8 @@ check('3n 退出不殘留標注模式', gui.annotation_mode is False
       and gui._ann_design_session is False and gui._ann_view == 'home')
 
 gui._refresh_puzzle_presets()
-menu = [p for p in gui.puzzle_presets
+# 样式已收进二级子菜单（带粘连 → 「捆绑谜题」，否则 → 「自定义还原态」）
+menu = [p for p in gui._all_puzzle_items()
         if len(p) == 3 and p[1] == '__custom__']
 check('3o 樣式進謎題菜單',
       any(p[2] == SNAME_T for p in menu), f'{[p[2] for p in menu]}')

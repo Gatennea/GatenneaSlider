@@ -2347,7 +2347,7 @@ class RendererMixin:
             if len(p) == 1 and p[0] == '__current__':
                 w = self.status_font.size('当前：' + self._current_puzzle_label())[0]
             elif len(p) == 2 and p[0] == '__group__':
-                # 分组标题（「捆绑谜题」「自定义还原态」）比一般条目长，
+                # 分组标题（「米字格谜题（最难…）」这类）比一般条目长，
                 # 按 p[0] 量会量到 '__group__' 这个占位串，框就窄了。
                 w = self.menu_font.size(p[1])[0]
             else:
