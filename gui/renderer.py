@@ -2356,6 +2356,9 @@ class RendererMixin:
         dropdown_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
         pygame.draw.rect(self.screen, self.colors['menu_bg'], dropdown_rect)
         pygame.draw.rect(self.screen, self.colors['border'], dropdown_rect, 1)
+        # 记住一级菜单的外框：二级菜单的悬停预览默认放它右侧，右侧塞不下
+        # 时改放一级菜单**左侧**（见 _draw_model_hover_preview）
+        self.puzzle_menu_rect = dropdown_rect
 
         self.puzzle_menu_rects = []
         current_key = self._current_puzzle_key()
@@ -2500,6 +2503,88 @@ class RendererMixin:
                 check_rect.right = menu_x + menu_width - 10
                 check_rect.centery = center_y
                 self.screen.blit(check_surface, check_rect)
+
+        # 悬停模型条目 → 旁边补一张「这题长什么样」的预览（用户 2026-10-26 要
+        # 的「查」）。放在循环之后画，压住菜单右侧空白，不参与任何命中判定。
+        self._draw_model_hover_preview(menu_x + menu_width + 4, menu_y)
+
+    # 模型悬停预览的版式（px）。104 的缩图 + 8 的间隙 + 8 的留白 = 232 宽，
+    # 正好塞在二级菜单右边而不会顶到屏幕边（1080p 下二级菜单右边界约 700）。
+    _PREVIEW_THUMB = 104
+    _PREVIEW_GAP = 8
+    _PREVIEW_PAD = 8
+    _PREVIEW_LABEL_H = 16
+
+    def _draw_model_hover_preview(self, panel_x, panel_y):
+        """二级菜单里悬停「模型谜题」条目时，在旁边显示复原态 + 一种打乱态。
+
+        为什么只有模型文件板型有预览：方形/三角/米字都是「规规矩矩的整块
+        网格」，菜单标题（6×6 等级2 / 三角 k=4）已经说清了长什么样；模型
+        板型的块形状由 JSON 决定，名字里那个「（28 块）」完全看不出形状。
+        条目恰好带模型名（len==5 且 preset[4] 是字符串），据此判据入手。
+
+        取图走 `model_preview.request()`（异步）：首算最坏 ~500ms（引擎要
+        懒建几何缓存），同步算会让悬停卡半秒。没算好这一帧就画「预览生成
+        中…」，算好了下一帧自然出现。
+        """
+        from gui import model_preview
+
+        idx = getattr(self, 'puzzle_sub_hovered', -1)
+        items = (getattr(self, 'puzzle_sub_presets', None) or {}).get(
+            getattr(self, 'puzzle_sub_open', '')) or []
+        if idx < 0 or idx >= len(items):
+            return
+        item = items[idx]
+        if len(item) < 5 or not isinstance(item[4], str):
+            return          # 分组标题 / 分隔线 / 非模型条目：没有预览可言
+
+        thumb = self._PREVIEW_THUMB
+        gap = self._PREVIEW_GAP
+        pad = self._PREVIEW_PAD
+        label_h = self._PREVIEW_LABEL_H
+        panel_w = pad * 2 + thumb * 2 + gap
+        panel_h = pad * 2 + thumb + 4 + label_h
+
+        # 右侧塞不下就翻到一级菜单左边（二级菜单本来就在右侧，翻左边等于
+        # 回到屏幕中间，仍然不挡菜单）。两级都塞不下时贴右边缘。
+        screen_w = self.screen.get_width()
+        px = panel_x
+        if px + panel_w > screen_w - 4:
+            base = getattr(self, 'puzzle_menu_rect', None)
+            px = (base.x - panel_w - 4) if base is not None else (screen_w - panel_w - 4)
+        px = max(4, px)
+        py = max(4, panel_y)
+
+        pygame.draw.rect(self.screen, self.colors['menu_bg'],
+                         pygame.Rect(px, py, panel_w, panel_h))
+        pygame.draw.rect(self.screen, self.colors['border'],
+                         pygame.Rect(px, py, panel_w, panel_h), 1)
+
+        goal, scr, state = model_preview.request(item[4], thumb, self.colors)
+        if state == 'pending' or (goal is None and scr is None
+                                  and model_preview.last_error(item[4]) is None):
+            msg = '预览生成中…'
+            surf = self.status_font.render(msg, True, self.colors['menu_text'])
+            self.screen.blit(surf, surf.get_rect(center=(
+                px + panel_w // 2, py + pad + thumb // 2)))
+            return
+        if goal is None or scr is None:
+            # 算不出来（模型文件坏了 / 打乱抛异常）：说出来，不假装没这功能
+            err = model_preview.last_error(item[4]) or '未知原因'
+            msg = '预览不可用：' + err
+            surf = self.status_font.render(msg[:40], True, self.colors['unsolvable'])
+            self.screen.blit(surf, surf.get_rect(center=(
+                px + panel_w // 2, py + pad + thumb // 2)))
+            return
+
+        self.screen.blit(goal, (px + pad, py + pad))
+        self.screen.blit(scr, (px + pad + thumb + gap, py + pad))
+        for i, text in enumerate(('复原态', '打乱态')):
+            label = self.status_font.render(text, True, self.colors['menu_text'])
+            rect = label.get_rect()
+            rect.centerx = px + pad + i * (thumb + gap) + thumb // 2
+            rect.top = py + pad + thumb + 4
+            self.screen.blit(label, rect)
 
     def draw_macro_menu(self):
         """绘制宏定义下拉菜单"""

@@ -1218,6 +1218,10 @@ class ModelEditorMixin:
                 f.write('\n')
             from engine import model_registry
             model_registry.reload(name)
+            # 菜单悬停缩图是按模型名缓存的：模型文件刚被改写，旧缩图必须作废
+            # （不清的话玩家会看到「改了形状、预览还是老样子」）。
+            from gui import model_preview
+            model_preview.clear_cache()
         except Exception as exc:      # noqa: BLE001 —— 通知要把原因带给玩家
             self._med_notify(f'保存失败：{exc}')
             return False
