@@ -27,7 +27,7 @@ from GUI import SliderGUI  # noqa: E402
 
 _OUT = os.path.join(_PROJ, 'archive', '_mi2b.txt')
 w = []
-ROUNDS = 12
+ROUNDS = 4   # 原 12：每轮要新建两个 SliderGUI（含 set_mode），沙箱里跑不完
 
 
 def rec(*a):
