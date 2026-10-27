@@ -132,6 +132,13 @@ class EngineGame:
     @board.setter
     def board(self, value: Board) -> None:
         self._board = value
+        # ⚠️ 换盘必须同步 spec：编辑器「打开模型」会把同一预览局换上一块
+        # 新 basis/pos_scale/朝向集的 Board（route A 支持任意晶格），若不
+        # 更新 self.spec，update_matrix 会拿旧 spec 的 orientations 去 index
+        # 新盘的朝向标签 → ValueError「x not in tuple」。普通换盘走
+        # create_puzzle 直接换 EngineGame 对象，不会踩到这条；只有编辑器
+        # 复用预览局、原地换 board 才会暴露。
+        self.spec = value.spec
         self._pending_board = None
         self._rebuild_blocks()
 

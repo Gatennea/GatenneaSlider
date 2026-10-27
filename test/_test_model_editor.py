@@ -633,7 +633,9 @@ def t_menu_entry():
           f'工具条不应压到左面板：bar.x={bar.x} panel.right={gui2._med_panel_rect().right}')
     gui2._med_draw_bar()
     acts = {a for _r, a in gui2._med['bar_btns']}
-    check(acts == {'exit', 'play', 'save', 'undo', 'clear'},
+    # 2026-10-28：「复制 / 粘贴 / 阵列」进工具条（搭积木复制功能）
+    check(acts == {'exit', 'play', 'save', 'undo', 'clear',
+                   'copy', 'paste', 'array'},
           f'按钮集合应完整：{sorted(acts)}')
     pos = {a: r for r, a in gui2._med['bar_btns']}
     check(pos['exit'].x > pos['play'].x > pos['save'].x,
@@ -759,6 +761,11 @@ def t_bundle_seam_click_routes():
         ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN,
                                 {'button': 3, 'pos': (sx, sy)})
         check(gui._med_handle_event(ev) is True, '点缝应被编辑器消费')
+        # ⚠️ 右键动作在**松手**时结算（位移超阈值才改判框选，见
+        # t_copy_paste_array），所以必须 down+up 成对——只发 down 现在不会
+        # 捆绑。真实点击本来就是成对的，语义未变（2026-10-28 更新）。
+        gui._med_handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONUP, {'button': 3, 'pos': (sx, sy)}))
         n_grp = len({g for g in gui._med['groups'].values() if g})
         check(n_grp == 1, f'点缝应捆出一组，实得 {n_grp}')
         check(len(gui._med['placed']) == 2, '点缝不应增删块')
@@ -1163,37 +1170,176 @@ def t_open_model():
         check({g for g in gui._med['groups'].values() if g} == gid_before,
               f'捆绑组应读得回：{gui._med["groups"]}')
         check(gui._med_gate()[0], '读回后的模型应过保存门')
-        # ④ basis / pos_scale 与编辑器（三角晶格、scale 1）不同的模型拒载，
-        #    且不动当前盘面——碎三角（basis (0.866,0)/(0,0.5)、scale 3）
-        #    就是现成样本
-        n_now = len(gui._med['placed'])
+        # ④ route A：碎三角（正交不等长基、scale 3）经 infer_lattice 正确判成
+        #    三角族，与默认编辑器（tri/scale1）同族 -> 直接载入替换盘面（48
+        #    块），不再硬拒；列表侧也不该灰（可续编）。
         if 'shatter' in model_registry.loaded():
-            check(not gui._med_load_model('shatter'),
-                  '碎三角 basis/scale 不同，应拒载')
-            check(len(gui._med['placed']) == n_now, '拒载不应动盘面')
-        # ⑤ 顶点对不上形状库的模型：载入失败（一块都放不下）
-        doc = load_model(json.load(open(
-            os.path.join(tmp, 'reopen_probe.json'), encoding='utf-8'))).doc
-        doc = dict(doc)
-        doc['name'] = 'alien_shape'
-        doc['orientations'] = {'x:0': {'shape': 'x',
-                                       'off': [[0, 0], [3, 0], [0, 3]]}}
-        doc['tiles'] = [{'p': [0, 0], 'o': 'x:0'}]
-        model_registry._LOADED['alien_shape'] = load_model(doc)
+            check(gui._med_load_model('shatter'),
+                  'route A: 同族碎三角应直接载入替换盘面')
+            check(len(gui._med['placed']) == 48,
+                  f'碎三角应 48 块，实得 {len(gui._med["placed"])}')
+            check(gui._med['pos_scale'] == 3,
+                  f'碎三角 pos_scale 应为 3，实得 {gui._med["pos_scale"]}')
+            check(gui._med['lattice'] == 'tri', '碎三角应判为三角族')
+            # ④b 列表侧: 可续编的模型不应灰（短因 None）
+            gui._med_open_model_list()
+            rows = {it[0]: it for it in gui._med['open_list']['items']}
+            check('shatter' in rows and rows['shatter'][3] is None,
+                  f'碎三角应可续编（无短因）: '
+                  f'{rows.get("shatter", ["?"])[3]}')
+            gui._med['open_list'] = None
+        else:
+            check(False, 'shatter 模型未注册，无法验证 route A 导入')
+        # ④c 异晶格守卫: 构造 square 基模型，盘面 >1 块时须拦「需先清空」
+        _doc_sq = {
+            'schema': 'gatenna.board/1', 'name': 'sq_probe',
+            'basis': [[1.0, 0.0], [0.0, 1.0]], 'pos_scale': 1,
+            'seams': [{'name': 'h', 'coeffs': [1, 0], 'step': [0, 1]}],
+
+            'solved': 'exact',
+            'orientations': {'sq:0': {'shape': 'sq',
+                                      'off': [[0, 0], [1, 0], [1, 1], [0, 1]]}},
+            'tiles': [{'p': [0, 0], 'o': 'sq:0'}],
+        }
+        model_registry._LOADED['sq_probe'] = load_model(_doc_sq)
         try:
-            check(not gui._med_load_model('alien_shape'),
-                  '形状库里没有的顶点应载入失败')
-            check(len(gui._med['placed']) == n_now, '失败不应动盘面')
+            check(not gui._med_load_model('sq_probe'),
+                  '异晶格且盘面>1块时应拦「需先清空」')
+            check('清空' in gui.macro_notify_msg,
+                  f'异晶格守卫提示应说清: {gui.macro_notify_msg}')
+            check(len(gui._med['placed']) == 48, '被拦不应动盘面')
+        finally:
+            model_registry._LOADED.pop('sq_probe', None)
+        # ⑤ route A: 形状库里没有的顶点（alien_shape）也能载入——模型自带
+        #    朝向即可续编，该形状进入可用目录（只是 shapes.json 没有它）。
+        _doc_alien = dict(load_model(json.load(open(
+            os.path.join(tmp, 'reopen_probe.json'), encoding='utf-8'))).doc)
+        _doc_alien['name'] = 'alien_shape'
+        _doc_alien['orientations'] = {'x:0': {'shape': 'x',
+                                              'off': [[0, 0], [3, 0], [0, 3]]}}
+        _doc_alien['tiles'] = [{'p': [0, 0], 'o': 'x:0'}]
+        model_registry._LOADED['alien_shape'] = load_model(_doc_alien)
+        try:
+            check(gui._med_load_model('alien_shape'),
+                  'route A: 形状库没有的顶点也应能载入（模型自带朝向）')
+            check(len(gui._med['placed']) == 1,
+                  f'alien_shape 应 1 块，实得 {len(gui._med["placed"])}')
+            check('x' in gui._med['images'], 'alien 形状应进入可用朝向表')
         finally:
             model_registry._LOADED.pop('alien_shape', None)
         # ⑥ 不存在的名字：明确失败
         check(not gui._med_load_model('no_such_model'), '不存在的模型应拒载')
     finally:
-        for nm in ('reopen_probe', 'alien_shape'):
+        for nm in ('reopen_probe', 'alien_shape', 'sq_probe'):
             model_registry._LOADED.pop(nm, None)
             if nm in board_types():
                 unregister_board_type(nm)
         ml.DEFAULT_MODEL_DIR = old
+        gui._med_close()
+
+
+def t_orient_lock():
+    """玩家显式按 R/F 选的朝向，贴边吸附必须认（2026-10-26 用户报）。
+
+    旧行为：吸附一律取「离点击最近」的候选，朝向纯由几何定——玩家按 R 只
+    影响**自由落点**那块，于是贴边时「想选的方向选不到」，而那个方向其实
+    完全可玩（不重叠、照样连通）。
+
+    ⚠️ 必须用**多朝向形状**验：只有两个朝向的形状（tri 的 ▲/▼）每个落点
+    本来就只贴得上一个朝向（贴另一条边才是另一朝向，属几何必然），拿它验
+    这条护栏恒不成立（实测 multi=0）。
+    """
+    from gui import model_editor as me
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        med = gui._med
+        i_up, _i_dn = _tri_indices(gui)
+        gui._med_clear()
+        _put_tri(gui, (0, 0), i_up)        # 盘上一块 ▲，其余形状往它身上贴
+        gui._med_rebuild()
+        shape = 'iso30' if 'iso30' in med['images'] else None
+        if shape is None:
+            shape = next((s for s, v in sorted(med['images'].items())
+                          if len(v) >= 3), None)
+        check(shape is not None, '形状库里应有 ≥3 朝向的形状可验这条')
+        if shape is None:
+            return
+        med['shape'] = shape
+        imgs = med['images'][shape]
+        tol, wide_tol = me._SNAP_TOL, me._SNAP_LOCK_TOL
+
+        def _cands(g):
+            """⚠️ g 是**平面坐标**（与 _med_place_at 收到的同一口径，见
+            _med_screen_to_geom）；别再过一遍 to_plane，那会把格坐标当平面
+            坐标用，与放置时的候选对不上。"""
+            return eg.snap_candidates(imgs, med['placed'], g,
+                                      basis=med['basis'])
+
+        # ① 找「自动朝向之外还有一个朝向贴得上」的位置
+        hit = None
+        for gi in range(-12, 13):
+            for gj in range(-12, 13):
+                g = (gi * 0.125, gj * 0.125)
+                c = _cands(g)
+                if not c or c[0][3] > tol:
+                    continue
+                auto = c[0][1]
+                alt = [x for x in c if x[3] <= wide_tol and x[1] != auto]
+                if alt:
+                    hit = (g, c, auto, alt[0][1])
+                    break
+            if hit:
+                break
+        check(hit is not None, '多朝向形状应存在「另一朝向也贴得上」的位置')
+        if hit is None:
+            return
+        g, cands, auto, other = hit
+        # ② 判据本身：没锁 = 取最近的（旧行为不变）；锁了 = 用锁的
+        med['cursor'] = auto
+        med['orient_lock'] = None
+        check(gui._med_pick_orient(cands) == auto,
+              '没锁朝向时应取最近的候选（旧行为不变）')
+        med['orient_lock'] = other
+        check(gui._med_pick_orient(cands) == other,
+              f'锁了朝向就该用它（{other} vs {gui._med_pick_orient(cands)}）')
+        # ③ 真按 R 会自己上锁（不是只有内部字段）
+        med['orient_lock'] = None
+        for _ in range(len(imgs) + 2):
+            if med['cursor'] == other:
+                break
+            gui._med_rotate()
+        check(med['cursor'] == other, f'R 应能转到朝向 {other}')
+        check(med['orient_lock'] == other, '按 R 应把该朝向锁上')
+        # ④ 端到端：放下去的就是玩家选的那个朝向（走 _med_place_at 直接给
+        #    几何坐标，避开屏幕→几何往返的舍入；事件层由 t_place 覆盖）
+        before = set(med['placed'])
+        check(gui._med_place_at(*g), f'{g} 处应放得下')
+        added = [k for k in med['placed'] if k not in before]
+        check(len(added) == 1, f'应新放一块（实得 {added}）')
+        if len(added) == 1:
+            check(added[0][2] == other,
+                  f'贴边放置应使用玩家选的朝向 {other}（实得 {added[0][2]}）')
+            check(eg.is_connected(gui._med_blocks(), gui._med_orientations()),
+                  '按玩家朝向贴边后仍应连通')
+        # ⑤ 锁的朝向连放宽带内都贴不上 → 退回最近的（别为凑朝向把块甩远）
+        far = None
+        for gi in range(-12, 13):
+            for gj in range(-12, 13):
+                gg = (gi * 0.5, gj * 0.5)
+                c2 = _cands(gg)
+                if not c2 or c2[0][3] > tol:
+                    continue
+                if all(x[1] != other for x in c2 if x[3] <= wide_tol):
+                    far = c2
+                    break
+            if far:
+                break
+        if far:
+            med['orient_lock'] = other
+            check(gui._med_pick_orient(far) == far[0][1],
+                  '锁的朝向贴不上时应退回最近的（绝不硬凑）')
+    finally:
         gui._med_close()
 
 
@@ -1264,7 +1410,327 @@ def t_rebuild_guard():
         gui._med_close()
 
 
+def t_open_shatter_route_a():
+    """route A：碎三角（任意 basis + pos_scale=3）应能导入并续编。
+
+    * 导入成功、48 块、pos_scale=3、族被推断为 tri（等边三角砖对 60° 旋转
+      闭合，不能只按 basis 夹角判成方形——那是 route A 之前拒载的根因）。
+    * 顶点已是 ×3 整数（碎三角文件里 off 自带 ×ps）。
+    * 渲染通道吃下预览局（basis+scale 都带进 spec 的 cell_polygon）。
+    * 屏幕↔几何换算按 pos_scale 正确（碎三角缩放后仍对得上棋盘）。
+    * 单块能用 world_rotate 旋转 / 拖动（route A「导入后还能转/动」）。
+    """
+    from engine import model_registry
+    if 'shatter' not in model_registry.loaded():
+        check(True, 'shatter 未注册，跳过（不影响其余）')
+        return
+    gui = _make_gui()
+    gui._med_open()
+    try:
+        gui._med_clear()
+        ok = gui._med_load_model('shatter')
+        check(ok, '碎三角应导入成功（route A）')
+        n = len(gui._med['placed'])
+        check(n == 48, f'碎三角应 48 块，实得 {n}')
+        check(gui._med['pos_scale'] == 3,
+              f'pos_scale 应为 3，实得 {gui._med["pos_scale"]}')
+        check(gui._med['lattice'] == 'tri',
+              f'族应推断为 tri，实得 {gui._med["lattice"]}')
+        # 顶点尺度：碎三角 off 已是 ×3，最大坐标幅度应 ≥ 3
+        maxc = max(abs(c) for off in gui._med['placed'].values()
+                   for v in off for c in v)
+        check(maxc >= 3, f'顶点应已是 ×3 整数（最大幅度 {maxc}）')
+        # 渲染不炸（basis+scale 都进了预览 spec 的 cell_polygon）
+        try:
+            gui.draw_board()
+            gui._med_draw_overlay()
+            gui.draw_status_bar()
+            check(True, '')
+        except Exception:
+            traceback.print_exc()
+            check(False, '碎三角渲染路径抛异常')
+        # 屏幕↔几何换算（按 pos_scale）：碎三角缩放后仍往返一致
+        key0 = next(iter(gui._med['placed']))
+        pts = eg.poly_of(key0[0], gui._med['placed'][key0], gui._med['basis'])
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        sx, sy = gui._med_geom_to_screen(cx, cy)
+        gx, gy = gui._med_screen_to_geom(sx, sy)
+        check(abs(gx - cx) < 1e-6 and abs(gy - cy) < 1e-6,
+              f'屏幕↔几何应往返一致（{cx:.3f},{cy:.3f} -> {gx:.3f},{gy:.3f}）')
+        # 旋转：隔离单块（避免邻居重叠拒转），R 应换朝向（world_rotate 生效）
+        tri_key = next((k for k in gui._med['placed'] if k[1] == 'tri'), key0)
+        gui._med['placed'] = {tri_key: gui._med['placed'][tri_key]}
+        gui._med['groups'] = {}
+        gui._med['hover'] = tri_key
+        before_idx = tri_key[2]
+        gui._med_rotate()
+        check(len(gui._med['placed']) == 1, '旋转不应增减块')
+        new_key = next(iter(gui._med['placed']))
+        check(new_key[2] != before_idx,
+              f'碎三角单块 R 应换朝向（前 idx {before_idx} / 后 idx {new_key[2]}）')
+        # 移动：拖动单块，锚点应变整数格
+        k = new_key
+        gui._med['hover'] = k
+        gui.camera_x, gui.camera_y, gui.zoom = 400.0, 250.0, 1.0
+        sx, sy = _center_screen(gui, k)
+        step = gui.cell_size * gui.zoom
+        _gui_drag(gui, sx, sy, sx, sy + 2 * step)
+        keys = list(gui._med['placed'])
+        check(len(keys) == 1, '拖动不应增减块')
+        check(keys[0][0] != k[0],
+              f'拖动后锚点应改变（{k[0]} -> {keys[0][0]}）')
+        d = (keys[0][0][0] - k[0][0], keys[0][0][1] - k[0][1])
+        check(all(isinstance(v, int) for v in d), f'锚点仍应是整数：{d}')
+        check(d != (0, 0), f'拖动后锚点应真的挪了：{d}')
+    finally:
+        gui._med_close()
+
+
+def t_save_roundtrip_route_a():
+    """route A 保存往返：载入任意 basis/pos_scale 的模型，存回再重开须保真。
+
+    载入只保证「读得进来」；保存必须把 ``basis`` / ``pos_scale`` / 去重后的
+    朝向表 / 每块几何**原样写回**——否则「打开碎三角 → 另存 → 再开」会失真
+    （块漂移、或族被 infer_lattice 判错导致朝向重排）。
+    """
+    import engine.model_loader as ml
+    from engine import model_registry
+    gui = _make_gui()
+    gui._med_open()
+    tmp = tempfile.mkdtemp(prefix='med_rt_')
+    old = ml.DEFAULT_MODEL_DIR
+    ml.DEFAULT_MODEL_DIR = tmp
+    shutil.copy(os.path.join(old, 'shapes.json'),
+                os.path.join(tmp, 'shapes.json'))
+
+    def _snap(med):
+        """几何快照：锚点 + 形状 + 归一化顶点集（不吃 idx 顺序）。"""
+        out = set()
+        for (p, shape, idx) in med['placed']:
+            out.add((tuple(p), shape,
+                     frozenset(tuple(v) for v in med['images'][shape][idx])))
+        return out
+
+    try:
+        if 'shatter' not in model_registry.loaded():
+            check(False, 'shatter 模型未注册，无法验证 route A 保存往返')
+        check(gui._med_load_model('shatter'),
+              '载入碎三角（任意 basis + pos_scale）')
+        n_before = len(gui._med['placed'])
+        ps_before = gui._med['pos_scale']
+        basis_before = [list(r) for r in gui._med['basis']]
+        geom_before = _snap(gui._med)
+        check(ps_before == 3, f'碎三角 pos_scale 应为 3，实得 {ps_before}')
+        # 保存：rt_probe（临时目录里本不存在，免覆盖确认）
+        gui._med['name'] = 'rt_probe'
+        check(gui._med_save(), 'route A 模型应能保存（过保存门 + 落盘）')
+        path = os.path.join(tmp, 'rt_probe.json')
+        check(os.path.exists(path), f'模型文件应落盘：{path}')
+        _doc = json.load(open(path, encoding='utf-8'))
+        check([list(r) for r in _doc['basis']] == basis_before,
+              f'文件 basis 应保真：{basis_before} vs {_doc["basis"]}')
+        check(_doc['pos_scale'] == ps_before,
+              f'文件 pos_scale 应保真：{ps_before} vs {_doc["pos_scale"]}')
+        # 清空 + 重开
+        gui._med_clear()
+        check(len(gui._med['placed']) == 0, '清空后 0 块')
+        check(gui._med_load_model('rt_probe'), '重开刚保存的模型')
+        check(len(gui._med['placed']) == n_before,
+              f'往返后块数应一致：{n_before} vs {len(gui._med["placed"])}')
+        check(gui._med['pos_scale'] == ps_before,
+              f'往返后 pos_scale 应一致：{ps_before} vs {gui._med["pos_scale"]}')
+        check([list(r) for r in gui._med['basis']] == basis_before,
+              f'往返后 basis 应一致：{basis_before} vs {gui._med["basis"]}')
+        diff = geom_before ^ _snap(gui._med)
+        check(not diff, f'往返后几何应逐块一致（差异 {len(diff)} 块）')
+    finally:
+        model_registry._LOADED.pop('rt_probe', None)
+        ml.DEFAULT_MODEL_DIR = old
+        gui._med_close()
+
+
 # ----------------------------------------------------------------------
+def t_copy_paste_array():
+    """选区 / 复制 / 粘贴 / 阵列（2026-10-28 新功能）。
+
+    只测**机制不变量**，不测具体摆位好不好看（摆得对不对由 can_place 保证）：
+      * 右键拖＝框选；右键**点**（不拖）仍然是删块 —— 旧语义不许退化
+      * 空选区复制 / 空剪贴板粘贴 都要明确拒绝，不动盘面
+      * 粘贴落位：块数 += 份数、无键冲突、last_delta = 相对原件的位移
+      * 阵列铺完**整盘不许有重叠**（这是新功能最重要的护栏）
+      * 撤销能整批退回阵列
+    """
+    gui = _make_gui()
+    gui._med_open()
+    med = gui._med
+    i_up, _i_dn = _tri_indices(gui)
+    imgs = med['images']['tri']
+
+    def no_overlap():
+        """整盘两两不重叠（can_place 是纯重叠判定，正好当护栏）。"""
+        placed = med['placed']
+        for k in placed:
+            others = {kk: vv for kk, vv in placed.items() if kk != k}
+            if not eg.can_place((placed[k],), 0, k[0], others, med['basis']):
+                return False
+        return True
+
+    # 摆一个 3 块的「单元」（锚点隔开 4 格，保证彼此不重叠）
+    med['placed'] = {((x, 0), 'tri', i_up): imgs[i_up] for x in (0, 4, 8)}
+    med['groups'] = {}
+    gui._med_rebuild()
+    gui.center_map()
+    # 往右挪出左侧面板：面板会吃掉右键按下（面板 x 10..228，块在 x≈195 时中招）
+    gui.camera_x += 140
+    check(len(med['placed']) == 3, '前置：应有 3 块')
+
+    # ---- 1. 右键拖 = 框选 ----
+    pts = []
+    for k in med['placed']:
+        poly = eg.poly_of(k[0], med['placed'][k], med['basis'])
+        pts.append(gui._med_geom_to_screen(sum(p[0] for p in poly) / len(poly),
+                                           sum(p[1] for p in poly) / len(poly)))
+    bx0 = min(p[0] for p in pts) - 45
+    by0 = min(p[1] for p in pts) - 45
+    bx1 = max(p[0] for p in pts) + 45
+    by1 = max(p[1] for p in pts) + 45
+    check(not gui._med_panel_rect().collidepoint(bx0, by0),
+          '框选起点不能压在左侧面板上（面板会吃掉右键按下）')
+    _gui_drag(gui, bx0, by0, bx1, by1, button=3)
+    check(len(med['sel']) == 3, f'框选应选中 3 块，实际 {len(med["sel"])}')
+
+    # ---- 2. 空剪贴板粘贴 / 空选区复制要拒绝 ----
+    check(gui._med_paste_begin() is False, '空剪贴板粘贴应被拒绝')
+    med['sel'] = set()
+    check(gui._med_copy_sel() is False, '空选区复制应被拒绝')
+    # 重选回来
+    _gui_drag(gui, bx0, by0, bx1, by1, button=3)
+    check(len(med['sel']) == 3, '重选应还是 3 块')
+
+    # ---- 3. 复制 ----
+    check(gui._med_copy_sel() is True, '复制应成功')
+    check(len(med['clip']['items']) == 3, '剪贴板应有 3 块')
+    check(med['clip']['ref'] == (0, 0), '剪贴板锚点应为最小角 (0,0)')
+
+    # ---- 4. 贴在重叠位置 → 拒绝落位 ----
+    gui._med_paste_begin()
+    gui._med_paste_update(0.0, 0.0)
+    check(med['paste']['ok'] is False, '压在原件上应判放不下')
+    check(gui._med_paste_commit() is False, '放不下时落位应被拒绝')
+    check(len(med['placed']) == 3, '被拒的落位不应改变块数')
+
+    # ---- 5. 贴到空位 → 落位 ----
+    gui._med_paste_begin()
+    gui._med_paste_update(0.0, 4.0)
+    check(med['paste']['ok'] is True, '空位应判放得下')
+    check(gui._med_paste_commit() is True, '空位落位应成功')
+    check(len(med['placed']) == 6, f'落位后应 6 块，实际 {len(med["placed"])}')
+    check(med['last_delta'] == (0, 4), f'last_delta 应为 (0,4)，实际 {med["last_delta"]}')
+    check(no_overlap(), '粘贴后整盘不应有重叠')
+
+    # ---- 6. 阵列 ----
+    before = len(med['placed'])
+    ok = gui._med_paste_array(2, 2)
+    check(ok is True or len(med['placed']) == before,
+          '阵列要么铺出东西、要么明确报告铺不出')
+    if ok:
+        check(len(med['placed']) > before, '阵列应新增块')
+        check(len(med['placed']) % 3 == 0, '每份副本必须整份落地（块数是 3 的倍数）')
+        check(no_overlap(), '阵列后整盘不应有重叠')
+
+    # ---- 7. 撤销整批退回 ----
+    gui._med_undo()
+    check(len(med['placed']) == before,
+          f'撤销应退回阵列前（{before}），实际 {len(med["placed"])}')
+
+    # ---- 8. 右键**点**（不拖）仍然是删块，没被框选吃掉 ----
+    k = sorted(med['placed'])[0]
+    poly = eg.poly_of(k[0], med['placed'][k], med['basis'])
+    sx, sy = gui._med_geom_to_screen(sum(p[0] for p in poly) / len(poly),
+                                     sum(p[1] for p in poly) / len(poly))
+    n0 = len(med['placed'])
+    _gui_click(gui, sx, sy, button=3)
+    check(len(med['placed']) == n0 - 1,
+          f'右键点块应删掉 1 块（{n0} → {len(med["placed"])}）')
+    gui._med_close()
+
+
+def t_seed_current_route_a():
+    """「改当前盘面」也要吃 route A（自定义 basis + pos_scale≠1）。
+
+    这条路径（``_med_seed_from_model``）与「打开模型…」（``_med_load_model``）
+    是两条独立代码，以前只有后者修了 route A，前者仍用 ``family_of_basis``
+    （只看 basis 两向量夹角）→ 碎三角那种正交不等长基被误判成方形；且
+    ``pos_scale`` 根本不写（恒 1）；再加上碎三角的朝向标签是**裸号**
+    （'6'/'12'），被当成非法标签直接退回空盘。本测试钉住这三条。
+
+    * 碎三角：48 块导入成功、族=tri、pos_scale=3、沿用盘面自己的 basis；
+    * 裸号标签也要拿到真形状名（tri / iso30）；
+    * 保存门通过（连通 + ≥2 可动）——证明锚点补偿没把整盘挪散；
+    * 标准模型（shield，`形状:序号` 标签、ps=1）零回归。
+    """
+    from engine import model_registry
+    if 'shatter' not in model_registry.loaded():
+        check(True, 'shatter 未注册，跳过（不影响其余）')
+        return
+    gui = _make_gui()
+    gui.new_model_puzzle('shatter', 1)
+    gui.center_map()
+    n_before = len(gui.game.blocks)
+    basis_before = [list(r) for r in gui.game.spec.basis]
+    gui.set_game_mode('create')
+    gui._ann_home_sub = 'restore'
+    gui.macro_notify_msg = ''
+    gui._ann_btn_blocks_current()
+    try:
+        check(gui._med_active, '碎三角「改当前盘面」应打开编辑器，而不是'
+                               f'退回空盘（{gui.macro_notify_msg!r}）')
+        if not gui._med_active:
+            return
+        med = gui._med
+        check(len(med['placed']) == n_before,
+              f'导入块数应与当前局面一致（{n_before}→{len(med["placed"])}）')
+        check(med['lattice'] == 'tri',
+              '族应按朝向集闭合性判为 tri（不是按 basis 夹角误判的 square），'
+              f'实得 {med["lattice"]}')
+        check(med['pos_scale'] == 3,
+              f'pos_scale 应为 3（旧代码漏写、恒为 1），实得 {med["pos_scale"]}')
+        check([list(r) for r in med['basis']] == basis_before,
+              '应沿用盘面自己的 basis（route A：不强行换成族的标准基），实得 '
+              f'{[list(r) for r in med["basis"]]}')
+        check('tri' in med['images'],
+              f'裸号标签也要拿到真形状名，实得 {sorted(med["images"])}')
+        gok, why = gui._med_gate()
+        check(gok, f'导入盘面应通过保存门（连通+≥2 可动），why={why!r}')
+    finally:
+        if gui._med_active:
+            gui._med_close()
+
+    # 零回归：标准模型（`形状:序号` 标签、ps=1）照旧
+    gui2 = _make_gui()
+    gui2.new_model_puzzle('shield', 1)
+    gui2.center_map()
+    n2 = len(gui2.game.blocks)
+    gui2.set_game_mode('create')
+    gui2._ann_home_sub = 'restore'
+    gui2.macro_notify_msg = ''
+    gui2._ann_btn_blocks_current()
+    try:
+        check(gui2._med_active, '标准模型「改当前盘面」应打开编辑器'
+                                f'（{gui2.macro_notify_msg!r}）')
+        if gui2._med_active:
+            check(len(gui2._med['placed']) == n2,
+                  f'shield 导入块数应一致（{n2}→{len(gui2._med["placed"])}）')
+            check(gui2._med['pos_scale'] == 1,
+                  f'shield pos_scale 应为 1，实得 {gui2._med["pos_scale"]}')
+            check(gui2._med['lattice'] == 'tri',
+                  f'shield 族应为 tri，实得 {gui2._med["lattice"]}')
+    finally:
+        if gui2._med_active:
+            gui2._med_close()
+
+
 def main():
     cases = [t_open_close, t_second_open_refused, t_spec_stable,
              t_render, t_ghost,
@@ -1279,8 +1745,10 @@ def main():
              t_square_lattice_save_open,
              t_playtest_playable,
              t_event_routing, t_abandon_on_swap, t_menu_entry,
-             t_unbundle_all, t_open_model,
-             t_free_point_reach, t_rebuild_guard]
+             t_unbundle_all, t_open_model, t_open_shatter_route_a,
+             t_save_roundtrip_route_a,
+             t_orient_lock, t_free_point_reach, t_rebuild_guard,
+             t_copy_paste_array, t_seed_current_route_a]
     for fn in cases:
         print(f'--- {fn.__name__} ---')
         try:

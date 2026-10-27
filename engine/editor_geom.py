@@ -33,13 +33,13 @@
    逐个造单族 spec 问 legal_moves，取第一个有合法移动的 k）——
    「步长作者写、引擎验」的自动化版，玩家不写任何数字。
 """
-from math import atan2, degrees, gcd, sqrt
+from math import acos, atan2, cos, degrees, gcd, radians, sin, sqrt
 
 from . import geometry_ops as gops
 from .board import Block, Board
 from .model_loader import SCHEMA_BOARD, load_model
 
-# 标准三角晶格基（与 docs/spec/模型文件_2026-10-24.md 的示例一致）
+# 标准三角晶格基（与 docs/spec/搭积木编辑器.md §7 的晶格族说明一致）
 TRI_BASIS = ((1.0, 0.0), (0.5, sqrt(3.0) / 2.0))
 # 方形晶格基：直角多边形的家（正方形、等腰直角三角形）。三角基里
 # **不存在**这两种形状——正方形要求 90° 旋转是格自同构，而 Eisenstein
@@ -99,6 +99,69 @@ def lattice_of_basis(basis, tol=1e-6):
                 and abs(ratio - ld / lc) <= tol:
             return name
     return None
+
+
+def family_of_basis(basis, tol=1e-6):
+    """基 → 族名（tri / square），按**两向量夹角**判定（不看等长）。
+
+    与 ``lattice_of_basis`` 的区别：后者要求基向量等长（三角 60°+等长、
+    方形 90°+等长），手写/生成的「正交不等长」基（如碎三角
+    ``(0.866,0)/(0,0.5)``——正三角格的矩形坐标表示）会判 None。本函数只
+    认夹角（≈60°→tri，≈90°→square），让编辑器能载入任意晶格表示的模型
+    （route A：任意 basis + pos_scale 支持）。夹角无法归类时回退到最近族。
+    """
+    try:
+        (ax, ay), (bx, by) = [(float(r[0]), float(r[1])) for r in basis]
+    except (TypeError, ValueError, IndexError):
+        return None
+    la, lb = sqrt(ax * ax + ay * ay), sqrt(bx * bx + by * by)
+    if la <= 0 or lb <= 0:
+        return None
+    cos = (ax * bx + ay * by) / (la * lb)
+    ang = degrees(acos(max(-1.0, min(1.0, cos))))
+    return 'tri' if abs(ang - 60) <= abs(ang - 90) else 'square'
+
+
+def infer_lattice(doc):
+    """从模型**朝向集的世界旋转闭合性**推断族（tri / square / None）。
+
+    为什么不能只靠 ``family_of_basis``：它只看 basis 两向量夹角，会把碎三角
+    那种「正交不等长基」``(0.866,0)/(0,0.5)`` 误判成方形（90°）——但碎三角
+    的三角砖是等边的、朝向集对 **60° 旋转闭合**，编辑器理应按三角族（D6）
+    去转它。所以这里直接检验朝向集：某形状的若干朝向经世界 60°（或 90°）
+    旋转后是否仍落在同一形状的朝向集里，闭合即认该族。
+
+    返回 None 表示两族都不闭合（正交/斜基等无法用 D6/D4 旋转的板型）——
+    这种情况下几何渲染照常（纯 basis+scale），只是编辑器内的旋转/镜像会
+    退化成朴素步进（找不到对应像就不转）。
+    """
+    basis = doc.get('basis')
+    scale = int(doc.get('pos_scale', 1) or 1)
+    orients = doc.get('orientations') or {}
+    by_shape = {}
+    for _lb, _it in orients.items():
+        _s = _it.get('shape')
+        by_shape.setdefault(_s, []).append(
+            [tuple(int(x) for x in v) for v in _it['off']])
+
+    def closed(imgs, deg):
+        if len(imgs) < 2:
+            return False
+        ok = 0
+        for img in imgs:
+            r = world_rotate(img, deg, basis, scale)
+            if any(r == normalize(o) for o in imgs):
+                ok += 1
+        return ok >= len(imgs) * 0.8          # 80% 闭合即算该族
+
+    for _s, imgs in by_shape.items():
+        if closed(imgs, 60):
+            return 'tri'
+    for _s, imgs in by_shape.items():
+        if closed(imgs, 90):
+            return 'square'
+    # 兜底：夹角判定（手写/标准基仍可用）
+    return family_of_basis(basis) if basis else None
 
 
 # ----------------------------------------------------------------------
@@ -185,6 +248,63 @@ def _norm(verts):
 def normalize(verts):
     """``_norm`` 的公开版（编辑器 Mixin 查「旋转/镜像后是哪個像」要用）。"""
     return _norm(verts)
+
+
+def world_rotate(verts, deg, basis=None, scale=1, mirror=False):
+    """整数顶点（在 ``basis`` 下、已乘 ``scale``）→ 绕质心旋转/镜像 → 归一化整数顶点。
+
+    与 ``rot60`` / ``rot90`` 的根本区别：后者是**标准基**下的整系数矩阵，
+    只对库形状（标准三角/方形基、scale=1）成立。载入模型的 ``basis`` 可能是
+    任意晶格表示（碎三角那种正交不等长基），直接套标准整数矩阵毫无几何意义
+    ——所以这里在**世界坐标**里做旋转/镜像，再换算回整数顶点（取整）。
+
+    * 标准基 + scale=1 时，绕质心旋转 60°/90° 与原点旋转的归一化结果一致
+      （等边/对称形状质心即旋转中心），所以**零回归**。
+    * 任意基都能正确旋转：这是 route A「任意谜题导入后还能转」的几何基石。
+    """
+    b = basis or TRI_BASIS
+    s = scale or 1
+    world = [to_plane((v[0] / s, v[1] / s), b) for v in verts]
+    n = len(world)
+    cx = sum(p[0] for p in world) / n
+    cy = sum(p[1] for p in world) / n
+    if mirror:
+        world = [(x, -y) for (x, y) in world]
+        cx = sum(p[0] for p in world) / n
+        cy = sum(p[1] for p in world) / n
+    th = radians(deg)
+    c, sn = cos(th), sin(th)
+    out = []
+    for (x, y) in world:
+        dx, dy = x - cx, y - cy
+        rx = cx + dx * c - dy * sn
+        ry = cy + dx * sn + dy * c
+        a, bb = to_lattice((rx, ry), b)
+        out.append((int(round(a * s)), int(round(bb * s))))
+    return normalize(out)
+
+
+def rotate_vector(v, deg, basis=None, scale=1):
+    """整数格向量 → 世界坐标旋转 ``deg`` → 回到整数格向量。
+
+    为什么不能直接用 ``rot60`` / ``rot90``：那两个是**标准基**下的整系数
+    矩阵，只对标准三角 / 方形基成立。载入模型的 ``basis`` 可能是任意晶格
+    表示（碎三角那种正交不等长基 (0.866,0)/(0,0.5)），把标准基的整数矩阵
+    套上去没有几何意义——实测把碎三角的位移 (24,0) 按 rot60 算会得到 (0,24)，
+    那根本不是 60° 方向，阵列一份都铺不出来。
+
+    这里走世界坐标：``to_plane`` → 纯向量旋转 → ``to_lattice`` → 乘回
+    ``scale`` 取整。标准基下结果与 rot60 / rot90 一致（零回归）。
+    """
+    b = basis or TRI_BASIS
+    s = scale or 1
+    wx, wy = to_plane((v[0] / s, v[1] / s), b)
+    th = radians(deg)
+    c, sn = cos(th), sin(th)
+    rx = wx * c - wy * sn
+    ry = wx * sn + wy * c
+    a, bb = to_lattice((rx, ry), b)
+    return (int(round(a * s)), int(round(bb * s)))
 
 
 def d6_images(verts):
@@ -450,16 +570,31 @@ def shared_edges(placed, basis=None):
 # 缝族推导
 # ----------------------------------------------------------------------
 def edge_directions(placed):
-    """全部已放置块的边方向（primitive、去重）。"""
-    dirs = set()
+    """全部已放置块的边方向：每个**方向**取最短的那条**真实边向量**。
+
+    同一方向（``_primitive`` 相同）只留一个代表，且必须保留**真实边长**，
+    不能返回 ``_primitive(d)``：route A 的粗晶格（pos_scale>1、任意 basis）
+    块边长在整数坐标里是 (0,6)/(3,-3)/(3,-9) 这类，除 gcd 会退成 (0,1)/
+    (1,-1)/(1,-3)，步长塌到 1/3 块宽——``_trial_family_live`` 必然 0 移动，
+    整个盘推不出缝族（碎三角实测：6 族全丢 → 保存门「没有可用的缝族」）。
+    标准单位晶格边长 gcd=1，最短真实边 == primitive，零回归。
+    """
+    best = {}
     for offs in placed.values():
         n = len(offs)
         for i in range(n):
             d = (offs[(i + 1) % n][0] - offs[i][0],
                  offs[(i + 1) % n][1] - offs[i][1])
-            if d != (0, 0):
-                dirs.add(_primitive(d))
-    return sorted(dirs)
+            if d == (0, 0):
+                continue
+            key = _primitive(d)
+            mag = d[0] * d[0] + d[1] * d[1]
+            cur = best.get(key)
+            # 并列（同方向同样长，如方形的 (1,0)/(-1,0)）按元组定序，保证
+            # 与迭代顺序无关的确定性结果。
+            if cur is None or (mag, d) < (cur[0] * cur[0] + cur[1] * cur[1], cur):
+                best[key] = d
+    return sorted(best.values())
 
 
 def _trial_family_live(blocks, orientations, coeffs, step, basis=None):

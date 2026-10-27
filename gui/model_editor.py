@@ -28,6 +28,9 @@
 * **右键点块** = 删除；**右键点两块之间的缝** = 捆绑/解绑（同组整组滑动）。
   左键只负责「放」和「拖」——以前左键点块是删、点缝是捆，想贴着已有块
   放一块时常常变成删除或捆绑，看着像「点了没反应」（2026-10-25 用户实测）。
+* **右键拖动** = 框选（2026-10-28 加，为复制服务）。右键的动作**推迟到松手**
+  才执行：按下后位移超过 4px 就改判成框选，没超过就还是原来的「删块 /
+  捆绑」。所以纯右键点击的行为一字未改。
 * **R 旋转 / F 镜像**：鼠标悬停在某块上 → 转**那一块**（绕自身重心，找
   最近的无重叠落点）；悬空 → 转**将要放置**的朝向。
 * 滚轮缩放、中键（或左键拖空白）平移；ESC 退出。
@@ -35,6 +38,18 @@
 * 侧栏「盘面」：**打开模型…** 把已保存的模型读回来续编（朝向按几何
   匹配，label 名不要求同款）；**清空捆绑** 一键解掉所有组（「全捆再
   逐缝剪」会留下无缝相连的余组，UI 上无缝可点，只能在这里清）。
+* **复制 / 粘贴 / 阵列**（2026-10-28 加；目的 = 把一个密铺单元复制成更大的
+  相同密铺图形）：右键拖框选出一个单元 → Ctrl+C 或 [复制] → Ctrl+V 或
+  [粘贴]，浮动副本跟着鼠标走（放得下绿、放不下红），左键点一下落位 →
+  [阵列] 选尺寸，按刚才那一份贴出来的间距整片铺开。副本内部保留捆绑，但
+  **每份副本各起新号段**，不会一次剪缝把所有副本一起剪开。
+  阵列周期**不靠猜形状**：方向一 = 玩家手动贴的那一份的真实位移（贴得下才
+  记得下来），方向二 = 它在**世界坐标**里转一个晶格步长（三角 60°、方形
+  90°）。⚠️ 这里必须用 ``eg.rotate_vector`` 而不是 ``eg.rot60`` / ``rot90``
+  ——后两者是标准基的整系数矩阵，套在碎三角那种自定义基 (0.866,0)/(0,0.5)
+  上根本不是 60° 方向（实测把位移 (24,0) 算成 (0,24)，一份都铺不出来）。
+  每份都过 ``can_place``，铺不下就跳过：圈错了也只会少铺几份，不会画出
+  重叠盘面。
 * 保存门只在**保存时**检查（整片连通 + ≥2 颗可动）：玩家自己一眼能看出
   摆得对不对，不必边摆边拦。
 
@@ -59,6 +74,12 @@ _PANEL_X = 10
 _BAR_H = 82
 # 贴边吸附的命中容差（晶格单位）：点得离候选块够近才吸附，否则自由落点
 _SNAP_TOL = 0.75
+# 玩家**显式**选了朝向（按过 R/F）时，为这个朝向放宽到的容差。为什么需要
+# 放宽：贴哪条边决定朝向，同一个落点附近往往只有一个朝向贴得上（贴另一条
+# 边才是另一个朝向），于是玩家按 R 选的方向「选不到」——而那个方向其实是
+# 合法可玩的（2026-10-26 用户报）。放宽到 1.2 格（< 一格半）既有一定自由
+# 度，又不会让块飞到玩家没看的那一侧：悬停预览走同一判据，点前就看得见。
+_SNAP_LOCK_TOL = 1.2
 # 自由落点的搜索半径（格）——以**盘面 bbox 中心**为圆心，不是以点击处为
 # 圆心：滑块游戏的盘面是一个整体，新块只能长在已有积木旁边。若以点击处
 # 为圆心，用户缩得太小点屏幕边缘就会把锚点放到几千格外，Board 据此建出
@@ -146,6 +167,7 @@ class ModelEditorMixin:
             'lib_lattice': {s: lib[s]['lattice'] for s in opts},
             'lattice': lattice,               # 当前晶格族（tri / square）
             'basis': info['basis'],           # 族基（会话期恒定）
+            'pos_scale': 1,                    # 当前细分度（route A：支持 >1）
             'deg': info['deg'],               # 缝族命名角粒度
             'lat_rows': [],                   # 面板「晶格」节热区
             'images': images,                 # 当前族的 {形状名: 像元组}
@@ -178,6 +200,16 @@ class ModelEditorMixin:
             'game': None,                   # 预览局（判「是否被中途换掉」）
             'open_list': None,              # 「打开模型」模态列表（None=关）
             'act_rows': [],                 # 面板「盘面」节按钮热区
+            'orient_lock': None,            # 玩家显式按 R/F 选的朝向号（见
+                                            # _med_pick_orient；None=交给几何）
+            # ---- 选区 / 复制 / 阵列（2026-10-28 加）----
+            'sel': set(),                   # 选中的块键（右键拖框选出）
+            'clip': None,                   # 剪贴板（见 _med_copy_sel）
+            'paste': None,                  # 粘贴中的浮动副本（见 _med_paste_begin）
+            'rband': None,                  # 框选橡皮筋（屏幕坐标 Rect）
+            'rmb': None,                    # 右键手势记录（按下→松手之间）
+            'last_delta': None,             # 上次粘贴落位的位移 = 阵列周期 d1
+            'array_dlg': None,              # 「阵列」尺寸选择弹窗（None=关）
         }
         # ---- 备份原局（退出时原样还原）----
         med['backup'] = {
@@ -289,38 +321,95 @@ class ModelEditorMixin:
                 out.append((ia, ic))
             return tuple(out)
 
-        try:
-            lattice = eg.lattice_of_basis(basis)
-        except Exception:
-            return False
-        if lattice not in eg.LATTICES:
-            return False
-        # 「形状:序号」→ {形状: {序号: 格偏移}}
-        buckets = {}
+        # 形状名从哪来（route A）：spec.orientations **只是标签元组**，没有
+        # shape 字段。优先回模型文件查（碎三角的标签是裸号 '6'/'12'，只有
+        # 文件里的 orientations 才记着它属于 tri 还是 iso30）；查不到再按
+        # '形状:序号' 解析；都没有就按几何起稳定名——绝不因为标签不合规就
+        # 整盘退回空盘（旧代码正是这么把碎三角挡在门外的）。
+        shape_of = {}
+        kind = getattr(game, 'kind', None)
+        if kind:
+            try:
+                from engine import model_registry
+                _doc = model_registry.loaded(kind).doc or {}
+                for _lb, _it in (_doc.get('orientations') or {}).items():
+                    if isinstance(_it, dict) and _it.get('shape'):
+                        shape_of[str(_lb)] = str(_it['shape'])
+            except Exception:               # noqa: BLE001 —— 拿不到就走后面的兜底
+                shape_of = {}
+
+        # 标签 → (形状名, 格偏移)（原始，未归一）
+        raw_by_label = {}
+        anon = {}                      # 归一化几何 -> 兜底形状名
         try:
             for label in orients:
-                shape, sep, idx = str(label).rpartition(':')
-                if not sep or not shape or not idx.isdigit():
-                    return False
-                buckets.setdefault(shape, {})[int(idx)] = _poly_to_grid(
-                    spec.cell_polygon((0, 0), label))
+                lb = str(label)
+                shape = shape_of.get(lb)
+                if shape is None:
+                    _s, sep, idx = lb.rpartition(':')
+                    if sep and _s and idx.isdigit():
+                        shape = _s
+                raw = _poly_to_grid(spec.cell_polygon((0, 0), label))
+                if shape is None:
+                    # 兜底：按几何给名，同一多边形共名、不同多边形分开
+                    _key = eg.normalize(raw)
+                    shape = anon.get(_key)
+                    if shape is None:
+                        shape = 's%d' % len(anon)
+                        anon[_key] = shape
+                raw_by_label[lb] = (shape, raw)
         except Exception:                   # noqa: BLE001 —— 任何几何异常都退回空盘
             return False
-        if not buckets:
+        if not raw_by_label:
             return False
-        order = {s: sorted(m) for s, m in buckets.items()}
-        images = {s: tuple(buckets[s][i] for i in order[s]) for s in buckets}
-        new_index = {f'{s}:{i}': k for s in buckets
-                     for k, i in enumerate(order[s])}
+        # 族判定（route A）：按**朝向集的世界旋转闭合性**，与「打开模型…」
+        # 共用 infer_lattice。旧口径 family_of_basis 只看 basis 两向量夹角，
+        # 会把碎三角那种「正交不等长基」(0.866,0)/(0,0.5) 误判成方形 → 编辑
+        # 器按 D4 去转它，转一次就散。伪 doc 只给 infer_lattice 用到的三键。
+        try:
+            lattice = eg.infer_lattice({
+                'basis': basis, 'pos_scale': int(scale),
+                'orientations': {lb: {'shape': sh,
+                                      'off': [list(v) for v in raw]}
+                                 for lb, (sh, raw) in raw_by_label.items()},
+            })
+        except Exception:
+            lattice = None
+        if lattice not in eg.LATTICES:
+            lattice = 'tri'          # 与载入侧同兜底：几何照导，旋转退化
+        # route A：归一化 + **几何去重**建档（同一几何形状在盘里常以多种顶点
+        # 排列重复出现），并记下各自减掉的最小角——落块时补回锚点，否则不同
+        # 朝向的块被各自平移不同的量，整盘会判不连通（与载入侧 _med_load_model
+        # 同一个坑）。标准盘面 off 的 min=(0,0)，零影响。
+        norm = eg.normalize
+
+        def _sort_key(l):
+            """按「形状名、序号」定序（裸号/非数字标签排最后，不炸）。"""
+            _s, _, _i = l.rpartition(':')
+            try:
+                return (_s, int(_i))
+            except ValueError:
+                return (_s, 1 << 30)
+
+        shift_of, label_of, by_shape = {}, {}, {}
+        for label in sorted(raw_by_label, key=_sort_key):
+            shape, raw = raw_by_label[label]
+            n = norm(raw)
+            shift_of[label] = (min(v[0] for v in raw), min(v[1] for v in raw))
+            bucket = by_shape.setdefault(shape, [])
+            if n not in bucket:
+                bucket.append(n)
+            label_of[label] = (shape, bucket.index(n))
+        images = {s: tuple(v) for s, v in by_shape.items()}
         # 块源：用引擎局面的 Board.blocks（真正的 engine Block），不是 GUI 的
         # 适配层列表——_AdapterBlock 只有 .location 列表，没有 .point/.orient。
         board = getattr(game, 'board', None)
         placed, groups, gid_map = {}, {}, {}
         for b in (getattr(board, 'blocks', ()) if board is not None else ()):
             label = str(getattr(b, 'orient', ''))
-            if label not in new_index:
+            if label not in label_of:
                 return False
-            shape = label.rpartition(':')[0]
+            shape, idx = label_of[label]
             # 块坐标本身已是整数格（Board 校验 Lattice.valid(point)），
             # 不能按 pos_scale 再除一次——那是顶点偏移的单位，不是锚点。
             try:
@@ -329,10 +418,14 @@ class ModelEditorMixin:
                 p = tuple(int(v) for v in b.point)
             except (TypeError, ValueError):
                 return False
-            key = (p, shape, new_index[label])
+            # 锚点补偿：images 里的偏移已归一化（减去各自最小角），把该 label
+            # 减掉的最小角加回锚点，物理位置才与盘面原来的一致。
+            _sh = shift_of.get(label, (0, 0))
+            p = (p[0] + _sh[0], p[1] + _sh[1])
+            key = (p, shape, idx)
             if key in placed:
                 return False
-            placed[key] = images[shape][new_index[label]]
+            placed[key] = images[shape][idx]
             g = getattr(b, 'group', 0) or 0
             if g:
                 if g not in gid_map:
@@ -342,8 +435,16 @@ class ModelEditorMixin:
             return False
         info = eg.lattice_info(lattice)
         med['lattice'] = lattice
-        med['basis'] = info['basis']
+        # route A：用盘面**自己的基**（碎三角那种自定义基也照用），族只决定
+        # 旋转粒度 deg。旧代码写死成族的标准基，配上 ps≠1 / 自定义基的盘面
+        # 会把块按错误基换算——尺寸、点击、存档全错。
+        med['basis'] = [list(r) for r in basis]
         med['deg'] = info['deg']
+        # ⚠️ 必须写盘面自己的细分度：_med_screen_to_geom/_med_geom_to_screen
+        # 与 _med_spec 全按它换算。旧代码漏写（恒为 1），ps=3 的盘面导入后
+        # 屏幕↔几何差 3 倍（点哪都不中、存回去尺寸也错）。
+        med['pos_scale'] = int(scale)
+        med['spec'] = None              # basis/images 变了，预览 spec 重建
         med['lib'].update(images)
         for s in images:
             med['lib_lattice'][s] = lattice
@@ -353,6 +454,7 @@ class ModelEditorMixin:
         med['next_gid'] = len(gid_map) + 1
         med['shape'] = self._med_default_shape(images)
         med['cursor'] = 0
+        med['orient_lock'] = None       # 载入/导入的盘面不由玩家挑朝向
         return True
 
     def _med_close(self):
@@ -442,7 +544,13 @@ class ModelEditorMixin:
             'schema': SCHEMA_BOARD,
             'name': '__editor_preview__',
             'basis': [list(r) for r in med['basis']],
-            'pos_scale': 1,
+            # ⚠️ 必须写模型自己的 pos_scale（route A：任意 basis + pos_scale）。
+            # spec 的 cell_polygon 会按 pos_scale 把整数顶点除回真格坐标
+            # （engine/model_loader.plane_of），否则碎三角 ps=3 的块会按
+            # ×3 尺寸画（物理尺寸爆炸）。编辑器全程在「原生分辨率」坐标里
+            # 工作（placed 存的 p 是 ×ps 整数顶点），渲染/事件换算的 /ps
+            # 统一由 _med_geom_to_screen / _med_screen_to_geom 负责。
+            'pos_scale': med['pos_scale'],
             'solved': 'exact',
             'orientations': {lb: {'shape': 'x', 'off': [list(v) for v in offs]}
                              for lb, offs in labels.items()},
@@ -544,6 +652,29 @@ class ModelEditorMixin:
     # ==================================================================
     # 放置 / 删除 / 整形
     # ==================================================================
+    def _med_pick_orient(self, cands):
+        """贴边吸附用哪个朝向（**放置与悬停预览共用**，别各写一套）。
+
+        旧行为：一律取「离点击最近」的候选，朝向纯由几何定——玩家按 R 只影响
+        **自由落点**那块，于是「想选的方向选不到」（2026-10-26 用户报），而
+        那个方向其实完全可玩（不重叠、也照样连通）。
+
+        新行为：玩家**显式**按过 R/F 就优先那个朝向——先在普通吸附带里找，
+        找不到再放宽到 ``_SNAP_LOCK_TOL``（1.2 格）：贴哪条边决定朝向，同一
+        个落点附近常常只有一种朝向贴得上，不放宽的话玩家按了 R 也白按。仍
+        找不到才退回最近的（绝不为了迁就朝向把块甩到天边）。
+        没显式选过（``orient_lock`` 为 None）时行为与旧版完全一致。
+
+        ``cands`` 已按 dist 升序（``eg.snap_candidates`` 保证）。
+        """
+        want = self._med.get('orient_lock')
+        if want is not None:
+            for lim in (_SNAP_TOL, _SNAP_LOCK_TOL):
+                for c in cands:
+                    if c[1] == want and c[3] <= lim:
+                        return want
+        return cands[0][1]
+
     def _med_place_at(self, gx, gy):
         """在几何坐标 (gx, gy) 处放置当前朝向；返回 True=放上了。
 
@@ -562,7 +693,8 @@ class ModelEditorMixin:
         # 边决定朝向，本来就该由几何选，玩家按 R 只影响**自由落点**那块。
         cands = eg.snap_candidates(imgs, placed, (gx, gy), basis=self._med['basis'])
         if cands and cands[0][3] <= _SNAP_TOL:
-            p, idx = cands[0][0], cands[0][1]
+            idx = self._med_pick_orient(cands)
+            p = next(c[0] for c in cands if c[1] == idx)
             img = imgs[idx]
         else:
             p = self._med_free_point(img, (gx, gy), placed)
@@ -750,6 +882,337 @@ class ModelEditorMixin:
         med['cnt_sig'] = None
         med['hover'] = None
 
+    # ==================================================================
+    # 选区 / 复制 / 粘贴 / 阵列（2026-10-28）
+    #
+    # 要解决的问题：想把一个「密铺单元」复制成更大的相同密铺图形，得一块块
+    # 重摆。复制的单位是**块**——模型文件里没有「单元」这种标记（shatter 的
+    # 48 块只是 48 个锚点，看不出哪 12 块构成一个单元），所以先框选出构成
+    # 一个单元的那些块，复制后整体平移一份即可。平移量与 _med_drag_to 同
+    # 口径（整数格），同晶格 ⇒ 自动贴合，不需要额外吸附。
+    # ==================================================================
+    _RMB_DRAG_PX = 4     # 右键位移超过这个像素＝「拖」（框选），否则＝「点」
+
+    def _med_right_move(self, x, y):
+        """右键拖动中：超过阈值就进入框选，画出橡皮筋。"""
+        med = self._med
+        r = med['rmb']
+        if abs(x - r['sx']) > self._RMB_DRAG_PX or abs(y - r['sy']) > self._RMB_DRAG_PX:
+            r['moved'] = True
+            med['rband'] = pygame.Rect(min(x, r['sx']), min(y, r['sy']),
+                                       abs(x - r['sx']), abs(y - r['sy']))
+
+    def _med_right_up(self):
+        """右键松手：没拖动＝原点击语义（缝捆绑 / 删块）；拖动过＝框选。"""
+        med = self._med
+        r = med.pop('rmb')
+        band = med.pop('rband', None)
+        if not r['moved']:
+            seam = self._med_seam_at(r['gx'], r['gy'])
+            if seam is not None:
+                self._med_toggle_bundle(*seam)
+            else:
+                self._med_delete_at(r['gx'], r['gy'])
+            return
+        self._med_select_box(band)
+
+    def _med_select_box(self, band):
+        """橡皮筋 → 选中集合：**质心**落在框内的块算选中。
+
+        为什么用质心而不是「顶点全在框内」或「与框相交」：单元之间互锁
+        （shatter 那种大三角由若干小三角单元拼成，圈住一个单元的矩形里
+        总会伸进邻单元的块），「全在框内」会漏选、「相交」会多选。块的
+        质心只落在它真正所属的那个单元里，圈单元最稳。
+        """
+        med = self._med
+        if band is None or band.w < 2 or band.h < 2:
+            med['sel'] = set()
+            return
+        a = self._med_screen_to_geom(band.left, band.top)
+        b = self._med_screen_to_geom(band.right, band.bottom)
+        x0, x1 = sorted((a[0], b[0]))
+        y0, y1 = sorted((a[1], b[1]))
+        sel = set()
+        for k, offs in med['placed'].items():
+            p = k[0]
+            n = len(offs)
+            cx = p[0] + sum(v[0] for v in offs) / float(n)
+            cy = p[1] + sum(v[1] for v in offs) / float(n)
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                sel.add(k)
+        med['sel'] = sel
+        self._med_notify(f'已选中 {len(sel)} 块' if sel else '框内没有块')
+
+    def _med_copy_sel(self):
+        """选中集合 → 剪贴板（相对坐标；锚点取排在最前那块，排序确定）。"""
+        med = self._med
+        sel = med['sel']
+        # 选区里可能夹着已被删掉/撤销掉的键（块没了但 sel 还留着），先过滤
+        keys = sorted((k for k in sel if k in med['placed']),
+                      key=lambda k: (k[0][0], k[0][1], k[1], k[2]))
+        if not keys:
+            self._med_notify('先右键拖框选要复制的块')
+            return False
+        ref = keys[0][0]
+        gids = sorted({med['groups'][k] for k in keys if k in med['groups']})
+        gmap = {g: i + 1 for i, g in enumerate(gids)}
+        med['clip'] = {
+            'ref': ref,
+            'items': tuple((k[0][0] - ref[0], k[0][1] - ref[1], k[1], k[2],
+                            med['placed'][k], gmap.get(med['groups'].get(k), 0))
+                           for k in keys),
+        }
+        self._med_notify(f'已复制 {len(keys)} 块（Ctrl+V 或点[粘贴]）')
+        return True
+
+    def _med_paste_begin(self):
+        """开始粘贴：浮动副本跟着鼠标，左键点一下落位，ESC 取消。"""
+        med = self._med
+        if med['clip'] is None:
+            self._med_notify('剪贴板是空的（先框选再[复制]）')
+            return False
+        mx, my = pygame.mouse.get_pos()
+        gx, gy = self._med_screen_to_geom(mx, my)
+        med['paste'] = {'items': med['clip']['items'], 'base': None, 'ok': False}
+        self._med_paste_update(gx, gy)
+        return True
+
+    def _med_paste_update(self, gx=None, gy=None):
+        """浮动副本跟随鼠标 + 整份合法性预检（预览与落位同一口径）。"""
+        med = self._med
+        pa = med['paste']
+        if pa is None:
+            return
+        if gx is None:
+            mx, my = pygame.mouse.get_pos()
+            gx, gy = self._med_screen_to_geom(mx, my)
+        base = (int(round(gx)), int(round(gy)))
+        if base == pa['base']:
+            return
+        pa['base'] = base
+        pa['ok'] = self._med_copy_fits(pa['items'], base)
+
+    def _med_copy_fits(self, items, base):
+        """这一份摆在这儿放不放得下（逐块 can_place，整份一票否决）。"""
+        med = self._med
+        others = med['placed']
+        seen = set()
+        for dx, dy, shape, idx, offs, _g in items:
+            p = (base[0] + dx, base[1] + dy)
+            nk = (p, shape, idx)
+            if nk in others or nk in seen:
+                return False
+            seen.add(nk)
+            if not eg.can_place((offs,), 0, p, others, med['basis']):
+                return False
+        return True
+
+    def _med_stamp(self, items, base):
+        """把一份副本写进 placed（不做校验，调用方先过 _med_copy_fits）。
+
+        捆绑组按新号段重排：每份副本各自成组，副本之间不共组（否则一次
+        剪缝会把所有副本一起剪开）。
+        """
+        med = self._med
+        n_g = max((it[5] for it in items), default=0)
+        gid_base = med['next_gid']
+        for dx, dy, shape, idx, offs, rel_g in items:
+            p = (base[0] + dx, base[1] + dy)
+            nk = (p, shape, idx)
+            med['placed'][nk] = offs
+            if rel_g:
+                med['groups'][nk] = gid_base + rel_g - 1
+        if n_g:
+            med['next_gid'] = gid_base + n_g
+
+    def _med_paste_commit(self):
+        """落位：写进 placed，并记下这次的位移当阵列周期。"""
+        med = self._med
+        pa = med['paste']
+        if pa is None:
+            return False
+        if not pa['ok']:
+            self._med_notify('这个位置放不下（与已有块重叠），换个位置')
+            return False
+        base = pa['base']
+        n = len(pa['items'])
+        self._med_undo_push()
+        self._med_stamp(pa['items'], base)
+        # 阵列周期 = 这一份相对原件锚点的位移（玩家贴出来的真实可用间距）
+        med['last_delta'] = (base[0] - med['clip']['ref'][0],
+                             base[1] - med['clip']['ref'][1])
+        med['paste'] = None
+        med['sel'] = set()
+        self._med_sync_after_edit()
+        self._med_notify(f'已粘贴 {n} 块')
+        return True
+
+    def _med_paste_cancel(self):
+        med = self._med
+        if med.get('paste') is not None:
+            med['paste'] = None
+            return True
+        return False
+
+    # ---- 阵列：把选中的单元铺成更大的相同密铺 ----
+    def _med_array_dlg_open(self):
+        """打开「阵列」尺寸弹窗（预设档位，纯鼠标点选，不手输数字）。"""
+        med = self._med
+        if med['clip'] is None:
+            self._med_notify('剪贴板是空的（先框选再[复制]）')
+            return False
+        if not med.get('last_delta'):
+            self._med_notify('先[粘贴]一份贴到相邻位置，阵列才知道按什么间距铺')
+            return False
+        med['array_dlg'] = {'items': ((2, 2), (3, 3), (4, 4), (2, 3), (3, 4), (5, 5)),
+                            'rects': []}
+        return True
+
+    def _med_array_dlg_click(self, x, y) -> bool:
+        med = self._med
+        dlg = med.get('array_dlg')
+        if dlg is None:
+            return False
+        for rect, (rows, cols) in dlg['rects']:
+            if rect.collidepoint(x, y):
+                med['array_dlg'] = None
+                self._med_paste_array(rows, cols)
+                return True
+        med['array_dlg'] = None            # 点外面 = 取消
+        return True
+
+    def _med_paste_array(self, rows, cols):
+        """沿 d1（上次粘贴的位移）和 d2（d1 转一个晶格步长）铺 rows×cols 份。
+
+        d1 是玩家手动贴出来的**真实可用间距**，不是猜的；三角格对 60°、
+        方形格对 90° 旋转自同构，所以 d2 仍是整数格向量（eg.rot60/rot90）。
+        每份都过 _med_copy_fits，放不下就跳过——即使圈出来的不是平移密铺
+        单元，也只会少铺几份，不会画出重叠盘面。
+        """
+        med = self._med
+        clip = med['clip']
+        d1 = med.get('last_delta')
+        if clip is None:
+            self._med_notify('剪贴板是空的（先框选再[复制]）')
+            return False
+        if not d1 or d1 == (0, 0):
+            self._med_notify('先[粘贴]一份贴到相邻位置，阵列才知道按什么间距铺')
+            return False
+        # 第二方向 = d1 在世界坐标里转一个晶格步长。**不能**用 eg.rot60/rot90
+        # （标准基的整系数矩阵，碎三角那种自定义基套上去不是 60° 方向）。
+        deg = 60 if med['lattice'] == 'tri' else 90
+        d2 = eg.rotate_vector(d1, deg, med['basis'], med['pos_scale'])
+        ref = clip['ref']
+        items = clip['items']
+        plan = []
+        for i in range(rows):
+            for j in range(cols):
+                di = i * d2[0] + j * d1[0]
+                dj = i * d2[1] + j * d1[1]
+                if (di, dj) == (0, 0):
+                    continue                      # 原件本身，已经在那儿
+                base = (ref[0] + di, ref[1] + dj)
+                if self._med_copy_fits(items, base):
+                    plan.append(base)
+        if not plan:
+            self._med_notify('这些位置放不下（都被占了或越界），没铺出新的')
+            return False
+        self._med_undo_push()
+        for base in plan:
+            self._med_stamp(items, base)
+        self._med_sync_after_edit()
+        n_new = len(items) * len(plan)
+        skipped = rows * cols - len(plan) - 1
+        self._med_notify(f'已阵列铺出 {len(plan)} 份（新增 {n_new} 块'
+                         + (f'，跳过 {skipped} 份' if skipped > 0 else '') + '）')
+        return True
+
+    # ---- 绘制：选区 / 浮动副本 / 橡皮筋 / 阵列弹窗 ----
+    def _med_draw_sel(self):
+        """选区高亮（描边加粗，不改填充——§3 不给滑块加新填充色）。"""
+        med = self._med
+        sel = med.get('sel')
+        if not sel:
+            return
+        surf = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        for k in sel:
+            if k not in med['placed']:
+                continue
+            pts = [self._med_geom_to_screen(x, y)
+                   for (x, y) in eg.poly_of(k[0], med['placed'][k], med['basis'])]
+            if len(pts) < 3:
+                continue
+            pygame.draw.polygon(surf, (255, 214, 90, 220), pts, 3)
+        self.screen.blit(surf, (0, 0))
+
+    def _med_draw_paste(self):
+        """浮动副本预览：可落位画绿、放不下画红（与落位判据同一口径）。"""
+        med = self._med
+        pa = med.get('paste')
+        if pa is None or pa['base'] is None:
+            return
+        col = (120, 230, 140, 110) if pa['ok'] else (235, 110, 110, 110)
+        edge = (170, 255, 190, 235) if pa['ok'] else (255, 160, 160, 235)
+        surf = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        base = pa['base']
+        for dx, dy, _shape, _idx, offs, _g in pa['items']:
+            p = (base[0] + dx, base[1] + dy)
+            pts = [self._med_geom_to_screen(x, y)
+                   for (x, y) in eg.poly_of(p, offs, med['basis'])]
+            if len(pts) < 3:
+                continue
+            pygame.draw.polygon(surf, col, pts)
+            pygame.draw.polygon(surf, edge, pts, 2)
+        self.screen.blit(surf, (0, 0))
+
+    def _med_draw_rband(self):
+        med = self._med
+        band = med.get('rband')
+        if band is None:
+            return
+        surf = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (255, 214, 90, 60), band)
+        pygame.draw.rect(surf, (255, 214, 90, 220), band, 1)
+        self.screen.blit(surf, (0, 0))
+
+    def _med_draw_array_dlg(self):
+        """「阵列」尺寸弹窗（与「打开模型」列表同一套模态外观）。"""
+        med = self._med
+        dlg = med.get('array_dlg')
+        if dlg is None:
+            return
+        c = self.colors
+        f_title = self._med_font(17)
+        f_item = self._med_font(15)
+        f_small = self._med_font(12)
+        items = dlg['items']
+        w, rh = 360, 30
+        h = 40 + len(items) * rh + 30
+        panel = pygame.Rect(0, 0, w, h)
+        panel.center = (self.screen_width // 2, self.screen_height // 2)
+        shade = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 90))
+        self.screen.blit(shade, (0, 0))
+        pygame.draw.rect(self.screen, c['menu_bg'], panel)
+        pygame.draw.rect(self.screen, c['dialog_border'], panel, 1)
+        t = f_title.render('阵列：铺几份？', True, c['dialog_title'])
+        self.screen.blit(t, (panel.x + 14, panel.y + 10))
+        y = panel.y + 40
+        dlg['rects'] = []
+        for rows, cols in items:
+            row = pygame.Rect(panel.x + 8, y, panel.width - 16, rh - 4)
+            dlg['rects'].append((row, (rows, cols)))
+            if row.collidepoint(*pygame.mouse.get_pos()):
+                pygame.draw.rect(self.screen, c['selection_bg'], row)
+            s = f_item.render(f'{rows} × {cols}', True, c['menu_text'])
+            self.screen.blit(s, (row.x + 8, row.y + 4))
+            s2 = f_small.render(f'共 {rows * cols} 份', True, c['status_text'])
+            self.screen.blit(s2, (row.right - s2.get_width() - 8, row.y + 7))
+            y += rh
+        self.screen.blit(f_small.render('按上次粘贴的间距铺；点外面或 ESC 取消',
+                                        True, c['status_text']),
+                         (panel.x + 14, panel.bottom - 24))
+
     # ---- 捆绑 / 解绑（点缝；与设计态同一交互）----
     def _med_seam_at(self, wx, wy, tol=0.22):
         """点击命中了哪条**块间共享边**（返回 (key_a, key_b) 或 None）。
@@ -812,16 +1275,80 @@ class ModelEditorMixin:
     # 编辑器预览 spec 的坐标基（三角晶格）；basis/pos_scale 不同的模型
     # 读回来会按另一套几何画，直接拒载并说明，不留一个错位的盘。
 
+    def _med_shape_index(self, images=None):
+        """形状库 → {规范化顶点元组: (形状名, 朝向号)}（按几何认朝向用）。
+
+        模型文件自带的 label 是文件作者起的（编辑器自己写的才是
+        ``'shape:idx'``），所以载入时按**顶点像**认朝向，不认字符串。
+
+        ``images`` 缺省 = 当前族（``med['images']``）；预检要不要给**全库**
+        （``med['lib']``）——方形模型在三角会话里预检时，它的形状根本不在
+        当前族的 ``images`` 里，用当前族判会误报「形状对不上库」。
+        """
+        src = self._med['images'] if images is None else images
+        index = {}
+        for shape, imgs in src.items():
+            for idx, offs in enumerate(imgs):
+                index[offs] = (shape, idx)
+        return index
+
+    def _med_matchable(self, doc):
+        """文档是否至少带可用的朝向表与块（route A：直接用模型自带朝向，
+
+        不再要求与形状库做几何匹配——``normalize`` 不吃尺度，库的 ×1 朝向
+        匹配不上模型的 ×ps 朝向）。有朝向表 + 有块即可续编。"""
+        return bool((doc.get('orientations') or {}) and (doc.get('tiles') or []))
+
+    def _med_load_blocker(self, doc):
+        """这份模型能不能续编？能 → ``None``；不能 → ``(短因, 长提示)``。
+
+        **列表侧**（``_med_open_model_list``，用短因标灰）与**载入侧**
+        （``_med_load_model``，用长提示）共用这一个判据——2026-10-27 修的坑：
+        碎三角那份 basis（0.866/0.5、90°）两族都认不出，列表里却照常列着，
+        玩家一点必然弹「认不出属于哪个晶格」，等于给了一条走不通的路。
+
+        ⚠️ 这里**只收窄入口、不放宽几何**：``lattice_of_basis`` 的判据一字不
+        动，认不出就是认不出——放宽会让块落到错的格子上，比拒载更糟。
+        """
+        nm = doc.get('name') or '该模型'
+        # ⚠️ 与载入侧（``_med_load_model``）共用 ``infer_lattice``：碎三角那种
+        # 「正交不等长基」必须按朝向集闭合性判成三角族（route A），不能再用
+        # ``family_of_basis``（只看夹角会误判方形），否则列表标灰与载入行为
+        # 自相矛盾——列表说「不可续编」、一点却又能载入。
+        lat = eg.infer_lattice(doc)
+        if lat is None:
+            return ('坐标基非三角/方形晶格',
+                    f'「{nm}」的坐标基不是编辑器支持的三角/方形晶格，'
+                    '续编会按错的几何画——改用[新建]搭一个，或先把它改成'
+                    '三角/方形基（见 docs/spec/搭积木编辑器.md §7）')
+        if lat != self._med['lattice'] and len(self._med['placed']) > 1:
+            # 文件是另一族：盘面还有东西就不能换（换族要清盘）
+            return ('另一晶格·需先清空',
+                    f'「{nm}」属于{eg.lattice_info(lat)["label"]}晶格，'
+                    f'当前盘面是{eg.lattice_info(self._med["lattice"])["label"]}'
+                    '——先[清空]（或切晶格）再打开')
+        if not self._med_matchable(doc):
+            return ('形状对不上库',
+                    f'「{nm}」里没有一块能对上 models/shapes.json 的形状'
+                    '（续编按顶点认朝向）——把它用到的形状加进形状库再打开')
+        return None
+
     def _med_open_model_list(self):
-        """弹出「打开模型」列表（models/ 下已注册的模型，续编用）。"""
+        """弹出「打开模型」列表（models/ 下已注册的模型，续编用）。
+
+        开不了的**照样列出来但标灰并在行尾写明原因**——不隐藏（玩家才知道
+        为什么没有），也不让它可点（点了只会弹一个走不通的提示）。
+        """
         from engine import model_registry
         try:
             loaded = model_registry.loaded()
         except Exception as exc:           # noqa: BLE001 —— 通知要带原因
             self._med_notify(f'读不到模型列表：{exc}')
             return
-        items = sorted((nm, m.title, len(m.spec.goal_blocks))
-                       for nm, m in loaded.items())
+        items = sorted(
+            (nm, m.title, len(m.spec.goal_blocks),
+             (self._med_load_blocker(m.doc or {}) or (None, None))[0])
+            for nm, m in loaded.items())
         if not items:
             self._med_notify('models/ 下还没有可打开的模型（先保存一个）')
             return
@@ -831,10 +1358,12 @@ class ModelEditorMixin:
     def _med_load_model(self, name):
         """把已注册模型读回编辑器（续编）。返回 True=载入成功。
 
-        朝向按**几何**匹配而不是 label 字符串：模型文件的 label 是文件
-        自带的（编辑器自己写的才是 ``'shape:idx'``），手写文件可能叫任何
-        名字——``normalize(off)`` 与形状库的像相等即同一个朝向，对不上
-        的块跳过并计数。
+        route A（任意 basis + pos_scale）：直接用模型**自带**的朝向表建档，
+        不再与形状库做几何匹配——``normalize`` 不吃尺度，库的 ×1 朝向匹配
+        不上模型的 ×ps 朝向（碎三角 pos_scale=3 的偏移是 ×3）。库里同形状
+        按 pos_scale 缩放补齐，供续编时加新块。换族/换基只改字段、清盘由
+        blocker 把关（盘面 >1 块时拦「需先清空」），绝不把基归一化成标准
+        基（否则重开失真）。
         """
         from engine import model_registry
         try:
@@ -843,57 +1372,109 @@ class ModelEditorMixin:
             self._med_notify(f'模型 {name!r} 不可用')
             return False
         doc = m.doc or {}
-        basis = doc.get('basis')
-        lat = None
-        if isinstance(basis, (list, tuple)) and len(basis) == 2:
-            lat = eg.lattice_of_basis(basis)
-        if lat is None:
-            self._med_notify(f'「{name}」的坐标基认不出属于哪个晶格'
-                             f'（{basis!r}），暂不支持续编')
+        blocker = self._med_load_blocker(doc)
+        if blocker is not None:
+            self._med_notify(blocker[1])       # 与列表标灰同一判据
             return False
-        if lat != self._med['lattice']:
-            # 文件是另一族：盘面还有东西就不能换（换族要清盘）
-            if len(self._med['placed']) > 1:
-                self._med_notify(
-                    f'「{name}」属于{eg.lattice_info(lat)["label"]}晶格，'
-                    f'当前盘面是{eg.lattice_info(self._med["lattice"])["label"]}'
-                    '——先[清空]（或切晶格）再打开')
-                return False
-            self._med_set_lattice(lat)
-        if int(doc.get('pos_scale', 1)) != 1:
-            self._med_notify(f'「{name}」的 pos_scale 不是 1，暂不支持续编')
-            return False
+        med = self._med
+        lat = eg.infer_lattice(doc)          # 朝集闭合性判定（碎三角→tri）
+        if lat is None:                       # 两族都不闭合：几何仍可导，但
+            lat = 'tri'                       # 旋转退化；给个兜底族不阻塞导入
+        ps = int(doc.get('pos_scale', 1) or 1)
+        # 1) 模型自带朝向（已是 ×ps）按形状**几何去重**建档。重要：模型文件
+        #    里同一几何形状常以多种顶点排列（permutation）重复出现（碎三角
+        #    12 个 label 实为 2 个朝向的全排列），编辑器只认「几何朝向」——
+        #    故先 normalize 去重成「不重复朝向表」，再记 label -> 最终下标，
+        #    落块时统一用去重下标。库同形状按 ps 缩放补齐、按几何合并去重，
+        #    供续编时加新块（库的朝向优先命中）。
         orients = doc.get('orientations') or {}
-        index = {}
-        for shape, imgs in self._med['images'].items():
-            for idx, offs in enumerate(imgs):
-                index[offs] = (shape, idx)
+        norm = eg.normalize
+        model_norm = {}          # shape -> [归一化多边形]（模型内去重、保序）
+        label_norm = {}          # 模型label -> (shape, 归一化多边形)
+        label_shift = {}         # 模型label -> 归一化时减掉的最小角（补锚点用）
+        for _lb, _o in orients.items():
+            if ':' in _lb:                      # 形如 "tri:3"
+                _s = _lb.rpartition(':')[0]
+            else:                                # 裸号 / "r12" 等
+                _s = _o.get('shape')
+            _raw = tuple(tuple(int(x) for x in v) for v in _o['off'])
+            _n = norm(_raw)
+            # ⚠️ normalize 把多边形平移到「最小角在原点」，落块若直接用它配
+            # 文件里的原锚点，每块会被各自平移不同的量（碎三角两类朝向最小
+            # 角 (-1,-3)/(-2,-3) 不同）→ 相邻 A/B 块错位、整盘判不连通。故记
+            # 下减掉的最小角，落块时把它加回锚点补偿（存回的 offsets 已归一
+            # 化、shift=0，重开不会二次叠加）。标准模型 min=(0,0) 零影响。
+            label_shift[_lb] = (min(v[0] for v in _raw),
+                                min(v[1] for v in _raw))
+            label_norm[_lb] = (_s, _n)
+            bucket = model_norm.setdefault(_s, [])
+            if _n not in bucket:
+                bucket.append(_n)
+        images = {}
+        for _sname, _imgs in med['lib'].items():
+            merged = []
+            for _off in _imgs:
+                _n = norm(tuple(tuple(ps * v for v in vert)
+                                for vert in _off))
+                if _n not in merged:
+                    merged.append(_n)
+            images[_sname] = merged
+        for _s, bucket in model_norm.items():
+            merged = images.setdefault(_s, [])
+            for _n in bucket:
+                if _n not in merged:
+                    merged.append(_n)
+        images = {s: tuple(merged) for s, merged in images.items()}
+        med['images'] = images
+        med['lib'] = images
+        med['lib_lattice'] = {s: lat for s in images}
+        # label -> 最终（合并去重后）下标：落块去重下标统一出处
+        med['label_remap'] = {_lb: (_s, images[_s].index(_n))
+                              for _lb, (_s, _n) in label_norm.items()}
+        # 2) 换族/换基/换细分度：只改字段，绝不清盘、绝不归一化基
+        if (lat != med['lattice']
+                or [list(r) for r in med['basis']]
+                != [list(r) for r in doc['basis']]
+                or med.get('pos_scale') != ps):
+            med['lattice'] = lat
+            med['basis'] = [list(r) for r in doc['basis']]
+            med['deg'] = eg.lattice_info(lat)['deg']
+            med['pos_scale'] = ps
+            med['spec'] = None              # basis/images 变了，预览 spec 重建
+        # 3) 按模型自带 label 直接落块（去重下标从 label_remap 取）
         placed, groups, skipped = {}, {}, 0
         for t in doc.get('tiles') or []:
             try:
                 p = (int(t['p'][0]), int(t['p'][1]))
-                off = orients[t['o']]['off']
+                _lb = t['o']
+                _s, _idx = med['label_remap'][_lb]   # 形状/下标都从去重映射取
             except (KeyError, TypeError, ValueError, IndexError):
                 skipped += 1
                 continue
-            hit = index.get(eg.normalize(off))
-            if hit is None or (p, hit[0], hit[1]) in placed:
+            # 锚点补偿：images 里的偏移已 normalize（减去各自最小角），把该
+            # label 的最小角加回锚点，物理位置才与文件原来的 p+off 一致。
+            _sh = label_shift.get(_lb, (0, 0))
+            p = (p[0] + _sh[0], p[1] + _sh[1])
+            if _s not in images or _idx >= len(images[_s]):
                 skipped += 1
                 continue
-            placed[(p, hit[0], hit[1])] = self._med['images'][hit[0]][hit[1]]
+            if (p, _s, _idx) in placed:
+                skipped += 1
+                continue
+            placed[(p, _s, _idx)] = images[_s][_idx]
             gid = int(t.get('g', 0) or 0)
             if gid:
-                groups[(p, hit[0], hit[1])] = gid
+                groups[(p, _s, _idx)] = gid
         if not placed:
-            self._med_notify(f'「{name}」里没有一块能对上形状库，载入失败')
+            self._med_notify(f'「{name}」里没有一块能落到棋盘，载入失败')
             return False
-        med = self._med
         self._med_undo_push()
         med['placed'] = placed
         med['groups'] = groups
         med['next_gid'] = max(list(groups.values()) + [0]) + 1
         med['name'] = name
         med['name_active'] = False
+        med['orient_lock'] = None       # 续编不继承「玩家刚才挑的朝向」
         # 缝族开关按文件里写了的族（续编语义：推导出但文件没有的族默认关）
         on = {s.get('name') for s in (doc.get('seams') or []) if s.get('name')}
         med['fam_off'] = {f[0] for f in self._med_families() if f[0] not in on}
@@ -902,7 +1483,7 @@ class ModelEditorMixin:
         if groups:
             msg += f'、{len(set(groups.values()))} 个捆绑组'
         if skipped:
-            msg += f'；{skipped} 块对不上形状库被跳过'
+            msg += f'；{skipped} 块落不进棋盘被跳过'
         self._med_notify(msg + '）')
         return True
 
@@ -930,6 +1511,26 @@ class ModelEditorMixin:
         """格坐标的 x 轴反射（按族选，与 basis 一致才跑不坏晶格）。"""
         return (eg.mirror_sq(v) if self._med['lattice'] == 'square'
                 else eg.mirror(v))
+
+    def _med_is_standard_basis(self):
+        """当前是否标准基 + scale=1（可用整系数 rot60/rot90，零回归路径）。"""
+        med = self._med
+        return med['pos_scale'] == 1 and \
+            med['basis'] == eg.lattice_info(med['lattice'])['basis']
+
+    def _med_xform_poly(self, offs, mirror):
+        """旋转/镜像一块顶点：标准基走整系数矩阵；自定义基走世界坐标旋转。
+
+        自定义基（碎三角正交不等长基等）没有对应的整系数 60°/90° 矩阵，
+        必须用 ``eg.world_rotate`` 在世界坐标里转——这是 route A「导入后
+        还能旋转」成立的几何前提；标准基 + scale=1 时退化回原整系数路径。
+        """
+        if self._med_is_standard_basis():
+            xf = self._med_mirror_v if mirror else self._med_rot_v
+            return eg.normalize(tuple(xf(v) for v in offs))
+        deg = 90 if self._med['lattice'] == 'square' else 60
+        return eg.world_rotate(offs, deg, self._med['basis'],
+                               self._med['pos_scale'], mirror=mirror)
 
     def _med_set_lattice(self, name):
         """切晶格族（三角 ↔ 方形）。只有空盘（或只剩种子）才允许。
@@ -969,6 +1570,7 @@ class ModelEditorMixin:
         med['spec'] = None            # basis 变了，预览 spec 必须重建
         med['shape'] = self._med_default_shape(med['images'])
         med['cursor'] = 0
+        med['orient_lock'] = None       # 换族后朝向号是另一套，锁不住
         seed = med['shape']
         med['placed'][((0, 0), seed, 0)] = med['images'][seed][0]
         preview = EngineGame(Board(self._med_spec(), self._med_blocks()),
@@ -983,10 +1585,40 @@ class ModelEditorMixin:
     def _med_image_index(self, verts):
         """一组顶点（已归一化）在像元组里的下标；找不到回 None。"""
         target = eg.normalize(verts)
-        for i, img in enumerate(self._med['images'][self._med['shape']]):
+        shape = self._med['shape']
+        for i, img in enumerate(self._med['images'][shape]):
             if img == target:
                 return i
-        return None
+        # 自定义基/低对称形状：几何旋转可能落不到整数格点，吸附到最近朝向
+        return self._med_nearest_image(shape, target, self._med['cursor'])
+
+    def _med_nearest_image(self, shape, target, current_idx=None):
+        """几何旋转落不到整数格点时，吸附到最近的一个已存朝向（route A
+
+        「导入后还能转」的兜底）。用「质心对齐后的顶点距离」比朝向，且排除
+        当前下标——保证总能切到另一个合法朝向（低对称形状退化为 2 个朝向时
+        也能 ▲↔▼ 切换，不会卡在自身）。无候选回 None。
+        """
+        imgs = self._med['images'].get(shape)
+        if not imgs or len(imgs) < 2:
+            return None
+
+        def _centered(poly):
+            n = len(poly)
+            cx = sum(v[0] for v in poly) / n
+            cy = sum(v[1] for v in poly) / n
+            return sorted((v[0] - cx, v[1] - cy) for v in poly)
+
+        tk = _centered(target)
+        best = None
+        for i, img in enumerate(imgs):
+            if i == current_idx:
+                continue
+            d = sum((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+                    for a, b in zip(tk, _centered(img)))
+            if best is None or d < best[0]:
+                best = (d, i)
+        return best[1] if best else None
 
     def _med_rotate(self, step=1):
         key = self._med.get('hover')
@@ -996,11 +1628,11 @@ class ModelEditorMixin:
         med = self._med
         imgs = med['images'][med['shape']]
         cur = imgs[med['cursor']]
-        nxt = self._med_image_index(
-            tuple(self._med_rot_v(v) for v in cur))
+        nxt = self._med_image_index(self._med_xform_poly(cur, mirror=False))
         if nxt is None:
             nxt = (med['cursor'] + step) % len(imgs)
         med['cursor'] = nxt
+        med['orient_lock'] = nxt        # 玩家自己选的朝向：吸附要认（§三）
         med['ghost'] = None
         self._med_notify(f'朝向 {nxt + 1}/{len(imgs)}')
 
@@ -1012,11 +1644,11 @@ class ModelEditorMixin:
         med = self._med
         imgs = med['images'][med['shape']]
         cur = imgs[med['cursor']]
-        nxt = self._med_image_index(
-            tuple(self._med_mirror_v(v) for v in cur))
+        nxt = self._med_image_index(self._med_xform_poly(cur, mirror=True))
         if nxt is None:
             return
         med['cursor'] = nxt
+        med['orient_lock'] = nxt        # 同 _med_rotate
         med['ghost'] = None
         self._med_notify(f'朝向 {nxt + 1}/{len(imgs)}（镜像）')
 
@@ -1031,13 +1663,15 @@ class ModelEditorMixin:
         med = self._med
         offs = med['placed'][key]
         shape, old_idx = key[1], key[2]
-        xform = self._med_mirror_v if mirror else self._med_rot_v
-        new = eg.normalize(tuple(xform(v) for v in offs))
+        new = self._med_xform_poly(offs, mirror=mirror)
         try:
             idx = med['images'][shape].index(new)
         except ValueError:
-            self._med_notify('这个形状没有镜像/旋转后的像')
-            return
+            # 自定义基/低对称形状：几何旋转落不到整数格点，吸附到最近朝向
+            idx = self._med_nearest_image(shape, new, old_idx)
+            if idx is None:
+                self._med_notify('这个形状没有镜像/旋转后的像')
+                return
         if idx == old_idx:
             self._med_notify('这块是对称的，转过去还是它自己')
             return
@@ -1175,7 +1809,7 @@ class ModelEditorMixin:
             'name': name,
             'title': name,
             'basis': [list(r) for r in med['basis']],
-            'pos_scale': 1,
+            'pos_scale': med['pos_scale'],
             'solved': 'exact',
             'shapes_ref': 'shapes.json',
             # 显式写死画风参数：与碎三角同款（6 / 3），这样文件自解释，
@@ -1278,12 +1912,22 @@ class ModelEditorMixin:
         """
         wx, wy = self.screen_to_world(sx, sy)
         s = float(self.cell_size) or 1.0
-        return wx / s, wy / s
+        ps = float(self._med.get('pos_scale', 1) or 1)
+        # 编辑器在「原生分辨率」坐标里工作（placed 的 p 是 ×ps 整数顶点）。
+        # 画面世界坐标 = 原生/ps × cell_size，故反算原生坐标要 ×ps。
+        return wx / s * ps, wy / s * ps
 
     def _med_geom_to_screen(self, gx, gy):
-        """几何单位 → 屏幕（``_med_screen_to_geom`` 的逆）。"""
+        """几何单位 → 屏幕（``_med_screen_to_geom`` 的逆）。
+
+        编辑器坐标 = 原生分辨率（×ps 整数顶点）；渲染通道世界坐标 =
+        原生/ps × cell_size（spec.cell_polygon 已除回真格坐标）。所以这里
+        先把原生坐标除 ps 再乘 cell_size，与棋盘块（cell_polygon × cell_size）
+        严格对齐——ps=1 时退化为原行为（零回归）。
+        """
         s = float(self.cell_size) or 1.0
-        return self.world_to_screen(gx * s, gy * s)
+        ps = float(self._med.get('pos_scale', 1) or 1)
+        return self.world_to_screen(gx / ps * s, gy / ps * s)
 
     def _med_panel_rect(self):
         return pygame.Rect(_PANEL_X, self.menu_bar_height + 10,
@@ -1338,6 +1982,8 @@ class ModelEditorMixin:
             if event.button == 2:
                 self._med_panning = False
                 self._med_pan_origin = None
+            elif event.button == 3 and med.get('rmb') is not None:
+                self._med_right_up()
             elif event.button == 1 and med.get('press') is not None:
                 gx, gy = self._med_screen_to_geom(*event.pos)
                 self._med_press_up(gx, gy)
@@ -1384,7 +2030,20 @@ class ModelEditorMixin:
                     med['name'] += ch
             return True
         ctrl = bool(event.mod & pygame.KMOD_CTRL) if hasattr(event, 'mod') else False
+        if med.get('array_dlg') is not None:
+            # 「阵列」弹窗开着时只认 ESC（取消），其余键一并吞掉
+            if k == pygame.K_ESCAPE:
+                med['array_dlg'] = None
+            return True
+        if ctrl and k == pygame.K_c:
+            self._med_copy_sel()
+            return True
+        if ctrl and k == pygame.K_v:
+            self._med_paste_begin()
+            return True
         if k == pygame.K_ESCAPE:
+            if self._med_paste_cancel():     # 粘贴浮动中：ESC 先撤副本
+                return True
             self._med_close()
         elif k == pygame.K_r:
             self._med_rotate()
@@ -1407,6 +2066,8 @@ class ModelEditorMixin:
         if med.get('open_list') is not None:
             # 「打开模型」列表模态中：一切点击只归列表（命中/取消）
             return self._med_open_list_click(x, y)
+        if med.get('array_dlg') is not None:
+            return self._med_array_dlg_click(x, y)
         if self._med_bar_rect().collidepoint(x, y):
             return self._med_bar_click(x, y)
         if self._med_panel_rect().collidepoint(x, y):
@@ -1417,18 +2078,17 @@ class ModelEditorMixin:
             return True
         gx, gy = self._med_screen_to_geom(x, y)
         if event.button == 3:
-            # 右键 = 「缝 / 块」：点缝捆绑（解绑），点块删除。放在右键上
-            # 是为了让左键**只**管放和拖——否则想贴着已有块放一块时，落点
-            # 正好压在缝上就变成捆绑，看着像「点了没放上」（2026-10-25 实测）。
+            # 右键 = 「拖＝框选 / 点＝缝捆绑·删块」。动作**推迟到松手**才执行：
+            # 按下后一旦移动超过阈值就改判框选（复制要能整片多选，2026-10-28）。
+            # 纯点击（按下→松手没移动）的语义与旧版一模一样。
             med['ghost'] = None
-            seam = self._med_seam_at(gx, gy)
-            if seam is not None:
-                self._med_toggle_bundle(*seam)
-            else:
-                self._med_delete_at(gx, gy)
+            med['rmb'] = {'sx': x, 'sy': y, 'gx': gx, 'gy': gy, 'moved': False}
             return True
         if event.button != 1:
             med['ghost'] = None
+            return True
+        if med.get('paste') is not None:
+            self._med_paste_commit()      # 粘贴浮动中：左键＝落位
             return True
         self._med_press_down(gx, gy, x, y)
         return True
@@ -1446,6 +2106,12 @@ class ModelEditorMixin:
             return True
         x, y = event.pos
         gx, gy = self._med_screen_to_geom(x, y)
+        if med.get('rmb') is not None:
+            self._med_right_move(x, y)      # 右键拖动 = 框选橡皮筋
+            return True
+        if med.get('paste') is not None:
+            self._med_paste_update(gx, gy)  # 浮动副本跟着鼠标
+            return True
         if med.get('press') is not None:
             self._med_press_move(x, y, gx, gy)
             return True
@@ -1461,7 +2127,10 @@ class ModelEditorMixin:
         # 预览必须与放置同口径：试**全部朝向**（贴哪条边决定朝向）
         cands = eg.snap_candidates(imgs, placed, (gx, gy), basis=self._med['basis'])
         if cands and cands[0][3] <= _SNAP_TOL:
-            poly = cands[0][2]
+            # 与放置同口径：玩家锁了朝向就先给锁的那个（否则悬停预览和真放
+            # 下的不是同一个朝向，按 R 看起来「没反应」）
+            want = self._med_pick_orient(cands)
+            poly = next(c[2] for c in cands if c[1] == want)
         else:
             p = self._med_free_point(imgs[med['cursor']], (gx, gy), placed)
             poly = None if p is None else eg.poly_of(p, imgs[med['cursor']], self._med['basis'])
@@ -1493,6 +2162,7 @@ class ModelEditorMixin:
                 else:
                     med['shape'] = shape
                     med['cursor'] = 0
+                    med['orient_lock'] = None   # 换形状=重新挑，不继承旧朝向
                     med['ghost'] = None
                     self._med_notify(f'形状切换到 {shape}')
                 return True
@@ -1531,6 +2201,12 @@ class ModelEditorMixin:
                 self._med_save()
             elif action == 'play':
                 self._med_playtest()
+            elif action == 'copy':
+                self._med_copy_sel()
+            elif action == 'paste':
+                self._med_paste_begin()
+            elif action == 'array':
+                self._med_array_dlg_open()
             return True
         return True
 
@@ -1548,9 +2224,13 @@ class ModelEditorMixin:
         self._med_draw_ghost()
         self._med_draw_groups()
         self._med_draw_hover()
+        self._med_draw_sel()
+        self._med_draw_paste()
+        self._med_draw_rband()
         self._med_draw_panel()
         self._med_draw_bar()
         self._med_draw_open_list()
+        self._med_draw_array_dlg()
 
     # ---- 小工具 ----
     def _med_font(self, size):
@@ -1775,7 +2455,7 @@ class ModelEditorMixin:
         f_item = self._med_font(15)
         f_small = self._med_font(12)
         items = lst['items']
-        w, rh = 380, 30
+        w, rh = 440, 30
         h = 40 + len(items) * rh + 30
         panel = pygame.Rect(0, 0, w, h)
         panel.center = (self.screen_width // 2, self.screen_height // 2)
@@ -1789,20 +2469,27 @@ class ModelEditorMixin:
         self.screen.blit(t, (panel.x + 14, panel.y + 10))
         y = panel.y + 40
         lst['rects'] = []
-        for name, title, n in items:
+        n_ok = 0
+        for name, title, n, why in items:
             row = pygame.Rect(panel.x + 8, y, panel.width - 16, rh - 4)
             lst['rects'].append((row, name))
-            hover = row.collidepoint(*pygame.mouse.get_pos())
+            if why is None:
+                n_ok += 1
+            # 开不了的：整行灰、不响应悬停（悬停高亮＝「可点」的承诺）
+            hover = why is None and row.collidepoint(*pygame.mouse.get_pos())
             if hover:
                 pygame.draw.rect(self.screen, c['selection_bg'], row)
-            s = f_item.render(f'{title}（{n} 块）', True, c['menu_text'])
+            s = f_item.render(f'{title}（{n} 块）', True,
+                              c['menu_text'] if why is None else c['status_text'])
             self.screen.blit(s, (row.x + 8, row.y + 4))
-            s2 = f_small.render(name, True, c['status_text'])
+            s2 = f_small.render(name if why is None else why, True,
+                                c['status_text'])
             self.screen.blit(s2, (row.right - s2.get_width() - 8, row.y + 7))
             y += rh
-        hint = f_small.render('点一项载入；点外面或 ESC 取消', True,
-                              c['status_text'])
-        self.screen.blit(hint, (panel.x + 14, panel.bottom - 24))
+        hint = (f'{n_ok} 个可续编；点一项载入，点外面或 ESC 取消' if n_ok
+                else '没有可续编的模型；点灰项看原因（点外面或 ESC 取消）')
+        self.screen.blit(f_small.render(hint, True, c['status_text']),
+                         (panel.x + 14, panel.bottom - 24))
 
     def _med_draw_bar(self):
         """工具条：右对齐悬浮圆角条，与格子画布**同一套外观**。
@@ -1839,7 +2526,8 @@ class ModelEditorMixin:
         # ---- 第 2 行右侧：主操作（从右往左：退出 / 试玩 / 保存）----
         rx = bar.right - 8
         for caption, action in (('退出 ESC', 'exit'), ('试玩 ▶', 'play'),
-                                ('保存 ↵', 'save')):
+                                ('保存 ↵', 'save'), ('阵列', 'array'),
+                                ('粘贴', 'paste'), ('复制', 'copy')):
             w = max(56, chrome.btn_width(caption, f, 20))
             br = pygame.Rect(rx - w, row2, w, bh)
             rx = br.left - 8
@@ -1877,7 +2565,8 @@ class ModelEditorMixin:
             bx = br.right + 8
 
         # ---- 第 2 行左侧：操作提示（空间不够就不画，别糊成一团）----
-        hint = '左键放 · 拖块移动 · 右键删/缝 · R/F 转向 · 滚轮缩放'
+        hint = ('左键放 · 拖块移动 · 右键删/缝 · 右键拖＝框选 · '
+                'Ctrl+C/V 复制粘贴 · R/F 转向 · 滚轮缩放')
         hs = f_small.render(hint, True, c['status_text'])
         if hs.get_width() <= rx - (bar.x + 12) - 8:
             self.screen.blit(hs, (bar.x + 12, row2 + 6))
