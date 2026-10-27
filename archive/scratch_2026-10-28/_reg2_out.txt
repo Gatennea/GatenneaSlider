@@ -1,0 +1,48 @@
+﻿=== t_undo_redo ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_gate ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_open_model ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_save_hot_reload ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_lattice_switch ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_rotate_mirror ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_turn_block_hover ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_orient_lock ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_playtest ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_save_roundtrip_route_a ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_open_shatter_route_a ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_second_open_refused ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+

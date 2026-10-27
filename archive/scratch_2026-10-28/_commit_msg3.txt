@@ -1,0 +1,19 @@
+docs(agent): §九（temp_history 导入 mi2）补排查进展——排掉两条错路
+
+未定位，但把「mi2 是什么」和两条错误方向钉死，免得后来人重复走：
+
+- ⚠️ **mi2 不是米字档位，是 `models/mi2.json`**（模型文件：48 块、标准三角基
+  `[[1,0],[0.5,0.866]]`、pos_scale=1、形状 half/iso30/tri）。用户「仅限模型谜题」
+  的推测站得住；当米字档位查会一路跑偏。
+- ❌ 排除「米字档位」：打乱每次产生 6~12 个半格错位块（A/B 双晶格），但缝枚举恒
+  8~12 条不为空（打乱门不会空），且存档往返 16→16 坐标集合一致（8-bit 无损）。
+  错位态是米字的常态，不是故障。
+- ❌ 排除「模型板不写 engine_state」：EngineGame 只在 kind=='mi' 时挂 Q_ORDER
+  （adapter.py:100），mi2 的 kind 是模型名 → save_snapshot 的 _engine_generic 判据
+  为真 → 快照带 engine_state。
+- 下一步三条：①旧档 / 跨版本（修复前写下的 temp_history 缺 engine_state 走 lossy
+  分支，_test_model_save_roundtrip 的反向护栏已证明该字段承重）；②启动恢复路径与
+  _load_save_data 是否同一条；③打乱后没存盘就退出（记的是上一局，不是"导入出错"）。
+
+复现脚本归档在 archive/scratch_2026-10-28/（_dbg_mi2.py 在沙箱跑通并给出上面两条
+结论；_dbg_mi2b.py 跑不出结果，需本机带显示环境跑）。

@@ -1,0 +1,10 @@
+load shatter: True
+blocks= 48 ps= 3 lattice= tri
+copy: True items= 48 ref= (0, 0)
+first fitting dx= 24
+commit: True blocks= 96 last_delta= (24, 0)
+no_overlap_after_paste: True
+array 2x2: True blocks= 192 (was 96 )
+no_overlap_after_array: True
+whole copies: True
+SMOKE_OK

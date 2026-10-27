@@ -1,0 +1,11 @@
+screen 1003 618 menu_bar_h 32
+panel_rect Rect(10, 42, 218, 542)
+bar_rect Rect(250, 500, 611, 82)
+block_screen_pts [(195.5, 302.33974596215563), (435.5, 302.33974596215563), (675.5, 302.33974596215563)]
+band 150.5 257.33974596215563 720.5 347.33974596215563
+hits_panel True hits_bar False
+after_down ret= True rmb= None
+after_motion rmb= None rband= None
+after_up sel= set() rband= None
+direct select_box sel= 3
+DBG_OK

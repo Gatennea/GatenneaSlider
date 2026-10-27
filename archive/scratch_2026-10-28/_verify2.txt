@@ -1,0 +1,3 @@
+9b83667 docs(agent): 待办清单删掉已完工的 §六（搭积木复制粘贴），发布状态刷新
+46e8786 feat(editor): 搭积木 route A 续编（任意 basis/pos_scale）+ 复制粘贴阵列 + 「改当前盘面」同口径
+3a8a983 docs(agent): 踩坑点从待办清单拆出去，另建「踩坑与搁置.md」

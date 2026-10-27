@@ -1,0 +1,3 @@
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FAILS=0
+FUNC_OK _test_model_editor.t_seed_current_route_a

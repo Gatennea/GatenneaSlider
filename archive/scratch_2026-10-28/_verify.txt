@@ -1,0 +1,82 @@
+46e8786 feat(editor): 搭积木 route A 续编（任意 basis/pos_scale）+ 复制粘贴阵列 + 「改当前盘面」同口径
+3a8a983 docs(agent): 踩坑点从待办清单拆出去，另建「踩坑与搁置.md」
+a9133f7 feat(menu): 捆绑谜题 / 自定义还原态从一级分组改成二级子菜单（用户 2026-10-27）
+
+--- show ---
+commit 46e8786990d88eea95ba35a51f3074fd89664c5a
+Author: Gatennea <1302450230@qq.com>
+Date:   Wed Oct 28 02:07:29 2026 +0800
+
+    feat(editor): 搭积木 route A 续编（任意 basis/pos_scale）+ 复制粘贴阵列 + 「改当前盘面」同口径
+    
+    三项都围绕「把已有的模型/盘面搬进编辑器继续编」与「快速造更大的密铺」：
+    
+    一、route A：「打开模型…」不再拒载任意 basis + pos_scale 的模型
+    - engine/editor_geom.py 新增 infer_lattice(doc)：按**朝向集的世界旋转闭合性**
+      判族（tri/square），替代只看 basis 两向量夹角的 family_of_basis——后者会把
+      碎三角那种正交不等长基 (0.866,0)/(0,0.5) 误判成方形，按 D4 去转它一转就散。
+    - 载入侧（_med_load_model）几何去重建档 + label_remap + 锚点补偿（label_shift）：
+      碎三角 12 个 tri 标签实为 2 个朝向的全排列；且 normalize 会把不同朝向平移
+      不同的量，不补偿则相邻块错位、整盘判不连通（保存门拦下）。
+    - 旋转走 world_rotate（世界坐标旋转再换算回整数格）：自定义基没有整系数
+      60°/90° 矩阵。新增 rotate_vector 供阵列用，标准基下与 rot60 等价（零回归）。
+    - edge_directions 改按 primitive 分组取**最短真实边向量**（原来除 gcd 退化成
+      primitive，粗晶格步长塌到 1/3 块宽 → derive_families 推不出族、保存被拦）。
+    - engine/adapter.py：EngineGame.board setter 换盘必须同步 self.spec，否则
+      update_matrix 拿旧 spec 的 orientations 报 ValueError: tuple.index。
+    
+    二、复制 / 粘贴 / 阵列（用户 2026-10-27「搭积木要能复制粘贴一片区域」）
+    - 右键**拖动**=框选（右键动作推迟到松手：位移超 4px 改判框选，没超就仍是
+      删块 / 点缝捆绑——纯点击语义一字未改）；Ctrl+C/V 与工具条 [复制][粘贴][阵列]。
+    - 阵列：以上次粘贴的位移为方向一，方向二 = 它在世界坐标转一个晶格步长
+      （三角 60°、方形 90°），铺 N×M；每份过 can_place，铺不下跳过并报告实际份数。
+    - 每份副本各起新捆绑号段，不会一次剪缝把所有副本一起剪开。
+    
+    三、「改当前盘面」（_med_seed_from_model）吃到同样的 route A
+    - 族判定改用 infer_lattice，两条路径口径至此统一。
+    - 会话字段写全：med['basis'] 用盘面**自己的基**（旧代码强行换成族的标准基）、
+      med['pos_scale'] 写盘面自己的细分度（旧代码漏写、恒为 1 → 粗晶格盘面导入后
+      屏幕↔几何差 ps 倍，点哪都不中、存回去尺寸也错）。
+    - 形状名：spec.orientations 只有标签没有 shape 字段，优先回模型文件查
+      （game.kind 即模型名）——碎三角的标签是裸号（'6'/'12'），旧代码当成非法标签
+      直接退回空盘，碎三角因此根本进不来。查不到再按 `形状:序号` 解析，都没有才
+      按几何起稳定名。
+    
+    回归：_test_model_editor 全部 t_* 子测试 FAILS=0（含新增 t_open_shatter_route_a /
+    t_save_roundtrip_route_a / t_copy_paste_array / t_seed_current_route_a；并修正两处
+    旧断言——工具条按钮集合补 copy/paste/array、点缝测试改成 down+up 成对，因为右键
+    动作已推迟到松手）；_test_model_modes 44 项全绿（I-2 段从「碎三角导不进是预期的」
+    改成钉住导入保真：块数一致 + pos_scale=3 + 族=tri + 门通过）；_test_model_style
+    12 项、_test_editor_geom（差分对拍）、_test_engine_adapter、_test_create_dual_lattice
+    全绿。真机：碎三角（48 块 / 自定义基 / pos_scale=3）复制整盘 → 贴一份 96 →
+    阵列 2×2 = 192 块，全程无重叠。
+    
+    未推送：按惯例等验收后再推。
+
+ ...234\250\347\274\226\350\276\221\345\231\250.md" | 475 +++++++++++
+ engine/adapter.py                                  |   7 +
+ engine/editor_geom.py                              | 149 +++-
+ gui/model_editor.py                                | 881 ++++++++++++++++++---
+ test/_test_model_editor.py                         | 514 +++++++++++-
+ test/_test_model_modes.py                          |  27 +-
+ 6 files changed, 1918 insertions(+), 135 deletions(-)
+
+--- status ---
+ M gui/file_ops.py
+ M gui/move.py
+ M gui/renderer.py
+?? test/_test_hover_gap.py
+?? test/_test_model_save_roundtrip.py
+?? test/chk_tri_sel.png
+?? test/diag_shatter_Ld30.svg
+?? test/diag_shatter_Lv.svg
+?? test/real_flow_1_seam.png
+?? test/real_flow_2_block.png
+?? test/real_flow_3_shuffled.png
+?? test/real_flow_4_moved.png
+?? test/real_flow_5_undo.png
+?? test/real_flow_6_scrambled_seam.png
+?? test/real_gui_selected.png
+?? test/real_gui_solved.png
+?? test/real_undo_mid.png
+?? test/style_compare.png

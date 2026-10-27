@@ -1,0 +1,6 @@
+﻿=== t_copy_paste_array ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== editor_geom ===
+

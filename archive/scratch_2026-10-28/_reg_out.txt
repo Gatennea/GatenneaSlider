@@ -1,0 +1,36 @@
+﻿=== t_right_click_delete ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_delete ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_bundle_toggle ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_bundle_seam_click_routes ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_place ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_drag_move_block ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_drag_empty_pans ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_event_routing ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
+=== t_render ===
+pygame-ce 2.5.7 (SDL 2.32.10, Python 3.12.6)
+FUNC_OK
+
