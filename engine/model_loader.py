@@ -88,7 +88,8 @@ def model_hash(doc):
 class LoadedModel:
     """加载结果：板型 + 供 GUI/存档使用的元信息。"""
 
-    __slots__ = ('spec', 'name', 'title', 'engine', 'view', 'doc', 'path')
+    __slots__ = ('spec', 'name', 'title', 'engine', 'view', 'doc', 'path',
+                 'disabled_seams')
 
     def __init__(self, spec, doc, path=None):
         self.spec = spec
@@ -97,6 +98,9 @@ class LoadedModel:
         self.name = spec.name
         self.title = doc.get('title') or spec.name
         self.engine = doc.get('engine', 'geometric')
+        # 被编辑器关掉的缝族（设计如此，谜题里不会滑动）；旧模型文件没有
+        # 这个字段 → 视为空。供谜题 HUD 提示玩家，避免「缝滑不动=出 bug」误判。
+        self.disabled_seams = doc.get('disabled_seams') or []
         view = doc.get('view') or {}
         self.view = {
             'rotate': int(view.get('rotate', 0)) % 360,

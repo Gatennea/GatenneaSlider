@@ -57,6 +57,11 @@ import pygame
 
 # 缩图边长（px）。104 是「28 块还能看出彼此」「菜单旁边放得下」的折中。
 THUMB_SIZE = 104
+# 数字谜题的缩图要大一号：编号是「块里再塞两个字」，104px 上打乱态每块只剩
+# 4~13px（实测 8×8 等级2 只剩 4.3px），字塞不进去。288 下最小的打乱态块
+# 也有 ~13px，8×8 才勉强写得上。代价是这类档位的预览面板更宽（版式本来就
+# 按 thumb 尺寸算，见 renderer._draw_hover_preview_impl）。
+NUMBERED_THUMB = 288
 # 缩图内边距：留一点白边，块不贴着框
 _PAD = 5
 
@@ -65,7 +70,9 @@ _PAD = 5
 # 2026-10-26 用户报「打乱态就是复原态」，根因之一就是这里：当时签名只有
 # 「模型内容 + 尺寸 + 配色」，算法换了签名没换，旧图原封不动留在盘上。
 # v3：文件名加 step（等级1/2 曾共用一个缓存文件互相覆盖），旧命名一律清掉。
-_CACHE_VER = 3
+# v4：数字谜题的缩图上开始画编号（2026-10-29）。同一目标、同一尺寸下，
+#     「有字」与「无字」是两张不同的图，不升版本号就会让无字的旧图一直冒充。
+_CACHE_VER = 4
 
 # 打乱口径：与 GUI 真打乱同源（gui/session.py 的 shuffle_puzzle 用
 # bias=0.3 / min_score=0.75）。缩图必须画玩家真会遇到的局面。
@@ -235,6 +242,16 @@ def as_target(x, step=2):
     return tuple(x)
 
 
+def is_numbered(target):
+    """该目标是「带编号的谜题」吗（缩图上要写号的那一类）。"""
+    return target[0] == 'board' and target[1] == 'numbered'
+
+
+def thumb_size_for(target):
+    """该目标该用多大的缩图（数字谜题要大一号，编号才画得下）。"""
+    return NUMBERED_THUMB if is_numbered(target) else THUMB_SIZE
+
+
 def target_of_item(item):
     """菜单条目 → 预览目标；不是「可预览的谜题」时返回 None。
 
@@ -337,9 +354,13 @@ def _polys_goal(spec):
 def _polygons_of_board(board):
     """从一局真实棋盘取 [(多边形, 块序号), ...]。
 
-    序号 = 块在 `board.blocks` 里的下标。实测 `board.blocks` 的**顺序**
-    与 `spec.goal_blocks` 逐项相同，且打乱（合法滑动只改位置不改对象）
-    之后顺序不变 → 下标就是跨状态的块身份，两张缩图靠它对上颜色。
+    ⚠️ **这里的「序号」只是列表下标，不是块身份**（2026-10-29 实测订正，
+    旧注释写的「打乱之后顺序不变」是错的）：`Board.blocks` 是**按键排序**
+    的元组，块一动，排序就跟着变。要「编号跟着块走」必须走下面的
+    `_polygons_of_game`（编号挂在块对象上），不能拿这里算出来的下标当编号。
+
+    几何是准确的（多边形取自块当下位置），所以非编号用途（数块、取形、
+    比相似度）照旧用它。
     """
     spec = board.spec
     out = []
@@ -348,6 +369,76 @@ def _polygons_of_board(board):
         if poly:
             out.append(([(float(x), float(y)) for x, y in poly], i))
     return out
+
+
+# ----------------------------------------------------------------------
+# 编号（数字谜题）：缩图上要看得出来「这是带编号的题」
+# ----------------------------------------------------------------------
+# 字号上限/下限：104px 缩图里 4×4 每块 ≈23px、8×8 只有 ≈12px，固定一个字号
+# 会把大盘糊成一团；但再小也得有 8px（低于这个就不是字了，会被下面
+# 「塞不下就不画」的判据直接跳过）。
+_NUM_MAX_FONT = 12
+_NUM_MIN_FONT = 8
+# 字不得超过块的这个比例（含多出来的余量），否则视为塞不下 → 不画
+_NUM_FIT = 0.7
+# 块像素尺寸的**硬下限**：低于它一律不画字（见 `thumb_size_for` 上方实测数据）
+_NUM_MIN_CELL = 12.0
+# 字色：与真盘编号同款黑（`gui/renderer.py` 三处编号绘制都是 (0,0,0)）
+_NUM_COLOR = (0, 0, 0)
+
+
+def _assign_numbers(game):
+    """给数字谜题的块赋编号 1..K（与 GUI 建局同一口径）。
+
+    口径来源：`GUI.new_puzzle` 里 `for idx, block in enumerate(blocks, 1)`，
+    而块列表在还原态下是行主序 —— 2026-10-29 实测：这样赋出来的编号矩阵
+    与 GUI 新开的数字局的矩阵逐格相同（`_probe_numbered.py`）。
+
+    编号**写在块对象上**（`block.number`），适配器重建块表时会复用对象，
+    所以打乱只换位置不换对象 → 编号自己就跟着块走，不需要任何位置映射
+    （试图用位置反推编号的那类写法必然错，见 `_polygons_of_board` 的注释）。
+    """
+    if not getattr(game, 'numbered', False):
+        return False
+    for i, b in enumerate(game.blocks, start=1):
+        try:
+            b.number = i
+        except AttributeError:      # 旧 game*.py 的 Block 没这槽 → 无所谓
+            pass
+    return True
+
+
+def _polygons_of_game(game):
+    """从**适配器块视图**取 ([(多边形, 序号)], [编号或 None])。
+
+    两条几何取路的区别（2026-10-29）：
+      - `_polygons_of_board(board)`：几何取自排好序的 Board，但下标随位置漂移；
+      - 这里遍历 `game.blocks`，编号挂在块对象上一起迁移 → 缩图上的编号
+        才是「这块到底第几号」，而不是「这一格现在是列表第几个」。
+
+    返回两个**平行**列表：`fit()` 不改点数也不改顺序，所以编号一路带到底。
+
+    ⚠️ 非数字局返回 `labels=None`（而不是 `[None, None, ...]`）：一串 None
+    会被 `if labels:` 判成真，逼着下游白跑一趟 `_draw_numbers`；更要紧的是
+    它让「这趟到底有没有编号」变成二义 —— 「没编号」必须是一个能一眼看出
+    的值，测试才能钉住「非数字画风不受牵连」这条反向护栏。
+    """
+    game.board                      # 先 sync：把块位置刷进引擎，保证 key 最新
+    spec = game.spec
+    polys, labels = [], []
+    has_num = False
+    for i, b in enumerate(game.blocks):
+        key = getattr(b, 'engine_key', None)
+        if key is None:
+            continue
+        poly = spec.cell_polygon(key[0], key[1])
+        if not poly:
+            continue
+        polys.append(([(float(x), float(y)) for x, y in poly], i))
+        num = getattr(b, 'number', None)
+        labels.append(str(num) if num else None)
+        has_num = has_num or bool(num)
+    return polys, (labels if has_num else None)
 
 
 def _polys_scrambled(target, goal_polys=None, size=THUMB_SIZE):
@@ -366,6 +457,9 @@ def _polys_scrambled(target, goal_polys=None, size=THUMB_SIZE):
     就是这么来的（另一半是磁盘旧图，见 `_CACHE_VER`）。
     归一化后仍与复原态一样 → 换一局重打，连试 `_SCRAMBLE_TRIES` 次都不行
     才报错，让面板写「预览不可用：…」，绝不拿复原态冒充打乱态。
+
+    返回 `(多边形列表, 编号列表)`：编号来自这一局自己（见 `_polygons_of_game`），
+    **不是**照抄复原态的下标 —— 打乱后块换了位置，编号必须跟着它走。
     """
     goal_sig = None
     if goal_polys is not None:
@@ -373,6 +467,10 @@ def _polys_scrambled(target, goal_polys=None, size=THUMB_SIZE):
 
     for _try in range(_SCRAMBLE_TRIES):
         game = _new_game(target)
+        # ⚠️ 编号必须在**打乱之前**赋：真局也是建局时（还原态）赋号、之后跟着
+        # 块走。打乱之后再按当时的块序赋号，同一个块在两张缩图里会拿到不同的
+        # 号 —— 那就不是「同一道题的两个状态」，而是两道不相干的题。
+        _assign_numbers(game)
         step = int(target[-1])
         budget = _attempts_for(target)
         done = 0
@@ -385,9 +483,9 @@ def _polys_scrambled(target, goal_polys=None, size=THUMB_SIZE):
                 break
             time.sleep(_SLICE_YIELD)
 
-        out = _polygons_of_board(game.board)
+        out, labels = _polygons_of_game(game)
         if goal_sig is None or _shape_set(_fit(out, int(size))) != goal_sig:
-            return out
+            return out, labels
 
     raise ValueError('这块板打乱后与复原态一样（几乎滑不动）')
 
@@ -413,8 +511,27 @@ def _fit(polys, size, pad=_PAD):
             for poly, idx in polys]
 
 
-def _paint(fitted, size, palette):
-    """把已拟合好的多边形画成一张 Surface。**只许在主线程调用**。
+def _min_cell(*fitted_sets):
+    """一组已拟合图里**最小的块**的像素边长（判「字塞不塞得下」用）。
+
+    取 `min(宽, 高)`：细长块（三角/米字）里字只能按短边排。空图返回 0
+    （调用方的阈值判断自然判成「塞不下」）。
+    """
+    best = None
+    for fitted in fitted_sets:
+        for poly, _idx in fitted:
+            if len(poly) < 3:
+                continue
+            xs = [q[0] for q in poly]
+            ys = [q[1] for q in poly]
+            c = min(max(xs) - min(xs), max(ys) - min(ys))
+            if best is None or c < best:
+                best = c
+    return 0.0 if best is None else best
+
+
+def _paint(fitted, size, palette, labels=None):
+    """把已拟合好的多边形画成一张 Surface。**只许在主线程调用**（要碰字体）。
 
     输入是 `_fit` 的输出（像素坐标），不含任何引擎/GUI 状态，所以这件
     「画」的活儿可以晚于「算」，且不需要后台线程碰 pygame。
@@ -422,6 +539,8 @@ def _paint(fitted, size, palette):
     块色一律用真盘的 `block` 色（**不按块序上彩虹**）：2026-10-26 实测，
     单色下复原态与打乱态的像素差 26~37%，本来就分得清；彩色渐变既没换来
     可读性，还和「自造谜题画风要和碎三角一致」直接冲突。
+
+    `labels` 是可选的编号表（数字谜题），参看 `_draw_numbers`。
     """
     bg, fill, line = palette
     surf = pygame.Surface((size, size))
@@ -436,7 +555,59 @@ def _paint(fitted, size, palette):
     for poly, _idx in fitted:
         if len(poly) >= 3:
             pygame.draw.polygon(surf, line, poly, width)
+    if labels:
+        _draw_numbers(surf, fitted, labels)
     return surf
+
+
+def _draw_numbers(surf, fitted, labels):
+    """在每块中心画它的编号（真盘同款：SimHei 黑字）。
+
+    三条约束（2026-10-29）：
+      ① **字号跟着块的像素大小走**，不写死：104px 缩图里 4×4 每块 ≈23px，
+         8×8 只剩 ≈12px，统一 12px 会把大盘糊成一团；
+      ② **塞不下就不画**：块小于 `_NUM_MIN_CELL`、或字宽/高超过块的
+         `_NUM_FIT` 就跳过这一块。「不画」好过「画糊」——糊了既看不出是
+         数字题，还把块色盖没了（8×8 数字档位属于这一类，见 `_NUM_MIN_CELL`）；
+      ③ 字体属于 pygame，**只能在这里（主线程 `_surfaces` 路径）用**；取不到
+         字体（裁剪运行时）就整张不画，绝不让「没有字体」变成「没有预览」。
+    """
+    if not pygame.font.get_init():
+        try:
+            pygame.font.init()
+        except Exception:      # noqa: BLE001 —— 见下方注释
+            return
+    try:
+        # 延迟导入（同 renderer 的编号绘制）：GUI 模块在 import 期还没定义它
+        from GUI import _gui_safe_font
+    except Exception:          # noqa: BLE001
+        return
+    cache = {}
+    for (poly, _idx), label in zip(fitted, labels):
+        if not label or len(poly) < 3:
+            continue
+        xs = [q[0] for q in poly]
+        ys = [q[1] for q in poly]
+        cw, ch = max(xs) - min(xs), max(ys) - min(ys)
+        cell = min(cw, ch)
+        if cell < _NUM_MIN_CELL:
+            continue
+        fs = int(max(_NUM_MIN_FONT, min(_NUM_MAX_FONT, cell * 0.45)))
+        font = cache.get(fs)
+        if font is None:
+            font = _gui_safe_font('SimHei', fs)
+            cache[fs] = font
+        # ⚠️ 判「塞不塞得下」要用 **排版口径** `font.size()`，不能用
+        # `render().get_size()`（2026-10-29 实测踩坑）：后者是**含行距留白的表面
+        # 尺寸** —— SimHei 8px 的表面高 11px，字本身只有 8px。8×8 打乱态每块
+        # 12.6px，用表面尺寸判就是 11 > 12.6×0.7 → **64 块全被跳过**，缩图上
+        # 一个数字都没有，而且没有任何报错。
+        tw, th = font.size(label)
+        if tw > cell * _NUM_FIT or th > ch * _NUM_FIT:
+            continue
+        text = font.render(label, True, _NUM_COLOR)
+        surf.blit(text, text.get_rect(center=((min(xs) + max(xs)) / 2,
+                                              (min(ys) + max(ys)) / 2)))
 
 
 def _build_pics(key):
@@ -451,9 +622,23 @@ def _build_pics(key):
         spec = _spec_of(target)
         if not spec.goal_blocks or spec.cell_polygon is None:
             raise ValueError('该板型没有声明 goal_blocks / cell_polygon')
-        goal = _polys_goal(spec)
-        val = (_fit(goal, int(size)),
-               _fit(_polys_scrambled(target, goal, int(size)), int(size)))
+        # 两张图**都从同一个块视图取**（`_polygons_of_game`）：编号写在块
+        # 对象上随打乱迁移，这样才算「编号跟着块走」。分开取（复原态走
+        # spec.goal_blocks、打乱态走 board）会让两边的编号对不上同一块。
+        game = _new_game(target)
+        _assign_numbers(game)
+        goal, glabels = _polygons_of_game(game)
+        scr, slabels = _polys_scrambled(target, goal, int(size))
+        gfit = _fit(goal, int(size))
+        sfit = _fit(scr, int(size))
+        # 两张图**同进同退**：判据取两张里更挤的那张。
+        # 打乱态散得更开、`_fit` 各自适配包围盒 → 它的块比复原态小得多
+        # （4×4 等级2 复原 23.5px、打乱只剩 9.4px）。若逐张各判，就会出现
+        # 「复原态有编号、打乱态没有」——那会被读成「打乱把编号弄丢了」，
+        # 恰恰和数字谜题「编号跟着块走」的语义相反。宁可两张都不画。
+        if _min_cell(gfit, sfit) < _NUM_MIN_CELL:
+            glabels = slabels = None
+        val = ((gfit, glabels), (sfit, slabels))
     except Exception as exc:      # noqa: BLE001 —— 见模块头「失败不静默」
         val = exc
         _log_failure(_target_tag(target), exc)
@@ -472,7 +657,8 @@ def _surfaces(key, pics):
         return got
     size, pal = key[1], key[2]
     try:
-        val = (_paint(pics[0], size, pal), _paint(pics[1], size, pal))
+        val = (_paint(pics[0][0], size, pal, pics[0][1]),
+               _paint(pics[1][0], size, pal, pics[1][1]))
     except Exception as exc:      # noqa: BLE001 —— 画不出来也只是没有预览
         val = exc
         _log_failure(_target_tag(key[0]), exc)
@@ -705,7 +891,9 @@ def _warm_worker(targets, size, pal):
     except Exception:      # noqa: BLE001 —— 清旧图失败不影响预热
         pass
     for i, target in enumerate(targets):
-        key = (target, int(size), pal)
+        # 每个目标用自己的缩图尺寸（数字谜题要大一号，见 thumb_size_for）：
+        # 预热若按 104 算，悬停要的却是 256 → 磁盘签名不命中、白算一遍。
+        key = (target, thumb_size_for(target), pal)
         try:
             if _disk_ok(key):
                 continue
@@ -727,6 +915,9 @@ def pump(colors=None, size=THUMB_SIZE, budget=1, targets=None):
     budget 限制单帧最多处理几个目标：画一张 0.4ms、存两张 PNG 约 2~5ms，
     一个目标 ~6ms 已够小；设上限是防止「第一次启动同时收到一批」把某一帧
     撑到 30ms 掉帧。返回本帧实际处理的数量（给测试用）。
+
+    尺寸按**目标各自**的来（`thumb_size_for`，数字谜题大一号），`size` 只是
+    兼容旧调用的缺省值：预热若按别的尺寸算，悬停时签名对不上，等于白算。
 
     失败一律不抛：预热是纯锦上添花，绝不许影响主循环。
     """

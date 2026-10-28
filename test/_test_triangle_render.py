@@ -18,6 +18,8 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 import tempfile  # noqa: E402
 
+import pygame  # noqa: E402
+
 failures = []
 
 
@@ -85,26 +87,31 @@ cells = gui.game.positions()
 
 
 def _pixel_count(color):
-    """屏幕上该颜色的像素数（隔行隔列采样，够用）。"""
-    n = 0
-    w, h = gui.screen.get_size()
-    for y in range(0, h, 2):
-        for x in range(0, w, 4):
-            if gui.screen.get_at((x, y))[:3] == color:
-                n += 1
-    return n
+    """屏幕上该颜色的像素数（**全像素**扫描，不隔点采样）。
+
+    ⚠️ 2026-10-29：原是 `range(0,h,2)` × `range(0,w,4)` 隔点采样。缝线只有
+    1~2px 宽，而它画在哪一列会随窗口尺寸浮动（`config/config.json` 记着上次
+    的窗口大小），差 1px 就足以让整条线落在被跳过的坐标上 → 报「线没画出来」，
+    而线其实画得好好的。见 `docs/agent/踩坑与搁置.md` §六。
+    """
+    buf = pygame.image.tobytes(gui.screen, 'RGB')
+    tgt = bytes(color)
+    return sum(1 for i in range(0, len(buf), 3) if buf[i:i + 3] == tgt)
 
 
 def _pixel_rows(color):
-    """返回屏幕上出现该颜色的所有行号（隔行采样，够用）。"""
-    rows = set()
+    """返回屏幕上出现该颜色的所有行号（**全像素**扫描，理由同上）。"""
     w, h = gui.screen.get_size()
-    for y in range(0, h, 2):
-        for x in range(0, w, 4):
-            if gui.screen.get_at((x, y))[:3] == color:
-                rows.add(y)
+    buf = pygame.image.tobytes(gui.screen, 'RGB')
+    tgt = bytes(color)
+    rows = []
+    for y in range(h):
+        base = y * w * 3
+        for x in range(w):
+            if buf[base + x * 3:base + x * 3 + 3] == tgt:
+                rows.append(y)
                 break
-    return sorted(rows)
+    return rows
 
 
 def _block_color(block):
@@ -152,9 +159,19 @@ for gap_type, line in gui.game.all_gaps():
         wx, wy = _seam_point(gap_type, line)
         mx, my = gui.world_to_screen(wx, wy)
         w, h = gui.screen.get_size()
-        near = any(abs(x - mx) <= 4 and abs(y - my) <= 4
-                   for y in range(0, h, 2) for x in range(0, w, 4)
-                   if gui.screen.get_at((x, y))[:3] == (255, 0, 0))
+        # 只在缝点周围 ±6px 找红像素（**全像素**，不隔点采样——见
+        # `_pixel_count` 的说明）：扫全屏既慢又会被隔点采样漏掉细线，
+        # 而「红线落在这条缝上」本来就是个局部判断。
+        near = False
+        for dy in range(-6, 7):
+            for dx in range(-6, 7):
+                xx, yy = int(mx) + dx, int(my) + dy
+                if 0 <= xx < w and 0 <= yy < h \
+                        and gui.screen.get_at((xx, yy))[:3] == (255, 0, 0):
+                    near = True
+                    break
+            if near:
+                break
     if not near:
         seam_ok = False
         print(f"      縫隙 {gap_type}{line} 的紅線沒落在公共分界上")

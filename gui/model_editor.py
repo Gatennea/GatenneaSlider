@@ -69,6 +69,31 @@ from gui import editor_chrome as chrome
 # 布局常量（设计像素）
 _PANEL_W = 218
 _PANEL_X = 10
+
+# 左侧竖排图标工具栏（几何画板风，2026-10-28 重做）
+_TOOL_W = 34                       # 图标方块边长
+_TOOL_GAP = 5                      # 图标间距
+_TOOL_GROUP_GAP = 8                # 分组间隔
+_TOOLBAR_X = 10                    # 工具栏左缘
+_TOOLBAR_TOP_PAD = 22              # 顶部标题留白
+# 工具定义：(label, shortcut, kind)  kind='tool' 切换激活 / 'action' 瞬时执行
+MED_TOOLS = {
+    'select': ('选择', '', 'tool'),
+    'place': ('放置', '', 'tool'),
+    'erase': ('删除', 'Del', 'tool'),
+    'band': ('捆绑', '', 'tool'),
+    'copy': ('复制', 'C', 'action'),
+    'paste': ('粘贴', 'V', 'action'),
+    'array': ('阵列', '', 'action'),
+    'rotate': ('旋转', 'R', 'action'),
+    'mirror': ('镜像', 'F', 'action'),
+}
+MED_TOOL_ORDER = ['select', 'place', 'erase', 'band',
+                  'copy', 'paste', 'array', 'rotate', 'mirror']
+# 分组（纯视觉分隔，标签留空）：工具 / 复制 / 变换
+MED_TOOL_GROUPS = [['select', 'place', 'erase', 'band'],
+                   ['copy', 'paste', 'array'],
+                   ['rotate', 'mirror']]
 # 工具条高：与格子画布（gui/annotation.py 的 design 视图，82）同高，
 # 两个编辑器切换时工具条不上下跳（用户要求「同一套 UI」）。
 _BAR_H = 82
@@ -210,6 +235,8 @@ class ModelEditorMixin:
             'rmb': None,                    # 右键手势记录（按下→松手之间）
             'last_delta': None,             # 上次粘贴落位的位移 = 阵列周期 d1
             'array_dlg': None,              # 「阵列」尺寸选择弹窗（None=关）
+            'tool': 'place',                 # 当前激活工具：select/place/erase/band
+            'tool_rects': [],                # 左侧工具栏图标热区（绘制时生成）
         }
         # ---- 备份原局（退出时原样还原）----
         med['backup'] = {
@@ -916,13 +943,37 @@ class ModelEditorMixin:
             return
         self._med_select_box(band)
 
-    def _med_select_box(self, band):
-        """橡皮筋 → 选中集合：**质心**落在框内的块算选中。
+    def _med_boxsel_move(self, x, y):
+        """选择工具：左键拖动中超过阈值 → 进入框选，画橡皮筋。"""
+        med = self._med
+        p = med['press']
+        if abs(x - p['sx']) > self._RMB_DRAG_PX or abs(y - p['sy']) > self._RMB_DRAG_PX:
+            p['moved'] = True
+            med['rband'] = pygame.Rect(min(x, p['sx']), min(y, p['sy']),
+                                       abs(x - p['sx']), abs(y - p['sy']))
 
-        为什么用质心而不是「顶点全在框内」或「与框相交」：单元之间互锁
-        （shatter 那种大三角由若干小三角单元拼成，圈住一个单元的矩形里
-        总会伸进邻单元的块），「全在框内」会漏选、「相交」会多选。块的
-        质心只落在它真正所属的那个单元里，圈单元最稳。
+    def _med_boxsel_up(self):
+        """选择工具松手：拖过＝框选；没拖＝点选单块/取消选择。"""
+        med = self._med
+        p = med.pop('press')
+        band = med.pop('rband', None)
+        if not p.get('moved'):
+            key = eg.block_at(med['placed'], (p['gx'], p['gy']), med['basis'])
+            med['sel'] = {key} if key is not None else set()
+            if key is not None:
+                self._med_notify('已选中 1 块')
+            else:
+                self._med_notify('已取消选择')
+            return
+        self._med_select_box(band)
+
+    def _med_select_box(self, band):
+        """橡皮筋 → 选中集合：**任一顶点在框内 或 质心在框内** 即选中。
+
+        旧版只认单点质心，碎三角 / 长条块质心偏在一侧会漏选（玩家框住了
+        块却选不中）。改为「顶点进框即选中」（见 ``eg.box_hits_block`` 的
+        说明，不会像「相交」那样过度选中互锁单元）。坐标口径：屏幕矩形先
+        经 ``_med_screen_to_geom`` 换算成几何框，再交给纯函数判定。
         """
         med = self._med
         if band is None or band.w < 2 or band.h < 2:
@@ -932,14 +983,7 @@ class ModelEditorMixin:
         b = self._med_screen_to_geom(band.right, band.bottom)
         x0, x1 = sorted((a[0], b[0]))
         y0, y1 = sorted((a[1], b[1]))
-        sel = set()
-        for k, offs in med['placed'].items():
-            p = k[0]
-            n = len(offs)
-            cx = p[0] + sum(v[0] for v in offs) / float(n)
-            cy = p[1] + sum(v[1] for v in offs) / float(n)
-            if x0 <= cx <= x1 and y0 <= cy <= y1:
-                sel.add(k)
+        sel = eg.select_blocks_in_box(med['placed'], (x0, x1, y0, y1))
         med['sel'] = sel
         self._med_notify(f'已选中 {len(sel)} 块' if sel else '框内没有块')
 
@@ -1802,6 +1846,16 @@ class ModelEditorMixin:
         seams = [{'name': nm, 'coeffs': [int(cf[0]), int(cf[1])],
                   'step': [int(st[0]), int(st[1])], 'rank': 'centroid'}
                  for (nm, cf, st, _n) in self._med_enabled_families()]
+        # 被玩家关掉的缝族也要记进文件：谜题开局时据此提示玩家「这些缝
+        # 不滑动（设计如此）」，否则玩家看到缝却滑不动会以为出 bug。
+        disabled = []
+        fam_by_name = {nm: st for (nm, _cf, st, _n) in self._med_families()}
+        for nm in med['fam_off']:
+            st = fam_by_name.get(nm)
+            if st is None:
+                continue
+            desc, _ = eg.direction_desc(st, med['basis'], med['deg'])
+            disabled.append({'name': nm, 'desc': desc})
         from engine.model_loader import (DEFAULT_CORNER_RADIUS,
                                          DEFAULT_SEAM_WIDTH)
         return {
@@ -1820,6 +1874,7 @@ class ModelEditorMixin:
             'orientations': orients,
             'tiles': tiles,
             'seams': seams,
+            'disabled_seams': disabled,
         }
 
     def _med_save(self):
@@ -1929,8 +1984,158 @@ class ModelEditorMixin:
         ps = float(self._med.get('pos_scale', 1) or 1)
         return self.world_to_screen(gx / ps * s, gy / ps * s)
 
+    # ==================================================================
+    # 左侧竖排图标工具栏（几何画板风，2026-10-28 重做）
+    # ==================================================================
+    def _med_toolbar_rect(self):
+        n = len(MED_TOOL_ORDER)
+        groups = len(MED_TOOL_GROUPS)
+        h = (_TOOLBAR_TOP_PAD + n * (_TOOL_W + _TOOL_GAP)
+             + (groups - 1) * _TOOL_GROUP_GAP + 8)
+        return pygame.Rect(_TOOLBAR_X, self.menu_bar_height + 8,
+                           _TOOL_W + 12, h)
+
+    def _med_tool_icon_rects(self):
+        """按 MED_TOOL_ORDER / MED_TOOL_GROUPS 算每个图标的方块 Rect（热区）。"""
+        med = self._med
+        rail = self._med_toolbar_rect()
+        x = rail.x + 6
+        y = rail.y + _TOOLBAR_TOP_PAD
+        rects = []
+        for gi, grp in enumerate(MED_TOOL_GROUPS):
+            if gi:
+                y += _TOOL_GROUP_GAP
+            for tid in grp:
+                rects.append((pygame.Rect(x, y, _TOOL_W, _TOOL_W), tid))
+                y += _TOOL_W + _TOOL_GAP
+        med['tool_rects'] = rects
+        return rects
+
+    def _med_draw_tools(self):
+        med = self._med
+        rail = self._med_toolbar_rect()
+        c = self.colors
+        pygame.draw.rect(self.screen, c['menu_bg'], rail)
+        pygame.draw.rect(self.screen, c['dialog_border'], rail, 1)
+        f = self._med_font(13)
+        self.screen.blit(f.render('工具', True, c['menu_selected']),
+                         (rail.x + 6, rail.y + 4))
+        rects = self._med_tool_icon_rects()
+        mx, my = pygame.mouse.get_pos()
+        hover_tid = None
+        for rect, tid in rects:
+            label, shortcut, kind = MED_TOOLS[tid]
+            on = (kind == 'tool' and med['tool'] == tid)
+            hover = rect.collidepoint(mx, my)
+            if hover:
+                hover_tid = tid
+            bg = (c['selection_bg'] if on
+                  else (c['button_hover'] if hover else c['button_bg']))
+            pygame.draw.rect(self.screen, bg, rect, border_radius=6)
+            pygame.draw.rect(self.screen,
+                             c['border'] if on else c['dialog_border'],
+                             rect, 2 if on else 1, border_radius=6)
+            self._med_tool_glyph(tid, rect, on or hover)
+        # tooltip：hover 的工具在右侧画名 + 快捷键
+        if hover_tid is not None:
+            label, shortcut, _k = MED_TOOLS[hover_tid]
+            tip = label + (('  ' + shortcut) if shortcut else '')
+            tf = self._med_font(13)
+            tw = tf.size(tip)[0] + 14
+            tr = pygame.Rect(rail.right + 6, my - 12, tw, 24)
+            pygame.draw.rect(self.screen, c['menu_bg'], tr)
+            pygame.draw.rect(self.screen, c['dialog_border'], tr, 1)
+            self.screen.blit(tf.render(tip, True, c['dialog_title']),
+                             (tr.x + 7, tr.y + 4))
+
+    def _med_tool_glyph(self, tid, rect, active):
+        """工具栏图标（简单几何符号，几何画板风）。"""
+        col = (235, 210, 90) if active else (200, 200, 210)
+        cx, cy = rect.center
+        g = min(rect.w, rect.h)
+        if tid == 'select':
+            pygame.draw.line(self.screen, col, (cx - g * 0.25, cy + g * 0.25),
+                            (cx + g * 0.1, cy - g * 0.25), 3)
+            pygame.draw.line(self.screen, col, (cx + g * 0.1, cy - g * 0.25),
+                            (cx - g * 0.05, cy - g * 0.1), 3)
+            pygame.draw.line(self.screen, col, (cx + g * 0.1, cy - g * 0.25),
+                            (cx + g * 0.25, cy - g * 0.05), 3)
+        elif tid == 'place':
+            pygame.draw.polygon(self.screen, col,
+                [(cx, cy - g * 0.3), (cx + g * 0.3, cy + g * 0.2),
+                 (cx - g * 0.3, cy + g * 0.2)])
+        elif tid == 'erase':
+            pygame.draw.rect(self.screen, col,
+                (cx - g * 0.22, cy - g * 0.22, g * 0.44, g * 0.3), 0, border_radius=2)
+            pygame.draw.line(self.screen, col, (cx + g * 0.18, cy - g * 0.3),
+                            (cx + g * 0.3, cy - g * 0.18), 3)
+        elif tid == 'band':
+            pygame.draw.circle(self.screen, col, (cx - g * 0.12, cy), g * 0.13, 2)
+            pygame.draw.circle(self.screen, col, (cx + g * 0.12, cy), g * 0.13, 2)
+        elif tid in ('copy', 'paste'):
+            if tid == 'copy':
+                pygame.draw.rect(self.screen, col,
+                    (cx - g * 0.2, cy - g * 0.2, g * 0.26, g * 0.34), 2)
+                pygame.draw.rect(self.screen, col,
+                    (cx - g * 0.02, cy - g * 0.12, g * 0.26, g * 0.34), 2)
+            else:
+                pygame.draw.rect(self.screen, col,
+                    (cx - g * 0.22, cy - g * 0.22, g * 0.34, g * 0.36), 2)
+                pygame.draw.rect(self.screen, col,
+                    (cx - g * 0.12, cy - g * 0.3, g * 0.2, g * 0.1), 2)
+        elif tid == 'array':
+            for dx in (-0.18, 0.06):
+                for dy in (-0.18, 0.06):
+                    pygame.draw.rect(self.screen, col,
+                        (cx + dx * g, cy + dy * g, g * 0.16, g * 0.16), 2)
+        elif tid == 'rotate':
+            r = g * 0.26
+            pygame.draw.arc(self.screen, col, (cx - r, cy - r, 2 * r, 2 * r),
+                           -2.2, 1.2, 3)
+            pygame.draw.line(self.screen, col, (cx + r * 0.7, cy - r * 0.7),
+                            (cx + r * 0.95, cy - r * 0.95), 3)
+        elif tid == 'mirror':
+            pygame.draw.line(self.screen, col, (cx, cy - g * 0.28),
+                            (cx, cy + g * 0.28), 2)
+            pygame.draw.polygon(self.screen, col,
+                [(cx - g * 0.28, cy - g * 0.2), (cx - g * 0.05, cy),
+                 (cx - g * 0.28, cy + g * 0.2)])
+            pygame.draw.polygon(self.screen, col,
+                [(cx + g * 0.28, cy - g * 0.2), (cx + g * 0.05, cy),
+                 (cx + g * 0.28, cy + g * 0.2)])
+
+    def _med_tools_click(self, x, y):
+        med = self._med
+        for rect, tid in med['tool_rects']:
+            if rect.collidepoint(x, y):
+                self._med_tool_activate(tid)
+                return True
+        return True
+
+    def _med_tool_activate(self, tid):
+        med = self._med
+        label, shortcut, kind = MED_TOOLS[tid]
+        if kind == 'tool':
+            med['tool'] = tid
+            if tid != 'place':
+                med['ghost'] = None
+            self._med_notify('工具：' + label)
+            return
+        if tid == 'copy':
+            self._med_copy_sel()
+        elif tid == 'paste':
+            self._med_paste_begin()
+        elif tid == 'array':
+            self._med_array_dlg_open()
+        elif tid == 'rotate':
+            self._med_rotate()
+        elif tid == 'mirror':
+            self._med_mirror()
+
     def _med_panel_rect(self):
-        return pygame.Rect(_PANEL_X, self.menu_bar_height + 10,
+        # 几何画板风：属性/库面板放画布右侧（2026-10-28 重做）
+        x = self.screen_width - _PANEL_W - 10
+        return pygame.Rect(x, self.menu_bar_height + 10,
                            _PANEL_W, self._med_panel_height())
 
     def _med_panel_height(self):
@@ -1945,8 +2150,17 @@ class ModelEditorMixin:
         return h + 12
 
     def _med_bar_rect(self):
-        """工具条矩形：走共用骨架，让出左面板（格子画布那边没有左面板）。"""
-        return chrome.bar_rect(self, _BAR_H, left=_PANEL_X + _PANEL_W + 8)
+        """工具条矩形：介于左侧工具栏与右侧属性面板之间（2026-10-28 重做）。
+
+        不再走 ``chrome.bar_rect`` 的 ``right_panel_width`` 机制——那个 132 是
+        主游戏右侧信息面板的宽，与本编辑器的属性面板（``_PANEL_W``）不是一回事；
+        直接用本面板左缘当右界，避免工具条压到右面板（实测 bar.right=861 >
+        panel.left=775 的重叠）。
+        """
+        left = _TOOLBAR_X + _TOOL_W + 18
+        right = self._med_panel_rect().left - 10
+        top = self.screen_height - self.status_bar_height - _BAR_H - 8
+        return pygame.Rect(left, top, max(240, right - left), _BAR_H)
 
     # ==================================================================
     # 事件
@@ -1982,11 +2196,12 @@ class ModelEditorMixin:
             if event.button == 2:
                 self._med_panning = False
                 self._med_pan_origin = None
-            elif event.button == 3 and med.get('rmb') is not None:
-                self._med_right_up()
             elif event.button == 1 and med.get('press') is not None:
-                gx, gy = self._med_screen_to_geom(*event.pos)
-                self._med_press_up(gx, gy)
+                if med['press'].get('mode') == 'boxselect':
+                    self._med_boxsel_up()
+                else:
+                    gx, gy = self._med_screen_to_geom(*event.pos)
+                    self._med_press_up(gx, gy)
             return True
         if event.type == pygame.MOUSEMOTION:
             return self._med_mouse_motion(event)
@@ -2060,7 +2275,14 @@ class ModelEditorMixin:
         return True
 
     def _med_mouse_down(self, event) -> bool:
-        """左键＝点放/拖块、右键＝删、中键＝平移（见 _med_press_down）。"""
+        """左键语义由当前工具决定（几何画板风，2026-10-28 重做）：
+
+        * select：左键拖＝框选、点＝选单块/取消选择
+        * place（默认）：左键点空白＝放块、按已有块拖＝移动（见 _med_press_down）
+        * erase：左键点块＝删除
+        * band：左键点缝＝捆绑/解绑
+        右键＝取消选择（与 ESC 取消选区同义）。中键＝平移。
+        """
         med = self._med
         x, y = event.pos
         if med.get('open_list') is not None:
@@ -2068,6 +2290,8 @@ class ModelEditorMixin:
             return self._med_open_list_click(x, y)
         if med.get('array_dlg') is not None:
             return self._med_array_dlg_click(x, y)
+        if self._med_toolbar_rect().collidepoint(x, y):
+            return self._med_tools_click(x, y)
         if self._med_bar_rect().collidepoint(x, y):
             return self._med_bar_click(x, y)
         if self._med_panel_rect().collidepoint(x, y):
@@ -2078,11 +2302,9 @@ class ModelEditorMixin:
             return True
         gx, gy = self._med_screen_to_geom(x, y)
         if event.button == 3:
-            # 右键 = 「拖＝框选 / 点＝缝捆绑·删块」。动作**推迟到松手**才执行：
-            # 按下后一旦移动超过阈值就改判框选（复制要能整片多选，2026-10-28）。
-            # 纯点击（按下→松手没移动）的语义与旧版一模一样。
+            # 右键 = 取消选择（与 ESC 取消选区同义）
+            med['sel'] = set()
             med['ghost'] = None
-            med['rmb'] = {'sx': x, 'sy': y, 'gx': gx, 'gy': gy, 'moved': False}
             return True
         if event.button != 1:
             med['ghost'] = None
@@ -2090,6 +2312,21 @@ class ModelEditorMixin:
         if med.get('paste') is not None:
             self._med_paste_commit()      # 粘贴浮动中：左键＝落位
             return True
+        tool = med['tool']
+        if tool == 'select':
+            # 左键拖=框选（推迟到松手），点=选单块/取消
+            med['press'] = {'sx': x, 'sy': y, 'gx': gx, 'gy': gy,
+                            'moved': False, 'mode': 'boxselect'}
+            return True
+        if tool == 'erase':
+            self._med_delete_at(gx, gy)
+            return True
+        if tool == 'band':
+            seam = self._med_seam_at(gx, gy)
+            if seam is not None:
+                self._med_toggle_bundle(*seam)
+            return True
+        # 默认 place（含拖动已有块）：现有 press_down 语义
         self._med_press_down(gx, gy, x, y)
         return True
 
@@ -2106,8 +2343,8 @@ class ModelEditorMixin:
             return True
         x, y = event.pos
         gx, gy = self._med_screen_to_geom(x, y)
-        if med.get('rmb') is not None:
-            self._med_right_move(x, y)      # 右键拖动 = 框选橡皮筋
+        if med.get('press') is not None and med['press'].get('mode') == 'boxselect':
+            self._med_boxsel_move(x, y)     # 选择工具：左键拖动 = 框选橡皮筋
             return True
         if med.get('paste') is not None:
             self._med_paste_update(gx, gy)  # 浮动副本跟着鼠标
@@ -2227,6 +2464,7 @@ class ModelEditorMixin:
         self._med_draw_sel()
         self._med_draw_paste()
         self._med_draw_rband()
+        self._med_draw_tools()
         self._med_draw_panel()
         self._med_draw_bar()
         self._med_draw_open_list()
@@ -2398,15 +2636,18 @@ class ModelEditorMixin:
         if not fams:
             _text('（没有推导出活缝）', f_small, c['status_text'], x0, y)
             y += 22
-        for (nm, _cf, _st, n_mv) in fams:
+        for (nm, _cf, st, n_mv) in fams:
             row = pygame.Rect(rect.x + 6, y - 2, rect.width - 12, 24)
             med['fam_rows'].append((row, nm))
             on = nm not in med['fam_off']
             if on:
                 pygame.draw.rect(self.screen, c['selection_bg'], row)
             mark = '[开]' if on else '[关]'
-            _text(f'{mark} {nm}', f_item,
-                  c['menu_text'] if on else c['status_text'], row.x + 6, row.y + 3)
+            desc, screen_ang = eg.direction_desc(st, med['basis'], med['deg'])
+            # 左侧小箭头：屏幕方向，一眼看出这族缝朝哪（比文字直觉）
+            self._med_fam_arrow(row, screen_ang, on)
+            _text(f'{mark} {desc}', f_item,
+                  c['menu_text'] if on else c['status_text'], row.x + 26, row.y + 3)
             _text(f'{n_mv} 移', f_small, c['status_text'],
                   row.right - 44, row.y + 6)
             y += 24
@@ -2443,6 +2684,25 @@ class ModelEditorMixin:
             pygame.draw.rect(self.screen, c['dialog_border'], row, 1)
             _text(caption, f_item, c['dialog_title'], row.x + 10, row.y + 4)
             y += 30
+
+    def _med_fam_arrow(self, row, screen_ang, on):
+        """缝族行左侧的小箭头：屏幕方向，直观表示这族缝朝哪。"""
+        c = self.colors
+        cx, cy = row.x + 13, row.y + row.height // 2
+        r = 8
+        rad = math.radians(screen_ang)
+        dx, dy = math.cos(rad) * r, math.sin(rad) * r
+        col = c['menu_text'] if on else c['status_text']
+        pygame.draw.line(self.screen, col,
+                        (cx - dx, cy - dy), (cx + dx, cy + dy), 2)
+        # 箭头：在终点画一个「<」形双翼（指向 (dx,dy) 方向）
+        back = math.radians(screen_ang + 180)
+        left = back + math.radians(30)
+        right = back - math.radians(30)
+        for a in (left, right):
+            ax, ay = math.cos(a) * 5, math.sin(a) * 5
+            pygame.draw.line(self.screen, col,
+                            (cx + dx, cy + dy), (cx + dx + ax, cy + dy + ay), 2)
 
     def _med_draw_open_list(self):
         """「打开模型」模态列表（编辑器内自绘，不另开对话框）。"""
@@ -2565,8 +2825,8 @@ class ModelEditorMixin:
             bx = br.right + 8
 
         # ---- 第 2 行左侧：操作提示（空间不够就不画，别糊成一团）----
-        hint = ('左键放 · 拖块移动 · 右键删/缝 · 右键拖＝框选 · '
-                'Ctrl+C/V 复制粘贴 · R/F 转向 · 滚轮缩放')
+        hint = ('左键放/拖块 · 选择工具拖＝框选 · 右键取消选择 · 橡皮点删块 · '
+                '捆绑工具点缝 · Ctrl+C/V 复制粘贴 · R/F 转向 · 滚轮缩放')
         hs = f_small.render(hint, True, c['status_text'])
         if hs.get_width() <= rx - (bar.x + 12) - 8:
             self.screen.blit(hs, (bar.x + 12, row2 + 6))

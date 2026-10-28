@@ -1,3 +1,5 @@
+> **受眾**：AI / 開發者（自由捆绑 v1，仅方形；方向与可行性评估）
+
 # 自由捆绑模式（Bandaged Mode）设计
 
 > 移植对象：捆绑魔方（Bandaged Cube，Uwe Meffert 1980s）——把相邻块粘成

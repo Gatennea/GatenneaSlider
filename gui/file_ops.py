@@ -549,6 +549,14 @@ class FileOpsMixin:
                 'matrix': snap['matrix'],
                 'bounds': snap['bounds']
             }
+            # 无损键表（引擎板型专属）：模型板（shield 等）同 2D 格可叠多块
+            # （不同朝向），矩阵编码会把同格多块压成一格、还原时永久丢块 →
+            # 还原态永不等于目标、判定「未复原」（2026-10-26 用户实测报的 bug）。
+            # 内存态 restore_snapshot 本就优先用它，但落盘若不写它，载入只能
+            # 回退到 lossy 的 matrix 重建。故模型板每个快照都必须带上。
+            es = snap.get('engine_state')
+            if es is not None:
+                snap_data['engine_state'] = es
             # 捆绑组（自由捆绑 / 高级选项）：{位置:gid} → [[r,c,gid],...]。
             # 不写的话载入后恢复端拿到 None，会把整盘静默拆成散块。
             _groups = groups_to_json(snap.get('groups'))
@@ -703,6 +711,10 @@ class FileOpsMixin:
                 'session_key': None,
                 # 捆绑关系随快照还原；旧存档无该字段 = 全散块（行为与修复前一致）
                 'groups': groups_from_json(snap.get('groups')),
+                # 无损键表（引擎板型）：落盘带来了就原样带回内存，restore_snapshot
+                # 据它无损还原（见 _build_save_data 的写入说明）。旧方形/三角/米字
+                # 存档无该字段 → None，restore 走各自的专属分支，行为不变。
+                'engine_state': snap.get('engine_state'),
             }
             # 旧格式兼容：01 矩阵 + 平行 numbers 表 → 折叠进整数矩阵（值即编号），
             # 不再携带 numbers 字段（编号谜题的整数矩阵本身即承载编号）

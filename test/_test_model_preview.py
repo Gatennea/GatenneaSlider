@@ -23,8 +23,14 @@ _test_model_style）。
      分组标题/分隔线/自定义样式不给；换图版本失效；打乱态≠复原态。
 
 跑法：D:/python/python.exe test/_test_model_preview.py
+
+L 组（2026-10-29 加）：数字谜题的缩图要写编号。**用固定随机种子跑**：打乱本身
+是随机的，而「画不画得上编号」取决于这一局散得多开（见 model_preview 的
+`_NUM_MIN_CELL` 注释）—— 不固定种子会让它变成偶尔红的测试，那比没有更糟。
+若哪天固定种子下也塞不下（比如档位更大），要回头重估缩图尺寸，别放宽判据。
 """
 import os
+import random
 import sys
 import time
 
@@ -72,28 +78,30 @@ def make_gui(model=None, step=2):
     return gui
 
 
+def _full_scan(surf):
+    """全像素字节缓冲（RGB 三元组序列）。
+
+    ⚠️ 2026-10-29：这两个比值原先按 `range(0, h, 2)` 隔点采样。缩图里的块
+    是大面积色块、隔点采样不会漏，但同款写法在细线（1~2px 的缝线 / 目标框）
+    上会**凭奇偶漏掉整条线**——见 `docs/agent/踩坑与搁置.md` §六。缩图只有
+    104²/288²，全扫的代价可以忽略，索性统一口径。
+    """
+    return pygame.image.tobytes(surf, 'RGB')
+
+
 def _ink_ratio(surf):
     """非背景像素占比（判断「这图不是空的」）。"""
-    bg = (30, 30, 30)
-    w, h = surf.get_size()
-    n = 0
-    for y in range(0, h, 2):
-        for x in range(0, w, 2):
-            if tuple(surf.get_at((x, y))[:3]) != bg:
-                n += 1
-    return n / max(1.0, (w // 2) * (h // 2))
+    bg = bytes((30, 30, 30))
+    buf = _full_scan(surf)
+    n = sum(1 for i in range(0, len(buf), 3) if buf[i:i + 3] != bg)
+    return n / max(1.0, len(buf) // 3)
 
 
 def _diff_ratio(a, b):
     """两张同尺寸图的逐像素差异占比。"""
-    w, h = a.get_size()
-    n = 0
-    tot = 0
-    for y in range(0, h, 2):
-        for x in range(0, w, 2):
-            tot += 1
-            if tuple(a.get_at((x, y))[:3]) != tuple(b.get_at((x, y))[:3]):
-                n += 1
+    ba, bb = _full_scan(a), _full_scan(b)
+    tot = min(len(ba), len(bb)) // 3
+    n = sum(1 for i in range(0, tot * 3, 3) if ba[i:i + 3] != bb[i:i + 3])
     return n / max(1, tot)
 
 
@@ -398,10 +406,12 @@ def main():
           'K6 不存在的模型名 → 不给预览（不画错的）')
 
     # K7 全量巡检：每个预设都要出图，且打乱态与复原态明显不同
+    # （尺寸按目标各自的来：数字谜题要大一号，编号才画得下）
     model_preview.clear_cache()
     bad = []
     for t in targets:
-        tg, ts = model_preview.thumbs(t, 104, gui.colors)
+        tg, ts = model_preview.thumbs(t, model_preview.thumb_size_for(t),
+                                      gui.colors)
         if tg is None or ts is None:
             bad.append((t, model_preview.last_error(t) or '无图'))
         elif _diff_ratio(tg, ts) < 0.10:
@@ -442,11 +452,98 @@ def main():
     seen = {}
     dup = []
     for t in targets:
-        sig = model_preview._disk_sig((t, 104, pal))
+        sig = model_preview._disk_sig((t, model_preview.thumb_size_for(t), pal))
         if sig in seen:
             dup.append((seen[sig], t))
         seen[sig] = t
     check(not dup, f'K11 {len(targets)} 个目标的磁盘签名互不冲突', str(dup[:2]))
+
+    # ---- L. 数字谜题的缩图要写编号（用户 2026-10-26 提，2026-10-29 做） ----
+    # 原状：numbered 档位有缩图但只有光块，和方形档位长得一模一样，
+    # 悬停看不出这是数字题。三条必须钉住：
+    #   ① 编号真的画上去了（缩图里出现纯黑字）；
+    #   ② 编号是 1..K 的完整排列，两张图都不重不漏 —— 这才是「跟着块走」；
+    #   ③ 两张图同进同退，不出现「复原态有编号、打乱态没有」（会被读成
+    #      「打乱把编号弄丢了」，与数字谜题的语义正好相反）。
+
+    def _black_px(surf):
+        """纯黑像素数：字色是 (0,0,0)，而块色/缝色/底色都不是纯黑。
+
+        ⚠️ **这条判据是错的，别再用它证「画上字了」**（2026-10-29 实测留档）：
+        SimHei 12px 走 `render(antialias=True)` 时**没有一个像素的 alpha 到 255**
+        （最大 234），blit 到任何底色上都被混成「很深的灰」而不是精确的
+        (0,0,0)。实测 168 个「黑像素」里有 110 个其实是字表面自己全透明的
+        背景 —— 数纯黑数出来的 1~6，跟画没画字毫无关系。
+        真判据见下面的 `_diff_px`：拿「同一份几何、不给编号」画一遍做基线，
+        两张图逐像素比，差异像素数才是「编号真的落在图上了」。
+        """
+        w, h = surf.get_size()
+        return sum(1 for y in range(h) for x in range(w)
+                   if tuple(surf.get_at((x, y))[:3]) == (0, 0, 0))
+
+    def _diff_px(a, b):
+        """两张同尺寸图的差异像素数（在同一个 SDL dummy 环境里出的图可比）。"""
+        if a is None or b is None or a.get_size() != b.get_size():
+            return 0
+        w, h = a.get_size()
+        return sum(1 for y in range(h) for x in range(w)
+                   if tuple(a.get_at((x, y))[:3]) != tuple(b.get_at((x, y))[:3]))
+
+    num_targets = [t for t in targets if model_preview.is_numbered(t)]
+    check(bool(num_targets), 'L0 菜单里能扫到数字档位')
+    for t in num_targets:
+        tag = f'{t[2]}x{t[3]} 等级{t[4]}'
+        sz = model_preview.thumb_size_for(t)
+        check(sz > model_preview.THUMB_SIZE,
+              f'L1 {tag} 数字档位用更大的缩图（编号才画得下）',
+              f'size={sz}')
+        random.seed(20261029)           # 见文件头：不固定种子就是偶尔红的测试
+        model_preview.clear_cache()
+        val = model_preview._build_pics((t, sz, model_preview._palette(gui.colors)))
+        if isinstance(val, Exception):
+            check(False, f'L2 {tag} 能算出缩图', str(val)[:70])
+            continue
+        (gp, gl), (sp, sl) = val
+        check(bool(gl) == bool(sl),
+              f'L2 {tag} 两张图同进同退（不会一张有编号一张没有）',
+              f'复原={bool(gl)} 打乱={bool(sl)}')
+        if not (gl and sl):
+            continue
+        check(sorted(int(x) for x in gl) == list(range(1, len(gp) + 1)),
+              f'L3 {tag} 复原态编号 = 1..K，不重不漏')
+        check(sorted(int(x) for x in sl) == list(range(1, len(sp) + 1)),
+              f'L4 {tag} 打乱态编号仍是 1..K（编号跟着块走）')
+        tg, ts = model_preview.thumbs(t, sz, gui.colors)
+        # 拿「同一份几何、但不给编号」画一遍当基线：差异像素 = 编号落在图上的像素。
+        baseline_g = model_preview._paint(gp, sz, model_preview._palette(gui.colors), None)
+        baseline_s = model_preview._paint(sp, sz, model_preview._palette(gui.colors), None)
+        nb, ns = _diff_px(tg, baseline_g), _diff_px(ts, baseline_s)
+        check(nb > 50 and ns > 50, f'L5 {tag} 缩图上真画出了编号',
+              f'与无编号基线的差异像素 复原={nb} 打乱={ns}')
+
+    # L6 反向护栏：非数字目标一张字都不画（方形/三角/米字/模型照旧是光板）
+    random.seed(20261029)
+    model_preview.clear_cache()
+    plain = model_preview._build_pics(
+        (model_preview.as_target('shield'), 104, model_preview._palette(gui.colors)))
+    if isinstance(plain, Exception):
+        check(False, 'L6 shield 能算出缩图', str(plain)[:70])
+    else:
+        check(plain[0][1] is None and plain[1][1] is None,
+              'L6 非数字目标不画编号（其它画风不受牵连）')
+
+    # L7 编号口径与真盘一致：预览局赋号后的整数矩阵 == GUI 同类局的矩阵。
+    # 两边都按「还原态块序」赋 1..K，但预览走的是自己的那条建局路径，
+    # 万一哪天块序不同，缩图上的编号就会和玩家实际看到的那局对不上。
+    gui_num = make_gui()
+    gui_num.new_puzzle(4, 4, 1, numbered=True)
+    gui_num.game.update_matrix()
+    prev_game = model_preview._new_game(('board', 'numbered', 4, 4, 1))
+    model_preview._assign_numbers(prev_game)
+    prev_game.update_matrix()
+    check(prev_game.matrix == gui_num.game.matrix,
+          'L7 预览局的编号矩阵与 GUI 真开局逐格相同',
+          f'预览={prev_game.matrix[:2]} 真局={gui_num.game.matrix[:2]}')
 
     return _report()
 

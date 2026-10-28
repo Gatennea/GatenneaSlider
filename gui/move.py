@@ -19,6 +19,46 @@ from gui.board_view import _seg_dist
 class MoveMixin:
     """移动核心（原 GUI.py 内联代码，整体搬迁）。"""
 
+    def _hover_gap_at(self, screen_x, screen_y):
+        """鼠标下「点得动」的那条缝（**纯查询，无副作用**）。回 None = 这里
+        点下去不会选中缝。
+
+        2026-10-27 加，给「悬停缝隙高亮」用：玩家要在按下去之前就知道这条
+        缝点不点得动（用户 2026-10-26 提）。判据必须与**点击**同一套，否则
+        高亮就成了骗人的：
+
+        · 走 ``get_gap_at_pos``（它已按形态分派，且通用通道还判了
+          ``is_valid_gap`` + ``_generic_gap_live``，即「两侧都有块、且推得
+          动」）；
+        · 通用通道的**宽兜底**（±28）也照搬——点偏进相邻块时点击会命中，悬停
+          就该亮，不然又是「看着能点、点了没反应」；
+        · 已选中缝后的第二步（点块定哪侧滑）与选块填空期间不算：那时点缝的
+          语义是另一回事（见 ``_sq_click_query`` 的同一组闸门）。
+
+        ⚠️ 这里**不查死缝**：死缝的语义是「点得到但选不动」，已经有提示浮窗
+        在管，画成高亮等于承诺能点。
+        """
+        try:
+            # 闸门：这些状态下「点缝」是另一套语义（编辑器放块 / 设计态捆绑
+            # / 选块填空），高亮会误导
+            if getattr(self, 'med_active', False):
+                return None
+            if getattr(self, 'annotation_mode', False) \
+                    or getattr(self, 'create_mode', False):
+                return None
+            if getattr(self, '_pick_fill', None) is not None:
+                return None
+            if getattr(self, 'selected_gap', None) is not None:
+                return None
+            if screen_y < getattr(self, 'menu_bar_height', 0):
+                return None
+            gap = self.get_gap_at_pos(screen_x, screen_y)
+            if gap is None and self._generic_spec() is not None:
+                gap = self.get_gap_at_pos(screen_x, screen_y, tolerance=28.0)
+            return gap
+        except Exception:                     # noqa: BLE001 —— 悬停不许炸主循环
+            return None
+
     def _arrow_move_allowed(self, direction: str, step: int = None) -> bool:
         """S1-4：干跑一次「点这个箭头」，看会不会被拒绝。
 

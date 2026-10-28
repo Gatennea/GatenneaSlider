@@ -252,8 +252,9 @@ def t_place():
 def t_click_inside_block_places():
     """左键单击（含点在块内部）= 接着这块放一块（2026-10-25 用户定案）。
 
-    以前左键点块是删除，手一抖就把刚放好的块删了；现在删除只在右键，
-    左键单击永远是「放」——点在块里就是「接着它搭」，贴边吸附选最近空位。
+    以前左键点块是删除，手一抖就把刚放好的块删了；几何画板风重做后
+    （2026-10-28）删除走橡皮工具左键点、右键只取消选择，左键单击（place
+    工具下）永远是「放」——点在块里就是「接着它搭」，贴边吸附选最近空位。
     """
     gui = _make_gui()
     gui._med_open()
@@ -276,8 +277,14 @@ def t_click_inside_block_places():
         gui._med_close()
 
 
-def t_right_click_delete():
-    """右键删块（左键不再兼任删除）。"""
+def t_rightclick_cancel_erase_delete():
+    """几何画板风重做（2026-10-28）：右键只取消选择；删块改走橡皮工具左键点。
+
+    旧版「右键点块删块」已被砍掉——右键语义简化为「取消选择」（与 ESC 同义），
+    删块职责交给左侧工具栏的橡皮工具（左键点）。本测试钉住两条新不变量：
+      * 选择工具选中一块后点右键 → 选区清空、盘面块数不变（右键不删块）
+      * 切到橡皮工具、左键点块 → 删掉那一块（删块的新入口）
+    """
     gui = _make_gui()
     gui._med_open()
     try:
@@ -285,13 +292,29 @@ def t_right_click_delete():
         gui._med_place_at(0.4, 0.3)
         gui._med_place_at(3.4, 0.3)
         check(len(gui._med['placed']) == 2, '应先有 2 块')
-        key = next(iter(gui._med['placed']))
         gui.camera_x, gui.camera_y, gui.zoom = 400.0, 200.0, 1.0
+        med = gui._med
+
+        # 1) 选择工具点选单块，右键应取消选择（不删块）
+        med['tool'] = 'select'
+        key = next(iter(med['placed']))
         sx, sy = _center_screen(gui, key)
-        _gui_click(gui, sx, sy, button=3)
-        check(len(gui._med['placed']) == 1,
-              f'右键应删掉一块（实得 {len(gui._med["placed"])}）')
-        check(key not in gui._med['placed'], '删的应是右键点中的那块')
+        _gui_click(gui, sx, sy, button=1)          # 点选单块
+        check(key in med['sel'], '选择工具点块应进入选区')
+        _gui_click(gui, sx, sy, button=3)          # 右键 → 取消选择
+        check(len(med['sel']) == 0, '右键应清空选区')
+        check(len(med['placed']) == 2, '右键只取消选择，不应删块')
+
+        # 2) 橡皮工具左键点块 → 删掉那一块
+        med['tool'] = 'erase'
+        sx, sy = _center_screen(gui, key)
+        check(not gui._med_toolbar_rect().collidepoint(sx, sy)
+              and not gui._med_panel_rect().collidepoint(sx, sy),
+              '删块点击不能压在工具栏/面板上')
+        _gui_click(gui, sx, sy, button=1)
+        check(len(med['placed']) == 1,
+              f'橡皮工具应删掉一块（实得 {len(med["placed"])}）')
+        check(key not in med['placed'], '删的应是橡皮点中的那块')
     finally:
         gui._med_close()
 
@@ -321,13 +344,18 @@ def t_drag_move_block():
 
 
 def t_drag_empty_pans():
-    """空白处按住左键拖动 = 平移画布，不放置。"""
+    """空白处按住左键拖动 = 平移画布，不放置。
+
+    落点必须落在画布区（左侧工具栏 10..56 与右侧属性面板之外），否则会被
+    面板吃掉按下、平移不起来（几何画板风重做后右面板在右侧）。
+    """
     gui = _make_gui()
     gui._med_open()
     try:
         n0 = len(gui._med['placed'])
         cam = (gui.camera_x, gui.camera_y)
-        _gui_drag(gui, 860, 180, 930, 250)
+        # 画布中部空白：远离左工具栏与右面板，也避开底部工具条
+        _gui_drag(gui, 320, 220, 390, 290)
         check(len(gui._med['placed']) == n0, '拖空白不应放置')
         check((gui.camera_x, gui.camera_y) != cam, '拖空白应平移画布')
     finally:
@@ -629,8 +657,8 @@ def t_menu_entry():
     bar = gui2._med_bar_rect()
     check(bar.bottom == gui2.screen_height - gui2.status_bar_height - 8,
           f'工具条应贴状态栏上沿 8px：bottom={bar.bottom}')
-    check(bar.x >= gui2._med_panel_rect().right,
-          f'工具条不应压到左面板：bar.x={bar.x} panel.right={gui2._med_panel_rect().right}')
+    check(bar.right <= gui2._med_panel_rect().left,
+          f'工具条不应压到右面板：bar.right={bar.right} panel.left={gui2._med_panel_rect().left}')
     gui2._med_draw_bar()
     acts = {a for _r, a in gui2._med['bar_btns']}
     # 2026-10-28：「复制 / 粘贴 / 阵列」进工具条（搭积木复制功能）
@@ -743,7 +771,13 @@ def t_bundle_toggle():
 
 
 def t_bundle_seam_click_routes():
-    """右键点缝 = 捆绑（右键点块才是删除）；左键只管放和拖。"""
+    """几何画板风重做（2026-10-28）：捆绑改走捆绑工具（band）左键点缝。
+
+    旧版「右键点缝 = 捆绑」，现在右键只取消选择，缝的捆绑职责交给左侧
+    工具栏的捆绑工具。左键语义随工具走：band 工具下点缝 = 捆绑，place
+    工具下点缝才会被当成「在这里放一块」。本测试钉住：band 工具左键点
+    缝 → 捆出一组、不增删块。
+    """
     gui = _make_gui()
     gui._med_open()
     try:
@@ -753,19 +787,21 @@ def t_bundle_seam_click_routes():
         gui._med_rebuild()
         _ka, _kb, mid = eg.shared_edges(gui._med['placed'])[0]
         gui.camera_x, gui.camera_y, gui.zoom = 400.0, 200.0, 1.0
+        med = gui._med
+        med['tool'] = 'band'                 # 捆绑走捆绑工具左键点
         sx, sy = gui._med_geom_to_screen(*mid)
         # ⚠️ pos 必须浮点：取整后 screen_to_world 会回到 (0,0)（两块锚
         # 点），于是缝没判中、反把块删了（2026-10-25 踩过）
-        # 缝归右键管：左键点缝会被当成「在这里放一块」，所以缝合必须
-        # 走右键（2026-10-25 实测：左键点缝导致「想放一块却变成了捆绑」）。
+        check(not gui._med_toolbar_rect().collidepoint(sx, sy)
+              and not gui._med_panel_rect().collidepoint(sx, sy),
+              '点缝落点不能压在工具栏/面板上')
         ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN,
-                                {'button': 3, 'pos': (sx, sy)})
+                                {'button': 1, 'pos': (sx, sy)})
         check(gui._med_handle_event(ev) is True, '点缝应被编辑器消费')
-        # ⚠️ 右键动作在**松手**时结算（位移超阈值才改判框选，见
-        # t_copy_paste_array），所以必须 down+up 成对——只发 down 现在不会
-        # 捆绑。真实点击本来就是成对的，语义未变（2026-10-28 更新）。
+        # band 工具下左键点缝 → 按下即捆绑（不依赖松手；与「右键拖改判框选」
+        # 那条旧语义无关）。仍成对发 down+up 以贴近真实点击。
         gui._med_handle_event(pygame.event.Event(
-            pygame.MOUSEBUTTONUP, {'button': 3, 'pos': (sx, sy)}))
+            pygame.MOUSEBUTTONUP, {'button': 1, 'pos': (sx, sy)}))
         n_grp = len({g for g in gui._med['groups'].values() if g})
         check(n_grp == 1, f'点缝应捆出一组，实得 {n_grp}')
         check(len(gui._med['placed']) == 2, '点缝不应增删块')
@@ -1555,7 +1591,8 @@ def t_copy_paste_array():
     """选区 / 复制 / 粘贴 / 阵列（2026-10-28 新功能）。
 
     只测**机制不变量**，不测具体摆位好不好看（摆得对不对由 can_place 保证）：
-      * 右键拖＝框选；右键**点**（不拖）仍然是删块 —— 旧语义不许退化
+      * 框选走「选择工具 + 左键拖」；右键只做取消选择（几何画板风重做，
+        2026-10-28：右键不再删块/框选，删块改走橡皮工具左键点）
       * 空选区复制 / 空剪贴板粘贴 都要明确拒绝，不动盘面
       * 粘贴落位：块数 += 份数、无键冲突、last_delta = 相对原件的位移
       * 阵列铺完**整盘不许有重叠**（这是新功能最重要的护栏）
@@ -1581,11 +1618,12 @@ def t_copy_paste_array():
     med['groups'] = {}
     gui._med_rebuild()
     gui.center_map()
-    # 往右挪出左侧面板：面板会吃掉右键按下（面板 x 10..228，块在 x≈195 时中招）
+    # 往右挪出左侧工具栏 / 右侧面板：它们的命中区会吃掉按下，框选起点不能压上
     gui.camera_x += 140
     check(len(med['placed']) == 3, '前置：应有 3 块')
 
-    # ---- 1. 右键拖 = 框选 ----
+    # ---- 1. 选择工具 + 左键拖 = 框选 ----
+    med['tool'] = 'select'                  # 几何画板风：框选改由选择工具驱动
     pts = []
     for k in med['placed']:
         poly = eg.poly_of(k[0], med['placed'][k], med['basis'])
@@ -1595,9 +1633,11 @@ def t_copy_paste_array():
     by0 = min(p[1] for p in pts) - 45
     bx1 = max(p[0] for p in pts) + 45
     by1 = max(p[1] for p in pts) + 45
+    check(not gui._med_toolbar_rect().collidepoint(bx0, by0),
+          '框选起点不能压在左侧工具栏上（工具栏会吃掉左键按下）')
     check(not gui._med_panel_rect().collidepoint(bx0, by0),
-          '框选起点不能压在左侧面板上（面板会吃掉右键按下）')
-    _gui_drag(gui, bx0, by0, bx1, by1, button=3)
+          '框选起点不能压在右侧面板上（面板会吃掉左键按下）')
+    _gui_drag(gui, bx0, by0, bx1, by1, button=1)
     check(len(med['sel']) == 3, f'框选应选中 3 块，实际 {len(med["sel"])}')
 
     # ---- 2. 空剪贴板粘贴 / 空选区复制要拒绝 ----
@@ -1605,7 +1645,7 @@ def t_copy_paste_array():
     med['sel'] = set()
     check(gui._med_copy_sel() is False, '空选区复制应被拒绝')
     # 重选回来
-    _gui_drag(gui, bx0, by0, bx1, by1, button=3)
+    _gui_drag(gui, bx0, by0, bx1, by1, button=1)
     check(len(med['sel']) == 3, '重选应还是 3 块')
 
     # ---- 3. 复制 ----
@@ -1644,15 +1684,19 @@ def t_copy_paste_array():
     check(len(med['placed']) == before,
           f'撤销应退回阵列前（{before}），实际 {len(med["placed"])}')
 
-    # ---- 8. 右键**点**（不拖）仍然是删块，没被框选吃掉 ----
+    # ---- 8. 橡皮工具左键点 = 删块（几何画板风：右键不再删块，只取消选择） ----
+    med['tool'] = 'erase'                  # 删块改走橡皮工具左键点
     k = sorted(med['placed'])[0]
     poly = eg.poly_of(k[0], med['placed'][k], med['basis'])
     sx, sy = gui._med_geom_to_screen(sum(p[0] for p in poly) / len(poly),
                                      sum(p[1] for p in poly) / len(poly))
+    check(not gui._med_toolbar_rect().collidepoint(sx, sy)
+          and not gui._med_panel_rect().collidepoint(sx, sy),
+          '删块点击不能压在工具栏/面板上')
     n0 = len(med['placed'])
-    _gui_click(gui, sx, sy, button=3)
+    _gui_click(gui, sx, sy, button=1)
     check(len(med['placed']) == n0 - 1,
-          f'右键点块应删掉 1 块（{n0} → {len(med["placed"])}）')
+          f'橡皮工具点块应删掉 1 块（{n0} → {len(med["placed"])}）')
     gui._med_close()
 
 
@@ -1735,7 +1779,7 @@ def main():
     cases = [t_open_close, t_second_open_refused, t_spec_stable,
              t_render, t_ghost,
              t_place, t_click_inside_block_places, t_delete,
-             t_right_click_delete, t_drag_move_block,
+             t_rightclick_cancel_erase_delete, t_drag_move_block,
              t_drag_empty_pans, t_turn_block_hover,
              t_rotate_mirror, t_undo_redo,
              t_bundle_toggle, t_bundle_seam_click_routes,

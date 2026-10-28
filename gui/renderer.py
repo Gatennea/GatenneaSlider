@@ -557,6 +557,9 @@ class RendererMixin:
         # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
         self._draw_gap_direction_annotation()
 
+        # 悬停缝高亮（画在最上层，与米字/通用同一处）
+        self._draw_hover_gap()
+
     def draw_mi_board(self):
         """繪製米字格棋盤（两次触控 + 虚拟键盘，方向由第二下的拖动给出）。
 
@@ -731,6 +734,9 @@ class RendererMixin:
 
         # S1-4：方向标注画在滑块之后（最上层），且端点跟随选中切片而非整条缝
         self._draw_gap_direction_annotation()
+
+        # 悬停缝高亮（画在最上层，与三角/通用同一处）
+        self._draw_hover_gap()
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。
@@ -1146,6 +1152,9 @@ class RendererMixin:
         # S1-4：方向標注必須畫在**滑块之後**（最上層）
         self._draw_gap_direction_annotation()
 
+        # 懸停縫高亮（画在最上层，否则被滑块盖掉一半）
+        self._draw_hover_gap()
+
     def _poly_neighbors_of(self, view):
         """通用通道的鄰接回調（餵給 _draw_bandaged_groups_poly）。
 
@@ -1254,7 +1263,96 @@ class RendererMixin:
         lo, hi = min(along), max(along)
         return ((x0 + ux * lo, y0 + uy * lo), (x0 + ux * hi, y0 + uy * hi))
 
-    def _draw_seam_through_screen(self, seg, width=3, antialias=False):
+    # ---- 悬停缝高亮（2026-10-27 加；三形态 + 通用通道各接一次）----
+    def _hover_gap_current(self):
+        """当前鼠标下的可点缝（缓存：鼠标不动且局面没变就不重算）。
+
+        每帧重算要过一遍候选缝（通用通道还要判 live），白烧 CPU；但也不能
+        只认鼠标位置——走一步之后同一位置的缝可能变了，所以缓存键带上
+        ``step_count`` / ``selected_gap``。
+        """
+        try:
+            pos = tuple(pygame.mouse.get_pos())
+        except Exception:                     # noqa: BLE001
+            return None
+        key = (pos, getattr(self, 'step_count', 0),
+               getattr(self, 'selected_gap', None))
+        if getattr(self, '_hover_key', None) == key:
+            return getattr(self, 'hover_gap', None)
+        self._hover_key = key
+        self.hover_gap = self._hover_gap_at(*pos)
+        return self.hover_gap
+
+    def _hover_seam_segments(self):
+        """悬停缝的线段（**世界坐标**两端点列表；没有/不用画 → 空）。
+
+        各形态的「缝 → 线段」函数本来就有（选中红线用的就是它们），这里只
+        是按同一套判据取出来，一行几何都不新写。
+        """
+        gap = self._hover_gap_current()
+        if not gap or gap == getattr(self, 'selected_gap', None):
+            return []
+        gt, line = gap[0], gap[1]
+        pv = self._polygon_view()
+        if pv is not None:
+            origin = self._poly_view_origin(pv)
+            segs = self._poly_seam_segments(pv, gt, line, origin)
+            merged = self._merge_seam_line(segs)
+            return [merged] if merged is not None else list(segs)
+        if getattr(self, 'triangle_mode', False):
+            if gt not in ('h', 'p', 'n'):
+                return []
+            view = self._tri_view()
+            seg = view.gap_line_segment(gt, line,
+                                        view.board_hull(self.game.positions()))
+            return [] if seg is None else [seg]
+        if getattr(self, 'mi_mode', False):
+            if gt not in ('h', 'v', 'd1', 'd2'):
+                return []
+            view = self._mi_view()
+            hull = view.board_hull(self.game.positions())
+            seg = view.gap_segment(gt, line, hull)
+            return [] if seg is None else [seg]
+        # 方形：与选中红线同一条像素公式（band 中线），转成世界坐标返回
+        if gt not in ('h', 'v'):
+            return []
+        _cell, scaled_gap, step_px = self._board_px()
+        cam_x, cam_y = int(round(self.camera_x)), int(round(self.camera_y))
+        if gt == 'h':
+            y = (line + 1) * step_px - scaled_gap + cam_y + scaled_gap // 2
+            return [(self.screen_to_world(0, y),
+                     self.screen_to_world(self.screen_width, y))]
+        x = (line + 1) * step_px - scaled_gap + cam_x + scaled_gap // 2
+        return [(self.screen_to_world(x, 0),
+                 self.screen_to_world(x, self.screen_height))]
+
+    def _draw_hover_gap(self):
+        """把「点得动」的那条缝先亮出来（用户 2026-10-26 要的悬停高亮）。
+
+        原为近白实线，用户 2026-10-27 反馈「太喧宾夺主」：改成**慢速灰闪**——
+        中性灰线，亮度约 1.8 秒一个周期做正弦呼吸，像悬停连锁提示那样低调
+        （连锁提示是半透明白叠层，这里退成不抢眼的灰线）。
+
+        与「选中红」仍明确区分：灰闪＝这里点得动，红＝已经选中。画在**滑块
+        之上**（三形态都在各自 draw 的末尾接一次），否则会被滑块盖掉一半。
+        """
+        segs = self._hover_seam_segments()
+        if not segs:
+            return
+        # 慢速灰闪：约 1.8s 周期，亮度在 dim↔bright 间平滑呼吸；灰色基调。
+        # 用亮度脉冲而非 alpha（主屏 draw.line 不吃 alpha），低频正弦=温和
+        # 不刺眼，正好压住「喧宾夺主」的观感。
+        t = pygame.time.get_ticks()
+        phase = (t % 1800) / 1800.0
+        pulse = 0.5 - 0.5 * math.cos(phase * 2.0 * math.pi)  # 0→1→0 平滑
+        lo, hi = 105.0, 190.0
+        g = int(lo + (hi - lo) * pulse)
+        color = (g, g, g + 8)  # 灰中带极轻冷味，仍是灰
+        for seg in segs:
+            self._draw_seam_through_screen(seg, width=2, color=color)
+
+    def _draw_seam_through_screen(self, seg, width=3, antialias=False,
+                                  color=None):
         """把縫線沿自身方向延長到畫面外再畫（與方形同一套視覺語言）。
 
         方形原版把選中縫畫成**貫穿整個視窗**的直線（`(0,y)-(W,y)` /
@@ -1283,9 +1381,10 @@ class RendererMixin:
         span = 2.0 * (self.screen_width + self.screen_height)
         a = (x0 - ux * span, y0 - uy * span)
         b = (x1 + ux * span, y1 + uy * span)
-        pygame.draw.line(self.screen, self.colors['line'], a, b, width)
+        col = color or self.colors['line']
+        pygame.draw.line(self.screen, col, a, b, width)
         if antialias:
-            pygame.draw.aaline(self.screen, self.colors['line'], a, b)
+            pygame.draw.aaline(self.screen, col, a, b)
 
     def draw_board(self):
         """绘制游戏主界面"""
@@ -1518,6 +1617,9 @@ class RendererMixin:
         # S1-4：方向标注必须画在**滑块之后**（最上层）。放在缝隙绘制阶段会被
         # 后画的滑块盖掉一半——圆的一半陷在块底下，看着像画崩了。
         self._draw_gap_direction_annotation()
+
+        # 悬停缝高亮（画在最上层，与三角/米字同一处）
+        self._draw_hover_gap()
 
     def _draw_bandaged_groups_poly(self, disp_key, poly_of, neighbors_of):
         """三角/米字：把捆绑组画成一整块（组内无缝、只描组外边界）。
@@ -2655,7 +2757,8 @@ class RendererMixin:
         if target is None:
             return          # 分组标题 / 分隔线 / 当前行 / 自定义样式：没有预览可言
 
-        thumb = self._PREVIEW_THUMB
+        # 数字谜题要更大的缩图（编号才画得下），其它档位维持 104
+        thumb = model_preview.thumb_size_for(target)
         gap = self._PREVIEW_GAP
         pad = self._PREVIEW_PAD
         label_h = self._PREVIEW_LABEL_H
@@ -4216,6 +4319,12 @@ class RendererMixin:
         # 位于状态栏上方、右侧面板左侧的右下角
         box_x = self.screen_width - self.right_panel_width - box_w - 12
         box_y = self.screen_height - self.status_bar_height - box_h - 8
+        # 编辑器激活时：右面板已隐藏、编辑器自己的底部工具条占住中下方，
+        # 右下角的通知会和工具条按钮（复制/粘贴/试玩/退出）重叠 → 改挂到
+        # 顶部居中（菜单栏正下方），那里是画布、不挡任何编辑器 UI。
+        if getattr(self, '_med_active', False):
+            box_x = (self.screen_width - box_w) // 2
+            box_y = self.menu_bar_height + 8
         # 新手教程：教程面板占据右下角会遮住提示 → 提示栏改挂到面板正上方
         # （面板矩形由上一帧 draw_tutorial_panel 记录；位置稳定，仅首帧略滞后）
         tut_rect = getattr(self, 'tut_panel_rect', None)
@@ -4254,6 +4363,36 @@ class RendererMixin:
             color = (255, 160, 80, text_alpha)
         text_surf_alpha.blit(self.status_font.render(msg, True, color), (0, 0))
         self.screen.blit(text_surf_alpha, (box_x + pad_x, box_y + pad_y))
+
+    def draw_seam_disable_hint(self):
+        """谜题 HUD：本谜题被编辑器关掉的缝族提示。
+
+        编辑器里关掉某条缝族、玩家在谜题里看到缝却滑不动，会以为出 bug。
+        这里把「关了哪些、为什么不滑」明示出来（设计如此）。只在**非编辑器**
+        且**当前谜题确有被关缝族**时画；棋盘类谜题（非模型）的 game 没这个
+        属性，getattr 回落 None → 不画。
+        """
+        if getattr(self, '_med_active', False):
+            return
+        seams = getattr(getattr(self, 'game', None), 'disabled_seams', None)
+        if not seams:
+            return
+        descs = [s.get('desc') or s.get('name') or '?' for s in seams]
+        msg = ('已关闭缝族：' + '、'.join(descs)
+               + '（这些缝在谜题里不滑动，是设计如此）')
+        f = self.status_font
+        surf = f.render(msg, True, (235, 235, 235))
+        pad_x, pad_y = 12, 6
+        box_w = surf.get_width() + pad_x * 2
+        box_h = surf.get_height() + pad_y * 2
+        box_x = 12
+        box_y = self.screen_height - self.status_bar_height - box_h - 8
+        bg = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+        bg.fill((20, 20, 20, 205))
+        self.screen.blit(bg, (box_x, box_y))
+        pygame.draw.rect(self.screen, (120, 120, 120),
+                        (box_x, box_y, box_w, box_h), 1)
+        self.screen.blit(surf, (box_x + pad_x, box_y + pad_y))
 
     def draw_solved_popup(self):
         """绘制复原成功悬浮窗（居中 + 弹入动画 + 呼吸光晕 + 自动消失）"""

@@ -221,6 +221,44 @@ def h5_render_no_crash():
         check(f'H5a {label} 三个绘制入口全通', not errs, '; '.join(errs))
 
 
+import pygame  # noqa: E402
+
+
+def count_greenish(surf, strict=False):
+    """全像素统计「绿色目标框」像素数（**不隔点采样**）。
+
+    ⚠️ 2026-10-29：这里原是 `range(0, h, 2)` 隔点采样，被**奇偶**骗出过假红。
+    目标框只有 1px 宽，而窗口宽度会跟着 `config/config.json` 里记的上次窗口
+    尺寸浮动（本机存着 1003，默认是 1000）—— 差 3px 就让整条竖线落到奇数
+    坐标上，只数偶数坐标就一个都数不到 → 报「框没画出来」，而框其实画得好
+    好的（逐点取色就是 (80,220,100)）。**本来就 1px 宽**的东西用隔点采样
+    等于猜奇偶，所以改成全扫。放在模块层：H5b 与 H9 两组都要用。
+    """
+    buf = pygame.image.tobytes(surf, 'RGB')
+    n = 0
+    for i in range(0, len(buf), 3):
+        r, gg, b = buf[i], buf[i + 1], buf[i + 2]
+        # 绿框 (80,220,100)：g 显著大于 r 与 b
+        if gg > 150 and r < 130 and b < 140 and gg - max(r, b) > 60:
+            if strict and not (gg > 170 and r < 120):
+                continue
+            n += 1
+    return n
+
+
+def count_marks(surf):
+    """记号色像素：(黄, 红) 的全像素计数（同样不隔点采样）。"""
+    buf = pygame.image.tobytes(surf, 'RGB')
+    yellow = red = 0
+    for i in range(0, len(buf), 3):
+        r, gg, b = buf[i], buf[i + 1], buf[i + 2]
+        if r > 200 and gg > 150 and b < 120:      # 凸起黄 (255,210,60)
+            yellow += 1
+        if r > 200 and gg < 130 and b < 130:      # 缺口红 (255,80,80)
+            red += 1
+    return yellow, red
+
+
 def h5b_really_paints():
     """H5b 真的画到屏幕上（不只是「方法不崩」）。
 
@@ -231,27 +269,14 @@ def h5b_really_paints():
     所以這裡改成「像素級驗證：屏幕上真的出現了綠色框線與記號色」。
     """
     print('\n--- H5b 真的画到屏幕上（像素级验证）---')
-    import pygame
     for k, step, sh, label in ((5, 2, 15, '打乱 k=5 step2'),
                                (4, 2, 0, '还原 k=4 step2')):
         g = _gui(k=k, step=step, shuffle=sh)
         g.draw_triangle_board()
         g.draw_metrics_panel()
-        # 统计屏幕上的特征色像素
-        w, h = g.screen.get_size()
-        green = yellow = red = 0
-        for py in range(0, h, 2):
-            for px in range(0, w, 2):
-                r, gg, b, _a = g.screen.get_at((px, py))
-                # 绿框 (80,220,100)：g 显著大于 r 与 b
-                if gg > 150 and r < 130 and b < 140 and gg - max(r, b) > 60:
-                    green += 1
-                # 凸起黄 (255,210,60)
-                if r > 200 and gg > 150 and b < 120:
-                    yellow += 1
-                # 缺口红 (255,80,80) / 大洞红
-                if r > 200 and gg < 130 and b < 130:
-                    red += 1
+        # 统计屏幕上的特征色像素（全像素，见 count_greenish 的说明）
+        green = count_greenish(g.screen)
+        yellow, red = count_marks(g.screen)
         check(f'H5b-1 {label} 画面有绿色目标框线', green > 0,
               f'绿色像素 {green}')
         if sh:
@@ -447,10 +472,7 @@ def h9_unsupported_kind_not_silent():
     g.board_marks_enabled = True
     g.draw_mi_board()
     g.draw_metrics_panel()
-    w, h = g.screen.get_size()
-    green_m = sum(1 for y in range(0, h, 2) for x in range(0, w, 2)
-                  if (lambda c: c[1] > 170 and c[0] < 120 and c[2] < 140)
-                  (g.screen.get_at((x, y))))
+    green_m = count_greenish(g.screen, strict=True)
     check('H9h mi 画出自己的目标框（绿像素 > 0）', green_m > 0, f'{green_m}')
 
     # **方形局下不能画出 mi 的框**（这才是「不串味」的正向验证）：
@@ -460,9 +482,7 @@ def h9_unsupported_kind_not_silent():
     g._target_region = None
     g.draw_board()
     g.draw_metrics_panel()
-    green_sq = sum(1 for y in range(0, h, 2) for x in range(0, w, 2)
-                   if (lambda c: c[1] > 170 and c[0] < 120 and c[2] < 140)
-                   (g.screen.get_at((x, y))))
+    green_sq = count_greenish(g.screen, strict=True)
     check('H9k 方形局画的是方形框（切形态后不残留 mi 的框）', green_sq >= 0,
           f'{green_sq}（只验不抛，方形框本身也是绿的）')
     # 方形与三角仍在支持表内（别把闸门开太大）。

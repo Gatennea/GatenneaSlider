@@ -198,6 +198,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'border': (100, 100, 100),
             'gap': (80, 80, 80),
             'line': (255, 0, 0),
+            # 悬停缝高亮（2026-10-27 加）：只提亮、不引入新色相，与「选中红」
+            # 区分开——白=这里点得动，红=已经选中
+            'gap_hover': (235, 235, 235),
             'grid': (40, 40, 40),
             'menu_bg': (50, 50, 50),
             'menu_hover': (70, 70, 70),
@@ -237,6 +240,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 选中状态
         self.selected_gap = None
         self.selected_block = None
+        # 鼠标下「点得动」的那条缝（悬停预览用，见 gui/move.py
+        # _hover_gap_at；只用于绘制，不参与任何判定）
+        self.hover_gap = None
 
         # 字体设置
         self.font = _gui_safe_font('SimHei', 24)
@@ -1265,6 +1271,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         from engine.adapter import create_adapter_puzzle
         self.game = create_adapter_puzzle(model_name, 4, 4, step)
+        # 把编辑器关掉的缝族带进谜题：HUD 据此提示（见 draw_seam_disable_hint）。
+        # 非模型谜题的 game 不会设这个属性，getattr 回落 None → 不画提示。
+        self.game.disabled_seams = model.disabled_seams
 
         self.zoom = 1.0
         self.selected_gap = None
@@ -1970,8 +1979,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                         self.redo_timer = now
 
                 self.draw_board()
-                self.draw_right_panel()
+                # 搭积木编辑器激活时：主游戏右面板（滑条+7 开关）是另一套
+                # 布局，且与编辑器自己的属性面板同处右缘——不跳过会被编辑器
+                # 浮动面板上下方「漏出来」造成重叠（2026-10-28 用户实测：
+                # 右侧编辑器和滑动条重叠、右下角提示和按键重叠）。
+                if not getattr(self, '_med_active', False):
+                    self.draw_right_panel()
                 self.draw_status_bar()
+                # 谜题 HUD：被编辑器关掉的缝族提示（编辑器激活时不画）
+                self.draw_seam_disable_hint()
 
                 # 动态更新编辑菜单的求解按钮文字
                 shortcut = self._format_menu_shortcut('auto_solve')

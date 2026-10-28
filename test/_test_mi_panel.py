@@ -54,6 +54,21 @@ def screen_signature(gui):
     return pygame.image.tobytes(gui.screen, 'RGB')
 
 
+def count_rgb(surf, rgb):
+    """全像素统计某个颜色出现了几次（**不隔点采样**）。
+
+    ⚠️ 2026-10-29：这里原是 `range(0, h, 2)` 隔点采样，被**奇偶**骗出过一次
+    假红。目标框是**1px 细线**，横向只有一列像素；而窗口宽度会随
+    `config/config.json` 里记的上次窗口尺寸浮动（本机就存着 1003，默认是
+    1000）——宽 3px 足以让整条竖线落到奇数 x 上，只数偶数 x 就一个都数不到，
+    于是报「框没画出来」。框其实画得好好儿的（逐点取色就是 (80,220,100)）。
+    这类**本来就只有 1px 宽**的东西，用隔点采样等于猜奇偶，所以改成全扫。
+    """
+    buf = pygame.image.tobytes(surf, 'RGB')
+    tgt = bytes(rgb)
+    return sum(1 for i in range(0, len(buf), 3) if buf[i:i + 3] == tgt)
+
+
 gui = SliderGUI(m=6, n=6, step=1)
 gui.animation_enabled = False
 gui.save_readonly_flag = False
@@ -171,17 +186,10 @@ gui._fit_mi_zoom()
 gui._center_mi()
 gui.screen.fill((0, 0, 0))
 gui.draw_mi_board()
-green = sum(1
-            for yy in range(0, gui.screen_height, 2)
-            for xx in range(0, gui.screen_width, 2)
-            if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
-check("P4e 目標框（綠）確實畫出來了", green > 0, f'{green} 個采樣點')
+green = count_rgb(gui.screen, (80, 220, 100))
+check("P4e 目標框（綠）確實畫出來了", green > 0, f'{green} 個像素')
 marks = {'紅': (255, 80, 80), '藍': (80, 160, 255), '黃': (255, 210, 60)}
-counts = {name: sum(1
-                    for yy in range(0, gui.screen_height, 4)
-                    for xx in range(0, gui.screen_width, 4)
-                    if gui.screen.get_at((xx, yy))[:3] == rgb)
-          for name, rgb in marks.items()}
+counts = {name: count_rgb(gui.screen, rgb) for name, rgb in marks.items()}
 check("P4e2 mi 不畫洞/缺口/凸起記號（紅藍黃像素 = 0）",
       all(v == 0 for v in counts.values()), str(counts))
 
@@ -342,19 +350,12 @@ check('P9a draw_mi_board 之后 _target_region 被填上（调用点存在）',
       isinstance(reg, MiPlacement),
       f'{type(reg).__name__}')
 # 框的颜色 (80,220,100) 真的落在屏幕上
-green = sum(1
-            for yy in range(0, gui.screen_height, 2)
-            for xx in range(0, gui.screen_width, 2)
-            if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
-check('P9b 目标框真的画在屏幕上了（绿像素 > 0）', green > 0, f'{green} 个采样点')
+green = count_rgb(gui.screen, (80, 220, 100))
+check('P9b 目标框真的画在屏幕上了（绿像素 > 0）', green > 0, f'{green} 个像素')
 # **用戶 2026-10-05 决定：mi 不画标记，只留目标框** —— 所以这里反过来：
 # 红/蓝/黄记号像素必须全为 0（洞/缺口/凸起都不画），但绿框（P9b）仍在。
 marks = {'红': (255, 80, 80), '蓝': (80, 160, 255), '黄': (255, 210, 60)}
-counts = {name: sum(1
-                     for yy in range(0, gui.screen_height, 2)
-                     for xx in range(0, gui.screen_width, 2)
-                     if gui.screen.get_at((xx, yy))[:3] == rgb)
-          for name, rgb in marks.items()}
+counts = {name: count_rgb(gui.screen, rgb) for name, rgb in marks.items()}
 check('P9c mi 不画洞/缺口/凸起记号（红蓝黄像素 = 0）',
       all(v == 0 for v in counts.values()),
       str(counts))
@@ -364,12 +365,9 @@ gui.show_metrics_panel = True
 gui.board_marks_enabled = False
 gui.screen.fill((0, 0, 0))
 gui.draw_mi_board()
-green_off = sum(1
-                for yy in range(0, gui.screen_height, 2)
-                for xx in range(0, gui.screen_width, 2)
-                if gui.screen.get_at((xx, yy))[:3] == (80, 220, 100))
+green_off = count_rgb(gui.screen, (80, 220, 100))
 check('P9d 只开面板不开标记 → 不画框（解耦语义）', green_off == 0,
-      f'{green_off} 个采样点')
+      f'{green_off} 个像素')
 
 # ================================================================ P10 行数与高度
 print("\n--- P10 面板高度按行数算（第 7 行不再被截断）---")

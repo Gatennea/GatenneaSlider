@@ -384,6 +384,38 @@ def direction_name(step, basis=None, deg=None):
     return names[best]
 
 
+def direction_desc(step, basis=None, deg=None):
+    """步长向量 → 具象缝族描述（给玩家/作者看的，不再只给 ``d30`` 这种代号）。
+
+    返回 ``(文字, 屏幕角)``：
+
+    * 文字：``水平缝`` / ``竖直缝`` / ``斜缝 N°``（N 取 30° 或 45° 粒度），
+      直接说清这族缝在盘面上朝哪个方向。
+    * 屏幕角：该方向在**屏幕**上的指向（渲染世界坐标 y 向下，故屏幕方向 =
+      ``(x, -y)``），供画小箭头用——箭头比文字更直觉，尤其对角缝。
+
+    ⚠️ 这是**展示层**描述，缝族在引擎/存档里的身份仍是 ``direction_name``
+    返回的抽象代号（``h``/``d30``/…），那套不能动（存档键、字母表映射都
+    依赖它）；本函数只在编辑器面板与谜题提示里用。
+    """
+    if deg is None:
+        nm = lattice_of_basis(basis or TRI_BASIS)
+        deg = LATTICES[nm]['deg'] if nm else 30
+    x, y = to_plane(step, basis)
+    ang = degrees(atan2(y, x)) % 180.0
+    gran = 45 if deg == 45 else 30
+    a = int(round(ang / gran) * gran) % 180
+    if a == 0:
+        word = '水平缝'
+    elif a == 90:
+        word = '竖直缝'
+    else:
+        word = f'斜缝{a}°'
+    # 屏幕角：渲染世界 y 向下，屏幕方向 = (x, -y)
+    screen_ang = degrees(atan2(-y, x)) % 360.0
+    return word, screen_ang
+
+
 # ----------------------------------------------------------------------
 # 点与多边形
 # ----------------------------------------------------------------------
@@ -525,6 +557,43 @@ def can_place(images, idx, p, placed, basis=None):
         if gops.convex_overlap(poly, poly_of(k[0], offs, basis)):
             return False
     return True
+
+
+def box_hits_block(p, offs, x0, x1, y0, y1):
+    """块是否被框选矩形命中（几何坐标，与 ``p``/``offs`` 同单位）。
+
+    判据 = **任一顶点在框内 或 质心在框内**（两者取或）。这是 2026-10-28
+    对「框选漏选」的修复：旧版只认单点质心，碎三角 / 长条块质心偏在一侧，
+    玩家明明框住了块却选不中。改成「顶点进框即选中」贴合直觉，又不会像
+    「相交」那样把「框只擦过块外空隙」也算进来（互锁单元会过度选中）。
+
+    ``offs`` 是块的相对顶点扁平列表（可能含多个 sub-polygon 的顶点，见
+    ``poly_of``），全部顶点都参与判定。
+    """
+    # 任一顶点在框内 → 选中（覆盖「框盖住块一角」的情形）
+    for ox, oy in offs:
+        vx, vy = p[0] + ox, p[1] + oy
+        if x0 <= vx <= x1 and y0 <= vy <= y1:
+            return True
+    # 顶点全在框外时，用质心兜底（块大部分在框内但没顶点落框内）
+    n = len(offs)
+    if n:
+        cx = p[0] + sum(v[0] for v in offs) / n
+        cy = p[1] + sum(v[1] for v in offs) / n
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            return True
+    return False
+
+
+def select_blocks_in_box(placed, box):
+    """框选：返回 ``placed`` 中所有被 ``box=(x0, x1, y0, y1)`` 命中的块键集合。
+
+    纯几何，不依赖 GUI / 屏幕换算；编辑器入口 ``_med_select_box`` 把屏幕
+    矩形换算成几何框后再调它（保证坐标口径一致）。
+    """
+    x0, x1, y0, y1 = box
+    return {k for k, offs in placed.items()
+            if box_hits_block(k[0], offs, x0, x1, y0, y1)}
 
 
 def shared_edge_segments(placed, basis=None):
