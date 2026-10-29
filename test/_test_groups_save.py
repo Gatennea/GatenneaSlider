@@ -308,5 +308,60 @@ for i in range(n_moves, -1, -1):
     all_ok = all_ok and len(gs) == 1 and len(gs[0][1]) == 4
 check('G10c 逐步撤销全程捆绑保留（惰性拆分中间态带 groups）', all_ok)
 
+print('\n--- G11 合并快照走 gui.undo() 真路径，捆绑不丢（2026-10-30）---')
+
+# ⚠️ G10c 用的是 `restore_snapshot(g, i)` **直接跳**，不走
+# `_ensure_step_granularity`；玩家按 Ctrl+Z 走的是
+# undo() → peek_undo() → _ensure_step_granularity → 拆出的单步快照。
+# 拆分处若漏拷 groups，撤到合并段**中间**那一步会把捆绑静默清空，
+# 而撤到底（真快照）又是好的 —— 表现极隐蔽，G10 这种跳法永远抓不到。
+# 实测修复前：第 1、2 次 undo 后 groups_summary() == []。
+
+gui.use_compressed_save = False
+# ⚠️ 必须关动画：`undo()` 在动画开启时走 `_start_undo_redo_animation` 分支，
+# 只调 peek_undo()（副作用 = 把合并段展开、history_index 跳到段末）就返回，
+# **根本不还原盘面** —— 那样 G11b 会永远绿，等于没验。关掉才走
+# `_undo_step_now` → `game_history.undo()` 真正 restore 到中间态。
+gui.animation_enabled = False
+gui.animation_duration = 0
+gui.new_puzzle(4, 4, 1)
+g = gui.game
+g.apply_pattern(CELLS, BANDED)
+gui.current_m, gui.current_n = g.m, g.n
+gui.game_history.reset()
+gui.game_history.save_snapshot(g)
+n11 = 0
+for _i in range(3):
+    res = find_move(g)
+    if not res:
+        break
+    gt, line, d, moved, fin = res
+    mv = {'gap_type': gt, 'gap_line': line, 'direction': d, 'step': 1,
+          'moved_positions': [list(x) for x in moved]}
+    g.commit_move(fin)
+    gui.game_history.save_snapshot(g, mv, 'SAME')   # 同一会话 → 合并
+    n11 += 1
+check('G11a 连走 3 步合并成 1 条快照',
+      n11 == 3 and len(gui.game_history.history) == 2,
+      f'{n11} 步 / {len(gui.game_history.history)} 条')
+
+seen11 = []
+ok11 = True
+while gui.game_history.can_undo():
+    _before = gui.game_history.history_index
+    gui.undo()
+    if gui.game_history.history_index == _before:
+        break                       # 没推进：别死循环
+    gs = gui.game.groups_summary()
+    seen11.append((gui.game_history.history_index, gs))
+    if not (len(gs) == 1 and len(gs[0][1]) == 4):
+        ok11 = False
+check('G11b 逐步撤销全程捆绑保留（undo 真路径，含拆出的中间态）', ok11,
+      str(seen11))
+# 防 G11b 变空：若哪天动画又被打开，undo() 只 peek 不还原，seen11 会只剩 1 条
+# 且盘面停在末态 —— 那样 G11b 照样绿。这条把「必须真的走过中间态」钉住。
+check('G11c 撤销真的逐条走过了拆出的中间态（不是只 peek 一下）',
+      len(seen11) >= 3, f'只撤了 {len(seen11)} 步：{seen11}')
+
 print('\n===', 'ALL PASS' if not _failures else f'{len(_failures)} FAILURES', '===')
 sys.exit(1 if _failures else 0)

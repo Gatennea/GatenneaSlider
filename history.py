@@ -302,6 +302,12 @@ def expand_snapshot_moves(prev_snap, snap) -> list:
         return [(prev_snap, snap, moves[0])]
     if not all(mv and mv.get('moved_positions') for mv in moves):
         return [(prev_snap, snap, moves[-1])]
+    if not all(len(p) == 2 for mv in moves for p in mv['moved_positions']):
+        # 非 2D 方格坐标（引擎板型块位置带朝向分量）：逐步重播按方形写死，
+        # 硬拆会在 `for r, c in moved` 抛 ValueError（实测：too many values
+        # to unpack），而异常从 peek_undo 冒出去会把撤销整条弄死（主循环
+        # 的大 try 吞掉后表现为「Ctrl+Z 没反应」）。不拆 = 整段一步撤。
+        return [(prev_snap, snap, moves[-1])]
     cells = set(snapshot_cells(prev_snap))
     # 带序号：编号随块一起动（块移动不换号），逐步重建中间态的编号表
     num_map = snapshot_numbers(prev_snap)
@@ -544,6 +550,15 @@ class GameHistory:
         snap = self.history[index]
         if snap.get('steps', 1) <= 1:
             return index
+        # 引擎板型（带无损键表 engine_state）：**不拆**。
+        # 拆分只能按 2D 方格矩阵重建中间态，而引擎板同一 2D 格可叠多块
+        # （不同朝向），矩阵编码把同格多块压成一格 → 拆出来的中间态必然
+        # 掉块碎盘（§九 的同款病，只不过触发点从旧档变成「撤销经过合并段」）。
+        # 整段一步撤少了逐步，但至少无损。正常流程本不会产生这种段
+        # （gui/drag.py 的 _move_merge_key 对 spec.orientations 非空的板型
+        # 返回 None = 不合并），这里是给旧档 / 导入的历史兜底。
+        if snap.get('engine_state'):
+            return index
         expanded = expand_snapshot_moves(self.history[index - 1], snap)
         if len(expanded) <= 1:
             return index
@@ -558,6 +573,14 @@ class GameHistory:
                 'steps': 1,
                 'step_total': base_total + k + 1,
                 'session_key': None,
+                # ⚠️ 捆绑必须跟着走：expand_snapshot_moves 已经把「整组平移后」
+                # 的 groups 算进 post（含中间态）了，这里漏拷就会让
+                # restore_snapshot 的 set_groups_from_positions(None) 把捆绑
+                # **静默清空** —— 玩家撤到合并段中间那一步，2×2 捆绑块散成
+                # 4 颗各走各的，谜题被悄悄变简单（2026-10-30 实测复现）。
+                # 表现很隐蔽：撤到中间是散的、撤到底（真快照）又好了。
+                'groups': post.get('groups'),
+                'engine_state': post.get('engine_state'),
             }
             # 编号直接写在整数矩阵里（值即编号），随快照一起携带，
             # 撤销/重做恢复到这些中间态时 restore_snapshot 据矩阵还原块编号

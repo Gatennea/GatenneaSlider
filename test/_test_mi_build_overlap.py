@@ -252,11 +252,17 @@ def t6_other_shapes():
         coords0 = set(gui._ann_build_coords)
         pos = next(iter(sorted(coords0)))
         gui._ann_build_toggle(pos)
+        # ⚠️ 失败时**必须打印错误串**：2026-10-30 全套里 triangle 这两条红过一次
+        # （单跑 11 次 + 按种子扫 40 次都全绿，没能复现），而当时 extra 是空的，
+        # 事后完全无法判断是「闸门误伤」还是「删放没生效」。带上 err 才有下次。
         check(f'{shape} 移除一块', pos not in gui._ann_build_coords
-              and len(gui._ann_build_coords) == len(coords0) - 1)
+              and len(gui._ann_build_coords) == len(coords0) - 1,
+              f'err={gui._ann_build_error!r} pos={pos} n={len(coords0)}')
         gui._ann_build_toggle(pos)
-        check(f'{shape} 放回复原', gui._ann_build_coords == coords0)
-        check(f'{shape} 无重叠闸门误伤（错误为空）', gui._ann_build_error == '')
+        check(f'{shape} 放回复原', gui._ann_build_coords == coords0,
+              f'err={gui._ann_build_error!r}')
+        check(f'{shape} 无重叠闸门误伤（错误为空）', gui._ann_build_error == '',
+              f'err={gui._ann_build_error!r}')
 
 
 def main():
