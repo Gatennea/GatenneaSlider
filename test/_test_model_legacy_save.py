@@ -22,6 +22,7 @@ engine_state），这与用户「仅遇到一次、条件未知」完全吻合�
 跑法：D:/python/python.exe test/_test_model_legacy_save.py
 """
 import os
+import re
 import sys
 import json
 import random
@@ -63,6 +64,19 @@ def _gui():
 
 def _components(gui):
     return len(gui.game.spec.components(frozenset(gui.game.board.keys)))
+
+
+def _shuffle_steps(msg):
+    """从 `已打乱：N步（…）` 里取出 N；取不到返回 None。
+
+    ⚠️ 2026-10-29：这里原是子串匹配 `'0步'`，**是错的**——`'已打乱：40步'`
+    里也含 `'0步'`，所以「好盘」只要打乱步数尾数是 0（10/20/40/60…）就会被
+    判成「一步没走」，而 `shuffle_puzzle` 的步数每次都不同 → **约 10% 的概率
+    假红**（实测本次就撞出 `已打乱：40步`）。要判「走了几步」就得把数字取出
+    来比，不能在整条文案里找子串。
+    """
+    m = re.search(r'已打乱：(\d+)步', msg or '')
+    return int(m.group(1)) if m else None
 
 
 def _mi2_walked_save():
@@ -139,7 +153,7 @@ def t_bad_board_cannot_shuffle():
     gui.macro_notify_msg = ''
     gui.shuffle_puzzle()
     good_msg = gui.macro_notify_msg
-    check('0步' not in good_msg,
+    check((_shuffle_steps(good_msg) or 0) > 0,
           f'好盘打乱应有步数（实测 msg={good_msg!r}）')
 
     bad = json.loads(json.dumps(sd, ensure_ascii=False))
@@ -149,7 +163,7 @@ def t_bad_board_cannot_shuffle():
     gui2 = _load(bad)
     gui2.macro_notify_msg = ''
     gui2.shuffle_puzzle()
-    check('0步' in gui2.macro_notify_msg,
+    check(_shuffle_steps(gui2.macro_notify_msg) == 0,
           f'坏盘打乱应一步都走不动（实测 msg={gui2.macro_notify_msg!r}）'
           '——§九 症状二「无法打乱」的成因')
 
