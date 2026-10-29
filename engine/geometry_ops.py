@@ -79,6 +79,26 @@ def centroid(poly):
     return (sum(v[0] for v in poly) / n, sum(v[1] for v in poly) / n)
 
 
+def point_in_tri(px, py, pts):
+    """点是否在三角形内（含边界）：三边同侧法，任意绕向都对。
+
+    为什么抽到这里：三角视图（gui/triangle_view）与米字视图（gui/mi_view）
+    各写了一份**逐字相同**的 ``_point_in_tri``，命中判据分叉就是「同一个
+    点在一个视图里算中、在另一个里算不中」那类 bug 的温床。两份都不含
+    任何板型知识（纯三点叉积符号），正好是本模块定位的形态无关原语。
+
+    判据：把点与每条边做叉积，三者同号（或含 0）即在内部/边上；一正一负
+    说明点在某一边的外侧。比重心坐标法少一次除法，也不怕退化三角形。
+    """
+    (ax, ay), (bx, by), (cx, cy) = pts
+    d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
+    d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
+    d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
+    has_neg = d1 < 0 or d2 < 0 or d3 < 0
+    has_pos = d1 > 0 or d2 > 0 or d3 > 0
+    return not (has_neg and has_pos)
+
+
 def edge_lengths(poly):
     """各边长（浮点）。边 e_i = poly[i] -> poly[i+1]，与 `edge_map` 同序。"""
     n = len(poly)

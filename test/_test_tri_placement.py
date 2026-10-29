@@ -119,7 +119,7 @@ def t3_offset_multiple_of_step():
 def t4_mod_conserved_by_moves():
     print('\n--- T4 mod 不变量在引擎滑动下守恒（放置约束的根据）---')
     from game_triangle import TriangleSliderMatrix, GAP_DIRECTIONS
-    from gui.cell_class import cell_class
+    from engine.cell_class import cell_class
     from collections import Counter
     random.seed(3)
     total_steps = 0
@@ -159,7 +159,7 @@ def t4_mod_conserved_by_moves():
 
 def t5_not_conserved_by_geometry():
     print('\n--- T5 任意几何平移下不守恒（所以枚举要按 mod 过滤）---')
-    from gui.cell_class import cell_class
+    from engine.cell_class import cell_class
     from solver.ml.tri_placement import goal_shape
     from collections import Counter
     found_non_multiple = False

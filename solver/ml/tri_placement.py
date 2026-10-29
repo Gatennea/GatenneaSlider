@@ -23,7 +23,7 @@
 from collections import Counter
 
 from game_triangle import TriangleSliderMatrix
-from gui.cell_class import cell_class
+from engine.cell_class import cell_class
 
 __all__ = ['TriPlacement', 'best_placement', 'goal_shape',
            'overlap_at', 'placement_offset_ok', 'tri_profile_defect']

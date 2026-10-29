@@ -7,7 +7,7 @@
 「整體平移過、而 step 不整除 m/n」的合法棋形不再被冤拒。
 `solver.ml.ann_gen.validate_state` 保留給 ML 生成器自用，本模組不碰。
 
-核心不變量（見 gui/cell_class.py）：一次合法移動把整組滑塊平移一個
+核心不變量（見 engine/cell_class.py）：一次合法移動把整組滑塊平移一個
 向量，該向量是方向生成元的 step 倍，所以每塊的類永遠不變。還原態有
 一張固定的類計數表；構造出來的棋形必須在**某個偏移**下與它逐類相等
 （三角/米字的表非均勻，所以掃偏移、≤ step² 次），掃到的那個偏移就是
@@ -30,7 +30,7 @@ from game_mi import MiSliderMatrix, blocks_from_cells as mi_blocks_from_cells
 from game_mi import any_overlap as mi_any_overlap, lattice_of as mi_lattice_of
 from game_mi import coords_coherent as mi_coords_coherent
 from game_triangle import TriangleSliderMatrix, blocks_from_cells as tri_blocks_from_cells
-from gui.cell_class import cell_class
+from engine.cell_class import cell_class
 
 __all__ = ['validate_shape', 'solved_cell_count']
 

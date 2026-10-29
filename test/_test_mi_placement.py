@@ -116,7 +116,7 @@ def t3_mod_structure():
 def t4_mod_conserved_by_moves():
     print('\n--- T4 mod 不变量在引擎滑动下守恒 ---')
     from game_mi import GAP_DIRECTIONS, MiSliderMatrix
-    from gui.cell_class import cell_class
+    from engine.cell_class import cell_class
     random.seed(3)
     total = bad = 0
     for m, n in ((3, 3), (4, 4), (4, 3)):

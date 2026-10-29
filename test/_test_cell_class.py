@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""移動不變量類的純邏輯測試（gui/cell_class.py）。
+"""移動不變量類的純邏輯測試（engine/cell_class.py）。
 
 執行：python test/_test_cell_class.py
 覆蓋：三形態類不變性（每族每方向真實移動前後類多重集不變 + 全部位置
@@ -20,7 +20,7 @@ from game_mi import (  # noqa: E402
     DIRECTIONS as MI_DIRS, MiSliderMatrix, mi_key,
     side_of as mi_side_of, gap_for_direction as mi_gap_of, lattice_of,
 )
-from gui.cell_class import cell_class, class_index  # noqa: E402
+from engine.cell_class import cell_class, class_index  # noqa: E402
 
 _failures = []
 
@@ -169,7 +169,7 @@ sys.path.insert(0, _PROJ)
 from game import SliderMatrix  # noqa: E402
 from game_mi import MiSliderMatrix, mi_key, side_of  # noqa: E402
 from game_triangle import TriangleSliderMatrix, tri_key  # noqa: E402
-from gui.cell_class import cell_class, class_index  # noqa: E402
+from engine.cell_class import cell_class, class_index  # noqa: E402
 from solver.actions import apply_action, enumerate_valid_actions  # noqa: E402
 
 def square_classes(g, step):

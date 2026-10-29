@@ -24,7 +24,7 @@ from game_triangle import tri_key
 from game_triangle import neighbors as tri_neighbors
 from game_triangle import DIRECTIONS as TRI_DIRECTIONS
 from game_triangle import GAP_DIRECTIONS as TRI_GAP_DIRECTIONS
-from gui.cell_class import cell_class, class_index
+from engine.cell_class import cell_class, class_index
 from gui.group_render import draw_group_chunks
 from gui.mi_view import MiBoardView
 from gui.triangle_view import TriangleBoardView

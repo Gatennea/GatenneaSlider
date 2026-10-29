@@ -25,7 +25,7 @@ os.environ['SDL_AUDIODRIVER'] = 'dummy'
 _PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJECT)
 
-from gui.cell_class import cell_class  # noqa: E402
+from engine.cell_class import cell_class  # noqa: E402
 
 _failures = []
 

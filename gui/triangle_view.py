@@ -19,6 +19,7 @@ from game_triangle import (
     gap_index_range,
     tri_vertices,
 )
+from engine.geometry_ops import point_in_tri
 from gui.hull_util import chord, convex_hull
 
 _SQRT3 = math.sqrt(3.0)
@@ -110,7 +111,7 @@ class TriangleBoardView:
             for j in (j0 - 1, j0, j0 + 1):
                 for up in (True, False):
                     pts = [self.to_world(vx, vy) for (vx, vy) in tri_vertices(i, j, up)]
-                    if _point_in_tri(wx, wy, pts):
+                    if point_in_tri(wx, wy, pts):
                         return (i, j, up)
         return None
 
@@ -271,16 +272,8 @@ class TriangleBoardView:
         return (min_x, min_y, max_x, max_y)
 
 
-def _point_in_tri(px: float, py: float, pts) -> bool:
-    """點是否在三角形內（含邊界）。"""
-    (ax, ay), (bx, by), (cx, cy) = pts
-    d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
-    d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
-    d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
-    has_neg = d1 < 0 or d2 < 0 or d3 < 0
-    has_pos = d1 > 0 or d2 > 0 or d3 > 0
-    return not (has_neg and has_pos)
-
+# 點是否在三角形內：真身已收到 engine/geometry_ops.point_in_tri
+# （三角視圖與米字視圖各有一份逐字相同的拷貝，2026-10-30 收斂為一份）。
 
 def _point_in_polygon(px: float, py: float, poly) -> bool:
     """點是否在多邊形內（射線法，凹凸皆可用；邊界視為內）。"""

@@ -22,7 +22,7 @@ from game_mi import (  # noqa: E402
     side_of as mi_side_of, blocks_from_cells as mi_blocks_from_cells, lattice_of,
     sublattice_of as _sublattice,
 )
-from gui.cell_class import cell_class  # noqa: E402
+from engine.cell_class import cell_class  # noqa: E402
 from gui.shape_validate import (  # noqa: E402
     validate_shape, solved_cell_count, _anchor_domain, _class_counts)
 

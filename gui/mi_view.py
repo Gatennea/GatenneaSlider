@@ -30,6 +30,7 @@ import math
 from typing import Optional, Tuple
 
 from game_mi import GAP_DIRECTIONS, gap_candidates, mi_vertices
+from engine.geometry_ops import point_in_tri
 from gui.hull_util import chord, convex_hull
 
 # 直角等腰三角的內切圓半徑（格為單位）：面積 1/4、半周長 (1+√2)/2
@@ -178,7 +179,7 @@ class MiBoardView:
                 if cells is not None and (r, c, q) not in cells:
                     continue
                 pts = self.piece_polygon(r, c, q, inset=False)
-                if not _point_in_tri(wx, wy, pts):
+                if not point_in_tri(wx, wy, pts):
                     continue
                 d = self._dist_to_tri(wx, wy, [self.incenter(r, c, q)])
                 if best_d is None or d < best_d - 1e-9:
@@ -413,16 +414,8 @@ class MiBoardView:
         return (min_x, min_y, max_x, max_y)
 
 
-def _point_in_tri(px: float, py: float, pts) -> bool:
-    """點是否在三角形內（含邊界）。"""
-    (ax, ay), (bx, by), (cx, cy) = pts
-    d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
-    d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
-    d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
-    has_neg = d1 < 0 or d2 < 0 or d3 < 0
-    has_pos = d1 > 0 or d2 > 0 or d3 > 0
-    return not (has_neg and has_pos)
-
+# 點是否在三角形內：真身已收到 engine/geometry_ops.point_in_tri
+# （三角視圖與米字視圖各有一份逐字相同的拷貝，2026-10-30 收斂為一份）。
 
 def _point_seg_dist(px: float, py: float, a, b) -> float:
     """點到線段的距離（線段退化為點時回傳點距）。"""

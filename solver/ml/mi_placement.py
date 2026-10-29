@@ -11,7 +11,7 @@ mi 與 tri 的三處實質差別（**全部來自實測，不是照抄**，
    所以枚舉有**兩個目標形狀**（tri 只有一個）。這是計劃 §6 拍板的。
 2. **換晶格（B 檔目標）只在 step=1 時存在。** 錯位態的塊坐標是半整數，
    目標形狀要落 B 檔就得整體偏移 (½,½)。實測 step=2/3 時這個偏移會翻
-   `(r±c)%step` 的類分佈 —— 與 `gui/cell_class` 文檔「step 偶數時晶格是
+   `(r±c)%step` 的類分佈 —— 與 `engine/cell_class` 文檔「step 偶數時晶格是
    不變量、類匹配自動排除另一晶格」自洽：引擎的斜向最短單位是 ½ 格 ×step，
    step≥2 時那是整數位移，**根本換不了晶格**。所以偏移的奇偶一致性要
    顯式判，不能只靠類分佈。
@@ -36,7 +36,7 @@ from collections import Counter
 from functools import lru_cache
 
 from game_mi import MiSliderMatrix
-from gui.cell_class import cell_class
+from engine.cell_class import cell_class
 
 __all__ = ['MiPlacement', 'best_placement', 'goal_shape', 'goal_shapes',
            'overlap_at', 'placement_offset_ok', 'mod_auts']

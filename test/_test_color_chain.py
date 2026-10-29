@@ -34,7 +34,7 @@ import pygame  # noqa: E402
 from GUI import SliderGUI  # noqa: E402
 from game_mi import mi_key, side_of  # noqa: E402
 from game_triangle import tri_key  # noqa: E402
-from gui.cell_class import cell_class  # noqa: E402
+from engine.cell_class import cell_class  # noqa: E402
 
 _failures = []
 

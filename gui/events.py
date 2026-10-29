@@ -3005,23 +3005,10 @@ class EventsMixin:
             except Exception as e:
                 self._cmd_reply(resp_q, False, f"执行 '{cmd}' 时出错: {e}")
     
-    def _update_slider_from_mouse(self, mouse_y):
-        """根据鼠标Y坐标更新动画速度"""
-        if not self.slider_rect:
-            return
-        track_top = self.slider_rect.top
-        track_bottom = self.slider_rect.bottom
-        track_height = track_bottom - track_top
-        if track_height <= 0:
-            return
-        y = max(track_top, min(track_bottom, mouse_y))
-        normalized = (y - track_top) / track_height
-        new_duration = int(self.SPEED_MIN_MS + normalized * (self.SPEED_MAX_MS - self.SPEED_MIN_MS))
-        if self.animating and self.animation_duration > 0:
-            elapsed = pygame.time.get_ticks() - self.anim_start_time
-            old_progress = elapsed / max(1, self.animation_duration)
-            self.anim_start_time = pygame.time.get_ticks() - int(old_progress * new_duration)
-        self.animation_duration = new_duration
+    # ⚠️ 这里原本有一份 _update_slider_from_mouse，与 AnimationMixin 的同名
+    #    方法逐字相同。SliderGUI 的 MRO 里 AnimationMixin 在 EventsMixin 之前，
+    #    所以 EventsMixin 那份永远不会被调用（纯死代码），2026-10-30 删除。
+    #    滑条改速的真身唯一：gui/animation.py AnimationMixin。
 
     def _apply_zoom_centered(self, new_zoom):
         """设置缩放并保持窗口中心对应的棋盘位置不变（以窗口中心为锚点）。
