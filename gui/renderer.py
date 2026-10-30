@@ -2678,6 +2678,7 @@ class RendererMixin:
     _PREVIEW_GAP = 8
     _PREVIEW_PAD = 8
     _PREVIEW_LABEL_H = 16
+    _PREVIEW_NOTE_H = 16
 
     def _preview_targets(self):
         """菜单里所有可预览的目标（预热用，每帧算一次也不贵）。
@@ -2762,8 +2763,11 @@ class RendererMixin:
         gap = self._PREVIEW_GAP
         pad = self._PREVIEW_PAD
         label_h = self._PREVIEW_LABEL_H
+        # 数字谜题在面板底部多一行说明（见 model_preview.preview_note）
+        note = model_preview.preview_note(target)
+        note_h = self._PREVIEW_NOTE_H if note else 0
         panel_w = pad * 2 + thumb * 2 + gap
-        panel_h = pad * 2 + thumb + 4 + label_h
+        panel_h = pad * 2 + thumb + 4 + label_h + (note_h + 4 if note else 0)
 
         # 右侧塞不下就翻到一级菜单左边（二级菜单本来就在右侧，翻左边等于
         # 回到屏幕中间，仍然不挡菜单）。两级都塞不下时贴右边缘。
@@ -2807,6 +2811,14 @@ class RendererMixin:
             rect.centerx = px + pad + i * (thumb + gap) + thumb // 2
             rect.top = py + pad + thumb + 4
             self.screen.blit(label, rect)
+
+        if note:
+            note_surf = self.status_font.render(note, True,
+                                                self.colors['menu_text'])
+            nrect = note_surf.get_rect()
+            nrect.centerx = px + panel_w // 2
+            nrect.top = py + pad + thumb + 4 + label_h + 4
+            self.screen.blit(note_surf, nrect)
 
     def draw_macro_menu(self):
         """绘制宏定义下拉菜单"""
