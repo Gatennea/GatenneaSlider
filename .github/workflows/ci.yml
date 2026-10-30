@@ -28,8 +28,9 @@ jobs:
 
       - name: Compile all sources
         # 只编正式代码与 test/：experiments/ 是研究草稿（不随 main 发布），
-        # 不进 CI 门面
-        run: python -m compileall -q GUI.py game.py game_triangle.py game_mi.py gui solver test
+        # 不进 CI 门面。engine/ macro/ 是产品代码，必须一起编（2026-10-31 补，
+        # 原先漏了这两个包，语法错会一路漏到运行时）。
+        run: python -m compileall -q GUI.py game.py game_triangle.py game_mi.py engine gui solver macro tools test
 
       - name: Run regression tests
         env:
@@ -38,9 +39,12 @@ jobs:
           GATENNEA_PY: python
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
-        # 排除 _test_tri_gather.py：其 C3c 用例为已知失败（见
-        # docs/agent/待办清单 §十一、踩坑与搁置.md），属待修真 bug，
-        # 非回归。排除它让流水线能反映"新引入的回归"，而非恒红。
+        # 排除 _test_tri_gather.py：其 C3c 用例为已知失败（k=5 三角聚拢
+        # 复原 0/8，用户 2026-10-22 拍板保持现状，非回归），详见
+        # docs/agent/待办清单.md §十五。
+        # 必须排除整个文件：脚本的所有 check 共用一个 main()，一条 FAIL
+        # 就 sys.exit(1)，pytest 层面无法只跳过 C3c 一条。
+        # 排除它让流水线能反映"新引入的回归"，而非恒红。
         run: pytest test/ -v --ignore=test/_test_tri_gather.py
 
   lint:

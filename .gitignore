@@ -78,3 +78,19 @@ arrow_b64.txt
 压缩存档样例/
 # 测试截图残留
 test/_mi_slide.png
+test/_*.png
+test/real_*.png
+test/chk_*.png
+test/diag_*.svg
+test/style_compare.png
+
+# ===== 一次性探针 / 临时输出（2026-10-31 加）=====
+# 起因：工作区 untracked 噪音 200+，`git status` 被淹没到无法审阅。
+# 规则：下划线开头 = 一次性脚本及其产物；scratch_* / retained = 临时脚本目录。
+# 文件都还在磁盘上（文档里按路径引用依然有效），只是不进版本库。
+archive/_*
+archive/scratch_*/
+archive/retained/
+experiments/_*
+experiments/mi_marks_fixed/
+out_*.txt
