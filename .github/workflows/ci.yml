@@ -44,9 +44,10 @@ jobs:
         run: pytest test/ -v --ignore=test/_test_tri_gather.py
 
   lint:
-    # 静态审查守门：复用仓库内 tools/static_lint。纯 AST 分析，不依赖
-    # Windows 字体，故用 ubuntu；pip 装 pygame-ce 仅作 import 保险。
-    runs-on: ubuntu-latest
+    # 静态审查守门：复用仓库内 tools/static_lint。与 test job 统一走
+    # windows-latest，遵循本仓库既有约定（见 test job 注释：Windows runner
+    # 复现本机环境、避免潜在的跨平台差异），不另起一套 OS。
+    runs-on: windows-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
