@@ -40,7 +40,7 @@
 |---|---|
 | `gui/renderer.py` 的 `draw_board` / `draw_triangle_board` / `draw_mi_board` + `_game_dir_tables` | 三形态绘制与方向表取用（按形态从模块取，勿 getattr 实例） |
 | `gui/metrics_panel.py` 的剖面缺陷行 | 调试面板三形态统一行（调用 `profile_defect`） |
-| `gui/cell_class.py` | mod 着色类（step>1 才开，1 级退化见 `readme_to_agent.md` §2.1） |
+| `engine/cell_class.py` | mod 着色类 `cell_class` / `class_index`（step>1 才开，1 级退化见 `readme_to_agent.md` §2.1）。2026-10-30 从 `gui/` 下沉到 `engine/`（纯数学、零依赖，solver 也要用）；**`gui/cell_class.py` 只剩一行转发壳**，新代码一律指 engine |
 | `test/_check_gap_annot.py` | 三形态动效验收脚本 |
 
 ## 控制通道（程序化驱动游戏，别自己造）
@@ -49,8 +49,19 @@
 - **stdin CLI**：`status` `move` `select_gap` `solve` `solver_status` …（§7 全集），与 HTTP 1:1。
 - 一次完整移动 = `select_gap` → `select_block` → `move`（三角可省略 `select_gap`）。
 
+## 工具链（改完跑一遍，别自己重写）
+
+| 现成工具 | 用途 | 用法 |
+|---|---|---|
+| `tools/static_lint/` | 静态审查：未用 import / 重复函数体 / 反向依赖 / mixin MRO 遮蔽死方法。`--baseline` 出 NEW / RESOLVED diff，`--strict` 给 CI 守门（非零退出 = 新引入问题）。基线锚定 81 条已知签名，详 `tools/static_lint/README.md` | `python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json` |
+
+> 本环境 `& python x.py` 不执行，须 `Start-Process -Wait`（见该 README 的沙箱段）。
+
 ## 测量 / 测试纪律（易踩，先读）
 
 - 微基准 ABAB 交替 + 逐轮配对（漂移 40% > 效应 14%）。
 - 后台 hybrid/auto_solve stdout 黑洞 → 评测 `-u` + 落盘。
 - 改求解器后至少重跑 `test/_test_mod_constraint.py` 与 `test/_test_gradient_pipeline.py`。
+- CI 的 test job **排除了 `test/_test_tri_gather.py`**（C3c k=5 0/8 是已知红，用户拍板保持现状），
+  真护栏是同文件的 C3e（k=4 ≥ 5/10）。见 `docs/agent/待办清单.md` §十五——别把它当回归，也别为了让
+  它变绿去调门槛。

@@ -171,6 +171,24 @@ gui/                   # 全是 Mixin，被 SliderGUI 繼承
   annotation.py        #   AnnotationMixin      標注模式（B/Z/M/S 隱藏入口）：標注取樣／手動構造畫布／跟蹤執行；創造模式：手動構造/隨機生成（造打亂局面）＋設計還原態/樣式庫（造還原態樣式，僅方形）
   tutorial_texts.json  #   新手教程文案（可脫離代碼修改）
 
+engine/                # 幾何引擎（**最底層**：GUI 與 solver 都向下依賴它）
+                       #   鐵律：本包不 import 任何 game*.py / gui/（詳見 docs/spec/幾何引擎.md）
+  __init__.py          #   包出口 + 發展階段說明（P0 原型 / P1 映射件 / P2 米字·三角 preset）
+  board.py             #   BoardSpec / Board / Block / Move / SeamFamily：形態無關的規則層
+  adapter.py           #   EngineGame 適配器（對上提供與 game*.py 同形介面；create_adapter_puzzle）
+  registry.py          #   板型註冊表（square / cubic / mi / tri preset）
+  lattice.py           #   Lattice 晶格（square/cubic，米字·三角在各自 preset 裡）
+  mi_geometry.py       #   米字 preset（與 game_mi 差分對齊，測試 L 節）
+  tri_geometry.py      #   三角 preset（與 game_triangle 差分對齊，測試 M 節）——**獨立真值，勿與 game_triangle.py 合併**
+  shatter_geometry.py  #   碎形（shatter）幾何
+  editor_geom.py       #   搭积木編輯器的兩族晶格（tri/square）與旋轉原語
+  geometry_ops.py      #   形態無關幾何原語（point_in_tri 等，零 pygame）
+  cell_class.py        #   mod 著色類（2026-10-30 從 gui/ 下沉，gui/cell_class.py 只剩轉發殼）
+  compat.py            #   Move ↔ 既有動作格式（history dict / 打亂演示 record）映射
+  analysis.py          #   frozen / locked_seams / safe_scramble / verify_path 等形態無關分析
+  model_loader.py / model_registry.py / model_validate.py / config.py
+                       #   模型檔案載入 / 註冊 / 校驗 / 引擎開關
+
 solver/                # 求解器（詳見 §5）
   __init__.py          #   SOLVER_ALGORITHMS 註冊表；solve/solve_fast/solve_greedy 入口
   actions.py           #   enumerate_valid_actions / apply_action（動作語義）
@@ -190,6 +208,11 @@ solver/                # 求解器（詳見 §5）
 macro/
   macro.py             #   宏系統：MacroManager / Macro / MacroStep（JSON 存 macro/*.json）
   test_macro_http.py   #   用 HTTP API 驅動宏錄製/執行的範例腳本
+
+tools/                 # 倉庫內工具（非產品代碼）
+  static_lint/         #   靜態審查 linter：未用 import / 重複函數體 / 反向依賴 / mixin 遮蔽
+                       #   `--baseline` 出 NEW/RESOLVED diff；CI 的 lint job 用 `--strict` 守門
+                       #   用法見 tools/static_lint/README.md（本沙箱須 Start-Process -Wait）
 
 config/                # 執行期組態（§8）
 save/                  # 使用者存檔 *.json
@@ -619,6 +642,21 @@ python test\_test_create_build_canvas.py  # 創造模式手動構造：三形態
 ```bash
 python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 ```
+
+### 9.1 CI（GitHub Actions，push / PR 觸發）
+
+`.github/workflows/ci.yml` 兩個 job，**統一 `windows-latest`**（本倉庫硬約定：遊戲字體走
+`C:/Windows/Fonts/simhei.ttf` 硬路徑，且 Windows runner 復現本機環境）：
+
+- **test**：安裝 pygame-ce/pytest/numpy → `compileall`（含 engine/gui/solver/macro/tools/test）→
+  `pytest test/ -v --ignore=test/_test_tri_gather.py`（超時 120min，環境 `GATENNEA_PY=python`、
+  `SDL_VIDEODRIVER=dummy`）。
+  排除 `_test_tri_gather` 是因為其 **C3c（k=5 三角聚攏復原 0/8）是已知紅、用戶 2026-10-22 拍板保持
+  現狀**，非回歸；該腳本所有 check 共用一個 `main()`，一條 FAIL 就 `sys.exit(1)`，pytest 層面無法
+  只跳過一條，所以排的是整個文件。真護欄是同文件的 C3e（k=4 ≥ 5/10）。詳
+  `docs/agent/待办清单.md` §十五——別把它當回歸，也別為了變綠去調門檻。
+- **lint**：`python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json --strict`，
+  任何相對 baseline 的新增問題都非零退出（baseline 錨定 81 條已知簽名）。
 
 ---
 
