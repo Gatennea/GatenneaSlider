@@ -32,7 +32,12 @@ def collect_findings(root):
 
     ui = deadcode.scan_unused_imports(root)
     for rp, ln, nm, kind in ui:
-        sigs['unused_import'].append('UI|%s|%d|%s' % (rp, ln, nm))
+        # 签名**不带行号**：行号会随任何一次编辑漂移，往文件里插几行注释就能让
+        # 整批条目变成 NEW + RESOLVED（2026-10-31 实测：给 _test_tri_gather.py
+        # 加一段 KNOWN_FAILS 注释 → 3 NEW / 3 RESOLVED，其实一条问题都没变），
+        # CI 会天天假红。行号只出现在给人看的 text 报告里，不进基线签名。
+        # 同类坑 doclink_check.py 也踩过（那边已修）。
+        sigs['unused_import'].append('UI|%s|%s' % (rp, nm))
         text.append('[未用 import] %s:%d %s (%s)' % (rp, ln, nm, kind))
 
     dmap = dup.scan_dups(root)
@@ -49,7 +54,8 @@ def collect_findings(root):
 
     md = mixin.scan_mixin_shadow(root)
     for m, b, mrp, ln in md:
-        sigs['mixin_dead'].append('MD|%s|%s|%s|%d' % (m, b, mrp, ln))
+        # 同上：签名不带行号
+        sigs['mixin_dead'].append('MD|%s|%s|%s' % (m, b, mrp))
         text.append('[mixin 死方法] %s.%s @ %s:%d' % (b, m, mrp, ln))
 
     return sigs, text

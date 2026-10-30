@@ -1,0 +1,464 @@
+# experiments/ 索引（自动生成，勿手改）
+
+由 `tools/experiments_index.py --emit` 生成；改脚本后重跑即可。
+命名约定（前缀只承担「调用关系」一个维度，用途不在这里）：
+
+| 前缀 | 含义 | 判据 |
+|---|---|---|
+| `script_*` | 独立脚本 | 不被任何脚本 import |
+| `reuse_*` | 两者皆是 | 被 import **且**有 `__main__` |
+| 无前缀 | 库 | 被 import、无 `__main__` |
+
+> 「一次性 / 有长期参考价值」**不由文件名承担**（下划线约定早已失真），
+> 看下方每节的引用来源与被引用次数判断。
+> 注：判「是否被 import」只用 AST，**不看 `__main__`** —— 大量一次性探针
+> 顶层直接写执行代码、没有守卫，照样能 `python x.py` 跑。
+
+合计 164 个 .py —— 库 5 / reuse 11 / 独立脚本 148
+
+## 库（被 import、不能独立跑）—— 保持无前缀（5）
+
+- `experiments/_perfect_check.py`
+  - 被 1 处引用：`experiments/script__paste_setup.py`
+- `experiments/exp_actions.py`
+  - 被 6 处引用：`experiments/exp_table_solve.py`、`experiments/reuse_exp_conj_search.py`、`experiments/script_check_succ_pure.py`、`experiments/script_probe_transition.py`、`experiments/script_test_descent.py`、`experiments/script_validate_exp_actions.py`
+- `experiments/exp_table_solve.py`
+  - 被 3 处引用：`experiments/reuse_exp_conj_search.py`、`experiments/script_exp_residual.py`、`experiments/script_test_descent.py`
+- `experiments/harness.py`
+  - 被 46 处引用：`experiments/exp_table_solve.py`、`experiments/reuse_analyze_conjugation.py`、`experiments/reuse_analyze_notch.py`、`experiments/reuse_exp10_setup.py`、`experiments/reuse_exp11_guided.py`、`experiments/reuse_exp12_chain.py` 等
+- `experiments/last_mile.py`
+  - 被 2 处引用：`experiments/script_exp2.py`、`experiments/script_exp3_diag.py`
+
+## 两者皆是（能独立跑 + 被 import）—— 前缀 reuse_（11）
+
+- `experiments/reuse__dist_probe.py`
+  - 被 1 处引用：`experiments/script__paste_setup.py`
+  - 有 `__main__`，可直接 `python experiments/reuse__dist_probe.py`
+- `experiments/reuse_analyze_conjugation.py`
+  - 被 5 处引用：`experiments/script_debug_focus.py`、`experiments/script_debug_rep.py`、`experiments/script_debug_transition.py`、`experiments/script_probe_transition.py`、`experiments/script_validate_exp_actions.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_analyze_conjugation.py`
+- `experiments/reuse_analyze_notch.py`
+  - 被 3 处引用：`experiments/script_detect_conj.py`、`experiments/script_labeled_41.py`、`experiments/script_verify_frames.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_analyze_notch.py`
+- `experiments/reuse_exp10_setup.py`
+  - 被 1 处引用：`experiments/reuse_exp11_guided.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_exp10_setup.py`
+- `experiments/reuse_exp11_guided.py`
+  - 被 4 处引用：`experiments/reuse_exp12_chain.py`、`experiments/script_exp15_repchain.py`、`experiments/script_exp16_diag.py`、`experiments/script_exp20_fillgather.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_exp11_guided.py`
+- `experiments/reuse_exp12_chain.py`
+  - 被 3 处引用：`experiments/reuse_exp13_compress.py`、`experiments/reuse_exp14_truncate.py`、`experiments/script_exp20_fillgather.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_exp12_chain.py`
+- `experiments/reuse_exp13_compress.py`
+  - 被 2 处引用：`experiments/reuse_exp14_truncate.py`、`experiments/script_exp15_repchain.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_exp13_compress.py`
+- `experiments/reuse_exp14_truncate.py`
+  - 被 2 处引用：`experiments/script_exp15_repchain.py`、`experiments/script_exp16_diag.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_exp14_truncate.py`
+- `experiments/reuse_exp17_greedy.py`
+  - 被 1 处引用：`experiments/script_exp19_noiseoracle.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_exp17_greedy.py`
+- `experiments/reuse_exp9_rep.py`
+  - 被 12 处引用：`experiments/reuse_analyze_notch.py`、`experiments/reuse_exp10_setup.py`、`experiments/reuse_exp11_guided.py`、`experiments/reuse_exp12_chain.py`、`experiments/reuse_exp13_compress.py`、`experiments/reuse_exp14_truncate.py` 等
+  - 有 `__main__`，可直接 `python experiments/reuse_exp9_rep.py`
+- `experiments/reuse_exp_conj_search.py`
+  - 被 3 处引用：`experiments/script_exp11_fast_pipeline.py`、`experiments/script_exp12_guided_test.py`、`experiments/script_exp9_5x5_conj.py`
+  - 有 `__main__`，可直接 `python experiments/reuse_exp_conj_search.py`
+
+## 独立脚本（不被任何脚本 import）—— 前缀 script_（148）
+
+- `experiments/mi_marks_fixed/script_render_fixed_marks.py`
+  - 无引用（独立脚本）
+- `experiments/script__auto_planner_bench.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__auto_planner_bench.py`
+- `experiments/script__bench_bandaged.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__bench_bandaged.py`
+- `experiments/script__bench_canon_packed.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__bench_canon_packed.py`
+- `experiments/script__bench_expand_mask.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__bench_expand_mask.py`
+- `experiments/script__bench_find_window.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__bench_find_window.py`
+- `experiments/script__bench_hybrid_profile.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__bench_hybrid_profile.py`
+- `experiments/script__bench_tiebreak.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__bench_tiebreak.py`
+- `experiments/script__chk_determinism_tmp.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_engine_modes.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_engine_play.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__chk_engine_play.py`
+- `experiments/script__chk_engine_render.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_iso_puzzle.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_lattice.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2_landing.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2_seam_model.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2_seam_model2.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2a_kernel.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2b_live_gap.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2c_interact.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2d_hit.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2e_vk.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_s2f_drag.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_shatter_adjacency.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_shatter_contact.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__chk_shatter_contact.py`
+- `experiments/script__chk_shatter_edge_map.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__chk_shatter_edge_map.py`
+- `experiments/script__chk_shatter_layout.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__chk_shatter_layout.py`
+- `experiments/script__chk_shatter_lm_cost.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__chk_shatter_lm_cost.py`
+- `experiments/script__chk_shatter_move_semantics.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__chk_shatter_move_semantics.py`
+- `experiments/script__chk_shatter_period.py`
+  - 无引用（独立脚本）
+- `experiments/script__chk_shatter_seam_truth.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__chk_shatter_seam_truth.py`
+- `experiments/script__chk_shatter_slots.py`
+  - 无引用（独立脚本）
+- `experiments/script__dbg_d1_diffs.py`
+  - 无引用（独立脚本）
+- `experiments/script__dbg_engine_solver.py`
+  - 无引用（独立脚本）
+- `experiments/script__dbg_numbered_undo.py`
+  - 无引用（独立脚本）
+- `experiments/script__dbg_side_of.py`
+  - 无引用（独立脚本）
+- `experiments/script__dbg_tri_engine.py`
+  - 无引用（独立脚本）
+- `experiments/script__dbg_tri_solved.py`
+  - 无引用（独立脚本）
+- `experiments/script__e2e_bench.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__e2e_bench.py`
+- `experiments/script__edge_setup.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__edge_setup.py`
+- `experiments/script__fuzz_auto_solve.py`
+  - 无引用（独立脚本）
+- `experiments/script__fuzz_index_error.py`
+  - 无引用（独立脚本）
+- `experiments/script__gather_267.py`
+  - 无引用（独立脚本）
+- `experiments/script__gather_baseline_compare.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__gather_baseline_compare.py`
+- `experiments/script__gen_a_explain.py`
+  - 无引用（独立脚本）
+- `experiments/script__gen_hex_svg.py`
+  - 无引用（独立脚本）
+- `experiments/script__gen_iso_svg.py`
+  - 无引用（独立脚本）
+- `experiments/script__gen_model_probe.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__gen_model_probe.py`
+- `experiments/script__gen_model_shatter.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__gen_model_shatter.py`
+- `experiments/script__gen_model_tri.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__gen_model_tri.py`
+- `experiments/script__ghost_track.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__ghost_track.py`
+- `experiments/script__measure_shatter_tile.py`
+  - 无引用（独立脚本）
+- `experiments/script__metric_duel.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__metric_duel.py`
+- `experiments/script__mi_diag_tiling.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__mi_diag_tiling.py`
+- `experiments/script__mi_gather_diag.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__mi_gather_diag.py`
+- `experiments/script__mi_mod_probe.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__mi_mod_probe.py`
+- `experiments/script__mi_prune_probe.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__mi_prune_probe.py`
+- `experiments/script__mi_zige_square.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__mi_zige_square.py`
+- `experiments/script__night_profile.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__night_profile.py`
+- `experiments/script__night_profile_gbfs.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__night_profile_gbfs.py`
+- `experiments/script__overlap_gate_hole.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__overlap_gate_hole.py`
+- `experiments/script__paste_setup.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__paste_setup.py`
+- `experiments/script__phi_cost.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__phi_cost.py`
+- `experiments/script__probe_adv.py`
+  - 无引用（独立脚本）
+- `experiments/script__probe_editor_frame.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__probe_editor_frame.py`
+- `experiments/script__probe_editor_geom.py`
+  - 无引用（独立脚本）
+- `experiments/script__probe_group_spill.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__probe_group_spill.py`
+- `experiments/script__probe_model_editor.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__probe_model_editor.py`
+- `experiments/script__probe_seam_between.py`
+  - 无引用（独立脚本）
+- `experiments/script__probe_seam_between2.py`
+  - 无引用（独立脚本）
+- `experiments/script__probe_sq_seam.py`
+  - 无引用（独立脚本）
+- `experiments/script__prof_engine_shuffle.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__prof_engine_shuffle.py`
+- `experiments/script__prof_invariant.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__prof_invariant.py`
+- `experiments/script__prof_rect.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__prof_rect.py`
+- `experiments/script__prof_stage3.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__prof_stage3.py`
+- `experiments/script__proto_holeflow.py`
+  - 无引用（独立脚本）
+- `experiments/script__regression.py`
+  - 无引用（独立脚本）
+- `experiments/script__repro_267.py`
+  - 无引用（独立脚本）
+- `experiments/script__repro_auto_solve_indexerror.py`
+  - 无引用（独立脚本）
+- `experiments/script__repro_fill_macro_freeze.py`
+  - 无引用（独立脚本）
+- `experiments/script__repro_mi_build_overlap.py`
+  - 无引用（独立脚本）
+- `experiments/script__repro_mi_pick.py`
+  - 无引用（独立脚本）
+- `experiments/script__ride_fill.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__ride_fill.py`
+- `experiments/script__shatter_proto.py`
+  - 无引用（独立脚本）
+- `experiments/script__shot_bandage_forms.py`
+  - 无引用（独立脚本）
+- `experiments/script__shot_shatter_fix.py`
+  - 无引用（独立脚本）
+- `experiments/script__shot_shatter_presets.py`
+  - 无引用（独立脚本）
+- `experiments/script__shot_tri_mi_check.py`
+  - 无引用（独立脚本）
+- `experiments/script__smoke_del_fill.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__smoke_del_fill.py`
+- `experiments/script__stream_test.py`
+  - 无引用（独立脚本）
+- `experiments/script__test_bandage_forms.py`
+  - 无引用（独立脚本）
+- `experiments/script__test_bitboard.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__test_bitboard.py`
+- `experiments/script__tri_mirror_probe.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__tri_mirror_probe.py`
+- `experiments/script__tri_mod_probe.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__tri_mod_probe.py`
+- `experiments/script__tri_two_family_iso.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__tri_two_family_iso.py`
+- `experiments/script__verify_corner_geom.py`
+  - 无引用（独立脚本）
+- `experiments/script__viz_278.py`
+  - 无引用（独立脚本）
+- `experiments/script_bench.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench.py`
+- `experiments/script_bench_disks.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench_disks.py`
+- `experiments/script_bench_hard.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench_hard.py`
+- `experiments/script_blindspot_report.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_blindspot_report.py`
+- `experiments/script_blindspot_scan.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_blindspot_scan.py`
+- `experiments/script_build_capped.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_build_capped.py`
+- `experiments/script_check_succ_pure.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_check_succ_pure.py`
+- `experiments/script_coverage_scan.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_coverage_scan.py`
+- `experiments/script_debug_focus.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_debug_focus.py`
+- `experiments/script_debug_hard.py`
+  - 无引用（独立脚本）
+- `experiments/script_debug_rep.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_debug_rep.py`
+- `experiments/script_debug_transition.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_debug_transition.py`
+- `experiments/script_detect_conj.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_detect_conj.py`
+- `experiments/script_disk_plan.py`
+  - 无引用（独立脚本）
+- `experiments/script_exp10_gather_speed.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp10_gather_speed.py`
+- `experiments/script_exp11_fast_pipeline.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp11_fast_pipeline.py`
+- `experiments/script_exp12_guided_test.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp12_guided_test.py`
+- `experiments/script_exp15_repchain.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp15_repchain.py`
+- `experiments/script_exp16_diag.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp16_diag.py`
+- `experiments/script_exp18_fitquality.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp18_fitquality.py`
+- `experiments/script_exp19_noiseoracle.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp19_noiseoracle.py`
+- `experiments/script_exp2.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp2.py`
+- `experiments/script_exp20_fillgather.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp20_fillgather.py`
+- `experiments/script_exp21_corner_random.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp21_corner_random.py`
+- `experiments/script_exp3_diag.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp3_diag.py`
+- `experiments/script_exp4_growth.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp4_growth.py`
+- `experiments/script_exp5_target.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp5_target.py`
+- `experiments/script_exp6_chain_table.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp6_chain_table.py`
+- `experiments/script_exp7_5x5.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp7_5x5.py`
+- `experiments/script_exp7_pinch.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp7_pinch.py`
+- `experiments/script_exp8_anchored.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp8_anchored.py`
+- `experiments/script_exp9_5x5_conj.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp9_5x5_conj.py`
+- `experiments/script_exp_chain.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp_chain.py`
+- `experiments/script_exp_residual.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_exp_residual.py`
+- `experiments/script_fillin_ablation.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_fillin_ablation.py`
+- `experiments/script_fillin_report.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_fillin_report.py`
+- `experiments/script_labeled_41.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_labeled_41.py`
+- `experiments/script_make_disks.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_make_disks.py`
+- `experiments/script_optimize_cancel.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_optimize_cancel.py`
+- `experiments/script_probe_continue.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_probe_continue.py`
+- `experiments/script_probe_transition.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_probe_transition.py`
+- `experiments/script_render_gallery.py`
+  - 无引用（独立脚本）
+- `experiments/script_render_state.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_render_state.py`
+- `experiments/script_step_compare.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_step_compare.py`
+- `experiments/script_term_audit.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_term_audit.py`
+- `experiments/script_test_descent.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_test_descent.py`
+- `experiments/script_test_hybrid_stream.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_test_hybrid_stream.py`
+- `experiments/script_test_partial_pick.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_test_partial_pick.py`
+- `experiments/script_test_use_fill_flag.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_test_use_fill_flag.py`
+- `experiments/script_validate_exp_actions.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_validate_exp_actions.py`
+- `experiments/script_verify_frames.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_verify_frames.py`
+
+## 守门
+
+`python tools/experiments_index.py --check` 会校验每个文件的前缀与
+AST 判定的真实类别是否一致；不一致（漏加前缀 / 加了但已被人 import /
+改名后 import 没同步）就非零退出。CI 的 lint job 已接。
