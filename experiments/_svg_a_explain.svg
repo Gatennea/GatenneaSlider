@@ -1,0 +1,53 @@
+<svg viewBox="0 0 680 430" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif" role="img">
+<title>碎三角方案A对比</title><desc>左=原画两种形状，右=统一等边三角形+红绿着色</desc>
+<polygon points="285.1,252.0 217.5,291.0 217.5,213.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="240.1" y="252.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">6</text>
+<polygon points="285.1,252.0 285.1,330.0 217.5,291.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="262.6" y="291.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">5</text>
+<polygon points="285.1,252.0 352.6,291.0 285.1,330.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="307.6" y="291.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">4</text>
+<polygon points="285.1,252.0 352.6,213.0 352.6,291.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="330.1" y="252.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">3</text>
+<polygon points="285.1,252.0 285.1,174.0 352.6,213.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="307.6" y="213.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">2</text>
+<polygon points="285.1,252.0 217.5,213.0 285.1,174.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="262.6" y="213.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">1</text>
+<polygon points="150.0,330.0 217.5,291.0 217.5,213.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="195.0" y="278.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">12</text>
+<polygon points="150.0,330.0 217.5,291.0 285.1,330.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="217.5" y="317.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">11</text>
+<polygon points="420.2,330.0 352.6,291.0 285.1,330.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="352.6" y="317.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">10</text>
+<polygon points="420.2,330.0 352.6,291.0 352.6,213.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="375.2" y="278.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">9</text>
+<polygon points="285.1,96.0 285.1,174.0 352.6,213.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="307.6" y="161.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">8</text>
+<polygon points="285.1,96.0 217.5,213.0 285.1,174.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="262.6" y="161.0" font-size="14" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">7</text>
+<text x="170" y="30" font-size="15" fill="#b3392e" text-anchor="middle" font-weight="500">左：你原画（两种形状）</text>
+<text x="170" y="408" font-size="12.5" fill="#666" text-anchor="middle">红=边长1正三角形，绿=30-30-120等腰</text>
+<text x="170" y="424" font-size="12.5" fill="#b3392e" text-anchor="middle">红绿形状不同 → 推一格后落不到合法格（按现有滑动机制）</text>
+<polygon points="470.0,330.0 484.6,330.0 477.3,317.3" fill="#ffd9d6" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="484.6,330.0 477.3,317.3 491.9,317.3" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="484.6,330.0 499.2,330.0 491.9,317.3" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="499.2,330.0 491.9,317.3 506.6,317.3" fill="#ffd9d6" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="499.2,330.0 513.9,330.0 506.6,317.3" fill="#ffd9d6" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="513.9,330.0 506.6,317.3 521.2,317.3" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="513.9,330.0 528.5,330.0 521.2,317.3" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="477.3,317.3 491.9,317.3 484.6,304.7" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="491.9,317.3 484.6,304.7 499.2,304.7" fill="#ffd9d6" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="491.9,317.3 506.6,317.3 499.2,304.7" fill="#ffd9d6" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="506.6,317.3 499.2,304.7 513.9,304.7" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="506.6,317.3 521.2,317.3 513.9,304.7" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="484.6,304.7 499.2,304.7 491.9,292.0" fill="#ffd9d6" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="499.2,304.7 491.9,292.0 506.6,292.0" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="499.2,304.7 513.9,304.7 506.6,292.0" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="491.9,292.0 506.6,292.0 499.2,279.3" fill="#d7ecd9" stroke="#7a7a7a" stroke-width="1"/>
+<polygon points="470.0,330.0 528.5,330.0 499.2,279.3" fill="none" stroke="#333" stroke-width="2.4"/>
+<line x1="484.6" y1="304.7" x2="543.1" y2="304.7" stroke="#2b6cb0" stroke-width="2" stroke-dasharray="5 4"/>
+<line x1="502.2" y1="290.7" x2="536.2" y2="290.7" stroke="#2b6cb0" stroke-width="2.4" marker-end="url(#ar)"/>
+<defs><marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2b6cb0"/></marker></defs>
+<text x="490" y="30" font-size="15" fill="#3d7a44" text-anchor="middle" font-weight="500">右：方案 A（统一等边三角形）</text>
+<text x="490" y="408" font-size="12.5" fill="#666" text-anchor="middle">每块都是同样大小的等边三角形，只是 6 红 / 6 绿涂色</text>
+<text x="490" y="424" font-size="12.5" fill="#3d7a44" text-anchor="middle">推一格正好落下一个三角格 → 能滑（现有引擎直接支持）</text>
+</svg>

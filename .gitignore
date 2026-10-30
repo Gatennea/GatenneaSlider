@@ -86,11 +86,14 @@ test/style_compare.png
 
 # ===== 一次性探针 / 临时输出（2026-10-31 加）=====
 # 起因：工作区 untracked 噪音 200+，`git status` 被淹没到无法审阅。
-# 规则：下划线开头 = 一次性脚本及其产物；scratch_* / retained = 临时脚本目录。
+# 规则：archive 下的一次性脚本与其产物不进版本库（scratch_* / retained 同理）。
 # 文件都还在磁盘上（文档里按路径引用依然有效），只是不进版本库。
 archive/_*
 archive/scratch_*/
 archive/retained/
-experiments/_*
-experiments/mi_marks_fixed/
 out_*.txt
+
+# ===== experiments/：**脚本全入库**（2026-10-31 用户拍板），只忽略产物 =====
+# 命名：script_* = 独立脚本（不被 import）；reuse_* = 既能独立跑又被 import；
+#       无前缀 = 库（被 import、不能独立跑）。
+# 已忽略的大产物目录见上：experiments/out/ disks/ results/ math_repro/full_A/

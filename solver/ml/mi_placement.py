@@ -5,7 +5,7 @@
 本模組是 mi 版的 `find_best_window`，GUI 與求解器都調它。
 
 mi 與 tri 的三處實質差別（**全部來自實測，不是照抄**，
-證據見 `experiments/_mi_mod_probe.py`）：
+證據見 `experiments/script__mi_mod_probe.py`）：
 
 1. **轉置也算還原。** `game_mi.is_solved` 判 m×n 或 n×m 兩種高寬都放行，
    所以枚舉有**兩個目標形狀**（tri 只有一個）。這是計劃 §6 拍板的。
@@ -149,7 +149,7 @@ def placement_offset_ok(offset, step, m, n):
     """放置偏移是否合法：**類自同構 ∧ 奇偶一致**（兩條都要，缺一不可）。
 
     - 類自同構：`((dr+dc)%step, (dr−dc)%step)` ∈ S（mod 約束的本體）。
-      實測 290 步引擎真實滑動零反例（`experiments/_mi_mod_probe.py` A 段）。
+      實測 290 步引擎真實滑動零反例（`experiments/script__mi_mod_probe.py` A 段）。
     - 奇偶一致：`2dr` 與 `2dc` 同奇偶，即兩個分量同為整數或同為半整數。
       **這條不是多餘的**：step=2 時偏移 (0.5, 0) 的類分佈碰巧匹配，但它
       對應「r 整數 / c 半整數」這種遊戲走不出來的死盤座標

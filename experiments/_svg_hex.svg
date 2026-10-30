@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 650" font-family="system-ui,sans-serif" role="img">
+<title>六边形密铺负面测试示意</title>
+<desc>砖墙错位无干净缝；rank 线切块心；剪切半程咬合而终点干净</desc>
+<text x="340.0" y="28" text-anchor="middle" font-size="14" font-weight="500" fill="#2c3e50">① 蜂巢没有干净缝：竖边砖墙错位，直线缝必切块</text>
+<path d="M328.64,208.50 L312.18,199.00 L295.73,208.50 L295.73,227.50 L312.18,237.00 L328.64,227.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M345.09,180.00 L328.64,170.50 L312.18,180.00 L312.18,199.00 L328.64,208.50 L345.09,199.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M361.55,151.50 L345.09,142.00 L328.64,151.50 L328.64,170.50 L345.09,180.00 L361.55,170.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M345.09,237.00 L328.64,227.50 L312.18,237.00 L312.18,256.00 L328.64,265.50 L345.09,256.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M361.55,208.50 L345.09,199.00 L328.64,208.50 L328.64,227.50 L345.09,237.00 L361.55,227.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M378.00,180.00 L361.55,170.50 L345.09,180.00 L345.09,199.00 L361.55,208.50 L378.00,199.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M394.45,151.50 L378.00,142.00 L361.55,151.50 L361.55,170.50 L378.00,180.00 L394.45,170.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M361.55,265.50 L345.09,256.00 L328.64,265.50 L328.64,284.50 L345.09,294.00 L361.55,284.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M378.00,237.00 L361.55,227.50 L345.09,237.00 L345.09,256.00 L361.55,265.50 L378.00,256.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M394.45,208.50 L378.00,199.00 L361.55,208.50 L361.55,227.50 L378.00,237.00 L394.45,227.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M410.91,180.00 L394.45,170.50 L378.00,180.00 L378.00,199.00 L394.45,208.50 L410.91,199.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M427.36,151.50 L410.91,142.00 L394.45,151.50 L394.45,170.50 L410.91,180.00 L427.36,170.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M394.45,265.50 L378.00,256.00 L361.55,265.50 L361.55,284.50 L378.00,294.00 L394.45,284.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M410.91,237.00 L394.45,227.50 L378.00,237.00 L378.00,256.00 L394.45,265.50 L410.91,256.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M427.36,208.50 L410.91,199.00 L394.45,208.50 L394.45,227.50 L410.91,237.00 L427.36,227.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M443.82,180.00 L427.36,170.50 L410.91,180.00 L410.91,199.00 L427.36,208.50 L443.82,199.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M427.36,265.50 L410.91,256.00 L394.45,265.50 L394.45,284.50 L410.91,294.00 L427.36,284.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M443.82,237.00 L427.36,227.50 L410.91,237.00 L410.91,256.00 L427.36,265.50 L443.82,256.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M460.27,208.50 L443.82,199.00 L427.36,208.50 L427.36,227.50 L443.82,237.00 L460.27,227.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<line x1="328.64" y1="227.50" x2="328.64" y2="208.50" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="345.09" y1="199.00" x2="345.09" y2="180.00" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="361.55" y1="170.50" x2="361.55" y2="151.50" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="345.09" y1="256.00" x2="345.09" y2="237.00" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="361.55" y1="227.50" x2="361.55" y2="208.50" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="378.00" y1="199.00" x2="378.00" y2="180.00" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="394.45" y1="170.50" x2="394.45" y2="151.50" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="361.55" y1="284.50" x2="361.55" y2="265.50" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="378.00" y1="256.00" x2="378.00" y2="237.00" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="394.45" y1="227.50" x2="394.45" y2="208.50" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="410.91" y1="199.00" x2="410.91" y2="180.00" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="394.45" y1="284.50" x2="394.45" y2="265.50" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="410.91" y1="256.00" x2="410.91" y2="237.00" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="427.36" y1="227.50" x2="427.36" y2="208.50" stroke="#2471a3" stroke-width="3" opacity="0.85"/>
+<line x1="394.45" y1="170.50" x2="394.45" y2="265.50" stroke="#c0392b" stroke-width="1.6" stroke-dasharray="7 5"/>
+<line x1="233.20" y1="218.00" x2="522.80" y2="218.00" stroke="#c0392b" stroke-width="1.6" stroke-dasharray="7 5"/>
+<text x="12" y="112" font-size="11.5" fill="#c0392b">红虚线 = 引擎的候选直线缝（每条都切块）</text>
+<text x="12" y="131" font-size="11.5" fill="#c0392b">· 竖直 x=√3/2：吻合同行竖边，切穿下一行块心</text>
+<text x="12" y="150" font-size="11.5" fill="#c0392b">· 水平（h 族 rank 线 t=0）：穿过整行块心</text>
+<text x="12" y="184" font-size="11.5" fill="#2471a3">蓝 = 真实竖裂纹（同行共享边，行行错开半格）</text>
+<text x="340.0" y="372" text-anchor="middle" font-size="14" font-weight="500" fill="#2c3e50">② 剪切一步：半程咬合（红），终点却恰好只接触</text>
+<text x="340.0" y="392" text-anchor="middle" font-size="11.5" fill="#5d6d7e">H₂ 下端行 (0,−2),(1,−2),(2,−2) 沿缝右滑 1 单位；图示半程（√3/2）</text>
+<path d="M328.64,502.50 L312.18,493.00 L295.73,502.50 L295.73,521.50 L312.18,531.00 L328.64,521.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M345.09,474.00 L328.64,464.50 L312.18,474.00 L312.18,493.00 L328.64,502.50 L345.09,493.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M361.55,445.50 L345.09,436.00 L328.64,445.50 L328.64,464.50 L345.09,474.00 L361.55,464.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M345.09,531.00 L328.64,521.50 L312.18,531.00 L312.18,550.00 L328.64,559.50 L345.09,550.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M361.55,502.50 L345.09,493.00 L328.64,502.50 L328.64,521.50 L345.09,531.00 L361.55,521.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M378.00,474.00 L361.55,464.50 L345.09,474.00 L345.09,493.00 L361.55,502.50 L378.00,493.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M394.45,445.50 L378.00,436.00 L361.55,445.50 L361.55,464.50 L378.00,474.00 L394.45,464.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M361.55,559.50 L345.09,550.00 L328.64,559.50 L328.64,578.50 L345.09,588.00 L361.55,578.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M378.00,531.00 L361.55,521.50 L345.09,531.00 L345.09,550.00 L361.55,559.50 L378.00,550.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M394.45,502.50 L378.00,493.00 L361.55,502.50 L361.55,521.50 L378.00,531.00 L394.45,521.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M410.91,474.00 L394.45,464.50 L378.00,474.00 L378.00,493.00 L394.45,502.50 L410.91,493.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M427.36,445.50 L410.91,436.00 L394.45,445.50 L394.45,464.50 L410.91,474.00 L427.36,464.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M394.45,559.50 L378.00,550.00 L361.55,559.50 L361.55,578.50 L378.00,588.00 L394.45,578.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M410.91,531.00 L394.45,521.50 L378.00,531.00 L378.00,550.00 L394.45,559.50 L410.91,550.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M427.36,502.50 L410.91,493.00 L394.45,502.50 L394.45,521.50 L410.91,531.00 L427.36,521.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M443.82,474.00 L427.36,464.50 L410.91,474.00 L410.91,493.00 L427.36,502.50 L443.82,493.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M427.36,559.50 L410.91,550.00 L394.45,559.50 L394.45,578.50 L410.91,588.00 L427.36,578.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M443.82,531.00 L427.36,521.50 L410.91,531.00 L410.91,550.00 L427.36,559.50 L443.82,550.00 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M460.27,502.50 L443.82,493.00 L427.36,502.50 L427.36,521.50 L443.82,531.00 L460.27,521.50 Z" fill="#eef2f7" stroke="#8a94a6" stroke-width="1"/>
+<path d="M361.55,559.50 L345.09,550.00 L328.64,559.50 L328.64,578.50 L345.09,588.00 L361.55,578.50 Z" fill="none" stroke="#aab2bc" stroke-width="1" stroke-dasharray="4 4"/>
+<path d="M394.45,559.50 L378.00,550.00 L361.55,559.50 L361.55,578.50 L378.00,588.00 L394.45,578.50 Z" fill="none" stroke="#aab2bc" stroke-width="1" stroke-dasharray="4 4"/>
+<path d="M427.36,559.50 L410.91,550.00 L394.45,559.50 L394.45,578.50 L410.91,588.00 L427.36,578.50 Z" fill="none" stroke="#aab2bc" stroke-width="1" stroke-dasharray="4 4"/>
+<path d="M378.00,559.50 L361.55,550.00 L345.09,559.50 L345.09,578.50 L361.55,588.00 L378.00,578.50 Z" fill="#c0392b" fill-opacity="0.30" stroke="#c0392b" stroke-width="1.6"/>
+<path d="M410.91,559.50 L394.45,550.00 L378.00,559.50 L378.00,578.50 L394.45,588.00 L410.91,578.50 Z" fill="#c0392b" fill-opacity="0.30" stroke="#c0392b" stroke-width="1.6"/>
+<path d="M443.82,559.50 L427.36,550.00 L410.91,559.50 L410.91,578.50 L427.36,588.00 L443.82,578.50 Z" fill="#c0392b" fill-opacity="0.30" stroke="#c0392b" stroke-width="1.6"/>
+<path d="M378.00,531.00 L361.55,521.50 L345.09,531.00 L345.09,550.00 L361.55,559.50 L378.00,550.00 Z" fill="none" stroke="#c0392b" stroke-width="2.2"/>
+<line x1="310.54" y1="569.00" x2="361.55" y2="569.00" stroke="#c0392b" stroke-width="1.8"/>
+<path d="M 361.55 569.00 l -7 -4 l 0 8 z" fill="#c0392b"/>
+<text x="340.0" y="612" text-anchor="middle" font-size="11.5" fill="#c0392b">红 = 半程位置：与上一行 (0,−1) 正面积重叠（咬合）</text>
+<text x="340.0" y="631" text-anchor="middle" font-size="11.5" fill="#5d6d7e">灰虚线 = 原位；终点两块距恰好 √3——只接触不重叠，端点 SAT 判据全盲</text>
+</svg>

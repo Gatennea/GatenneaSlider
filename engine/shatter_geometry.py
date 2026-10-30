@@ -37,7 +37,7 @@ from .lattice import Lattice
 
 SQ3 = math.sqrt(3.0)
 
-# ---- 单元构造（与 experiments/_chk_iso_puzzle.py 一致）----
+# ---- 单元构造（与 experiments/script__chk_iso_puzzle.py 一致）----
 A = (0.0, 0.0); B = (2 * SQ3, 0.0); C = (SQ3, 3.0)
 J = (SQ3, 0.0); H = (SQ3 / 2, 1.5); I = (3 * SQ3 / 2, 1.5)
 F = (SQ3 / 2, 0.5); G = (3 * SQ3 / 2, 0.5); D = (SQ3, 1.0); E = (SQ3, 2.0)
@@ -202,7 +202,7 @@ def _polygon_at(point, orient):
 # 线的方向必须取自密铺里**真有长串共线边**的三族（实测 30/90/150 各 40 条；
 # 0/60/120 只有 8 条、全在盘面外沿）——否则缝只能沿别的方向的边爬成锯齿。
 #
-# 滑动步长 = 沿缝 **一个边长**（与 experiments/_shatter_proto.py 的 fam_step
+# 滑动步长 = 沿缝 **一个边长**（与 experiments/script__shatter_proto.py 的 fam_step
 # 同口径）：30/90/150 的边长 1（C 步长 3 格单位）、0/60/120 的边长 √3（C
 # 步长 6 格单位）。这是唯一物理自洽的选择：缝是直线时两侧互为沿缝的刚体
 # 平移，**途中任何位置都不重叠**；步长再取整周期（沿这些方向高达 6 个边长

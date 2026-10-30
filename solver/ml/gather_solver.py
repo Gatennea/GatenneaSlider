@@ -133,7 +133,7 @@ def find_best_window(coords, m, n, step):
     求解器的熱路徑。改為與 `max_overlap` 同構的二維前綴和：建表 O(R·C)、
     查窗 O(1)。**枚舉順序、比較規則（嚴格大於才更新）、提前退出條件與舊版
     逐字一致，輸出逐字相同——差分測試見
-    `experiments/_bench_find_window.py`（數百個隨機局面零差異）。
+    `experiments/script__bench_find_window.py`（數百個隨機局面零差異）。
     """
     if not coords:
         return 0, 0, (m, n), 0
@@ -364,7 +364,7 @@ def _optimize_path(start_hash, actions, rep_cells, trace, hashes, moved_groups,
               ⚠️ 真实引擎重放时会按当前盘面重新推导滑片（连通片），状态在
               其他位置不同可能让重推导出不同滑片——这一边角由调用方的
               重放验证兜底（失败回退原路径），本函数不必也不做重放。
-              8×8 实测（experiments/optimize_cancel.py）：124 步安全删 18 步。
+              8×8 实测（experiments/script_optimize_cancel.py）：124 步安全删 18 步。
     返回优化后的 (actions, rep_cells, trace)。不做规则重放验证（调用方负责）。
     removed_groups: 每步「净空出」坐标集（before−after），与 moved_groups
               平行。None（旧调用方）= 跳过远程逆对抵消，保持旧行为。

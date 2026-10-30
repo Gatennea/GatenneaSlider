@@ -1,0 +1,66 @@
+<svg viewBox="0 0 680 424" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif" role="img"><title>双形状谜题构造图</title><desc>单元与四单元拼盘的滑块密铺</desc>
+
+<polygon points="256.6,302.0 213.3,327.0 213.3,277.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="256.6,302.0 256.6,352.0 213.3,327.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="256.6,302.0 299.9,327.0 256.6,352.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="256.6,302.0 299.9,277.0 299.9,327.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="256.6,302.0 256.6,252.0 299.9,277.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="256.6,302.0 213.3,277.0 256.6,252.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="170.0,352.0 213.3,327.0 213.3,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="170.0,352.0 213.3,327.0 256.6,352.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,352.0 299.9,327.0 256.6,352.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,352.0 299.9,327.0 299.9,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="256.6,202.0 256.6,252.0 299.9,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="256.6,202.0 213.3,277.0 256.6,252.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="429.8,302.0 386.5,327.0 386.5,277.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="429.8,302.0 429.8,352.0 386.5,327.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="429.8,302.0 473.1,327.0 429.8,352.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="429.8,302.0 473.1,277.0 473.1,327.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="429.8,302.0 429.8,252.0 473.1,277.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="429.8,302.0 386.5,277.0 429.8,252.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,352.0 386.5,327.0 386.5,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,352.0 386.5,327.0 429.8,352.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="516.4,352.0 473.1,327.0 429.8,352.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="516.4,352.0 473.1,327.0 473.1,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="429.8,202.0 429.8,252.0 473.1,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="429.8,202.0 386.5,277.0 429.8,252.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,152.0 299.9,177.0 299.9,127.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,152.0 343.2,202.0 299.9,177.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,152.0 386.5,177.0 343.2,202.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,152.0 386.5,127.0 386.5,177.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,152.0 343.2,102.0 386.5,127.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,152.0 299.9,127.0 343.2,102.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="256.6,202.0 299.9,177.0 299.9,127.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="256.6,202.0 299.9,177.0 343.2,202.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="429.8,202.0 386.5,177.0 343.2,202.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="429.8,202.0 386.5,177.0 386.5,127.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,52.0 343.2,102.0 386.5,127.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,52.0 299.9,127.0 343.2,102.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,252.0 299.9,227.0 299.9,277.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,252.0 343.2,202.0 299.9,227.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,252.0 386.5,227.0 343.2,202.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,252.0 386.5,277.0 386.5,227.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,252.0 343.2,302.0 386.5,277.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="343.2,252.0 299.9,277.0 343.2,302.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1"/>
+<polygon points="256.6,202.0 299.9,227.0 299.9,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="256.6,202.0 299.9,227.0 343.2,202.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="429.8,202.0 386.5,227.0 343.2,202.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="429.8,202.0 386.5,227.0 386.5,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,352.0 343.2,302.0 386.5,277.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<polygon points="343.2,352.0 299.9,277.0 343.2,302.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1"/>
+<line x1="170.0" y1="352.0" x2="343.2" y2="352.0" stroke="#999" stroke-width="1.4" stroke-dasharray="5 4"/>
+<line x1="343.2" y1="352.0" x2="256.6" y2="202.0" stroke="#999" stroke-width="1.4" stroke-dasharray="5 4"/>
+<line x1="256.6" y1="202.0" x2="170.0" y2="352.0" stroke="#999" stroke-width="1.4" stroke-dasharray="5 4"/>
+<line x1="170.0" y1="352.0" x2="516.4" y2="352.0" stroke="#999" stroke-width="1.4" stroke-dasharray="5 4"/>
+<line x1="516.4" y1="352.0" x2="343.2" y2="52.0" stroke="#999" stroke-width="1.4" stroke-dasharray="5 4"/>
+<line x1="343.2" y1="52.0" x2="170.0" y2="352.0" stroke="#999" stroke-width="1.4" stroke-dasharray="5 4"/>
+<line x1="256.6" y1="352.0" x2="256.6" y2="202.0" stroke="#1f5fa8" stroke-width="3.2"/>
+<polygon points="256.6,263.0 249.6,279.0 263.6,279.0" fill="#1f5fa8"/>
+<polygon points="256.6,291.0 249.6,275.0 263.6,275.0" fill="#1f5fa8"/>
+<text x="256.6" y="370.0" font-size="13" fill="#1f5fa8" font-weight="500" text-anchor="middle">晶格缝（边长1，步长1）</text>
+<line x1="170.0" y1="202.0" x2="516.4" y2="202.0" stroke="#8a6d1f" stroke-width="3.2"/>
+<polygon points="329.2,202.0 345.2,195.0 345.2,209.0" fill="#8a6d1f"/>
+<polygon points="357.2,202.0 341.2,195.0 341.2,209.0" fill="#8a6d1f"/>
+<text x="343.2" y="190.0" font-size="13" fill="#8a6d1f" font-weight="500" text-anchor="middle">绿底缝（边长√3，步长√3）</text>
+<text x="340" y="404" font-size="13.5" fill="#555" text-anchor="middle">四单元拼盘（大三角形边长 4√3）：48 块；蓝=晶格缝族（30°/90°/150°，间距√3），棕=绿底缝族（0°/60°/120°，间距3），两侧均可沿缝剪切</text>
+</svg>

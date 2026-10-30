@@ -1,0 +1,48 @@
+<svg viewBox="0 0 680 404" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif" role="img"><title>双形状谜题构造图</title><desc>单元与四单元拼盘的滑块密铺</desc>
+
+<polygon points="315.1,242.0 247.5,281.0 247.5,203.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="270.1" y="242.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">6</text>
+<polygon points="315.1,242.0 315.1,320.0 247.5,281.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="292.6" y="281.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">5</text>
+<polygon points="315.1,242.0 382.6,281.0 315.1,320.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="337.6" y="281.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">4</text>
+<polygon points="315.1,242.0 382.6,203.0 382.6,281.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="360.1" y="242.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">3</text>
+<polygon points="315.1,242.0 315.1,164.0 382.6,203.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="337.6" y="203.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">2</text>
+<polygon points="315.1,242.0 247.5,203.0 315.1,164.0" fill="#ffd9d6" stroke="#b3392e" stroke-width="1.6"/>
+<text x="292.6" y="203.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">1</text>
+<polygon points="180.0,320.0 247.5,281.0 247.5,203.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="225.0" y="268.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">12</text>
+<polygon points="180.0,320.0 247.5,281.0 315.1,320.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="247.5" y="307.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">11</text>
+<polygon points="450.2,320.0 382.6,281.0 315.1,320.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="382.6" y="307.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">10</text>
+<polygon points="450.2,320.0 382.6,281.0 382.6,203.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="405.2" y="268.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">9</text>
+<polygon points="315.1,86.0 315.1,164.0 382.6,203.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="337.6" y="151.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">8</text>
+<polygon points="315.1,86.0 247.5,203.0 315.1,164.0" fill="#d7ecd9" stroke="#3d7a44" stroke-width="1.6"/>
+<text x="292.6" y="151.0" font-size="15" text-anchor="middle" dominant-baseline="middle" fill="#222" font-weight="500">7</text>
+<circle cx="180.0" cy="320.0" r="3.2" fill="#333"/>
+<text x="166.0" y="330.0" font-size="13" fill="#333" text-anchor="middle">A</text>
+<circle cx="450.2" cy="320.0" r="3.2" fill="#333"/>
+<text x="462.2" y="330.0" font-size="13" fill="#333" text-anchor="middle">B</text>
+<circle cx="315.1" cy="86.0" r="3.2" fill="#333"/>
+<text x="315.1" y="70.0" font-size="13" fill="#333" text-anchor="middle">C</text>
+<circle cx="315.1" cy="320.0" r="3.2" fill="#333"/>
+<text x="315.1" y="340.0" font-size="13" fill="#333" text-anchor="middle">J</text>
+<circle cx="247.5" cy="203.0" r="3.2" fill="#333"/>
+<text x="231.5" y="207.0" font-size="13" fill="#333" text-anchor="middle">H</text>
+<circle cx="382.6" cy="203.0" r="3.2" fill="#333"/>
+<text x="398.6" y="207.0" font-size="13" fill="#333" text-anchor="middle">I</text>
+<circle cx="247.5" cy="281.0" r="3.2" fill="#333"/>
+<text x="231.5" y="285.0" font-size="13" fill="#333" text-anchor="middle">F</text>
+<circle cx="382.6" cy="281.0" r="3.2" fill="#333"/>
+<text x="398.6" y="285.0" font-size="13" fill="#333" text-anchor="middle">G</text>
+<circle cx="315.1" cy="242.0" r="3.2" fill="#333"/>
+<text x="315.1" y="264.0" font-size="13" fill="#333" text-anchor="middle">D</text>
+<circle cx="315.1" cy="164.0" r="3.2" fill="#333"/>
+<text x="315.1" y="150.0" font-size="13" fill="#333" text-anchor="middle">E</text>
+<text x="340" y="384" font-size="13.5" fill="#555" text-anchor="middle">单元（大正三角形边长 2√3）：红 1–6 = 边长 1 正三角形绕中心 D 成六边形；绿 7–12 = 30-30-120 等腰（腰 1、底 √3）居三角</text>
+</svg>

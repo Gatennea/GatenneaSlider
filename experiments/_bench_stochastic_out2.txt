@@ -1,0 +1,38 @@
+配置 4 × 盘面 5 = 20 对 A/B
+
+=== 4x4 step2 (shuffle=80, cap=15s) ===
+  disk1: det[solved=1 11步 sc=1.000 踢0] vs stoch[solved=1 133步 sc=1.000 踢0 seed=12345] -> =  (0.1s/1.5s)
+  disk2: det[solved=1 4步 sc=1.000 踢0] vs stoch[solved=0 84步 sc=0.938 踢1 seed=12345] -> DET+  (0.1s/3.8s)
+  disk3: det[solved=1 38步 sc=1.000 踢0] vs stoch[solved=1 138步 sc=1.000 踢0 seed=12345] -> =  (0.3s/1.4s)
+  disk4: det[solved=0 41步 sc=0.875 踢0] vs stoch[solved=0 105步 sc=0.938 踢0 seed=12345] -> =  (2.1s/1.8s)
+  disk5: det[solved=0 26步 sc=0.938 踢0] vs stoch[solved=0 25步 sc=0.875 踢0 seed=12345] -> =  (2.0s/2.4s)
+
+=== 4x4 step3 (shuffle=60, cap=15s) ===
+  disk1: det[solved=0 10步 sc=0.938 踢0] vs stoch[solved=0 9步 sc=0.750 踢0 seed=12345] -> =  (0.4s/0.3s)
+  disk2: det[solved=0 8步 sc=0.938 踢0] vs stoch[solved=0 38步 sc=0.938 踢0 seed=12345] -> =  (0.3s/1.3s)
+  disk3: det[solved=0 9步 sc=0.938 踢0] vs stoch[solved=0 37步 sc=0.938 踢0 seed=12345] -> =  (0.3s/0.6s)
+  disk4: det[solved=0 10步 sc=0.938 踢0] vs stoch[solved=0 5步 sc=0.812 踢0 seed=12345] -> =  (0.4s/0.3s)
+  disk5: det[solved=1 3步 sc=1.000 踢0] vs stoch[solved=1 18步 sc=1.000 踢0 seed=12345] -> =  (0.0s/0.2s)
+
+=== 5x5 step2 (shuffle=150, cap=20s) ===
+  disk1: det[solved=1 59步 sc=1.000 踢0] vs stoch[solved=0 85步 sc=0.960 踢1 seed=12345] -> DET+  (1.2s/7.9s)
+  disk2: det[solved=0 158步 sc=0.960 踢0] vs stoch[solved=0 39步 sc=0.840 踢0 seed=12345] -> =  (6.3s/4.1s)
+  disk3: det[solved=0 168步 sc=0.960 踢0] vs stoch[solved=0 196步 sc=0.960 踢1 seed=12345] -> =  (6.2s/11.1s)
+  disk4: det[solved=0 21步 sc=0.880 踢0] vs stoch[solved=0 423步 sc=0.880 踢1 seed=12345] -> =  (1.3s/10.6s)
+  disk5: det[solved=0 111步 sc=0.920 踢0] vs stoch[solved=0 141步 sc=0.880 踢0 seed=12345] -> =  (5.0s/5.9s)
+
+=== 6x6 step2 (shuffle=120, cap=25s) ===
+  disk1: det[solved=0 15步 sc=0.889 踢0] vs stoch[solved=0 76步 sc=0.889 踢1 seed=12345] -> =  (4.6s/11.7s)
+  disk2: det[solved=0 94步 sc=0.944 踢0] vs stoch[solved=0 84步 sc=0.917 踢1 seed=12345] -> =  (7.0s/11.2s)
+  disk3: det[solved=0 144步 sc=0.944 踢0] vs stoch[solved=0 189步 sc=0.889 踢2 seed=12345] -> =  (8.0s/14.2s)
+  disk4: det[solved=0 256步 sc=0.944 踢0] vs stoch[solved=0 87步 sc=0.889 踢0 seed=12345] -> =  (11.8s/7.0s)
+  disk5: det[solved=0 124步 sc=0.917 踢0] vs stoch[solved=0 279步 sc=0.889 踢1 seed=12345] -> =  (7.0s/13.6s)
+
+============================================================
+确定性胜（随机臂没还原但确定性还原）: 2
+随机臂胜（确定性没还原但随机还原）  : 0
+平手（两臂同结果）                  : 18
+崩溃                               : 0
+两臂都还原的 3 盘：随机臂平均步数差 +79.00 （正=随机更长），平均终聚拢度差 +0.0000
+结论待子代理客观评估（见调用方说明）。
+EXIT=0

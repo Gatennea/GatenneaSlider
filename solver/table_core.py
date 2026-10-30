@@ -153,9 +153,9 @@ def _canonicalize_fs(fs: frozenset) -> int:
     算式（無 min 遍歷、無元組构造），整數排序即字典序。
     ⚠️ 中間版（偏置打包 _PO + 逐變體 _norm_variant 求 min）微基準僅 1.06×：
     min(genexpr) 117k 次調用燒 0.72s，比排序省下的還多——已廢棄，
-    復刻見 experiments/_bench_canon_packed.py 的差分基準（輸出與本版逐字
+    復刻見 experiments/script__bench_canon_packed.py 的差分基準（輸出與本版逐字
     一致，因兩版都等價於舊語義）。
-    差分測試（含漂移坐標/非方形/對稱并列路徑）見 experiments/_bench_canon_packed.py。
+    差分測試（含漂移坐標/非方形/對稱并列路徑）見 experiments/script__bench_canon_packed.py。
     """
     PB, PS, PM = _PB, _PS, _PM
     # 1) 單遍掃描求 min/max（fs 非空；空集舊版即拋 ValueError，語義一致）

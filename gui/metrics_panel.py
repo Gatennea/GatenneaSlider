@@ -44,7 +44,7 @@ class MetricsPanelMixin:
 
         `n_rows` 是指标行数；不给就按 6 行算（方形/三角的既有行数）。
         **mi 分支有 7 行**（多一行「mod 约束」，报 |S(step)| 而不是
-        「有无约束」——倍数控法在 mi 上是错的，见 `experiments/_mi_mod_probe.py`），
+        「有无约束」——倍数控法在 mi 上是错的，见 `experiments/script__mi_mod_probe.py`），
         高度写死 6 行会把最后一行画到面板外面去（截图里表现为「mod 约束」
         那行被截断）。所以这里按调用方给的行数动态算，别再写死。
         """
@@ -614,7 +614,7 @@ class MetricsPanelMixin:
                 ("洞/凸起", f"洞{n_hole} 缺{n_gap} 凸{len(protrusions)}"),
             ]
             # mod 约束：mi 的合法偏移不是「step 倍数」而是「类自同构余数对
-            # 集合 S(step)」（实测否证了倍数控法，见 experiments/_mi_mod_probe.py）。
+            # 集合 S(step)」（实测否证了倍数控法，见 experiments/script__mi_mod_probe.py）。
             # 这里报 S 的大小而不是有无 —— 倍数口径在 mi 上是错的。
             from solver.ml.mi_placement import mod_auts
             rows.append(("mod 约束",

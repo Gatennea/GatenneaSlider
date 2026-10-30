@@ -2659,7 +2659,7 @@ def _split_actions(actions):
 # 填洞宏 GUI 入口的**墙钟总预算**（秒）。
 #
 # 由来（2026-10-06 用户报「填洞宏执行阶段莫名其妙卡住，无法重新选中/滑动/移动视角」）：
-# 离线复现（experiments/_repro_fill_macro_freeze.py，8×8 step2 散盘，棋盘从
+# 离线复现（experiments/script__repro_fill_macro_freeze.py，8×8 step2 散盘，棋盘从
 # 5050 现场抓下）跑了 **183.6 秒**才停 —— 根因是这条链只有**次数**上限
 # （solve_multi_void 的 max_attempts=400 / max_rounds=80），**没有任何墙钟上限**，
 # 而大散盘上每次 couple 尝试都很贵。求解线程全程 CPU 满载 → 主线程被 GIL 饿死，

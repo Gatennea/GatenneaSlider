@@ -1821,7 +1821,7 @@ class ModelEditorMixin:
     # 保存
     # ==================================================================
     def _med_build_doc(self, name):
-        """合成模型文档（与 experiments/_gen_model_shatter.py 同款结构）。"""
+        """合成模型文档（与 experiments/script__gen_model_shatter.py 同款结构）。"""
         med = self._med
         orients = {}
         for shape, imgs in med['images'].items():

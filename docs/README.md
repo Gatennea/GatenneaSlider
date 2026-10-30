@@ -31,7 +31,7 @@
 | 文档 | 用途 | 状态 |
 |---|---|---|
 | `docs/player/玩家指南.md` | 玩家操作指南 | 维护中 |
-| `docs/player/功能总览.md` | 全部功能快速预览表（48 项，只列表不解释） | 自动生成（gui/feature_index.py → gen_feature_overview.py） |
+| `docs/player/功能总览.md` | 全部功能快速预览表（48 项，只列表不解释） | 自动生成（`gui/feature_index.py` → `tools/gen_feature_overview.py`） |
 | `docs/player/操作说明.md` | GUI 操作说明（帮助面板加载） | 维护中 |
 
 ### agent（给 AI / 接手）

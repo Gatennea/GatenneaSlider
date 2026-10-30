@@ -112,7 +112,7 @@ def fast_window(coords, m, n):
     holes/protr（舊版對每個「刷新紀錄」的中間窗口也算，純浪費）。
     枚舉順序（朝向 (m,n)→(n,m)，r0/c0 升序）、「嚴格大於才更新」規則、
     視窗範圍公式（rlo/rhi/clo/chi 與 5 格夾取）與舊版逐字一致，輸出相同
-    （差分測試見 experiments/_bench_find_window.py 的 fast_window 部分）。
+    （差分測試見 experiments/script__bench_find_window.py 的 fast_window 部分）。
     """
     B = set(coords)
     rs = [r for r, _ in B]
