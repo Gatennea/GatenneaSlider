@@ -39,13 +39,14 @@ jobs:
           GATENNEA_PY: python
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
-        # 排除 _test_tri_gather.py：其 C3c 用例为已知失败（k=5 三角聚拢
-        # 复原 0/8，用户 2026-10-22 拍板保持现状，非回归），详见
-        # docs/agent/待办清单.md §十五。
-        # 必须排除整个文件：脚本的所有 check 共用一个 main()，一条 FAIL
-        # 就 sys.exit(1)，pytest 层面无法只跳过 C3c 一条。
-        # 排除它让流水线能反映"新引入的回归"，而非恒红。
-        run: pytest test/ -v --ignore=test/_test_tri_gather.py
+        # 2026-10-31 起不再排除 _test_tri_gather.py：该文件原先因 C3c 一条
+        # 已知失败（k=5 三角聚拢复原 0/8，用户 2026-10-22 拍板保持现状、非回归，
+        # 详见 docs/agent/待办清单.md §十五）被整个 --ignore —— 代价是同文件里
+        # C3a/C3b/C3d/**C3e** 等 20 条护栏一起常年不跑，而 C3e（k=4 ≥ 5/10）
+        # 才是真正的回归护栏。现在 C3c 走脚本内 KNOWN_FAILS 白名单：数值照常
+        # 打印、不计入 exit code，其余 20 条重新在 CI 上真跑。
+        # 白名单项若哪天转绿，脚本会打 [RECOVERED] 并刻意非零退出逼人销账。
+        run: pytest test/ -v
 
   lint:
     # 静态审查守门：复用仓库内 tools/static_lint。与 test job 统一走
@@ -72,6 +73,13 @@ jobs:
         # 的 engine->solver 反向依赖、GUI.py 未用 import 等），它们作为
         # "已知、可接受"基线，将来谁引入同类新问题才会在此冒红。
         run: python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json --strict
+
+      - name: Experiments naming guard (script_ / reuse_ 前缀守门)
+        # experiments/ 的前缀只承担「调用关系」一个维度（2026-10-31 与用户定的
+        # 三类）：script_* 独立脚本 / reuse_* 两者皆是 / 无前缀=库。
+        # 这里用 AST 重新判定真实类别，与文件名前缀比对，不符就红 ——
+        # 挡住「改名漏改 import」「加了 script_ 却被人 import 了」这类腐化。
+        run: python tools/experiments_index.py --check
 
       - name: Doc link check (文档里的文件引用 / §X 节号)
         # 拦两类文档腐烂：引用了不存在的文件、引用了不存在的节号。

@@ -216,6 +216,9 @@ tools/                 # 倉庫內工具（非產品代碼）
   doclink_check.py    #   文檔引用校驗：掃 .md 裡的檔案引用（存在性）與「§X」節號引用
                       #   `--baseline` 只看新增；存量問題見 待办清单.md §十六
   gen_feature_overview.py  #  由真源 gui/feature_index.py 重新生成 docs/player/功能总览.md
+  experiments_index.py  #  experiments/ 索引生成 + 命名守門：`--emit` 重生成
+                        #  experiments/INDEX.md；`--check` 用 AST 判定真實類別與
+                        #  檔名前綴比對，不符就非零退出（CI 已接）
 
 config/                # 執行期組態（§8）
 save/                  # 使用者存檔 *.json
@@ -652,15 +655,21 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 `C:/Windows/Fonts/simhei.ttf` 硬路徑，且 Windows runner 復現本機環境）：
 
 - **test**：安裝 pygame-ce/pytest/numpy → `compileall`（含 engine/gui/solver/macro/tools/test）→
-  `pytest test/ -v --ignore=test/_test_tri_gather.py`（超時 120min，環境 `GATENNEA_PY=python`、
-  `SDL_VIDEODRIVER=dummy`）。
-  排除 `_test_tri_gather` 是因為其 **C3c（k=5 三角聚攏復原 0/8）是已知紅、用戶 2026-10-22 拍板保持
-  現狀**，非回歸；該腳本所有 check 共用一個 `main()`，一條 FAIL 就 `sys.exit(1)`，pytest 層面無法
-  只跳過一條，所以排的是整個文件。真護欄是同文件的 C3e（k=4 ≥ 5/10）。詳
-  `docs/agent/待办清单.md` §十五——別把它當回歸，也別為了變綠去調門檻。
+  `pytest test/ -v`（超時 120min，環境 `GATENNEA_PY=python`、`SDL_VIDEODRIVER=dummy`）。
+  **2026-10-31 起不再 `--ignore` 任何文件**：`_test_tri_gather` 的 **C3c（k=5 三角聚攏
+  復原 0/8）是已知紅、用戶 2026-10-22 拍板保持現狀**（非回歸，詳 `docs/agent/待办清单.md`
+  §十五）。過去因該腳本所有 check 共用一個 `main()`、一條 FAIL 就 `sys.exit(1)`，
+  只能排整個文件——代價是同文件 C3a/C3b/C3d/**C3e** 等 20 條護欄一起常年不跑，
+  而 C3e（k=4 ≥ 5/10）才是真回歸護欄。現改為腳本內 `KNOWN_FAILS` 白名單：C3c 仍判、
+  仍打印 `[KNOWN-FAIL] 0/8`（閾值一字未動），只是不計入 exit code，其餘 20 條復活。
+  白名單項若轉綠，腳本打 `[RECOVERED]` 並**刻意非零退出**逼人銷賬（防白名單永久殘留）。
+  ⚠️ 別為了讓 C3c 變綠去調門檻 / 換種子 / 縮小 n——那等於拆護欄。
 - **lint**：①`python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json --strict`，
-  任何相對 baseline 的新增問題都非零退出（baseline 錨定 81 條已知簽名）；
-  ②`python tools/doclink_check.py --baseline tools/doclink_baseline.json --strict`，
+  任何相對 baseline 的新增問題都非零退出（baseline 錨定 61 條已知簽名，2026-10-31
+  修掉 noqa/re-export 假陽性後從 81 降到 61）；
+  ②`python tools/experiments_index.py --check`，擋 experiments/ 的 `script_` / `reuse_`
+  前綴與真實調用關係不符（漏改 import、加了前綴卻被人 import）；
+  ③`python tools/doclink_check.py --baseline tools/doclink_baseline.json --strict`，
   擋「文檔引用到不存在的檔案」與「§X 節號不存在」兩類腐爛（存量見 待办清单.md §十六）。
 
 ---

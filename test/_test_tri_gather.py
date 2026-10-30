@@ -14,6 +14,10 @@ r"""三角聚拢求解器回归（M1）。
 
 运行：
     D:\python\python.exe -u test\_test_tri_gather.py
+
+已知失败：C3c k=5 走脚本内 KNOWN_FAILS 白名单（打印 [KNOWN-FAIL] + 实际数值，
+不计入 FAIL），因此 CI **不再排除本文件**，其余 20 条 check 全部真跑。
+详见下方 KNOWN_FAILS 的三条铁律与待办清单 §十五。
 """
 
 import os
@@ -31,14 +35,50 @@ from solver.ml import tri_adapter as TA  # noqa: E402
 from solver.ml.shape_gather import ShapeGather  # noqa: E402
 from solver.ml.tri_placement import best_placement  # noqa: E402
 
-_F = []
+_F = []   # 真失败（挡 exit code）
+_K = []   # 已知失败（白名单内，显式记账但不挡 exit code）
+_R = []   # 白名单项转绿（需要销账）
+
+# 已知失败白名单 —— **只记账，不调低门槛**。
+#
+# 为什么不直接改判据 / 换种子 / 缩小 n（那等于拆护栏）：本文件所有 check 共用
+# 一个 main()，一条 FAIL 就 sys.exit(1)，所以过去只能靠 CI 的
+# --ignore=test/_test_tri_gather.py 把**整个文件**排除——那等于把 C3a/C3b/C3d/
+# C3e 等 20 条护栏一起雪藏（C3e 才是 k=4 的真回归护栏）。白名单让那 20 条重新
+# 在 CI 上真跑，同时 C3c 的失败数值照常打印，不会被忘掉。
+#
+# 铁律：
+#   ① key 必须写**全名**（含 k=?）——只豁免那一条，别把同名的其他 k 也豁免了；
+#   ② 判据与阈值一律不动，动它才是拆护栏；
+#   ③ 条目转绿时脚本会打 [RECOVERED] 并**非零退出**，逼人销账（删本表条目 +
+#      同步 docs/agent/待办清单.md §十五 + 去掉 CI 的 --ignore），
+#      否则白名单会永久残留、护栏名存实亡。
+KNOWN_FAILS = {
+    'C3c k=5 有复原能力（基线 > 0）':
+        '待办清单 §十五：k=5 大三角贪心卡住的既有边界（2026-10-03 基线 1/8 → 现 0/8，'
+        '末 score 0.825、均时 1.3s，远未触 25s 墙钟）。三分支差分实验证实与任何近期'
+        '合并无关，非回归；用户 2026-10-22 拍板保持现状，待求解器改进后再看能否回 ≥ 1/8',
+}
 
 
 def check(name, cond, extra=''):
-    tag = 'PASS' if cond else 'FAIL'
-    print(f'[{tag}] {name}' + (f'  {extra}' if extra else ''))
-    if not cond:
-        _F.append(name)
+    tail = f'  {extra}' if extra else ''
+    if cond:
+        if name in KNOWN_FAILS:
+            print(f'[RECOVERED] {name}{tail}')
+            print('             !! 白名单项已转绿（好消息）—— 请从 KNOWN_FAILS 删掉本条，'
+                  '并同步待办清单 §十五；在此之前本脚本刻意保持非零退出')
+            _R.append(name)
+        else:
+            print(f'[PASS] {name}{tail}')
+        return
+    if name in KNOWN_FAILS:
+        print(f'[KNOWN-FAIL] {name}{tail}')
+        print(f'             {KNOWN_FAILS[name]}')
+        _K.append(name)
+        return
+    print(f'[FAIL] {name}{tail}')
+    _F.append(name)
 
 
 def _solver():
@@ -375,12 +415,25 @@ def main():
     d1_square_no_regression()
     d2_canonicalize_required()
     print('\n' + '=' * 68)
+    if _K:
+        print(f'KNOWN-FAIL {len(_K)}（白名单内，不挡 exit code，但仍需修）：')
+        for f in _K:
+            print(f'  · {f}')
+    if _R:
+        print(f'RECOVERED {len(_R)}（白名单项已转绿，需销账）：')
+        for f in _R:
+            print(f'  · {f}')
     if _F:
         print(f'FAIL {len(_F)}:')
         for f in _F:
             print(f'  · {f}')
         sys.exit(1)
-    print('ALL PASS')
+    if _R:
+        # 好消息，但必须销账：否则白名单永久残留，护栏等于白加
+        print('销账提示：把 KNOWN_FAILS 里对应条目删掉，同步待办清单 §十五，'
+              '再去掉 CI 的 --ignore（若仍在）')
+        sys.exit(1)
+    print('ALL PASS' + (f'（含 {len(_K)} 条已知失败）' if _K else ''))
 
 
 if __name__ == '__main__':
