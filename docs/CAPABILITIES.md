@@ -24,6 +24,12 @@
 | `snapshot` / `restore` | 状态正规化与回放 | `solver/state.py` |
 | `table_solve` | 查表求解（需先 `solver.data` 建表；**会原地移动传入的 game**，调用方务必 deepcopy） | `solver/table_solver.py` |
 
+> ⚠️ `solver/ml/` **分两块**：上表这些（含 `shape_gather` / `invariants` / `gather_solver` /
+> `hole_detector` / `fill_macro` / `gap_solver` / `*_adapter` / `*_placement`）是**服役中的求解器核心**；
+> 而 `train_*` / `features` / `export_*` / `annotate` / `ai_solver` / `human_solver` / `emd_solver` /
+> `distance_solver` 属**已搁置的 ML 学习方向**（只剩参考价值，不再优化/重构/清理）。
+> 划分与依据见 `solver/ml/__init__.py` docstring 与 `docs/agent/踩坑与搁置.md` §一。
+
 ## 纯逻辑游戏模块（零 pygame 依赖，可被直接 import）
 
 | 模块 | 关键类 / 表 | 用途 |
