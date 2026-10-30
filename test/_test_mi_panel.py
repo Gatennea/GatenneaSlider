@@ -131,7 +131,7 @@ check("P3c placement 带 lattice 档 + 单元数 = 4mn（goal_shapes 是单元�
       and len(goal_shapes(4, 4)) == 1,
       f"lattice={region.lattice} cells={len(region.cells)} "
       f"goal_shapes={len(goal_shapes(4,4))}")
-# step=2 时 S = {(0,0),(1,1)}（实测值，不是「step 倍数」——见 _mi_mod_probe.py）
+# step=2 时 S = {(0,0),(1,1)}（实测值，不是「step 倍数」——见 script__mi_mod_probe.py）
 check("P3d mod_auts(4,4,2) == {(0,0),(1,1)} 且 step=1 时只有 (0,0)",
       set(mod_auts(4, 4, 2)) == {(0, 0), (1, 1)}
       and set(mod_auts(4, 4, 1)) == {(0, 0)},

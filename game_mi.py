@@ -268,7 +268,7 @@ def seam_between(a: tuple, b: tuple, valid=None):
     **米字不能只靠 rank**：同格相鄰的 N/E 會被 h 線（N 的底邊那條）也
     「分到兩側」，那是誤判；真正的縫必須本身合法。所以 valid 在這裡不是
     可選項而是必需——傳 `game.is_valid_gap`，挑出其中合法的那條。實測
-    （experiments/_probe_seam_between2.py）滿盤/帶洞/錯位態三種局面下，
+    （experiments/script__probe_seam_between2.py）滿盤/帶洞/錯位態三種局面下，
     全部相鄰對都恰好只剩 1 個合法候選。
     """
     a = tuple(a)

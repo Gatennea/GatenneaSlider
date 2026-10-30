@@ -245,7 +245,7 @@ def g5_random_replay_all():
     check('G5b 6 盘里都有可回放的动作序列（聚拢段在工作）',
           tot >= 4, f'{tot} 盘有动作')
     # 注意：这里**不**断言「有盘能还原」——实测贪心在 mi 上 0/6 复原
-    # （卡在 score 0.72~0.94，150 步无改进；见 experiments/_mi_gather_diag.py）。
+    # （卡在 score 0.72~0.94，150 步无改进；见 experiments/script__mi_gather_diag.py）。
     # 那是**已知能力边界**（缺末端填洞段，計劃 §8 M4/M5），不是回放层缺陷 ——
     # 回放层的职责是「把求解器给的序列忠实播完」，G5a 已经在测这件事。
     print(f'     （參考：還原 {solved}/6 —— 貪心在 mi 上的已知上限，'

@@ -193,7 +193,7 @@ def seam_between(a: tuple, b: tuple, valid=None):
     判據不寫死幾何，走 gap_rank：同族 rank 相等 ⇒ 這族縫不把兩塊分開；
     rank 不等就取 min(rank_a, rank_b) 作線號，再用 side_of 複核兩者確實
     落在一條縫的兩側（三角三族都只有一條縫共用同一條邊，實測全部相鄰對
-    恰好命中 1 個候選，見 experiments/_probe_seam_between2.py）。
+    恰好命中 1 個候選，見 experiments/script__probe_seam_between2.py）。
 
     valid：可選的 `(fam, line) -> bool` 合法性判定（一般傳
     `game.is_valid_gap`）。帶洞局面下候選可能不止一個，用它挑出真的那條；
