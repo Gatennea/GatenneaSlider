@@ -35,7 +35,6 @@ import math
 from collections import Counter
 from functools import lru_cache
 
-from game_mi import MiSliderMatrix
 from engine.cell_class import cell_class
 
 __all__ = ['MiPlacement', 'best_placement', 'goal_shape', 'goal_shapes',

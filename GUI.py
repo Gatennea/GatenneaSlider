@@ -16,17 +16,14 @@ import sys
 import os
 import json
 import time
-import traceback
 import queue
-import math
 import secrets
-import threading
-from game import SliderMatrix, Block
+from game import Block
 from history import GameHistory
-from records import Records, format_time
-from puzzle_types import create_puzzle, puzzle_key
+from records import Records
+from puzzle_types import create_puzzle
 from game_triangle import tri_key
-from game_mi import mi_key, DIRECTIONS as MI_DIRECTIONS
+from game_mi import mi_key
 from gui.renderer import RendererMixin
 from gui.dialogs import DialogsMixin
 from gui.animation import AnimationMixin

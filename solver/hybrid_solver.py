@@ -23,7 +23,7 @@ from copy import deepcopy
 
 from solver.actions import apply_action
 from solver.table_core import _side_components, is_single_connected
-from solver.search_core import (fast_window, guided_reduce_one)
+from solver.search_core import guided_reduce_one
 from solver.ml.gather_solver import gradient_gather, gather_solve, gather_metrics
 
 

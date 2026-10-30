@@ -15,7 +15,7 @@
 
 | 类别 | 内容 | 假阳性处理 |
 | --- | --- | --- |
-| `unused_import` | 未被引用的 import | 过滤 `from __future__ import ...` 与框架回调（`do_POST` / `log_message` 等） |
+| `unused_import` | 未被引用的 import | 过滤 `from __future__ import ...`、框架回调（`do_POST` / `log_message` 等）、`# noqa: F401`（作者显式保留）、`__all__` 里的 re-export。报告的是**本文件生效名**（`import x as y` 报 `y`） |
 | `dup_body` | 函数体完全相同的重复实现 | 排除有意的独立真值 `engine/tri_geometry.py` `engine/game_triangle.py` |
 | `reverse_dep` | 反向依赖（底层 `engine` 依赖上层 `gui` 等） | 仅报 `BAD_DEPS` 表里定义的禁止方向 |
 | `mixin_dead` | mixin MRO 同名遮蔽且无非显式调用 | 只报 MRO 靠后、且全文无 `Mixin.method(` 死方法 |

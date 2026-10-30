@@ -59,7 +59,7 @@
 
 | 现成工具 | 用途 | 用法 |
 |---|---|---|
-| `tools/static_lint/` | 静态审查：未用 import / 重复函数体 / 反向依赖 / mixin MRO 遮蔽死方法。`--baseline` 出 NEW / RESOLVED diff，`--strict` 给 CI 守门（非零退出 = 新引入问题）。基线锚定 81 条已知签名，详 `tools/static_lint/README.md` | `python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json` |
+| `tools/static_lint/` | 静态审查：未用 import / 重复函数体 / 反向依赖 / mixin MRO 遮蔽死方法。`--baseline` 出 NEW / RESOLVED diff，`--strict` 给 CI 守门（非零退出 = 新引入问题）。基线锚定 61 条已知签名（2026-10-31 修正假阳性后从 81 降到 61），详 `tools/static_lint/README.md` | `python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json` |
 | `tools/doclink_check.py` | 文档引用校验：扫 `.md` 里的文件引用（存在性）与「§X」节号引用（目标有没有这一节）。产出 file_ref / sec_ref / ambiguous / artifact_ref / known_broken 五类；`--strict` 只让**新引入的**断链让 CI 变红。当前存量问题登记在 `docs/agent/待办清单.md` §十六 | `python tools/doclink_check.py --baseline tools/doclink_baseline.json` |
 | `tools/gen_feature_overview.py` | 从真源 `gui/feature_index.py` 重新生成 `docs/player/功能总览.md`（48 项）。改了功能索引后跑它，别手改产物 | `python tools/gen_feature_overview.py` |
 

@@ -26,7 +26,7 @@
 
 from solver.ml.shape_gather import ShapeGather
 from game_triangle import (
-    GAP_DIRECTIONS, TriangleSliderMatrix, gap_index_range, side_of,
+    GAP_DIRECTIONS, TriangleSliderMatrix, side_of,
 )
 
 __all__ = [

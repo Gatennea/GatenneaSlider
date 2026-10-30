@@ -27,7 +27,7 @@ from collections import Counter
 
 from game import SliderMatrix
 from game_mi import MiSliderMatrix, blocks_from_cells as mi_blocks_from_cells
-from game_mi import any_overlap as mi_any_overlap, lattice_of as mi_lattice_of
+from game_mi import any_overlap as mi_any_overlap
 from game_mi import coords_coherent as mi_coords_coherent
 from game_triangle import TriangleSliderMatrix, blocks_from_cells as tri_blocks_from_cells
 from engine.cell_class import cell_class

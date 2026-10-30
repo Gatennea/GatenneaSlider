@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from engine.model_loader import (DEFAULT_MODEL_DIR, ModelError, load_dir,  # noqa: E402
+from engine.model_loader import (DEFAULT_MODEL_DIR, ModelError,  # noqa: E402
                                  load_file)
 from engine.model_validate import summarize, validate  # noqa: E402
 

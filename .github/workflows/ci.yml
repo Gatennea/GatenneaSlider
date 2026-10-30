@@ -68,7 +68,7 @@ jobs:
 
       - name: Static lint (dead code / dup / mixin override)
         # --strict：任何相对 baseline 的新增问题都非零退出，挡住回归。
-        # baseline.json 锚定了当前 81 条已知签名（含 §十一/§十二 已记录
+        # baseline.json 锚定了当前 61 条已知签名（含 §十一/§十二 已记录
         # 的 engine->solver 反向依赖、GUI.py 未用 import 等），它们作为
         # "已知、可接受"基线，将来谁引入同类新问题才会在此冒红。
         run: python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json --strict

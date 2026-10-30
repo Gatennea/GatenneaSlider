@@ -30,7 +30,6 @@
 """
 import math
 from functools import lru_cache
-from itertools import product
 
 from .board import Block, BoardSpec, SeamFamily
 from .lattice import Lattice
