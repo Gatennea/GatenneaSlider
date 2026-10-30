@@ -72,3 +72,12 @@ jobs:
         # 的 engine->solver 反向依赖、GUI.py 未用 import 等），它们作为
         # "已知、可接受"基线，将来谁引入同类新问题才会在此冒红。
         run: python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json --strict
+
+      - name: Doc link check (文档里的文件引用 / §X 节号)
+        # 拦两类文档腐烂：引用了不存在的文件、引用了不存在的节号。
+        # 起因：2026-10-31 一晚手修了 4 处（docs/README.md 的「§十一」实为 §七、
+        # bandaged_mode.md 的「§六之二」实为 §一、待办清单头部旧说明、AGENTS.md §17
+        # 引的数学真源只在 feat/math-research 分支），靠人眼扫不可持续。
+        # 当前 16 条真断链 + 3 条同名歧义已锚进 doclink_baseline.json，并在
+        # 待办清单 §十六 逐条登记；这里守的是「别再新增」。
+        run: python tools/doclink_check.py --baseline tools/doclink_baseline.json --strict

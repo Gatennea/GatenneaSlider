@@ -213,6 +213,9 @@ tools/                 # 倉庫內工具（非產品代碼）
   static_lint/         #   靜態審查 linter：未用 import / 重複函數體 / 反向依賴 / mixin 遮蔽
                        #   `--baseline` 出 NEW/RESOLVED diff；CI 的 lint job 用 `--strict` 守門
                        #   用法見 tools/static_lint/README.md（本沙箱須 Start-Process -Wait）
+  doclink_check.py    #   文檔引用校驗：掃 .md 裡的檔案引用（存在性）與「§X」節號引用
+                      #   `--baseline` 只看新增；存量問題見 待办清单.md §十六
+  gen_feature_overview.py  #  由真源 gui/feature_index.py 重新生成 docs/player/功能总览.md
 
 config/                # 執行期組態（§8）
 save/                  # 使用者存檔 *.json
@@ -655,8 +658,10 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
   現狀**，非回歸；該腳本所有 check 共用一個 `main()`，一條 FAIL 就 `sys.exit(1)`，pytest 層面無法
   只跳過一條，所以排的是整個文件。真護欄是同文件的 C3e（k=4 ≥ 5/10）。詳
   `docs/agent/待办清单.md` §十五——別把它當回歸，也別為了變綠去調門檻。
-- **lint**：`python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json --strict`，
-  任何相對 baseline 的新增問題都非零退出（baseline 錨定 81 條已知簽名）。
+- **lint**：①`python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json --strict`，
+  任何相對 baseline 的新增問題都非零退出（baseline 錨定 81 條已知簽名）；
+  ②`python tools/doclink_check.py --baseline tools/doclink_baseline.json --strict`，
+  擋「文檔引用到不存在的檔案」與「§X 節號不存在」兩類腐爛（存量見 待办清单.md §十六）。
 
 ---
 

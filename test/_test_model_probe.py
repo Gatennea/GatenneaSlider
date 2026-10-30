@@ -74,7 +74,7 @@ def probe_tri(k=6):
     from engine.registry import make_board
 
     print(f'\n== 三角 k={k}：文件版 vs 代码版 ==')
-    from _gen_model_tri import build as build_tri
+    from script__gen_model_tri import build as build_tri
     model = _load(build_tri(k))
     b_file = Board(model.spec, model.spec.goal_blocks)
     board_code = make_board('tri', k=k)
@@ -105,7 +105,7 @@ def probe_tri(k=6):
 def probe(m, n):
     from engine.board import Board
     from engine.registry import square_spec
-    from _gen_model_probe import build_square
+    from script__gen_model_probe import build_square
 
     print(f'\n== 方形 {m}×{n}：文件版 vs 代码版 ==')
     model = _load(build_square(m, n))
@@ -150,7 +150,7 @@ def test_probe_files_are_out_of_runtime():
     check(not (probe_json & model_json),
           '探针文件不在 models/ 下（不会被运行时注册）', str(probe_json & model_json))
     # 文件内容与生成器一致（防止手改后忘记重新生成）
-    from _gen_model_probe import build_square
+    from script__gen_model_probe import build_square
     for fname, (m, n) in (('square_4x4.json', (4, 4)),
                           ('square_6x6.json', (6, 6))):
         path = os.path.join(probe_dir, fname)
@@ -161,7 +161,7 @@ def test_probe_files_are_out_of_runtime():
             got = json.load(f)
         check(got == build_square(m, n), f'{fname} 与生成器输出一致（未被手改）')
     # 三角探针
-    from _gen_model_tri import build as build_tri
+    from script__gen_model_tri import build as build_tri
     tpath = os.path.join(probe_dir, 'tri_6.json')
     if os.path.exists(tpath):
         with open(tpath, encoding='utf-8') as f:
