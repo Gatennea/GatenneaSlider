@@ -99,6 +99,9 @@ HISTORY_HINT_RE = re.compile(
 # 文件当然还不存在。
 PLANNED_HINT_RE = re.compile(r'(建議|建议|新增|計劃|计划|待建|拟建|擬建|TODO)')
 
+# 占位名：文档举例时写的示意文件名（`script_X.py`、`experiments/X.py`）
+PLACEHOLDER_RE = re.compile(r'(^|[_/])X(\.|$)')
+
 # 运行期资源 / 外部素材目录：仓库里没有也不算文档断链。
 # 注意这里存的是**去掉尾部斜杠**后的名字（与 norm 口径一致）。
 RESOURCE_DIRS = {
@@ -338,11 +341,16 @@ def scan(root):
                     continue
                 if len(tok.rstrip('/\\')) < 2:  # 伪 token（单独的 `/` 之类）
                     continue
+                if os.path.basename(tok).startswith('.'):
+                    # `.md` / `.py` 这种是「某类文件」的通配写法，不是引用某个文件
+                    continue
+                if PLACEHOLDER_RE.search(tok):
+                    continue  # 示意用的占位名（script_X.py / experiments/X.py）
                 r = resolve_file_ref(root, md_rel, tok, name_index)
                 if r is not None:
                     if r.startswith('AMBIGUOUS:'):
                         findings.append(
-                            ('ambiguous', 'AM|%s|%d|%s' % (md_rel, ln, tok.rstrip('/\\')),
+                            ('ambiguous', 'AM|%s|%s' % (md_rel, tok.rstrip('/\\')),
                              '%s:%d  同名多个，无法确定指哪一个：`%s` → %s'
                              % (md_rel, ln, tok, r[len('AMBIGUOUS:'):])))
                     continue
@@ -356,18 +364,18 @@ def scan(root):
                     # 待办清单本来就会提到"要建的模块"，提到不存在的文件是正常的
                     why = '待办清单中提到的待建 / 待定文件，非断链'
                 if why:
-                    findings.append(('known_broken', 'KB|%s|%d|%s' % (md_rel, ln, norm),
+                    findings.append(('known_broken', 'KB|%s|%s' % (md_rel, norm),
                                      '%s:%d  已知断链（白名单）：`%s` —— %s'
                                      % (md_rel, ln, tok, why)))
                     continue
                 # 文档与代码才当断链；产物 / 资源 / 一次性脚本只提示
                 if ext in ARTIFACT_EXT or norm in RESOURCE_DIRS \
                         or (ext == 'py' and ONE_OFF_RE.match(os.path.basename(tok))):
-                    findings.append(('artifact_ref', 'AR|%s|%d|%s' % (md_rel, ln, norm),
+                    findings.append(('artifact_ref', 'AR|%s|%s' % (md_rel, norm),
                                      '%s:%d  产物/资源不存在（不视为断链）：`%s`'
                                      % (md_rel, ln, tok)))
                     continue
-                findings.append(('file_ref', 'FR|%s|%d|%s' % (md_rel, ln, norm),
+                findings.append(('file_ref', 'FR|%s|%s' % (md_rel, norm),
                                  '%s:%d  文件不存在：`%s`' % (md_rel, ln, tok)))
 
             # --- 2. 节号引用 ---
@@ -383,12 +391,19 @@ def scan(root):
                 want = num if '.' in num else str(cn2int(num))
                 if not nums:
                     findings.append(('sec_unverifiable',
-                                     'SU|%s|%d|%s|%s' % (md_rel, ln, key, want),
+                                     'SU|%s|%s|%s' % (md_rel, key, want),
                                      '%s:%d  目标无编号节，无法校验：`%s §%s`'
                                      % (md_rel, ln, key, num)))
                 elif want not in nums:
+                    # 待办清单会引用"待修 / 待补的节号"，与 file_ref 一样降级
+                    if md_rel.endswith('待办清单.md'):
+                        findings.append(('known_broken',
+                                         'KB|%s|SEC:%s|%s' % (md_rel, key, want),
+                                         '%s:%d  待办清单里登记的失效节号：`%s §%s`'
+                                         % (md_rel, ln, key, num)))
+                        continue
                     findings.append(('sec_ref',
-                                     'SR|%s|%d|%s|%s' % (md_rel, ln, key, want),
+                                     'SR|%s|%s|%s' % (md_rel, key, want),
                                      '%s:%d  节号不存在：`%s §%s`（现有节号：%s）'
                                      % (md_rel, ln, key, num,
                                         ', '.join(sorted(nums, key=lambda x: cn2int(x.split('.')[0]))))))
