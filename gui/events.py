@@ -485,6 +485,13 @@ class EventsMixin:
                                 if rect.collidepoint(mx, my):
                                     in_dropdown = True
                                     break
+                        # 二级子菜单同样算「菜单层内」：否则点子菜单项会被守卫
+                        # 当成空白而跳过，导致二级条目点了没反应（旧死代码）。
+                        if not in_dropdown and self.show_puzzle_menu and getattr(self, 'puzzle_sub_open', ''):
+                            for rect in getattr(self, 'puzzle_sub_rects', ()):
+                                if rect.collidepoint(mx, my):
+                                    in_dropdown = True
+                                    break
                         if not in_dropdown and self.show_macro_menu and hasattr(self, 'macro_menu_rects'):
                             for rect in self.macro_menu_rects:
                                 if rect.collidepoint(mx, my):
@@ -492,6 +499,10 @@ class EventsMixin:
                                     break
                         # 如果不在菜单栏、下拉菜单或右侧面板，跳过事件
                         if my >= self.menu_bar_height and mx < self.screen_width - self.right_panel_width and not in_dropdown:
+                            # 点空白（菜单层之外）即收起所有下拉菜单；谜题二级
+                            # 子菜单是「常驻」的——鼠标挪开不收，只有点空白才收。
+                            if self.show_file_menu or self.show_edit_menu or self.show_puzzle_menu or self.show_macro_menu:
+                                self.close_all_menus()
                             continue
                 
                 # 鼠标移动
@@ -559,8 +570,13 @@ class EventsMixin:
                                     self.puzzle_menu_hovered = i
                                 break
 
-                    # 谜题二级子菜单悬停：悬停在一级可展开项上即展开；
-                    # 鼠标移入子菜单保持打开，离开入口与子菜单则收起
+                    # 谜题二级子菜单悬停：悬停在一级可展开项上即展开。
+                    # 常驻行为——鼠标挪开子菜单不自动收起（避免旧 bug：
+                    # 子菜单从一级菜单顶部起画、与所属条目行不在同一高度，
+                    # 移过去要跨一段纵向空白，鼠标一离开条目行子菜单就消失，
+                    # 远端谜题点不到），只有点空白或点其他菜单项才收起
+                    # （见 MOUSEBUTTONDOWN 的空白收起与点击菜单项收起）。
+                    # 悬停另一可展开项则切换到那个子菜单。
                     self.puzzle_sub_hovered = -1
                     if self.show_puzzle_menu:
                         for i, rect in enumerate(self.puzzle_menu_rects):
@@ -570,23 +586,12 @@ class EventsMixin:
                                     self.puzzle_sub_open = p[2]
                                 break
                         if self.puzzle_sub_open:
-                            in_sub = False
                             for i, rect in enumerate(self.puzzle_sub_rects):
                                 if rect.collidepoint(mx, my):
                                     item = self.puzzle_sub_presets[self.puzzle_sub_open][i]
                                     if not (len(item) == 1 and item[0] == '---'):
                                         self.puzzle_sub_hovered = i
-                                    in_sub = True
                                     break
-                            if not in_sub:
-                                entry_hovered = any(
-                                    j == self.puzzle_menu_hovered
-                                    and len(self.puzzle_presets[j]) == 3
-                                    and self.puzzle_presets[j][1] == '__sub__'
-                                    and self.puzzle_presets[j][2] == self.puzzle_sub_open
-                                    for j in range(len(self.puzzle_presets)))
-                                if not entry_hovered:
-                                    self.puzzle_sub_open = ''
                     
                     # 宏定义菜单悬停
                     self.macro_menu_hovered = -1

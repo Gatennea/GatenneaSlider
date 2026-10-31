@@ -146,8 +146,8 @@ def main():
     ys = [p[1] for poly, _ in gp for p in poly]
     gw, gh = max(xs) - min(xs), max(ys) - min(ys)
     fitted = model_preview._fit(gp, 104)
-    fx = [p[0] for poly, _ in fitted for p in poly]
-    fy = [p[1] for poly, _ in fitted for p in poly]
+    fx = [p[0] for poly, *_ in fitted for p in poly]
+    fy = [p[1] for poly, *_ in fitted for p in poly]
     fw, fh = max(fx) - min(fx), max(fy) - min(fy)
     ratio_geo = gw / gh
     ratio_fit = fw / fh
@@ -392,10 +392,16 @@ def main():
           'K2 内置板型（矩形/三角/米字/数字）都进了预览目标', str(sorted(kinds)))
     check(any(t[0] == 'model' for t in targets), 'K3 模型板型也在其中')
 
+    # 分组 / 分隔线 / 当前行 / 纯文字条目 仍不给预览
     bad_items = [('__group__', '分组'), ('---',), ('__current__',),
-                 ('自定义...',), ('样式', '__custom__', 'x')]
+                 ('自定义...',)]
     check(all(model_preview.target_of_item(it) is None for it in bad_items),
-          'K4 非谜题条目（分组/分隔线/当前行/自定义）不给预览')
+          'K4 非谜题条目（分组/分隔线/当前行/纯文字）不给预览')
+    # 自定义样式预设（捆绑谜题 / 自定义还原态）现在要给预览：识别成 ('style', name)
+    # —— 这是 2026-10-31 新增的预览目标类型，旧的 K4 把这类条目也当成
+    # 「不给预览」已过时，这里改成钉住新行为。
+    check(model_preview.target_of_item(('样式', '__custom__', 'x')) == ('style', 'x'),
+          'K4b 自定义样式预设识别成 style 预览目标')
     tri_item = ('边长4 等级1', 4, 4, 1, 'triangle')
     check(model_preview.target_of_item(tri_item) == ('board', 'triangle', 4, 4, 1),
           'K5 异形档位识别成内置板型（不再当模型名查表）',

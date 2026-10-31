@@ -2524,7 +2524,17 @@ class RendererMixin:
 
                 self._draw_sub_arrow(menu_x + menu_width - 10, center_y)
                 if sub_open:
-                    self.draw_puzzle_sub_menu(preset[2], menu_x + menu_width + 2)
+                    # 二级子菜单以所属一级条目为中心纵向定位：顶边取条目中心
+                    # 上移半个子菜单高，再夹在菜单栏与屏幕底之间，避免子菜单
+                    # 顶到屏幕外；这样它紧贴入口、鼠标横移一小段就能点到，
+                    # 不必再跨一整段纵向空白。
+                    sub_items = self.puzzle_sub_presets[preset[2]]
+                    sub_h = 26 * len(sub_items)
+                    sub_top = center_y - sub_h // 2
+                    sub_top = max(self.menu_bar_height,
+                                  min(sub_top, self.screen_height - sub_h))
+                    self.draw_puzzle_sub_menu(
+                        preset[2], menu_x + menu_width + 2, sub_top)
                 continue
 
             if i == self.puzzle_menu_hovered:
@@ -2597,11 +2607,12 @@ class RendererMixin:
         pygame.draw.line(self.screen, color, (cx - k, cy + k), (cx + k, cy - k), 2)
         hits.append((btn, preset))
 
-    def draw_puzzle_sub_menu(self, subkey, sub_x):
-        """绘制谜题二级子菜单（画在一级项右侧）。
+    def draw_puzzle_sub_menu(self, subkey, sub_x, sub_y=None):
+        """绘制谜题二级子菜单（画在一级项右侧，纵向以附属一级条目为中心）。
 
         条目格式与一级 preset 相同（分组标题/分隔线/谜题档位），
         「当前✓」用同一套 _preset_puzzle_key 比对。
+        sub_y 为子菜单顶边的 y；不传时回落到菜单栏下方（兼容旧调用）。
         """
         items = self.puzzle_sub_presets[subkey]
         item_height = 26
@@ -2615,7 +2626,7 @@ class RendererMixin:
             w = self.menu_font.size(name)[0]
             menu_width = max(menu_width, w + 40)
         menu_x = sub_x
-        menu_y = self.menu_bar_height
+        menu_y = self.menu_bar_height if sub_y is None else sub_y
         menu_height = item_height * len(items)
 
         dropdown_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
@@ -2702,11 +2713,12 @@ class RendererMixin:
         放在主循环里而不是悬停时：悬停只剩「读图」这一步，零等待也零风险。
         本身不抛异常（失败只是没有预览），这里再兜一层是防 import 级别的意外。
         """
-        try:
-            from gui import model_preview
-            model_preview.pump(self.colors, targets=self._preview_targets())
-        except Exception:      # noqa: BLE001 —— 见 docstring
-            pass
+    try:
+        from gui import model_preview
+        model_preview.set_config_dir(self.config_dir)
+        model_preview.pump(self.colors, targets=self._preview_targets())
+    except Exception:      # noqa: BLE001 —— 见 docstring
+        pass
 
     def _draw_hover_preview(self, panel_x, panel_y):
         """悬停谜题条目时的预览面板。
@@ -2735,8 +2747,8 @@ class RendererMixin:
         """二级菜单里悬停任意谜题条目时，在旁边显示复原态 + 一种打乱态。
 
         哪些条目有预览由 `model_preview.target_of_item()` 决定：内置档位
-        （矩形/三角/米字/数字）与模型文件档位都有，分组标题 / 分隔线 /
-        当前行 / 自定义样式没有。
+        （矩形/三角/米字/数字）、模型文件档位、以及自定义样式（捆绑谜题 /
+        自定义还原态两个子菜单）都有；分组标题 / 分隔线 / 当前行没有。
 
         ⚠️ 2026-10-26 的教训：早先判据是「len==5 且第 5 项是字符串」，于是
         异形档位 `('边长4 等级1', 4, 4, 1, 'triangle')` 被当成模型名去查注册表，
@@ -2748,6 +2760,7 @@ class RendererMixin:
         出现。
         """
         from gui import model_preview
+        model_preview.set_config_dir(self.config_dir)
 
         idx = getattr(self, 'puzzle_sub_hovered', -1)
         items = (getattr(self, 'puzzle_sub_presets', None) or {}).get(

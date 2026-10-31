@@ -52,6 +52,7 @@ import os
 import re
 import threading
 import time
+from collections import defaultdict
 
 import pygame
 
@@ -67,7 +68,12 @@ _PAD = 5
 # v3：文件名加 step（等级1/2 曾共用一个缓存文件互相覆盖），旧命名一律清掉。
 # v4：数字谜题的缩图上开始画编号（2026-10-29）。同一目标、同一尺寸下，
 #     「有字」与「无字」是两张不同的图，不升版本号就会让无字的旧图一直冒充。
-_CACHE_VER = 4
+# v5：回退「捆绑块融合」那版算法——那版把整块板按连通分量只描外缘，相邻块
+#     （含普通相邻的块）全连成一块，预览糊成一坨、数不清块数，比不改还糟。
+# v6：正确做法——按捆绑组号融合：同一组号的多块画成一坨刚体（只描外缘、
+#     内部无缝），不同组号 / 独立块各自描边、彼此留缝。既显出捆绑关系，
+#     又不把整盘糊成一团。v5 的逐块图作废重算。
+_CACHE_VER = 6
 
 # 打乱口径：与 GUI 真打乱同源（gui/session.py 的 shuffle_puzzle 用
 # bias=0.3 / min_score=0.75）。缩图必须画玩家真会遇到的局面。
@@ -106,6 +112,21 @@ _inflight = set()
 # 缓存世代：clear_cache() 时 +1。后台线程算完发现世代变了就**不写回**——
 # 否则「编辑器存了新形状 → 清缓存 → 旧线程把旧图写回去」会留下旧预览。
 _gen = [0]
+
+# 自定义样式（捆绑谜题 / 自定义还原态）预览：样式数据落在 config/design_styles/，
+# 需要 config_dir 才能从名字取到几何。renderer 在每帧预热 / 悬停预览前把它设进来
+# （样式数量极少，一次赋值开销可忽略）。没设时样式预览返回「不可用」，不影响
+# 内置板型 / 模型档位的预览。
+_config_dir = None
+
+
+def set_config_dir(config_dir):
+    """让样式预览能按名字找到 config/design_styles/<name>.json。
+
+    只有 `('style', name)` 这类目标会用到；内置板型与模型档位的预览不依赖它。
+    """
+    global _config_dir
+    _config_dir = config_dir
 
 
 def clear_cache():
@@ -273,6 +294,15 @@ def target_of_item(item):
     也是字符串（kind），曾据此把它当模型名。未知 kind / 不存在的模型名
     一律返回 None —— 宁可不给预览，也不要画一个错的。
     """
+    # 自定义样式预设（捆绑谜题 / 自定义还原态两个子菜单）：条目形如
+    # ('名', '__custom__', '名')，按保存的还原态样式开局。预览目标只记样式名，
+    # 几何在 _new_game / _target_hash 里按 _config_dir 现取（保持 target 小巧、
+    # 缓存键稳定）。_config_dir 未设置时返回 None，不影响内置/模型档位的预览。
+    if len(item) == 3 and item[1] == '__custom__':
+        name = item[2]
+        if isinstance(name, str) and name:
+            return ('style', name)
+        return None
     if not isinstance(item, (tuple, list)) or len(item) < 4:
         return None
     if not all(isinstance(v, int) and not isinstance(v, bool)
@@ -298,6 +328,10 @@ def _target_tag(target):
     """
     if target[0] == 'model':
         raw = f'model_{target[1]}_s{target[2]}'
+    elif target[0] == 'style':
+        safe = ''.join(ch if ch.isalnum() or ch in '-_.' else '_'
+                       for ch in str(target[1]))
+        raw = f'style_{safe}'
     else:
         _, kind, m, n, step = target
         raw = f'board_{kind}_{m}x{n}s{step}'
@@ -312,6 +346,28 @@ def _new_game(target):
         _, name, step = target
         # 模型局固定 4×4（与菜单条目、GUI.new_model_puzzle 同口径）
         return create_adapter_puzzle(name, 4, 4, int(step))
+    if target[0] == 'style':
+        # 自定义样式：复用「点菜单项开局」同一条造盘路径
+        # （new_puzzle + apply_pattern + set_goal_pattern），只是无头执行。
+        from gui import design_styles
+        name = target[1]
+        data = design_styles.load_style(_config_dir, name) if _config_dir else None
+        if not data:
+            raise ValueError(f'样式「{name}」读取失败')
+        kind = str(data.get('kind') or 'square')
+        m = int(data.get('m') or 0)
+        n = int(data.get('n') or 0)
+        step = int(data.get('step') or 1)
+        cells = [tuple(p) for p in data.get('cells', [])]
+        groups = design_styles.groups_from_data(data)
+        if kind == 'triangle':
+            # 三角样式的 m 字段就是斜边边长 k（见 _ann_design_start_style）
+            game = create_adapter_puzzle('triangle', m, n, step, triangle_side=m)
+        else:
+            game = create_adapter_puzzle(kind, m, n, step)
+        game.apply_pattern(cells, groups)
+        game.set_goal_pattern(cells)
+        return game
     _, kind, m, n, step = target
     return create_adapter_puzzle(kind, int(m), int(n), int(step))
 
@@ -325,6 +381,15 @@ def _spec_of(target):
     return _new_game(target).board.spec
 
 
+def _step_of(target):
+    """该目标的打乱等级（缩图用）。样式目标按名字现取，不依赖 target 长度。"""
+    if target[0] == 'style':
+        from gui import design_styles
+        data = design_styles.load_style(_config_dir, target[1]) if _config_dir else None
+        return int((data or {}).get('step') or 1)
+    return int(target[-1])
+
+
 def _attempts_for(target):
     """该目标打乱多少步：真打乱口径 m*n*10，但封顶 _MAX_ATTEMPTS。
 
@@ -333,6 +398,13 @@ def _attempts_for(target):
     """
     if target[0] == 'model':
         m = n = 4
+    elif target[0] == 'style':
+        from gui import design_styles
+        data = design_styles.load_style(_config_dir, target[1]) if _config_dir else None
+        m = n = 4
+        if data:
+            m = max(2, int(data.get('m') or 4))
+            n = max(2, int(data.get('n') or 4))
     else:
         _, _kind, m, n, _step = target
     return max(40, min(int(m) * int(n) * 10, _MAX_ATTEMPTS))
@@ -341,7 +413,7 @@ def _attempts_for(target):
 def _shape_set(polys):
     """多边形集合的规范形（画出来一样 ⟺ 集合一样），用于「打乱没打乱」判据。"""
     return {tuple(sorted((round(x, 2), round(y, 2)) for x, y in poly))
-            for poly, _idx in polys}
+            for poly, _idx, *_ in polys}
 
 
 def _polys_goal(spec):
@@ -400,7 +472,8 @@ def _polygons_of_game(game):
         poly = spec.cell_polygon(key[0], key[1])
         if not poly:
             continue
-        polys.append(([(float(x), float(y)) for x, y in poly], i))
+        polys.append(([(float(x), float(y)) for x, y in poly], i,
+                      getattr(b, 'group', 0) or 0))
     return polys, None
 
 
@@ -430,7 +503,7 @@ def _polys_scrambled(target, goal_polys=None, size=THUMB_SIZE):
 
     for _try in range(_SCRAMBLE_TRIES):
         game = _new_game(target)
-        step = int(target[-1])
+        step = _step_of(target)
         budget = _attempts_for(target)
         done = 0
         t0 = time.time()
@@ -456,8 +529,8 @@ def _fit(polys, size, pad=_PAD):
     比例尺，复原态会被压成中间一小坨（模型局的散开幅度能到 3 倍以上）。
     缩图要的是「看清这题长什么样」，不是「比较两张的绝对大小」。
     """
-    xs = [p[0] for poly, _ in polys for p in poly]
-    ys = [p[1] for poly, _ in polys for p in poly]
+    xs = [p[0] for poly, _idx, *_ in polys for p in poly]
+    ys = [p[1] for poly, _idx, *_ in polys for p in poly]
     if not xs:
         return []
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
@@ -466,33 +539,78 @@ def _fit(polys, size, pad=_PAD):
     scale = min(box / w, box / h)
     ox = (size - w * scale) / 2.0 - x0 * scale
     oy = (size - h * scale) / 2.0 - y0 * scale
-    return [([(x * scale + ox, y * scale + oy) for x, y in poly], idx)
-            for poly, idx in polys]
+    # 相容兩種輸入：三元素 (多邊形, 序號, 組號) 或舊式二元素 (多邊形, 序號)
+    out = []
+    for item in polys:
+        poly, idx = item[0], item[1]
+        gid = item[2] if len(item) > 2 else 0
+        out.append(([(x * scale + ox, y * scale + oy) for x, y in poly], idx, gid))
+    return out
 
 
 def _paint(fitted, size, palette, labels=None):
     """把已拟合好的多边形画成一张 Surface。**只许在主线程调用**（要碰字体）。
 
-    输入是 `_fit` 的输出（像素坐标），不含任何引擎/GUI 状态，所以这件
-    「画」的活儿可以晚于「算」，且不需要后台线程碰 pygame。
+    输入是 `_fit` 的输出（像素坐标），每块带 (多边形, 块序号, 捆绑组号)，
+    不含任何引擎/GUI 状态。
 
-    块色一律用真盘的 `block` 色（**不按块序上彩虹**）：2026-10-26 实测，
-    单色下复原态与打乱态的像素差 26~37%，本来就分得清；彩色渐变既没换来
-    可读性，还和「自造谜题画风要和碎三角一致」直接冲突。
+    块色一律用真盘的 `block` 色（**不按块序上彩虹**）。
+
+    捆绑块：同组才融合成一坨刚体
+    ---------------------------
+    游戏里「捆绑」= 相邻几块粘成一个刚体、内部无缝。预览据此：同一捆绑组号
+    的多块先全部填充（自然连成一体），再用遮罩取**该组**的连通分量，只描
+    它的**外缘一道**——块间不留内部缝，看起来就是一坨刚体；而**不同组号 /
+    独立块**各自描边、彼此留缝、能数清块数。这样既不是「整块板糊成一团」
+    （上一版误把全板当连通分量），也不是「捆绑块和散块看不出区别」
+    （更早那版逐块描边，捆绑关系完全看不出来）。
     """
     bg, fill, line = palette
     surf = pygame.Surface((size, size))
     surf.fill(bg)
     if not fitted:
         return surf
-    for poly, _idx in fitted:
-        if len(poly) >= 3:
-            pygame.draw.polygon(surf, fill, poly)
+    items = []
+    for item in fitted:
+        if len(item[0]) < 3:
+            continue
+        gid = item[2] if len(item) > 2 else 0
+        items.append((item[0], gid))
     # 描边宽度随缩图尺寸走：104px 用 1px，更大的尺寸给 2px 免得糊
     width = 1 if size <= 160 else 2
-    for poly, _idx in fitted:
-        if len(poly) >= 3:
-            pygame.draw.polygon(surf, line, poly, width)
+    groups = defaultdict(list)
+    for poly, gid in items:
+        groups[gid].append(poly)
+    for gid, polys in groups.items():
+        if gid and len(polys) > 1:
+            # 融合刚体：填充所有块，再对「该组并集」只描外缘一道
+            for poly in polys:
+                pygame.draw.polygon(surf, fill, poly)
+            try:
+                tmp = pygame.Surface((size, size), pygame.SRCALPHA)
+                tmp.fill((0, 0, 0, 0))
+                for poly in polys:
+                    pygame.draw.polygon(tmp, (255, 255, 255, 255), poly)
+                comps = pygame.mask.from_surface(tmp).connected_components()
+                if not isinstance(comps, (list, tuple)):
+                    # 个别版本返回分量个数而非列表 → 退回逐块描边兜底
+                    raise TypeError('connected_components 返回了 %r' % type(comps))
+                drew = False
+                for comp in comps:
+                    pts = comp.outline()
+                    if len(pts) >= 2:
+                        pygame.draw.lines(surf, line, True, pts, width)
+                        drew = True
+                if not drew:
+                    raise RuntimeError('捆绑外缘为空')
+            except Exception:      # noqa: BLE001 —— 遮罩出意外就退回逐块描边兜底
+                for poly in polys:
+                    pygame.draw.polygon(surf, line, poly, width)
+        else:
+            # 独立块 / 单块组：逐块填充+描边，块间留缝
+            for poly in polys:
+                pygame.draw.polygon(surf, fill, poly)
+                pygame.draw.polygon(surf, line, poly, width)
     return surf
 
 
@@ -560,6 +678,20 @@ def _target_hash(target):
 
     if target[0] == 'model':
         got = model_registry.loaded(target[1]).hash()
+    elif target[0] == 'style':
+        from gui import design_styles
+        data = design_styles.load_style(_config_dir, target[1]) if _config_dir else None
+        if not data:
+            got = 'missing-style'
+        else:
+            cells = [tuple(p) for p in data.get('cells', [])]
+            groups = design_styles.groups_from_data(data)
+            raw = repr((str(data.get('kind') or 'square'),
+                        int(data.get('m') or 0), int(data.get('n') or 0),
+                        int(data.get('step') or 0),
+                        sorted(tuple(c) for c in cells),
+                        sorted((tuple(p), g) for p, g in groups.items())))
+            got = hashlib.sha1(raw.encode('utf-8')).hexdigest()[:8]
     else:
         spec = _spec_of(target)
         raw = repr(sorted((tuple(b.point), b.orient) for b in spec.goal_blocks))
