@@ -10,7 +10,6 @@
 
 import os
 import sys
-import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -86,10 +85,8 @@ def main():
     foot.append('')
     foot.append('---')
     foot.append('')
-    foot.append('> 生成时间：%s。功能增删改后重跑 '
-                '`tools/gen_feature_overview.py` 即可刷新本表；'
-                '改动功能行为请先改 `gui/feature_index.py`（单一真源）。'
-                % time.strftime('%Y-%m-%d %H:%M'))
+    foot.append('> 本表由 `tools/gen_feature_overview.py` 从 `gui/feature_index.py`'
+                '（单一真源）自动生成；功能增删改后重跑该脚本即可刷新，勿手改本表。')
     foot.append('')
 
     text = '\n'.join(head + body + foot)

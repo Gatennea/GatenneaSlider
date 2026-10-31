@@ -29,6 +29,7 @@ import ast
 import os
 import re
 import sys
+import warnings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -43,6 +44,19 @@ PREFIX_REUSE = 'reuse_'
 def _read(path):
     with open(path, encoding='utf-8', errors='replace') as fh:
         return fh.read()
+
+
+def _parse(path):
+    """ast.parse 但吞掉 SyntaxWarning（扫描 import 图无需管坏转义；
+
+    部分旧脚本（solver/ml 搁置方向、experiments 一次性探针）里有非 raw 串
+    含 \\* / \\p 等，ast.parse 会报 invalid escape sequence，与本工具职责无关，
+    不向上冒泡污染 CI 输出）。
+    """
+    src = _read(path)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', SyntaxWarning)
+        return ast.parse(src)
 
 
 def iter_py(root, rel_dir):
@@ -88,7 +102,7 @@ def classify(root, rel_dir='experiments'):
 
     def scan_file(path):
         try:
-            tree = ast.parse(_read(path))
+            tree = _parse(path)
         except (SyntaxError, UnicodeDecodeError, OSError):
             return
         src_rel = os.path.relpath(path, root).replace('\\', '/')
@@ -124,7 +138,7 @@ def classify(root, rel_dir='experiments'):
 
     def scan_path_file(p):
         try:
-            tree = ast.parse(_read(p))
+            tree = _parse(p)
         except (SyntaxError, UnicodeDecodeError, OSError):
             return
         src_rel = os.path.relpath(p, root).replace('\\', '/')
