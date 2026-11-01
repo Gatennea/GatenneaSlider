@@ -31,6 +31,67 @@ from gui.triangle_view import TriangleBoardView
 from records import format_time
 
 
+def _seg_intersection(p1, p2, p3, p4):
+    """线段 p1-p2 与 p3-p4 的交点；不相交返回 None。"""
+    x1, y1 = p1; x2, y2 = p2; x3, y3 = p3; x4, y4 = p4
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-9:
+        return None
+    px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denom
+    py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom
+
+    def _between(a, b, c):
+        return min(a, b) - 1e-6 <= c <= max(a, b) + 1e-6
+    if (_between(x1, x2, px) and _between(y1, y2, py)
+            and _between(x3, x4, px) and _between(y3, y4, py)):
+        return (px, py)
+    return None
+
+
+def _seg_polygon_intersections(a, b, poly):
+    """线段 a-b 与多边形 poly（顶点列表）各边的交点列表。"""
+    pts = []
+    n = len(poly)
+    for i in range(n):
+        hit = _seg_intersection(a, b, poly[i], poly[(i + 1) % n])
+        if hit is not None:
+            pts.append(hit)
+    return pts
+
+
+def _convex_hull(points):
+    """points 的凸包（逆时针顶点列表，monotone chain）。"""
+    pts = sorted(set((round(x, 4), round(y, 4)) for (x, y) in points))
+    if len(pts) <= 2:
+        return pts
+
+    def _cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and _cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and _cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def _extend_line(a, b, margin):
+    """把线段 a-b 沿其方向双向延长 margin 像素，得到近乎无限长的直线端点。"""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return (a, b)
+    ux, uy = dx / length, dy / length
+    return ((a[0] - ux * margin, a[1] - uy * margin),
+            (b[0] + ux * margin, b[1] + uy * margin))
+
+
 class RendererMixin:
     """渲染相关方法 Mixin"""
 
@@ -560,6 +621,10 @@ class RendererMixin:
         # 悬停缝高亮（画在最上层，与米字/通用同一处）
         self._draw_hover_gap()
 
+        # 选不中缝反馈统一：捆绑内部缝打叉 + 非捆绑拒绝缝补白线预览
+        self._draw_gap_reject_marks()
+        self._draw_rejected_gap_preview()
+
     def draw_mi_board(self):
         """繪製米字格棋盤（两次触控 + 虚拟键盘，方向由第二下的拖动给出）。
 
@@ -737,6 +802,10 @@ class RendererMixin:
 
         # 悬停缝高亮（画在最上层，与三角/通用同一处）
         self._draw_hover_gap()
+
+        # 选不中缝反馈统一：捆绑内部缝打叉 + 非捆绑拒绝缝补白线预览
+        self._draw_gap_reject_marks()
+        self._draw_rejected_gap_preview()
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。
@@ -1155,6 +1224,10 @@ class RendererMixin:
         # 懸停縫高亮（画在最上层，否则被滑块盖掉一半）
         self._draw_hover_gap()
 
+        # 选不中缝反馈统一：捆绑内部缝打叉 + 非捆绑拒绝缝补白线预览
+        self._draw_gap_reject_marks()
+        self._draw_rejected_gap_preview()
+
     def _poly_neighbors_of(self, view):
         """通用通道的鄰接回調（餵給 _draw_bandaged_groups_poly）。
 
@@ -1385,6 +1458,225 @@ class RendererMixin:
         pygame.draw.line(self.screen, col, a, b, width)
         if antialias:
             pygame.draw.aaline(self.screen, col, a, b)
+
+    # ------------------------------------------------------------------
+    # 选不中缝的反馈统一（2026-11-01）：
+    #   捆绑内部缝 与 非捆绑块（外沿/两侧推不动）对玩家无本质区别，故统一提示
+    #   + 统一「选中预览（白线）」；捆绑内部缝额外在「缝切入/切出捆绑块」的两
+    #   个交点打叉号，提前标出不能选它的地方（见用户手绘预览：GATENNEASTYLE
+    #   基础上只在捆绑块与缝相交处加了这两个叉）。
+    # ------------------------------------------------------------------
+    def _gap_screen_line(self, gap):
+        """给定一条缝 (gap_type, line)，回传它在屏幕上的两个端点（贯穿直线）。
+
+        与 _draw_hover_gap / draw_board 选中红线同一套几何口径：方形直接套
+        像素公式；多边形/米字/三角走各自视图的缝线段，再转屏幕坐标。
+        """
+        if not gap:
+            return None
+        gt, line = gap[0], gap[1]
+        pv = self._polygon_view()
+        if pv is not None:
+            try:
+                origin = self._poly_view_origin(pv)
+                segs = self._poly_seam_segments(pv, gt, line, origin)
+                if segs:
+                    a, b = segs[0][0], segs[0][1]
+                    return (self.world_to_screen(*a),
+                            self.world_to_screen(*b))
+            except Exception:
+                pass
+            return None
+        if getattr(self, 'triangle_mode', False):
+            try:
+                view = self._tri_view()
+                seg = view.gap_line_segment(
+                    gt, line, view.board_hull(self.game.positions()))
+                if seg:
+                    return (self.world_to_screen(*seg[0]),
+                            self.world_to_screen(*seg[1]))
+            except Exception:
+                pass
+            return None
+        if getattr(self, 'mi_mode', False):
+            try:
+                view = self._mi_view()
+                seg = view.gap_segment(
+                    gt, line, view.board_hull(self.game.positions()))
+                if seg:
+                    return (self.world_to_screen(*seg[0]),
+                            self.world_to_screen(*seg[1]))
+            except Exception:
+                pass
+            return None
+        # 方形
+        if gt not in ('h', 'v'):
+            return None
+        _cell, scaled_gap, step_px = self._board_px()
+        cam_x, cam_y = int(round(self.camera_x)), int(round(self.camera_y))
+        if gt == 'h':
+            y = (line + 1) * step_px - scaled_gap + cam_y + scaled_gap // 2
+            return ((0, y), (self.screen_width, y))
+        x = (line + 1) * step_px - scaled_gap + cam_x + scaled_gap // 2
+        return ((x, 0), (x, self.screen_height))
+
+    def _bundled_group_hulls_screen(self):
+        """每个「已捆绑」组（group != 0）的屏幕凸包多边形；没有返回空。
+
+        按组取凸包（而非逐块多边形）的原因：捆绑内部缝通常正好落在两块
+        胶粘块的共用边上——若拿逐块多边形去求交，缝线会与边共线而求不到
+        交点；而拿「整组外围」去求交，缝线切入/切出整组的两点正是该画叉号
+        的位置（见用户手绘预览：叉号标在缝进/出捆绑块处）。
+        """
+        game = getattr(self, 'game', None)
+        if game is None:
+            return []
+        per = {}  # gid -> [屏幕顶点...]
+        pv = self._polygon_view()
+        if pv is not None:
+            origin = self._poly_view_origin(pv)
+            for b in game.blocks:
+                g = getattr(b, 'group', 0)
+                if not g:
+                    continue
+                try:
+                    wp = pv.world_polygon(b.point, b.orient, origin)
+                    per.setdefault(g, []).extend(
+                        self.world_to_screen(*p) for p in wp)
+                except Exception:
+                    pass
+        elif getattr(self, 'triangle_mode', False):
+            view = self._tri_view()
+            for b in game.blocks:
+                g = getattr(b, 'group', 0)
+                if not g:
+                    continue
+                try:
+                    i, j, up = tri_key(b)
+                    per.setdefault(g, []).extend(
+                        self.world_to_screen(*p) for p in view.piece_polygon(i, j, up))
+                except Exception:
+                    pass
+        elif getattr(self, 'mi_mode', False):
+            view = self._mi_view()
+            for b in game.blocks:
+                g = getattr(b, 'group', 0)
+                if not g:
+                    continue
+                try:
+                    r, c, q = mi_key(b)
+                    per.setdefault(g, []).extend(
+                        self.world_to_screen(*p) for p in view.piece_polygon(r, c, q))
+                except Exception:
+                    pass
+        else:
+            # 方形：块矩形四角
+            for b in game.blocks:
+                g = getattr(b, 'group', 0)
+                if not g:
+                    continue
+                bx, by, bw, bh = self.board_view.block_rect(*b.location)
+                x0, y0 = self.world_to_screen(bx, by)
+                x1, y1 = self.world_to_screen(bx + bw, by + bh)
+                per.setdefault(g, []).extend(
+                    [(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        hulls = []
+        for verts in per.values():
+            if len(verts) >= 3:
+                hulls.append(_convex_hull(verts))
+        return hulls
+
+    def _gap_reject_mark_points(self):
+        """当前预览/选中的缝若「从中间切开捆绑块」，回传叉号屏幕坐标列表。
+
+        只处理 bandage_internal_seams 这类缝：几何上合法（鼠标下有白线预览），
+        但真选中会切开同组块，故在「缝切入/切出捆绑块」的两个交点打叉。
+        非捆绑的选不中缝由统一提示文案覆盖，不在盘面画叉。
+        """
+        game = getattr(self, 'game', None)
+        if game is None or not hasattr(game, 'bandage_internal_seams'):
+            return []
+        # 已选中有效滑块 → 拒绝反馈（白线+叉号）让位给当前选择，免得盖在上面
+        if getattr(self, 'selected_block', None) is not None:
+            return []
+        # 优先取「被拒的缝」（点击后留下来的 rejected_gap），其次当前悬停缝、
+        # 再次之已选中缝——后两者本就不是捆绑内部缝，只作占位
+        gap = getattr(self, 'rejected_gap', None)
+        if not gap:
+            gap = self._hover_gap_current()
+        if not gap:
+            gap = getattr(self, 'selected_gap', None)
+        if not gap:
+            return []
+        try:
+            bi = game.bandage_internal_seams()
+        except Exception:
+            return []
+        if gap not in bi:
+            return []
+        line = self._gap_screen_line(gap)
+        if line is None:
+            return []
+        # 缝线可能是被棋形凸包裁短的一段（三角/米字），要当无限直线来求与整组
+        # 凸包的交点 → 先双向延长
+        a, b = _extend_line(line[0], line[1],
+                            2.0 * (self.screen_width + self.screen_height))
+        polys = self._bundled_group_hulls_screen()
+        pts = []
+        for poly in polys:
+            pts.extend(_seg_polygon_intersections(a, b, poly))
+        # 去重（同一交点被相邻边重复命中等）
+        uniq = []
+        for p in pts:
+            if not any(abs(p[0] - q[0]) < 1.0 and abs(p[1] - q[1]) < 1.0
+                       for q in uniq):
+                uniq.append(p)
+        return uniq
+
+    def _draw_x(self, x, y, r, color, width=2):
+        pygame.draw.line(self.screen, color, (x - r, y - r), (x + r, y + r), width)
+        pygame.draw.line(self.screen, color, (x - r, y + r), (x + r, y - r), width)
+
+    def _draw_gap_reject_marks(self):
+        """捆绑内部缝：在缝与捆绑块相交处画叉号（提示不能选这条缝）。"""
+        pts = self._gap_reject_mark_points()
+        if not pts:
+            return
+        col = (255, 196, 48)        # 琥珀色警示，区别于红缝/蓝块
+        outline = (18, 18, 18)
+        for (sx, sy) in pts:
+            self._draw_x(sx, sy, 10, outline, width=4)
+            self._draw_x(sx, sy, 8, col, width=2)
+
+    def _draw_rejected_gap_preview(self):
+        """非捆绑块导致的选不中缝：补上「选中预览（白线）」（原本只有提示）。
+
+        与 _draw_hover_gap 同款灰闪，让两种拒绝都有选不中的缝预览。
+        """
+        gap = getattr(self, 'rejected_gap', None)
+        if not gap:
+            return
+        # 已选中有效滑块 → 拒绝白线让位给当前选择
+        if getattr(self, 'selected_block', None) is not None:
+            return
+        line = self._gap_screen_line(gap)
+        if line is None:
+            return
+        t = pygame.time.get_ticks()
+        phase = (t % 1800) / 1800.0
+        pulse = 0.5 - 0.5 * math.cos(phase * 2.0 * math.pi)
+        g = int(105.0 + 85.0 * pulse)
+        color = (g, g, g + 8)
+        a, b = line
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            return
+        ux, uy = dx / length, dy / length
+        span = 2.0 * (self.screen_width + self.screen_height)
+        p1 = (a[0] - ux * span, a[1] - uy * span)
+        p2 = (b[0] + ux * span, b[1] + uy * span)
+        pygame.draw.line(self.screen, color, p1, p2, 2)
 
     def draw_board(self):
         """绘制游戏主界面"""
@@ -1620,6 +1912,10 @@ class RendererMixin:
 
         # 悬停缝高亮（画在最上层，与三角/米字同一处）
         self._draw_hover_gap()
+
+        # 选不中缝反馈统一：捆绑内部缝打叉 + 非捆绑拒绝缝补白线预览
+        self._draw_gap_reject_marks()
+        self._draw_rejected_gap_preview()
 
     def _draw_bandaged_groups_poly(self, disp_key, poly_of, neighbors_of):
         """三角/米字：把捆绑组画成一整块（组内无缝、只描组外边界）。

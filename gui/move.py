@@ -19,6 +19,9 @@ from gui.board_view import _seg_dist
 class MoveMixin:
     """移动核心（原 GUI.py 内联代码，整体搬迁）。"""
 
+    # 选不中缝（捆绑内部缝 / 非捆绑死缝）对玩家没有本质区别 → 提示语统一成一种
+    GAP_UNSELECTABLE_MSG = "这条缝选不动：请选旁边的缝"
+
     def _hover_gap_at(self, screen_x, screen_y):
         """鼠标下「点得动」的那条缝（**纯查询，无副作用**）。回 None = 这里
         点下去不会选中缝。
@@ -676,6 +679,8 @@ class MoveMixin:
         通用通道的決策帶依次是：精準死縫 ±6 → 活縫 ±28 → 死縫 ±28 →
         貼邊灰線 ±8（±28 仍小於半格 30，不會跨格誤選對側縫）。
         """
+        # 选不中缝反馈统一：每次点击重新评估，先清掉上一次的拒绝白线
+        self.rejected_gap = None
         gap = self.get_gap_at_pos(screen_x, screen_y)
         block = self.get_block_at_pos(screen_x, screen_y)
         # 寬帶命中的死縫：塊被它收掉時記在這裡，供下面提示分支直接用——
@@ -733,14 +738,12 @@ class MoveMixin:
                            else ('tri' if getattr(self, 'triangle_mode', False)
                                  else 'sq'))
                 if generic:
-                    # 通用通道的否決原因有兩種，分開說（外沿 vs 焊死）
-                    self.macro_notify_msg = (
-                        "这条缝选不动（两侧滑块都推不动）：请选旁边的缝"
-                        if self.game.is_valid_gap(*seam)
-                        else "这条缝选不动（一侧没有滑块）：请选里面的缝")
+                    # 通用通道的否決原因有兩種，但對玩家無本質區別 → 統一提示
+                    self.rejected_gap = seam
+                    self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
                 else:
-                    self.macro_notify_msg = ("这条缝选不动（棋盘外沿，外侧没有滑块）："
-                                             "请选里面的缝")
+                    self.rejected_gap = seam
+                    self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
                 self.macro_notify_timer = 120
             elif _edge_hint is not None:
                 # 點在「看得到、卻不是可選縫」的邊線上（棋盤外沿，或走位後
@@ -748,9 +751,8 @@ class MoveMixin:
                 # 事件層當成普通點塊而靜默——正是「選不中又沒提示」。
                 op_log.log('sq_seam_reject', gap=None, form='generic',
                            reason='nonplayable_edge')
-                self.macro_notify_msg = (
-                    "这条线切不开（棋盘外沿或错位接缝）："
-                    "请点两块滑块之间的缝线")
+                # 这条边不是可選縫，無法畫拒絕白線，但提示語仍統一
+                self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
                 self.macro_notify_timer = 120
         return gap, block
 
@@ -764,6 +766,8 @@ class MoveMixin:
         無反應」）。其餘情況與 get_gap_at_pos / get_block_at_pos 分別查詢
         等價（那兩個是純查詢，不發提示，供測試與其他地方複用）。
         """
+        # 选不中缝反馈统一：每次点击重新评估，先清掉上一次的拒绝白线
+        self.rejected_gap = None
         world_x, world_y = self.screen_to_world(screen_x, screen_y)
         cells = self.game.positions()
         gap = self._mi_view().gap_at(world_x, world_y, cells)
@@ -781,8 +785,10 @@ class MoveMixin:
                 op_log.log('mi_seam_reject', gap=list(gap),
                            shifted=self._mi_shifted(), valid=False,
                            left=self._mi_fam_counts(), cut=cut)
-                self.macro_notify_msg = (
-                    f"这条缝选不动（错位态切在块里）：{self._mi_hv_left(gap[0])}")
+                # 米字格错位態切在塊裡的縫：對玩家與捆綁/外沿拒絕無本質區別
+                # → 統一提示語；拒絕白線由選中預覽（hover/selected_gap）提供
+                self.rejected_gap = gap
+                self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
                 self.macro_notify_timer = 120
                 return None, None
             gap = None

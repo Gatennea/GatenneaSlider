@@ -111,15 +111,25 @@ gui.selected_block = None
 gi = sorted(bi)[0]
 p_in = seam_click_point(gui, gi, grp)
 click(gui, p_in)
-check('1c 點內部縫不彈「選不動」', '选不动' not in (gui.macro_notify_msg or ''),
+# 选中缝因捆绑被拒：统一提示「选不动」+ 选中预览（rejected_gap 记录该缝，供白线/叉号渲染）
+check('1c 點內部縫彈統一拒絕提示', '选不动' in (gui.macro_notify_msg or ''),
       f'{gui.macro_notify_msg!r}')
+check('1c2 拒絕縫已記錄(rejected_gap)', gui.rejected_gap == gi,
+      f'{gui.rejected_gap!r}')
 opted = {tuple(b.location) for b in gui.game.blocks if b.be_opted}
-check('1d 內部縫 → 整組當滑塊選中', set(grp).issubset(opted),
+check('1d 內部縫被拒：整組未被當滑塊選中', not set(grp).issubset(opted),
       f'opted={len(opted)}')
 check('1e selected_gap 未被污染', gui.selected_gap == ('h', 1),
       f'{gui.selected_gap}')
 gui.draw_triangle_board()
 check('1f 三角捆綁組渲染不拋異常', True)
+# 捆綁內部縫被拒後，叉號應出現在「縫切入/切出捆綁塊」的兩個交點
+_mk1 = gui._gap_reject_mark_points()
+check('1f2 捆綁內部縫叉號點 = 2（切出入）', len(_mk1) >= 2,
+      f'pts={len(_mk1)}')
+gui._draw_gap_reject_marks()  # 不應拋異常
+gui._draw_rejected_gap_preview()
+check('1f3 拒絕白線/叉號渲染不拋異常', True)
 
 # 剛性不變量：切組縫上 opt 也要把整組拖進來
 gui = boot('new_triangle_puzzle', 5, 2)
@@ -170,15 +180,23 @@ gui.selected_block = None
 gi = sorted(bi)[0]
 p_in = seam_click_point(gui, gi, quad)
 click(gui, p_in)
-check('2b 點內部縫不彈「選不動」', '选不动' not in (gui.macro_notify_msg or ''),
+check('2b 點內部縫彈統一拒絕提示', '选不动' in (gui.macro_notify_msg or ''),
       f'{gui.macro_notify_msg!r}')
+check('2b2 拒絕縫已記錄(rejected_gap)', gui.rejected_gap == gi,
+      f'{gui.rejected_gap!r}')
 opted = {tuple(b.location) for b in gui.game.blocks if b.be_opted}
-check('2c 內部縫 → 整胞當滑塊選中', set(quad).issubset(opted),
+check('2c 內部縫被拒：整胞未被當滑塊選中', not set(quad).issubset(opted),
       f'opted={len(opted)}')
 check('2d selected_gap 未被污染', gui.selected_gap == ('h', 1),
       f'{gui.selected_gap}')
 gui.draw_mi_board()
 check('2e 米字捆綁組渲染不拋異常', True)
+_mk2 = gui._gap_reject_mark_points()
+check('2e2 米字捆綁內部縫叉號點 = 2（切出入）', len(_mk2) >= 2,
+      f'pts={len(_mk2)}')
+gui._draw_gap_reject_marks()
+gui._draw_rejected_gap_preview()
+check('2e3 拒絕白線/叉號渲染不拋異常', True)
 
 checked = 0
 bad = []

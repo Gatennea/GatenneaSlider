@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """无头验证：方形/三角点「画得出、点得到、选不动」的外沿缝要给提示。
 
-对标米字格的 _mi_click_query（错位态锁死缝 → 「这条缝选不动（…）：…」）：
+对标米字格的 _mi_click_query（错位态锁死缝 → 同样走统一提示）：
 方形最外沿那圈缝只有一侧有滑块，点了既选不中也不该一声不响。
 本文件守四件事：
-  1. 点外沿缝 → 给「这条缝选不动（棋盘外沿，外侧没有滑块）」提示，
+  1. 点外沿缝 → 给统一「选不动」提示（与非捆绑死缝同一种提示语），
      且不改变选中态（selected_gap 仍为空、不误当第二下触控）；
   2. 点里面正常的缝 → 照旧选中，且不弹「选不动」；
   3. 点滑块 → 照旧选中滑块，不弹「选不动」；
@@ -24,7 +24,8 @@ import pygame  # noqa: E402
 
 from GUI import SliderGUI  # noqa: E402
 
-HINT = '这条缝选不动（棋盘外沿，外侧没有滑块）：请选里面的缝'
+# 统一提示语（与非捆绑死缝同一种）：点外沿/两侧推不动的缝都只弹这一句
+HINT = None  # 在 boot 后从 gui.GAP_UNSELECTABLE_MSG 取得
 
 _failures = []
 
@@ -72,6 +73,7 @@ FULL = {(r, c) for r in range(4) for c in range(4)}
 
 # ---- 1. 外沿缝：点了要有提示，且选中态不变 --------------------------------
 gui = boot(FULL)
+HINT = gui.GAP_UNSELECTABLE_MSG
 bounds = gui.game.get_boundaries()
 rim_line = bounds['min_row'] - 1          # 最上沿那条（get_gap_at_pos 会否掉）
 

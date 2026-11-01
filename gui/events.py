@@ -1068,13 +1068,16 @@ class EventsMixin:
                                else set())
                         if gap is not None and gap in _bi:
                             # 命中捆绑内部缝：这段不能把胶粘块从中间切开，
-                            # 整组只能随动——把它当作点中滑块（选该组任一块
-                            # 等价，刚性体选哪块都通向同一整组）。
-                            wx, wy = self.screen_to_world(x, y)
-                            best = self._bandage_group_block_near(wx, wy)
-                            if best is not None:
-                                block = best
+                            # 整组只随动 → 这条缝对玩家「选不中」。与「非捆绑
+                            # 死缝」统一成同一种拒绝反馈：提示 + 选中预览（白线
+                            # 由 rejected_gap 提供）+ 叉号（_gap_reject_mark_points
+                            # 按 bandage_internal_seams 在缝切入/切出捆绑块处画）。
+                            # 不再静默转成「选整组」——要移整组请选组外侧的外缝。
+                            self.rejected_gap = gap
+                            self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
+                            self.macro_notify_timer = 120
                             gap = None
+                            block = None
 
                         # 控制模式开关（独立布尔，可任意组合）
                         two_touch_on = getattr(self, 'control_two_touch', True)
@@ -1111,6 +1114,8 @@ class EventsMixin:
                                 else:
                                     gap_type, line = gap
                                     self.selected_gap = gap
+                                    # 选不中缝反馈统一：成功选中合法缝 → 清掉拒绝白线
+                                    self.rejected_gap = None
                                     for b in self.game.blocks:
                                         b.be_opted = False
                                     self.selected_block = None

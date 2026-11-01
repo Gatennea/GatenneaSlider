@@ -193,8 +193,8 @@ for g in sorted(locked):
     snap = set(gui.game.positions())
     click(sx, sy)
     m = gui.macro_notify_msg or ''
-    want = ('这条缝选不动（错位态切在块里）：'
-            + gui._mi_hv_left(g[0]))
+    # 统一提示语：锁死缝（错位态切在块里）与非捆绑死缝同一种提示，不再细分
+    want = gui.GAP_UNSELECTABLE_MSG
     if m != want:
         bad_msg.append((g, m))
     if set(gui.game.positions()) != snap:

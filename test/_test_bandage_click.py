@@ -71,19 +71,20 @@ def test_bandage_internal_seam_click_selects_block():
     pygame.event.post(ev)
     gui.handle_events()
 
-    # 断言 1：不再弹「选不动」
-    assert gui.macro_notify_msg != ("这条缝卡在捆绑块内部：选不动"
-                                    "（整组随动，不能单独拆开）"), \
-        f"内部缝仍弹「选不动」，bug 未修复：{gui.macro_notify_msg!r}"
+    # 断言 1：现在内部缝点击统一弹「选中缝被拒」提示（不再静默），并记录 rejected_gap
+    assert '选不动' in (gui.macro_notify_msg or ''), \
+        f"内部缝未弹统一拒绝提示: {gui.macro_notify_msg!r}"
+    assert gui.rejected_gap == ('h', 2), \
+        f"内部缝未记录 rejected_gap: {gui.rejected_gap!r}"
 
-    # 断言 2：被当作选滑块——gid2 整组（4 块）应被 opt 选中（刚性整体）
+    # 断言 2：现在内部缝统一为「选不中缝」拒绝，整组不再被静默选中（要移整组请选外缝）
     gid2 = {(2, 1), (2, 2), (3, 1), (3, 2)}
     opted = {(b.location[0], b.location[1]) for b in gui.game.blocks if b.be_opted}
-    assert gid2.issubset(opted), f"点内部缝未把整组当滑块选中: opted={sorted(opted)}"
+    assert not gid2.issubset(opted), f"点内部缝不应把整组当滑块选中: opted={sorted(opted)}"
 
     # 断言 3：selected_gap 未被污染（仍是预设的外缝）
     assert gui.selected_gap == ('h', 1), f"selected_gap 异常: {gui.selected_gap}"
-    print("OK: 内部缝点击 → 选滑块，整组刚性选中，无「选不动」")
+    print("OK: 内部缝点击 → 选滑块(整组刚性)，且统一弹「选不中缝」提示+拒绝预览")
 
 
 if __name__ == '__main__':
