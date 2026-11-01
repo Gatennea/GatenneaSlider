@@ -1461,11 +1461,46 @@ class RendererMixin:
 
     # ------------------------------------------------------------------
     # 选不中缝的反馈统一（2026-11-01）：
-    #   捆绑内部缝 与 非捆绑块（外沿/两侧推不动）对玩家无本质区别，故统一提示
-    #   + 统一「选中预览（白线）」；捆绑内部缝额外在「缝切入/切出捆绑块」的两
-    #   个交点打叉号，提前标出不能选它的地方（见用户手绘预览：GATENNEASTYLE
-    #   基础上只在捆绑块与缝相交处加了这两个叉）。
+    #   捆绑内部缝 与 非捆绑块（外沿/两侧推不动/米字错位）对玩家无本质区别，
+    #   故统一提示 + 统一「选中预览（白线）」；捆绑内部缝额外在「缝切入/切出
+    #   捆绑块」的两个交点打叉号，非捆绑死缝则在缝两端打叉，提前标出不能选它的
+    #   地方（见用户手绘预览：GATENNEASTYLE 基础上只在捆绑块与缝相交处加了
+    #   这两个叉）。
+    #
+    #   寿命模型（用户 2026-11-01 纠正）：白线 + 叉号 必须跟「闪烁白线（悬停
+    #   灰闪）」同寿命——鼠标还压在被拒缝上才显示，鼠标挪开立刻消失，不常驻。
+    #   不能借 macro_notify_timer（文字提示计时）也不能借 _hover_gap_current
+    #   （后者刻意为悬停高亮服务、把死缝排除在外，对该缝永远返回 None，会让
+    #   刚点完就消失）。专用 _mouse_near_gap 直接测「鼠标离这条缝的屏幕线够不
+    #   够近」来判定。
     # ------------------------------------------------------------------
+    def _mouse_near_gap(self, gap, tol=24.0):
+        """鼠标是否还压在这条缝上（**不在乎它点不点得动**）。
+
+        与 _hover_gap_at / _hover_gap_current 不同：后者专门为「悬停高亮」服务、
+        刻意**排除死缝**（见 move.py 的 docstring——死缝画成高亮等于承诺能点），
+        所以死缝永远返回 None。这里给「被拒缝的预览/叉号」用：被拒缝大多是死缝，
+        要让白线 + 叉号随鼠标离开而消失，就得直接测「鼠标离这条缝的屏幕线够不
+        够近」，不能借 _hover_gap_current（它对该缝永远是 None，会导致刚点完
+        就消失）。
+        """
+        try:
+            pos = pygame.mouse.get_pos()
+        except Exception:                       # noqa: BLE001
+            return False
+        line = self._gap_screen_line(gap)
+        if line is None:
+            return False
+        a, b = line
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length2 = dx * dx + dy * dy
+        if length2 < 1e-9:
+            return math.hypot(pos[0] - a[0], pos[1] - a[1]) <= tol
+        t = ((pos[0] - a[0]) * dx + (pos[1] - a[1]) * dy) / length2
+        t = max(0.0, min(1.0, t))
+        px, py = a[0] + t * dx, a[1] + t * dy
+        return math.hypot(pos[0] - px, pos[1] - py) <= tol
+
     def _gap_screen_line(self, gap):
         """给定一条缝 (gap_type, line)，回传它在屏幕上的两个端点（贯穿直线）。
 
@@ -1587,58 +1622,69 @@ class RendererMixin:
         return hulls
 
     def _gap_reject_mark_points(self):
-        """当前预览/选中的缝若「从中间切开捆绑块」，回传叉号屏幕坐标列表。
+        """当前被拒缝（rejected_gap）的叉号屏幕坐标。
 
-        只处理 bandage_internal_seams 这类缝：几何上合法（鼠标下有白线预览），
-        但真选中会切开同组块，故在「缝切入/切出捆绑块」的两个交点打叉。
-        非捆绑的选不中缝由统一提示文案覆盖，不在盘面画叉。
+        捆绑内部缝：几何上合法（鼠标下有白线预览）但真选中会切开同组块，故在
+        「缝切入/切出捆绑块」的两交点打叉；非捆绑死缝（外沿/两侧推不动/米字
+        错位）在缝两端打叉。统一提示文案见 MoveMixin.GAP_UNSELECTABLE_MSG。
+
+        叉号是否真的画出来，由 _draw_gap_reject_marks 视「鼠标是否还压在被拒缝
+        上」决定——与悬停灰闪同寿命，鼠标挪开即消失（不常驻）。
+
+        本条是纯几何方法（不查鼠标位置），便于无头测试直接断言交叉点数量。
         """
         game = getattr(self, 'game', None)
         if game is None or not hasattr(game, 'bandage_internal_seams'):
             return []
-        # 已选中有效滑块 → 拒绝反馈（白线+叉号）让位给当前选择，免得盖在上面
+        # 已选中有效滑块 → 拒绝反馈（白线+叉号）让位给当前选择
         if getattr(self, 'selected_block', None) is not None:
             return []
-        # 优先取「被拒的缝」（点击后留下来的 rejected_gap），其次当前悬停缝、
-        # 再次之已选中缝——后两者本就不是捆绑内部缝，只作占位
         gap = getattr(self, 'rejected_gap', None)
         if not gap:
-            gap = self._hover_gap_current()
-        if not gap:
-            gap = getattr(self, 'selected_gap', None)
-        if not gap:
-            return []
-        try:
-            bi = game.bandage_internal_seams()
-        except Exception:
-            return []
-        if gap not in bi:
             return []
         line = self._gap_screen_line(gap)
         if line is None:
             return []
-        # 缝线可能是被棋形凸包裁短的一段（三角/米字），要当无限直线来求与整组
-        # 凸包的交点 → 先双向延长
-        a, b = _extend_line(line[0], line[1],
-                            2.0 * (self.screen_width + self.screen_height))
-        polys = self._bundled_group_hulls_screen()
-        pts = []
-        for poly in polys:
-            pts.extend(_seg_polygon_intersections(a, b, poly))
-        # 去重（同一交点被相邻边重复命中等）
-        uniq = []
-        for p in pts:
-            if not any(abs(p[0] - q[0]) < 1.0 and abs(p[1] - q[1]) < 1.0
-                       for q in uniq):
-                uniq.append(p)
-        return uniq
+        try:
+            bi = game.bandage_internal_seams()
+        except Exception:
+            bi = set()
+        if gap in bi:
+            # 捆绑内部缝：缝线 × 整组凸包 的切点（切入/切出捆绑块处）。
+            # 缝线可能是被棋形凸包裁短的一段（三角/米字），要当无限直线来求与
+            # 整组凸包的交点 → 先双向延长。
+            a, b = _extend_line(line[0], line[1],
+                                2.0 * (self.screen_width + self.screen_height))
+            polys = self._bundled_group_hulls_screen()
+            pts = []
+            for poly in polys:
+                pts.extend(_seg_polygon_intersections(a, b, poly))
+            # 去重（同一交点被相邻边重复命中等）
+            uniq = []
+            for p in pts:
+                if not any(abs(p[0] - q[0]) < 1.0 and abs(p[1] - q[1]) < 1.0
+                           for q in uniq):
+                    uniq.append(p)
+            return uniq
+        # 非捆绑死缝：缝两端打叉，提示「这条缝选不动」
+        return [line[0], line[1]]
 
     def _draw_x(self, x, y, r, color, width=2):
         pygame.draw.line(self.screen, color, (x - r, y - r), (x + r, y + r), width)
         pygame.draw.line(self.screen, color, (x - r, y + r), (x + r, y - r), width)
 
     def _draw_gap_reject_marks(self):
-        """捆绑内部缝：在缝与捆绑块相交处画叉号（提示不能选这条缝）。"""
+        """被拒缝：在盘面画琥珀色叉号（提示不能选这条缝）。
+
+        叉号与白线同寿命——鼠标还压在被拒缝上才画，挪开即消失（与悬停灰闪
+        一致，不常驻）。是否压在上面由 _mouse_near_gap 判定。
+        """
+        gap = getattr(self, 'rejected_gap', None)
+        if not gap:
+            return
+        # 叉号随白线同寿命：鼠标离开被拒缝即消失
+        if not self._mouse_near_gap(gap):
+            return
         pts = self._gap_reject_mark_points()
         if not pts:
             return
@@ -1649,12 +1695,16 @@ class RendererMixin:
             self._draw_x(sx, sy, 8, col, width=2)
 
     def _draw_rejected_gap_preview(self):
-        """非捆绑块导致的选不中缝：补上「选中预览（白线）」（原本只有提示）。
+        """被拒缝：补上「选中预览（白线）」（原本只有提示文案）。
 
-        与 _draw_hover_gap 同款灰闪，让两种拒绝都有选不中的缝预览。
+        与 _draw_hover_gap 同款灰闪；白线随鼠标离开被拒缝而消失（与悬停灰闪
+        同寿命，不常驻到选了有效块才清），见 _mouse_near_gap。
         """
         gap = getattr(self, 'rejected_gap', None)
         if not gap:
+            return
+        # 白线随鼠标离开被拒缝而消失（与悬停灰闪同寿命，不常驻）
+        if not self._mouse_near_gap(gap):
             return
         # 已选中有效滑块 → 拒绝白线让位给当前选择
         if getattr(self, 'selected_block', None) is not None:
