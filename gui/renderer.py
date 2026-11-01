@@ -92,6 +92,69 @@ def _extend_line(a, b, margin):
             (b[0] + ux * margin, b[1] + uy * margin))
 
 
+def _point_in_polygon(pt, poly):
+    """射线法判断 pt 是否在多边形 poly（屏幕顶点列表）内。"""
+    x, y = pt
+    n = len(poly)
+    inside = False
+    for i in range(n):
+        ax, ay = poly[i]
+        bx, by = poly[(i + 1) % n]
+        if ((ay > y) != (by > y)) and (
+                x < (bx - ax) * (y - ay) / (by - ay) + ax):
+            inside = not inside
+    return inside
+
+
+def _dist_point_to_segment(px, py, ax, ay, bx, by):
+    """点 (px,py) 到线段 a-b 的最短距离。"""
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _dist_point_to_line(pt, a, b):
+    """点 pt 到无限直线 a-b 的距离。"""
+    ax, ay = a; bx, by = b
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 < 1e-9:
+        return math.hypot(pt[0] - ax, pt[1] - ay)
+    return abs((pt[0] - ax) * dy - (pt[1] - ay) * dx) / math.sqrt(L2)
+
+
+def _dist_point_to_polygon(pt, poly):
+    """点 pt 到多边形 poly 的最短距离（取各边最小值）。"""
+    x, y = pt
+    n = len(poly)
+    best = None
+    for i in range(n):
+        d = _dist_point_to_segment(x, y, *poly[i], *poly[(i + 1) % n])
+        if best is None or d < best:
+            best = d
+    return best if best is not None else 1e9
+
+
+def _solve_3x3(M, v):
+    """解 3x3 线性方程组 M·x = v（M 行优先 3x3），奇异回 None。"""
+    a, b, c = M[0]; d, e, f = M[1]; g, h, i = M[2]
+    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    if abs(det) < 1e-12:
+        return None
+    inv = 1.0 / det
+
+    def _col(j, val):
+        m = [list(M[0]), list(M[1]), list(M[2])]
+        m[0][j], m[1][j], m[2][j] = val[0], val[1], val[2]
+        return (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+    return (_col(0, v) * inv, _col(1, v) * inv, _col(2, v) * inv)
+
+
 class RendererMixin:
     """渲染相关方法 Mixin"""
 
@@ -1474,7 +1537,7 @@ class RendererMixin:
     #   刚点完就消失）。专用 _mouse_near_gap 直接测「鼠标离这条缝的屏幕线够不
     #   够近」来判定。
     # ------------------------------------------------------------------
-    def _mouse_near_gap(self, gap, tol=24.0):
+    def _mouse_near_gap(self, gap, tol=28.0):
         """鼠标是否还压在这条缝上（**不在乎它点不点得动**）。
 
         与 _hover_gap_at / _hover_gap_current 不同：后者专门为「悬停高亮」服务、
@@ -1483,6 +1546,16 @@ class RendererMixin:
         要让白线 + 叉号随鼠标离开而消失，就得直接测「鼠标离这条缝的屏幕线够不
         够近」，不能借 _hover_gap_current（它对该缝永远是 None，会导致刚点完
         就消失）。
+
+        判据用「鼠标到这条**无限直线**的距离」而非到短段端点的距离：
+          · 碎三角等多边形盘型，一条缝的接触边足迹常散成多段，
+            _gap_screen_line 只回合并出的那一小段；玩家点在缝的其它分片上时，
+            到合并段端点会 >tol，反馈整段消失（2026-11-01 碎三角实测
+            _gap_screen_line 有值、叉号也有 2 点，却因门控判短段而全不画）。
+          · 容差取 28，与 move.py _rejected_seam_at 的「宽频带」判定（±28）
+            对齐——否则命中被拒的点击（在 24~28 带内被 _rejected_seam_at
+            收到）会因门控 24 而判不到，于是只有提示文字、白线+叉号全无
+            （正是用户 2026-11-01 报的「图2 毫无改观」）。
         """
         try:
             pos = pygame.mouse.get_pos()
@@ -1496,10 +1569,8 @@ class RendererMixin:
         length2 = dx * dx + dy * dy
         if length2 < 1e-9:
             return math.hypot(pos[0] - a[0], pos[1] - a[1]) <= tol
-        t = ((pos[0] - a[0]) * dx + (pos[1] - a[1]) * dy) / length2
-        t = max(0.0, min(1.0, t))
-        px, py = a[0] + t * dx, a[1] + t * dy
-        return math.hypot(pos[0] - px, pos[1] - py) <= tol
+        cross = abs(dx * (a[1] - pos[1]) - (a[0] - pos[0]) * dy)
+        return cross / math.sqrt(length2) <= tol
 
     def _gap_screen_line(self, gap):
         """给定一条缝 (gap_type, line)，回传它在屏幕上的两个端点（贯穿直线）。
@@ -1516,9 +1587,16 @@ class RendererMixin:
                 origin = self._poly_view_origin(pv)
                 segs = self._poly_seam_segments(pv, gt, line, origin)
                 if segs:
-                    a, b = segs[0][0], segs[0][1]
+                    merged = self._merge_seam_line(segs)
+                    a, b = (merged if merged is not None else segs[0])
                     return (self.world_to_screen(*a),
                             self.world_to_screen(*b))
+                # 死缝回退：当前局面该缝一侧无块 → seam_segments 空 → 用缝族
+                # rank 泛函在盘面拟合出这条直缝（碎三角 1_shatter 选不中但
+                # 该有白线+叉号，见 2026-11-01 修复）。
+                fb = self._poly_dead_seam_line(pv, gt, line, origin)
+                if fb is not None:
+                    return fb
             except Exception:
                 pass
             return None
@@ -1566,11 +1644,12 @@ class RendererMixin:
         game = getattr(self, 'game', None)
         if game is None:
             return []
+        board = getattr(game, 'board', game)
         per = {}  # gid -> [屏幕顶点...]
         pv = self._polygon_view()
         if pv is not None:
             origin = self._poly_view_origin(pv)
-            for b in game.blocks:
+            for b in board.blocks:
                 g = getattr(b, 'group', 0)
                 if not g:
                     continue
@@ -1582,7 +1661,7 @@ class RendererMixin:
                     pass
         elif getattr(self, 'triangle_mode', False):
             view = self._tri_view()
-            for b in game.blocks:
+            for b in board.blocks:
                 g = getattr(b, 'group', 0)
                 if not g:
                     continue
@@ -1594,7 +1673,7 @@ class RendererMixin:
                     pass
         elif getattr(self, 'mi_mode', False):
             view = self._mi_view()
-            for b in game.blocks:
+            for b in board.blocks:
                 g = getattr(b, 'group', 0)
                 if not g:
                     continue
@@ -1606,7 +1685,7 @@ class RendererMixin:
                     pass
         else:
             # 方形：块矩形四角
-            for b in game.blocks:
+            for b in board.blocks:
                 g = getattr(b, 'group', 0)
                 if not g:
                     continue
@@ -1621,12 +1700,158 @@ class RendererMixin:
                 hulls.append(_convex_hull(verts))
         return hulls
 
+    def _poly_dead_seam_line(self, pv, gt, line, origin):
+        """多边形通道死缝回退：用缝族 rank 泛函在盘面拟合直缝，回屏幕长弦。
+
+        死缝的 rejected_gap 有值（move.py 已设），但 seam_segments 空（一侧
+        无块、没有接触边足迹）→ 原先 _gap_screen_line 回 None → 白线/叉号全
+        不画（用户 2026-11-01 实测碎三角 1_shatter 选不中却只有提示）。
+
+        rank 在「世界坐标」上是仿射的（world = scale·unit + origin，unit 与
+        rank 同源），故用各块质心与其 rank_of 做最小二乘拟合 h(world)=rank，
+        再取 h=t（t = line_scale·line+1，与 seam_segments 同口径）即得缝线。
+        """
+        game = getattr(self, 'game', None)
+        if game is None:
+            return None
+        # 注意：game.blocks 是 _AdapterBlock 包装（无 .point），几何通道一律用
+        # 真正的 Board（self.game.board.blocks 才是带 .point/.orient 的原始块）。
+        board = getattr(game, 'board', game)
+        spec = getattr(board, 'spec', None)
+        if spec is None:
+            return None
+        fam = next((f for f in getattr(spec, 'seam_families', ()) if f.name == gt), None)
+        if fam is None or not callable(getattr(fam, 'rank_of', None)):
+            return None
+        samples = []
+        for b in board.blocks:
+            try:
+                wp = pv.world_polygon(b.point, b.orient, origin)
+                if not wp:
+                    continue
+                cx = sum(p[0] for p in wp) / len(wp)
+                cy = sum(p[1] for p in wp) / len(wp)
+                rk = fam.rank_of(b.point, b.orient)
+                samples.append((cx, cy, float(rk)))
+            except Exception:
+                pass
+        if len(samples) < 3:
+            return None
+        sxx = sxy = syy = sx = sy = sxn = syn = sr = 0.0
+        for (x, y, r) in samples:
+            sxx += x * x; sxy += x * y; syy += y * y
+            sx += x; sy += y; sxn += x * r; syn += y * r; sr += r
+        n = len(samples)
+        sol = _solve_3x3([[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]],
+                         [sxn, syn, sr])
+        if sol is None:
+            return None
+        a, b, c = sol
+        if a * a + b * b < 1e-12:
+            return None
+        t = int(round(fam.line_scale * line)) + 1
+        bb = self._poly_world_bbox()
+        if bb is None:
+            bb = (0, 0, self.screen_width, self.screen_height)
+        mx = (bb[0] + bb[2]) / 2.0
+        my = (bb[1] + bb[3]) / 2.0
+        norm = math.hypot(a, b)
+        d = (a * mx + b * my + c - t) / norm
+        px = mx - d * a / norm
+        py = my - d * b / norm
+        ux, uy = b / norm, -a / norm     # 缝线方向（法向垂直）
+        span = 2.0 * (abs(bb[2] - bb[0]) + abs(bb[3] - bb[1]))
+        w1 = (px + ux * span, py + uy * span)
+        w2 = (px - ux * span, py - uy * span)
+        return (self.world_to_screen(*w1), self.world_to_screen(*w2))
+
+    def _block_screen_polygons(self):
+        """当前局面所有滑块屏幕多边形 [(块, 屏幕顶点列表), ...]。
+
+        被拒缝叉号定位用：非捆绑死缝要把叉画在「缝线 × 被缝穿那一块滑块边界」
+        的两交点，需要每块在屏幕上的多边形。覆盖三形态 + 通用多边形通道 +
+        方形（矩形四角）。
+        """
+        game = getattr(self, 'game', None)
+        if game is None:
+            return []
+        board = getattr(game, 'board', game)
+        out = []
+        pv = self._polygon_view()
+        if pv is not None:
+            origin = self._poly_view_origin(pv)
+            for b in board.blocks:
+                try:
+                    wp = pv.world_polygon(b.point, b.orient, origin)
+                    out.append((b, [self.world_to_screen(*p) for p in wp]))
+                except Exception:
+                    pass
+        elif getattr(self, 'triangle_mode', False):
+            view = self._tri_view()
+            for b in board.blocks:
+                try:
+                    i, j, up = tri_key(b)
+                    out.append((b, [self.world_to_screen(*p)
+                                    for p in view.piece_polygon(i, j, up)]))
+                except Exception:
+                    pass
+        elif getattr(self, 'mi_mode', False):
+            view = self._mi_view()
+            for b in board.blocks:
+                try:
+                    r, c, q = mi_key(b)
+                    out.append((b, [self.world_to_screen(*p)
+                                    for p in view.piece_polygon(r, c, q)]))
+                except Exception:
+                    pass
+        else:
+            for b in board.blocks:
+                try:
+                    bx, by, bw, bh = self.board_view.block_rect(*b.location)
+                    x0, y0 = self.world_to_screen(bx, by)
+                    x1, y1 = self.world_to_screen(bx + bw, by + bh)
+                    out.append((b, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]))
+                except Exception:
+                    pass
+        return out
+
+    def _reject_gap_blocks_hit(self, gap):
+        """非捆绑被拒缝：缝线（无限延长）× 各滑块屏幕多边形的交点，按块回传。
+
+        回 [(块, 屏幕多边形, [交点...]), ...]，只收缝线真穿过（≥1 交点）的块。
+        调用方按「鼠标离哪块最近」挑出被缝穿的那一块，取其 2 个交点画叉。
+        """
+        line = self._gap_screen_line(gap)
+        if line is None:
+            return []
+        inf = _extend_line(line[0], line[1],
+                          2.0 * (self.screen_width + self.screen_height))
+        out = []
+        for b, poly in self._block_screen_polygons():
+            if len(poly) < 3:
+                continue
+            pts = _seg_polygon_intersections(inf[0], inf[1], poly)
+            # 缝线可能正好沿块某条边走（共线）→ 边交点退化成 None；改收
+            # 「落在缝线上的块顶点」（即那条边的两个端点），照样得到 2 个交点。
+            for v in poly:
+                if _dist_point_to_line(v, inf[0], inf[1]) < 1.5:
+                    pts.append(v)
+            if pts:
+                uniq = []
+                for p in pts:
+                    if not any(abs(p[0] - q[0]) < 1.0 and abs(p[1] - q[1]) < 1.0
+                               for q in uniq):
+                        uniq.append(p)
+                out.append((b, poly, uniq))
+        return out
+
     def _gap_reject_mark_points(self):
         """当前被拒缝（rejected_gap）的叉号屏幕坐标。
 
         捆绑内部缝：几何上合法（鼠标下有白线预览）但真选中会切开同组块，故在
         「缝切入/切出捆绑块」的两交点打叉；非捆绑死缝（外沿/两侧推不动/米字
-        错位）在缝两端打叉。统一提示文案见 MoveMixin.GAP_UNSELECTABLE_MSG。
+        错位）则画在「缝线 × 被缝穿过的那一块滑块边界」的两交点（不再画缝两端
+        = 棋盘边）。统一提示文案见 MoveMixin.GAP_UNSELECTABLE_MSG。
 
         叉号是否真的画出来，由 _draw_gap_reject_marks 视「鼠标是否还压在被拒缝
         上」决定——与悬停灰闪同寿命，鼠标挪开即消失（不常驻）。
@@ -1634,7 +1859,7 @@ class RendererMixin:
         本条是纯几何方法（不查鼠标位置），便于无头测试直接断言交叉点数量。
         """
         game = getattr(self, 'game', None)
-        if game is None or not hasattr(game, 'bandage_internal_seams'):
+        if game is None:
             return []
         # 已选中有效滑块 → 拒绝反馈（白线+叉号）让位给当前选择
         if getattr(self, 'selected_block', None) is not None:
@@ -1645,6 +1870,8 @@ class RendererMixin:
         line = self._gap_screen_line(gap)
         if line is None:
             return []
+        # 注意：碎三角等引擎型盘面（EngineGame）没有 bandage_internal_seams
+        # 方法，不能直接用 hasattr 拦掉——没有就当「无捆绑内部缝」走非捆绑分支。
         try:
             bi = game.bandage_internal_seams()
         except Exception:
@@ -1666,7 +1893,29 @@ class RendererMixin:
                            for q in uniq):
                     uniq.append(p)
             return uniq
-        # 非捆绑死缝：缝两端打叉，提示「这条缝选不动」
+        # 非捆绑死缝：叉号画在「缝线（无限延长）× 被缝穿过的那一块滑块边界」
+        # 的两交点（用户 2026-11-01 纠正：原先画在缝两端=棋盘边，错；应画在
+        # 被穿滑块与缝相交处）。按「鼠标离哪块最近」挑出被缝穿的那一块。
+        hits = self._reject_gap_blocks_hit(gap)
+        if hits:
+            try:
+                mpos = pygame.mouse.get_pos()
+            except Exception:
+                mpos = (self.screen_width / 2.0, self.screen_height / 2.0)
+            def _key(h):
+                _b, poly, _pts = h
+                cx = sum(p[0] for p in poly) / len(poly)
+                cy = sum(p[1] for p in poly) / len(poly)
+                return math.hypot(mpos[0] - cx, mpos[1] - cy)
+            hits.sort(key=_key)
+            pts = hits[0][2]
+            uniq = []
+            for p in pts:
+                if not any(abs(p[0] - q[0]) < 1.0 and abs(p[1] - q[1]) < 1.0
+                           for q in uniq):
+                    uniq.append(p)
+            return uniq
+        # 兜底：极端退化局面实在求不到被穿块 → 退回缝两端
         return [line[0], line[1]]
 
     def _draw_x(self, x, y, r, color, width=2):

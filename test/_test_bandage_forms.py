@@ -18,6 +18,8 @@
 import os
 import queue
 import sys
+import math
+import random
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
@@ -32,6 +34,7 @@ from game_triangle import gap_index_range as tri_gap_range  # noqa: E402
 from game_triangle import neighbors as tri_neighbors  # noqa: E402
 from game_triangle import side_of as tri_side_of  # noqa: E402
 from gui import design_styles  # noqa: E402
+from engine.compat import direction_table  # noqa: E402
 
 _failures = []
 
@@ -214,6 +217,54 @@ for gt, line in gui.game.all_gaps():
     checked += 1
 check('2f 切組縫上 opt 一律整組選中（剛性）', checked > 0 and not bad,
       f'{checked} 條, 失敗 {bad}')
+
+# ================================================================ 2g 米字非捆绑拒缝叉号定位
+print('\n--- 2g 米字非捆绑缝：叉号定位修复（图1）---')
+# 标准米字满盘时，缝走「块间隙」（距块顶点 ~3.6px），一条都不穿块；用户图1 是
+# 移位后的局面（块被推到缝上）才出现「缝穿单块」。米字走独立 mi_mode 通道
+# （与碎三角的通用多边形通道不是同一分支），故这里分两层验证 mi 通道：
+#  (a) mi_mode 分支的 _block_screen_polygons 真能算出每块屏幕多边形（不崩）；
+#  (b) 非捆绑派发逻辑：一旦某块被缝穿，叉号落在「缝×该块」交点而非缝两端。
+# 真实「缝穿单块」的几何由第 7 节（碎三角）覆盖，那里缝天然穿块。
+_bi = gui.game.bandage_internal_seams()
+_nonb = [g for g in gui.game.all_gaps()
+         if g not in _bi and gui.game.is_valid_gap(*g)]
+check('2g0 存在非捆绑缝', len(_nonb) >= 1, f'{len(_nonb)} 条')
+_nb = _nonb[0]
+gui.selected_block = None
+gui.rejected_gap = _nb
+# (a) mi_mode 分支真实几何：每块屏幕多边形非空
+_polys = gui._block_screen_polygons()
+_nok = sum(1 for (_b, poly) in _polys if len(poly) >= 3)
+check('2g1 mi_mode 分支每块屏幕多边形有效',
+      _nok == len(_polys) and len(_polys) > 0, f'{_nok}/{len(_polys)}')
+# (b) 派发逻辑：模拟「该缝穿了一块滑块」，叉号应落在该块交点而非缝两端
+_line = gui._gap_screen_line(_nb)
+check('2g2 非捆绑缝屏幕线非空', _line is not None, f'{_line}')
+# 取一块真实多边形当载体（质心用于「最近的块」挑选），塞两个明显不在缝两端
+# 的合成交点，验证派发确实取「被穿块交点」而非退回缝两端。
+_realblk, _realpoly = _polys[0]
+_syn = [(float(_line[0][0]) + 17.0, float(_line[0][1]) + 9.0),
+        (float(_line[1][0]) - 23.0, float(_line[1][1]) + 11.0)]
+_orig_hit = gui._reject_gap_blocks_hit
+gui._reject_gap_blocks_hit = lambda g: [(_realblk, _realpoly, list(_syn))]
+_mk = gui._gap_reject_mark_points()
+gui._reject_gap_blocks_hit = _orig_hit
+_mk_r = sorted(tuple(round(v) for v in p) for p in _mk)
+_syn_r = sorted(tuple(round(v) for v in p) for p in _syn)
+check('2g3 叉号落在被穿块交点(非缝两端)', _mk_r == _syn_r,
+      f'mk={_mk_r} syn={_syn_r}')
+# 兜底：没有任何块被穿 → 退回缝两端（旧实现永远走这；新实现仅在无穿块时）
+gui._reject_gap_blocks_hit = lambda g: []
+_mk_fb = gui._gap_reject_mark_points()
+gui._reject_gap_blocks_hit = _orig_hit
+_fb_r = sorted(tuple(round(v) for v in p) for p in _mk_fb)
+_ends_r = sorted(tuple(round(v) for v in p) for p in _line)
+check('2g4 无穿块时退回缝两端(兜底)', _fb_r == _ends_r,
+      f'fb={_fb_r} ends={_ends_r}')
+gui._draw_gap_reject_marks()
+gui._draw_rejected_gap_preview()
+check('2g5 非捆绑拒缝渲染不抛异常', True)
 
 # ================================================================ 3 設計態
 print('\n--- 3 異形高級選項：自定義形狀 + 點縫綁解 + 存/讀樣式 ---')
@@ -500,6 +551,170 @@ c = gui._cell_center_screen(1, 1)
 check('6p _cell_center_screen 仍是座標函數（未被截斷）',
       isinstance(c, tuple) and len(c) == 2, f'{c}')
 gui._ann_design_cancel()
+
+# ================================================================ 7 碎三角死缝回退
+print('\n--- 7 碎三角：死缝（一条缝无接触边足迹）也能出白线+叉号（图2 修复）---')
+gui = boot('new_shatter_puzzle', 1)
+pv = gui._polygon_view()
+check('7a 碎三角走通用多边形通道', pv is not None)
+origin = gui._poly_view_origin(pv)
+board = gui.game.board
+# 取一条「非退化」缝：至少一块滑块被缝穿过且交点=2（落在该块内部两端），
+# 这样叉号定位（缝×块边界两交点）才验得到；退化缝（缝正好压在块顶点共享线
+# 上）每块只交 1 点，不是本修复要验的场景。
+_g = None
+for _gt, _ln in pv.seam_candidates(board):
+    _hs = gui._reject_gap_blocks_hit((_gt, _ln))
+    if any(len(pts) >= 2 for (_b, _p, pts) in _hs):
+        _g = (_gt, _ln)
+        break
+check('7b 取到一条非退化候选缝', _g is not None, f'{_g}')
+# 正常路径：缝有接触边足迹 → 屏幕线非空
+_real = gui._gap_screen_line(_g)
+check('7c 正常缝屏幕线非空', _real is not None, f'{_real}')
+# 死缝路径：让该缝的 seam_segments 返回空（模拟「一侧无块/无接触边」），
+# 旧实现会直接回 None → 白线/叉号全无；新实现走代数直线回退。
+_orig = gui._poly_seam_segments
+gui._poly_seam_segments = lambda pv_, gt_, line_, origin_: []
+_dead_line = gui._gap_screen_line(_g)
+check('7d 死缝也能拿到屏幕线（回退生效）', _dead_line is not None,
+      f'{_dead_line}')
+# 死缝路径下，回退直线仍应「穿过」同侧有块的滑块（被拒缝叉号才有载体）
+_dead_hits = gui._reject_gap_blocks_hit(_g)
+gui._poly_seam_segments = _orig
+check('7e 死缝回退直线仍穿过至少一块滑块', len(_dead_hits) >= 1,
+      f'{len(_dead_hits)} 块')
+# 叉号定位：鼠标摆到「被缝穿且交点=2」的滑块上，验证出 >=2 个交点
+gui.selected_block = None
+gui.rejected_gap = _g
+_hits = gui._reject_gap_blocks_hit(_g)
+_good = next((h for h in _hits if len(h[2]) >= 2), _hits[0] if _hits else None)
+if _good is not None:
+    _blk, _poly, _ = _good
+    _cx = sum(p[0] for p in _poly)/len(_poly)
+    _cy = sum(p[1] for p in _poly)/len(_poly)
+    pygame.mouse.set_pos((int(_cx), int(_cy)))
+_mk = gui._gap_reject_mark_points()
+check('7f 死缝叉号点 >= 2', len(_mk) >= 2, f'pts={len(_mk)}')
+gui._draw_gap_reject_marks()
+gui._draw_rejected_gap_preview()
+check('7g 死缝白线/叉号渲染不抛异常', True)
+# 回退直线几何正确性：与真实缝线（满盘时）应重合
+_fb = gui._poly_dead_seam_line(pv, _g[0], _g[1], origin)
+check('7h 回退直线非空', _fb is not None, f'{_fb}')
+if _real is not None and _fb is not None:
+    _rmid = ((_real[0][0]+_real[1][0])/2.0, (_real[0][1]+_real[1][1])/2.0)
+    _d = abs((_rmid[0]-_fb[0][0])*(_fb[1][1]-_fb[0][1])
+             - (_rmid[1]-_fb[0][1])*(_fb[1][0]-_fb[0][0])) / \
+        (math.hypot(_fb[1][0]-_fb[0][0], _fb[1][1]-_fb[0][1]) or 1)
+    check('7i 回退直线≈真实缝线（满盘重合）', _d < 40.0, f'dist={_d:.1f}')
+
+# ================================================================ 8 碎三角：拒绝点击门控通过（图2 根因闭环）
+print('\n--- 8 碎三角：真实点击被拒缝后，门控通过→白线+叉号可渲染（图2 根因）---')
+# 旧门控 _mouse_near_gap 测「鼠标到合并短段端点」距离+tol=24，玩家点在缝的
+# 其它分片（无限直线 28px 带内、但离合并段端点>24）时门控 False→只有文字、
+# 白线/叉号全无（正是用户 2026-11-01 报的「图2 毫无改观」）。修复后测「到无限
+# 直线」垂直距离+tol=28，与 _rejected_seam_at 宽频带±28 对齐，门控必过。
+# 下面 8A-8D 是确定性单测（不依赖盘面恰有被拒缝），8E-8G 是端到端复现。
+
+# ---- 8A-8D 确定性门控单测：取一条真实缝，构造「点在缝其它分片/无限直线带内、
+#      但越过合并短段端点外推 25px」的点击，断言门控通过（旧代码此处必 False）。
+gui = boot('new_shatter_puzzle', 1)
+pv = gui._polygon_view()
+board = gui.game.board
+_real_gap = None
+for _gt, _ln in pv.seam_candidates(board):
+    if gui._gap_screen_line((_gt, _ln)) is not None:
+        _real_gap = (_gt, _ln)
+        break
+check('8A 取到一条有屏幕线真实缝', _real_gap is not None, f'{_real_gap}')
+if _real_gap is not None:
+    a, b = gui._gap_screen_line(_real_gap)
+    _dx, _dy = b[0] - a[0], b[1] - a[1]
+    _L = math.hypot(_dx, _dy) or 1.0
+    # 沿缝线方向越过 b 端点外推 25px：到无限直线距离≈0(<=28)，但到端点=25(>24旧容差)
+    _px = b[0] + _dx / _L * 25.0
+    _py = b[1] + _dy / _L * 25.0
+    pygame.mouse.set_pos((int(_px), int(_py)))
+    _near = gui._mouse_near_gap(_real_gap)
+    _dist = abs(_dx * (a[1] - _py) - (a[0] - _px) * _dy) / _L
+    check('8B 外推点到无限直线距离<=28（门控判据）', _dist <= 28.0,
+          f'dist={_dist:.1f}')
+    check('8C 门控对「其它分片点击」返回True（修复核心）', _near is True,
+          f'near={_near}')
+    gui.rejected_gap = _real_gap
+    _mk = gui._gap_reject_mark_points()
+    check('8D 门控通过后叉号几何点>=1（可渲染前置）', len(_mk) >= 1,
+          f'pts={len(_mk)}')
+    gui.rejected_gap = None
+
+# ---- 8E-8G 端到端复现：随机走子制造被拒缝，扫描真实点击，断言「被拒点击→门控
+#      全过」（白线+叉号与文字提示同寿、鼠标挪开即消失）。复刻 2026-11-01 排障。
+gui = boot('new_shatter_puzzle', 1)
+g = gui.game
+_tbl = direction_table(g.spec)
+
+
+def _all_moves():
+    out = []
+    for (_gf, _line) in list(g.all_gaps()):
+        _fam = next(f for f in g.spec.seam_families if f.name == _gf)
+        for _letter, _d in sorted(_tbl.items()):
+            if _d not in _fam.parallel:
+                continue
+            for _b in g.blocks:
+                g.opt(_gf, _line, _b)
+                _pos, _reason = g.try_move_ex(_letter, 1)
+                if _reason == '':
+                    out.append((_gf, _line, _b, _letter))
+    return out
+
+
+random.seed(7)
+for _i in range(25):
+    _moves = _all_moves()
+    if not _moves:
+        break
+    _gf, _line, _blk, _letter = random.choice(_moves)
+    gui.selected_gap = (_gf, _line)
+    gui.selected_block = _blk
+    g.opt(_gf, _line, _blk)
+    pygame.event.post(pygame.event.Event(
+        pygame.KEYDOWN, {'key': getattr(pygame, 'K_' + _letter.lower()),
+                         'mod': 0, 'unicode': _letter}))
+    gui.handle_events()
+W = gui.screen_width
+H = gui.screen_height
+_found = 0
+_bad = 0
+_sample = None
+for _sx in range(20, W - 20, 7):
+    for _sy in range(20, H - 20, 7):
+        pygame.mouse.set_pos((_sx, _sy))
+        gui.selected_gap = None
+        gui.selected_block = None
+        gui.rejected_gap = None
+        gui._sq_click_query(_sx, _sy)
+        _rg = gui.rejected_gap
+        if _rg is None:
+            continue
+        _found += 1
+        _near = gui._mouse_near_gap(_rg)
+        _mk = gui._gap_reject_mark_points()
+        if (not _near) or len(_mk) < 1:
+            _bad += 1
+            if _sample is None:
+                _sample = (_sx, _sy, _rg, _near, len(_mk))
+print(f'  端到端：扫到 {_found} 个拒绝点击点，门控失败 {_bad} 个')
+check('8E 拒绝点击点门控全过（白线+叉号可渲染）', _bad == 0,
+      f'found={_found} bad={_bad} sample={_sample}')
+if _sample is not None:
+    _sx, _sy, _rg, _near, _n = _sample
+    check('8F 样本门控=True', _near is True, f'near={_near}')
+    check('8G 样本叉号点>=1', _n >= 1, f'pts={_n}')
+else:
+    check('8F 样本门控=True（无失败样本，跳过）', True)
+    check('8G 样本叉号点>=1（无失败样本，跳过）', True)
 
 print('\n===', 'ALL PASS' if not _failures else f'{len(_failures)} FAILURES',
       '===')
