@@ -37,7 +37,7 @@ from gui.annotation import AnnotationMixin
 from gui.model_editor import ModelEditorMixin
 from gui.tutorial import TutorialMixin
 from gui.palette import PaletteMixin
-from gui.board_view import SquareBoardView
+from gui.board_view import SquareBoardView, point_in_polygon
 from gui.text_input import TextInput
 from gui.scrollbar import Scrollbar
 from gui import log_writer
@@ -1753,6 +1753,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     if self.game.is_valid_gap(gap_type, line) and \
                             self._generic_gap_live((gap_type, line)):
                         return (gap_type, line)
+                # 代数缝线兜底：接触边足迹有断点时，点压在合法活缝的无限直线
+                # 上、且两侧局部都有块 → 仍选中（解决「缝上某些位置选不中」的
+                # bug：用户 2026-11-02 报，自造模型尤其明显——缝足迹在顶点/错位
+                # 处断开，断点处点击 get_gap_at_pos 返回 None，无白线预览、点击
+                # 显示选不动。缝的视觉身份本应是贯穿谜题的整条代数线，不是分区的
+                # 接触边片段）。
+                fb = self._generic_gap_at_line(world_x, world_y, tol)
+                if fb is not None:
+                    return fb
                 return None
 
             bounds = self.game.get_boundaries()
@@ -1765,6 +1774,60 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             print(f"get_gap_at_pos error: {e}")
 
         return None
+
+    def _generic_gap_at_line(self, world_x, world_y, tol):
+        """通用通道的代数缝线兜底命中。
+
+        与 gap_candidates（接触边片段距离）互补：遍历所有合法+活缝，取「点到该
+        缝无限直线」垂距 ≤ tol、且两侧局部（沿世界法向 ±eps）都有块 的那条，
+        选垂距最小者。只在主路径（接触边）未命中时才进这里，不改动常见命中的
+        歧义决胜。
+        """
+        view = self._polygon_view()
+        origin = self._poly_view_origin(view)
+        board = self.game.board
+        fams = {f.name: f for f in view.spec.seam_families}
+        best = None
+        for g in self.game.all_gaps():
+            gt, line = g
+            if not self.game.is_valid_gap(gt, line):
+                continue
+            if not self._generic_gap_live(g):
+                continue
+            segs = view.seam_segments(board, gt, line, origin)
+            if not segs:
+                continue
+            (ax, ay), (bx, by) = segs[0]
+            dx, dy = bx - ax, by - ay
+            seg2 = dx * dx + dy * dy
+            if seg2 <= 0:
+                continue
+            # 世界法向 = 缝线（接触边片段）方向旋转 90°；用片段方向而非
+            # fam.coeffs——后者在自造模型里处于不同坐标空间（实测 d60 的
+            # coeffs=(1,0) 是 x 轴，但世界缝线是 60° 斜线，直接用会算错垂距。
+            nx, ny = -dy, dx
+            nlen = seg2 ** 0.5
+            nx, ny = nx / nlen, ny / nlen
+            # 点到无限直线距离 = |(P - p0)·n|
+            dist = abs((world_x - ax) * nx + (world_y - ay) * ny)
+            if dist > tol:
+                continue
+            if not self._both_sides_blocked(view, board, origin,
+                                            world_x, world_y, (nx, ny)):
+                continue
+            if best is None or dist < best[0]:
+                best = (dist, gt, line)
+        return (best[1], best[2]) if best else None
+
+    def _both_sides_blocked(self, view, board, origin, wx, wy, n, eps=3.0):
+        """点 (wx,wy) 沿世界法向 n 两侧各偏 eps，是否都在某块多边形内。"""
+        polys = [view.world_polygon(b.point, b.orient, origin)
+                 for b in board.blocks]
+        a = (wx + n[0] * eps, wy + n[1] * eps)
+        b = (wx - n[0] * eps, wy - n[1] * eps)
+        in_a = any(point_in_polygon(a, p) for p in polys)
+        in_b = any(point_in_polygon(b, p) for p in polys)
+        return in_a and in_b
 
     def _readonly_blocked(self) -> bool:
         """只读存档检查：返回 True 表示当前存档只读，禁止改变滑块组状态。

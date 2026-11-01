@@ -19,6 +19,10 @@ from gui.board_view import _seg_dist
 class MoveMixin:
     """移动核心（原 GUI.py 内联代码，整体搬迁）。"""
 
+    # 选不中缝（捆绑内部缝 / 非捆绑死缝 / 错位接缝 / 米字错位态）对玩家没有
+    # 本质区别 → 提示语统一成一种，原因一律写「缝没有贯穿滑块组」（用户 2026-11-02 定调）
+    GAP_UNSELECTABLE_MSG = "这条缝选不动（缝没有贯穿滑块组）：请选旁边的缝"
+
     def _hover_gap_at(self, screen_x, screen_y):
         """鼠标下「点得动」的那条缝（**纯查询，无副作用**）。回 None = 这里
         点下去不会选中缝。
@@ -732,15 +736,10 @@ class MoveMixin:
                            form='generic' if generic
                            else ('tri' if getattr(self, 'triangle_mode', False)
                                  else 'sq'))
-                if generic:
-                    # 通用通道的否決原因有兩種，分開說（外沿 vs 焊死）
-                    self.macro_notify_msg = (
-                        "这条缝选不动（两侧滑块都推不动）：请选旁边的缝"
-                        if self.game.is_valid_gap(*seam)
-                        else "这条缝选不动（一侧没有滑块）：请选里面的缝")
-                else:
-                    self.macro_notify_msg = ("这条缝选不动（棋盘外沿，外侧没有滑块）："
-                                             "请选里面的缝")
+                # 通用通道的否決原因有兩種，但對玩家無本質區別 → 統一提示。
+                # main 是文字态（无图形反馈），故不设置 rejected_gap 载体
+                # （图形态的 archive 分支才会用它画拒绝白线/叉号）。
+                self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
                 self.macro_notify_timer = 120
             elif _edge_hint is not None:
                 # 點在「看得到、卻不是可選縫」的邊線上（棋盤外沿，或走位後
@@ -748,9 +747,8 @@ class MoveMixin:
                 # 事件層當成普通點塊而靜默——正是「選不中又沒提示」。
                 op_log.log('sq_seam_reject', gap=None, form='generic',
                            reason='nonplayable_edge')
-                self.macro_notify_msg = (
-                    "这条线切不开（棋盘外沿或错位接缝）："
-                    "请点两块滑块之间的缝线")
+                # 这条边不是可選縫，無法畫拒絕白線，但提示語仍統一
+                self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
                 self.macro_notify_timer = 120
         return gap, block
 
@@ -781,8 +779,9 @@ class MoveMixin:
                 op_log.log('mi_seam_reject', gap=list(gap),
                            shifted=self._mi_shifted(), valid=False,
                            left=self._mi_fam_counts(), cut=cut)
-                self.macro_notify_msg = (
-                    f"这条缝选不动（错位态切在块里）：{self._mi_hv_left(gap[0])}")
+                # 米字格错位態切在塊裡的縫：對玩家與捆綁/外沿拒絕無本質區別 →
+                # 提示語統一（用户 2026-11-02 定调）
+                self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
                 self.macro_notify_timer = 120
                 return None, None
             gap = None
