@@ -19,8 +19,9 @@ from gui.board_view import _seg_dist
 class MoveMixin:
     """移动核心（原 GUI.py 内联代码，整体搬迁）。"""
 
-    # 选不中缝（捆绑内部缝 / 非捆绑死缝）对玩家没有本质区别 → 提示语统一成一种
-    GAP_UNSELECTABLE_MSG = "这条缝选不动：请选旁边的缝"
+    # 选不中缝（捆绑内部缝 / 非捆绑死缝 / 错位接缝）对玩家没有本质区别 →
+    # 提示语统一成一种，原因一律写「缝没有贯穿滑块组」（用户 2026-11-02 定调）
+    GAP_UNSELECTABLE_MSG = "这条缝选不动（缝没有贯穿滑块组）：请选旁边的缝"
 
     def _hover_gap_at(self, screen_x, screen_y):
         """鼠标下「点得动」的那条缝（**纯查询，无副作用**）。回 None = 这里
