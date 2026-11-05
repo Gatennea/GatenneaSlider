@@ -47,6 +47,16 @@ class BootAnimationSmokeTest(unittest.TestCase):
         for m in ('_shuffle_has_history', '_request_shuffle_confirm',
                   '_save_then_shuffle'):
             self.assertTrue(hasattr(cls, m), f"缺防意外打乱方法 {m}")
+        # 无限打乱的取步必须走穷举随机扫描（_ann_random_shuffle_move），
+        # 不能再退回「game.shuffle(1) 抽 40 次」——那样会误判无路而停机
+        self.assertTrue(hasattr(cls, '_ann_random_shuffle_move'),
+                        "缺少 _ann_random_shuffle_move（穷举随机取步）")
+        import inspect as _inspect  # noqa: E402
+        step_src = _inspect.getsource(cls._infinite_shuffle_step)
+        self.assertIn('_ann_random_shuffle_move', step_src,
+                      "_infinite_shuffle_step 未使用穷举随机取步")
+        self.assertNotIn('tries < 40', step_src,
+                         "_infinite_shuffle_step 仍在用 40 次抽样兜底")
 
     def test_boot_frame_assets_present(self):
         # 预渲染帧序列应已生成（作者之后可替换为真动画，保持 frame_NNN.png 命名）

@@ -152,14 +152,15 @@ class SessionMixin:
     # 无限打乱：开启后调用打乱即进入连续「单步随机游走」，再次调用打乱即停止。
     #
     # 实现是真正的逐格游走——完全绕开「打乱演示」管線：
-    #   · 每步调用 game.shuffle(1, …, bias=0) 只走成一步（不放 min_score，
-    #     避免触发其「重洗重试」循环产生成千上万步、进而又走回普通打乱的
-    #     淡出切屏 + 进度条）；个别形态偶发该步不可逆被回滚，则补到 1 步。
+    #   · 每步用 _ann_random_shuffle_move 取一条合法且可逆的走法：随机顺序
+    #     穷举扫过每条缝两侧的每个连通分量，命中即停——只要盘面上还有可逆
+    #     走法就必取到（旧写法用 game.shuffle(1) 抽 40 次，盘面散开/步长大
+    #     时会误判「无可移动缝」而停机）。
     #   · 把棋盘回退到这一步起点、用 start_animation 滑一格、落位后立刻
     #     在 commit_animation 里续下一格——视觉就是无缝连续随机游走。
     #   · 不设 _shuffle_demo_active -> 渲染层不会画进度条、不会走淡出切屏。
-    #   · 每步都从当前盘面的合法缝取走法 -> 所有形态（方/三角/米字/自定義
-    #     模型局）通用；每步经 commit_shuffle_step 可逆校验 -> 终态恒有解。
+    #   · 每步都从当前盘面取走法 -> 所有形态（方/三角/米字/自定義模型局）
+    #     通用；每步经 commit_shuffle_step 可逆校验 -> 终态恒有解。
     # ------------------------------------------------------------------
     def _start_infinite_shuffle(self):
         """进入无限打乱：从当前态开始连续随机游走。"""
@@ -200,36 +201,32 @@ class SessionMixin:
             self._infinite_shuffle_active = False
             self._restore_infinite_duration()
             return
-        recs = []
-        # 一次只走成一步：attempts=1 且不放 min_score（避免 game.shuffle 的
-        # 重洗重试循环，否则会产生成千上万步、甚至触发普通打乱的淡出切屏）。
-        # 个别形态偶发 0 步（该次随机走法不可逆被回滚），循环补到 1 步为止。
-        tries = 0
-        while len(recs) < 1 and tries < 40:
-            recs = []
-            # min_score=None：各形态均跳过「难度重洗」循环，只走恰好 attempts=1
-            # 步；bias=0 纯随机。这样每轮只产出 0~1 步，绝不触发成千上万步。
-            self.game.shuffle(1, self.current_step, bias=0.0,
-                              min_score=None, record=recs)
-            tries += 1
-        if len(recs) < 1:
-            # 没有可用缝（极罕见）：安全退出，不空转
+        rec = None
+        # 取一步随机可逆走法：由 _ann_random_shuffle_move 穷举式随机扫描
+        # （随机顺序试遍每条缝两侧的每个连通分量），只要盘面上还有一条可逆
+        # 走法就必取到——不再用「game.shuffle(1) 抽 40 次」的抽样兜底。
+        # 旧写法在盘面散开、步长较大时单次命中率极低，40 次全空会误判
+        # 「无可移动缝」而意外停机（实测 6×6/step3 每 300 步约 4 次）。
+        blocks = []
+        for _ in range(2):  # 位置对不上（理论不发生）时再取一次，不递归
+            rec = self._ann_random_shuffle_move()
+            if rec is None:
+                break
+            blocks = self._find_blocks_at_positions(rec['final'])
+            if len(blocks) == len(rec['final']):
+                break
+            rec = None
+        if rec is None:
+            # 整盘扫完确实没有可逆走法（不是「抽不到」）：如实停止
             self._infinite_shuffle_active = False
             self._restore_infinite_duration()
             self._finalize_infinite_state()
-            self.macro_notify_msg = "无限打乱：当前盘面无可移动缝，已自动停止"
+            self.macro_notify_msg = "无限打乱：当前盘面已无可逆走法，已自动停止"
             self.macro_notify_timer = 120
             return
-        rec = recs[0]
-        # game.shuffle 已把棋盘推到该步终点；先找到「终点位置」上的块（即
-        # 这一步实际移动的块），再回退到移动前位置，最后滑回终点重放这一格。
-        blocks = self._find_blocks_at_positions(rec['final'])
-        if len(blocks) != len(rec['final']):
-            # 位置对不上（理论不发生）：跳过这步、直接续下一格
-            self._infinite_shuffle_step()
-            return
+        # 取步时棋盘已被推到该步终点；先回退到移动前位置，再滑回终点重放这一格
         for b, p in zip(blocks, rec['moved']):
-            b.location = list(p)  # 回退到移动前
+            b.location = list(p)
         # 步长跟随玩家速度但夹在 200ms 以内，保证游走连贯可看；动画关闭时
         # 退化为 60ms 一格（无限打乱本质是视觉特效，仍让它可见地游走）
         if getattr(self, 'animation_enabled', True) and self.animation_duration > 0:
