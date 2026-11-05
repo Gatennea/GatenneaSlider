@@ -202,6 +202,10 @@ class SessionMixin:
             self._restore_infinite_duration()
             return
         rec = None
+        # 先收掉上一格的选中高亮再取步：取步要自己用 be_opted 认「移动前
+        # 那一组」（_ann_random_shuffle_move -> game.opt），盘面上残留的
+        # 高亮会被当成选中片，取到错误的走法
+        self._clear_sel_anim()
         # 取一步随机可逆走法：由 _ann_random_shuffle_move 穷举式随机扫描
         # （随机顺序试遍每条缝两侧的每个连通分量），只要盘面上还有一条可逆
         # 走法就必取到——不再用「game.shuffle(1) 抽 40 次」的抽样兜底。
@@ -238,6 +242,8 @@ class SessionMixin:
         self.step_count += 1
         self._infinite_shuffle_step_playing = True
         self.start_animation(blocks, rec['final'])
+        # 选中动画：游走每一步同样画出用到的缝隙与滑块组
+        self._flash_shuffle_selection(rec.get('moved'), rec.get('gap'))
 
     def _restore_infinite_duration(self):
         """停止无限打乱时还原玩家原来的动画步长。"""
@@ -277,6 +283,8 @@ class SessionMixin:
         self.game_history.reset()
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
+        # 收起游走期间逐格续期的选中高亮（停止/自动停止/开关关闭都走这里）
+        self._clear_sel_anim()
 
     # ------------------------------------------------------------------
     # 防意外打乱：历史非空时先确认（确定打乱 / 存档 / 取消）

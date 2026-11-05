@@ -361,6 +361,92 @@ for p in (0.0, 0.37, 0.9, 0.99, 1.0):
     check(f'T8 渲染冒煙 progress={p:.2f}', ok)
 gui8._clear_demo_state()
 
+# ================================================================ T9 选中动画
+print()
+print("=" * 60)
+print("T9 选中动画：打乱演示 / 无限打乱也画选中高亮")
+print("=" * 60)
+
+
+def opted(g):
+    return [tuple(b.location) for b in g.game.blocks if b.be_opted]
+
+
+def build_demo(g, take=3):
+    """从当前盘面打乱并直接启动演示（同步返回记录与终态）。"""
+    pre = positions(g.game)
+    recs = []
+    g.game.shuffle(80, 2, min_score=0.6, record=recs)
+    take = recs[:take]
+    for b, p in zip(g.game.blocks, pre):
+        b.location = list(p)
+    replay(g.game, take)
+    final = positions(g.game)
+    for b, p in zip(g.game.blocks, pre):
+        b.location = list(p)
+    g._start_shuffle_demo(take, pre, final, ('完成', 60))
+    return take
+
+
+# 开：每一步都高亮该步缝隙 + 选中片
+gui9 = make_gui()
+gui9.animation_duration = 20
+gui9.SHUFFLE_DEMO_STEPS = 3
+gui9.selection_animation_enabled = True
+random.seed(41)
+recs9 = build_demo(gui9)
+check('T9 演示启动即有选中高亮', bool(opted(gui9)) and gui9.selected_gap is not None,
+      f'blocks={len(opted(gui9))} gap={gui9.selected_gap}')
+check('T9 高亮片 = 该步记录选中块',
+      sorted(opted(gui9)) == sorted(tuple(p) for p in recs9[0]['moved']))
+check('T9 高亮缝隙 = 该步记录缝隙', gui9.selected_gap == tuple(recs9[0]['gap']))
+# 推进一格：高亮跟随到下一格
+ff_anim(gui9)
+gui9.update_animation()
+check('T9 第二格高亮缝隙跟上', gui9.selected_gap == tuple(recs9[1]['gap']),
+      f'{gui9.selected_gap} vs {recs9[1]["gap"]}')
+run_demo_until_done(gui9)
+check('T9 演示结束后高亮收净',
+      not opted(gui9) and gui9.selected_gap is None)
+
+# 关：一个字节都不碰
+gui10 = make_gui()
+gui10.animation_duration = 20
+gui10.SHUFFLE_DEMO_STEPS = 3
+gui10.selection_animation_enabled = False
+random.seed(42)
+build_demo(gui10)
+check('T9 关掉选中动画：演示中无高亮',
+      not opted(gui10) and gui10.selected_gap is None)
+run_demo_until_done(gui10)
+
+# 无限打乱：游走每格也画高亮，停止后收净
+gui11 = make_gui()
+gui11.animation_duration = 20
+gui11.selection_animation_enabled = True
+gui11.infinite_shuffle = True
+gui11.confirm_before_shuffle = False
+random.seed(43)
+gui11.shuffle_puzzle(confirm=False)
+check('T9 无限打乱已启动', getattr(gui11, '_infinite_shuffle_active', False))
+check('T9 无限打乱每格有高亮',
+      bool(opted(gui11)) and gui11.selected_gap is not None)
+walk_ok = True
+for _ in range(12):                      # 连走几格，高亮必须持续跟上
+    if not gui11._infinite_shuffle_active:
+        walk_ok = False
+        break
+    ff_anim(gui11)
+    gui11.update_animation()
+    if not opted(gui11):
+        walk_ok = False
+        break
+check('T9 无限打乱连走 12 格高亮不丢', walk_ok)
+gui11.shuffle_puzzle(confirm=False)      # 再次调用 = 停止
+check('T9 停止无限打乱后高亮收净',
+      not getattr(gui11, '_infinite_shuffle_active', False)
+      and not opted(gui11) and gui11.selected_gap is None)
+
 # ================================================================ 匯總
 print("\n" + "=" * 60)
 if _failures:

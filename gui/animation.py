@@ -303,6 +303,42 @@ class AnimationMixin:
         dur = max(45, (self.animation_duration + 300) // 17)
         self._sel_anim_timer = dur
 
+    def _flash_shuffle_selection(self, moved_positions, gap):
+        """选中动画：打乱演示 / 无限打乱重放一步时，高亮该步用到的缝隙与滑块组。
+
+        打乱记录（game.record_shuffle_move）本来就有 'moved' 与 'gap'，
+        与玩家动作同构；「选中动画」开着的玩家在撤销/重做时能看到自己选中的
+        是哪条缝、哪一片，打乱时自然也该看到同样的提示。关闭时一个字节都
+        不碰盘面状态（be_opted / selected_gap 原样）。
+
+        参数：
+            moved_positions: 该步选中块的移动前位置（record['moved']）
+            gap            : (gap_type, line)，record['gap']
+        """
+        if not getattr(self, 'selection_animation_enabled', False):
+            return
+        moved = [list(p) for p in (moved_positions or [])]
+        if not moved:
+            return
+        self._clear_sel_anim()
+        blocks = self._find_blocks_at_positions(moved)
+        if len(blocks) != len(moved):
+            return  # 位置对不上（理论不发生）：宁可不画，也不乱指一片
+        for b in blocks:
+            b.be_opted = True
+        self._sel_anim_blocks = list(blocks)
+        self._sel_anim_gap = (gap[0], gap[1]) if gap else None
+        self.selected_gap = self._sel_anim_gap
+        # 打乱没有 move_info（不是历史里的真实一步）：提交时不去刷新位置，
+        # 高亮到期或下一格重设时自然收掉
+        self._sel_anim_move_info = None
+        # 不借撤销/重做的边框色（那套冷/暖色是「往回走/往前走」的语义）。
+        # 置 None 既不加边框，也避免上一轮撤销留下的颜色挂到打乱高亮上
+        self._sel_anim_is_undo = None
+        # 至少 0.75s：打乱演示每格只有 50~150ms，靠下一格不断续期，
+        # 于是整段演示里高亮一直跟着当前这一格走
+        self._sel_anim_timer = max(45, (self.animation_duration + 300) // 17)
+
     def _clear_sel_anim(self):
         """清除选中动画高亮（只清除自己标记过的缝隙与滑块，不打扰用户选择）。"""
         if getattr(self, '_sel_anim_gap', None) is not None \
@@ -497,6 +533,8 @@ class AnimationMixin:
             self.animation_duration = min(self.animation_duration,
                                           self.SHUFFLE_DEMO_STEP_MAX_MS)
             self.start_animation(blocks, rec['final'])
+            # 选中动画：把「这一步选的是哪条缝、哪一片」也画出来
+            self._flash_shuffle_selection(rec.get('moved'), rec.get('gap'))
             self._shuffle_demo_done += 1
             self._shuffle_demo_progress = self._shuffle_demo_done / self._shuffle_demo_total
             self._shuffle_demo_playing = True
@@ -598,6 +636,9 @@ class AnimationMixin:
         self._shuffle_demo_done = 0
         self._shuffle_demo_total = 0
         self._shuffle_demo_fade_base = 0.0
+        # 选中动画：演示逐格续期的高亮在此一并收掉（演示结束时不该留一片
+        # 亮着的滑块，玩家会以为那是自己的选中）
+        self._clear_sel_anim()
         # 恢复玩家滑动的步长（演示期间用的是 SHUFFLE_DEMO_STEP_MS）
         prev = getattr(self, '_shuffle_demo_prev_duration', None)
         if prev is not None:
