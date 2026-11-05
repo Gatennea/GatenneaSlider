@@ -147,6 +147,7 @@ curl http://127.0.0.1:5050/status
 ```
 main.py                # 入口：解析 CLI → 開 stdin 執行緒 + HTTP → SliderGUI().run()
 game.py                # 純遊戲邏輯（無 pygame 依賴）：Block、SliderMatrix、is_solved
+anchor_shuffle.py       # 打亂序列規劃（錨點＝初始重心、偏移＝Σ座標差向量和、MAX_DRIFT 硬上限、不選平行縫、末尾收錨）；四套 shuffle 共用，純邏輯零 pygame
 game_triangle.py       # 三角形密鋪純邏輯：DIRECTIONS/GAP_DIRECTIONS 兩張方向表、TriangleSliderMatrix
 game_mi.py             # 米字格純邏輯：DIRECTIONS/GAP_DIRECTIONS、兩晶格（lattice_of）、MiSliderMatrix、8-bit 快照/地圖
 GUI.py                 # SliderGUI 主類（8 個 Mixin 聚合）+ 主迴圈/高層操作/資源路徑

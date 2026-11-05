@@ -21,6 +21,8 @@ DIRECTIONS = {
     'd': (0, 1),
 }
 
+import anchor_shuffle
+
 # 位棋盘连通性原语（阶段3：替换 set 版 DFS 热点，见根目录 bitboard.py）
 from bitboard import build_occupancy, is_connected, component, grid_side_mask
 
@@ -1055,7 +1057,12 @@ class SliderMatrix:
                        若最终状态的 compute_score > min_score（太容易还原），
                        则丢弃并重洗，直到满足条件或达到重试上限。
                        设为 None 时不检验。
+
+        锚点式序列（2026-11-06）：用 AnchorPlanner 在合法步里挑——连续两步
+        不选平行缝、偏移超阈值才稀疏软偏置、末尾补几步把重心收回初始锚点。
+        选步归选步，规则完全不动：每步仍过「先提交 → 验可逆 → 不可逆回滚」。
         """
+        import math as _math
         import random
 
         def _scatter(coords):
@@ -1080,93 +1087,111 @@ class SliderMatrix:
             score = 0.5 * fill_rate + 0.5 * (1.0 - aspect_error)
             return 1.0 - score
 
-        cur_scatter = _scatter({tuple(b.location) for b in self.blocks})
+        def _cur_score(coords):
+            if not coords:
+                return 1.0
+            rs = [r for r, _ in coords]
+            cs = [c for _, c in coords]
+            H = max(rs) - min(rs) + 1
+            W = max(cs) - min(cs) + 1
+            K = self.m * self.n
+            fill_rate = K / (H * W) if H * W > 0 else 0.0
+            min_dim, max_dim = min(self.m, self.n), max(self.m, self.n)
+            target_ratio = max_dim / min_dim if min_dim > 0 else 1.0
+            min_hw, max_hw = min(H, W), max(H, W)
+            current_ratio = max_hw / min_hw if min_hw > 0 else 1.0
+            max_ratio = max(current_ratio, target_ratio)
+            aspect_error = abs(current_ratio - target_ratio) / max_ratio if max_ratio > 0 else 0.0
+            return 0.5 * fill_rate + 0.5 * (1.0 - aspect_error)
 
-        # attempts = **尝试次数**（不是走成的步数）：不可逆的随机走法会被
-        # continue 跳过，所以实际步数少于它。这是既有难度口径，不动——
-        # 调用方要报「打乱了多少步」请用 record 的长度（见 gui/session.py）。
-        for _ in range(attempts):
+        def _dirs_of(gap_type):
+            return ('a', 'd') if gap_type == 'h' else ('w', 's')
+
+        def _all_gaps():
             bounds = self.get_boundaries()
             min_row, max_row = bounds['min_row'], bounds['max_row']
             min_col, max_col = bounds['min_col'], bounds['max_col']
+            h_lines = [i for i in range(min_row + 1, max_row)
+                       if self.is_valid_h_line(i)]
+            v_lines = [j for j in range(min_col + 1, max_col)
+                       if self.is_valid_v_line(j)]
+            return ([('h', line) for line in h_lines] +
+                    [('v', line) for line in v_lines])
 
-            # 收集所有有效缝隙
-            h_lines = [i for i in range(min_row + 1, max_row) if self.is_valid_h_line(i)]
-            v_lines = [j for j in range(min_col + 1, max_col) if self.is_valid_v_line(j)]
-            all_gaps = [('h', line) for line in h_lines] + [('v', line) for line in v_lines]
+        planner = None
+        if anchor_shuffle.ENABLED:
+            planner = anchor_shuffle.AnchorPlanner(
+                self.blocks, step, max_drift=anchor_shuffle.MAX_DRIFT)
+        clear = lambda: anchor_shuffle.clear_flags(self.blocks)
+        cur_scatter = _scatter({tuple(b.location) for b in self.blocks})
 
+        def one_step(closing=False):
+            """走一步；返回是否走成。锚点规划只负责「从合法步里挑哪一步」。"""
+            nonlocal cur_scatter
+            all_gaps = _all_gaps()
             if not all_gaps:
-                continue
-
-            # 随机选择一个缝隙
-            gap_type, line = random.choice(all_gaps)
-
-            # 根据缝隙类型选择合法方向
-            if gap_type == 'h':
-                direction = random.choice(['a', 'd'])
-            else:
-                direction = random.choice(['w', 's'])
-
-            # 随机选择一个滑块来触发 opt
-            block = random.choice(self.blocks)
-            self.opt(gap_type, line, block)
-
-            # 使用 try_move 验证并获取最终位置
-            final_positions = self.try_move(direction, step)
-            if not final_positions:
-                # 不合法，清除选中状态继续
-                for b in self.blocks:
-                    b.be_opted = False
-                continue
-
-            # bias 模式：Metropolis 接受准则
+                return False
+            gaps = (planner.filter_gaps(all_gaps)
+                    if planner is not None and not closing else all_gaps)
+            pk = planner.parallel_keys if planner is not None else None
+            cands = anchor_shuffle.draw_candidates(
+                self, step, gaps, _dirs_of,
+                count=(planner.candidate_count(closing)
+                       if planner is not None else 1),
+                clear=clear, blocks=self.blocks, parallel_keys=pk,
+                rng=random)
+            cand = (planner.select(cands, closing=closing)
+                    if planner is not None
+                    else (cands[0] if cands else None))
+            if cand is None:
+                clear()
+                return False
+            # 抽候选时清过选中态，提交前必须用中选那步重新 opt + try_move
+            got = anchor_shuffle.reapply(
+                self, cand, step, clear=clear, blocks=self.blocks,
+                parallel_keys=pk)
+            if got is None:
+                clear()
+                return False
+            final_positions, fresh = got
+            cand_scatter = None
             if bias > 0:
-                import math
-                # 从候选位置计算散度（不需要 commit，直接算）
-                non_sel = {tuple(b.location) for b in self.blocks if not b.be_opted}
-                cand_coords = non_sel | {tuple(p) for p in final_positions}
-                cand_scatter = _scatter(cand_coords)
-                # 候选更紧凑（散度下降）→ 按概率拒绝
+                non_sel = {tuple(b.location) for b in self.blocks
+                           if not b.be_opted}
+                cand_scatter = _scatter(
+                    non_sel | {tuple(p) for p in final_positions})
                 if cand_scatter < cur_scatter:
-                    if random.random() >= math.exp(bias * (cand_scatter - cur_scatter)):
-                        # 拒绝：不提交，清除选中
-                        for b in self.blocks:
-                            b.be_opted = False
-                        continue
-
-            # 安全打乱（对齐网页版 shuffle_safe）：提交 + 可逆性校验，
-            # 不可逆自动回滚该步——整条打乱路径反转即是合法解法，终态
-            # 保证有解；4_4_2 实测约 15% 的随机走法过不了这一关
-            if commit_shuffle_step(
-                    self, gap_type, line, block, direction, step,
-                    ('a', 'd') if gap_type == 'h' else ('w', 's'),
-                    final_positions, record):
+                    if random.random() >= _math.exp(
+                            bias * (cand_scatter - cur_scatter)):
+                        clear()
+                        return False
+            # 安全打乱：提交 + 可逆性校验，不可逆自动回滚该步
+            ok = commit_shuffle_step(
+                self, fresh.gap_type, fresh.line, fresh.block,
+                fresh.direction, step, _dirs_of(fresh.gap_type),
+                final_positions, record)
+            if ok:
+                if planner is not None:
+                    planner.commit(fresh, self.blocks,
+                                   len(record) if record is not None else 0)
                 if bias > 0:
-                    cur_scatter = cand_scatter  # 校验通过才真正接受该候选
-        # 确保最终清除所有选中状态
-        for b in self.blocks:
-            b.be_opted = False
+                    cur_scatter = cand_scatter
+            else:
+                clear()
+            return ok
+
+        # attempts = **尝试次数**（不是走成的步数）：不可逆的随机走法会被
+        # 跳过，所以实际步数少于它。这是既有难度口径，不动——
+        # 调用方要报「打乱了多少步」请用 record 的长度（见 gui/session.py）。
+        for _ in range(attempts):
+            one_step()
+        clear()
         # ⚠️ 不在这里记「实际步数」：SliderMatrix 有 __slots__，挂新属性会
         #    AttributeError。调用方以 `record` 长度为准（它就是成功流水）。
 
         # min_score 校验：聚拢度过高说明题目太简单，重洗直到满足要求
         if min_score is not None:
-            import math as _math
             max_retries = attempts * 3  # 最多重试 3 倍原次数
-            def _cur_score():
-                rs = [r for r, _ in coords]
-                cs = [c for _, c in coords]
-                H = max(rs) - min(rs) + 1
-                W = max(cs) - min(cs) + 1
-                K = self.m * self.n
-                fill_rate = K / (H * W) if H * W > 0 else 0.0
-                min_dim, max_dim = min(self.m, self.n), max(self.m, self.n)
-                target_ratio = max_dim / min_dim if min_dim > 0 else 1.0
-                min_hw, max_hw = min(H, W), max(H, W)
-                current_ratio = max_hw / min_hw if min_hw > 0 else 1.0
-                max_ratio = max(current_ratio, target_ratio)
-                aspect_error = abs(current_ratio - target_ratio) / max_ratio if max_ratio > 0 else 0.0
-                return 0.5 * fill_rate + 0.5 * (1.0 - aspect_error)
             for _ in range(max_retries):
                 coords = {tuple(b.location) for b in self.blocks}
                 if self.goal_pattern is not None:
@@ -1175,63 +1200,31 @@ class SliderMatrix:
                     # 默认满矩形路径不受影响。
                     if self.pattern_fit(coords) <= min_score:
                         break
-                elif _cur_score() <= min_score:
+                elif _cur_score(coords) <= min_score:
                     break
-                # 不够散，重新打乱（带 bias 加速）
-                found_good = False
+                # 不够散，继续按同一套选步逻辑补打乱（锚点规划同步生效）
                 for _attempt in range(attempts):
-                    bounds = self.get_boundaries()
-                    min_row, max_row = bounds['min_row'], bounds['max_row']
-                    min_col, max_col = bounds['min_col'], bounds['max_col']
-                    h_lines = [i for i in range(min_row + 1, max_row) if self.is_valid_h_line(i)]
-                    v_lines = [j for j in range(min_col + 1, max_col) if self.is_valid_v_line(j)]
-                    all_gaps = [('h', line) for line in h_lines] + [('v', line) for line in v_lines]
-                    if not all_gaps:
-                        continue
-                    gap_type, line = random.choice(all_gaps)
-                    direction = random.choice(['a', 'd']) if gap_type == 'h' else random.choice(['w', 's'])
-                    block = random.choice(self.blocks)
-                    self.opt(gap_type, line, block)
-                    final_positions = self.try_move(direction, step)
-                    if not final_positions:
-                        for b in self.blocks:
-                            b.be_opted = False
-                        continue
-                    if bias > 0:
-                        non_sel = {tuple(b.location) for b in self.blocks if not b.be_opted}
-                        cand_coords = non_sel | {tuple(p) for p in final_positions}
-                        rs2 = [r for r, _ in cand_coords]
-                        cs2 = [c for _, c in cand_coords]
-                        H2 = max(rs2) - min(rs2) + 1
-                        W2 = max(cs2) - min(cs2) + 1
-                        K2 = self.m * self.n
-                        fr2 = K2 / (H2 * W2) if H2 * W2 > 0 else 0.0
-                        min_d2, max_d2 = min(self.m, self.n), max(self.m, self.n)
-                        tr2 = max_d2 / min_d2 if min_d2 > 0 else 1.0
-                        mh2, mx2 = min(H2, W2), max(H2, W2)
-                        cr2 = mx2 / mh2 if mh2 > 0 else 1.0
-                        mr2 = max(cr2, tr2)
-                        ae2 = abs(cr2 - tr2) / mr2 if mr2 > 0 else 0.0
-                        cand_score = 0.5 * fr2 + 0.5 * (1.0 - ae2)
-                        cur_s = _cur_score()
-                        if cand_score > cur_s or random.random() >= _math.exp(bias * (cand_score - cur_s)):
-                            pass
-                        else:
-                            for b in self.blocks:
-                                b.be_opted = False
-                            continue
-                    # 安全打乱（同主循环）：提交 + 可逆性校验，不可逆
-                    # 自动回滚该步——终态可解是无条件保证，与 record 无关
-                    commit_shuffle_step(
-                        self, gap_type, line, block, direction, step,
-                        ('a', 'd') if gap_type == 'h' else ('w', 's'),
-                        final_positions, record)
-                # 檢查這次重洗是否滿足條件
+                    one_step()
                 coords = {tuple(b.location) for b in self.blocks}
-                if _cur_score() <= min_score:
-                    found_good = True
+                if _cur_score(coords) <= min_score:
                     break
-                # 否則繼續下一次重試（不 break else 子句）
+            clear()
+
+        # 收尾：补几步把重心收回初始锚点，动画全程不用被动居中拉回。
+        # guard 用与上面 min_score 校验完全相同的判据：收尾是往锚点贪心收，
+        # 偶尔会把图形重新拼紧、把题目变简单，这时宁可留一点偏移也不收。
+        if planner is not None:
+            def _passes_min_score():
+                if min_score is None:
+                    return True
+                coords = {tuple(b.location) for b in self.blocks}
+                if self.goal_pattern is not None:
+                    return self.pattern_fit(coords) <= min_score
+                return _cur_score(coords) <= min_score
+            planner.finish(lambda: one_step(closing=True),
+                           self.blocks, record,
+                           guard=_passes_min_score)
+            clear()
 
     def export_map(self) -> str:
         """

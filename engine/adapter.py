@@ -45,6 +45,8 @@
 import math
 import random
 
+import anchor_shuffle
+
 from .board import Board, _connected_components, _group_closure
 from .compat import (_keys_to_positions, _norm_keys, _real_to_point,
                      action_to_move, direction_table)
@@ -961,7 +963,7 @@ class EngineGame:
     # 打乱（安全打乱：每步可逆，终态保证有解）
     # ------------------------------------------------------------------
     def _random_move(self, step: int, bias: float, cur_scatter: float,
-                     record=None):
+                     record=None, planner=None, closing: bool = False):
         """执行一次随机合法滑动，回传 (是否移动, 新散度)。
 
         对齐 game.commit_shuffle_step 的三段式：**先提交、再校验可逆、
@@ -972,28 +974,41 @@ class EngineGame:
         ⚠️ 校验必须在提交之后：未提交时 opt 选中的组还在原位，任何方向的
         落点都不可能等于原位，放前面会恒假（2026-10-18 踩过）。
 
-        record 非 None 时按执行顺序记录（格式见 game.record_shuffle_move）。
+        planner 非 None 时走锚点式序列规划（见 anchor_shuffle.py）：只在
+        合法步里挑，不改规则、不改玩家操作。record 格式见
+        game.record_shuffle_move。
         """
         gaps = self.all_gaps()
         if not gaps:
             return False, cur_scatter
-        gap_type, line = random.choice(gaps)
+        if planner is not None and not closing:
+            gaps = planner.filter_gaps(gaps)
+        pk = planner.parallel_keys if planner is not None else None
+        cands = anchor_shuffle.draw_candidates(
+            self, step, gaps, self._gap_directions,
+            count=(planner.candidate_count(closing)
+                   if planner is not None else 1),
+            clear=self._clear_selection, blocks=self._blocks,
+            parallel_keys=pk, rng=random)
+        cand = (planner.select(cands, closing=closing)
+                if planner is not None else (cands[0] if cands else None))
+        if cand is None:
+            self._clear_selection()
+            return False, cur_scatter
+        # 抽候选时清过选中态，且 try_move_ex 会写 _pending_board —— 提交前
+        # 必须用中选那一步重新 opt + try_move，让 pending 与这一步对应
+        got = anchor_shuffle.reapply(
+            self, cand, step, clear=self._clear_selection,
+            blocks=self._blocks, parallel_keys=pk)
+        if got is None:
+            self._clear_selection()
+            return False, cur_scatter
+        final, fresh = got
+        gap_type, line = fresh.gap_type, fresh.line
+        direction, block = fresh.direction, fresh.block
         dirs = self._gap_directions(gap_type)
-        if not dirs:
-            return False, cur_scatter
-        direction = random.choice(dirs)
-        block = random.choice(self._blocks)
-        self.opt(gap_type, line, block)
-        if not any(b.be_opted for b in self._blocks):
-            self._clear_selection()
-            return False, cur_scatter
         before_locs = [list(b.location) for b in self._blocks]
-        moved = [tuple(b.location) for b in self._blocks if b.be_opted]
-        before_sel = set(moved)
-        final = self.try_move(direction, step)
-        if not final:
-            self._clear_selection()
-            return False, cur_scatter
+        before_sel = set(fresh.moved)
         cand_scatter = cur_scatter
         if bias > 0:
             non_sel = {tuple(b.location) for b in self._blocks
@@ -1020,12 +1035,15 @@ class EngineGame:
         if ok:
             if record is not None:
                 record.append({
-                    'moved': [tuple(p) for p in moved],
-                    'final': [tuple(p) for p in final],
+                    'moved': [tuple(p) for p in fresh.moved],
+                    'final': [tuple(p) for p in fresh.final],
                     'gap': (gap_type, line),
                     'direction': direction,
                     'step': step,
                 })
+            if planner is not None:
+                planner.commit(fresh, self._blocks,
+                               len(record) if record is not None else 0)
             return True, cand_scatter
         # 不可逆：回滚坐标（引擎局面下次 _sync 时随之回到该状态）
         for i, b in enumerate(self._blocks):
@@ -1039,19 +1057,46 @@ class EngineGame:
         attempts = **尝试次数**：不可逆的随机走法会被 `_random_move` 跳过，
         实际走成的步数少于它。这是既有难度口径，不动——调用方要报「打乱了
         多少步」请用 record 的长度（GUI 的提示即如此）。
+
+        锚点式序列（2026-11-06）：本次打乱对应一个 AnchorPlanner，末尾补
+        几步把重心收回初始锚点；缝族法向用 spec.seam_families.coeffs，
+        跨族平行也能判出来。
         """
+        planner = None
+        if anchor_shuffle.ENABLED:
+            pk = {f.name: tuple(f.coeffs)
+                  for f in self.spec.seam_families}
+            planner = anchor_shuffle.AnchorPlanner(
+                self._blocks, step, max_drift=anchor_shuffle.MAX_DRIFT,
+                parallel_keys=pk)
         cur_scatter = self._scatter()
+
+        def _after_restore():
+            """硬兜底退回检查点后，引擎局面也要跟着块位置重建。"""
+            self._pending_board = None
+            self._pending_updates = None
+            self._clear_selection()
+            self._sync(force=True)
+            self.update_matrix()
+
         for _ in range(attempts):
             _ok, cur_scatter = self._random_move(step, bias, cur_scatter,
-                                                 record)
-        if min_score is None:
-            return
-        for _ in range(attempts * 3):
-            if self.compute_score() <= min_score:
-                break
-            for _attempt in range(attempts):
-                _ok, cur_scatter = self._random_move(step, bias,
-                                                     cur_scatter, record)
+                                                 record, planner)
+        if min_score is not None:
+            for _ in range(attempts * 3):
+                if self.compute_score() <= min_score:
+                    break
+                for _attempt in range(attempts):
+                    _ok, cur_scatter = self._random_move(
+                        step, bias, cur_scatter, record, planner)
+        if planner is not None:
+            guard = (lambda: self.compute_score() <= min_score) \
+                if min_score is not None else None
+            planner.finish(
+                lambda: self._random_move(step, bias, cur_scatter, record,
+                                          planner, closing=True),
+                self._blocks, record, after_restore=_after_restore,
+                guard=guard)
         self._clear_selection()
 
     def shuffle(self, attempts: int, step: int, bias: float = 0.0,

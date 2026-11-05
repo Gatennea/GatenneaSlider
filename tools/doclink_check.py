@@ -27,8 +27,10 @@ import re
 import sys
 
 # 不扫的目录（历史草稿 / 临时产物 / 第三方）
+# archives/ 是本机未跟踪的旧构建归档（含多份同名 version.json / cell_class.py），
+# 参与 basename 索引会把仓库根的正常裸名引用误判成「同名多个」。
 SKIP_DIRS = {
-    '.git', '.workbuddy', 'archive', '__pycache__', 'node_modules',
+    '.git', '.workbuddy', 'archive', 'archives', '__pycache__', 'node_modules',
     'video', 'voice_demo', 'build', 'dist', '.venv', '.idea', '.vscode',
 }
 
