@@ -2166,6 +2166,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                         self.macro_notify_msg = f"求解中... {elapsed:.1f}s"
                     self.macro_notify_timer = 180
                     self.macro_notify_persistent = True  # 持续显示不走淡出
+                elif getattr(self, '_infinite_shuffle_active', False):
+                    # 无限打乱进行中：复用同一套通知常驻提示（与求解等提示同款，
+                    # 右下角灰底），显示当前打乱快捷键，按它即停。停后
+                    # _infinite_shuffle_active 变 False，自然走 else 恢复普通淡出。
+                    _sc = self._format_menu_shortcut('shuffle')
+                    self.macro_notify_msg = (f"无限打乱中：再次按 {_sc} 停止"
+                                             if _sc else "无限打乱中：再次打乱停止")
+                    self.macro_notify_timer = 180
+                    self.macro_notify_persistent = True
                 else:
                     self.macro_notify_persistent = False
 
@@ -2240,7 +2249,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 模态最先消费点击；若这里反过来画在模态之上，会出现「模态已吃掉点
                 # 击、浮层却浮在模态表面」的视觉错位（求解进行中按设置键即触发）。
                 self.draw_macro_notify()
-                self.draw_infinite_shuffle_hint()
                 self.draw_solved_popup()
                 self.draw_tutorial_prompt()
                 self.draw_tutorial_panel()

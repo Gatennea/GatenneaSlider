@@ -42,9 +42,6 @@ class BootAnimationSmokeTest(unittest.TestCase):
             self.assertTrue(hasattr(cls, m), f"缺少无限打乱方法 {m}")
         for gone in ('_start_infinite_segment', '_infinite_shuffle_continue'):
             self.assertFalse(hasattr(cls, gone), f"旧的无限打乱方法 {gone} 应已删除")
-        # 右下角常驻提示（无限打乱进行中显示如何停止）
-        self.assertTrue(hasattr(cls, 'draw_infinite_shuffle_hint'),
-                        "缺少右下角无限打乱提示绘制方法")
 
     def test_boot_frame_assets_present(self):
         # 预渲染帧序列应已生成（作者之后可替换为真动画，保持 frame_NNN.png 命名）
