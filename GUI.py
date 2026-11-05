@@ -646,7 +646,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 打乱演示动画（2026-10-18）：打乱后从打乱前状态按记录逐步重放，
         # 步数过多只演前 SHUFFLE_DEMO_STEPS 步，再淡出切入打乱终态
         self._shuffle_demo_active = False   # 演示进行中（含淡入淡出）
-        self._infinite_shuffle_active = False  # 无限打乱进行中（连续随机游走）
         self._shuffle_demo_playing = False  # 正在播某一条记录（动画系统驱动）
         self._shuffle_demo_queue = []       # 待播记录（见 game.record_shuffle_move）
         self._shuffle_demo_final = []       # 打乱终态（与 game.blocks 同序）
@@ -661,6 +660,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._shuffle_demo_done = 0         # 已演步数
         self._shuffle_demo_total = 0        # 演示总步数
         self._shuffle_demo_fade_base = 0.0  # 淡出补足进度的起点
+
+        # 无限打乱：真正的「单步随机游走」，完全绕开上面的演示管線——
+        # 不设 _shuffle_demo_active，故不会画进度条、不会走淡出切屏；
+        # 每步从当前盘面的合法缝取一步、滑一格、落位后立刻续下一格。
+        self._infinite_shuffle_active = False       # 无限打乱进行中
+        self._infinite_shuffle_step_playing = False  # 正在播某一格随机游走
+        self._infinite_shuffle_game = None          # 绑定的棋局（换盘即停）
+        self._infinite_prev_duration = None         # 进入前玩家步长（停止时还原）
 
         # 连续撤销/重做（虚拟键盘一键连续播放）：True=连续模式进行中
         self._continuous_undo = False

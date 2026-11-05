@@ -104,6 +104,13 @@ class AnimationMixin:
         for i, block in enumerate(self.anim_blocks):
             block.location = list(self.anim_end_pos[i])
 
+        # 无限打乱的提交：一格随机游走刚滑完——立刻从当前态续下一格。
+        # 完全独立于打乱演示管線：不画进度条、不淡出切屏、不碰历史/计步。
+        if getattr(self, '_infinite_shuffle_step_playing', False):
+            self._reset_anim_state()
+            self._infinite_shuffle_step()
+            return
+
         # 打乱演示的提交：只是在「重播」打乱过程——不记历史、不计步、不弹
         # 复原窗（历史已在 shuffle_puzzle 里按打乱终态重置），落位后直接
         # 推进下一条记录
@@ -514,7 +521,6 @@ class AnimationMixin:
         if not getattr(self, '_shuffle_demo_active', False):
             return
         if self._shuffle_demo_stale():
-            self._infinite_shuffle_active = False
             self._clear_demo_state()
             return
         phase = self._shuffle_demo_phase
@@ -546,12 +552,7 @@ class AnimationMixin:
 
     def _finish_shuffle_demo(self):
         """演示正常结束：清状态、对齐终态、补发通知。"""
-        # 无限打乱：一段结束且仍处于无限模式 -> 从当前态续接下一段
-        if getattr(self, '_infinite_shuffle_active', False) and not self._shuffle_demo_stale():
-            self._infinite_shuffle_continue()
-            return
         if self._shuffle_demo_stale():
-            self._infinite_shuffle_active = False
             self._clear_demo_state()
             return
         for b, p in zip(self.game.blocks, getattr(self, '_shuffle_demo_final', [])):
@@ -562,24 +563,15 @@ class AnimationMixin:
             self.macro_notify_msg, self.macro_notify_timer = notify
         self.ensure_blocks_visible()
 
-    def _infinite_shuffle_continue(self):
-        """无限打乱一段结束 -> 从当前态续接下一段（由 _finish_shuffle_demo 调用）。"""
-        if not getattr(self, '_infinite_shuffle_active', False):
-            self._finish_shuffle_demo()
-            return
-        if self._shuffle_demo_stale():
-            self._infinite_shuffle_active = False
-            self._clear_demo_state()
-            return
-        # 续接下一段；notify=None 避免每段都弹通知
-        self._start_infinite_segment(None)
-
     def _abort_shuffle_demo(self):
         """演示被外力打断（再次打乱/撤销/删成绩）：棋盘直接对齐终态。
 
         棋盘已被整体替换时（换锚失效）只清状态——此刻 self.game.blocks
         是新棋盘的块，写旧位置会把新局搞乱。
         """
+        # 顺手清掉无限打乱的续播标记（无限模式不走演示管線，但万一混用
+        # 也不该残留一个会续播下一格的悬空标记）
+        self._infinite_shuffle_step_playing = False
         if not getattr(self, '_shuffle_demo_active', False):
             return
         if not self._shuffle_demo_stale():

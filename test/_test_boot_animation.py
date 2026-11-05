@@ -30,10 +30,26 @@ class BootAnimationSmokeTest(unittest.TestCase):
         cls = _gui_class()
         self.assertIsNotNone(cls, "找不到带 _play_boot_animation 的 GUI 类")
         self.assertTrue(hasattr(cls, '_pixelate'), "缺少 _pixelate 像素化辅助方法")
-        # 无限打乱相关方法
-        for m in ('_start_infinite_shuffle', '_start_infinite_segment',
-                  '_stop_infinite_shuffle'):
+        # 无限打乱相关方法（真正单步随机游走，绕开演示管線）
+        for m in ('_start_infinite_shuffle', '_infinite_shuffle_step',
+                  '_stop_infinite_shuffle', '_restore_infinite_duration'):
             self.assertTrue(hasattr(cls, m), f"缺少无限打乱方法 {m}")
+        # 旧的分段续接方案已废弃，不应残留
+        for gone in ('_start_infinite_segment', '_infinite_shuffle_continue'):
+            self.assertFalse(hasattr(cls, gone), f"旧的无限打乱方法 {gone} 应已删除")
+
+    def test_infinite_bypasses_demo_pipeline(self):
+        # 无限打乱必须是真·单步游走，不进入打乱演示管線
+        # （否则会画进度条、走淡出切屏）—— commit_animation 续播入口改指
+        # _infinite_shuffle_step，而非演示的 _play_next_shuffle_record。
+        import inspect  # noqa: E402
+        import gui.animation as animation  # noqa: E402
+        src = inspect.getsource(animation.AnimationMixin.commit_animation)
+        self.assertIn('_infinite_shuffle_step()', src,
+                      "commit_animation 未续播到 _infinite_shuffle_step")
+        # 且不应再残留演示续接的旧钩子
+        self.assertNotIn('_infinite_shuffle_continue', src,
+                         "commit_animation 仍残留旧续接钩子")
 
     def test_settings_bool_key_synced(self):
         # 两份白名单都应包含开机动画/无限打乱开关，保证本地/远程设置对称（§16）
