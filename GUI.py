@@ -519,6 +519,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.arrows_enabled = True
         # 开机动画开关（启动时标题动画，可点击/任意键跳过；缺省开）
         self.show_boot_animation = True
+        # 无限打乱开关（开启后调用打乱=连续随机游走，再次调用打乱=停止；缺省关）
+        self.infinite_shuffle = False
         # 控制模式开关（独立布尔，非互斥；对应 web 版 touch-gesture.md 的三种模式）：
         #  single_touch：直接拖拽滑塊即滑動（移动后清空选中）
         #  two_touch   ：点缝隙→点滑块→再拖拽/键盘（原版两次触控习惯）
@@ -644,6 +646,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 打乱演示动画（2026-10-18）：打乱后从打乱前状态按记录逐步重放，
         # 步数过多只演前 SHUFFLE_DEMO_STEPS 步，再淡出切入打乱终态
         self._shuffle_demo_active = False   # 演示进行中（含淡入淡出）
+        self._infinite_shuffle_active = False  # 无限打乱进行中（连续随机游走）
         self._shuffle_demo_playing = False  # 正在播某一条记录（动画系统驱动）
         self._shuffle_demo_queue = []       # 待播记录（见 game.record_shuffle_move）
         self._shuffle_demo_final = []       # 打乱终态（与 game.blocks 同序）

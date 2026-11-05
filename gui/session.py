@@ -22,6 +22,10 @@ class SessionMixin:
 
     def shuffle_puzzle(self):
         """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
+        # 无限打乱进行中：本次调用即为「停止」（优先于一切 guard）
+        if getattr(self, '_infinite_shuffle_active', False):
+            self._stop_infinite_shuffle()
+            return
         # 教程解法播放中：锁定棋盘操作
         if self._tut_board_locked():
             return
@@ -61,6 +65,11 @@ class SessionMixin:
         if gaps is not None and not gaps:
             self.macro_notify_msg = "无法打乱：这个盘面没有能选中的缝，滑块滑不动"
             self.macro_notify_timer = 90
+            return
+
+        # 无限打乱模式：开启后首次调用打乱 -> 启动连续随机游走（再次调用停止）
+        if getattr(self, 'infinite_shuffle', False):
+            self._start_infinite_shuffle()
             return
 
         # 取消当前动画 / 打乱演示
@@ -126,6 +135,57 @@ class SessionMixin:
         else:
             self._fit_board_view()
             self.macro_notify_msg, self.macro_notify_timer = notify
+
+    # ------------------------------------------------------------------
+    # 无限打乱：开启后调用打乱即进入连续随机游走，再次调用打乱即停止。
+    # 复用现有「打乱演示」管线做活续接——每段做一次定长纯随机可逆游走并播放，
+    # 一段结束（_finish_shuffle_demo）若仍处于无限模式就续接下一段。
+    # bias=0 / min_score=0：纯随机游走、段长可控（不做难度重洗），视觉无缝。
+    # 每步经 commit_shuffle_step 可逆校验 -> 整条路径反转即合法解法，终态恒有解。
+    # ------------------------------------------------------------------
+    def _start_infinite_shuffle(self):
+        """进入无限打乱：从当前态开始连续随机游走。"""
+        self._abort_shuffle_demo()
+        if self.animating:
+            self.cancel_animation()
+        self._infinite_shuffle_active = True
+        self.selected_gap = None
+        self.selected_block = None
+        # 以当前态为根：清历史、步数归零（连续游走的历史无意义）
+        self.step_count = 0
+        self.game_history.reset()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+        self._last_timed_result = None
+        self.macro_notify_msg = "无限打乱中：再次打乱停止"
+        self.macro_notify_timer = 120
+        self._start_infinite_segment(("无限打乱中：再次打乱停止", 120))
+
+    def _start_infinite_segment(self, notify):
+        """无限打乱的一段：从当前态做一次定长随机游走并播放。"""
+        seg = 40  # 段长：每段定长、连续续接 -> 视觉上无缝随机游走
+        pre = [list(b.location) for b in self.game.blocks]
+        records = []
+        # bias=0 + min_score=0：纯随机游走、段长可控（不做难度重洗）
+        self.game.shuffle(seg, self.current_step, bias=0.0, min_score=0.0, record=records)
+        if not records:
+            # 没有可用缝（极罕见）：安全退出，不空转
+            self._infinite_shuffle_active = False
+            self.macro_notify_msg = "无法无限打乱：当前盘面无可用缝"
+            self.macro_notify_timer = 120
+            return
+        final = [list(b.location) for b in self.game.blocks]
+        self._start_shuffle_demo(records, pre, final, notify)
+
+    def _stop_infinite_shuffle(self):
+        """停止无限打乱：对齐到当前态、清演示状态。"""
+        self._infinite_shuffle_active = False
+        self._abort_shuffle_demo()
+        if self.animating:
+            self.cancel_animation()
+        self.macro_notify_msg = "已停止无限打乱"
+        self.macro_notify_timer = 90
+        self.ensure_blocks_visible()
 
     def _fit_board_view(self):
         """按当前盘面适配视图（打乱后 / 演示切终态时用）。"""

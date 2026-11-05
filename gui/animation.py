@@ -514,6 +514,7 @@ class AnimationMixin:
         if not getattr(self, '_shuffle_demo_active', False):
             return
         if self._shuffle_demo_stale():
+            self._infinite_shuffle_active = False
             self._clear_demo_state()
             return
         phase = self._shuffle_demo_phase
@@ -545,7 +546,12 @@ class AnimationMixin:
 
     def _finish_shuffle_demo(self):
         """演示正常结束：清状态、对齐终态、补发通知。"""
+        # 无限打乱：一段结束且仍处于无限模式 -> 从当前态续接下一段
+        if getattr(self, '_infinite_shuffle_active', False) and not self._shuffle_demo_stale():
+            self._infinite_shuffle_continue()
+            return
         if self._shuffle_demo_stale():
+            self._infinite_shuffle_active = False
             self._clear_demo_state()
             return
         for b, p in zip(self.game.blocks, getattr(self, '_shuffle_demo_final', [])):
@@ -555,6 +561,18 @@ class AnimationMixin:
         if notify:
             self.macro_notify_msg, self.macro_notify_timer = notify
         self.ensure_blocks_visible()
+
+    def _infinite_shuffle_continue(self):
+        """无限打乱一段结束 -> 从当前态续接下一段（由 _finish_shuffle_demo 调用）。"""
+        if not getattr(self, '_infinite_shuffle_active', False):
+            self._finish_shuffle_demo()
+            return
+        if self._shuffle_demo_stale():
+            self._infinite_shuffle_active = False
+            self._clear_demo_state()
+            return
+        # 续接下一段；notify=None 避免每段都弹通知
+        self._start_infinite_segment(None)
 
     def _abort_shuffle_demo(self):
         """演示被外力打断（再次打乱/撤销/删成绩）：棋盘直接对齐终态。
@@ -570,6 +588,8 @@ class AnimationMixin:
             # 连正在播的那条记录的动画态一起清掉（否则 cancel_animation 的
             # 常规路径会把块拖回动画起点，抵掉这次终态对齐）
             self._reset_anim_state()
+        # 换盘（含无限打乱进行中载入新局）即视为无限模式结束
+        self._infinite_shuffle_active = False
         self._clear_demo_state()
 
     def _clear_demo_state(self):

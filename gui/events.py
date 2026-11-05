@@ -1640,7 +1640,7 @@ class EventsMixin:
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
-        'op_log_enabled', 'show_boot_animation',
+        'op_log_enabled', 'show_boot_animation', 'infinite_shuffle',
     )
     _SETTINGS_INT_KEYS = ('animation_duration_ms',)
     _ANIM_DURATION_RANGE = (50, 1000)
@@ -3417,6 +3417,15 @@ class EventsMixin:
                     self.show_boot_animation = not getattr(self, 'show_boot_animation', True)
                     status = '开' if self.show_boot_animation else '关'
                     self.macro_notify_msg = f"开机动画：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 无限打乱开关
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_infinite_shuffle_toggle_rect'):
+                if self._settings_infinite_shuffle_toggle_rect.collidepoint(mx, my):
+                    self.infinite_shuffle = not getattr(self, 'infinite_shuffle', False)
+                    status = '开' if self.infinite_shuffle else '关'
+                    self.macro_notify_msg = f"无限打乱：{status}"
                     self.macro_notify_timer = 90
                     return
 

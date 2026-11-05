@@ -214,6 +214,7 @@ class FileOpsMixin:
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'op_log_enabled': getattr(self, 'op_log_enabled', False),
             'boot_animation': getattr(self, 'show_boot_animation', True),
+            'infinite_shuffle': getattr(self, 'infinite_shuffle', False),
             'use_compressed_save': getattr(self, 'use_compressed_save', False),
             'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
@@ -460,6 +461,9 @@ class FileOpsMixin:
                     # 开机动画开关（缺省开）
                     if 'boot_animation' in config:
                         self.show_boot_animation = bool(config['boot_animation'])
+                    # 无限打乱开关（缺省关）
+                    if 'infinite_shuffle' in config:
+                        self.infinite_shuffle = bool(config['infinite_shuffle'])
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])

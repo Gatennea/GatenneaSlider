@@ -30,21 +30,29 @@ class BootAnimationSmokeTest(unittest.TestCase):
         cls = _gui_class()
         self.assertIsNotNone(cls, "找不到带 _play_boot_animation 的 GUI 类")
         self.assertTrue(hasattr(cls, '_pixelate'), "缺少 _pixelate 像素化辅助方法")
+        # 无限打乱相关方法
+        for m in ('_start_infinite_shuffle', '_start_infinite_segment',
+                  '_stop_infinite_shuffle'):
+            self.assertTrue(hasattr(cls, m), f"缺少无限打乱方法 {m}")
 
     def test_settings_bool_key_synced(self):
-        # 两份白名单都应包含开机动画开关，保证本地/远程设置对称（§16）
+        # 两份白名单都应包含开机动画/无限打乱开关，保证本地/远程设置对称（§16）
         import gui.events as events  # noqa: E402
         import http_server  # noqa: E402
-        self.assertIn('show_boot_animation', events.EventsMixin._SETTINGS_BOOL_KEYS)
-        self.assertIn('show_boot_animation', http_server.GameHTTPHandler._SETTINGS_BOOL_KEYS)
+        for key in ('show_boot_animation', 'infinite_shuffle'):
+            self.assertIn(key, events.EventsMixin._SETTINGS_BOOL_KEYS)
+            self.assertIn(key, http_server.GameHTTPHandler._SETTINGS_BOOL_KEYS)
 
     def test_config_key_name(self):
-        # save_config 用 'boot_animation' 持久化，load_last_state 读同名键
+        # save_config 用 'boot_animation' / 'infinite_shuffle' 持久化，
+        # load_last_state 读同名键
         import inspect  # noqa: E402
         import gui.file_ops as file_ops  # noqa: E402
         src = inspect.getsource(file_ops)
         self.assertIn("'boot_animation':", src, "save_config 未持久化 boot_animation")
         self.assertIn("'boot_animation' in config", src, "load_last_state 未读取 boot_animation")
+        self.assertIn("'infinite_shuffle':", src, "save_config 未持久化 infinite_shuffle")
+        self.assertIn("'infinite_shuffle' in config", src, "load_last_state 未读取 infinite_shuffle")
 
 
 if __name__ == '__main__':
