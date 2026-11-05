@@ -4399,6 +4399,43 @@ class RendererMixin:
         text_surf_alpha.blit(self.status_font.render(msg, True, color), (0, 0))
         self.screen.blit(text_surf_alpha, (box_x + pad_x, box_y + pad_y))
 
+    def draw_infinite_shuffle_hint(self):
+        """无限打乱进行中：右下角常驻提示（如何停止）。
+
+        无限打乱本质是连续随机游走、棋盘不该被碰，但玩家需要一个明确的「怎么停」
+        提示。放右下角（与右下通知错开一截避免重叠），显示当前打乱快捷键，按它即
+        停止。仅在 _infinite_shuffle_active 时绘制，停止后自动消失。
+        """
+        if not getattr(self, '_infinite_shuffle_active', False):
+            return
+        shortcut = self._format_menu_shortcut('shuffle')
+        msg = ('无限打乱中：再次按 %s 停止' % shortcut) if shortcut else '无限打乱中：再次打乱停止'
+
+        text_surface = self.status_font.render(msg, True, (235, 240, 245))
+        text_w = text_surface.get_width()
+        text_h = text_surface.get_height()
+        pad_x, pad_y = 12, 7
+        box_w = text_w + pad_x * 2
+        box_h = text_h + pad_y * 2
+
+        # 右下角，但相对右下通知上移一截，避免两框重叠；编辑器中右面板隐藏时可
+        # 直接贴右缘。
+        box_x = self.screen_width - getattr(self, 'right_panel_width', 0) - box_w - 12
+        base_y = self.screen_height - getattr(self, 'status_bar_height', 0) - box_h - 8
+        box_y = base_y - 40  # 与右下通知上下错开
+        if box_y < getattr(self, 'menu_bar_height', 0):
+            box_y = base_y
+
+        # 半透明蓝底 + 描边，和右下通知区分（它偏灰、这个是蓝）
+        alpha = 235
+        bg = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+        bg.fill((28, 58, 92, alpha))
+        pygame.draw.rect(bg, (96, 168, 214, alpha), bg.get_rect(), 1, border_radius=8)
+        self.screen.blit(bg, (box_x, box_y))
+        ts = pygame.Surface((text_w, text_h), pygame.SRCALPHA)
+        ts.blit(self.status_font.render(msg, True, (235, 240, 245)), (0, 0))
+        self.screen.blit(ts, (box_x + pad_x, box_y + pad_y))
+
     def draw_seam_disable_hint(self):
         """谜题 HUD：本谜题被编辑器关掉的缝族提示。
 

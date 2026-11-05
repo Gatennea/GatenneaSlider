@@ -2240,6 +2240,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 模态最先消费点击；若这里反过来画在模态之上，会出现「模态已吃掉点
                 # 击、浮层却浮在模态表面」的视觉错位（求解进行中按设置键即触发）。
                 self.draw_macro_notify()
+                self.draw_infinite_shuffle_hint()
                 self.draw_solved_popup()
                 self.draw_tutorial_prompt()
                 self.draw_tutorial_panel()

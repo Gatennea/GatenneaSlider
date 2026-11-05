@@ -425,13 +425,17 @@ class EventsMixin:
                     if self.handle_records_panel_event(event):
                         continue
 
-                # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解，及连续播放时的空格打断）
+                # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解，连续播放时
+                # 空格打断，以及无限打乱进行中按「打乱」快捷键以停止游走——
+                # 无限打乱每步都吃动画，否则启动它的快捷键被这里吞掉、永远停不下来）
                 if self.animating and event.type == pygame.KEYDOWN:
+                    _inf_active = getattr(self, '_infinite_shuffle_active', False)
                     if not self._is_action_triggered(event, 'undo') and \
                        not self._is_action_triggered(event, 'redo') and \
                        not self._is_action_triggered(event, 'auto_solve') and \
                        not (event.key == pygame.K_SPACE and
-                            (self._continuous_undo or self._continuous_redo)):
+                            (self._continuous_undo or self._continuous_redo)) and \
+                       not (_inf_active and self._is_action_triggered(event, 'shuffle')):
                         continue
 
                 # 求解器运行期间阻止用户改動滑塊（只能停止求解）
