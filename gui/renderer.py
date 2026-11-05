@@ -3652,6 +3652,11 @@ class RendererMixin:
             x, ny, "调试面板：", getattr(self, 'show_metrics_panel', False),
             "右下角的数据面板（聚拢度 / 剖面缺陷等），F2 亦可开关")
 
+        # 开机动画开关（启动时标题动画，可跳过）
+        self._settings_boot_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
+            "启动时播放标题动画，点击或按任意键可跳过")
+
         # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
         # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
         # 的说明与下面的开关行整块落在裁剪区外，玩家根本看不到（2026-10-13

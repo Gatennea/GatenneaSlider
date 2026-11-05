@@ -213,6 +213,7 @@ class FileOpsMixin:
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'op_log_enabled': getattr(self, 'op_log_enabled', False),
+            'boot_animation': getattr(self, 'show_boot_animation', True),
             'use_compressed_save': getattr(self, 'use_compressed_save', False),
             'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
@@ -456,6 +457,9 @@ class FileOpsMixin:
                     # 箭头按键开关（缺省开）
                     if 'arrows_enabled' in config:
                         self.arrows_enabled = bool(config['arrows_enabled'])
+                    # 开机动画开关（缺省开）
+                    if 'boot_animation' in config:
+                        self.show_boot_animation = bool(config['boot_animation'])
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])

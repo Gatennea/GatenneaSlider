@@ -517,6 +517,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 原本只跟着界面模式（enhanced）走、没有自己的开关，这里解耦出来，
         # 作为宣传中的五种操作方式之一独立可控。
         self.arrows_enabled = True
+        # 开机动画开关（启动时标题动画，可点击/任意键跳过；缺省开）
+        self.show_boot_animation = True
         # 控制模式开关（独立布尔，非互斥；对应 web 版 touch-gesture.md 的三种模式）：
         #  single_touch：直接拖拽滑塊即滑動（移动后清空选中）
         #  two_touch   ：点缝隙→点滑块→再拖拽/键盘（原版两次触控习惯）
@@ -1919,9 +1921,92 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         return self.get_block_at_pos(screen_x, screen_y) is None and \
                self.get_gap_at_pos(screen_x, screen_y) is None
 
+    def _pixelate(self, surf, factor=3):
+        """把表面降采样再最近邻放大，得到块状像素风。
+
+        仓库未打包中文字体，真·中文像素字体体积巨大不适合打包，这里用系统
+        字体渲染后做像素化近似（英文同理）。factor 越大块越粗。
+        """
+        if factor <= 1:
+            return surf
+        w, h = surf.get_size()
+        sw, sh = max(1, w // factor), max(1, h // factor)
+        small = pygame.transform.scale(surf, (sw, sh))
+        return pygame.transform.scale(small, (w, h))
+
+    def _play_boot_animation(self):
+        """启动标题动画：封面背景 + 标题淡入淡出，约 2.4 秒，点击或任意键可跳过。
+
+        整段包在大 try 里：任何异常（资源缺失 / 字体失败 / 渲染异常）都静默
+        跳过，绝不卡死进程——对应打包铁律 §4：每帧可选功能必须能力检测、失败
+        只跳过。
+        """
+        if not getattr(self, 'show_boot_animation', True):
+            return
+        try:
+            clock = pygame.time.Clock()
+            # 背景封面（失败则退为纯色背景）
+            bg = None
+            try:
+                bg = pygame.image.load(
+                    _gui_get_resource_path('picture/cover.png')).convert_alpha()
+            except Exception:
+                bg = None
+            # 字体：中文用系统 SimHei（仓库未打包字体），英文同字体渲染后像素化
+            zh_font = _gui_safe_font('SimHei', 46)
+            en_font = _gui_safe_font('SimHei', 20)
+            title_zh = '貓九的滑块游戏'
+            title_en = 'Gatennea Slider'
+            zh_surf = self._pixelate(zh_font.render(title_zh, True, (235, 240, 245)), 3)
+            en_surf = self._pixelate(en_font.render(title_en, True, (140, 200, 230)), 3)
+
+            total = 2.4
+            fade_in, fade_out = 0.5, 0.5
+            t = 0.0
+            while t < total:
+                dt = clock.tick(60) / 1000.0
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        self.running = False
+                        return
+                    if ev.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+                        return  # 任意键 / 点击跳过
+                # 透明度：淡入 → 常亮 → 淡出
+                if t < fade_in:
+                    a = t / fade_in
+                elif t > total - fade_out:
+                    a = max(0.0, (total - t) / fade_out)
+                else:
+                    a = 1.0
+                a = max(0.0, min(1.0, a))
+                sw, sh = self.screen.get_size()
+                self.screen.fill((13, 13, 15))
+                if bg:
+                    scale = min(sw / bg.get_width(), sh / bg.get_height())
+                    bw, bh = int(bg.get_width() * scale), int(bg.get_height() * scale)
+                    bgs = pygame.transform.smoothscale(bg, (bw, bh))
+                    bgs.set_alpha(int(90 * a))
+                    self.screen.blit(bgs, ((sw - bw) // 2, (sh - bh) // 2))
+                    scrim = pygame.Surface((sw, sh), pygame.SRCALPHA)
+                    scrim.fill((13, 13, 15, int(150 * a)))
+                    self.screen.blit(scrim, (0, 0))
+                zh_surf.set_alpha(int(255 * a))
+                en_surf.set_alpha(int(255 * a))
+                self.screen.blit(zh_surf, zh_surf.get_rect(center=(sw // 2, sh // 2 - 10)))
+                self.screen.blit(en_surf, en_surf.get_rect(center=(sw // 2, sh // 2 + 36)))
+                pygame.display.flip()
+                t += dt
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return
+
     def run(self):
         """游戏主循环"""
         clock = pygame.time.Clock()
+
+        # 开机标题动画（可跳过、受 show_boot_animation 开关控制）
+        self._play_boot_animation()
 
         while self.running:
             try:
