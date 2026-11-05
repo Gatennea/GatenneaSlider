@@ -186,6 +186,35 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         except Exception:
             pass  # 图标加载失败不影响运行
 
+        # 开机标题画面：窗口一创建就绘出首帧，让后续重活在它底下进行（覆盖加载空缺，
+        # 而非叠加时长）。load_last_state 完整载入前不便读开关，这里快速读一次。
+        if self._boot_enabled_now():
+            try:
+                # 先画一张即时标题卡（无文件IO），杜绝黑屏
+                self._boot_frames = [self._make_fallback_boot_surf()]
+                self._paint_boot(self._boot_frames[0], 1.0)
+                pygame.display.flip()
+            except Exception:
+                self._boot_frames = [self._make_fallback_boot_surf()]
+            self._boot_paint_time = pygame.time.get_ticks()
+            # 再载真实预渲染帧（同步、很快），载完替换并补绘首帧
+            try:
+                real = self._load_boot_frames()
+                if real and len(real) > 1:
+                    self._boot_frames = real
+                    self._paint_boot(self._boot_frames[0], 1.0)
+                    pygame.display.flip()
+            except Exception:
+                pass
+        else:
+            self._boot_paint_time = 0
+        # 关闭 PyInstaller 启动图（若本次是打包运行且 spec 配了 splash=）
+        try:
+            import pyi_splash
+            pyi_splash.close()
+        except Exception:
+            pass
+
         # 颜色配置
         self.colors = {
             'background': (30, 30, 30),
@@ -1931,92 +1960,130 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         return self.get_block_at_pos(screen_x, screen_y) is None and \
                self.get_gap_at_pos(screen_x, screen_y) is None
 
-    def _pixelate(self, surf, factor=3):
-        """把表面降采样再最近邻放大，得到块状像素风。
+    # ------------------------------------------------------------------
+    # 开机动画：预渲染帧序列（picture/boot/frame_*.png）
+    # 设计目标：覆盖「加载空缺」而非叠加时长。窗口一创建（__init__ 的 set_mode
+    # 之后）就立即绘出首帧，让后续所有重活（建盘/载资源）在它底下进行；run() 里的
+    # _run_boot_phase 只在「空闲时间」播动画 + 末尾淡出，整体时长≈真实加载时长。
+    # 想要覆盖「exe 自解压 / Python 启动」那段更前的空缺，需配合 PyInstaller
+    # splash（见 Gatenneaslider.spec 的 splash=），本类只在窗口就绪后关闭它。
+    # ------------------------------------------------------------------
+    def _boot_enabled_now(self):
+        """开窗口前快速读一次 config 的 boot_animation 开关（此时 load_last_state
+        尚未完整载入，这里只取这一项；读不到按默认开）。"""
+        try:
+            _base = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+                     else os.path.dirname(os.path.abspath(__file__)))
+            _p = os.path.join(_base, 'config', 'config.json')
+            if os.path.exists(_p):
+                with open(_p, 'r', encoding='utf-8') as f:
+                    _c = json.load(f)
+                if 'boot_animation' in _c:
+                    return bool(_c['boot_animation'])
+        except Exception:
+            pass
+        return True
 
-        仓库未打包中文字体，真·中文像素字体体积巨大不适合打包，这里用系统
-        字体渲染后做像素化近似（英文同理）。factor 越大块越粗。
-        """
-        if factor <= 1:
-            return surf
-        w, h = surf.get_size()
-        sw, sh = max(1, w // factor), max(1, h // factor)
-        small = pygame.transform.scale(surf, (sw, sh))
-        return pygame.transform.scale(small, (w, h))
+    def _make_fallback_boot_surf(self):
+        """无预渲染帧时的回退：代码画一张清晰大字标题卡（透明底，垫游戏同色背景）。"""
+        surf = pygame.Surface((960, 540), pygame.SRCALPHA)
+        try:
+            zh = _gui_safe_font('SimHei', 64).render('貓九的滑块游戏', True, (238, 242, 248))
+            en = _gui_safe_font('SimHei', 22).render('Gatennea Slider', True, (150, 205, 235))
+            hint = _gui_safe_font('SimHei', 16).render('加载中…', True, (170, 178, 188))
+            surf.blit(zh, zh.get_rect(center=(480, 270 - 18)))
+            surf.blit(en, en.get_rect(center=(480, 270 + 34)))
+            surf.blit(hint, hint.get_rect(center=(480, 270 + 72)))
+        except Exception:
+            pass
+        return surf
 
-    def _play_boot_animation(self):
-        """启动标题动画：封面背景 + 标题淡入淡出，约 2.4 秒，点击或任意键可跳过。
+    def _load_boot_frames(self):
+        """载入预渲染开机帧；缺失则回退到代码绘制的单帧标题卡。"""
+        frames = []
+        try:
+            import glob
+            d = _gui_get_resource_path('picture/boot')
+            for p in sorted(glob.glob(os.path.join(d, 'frame_*.png'))):
+                frames.append(pygame.image.load(p).convert_alpha())
+        except Exception:
+            frames = []
+        if not frames:
+            frames = [self._make_fallback_boot_surf()]
+        return frames
 
-        整段包在大 try 里：任何异常（资源缺失 / 字体失败 / 渲染异常）都静默
-        跳过，绝不卡死进程——对应打包铁律 §4：每帧可选功能必须能力检测、失败
-        只跳过。
+    def _paint_boot(self, frame_surf, overlay_alpha):
+        """绘制一帧开机画面：垫 (30,30,30) 同游戏背景，覆盖层按 overlay_alpha 淡出。"""
+        if overlay_alpha <= 0:
+            self.screen.fill((30, 30, 30))
+            return
+        sw, sh = self.screen.get_size()
+        self.screen.fill((30, 30, 30))
+        fw, fh = frame_surf.get_size()
+        scale = max(sw / fw, sh / fh)
+        bw, bh = int(fw * scale), int(fh * scale)
+        img = pygame.transform.smoothscale(frame_surf, (bw, bh))
+        img.set_alpha(int(255 * overlay_alpha))
+        self.screen.blit(img, ((sw - bw) // 2, (sh - bh) // 2))
+
+    def _run_boot_phase(self, clock):
+        """开机标题阶段：在加载之上播动画 + 末尾淡出，不额外加时。
+
+        窗口创建时 __init__ 已绘出首帧（self._boot_paint_time 记录那一刻）。
+        这里只在「空闲时间」(加载极快、还没到最短展示阈值时) 播完整动画；
+        若加载已很慢则不播、直接淡出——整体时长≈真实加载时长，不再像旧版
+        那样在加载之后平白叠加 2.4s。
         """
         if not getattr(self, 'show_boot_animation', True):
             return
         try:
-            clock = pygame.time.Clock()
-            # 背景封面（失败则退为纯色背景）
-            bg = None
-            try:
-                bg = pygame.image.load(
-                    _gui_get_resource_path('picture/cover.png')).convert_alpha()
-            except Exception:
-                bg = None
-            # 字体：中文用系统 SimHei（仓库未打包字体），英文同字体渲染后像素化
-            zh_font = _gui_safe_font('SimHei', 46)
-            en_font = _gui_safe_font('SimHei', 20)
-            title_zh = '貓九的滑块游戏'
-            title_en = 'Gatennea Slider'
-            zh_surf = self._pixelate(zh_font.render(title_zh, True, (235, 240, 245)), 3)
-            en_surf = self._pixelate(en_font.render(title_en, True, (140, 200, 230)), 3)
-
-            total = 2.4
-            fade_in, fade_out = 0.5, 0.5
-            t = 0.0
-            while t < total:
-                dt = clock.tick(60) / 1000.0
+            frames = getattr(self, '_boot_frames', None)
+            if not frames:
+                frames = self._load_boot_frames()
+                self._boot_frames = frames
+            n = len(frames)
+            MIN_HOLD = 800   # 最短展示（加载极快时补到此时长，保证标题可读）
+            FADE = 400       # 淡出时长
+            paint_t = getattr(self, '_boot_paint_time', 0)
+            init_time = pygame.time.get_ticks() - paint_t
+            free = max(0, MIN_HOLD - init_time)  # 空闲时间：用来播动画
+            while self.running:
+                now = pygame.time.get_ticks()
+                since = now - paint_t
+                # 跳过：点击 / 任意键（纯鼠标亦可，§15）
                 for ev in pygame.event.get():
                     if ev.type == pygame.QUIT:
                         self.running = False
                         return
                     if ev.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
-                        return  # 任意键 / 点击跳过
-                # 透明度：淡入 → 常亮 → 淡出
-                if t < fade_in:
-                    a = t / fade_in
-                elif t > total - fade_out:
-                    a = max(0.0, (total - t) / fade_out)
+                        return
+                if since <= init_time + free:
+                    a = since - init_time
+                    fidx = min(n - 1, int((a / free) * (n - 1))) if free > 0 else 0
+                    self._paint_boot(frames[fidx], 1.0)
+                elif since <= init_time + free + FADE:
+                    end_fidx = (n - 1) if free > 0 else 0
+                    fa = max(0.0, 1.0 - (since - init_time - free) / FADE)
+                    self._paint_boot(frames[end_fidx], fa)
                 else:
-                    a = 1.0
-                a = max(0.0, min(1.0, a))
-                sw, sh = self.screen.get_size()
-                self.screen.fill((13, 13, 15))
-                if bg:
-                    scale = min(sw / bg.get_width(), sh / bg.get_height())
-                    bw, bh = int(bg.get_width() * scale), int(bg.get_height() * scale)
-                    bgs = pygame.transform.smoothscale(bg, (bw, bh))
-                    bgs.set_alpha(int(90 * a))
-                    self.screen.blit(bgs, ((sw - bw) // 2, (sh - bh) // 2))
-                    scrim = pygame.Surface((sw, sh), pygame.SRCALPHA)
-                    scrim.fill((13, 13, 15, int(150 * a)))
-                    self.screen.blit(scrim, (0, 0))
-                zh_surf.set_alpha(int(255 * a))
-                en_surf.set_alpha(int(255 * a))
-                self.screen.blit(zh_surf, zh_surf.get_rect(center=(sw // 2, sh // 2 - 10)))
-                self.screen.blit(en_surf, en_surf.get_rect(center=(sw // 2, sh // 2 + 36)))
+                    break
                 pygame.display.flip()
-                t += dt
+                clock.tick(60)
         except Exception:
             import traceback
             traceback.print_exc()
             return
 
+    # 注：旧的 _play_boot_animation（代码绘制 + 固定 2.4s）已移除，改为预渲染
+    # 帧序列方案，见上方 _run_boot_phase / _load_boot_frames。
+
     def run(self):
         """游戏主循环"""
         clock = pygame.time.Clock()
 
-        # 开机标题动画（可跳过、受 show_boot_animation 开关控制）
-        self._play_boot_animation()
+        # 开机标题阶段：窗口创建时已在 __init__ 绘出首帧，这里做动画 + 淡出，
+        # 覆盖加载空缺而非叠加时间（受 show_boot_animation 开关控制）
+        self._run_boot_phase(clock)
 
         while self.running:
             try:
