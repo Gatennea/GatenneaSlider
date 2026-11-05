@@ -6,6 +6,8 @@
 > 项目全景、目录地图、接口全集见 `docs/agent/readme_to_agent.md`，各主题细节见 `docs/` 子目录。
 > 规则冲突时优先级：**代码为真 → 文档其次 → 本文件是「不要踩的坑」清单**。
 > **维护纪律（AI 必读）**：本文件由 AI 协作者在项目演进中**自动更新**。每次改动都会在对话里**明确告知更新了哪几条、为什么**，以便你随时否决 / 回退。只收录**本项目相关**的约定；本地环境、工具链、WorkBuddy 行为等跨项目事项**不写在此**（见个人记忆 / 环境文档）。
+>
+> **开工顺序**：读 §20「AI 自己能用的工具」——游戏自带 HTTP API（含 `/screenshot`）、多实例启动、175 个可直接跑的冒烟测试。**不知道它们存在 = 会返工的失职**（2026-11-06 用户点名批评：多次声称「无法跑 GUI」，其实一直在裸奔凭代码猜）。
 
 ## 0. 项目本质（一句话）
 Gatennea Slider（**貓九**的滑块游戏）= 平面滑块拼图，四种密铺形态：**方形 / 三角 / 米字 / 数字**（数字由玩家建议加入，非作者原创构想）。
@@ -158,3 +160,19 @@ Gatennea Slider（**貓九**的滑块游戏）= 平面滑块拼图，四种密�
 - **手填版本号约束**（`build_release.py` 校验）：须 `vYYYYMMDD` 或 `vYYYYMMDD-xxx`，且日期**不早于今天**（防倒退）；旧制 `vN-YYYYMMDD` 放行。
 - **同日发两版**：直接取下一天日期，或 `--version vYYYYMMDDHHMM`（带时分才能真正比旧的大；`v20261017-2` 这类后缀比较时只看前导整数 20261017，同日不会判新）。
 - **发版走 GitHub 网页手动**：tag 填版本号，上传 **`GatenneaSlider-Windows.zip` + `version.json`** 两附件；zip 文件名必须固定（下载链接 / 更新器都依赖它，改名即失效）。
+
+## 20. AI 自己能用的工具（先查再用，别裸猜）
+> 起因（2026-11-06）：AI 多次声称「无法跑 GUI」，实际游戏一直带完整 HTTP API 与**截图接口**，全程凭代码想象观感，被用户点名是文档失职。
+
+**开工前必读两份**：`docs/api/AI使用API注意事项.md`（启动 / 令牌 / 请求写法 / 卡死处置）、`docs/agent/readme_to_agent.md`（§1 启动与验证、API 全集、stdin 命令表）。查得到的工具**不许再发明第二套**。
+
+- **视觉验收只走 `GET /screenshot`**（`?path=` 指定落点，缺省存 `screenshots/`）。要判断「某个开关到底改变没改变画面」就跑 **开 / 关两次 + 两张截图对比**，不要读渲染代码猜。
+- **令牌**：启动时 stdout 打印 `GATSLI_TOKEN=...`（`python -u` 或 `PYTHONUNBUFFERED=1`，否则被缓冲吞掉）；每个进程新令牌。`401` 多是打到了别的实例（见下条）。
+- **多实例的真相**：`http.server.HTTPServer` 默认 `allow_reuse_address = 1` + Windows 的 `SO_REUSEADDR` 语义 ⇒ **第二个实例 bind 同一端口不报错**，这就是「双击就能多开」的机制（不是专门写的兜底）。代价是**同一端口上多个实例谁接连接不可依赖**，请求可能打到旧进程、跑的是旧代码。
+  - 因此：**验收新代码不要重启用户正在玩的实例**。直接新开一个换端口：
+    `D:\python\python.exe -u main.py 4 4 2 --http-port 5051`，然后只对 `5051` 发请求；验完杀掉临时实例（强杀即可，别让它退出时写 `config/temp_history.json` 覆盖用户局面）。
+  - 反过来：对 `5050` 发请求前先 `Get-NetTCPConnection -LocalPort 5050 -State Listen` 看 owner pid / 启动时间，确认打到的是你要验的那个进程。
+- **不开窗口也能验纯逻辑**：项目根有 `_tmp_api_test.py` / `_tmp_shuffle_test.py` / `_tmp_token_test.py` 现成探针；请求用 python `urllib` + `json.dumps().encode('utf-8')`，不要用 PowerShell 写带 BOM 的 JSON。
+- **测试直接跑文件，不用 pytest 收集**：`python test\_test_xxx.py`（多数自带 `sys.exit(1)`；有 `if __name__ == '__main__'` 守卫的文件被 pytest 收集只会看到 1 项，误判「没测到」）。GUI 相关测试自己设 `SDL_VIDEODRIVER=dummy`，可在无窗口下跑完整绘制，**改 UI 后至少跑对应的 `test/_test_*.py`**（现共 175 个）。
+- **日志是第一现场**：`config/error_log.jsonl`（一行一条 JSON，启动与全异常都记）；`/status` 给 `puzzle / step_count / solved / selected_gap / blocks`。
+- **交付时说清用了哪条通道验收**（截图路径 / 测试文件名），别再写「无法验证」。
