@@ -1645,6 +1645,7 @@ class EventsMixin:
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
         'op_log_enabled', 'show_boot_animation', 'infinite_shuffle',
+        'confirm_before_shuffle',
     )
     _SETTINGS_INT_KEYS = ('animation_duration_ms',)
     _ANIM_DURATION_RANGE = (50, 1000)
@@ -2035,7 +2036,9 @@ class EventsMixin:
                     continue
 
                 if action == 'shuffle':
-                    self.shuffle_puzzle()
+                    # 外部控制（HTTP / stdin）是显式指令：跳过「防意外打乱」确认框，
+                    # 否则模态弹窗会卡住自动化调用（无人点按钮）。
+                    self.shuffle_puzzle(confirm=False)
                     self._cmd_reply(resp_q, True, "已打乱")
                 
                 elif action == 'reset':
@@ -3433,6 +3436,15 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 防意外打乱开关（打乱前历史非空先确认）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_confirm_shuffle_toggle_rect'):
+                if self._settings_confirm_shuffle_toggle_rect.collidepoint(mx, my):
+                    self.confirm_before_shuffle = not getattr(self, 'confirm_before_shuffle', True)
+                    status = '开' if self.confirm_before_shuffle else '关'
+                    self.macro_notify_msg = f"防意外打乱：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 控制 Tab：三种模式开关（独立布尔，可任意组合）
             if self.settings_active_tab == 'control':
                 if hasattr(self, '_settings_ctrl_single_rect') and self._settings_ctrl_single_rect.collidepoint(mx, my):
@@ -4606,6 +4618,9 @@ class EventsMixin:
         self.confirm_lines = menu_delete.describe(tgt)
         self.confirm_ok_text = '删除'
         self.confirm_danger = True
+        # 明确清掉可选第三按钮，避免误继承「打乱确认」的「存档」按钮
+        self.confirm_extra_text = ''
+        self.confirm_extra_action = None
         self.confirm_action = (lambda t=tgt: self._do_delete_preset(t))
         return True
 

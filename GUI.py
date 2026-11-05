@@ -603,6 +603,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.confirm_ok_text = '确定'
         self.confirm_danger = False
         self.confirm_action = None      # 无参可调用对象；确认后执行
+        self.confirm_extra_text = ''     # 可选第三按钮文字（如「存档」）；空=不显示
+        self.confirm_extra_action = None # 第三按钮点击后的无参可调用对象
+
+        # 防意外打乱：开启后，历史非空时点打乱先弹确认（可先存档）；关则直接打乱
+        self.confirm_before_shuffle = True
+        # 「存档后打乱」的挂起标记：另存为对话框保存成功后自动续打乱
+        self._pending_shuffle_after_save = False
 
         # 三角形密铺模式（Stage B）：self.game 为 TriangleSliderMatrix 时为 True
         self.triangle_mode = False

@@ -20,8 +20,13 @@ class SessionMixin:
             return True
         return False
 
-    def shuffle_puzzle(self):
-        """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
+    def shuffle_puzzle(self, confirm=True):
+        """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑
+
+        confirm=True（交互入口默认）：若「防意外打乱」开关开着且当前历史非空，
+        先弹确认框（确定打乱 / 存档 / 取消），避免误触把可撤销的历史冲掉。
+        确认后与外部控制（API / stdin）都会以 confirm=False 再调一次直接执行。
+        """
         # 无限打乱进行中：本次调用即为「停止」（优先于一切 guard）
         if getattr(self, '_infinite_shuffle_active', False):
             self._stop_infinite_shuffle()
@@ -65,6 +70,13 @@ class SessionMixin:
         if gaps is not None and not gaps:
             self.macro_notify_msg = "无法打乱：这个盘面没有能选中的缝，滑块滑不动"
             self.macro_notify_timer = 90
+            return
+
+        # 防意外打乱：历史非空时先确认（打乱会清空历史、之后无法撤回）
+        if (confirm
+                and getattr(self, 'confirm_before_shuffle', True)
+                and self._shuffle_has_history()):
+            self._request_shuffle_confirm()
             return
 
         # 无限打乱模式：开启后首次调用打乱 -> 启动连续随机游走（再次调用停止）
@@ -177,6 +189,7 @@ class SessionMixin:
         if not getattr(self, 'infinite_shuffle', False):
             self._infinite_shuffle_active = False
             self._restore_infinite_duration()
+            self._finalize_infinite_state()
             self.macro_notify_msg = "已停止无限打乱（开关已关）"
             self.macro_notify_timer = 90
             return
@@ -203,6 +216,7 @@ class SessionMixin:
             # 没有可用缝（极罕见）：安全退出，不空转
             self._infinite_shuffle_active = False
             self._restore_infinite_duration()
+            self._finalize_infinite_state()
             self.macro_notify_msg = "无限打乱：当前盘面无可移动缝，已自动停止"
             self.macro_notify_timer = 120
             return
@@ -223,6 +237,8 @@ class SessionMixin:
         else:
             dur = 60
         self.animation_duration = dur
+        # 无限打乱只计步、不记历史：左下角步数持续增长，纯粹是游走进度
+        self.step_count += 1
         self._infinite_shuffle_step_playing = True
         self.start_animation(blocks, rec['final'])
 
@@ -237,13 +253,80 @@ class SessionMixin:
     def _stop_infinite_shuffle(self):
         """停止无限打乱：对齐到当前态、还原步长、清状态。"""
         self._infinite_shuffle_active = False
+        # 若正有一格在滑：把它落到**终点**再快照。此时 game 内部矩阵早已推进
+        # 到终点，若走 cancel_animation（放回起点）会让 blocks 与矩阵不一致，
+        # 快照出来的历史根就是错位盘面。
+        if getattr(self, '_infinite_shuffle_step_playing', False) and self.anim_blocks:
+            for i, b in enumerate(self.anim_blocks):
+                b.location = list(self.anim_end_pos[i])
+            self._reset_anim_state()
+        elif self.animating:
+            self.cancel_animation()
         self._restore_infinite_duration()
         self._abort_shuffle_demo()
-        if self.animating:
-            self.cancel_animation()
+        self._finalize_infinite_state()
         self.macro_notify_msg = "已停止无限打乱"
         self.macro_notify_timer = 90
         self.ensure_blocks_visible()
+
+    def _finalize_infinite_state(self):
+        """无限打乱结束的统一收尾：步数清零、历史以当前态为根（绝不可撤回）。
+
+        游走期间只计步、不写历史——历史里仍是最初为根的那一条快照。若不在
+        这时重置，撤销会把棋盘拉回游走起点。所以结束时把**当前态**存成唯一
+        快照（history_index=0，can_undo=False），与普通打乱后的语义一致。
+        """
+        self.step_count = 0
+        self.game_history.reset()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+
+    # ------------------------------------------------------------------
+    # 防意外打乱：历史非空时先确认（确定打乱 / 存档 / 取消）
+    # ------------------------------------------------------------------
+    def _shuffle_has_history(self) -> bool:
+        """当前是否存在会被打乱清掉的历史（可撤销或可重做）。"""
+        h = getattr(self, 'game_history', None)
+        if h is None:
+            return False
+        try:
+            return bool(h.can_undo() or h.can_redo())
+        except Exception:
+            # 历史接口异常时保守放行（不因预检把正常打乱挡掉）
+            return False
+
+    def _request_shuffle_confirm(self):
+        """弹出「打乱前确认」：明确会清空历史，提供 确定打乱 / 存档 / 取消。"""
+        self.show_confirm_dialog = True
+        self.confirm_title = '打乱前确认'
+        self.confirm_lines = [
+            '打乱会清空当前的历史记录，之后将无法撤销回打乱前的局面。',
+            '建议先存档再打乱。',
+        ]
+        self.confirm_ok_text = '确定打乱'
+        self.confirm_danger = True
+        self.confirm_extra_text = '存档'
+        self.confirm_action = (lambda: self.shuffle_puzzle(confirm=False))
+        self.confirm_extra_action = self._save_then_shuffle
+
+    def _save_then_shuffle(self):
+        """确认框的「存档」：先存档，成功后再打乱（用户本意仍是打乱）。
+
+        无当前文件路径时走另存为对话框（异步）——先挂 `_pending_shuffle_after_save`
+        标记，等 handle_file_dialog_result 保存成功后再打乱；取消另存为则放弃打乱。
+        """
+        # 编辑器画布不能存成谜题存档（save_to_file 会拦截并提示）
+        if self._med_save_blocked():
+            return
+        if getattr(self, 'prevent_overwrite_flag', False) and self.current_file_path:
+            self._pending_shuffle_after_save = True
+            self.save_as()
+        elif self.current_file_path:
+            if self._save_to_path(self.current_file_path):
+                self.shuffle_puzzle(confirm=False)
+        else:
+            self._pending_shuffle_after_save = True
+            self.save_as()
 
     def _fit_board_view(self):
         """按当前盘面适配视图（打乱后 / 演示切终态时用）。"""

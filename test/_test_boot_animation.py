@@ -38,10 +38,15 @@ class BootAnimationSmokeTest(unittest.TestCase):
             self.assertFalse(hasattr(cls, gone), f"旧开机动画方法 {gone} 应已删除")
         # 无限打乱相关方法（真正单步随机游走，绕开演示管線）
         for m in ('_start_infinite_shuffle', '_infinite_shuffle_step',
-                  '_stop_infinite_shuffle', '_restore_infinite_duration'):
+                  '_stop_infinite_shuffle', '_restore_infinite_duration',
+                  '_finalize_infinite_state'):
             self.assertTrue(hasattr(cls, m), f"缺少无限打乱方法 {m}")
         for gone in ('_start_infinite_segment', '_infinite_shuffle_continue'):
             self.assertFalse(hasattr(cls, gone), f"旧的无限打乱方法 {gone} 应已删除")
+        # 防意外打乱：确认 / 存档后打乱
+        for m in ('_shuffle_has_history', '_request_shuffle_confirm',
+                  '_save_then_shuffle'):
+            self.assertTrue(hasattr(cls, m), f"缺防意外打乱方法 {m}")
 
     def test_boot_frame_assets_present(self):
         # 预渲染帧序列应已生成（作者之后可替换为真动画，保持 frame_NNN.png 命名）
@@ -78,7 +83,7 @@ class BootAnimationSmokeTest(unittest.TestCase):
         # 两份白名单都应包含开机动画/无限打乱开关，保证本地/远程设置对称（§16）
         import gui.events as events  # noqa: E402
         import http_server  # noqa: E402
-        for key in ('show_boot_animation', 'infinite_shuffle'):
+        for key in ('show_boot_animation', 'infinite_shuffle', 'confirm_before_shuffle'):
             self.assertIn(key, events.EventsMixin._SETTINGS_BOOL_KEYS)
             self.assertIn(key, http_server.GameHTTPHandler._SETTINGS_BOOL_KEYS)
 
@@ -92,6 +97,13 @@ class BootAnimationSmokeTest(unittest.TestCase):
         self.assertIn("'boot_animation' in config", src, "load_last_state 未读取 boot_animation")
         self.assertIn("'infinite_shuffle':", src, "save_config 未持久化 infinite_shuffle")
         self.assertIn("'infinite_shuffle' in config", src, "load_last_state 未读取 infinite_shuffle")
+        self.assertIn("'confirm_before_shuffle':", src, "save_config 未持久化 confirm_before_shuffle")
+        self.assertIn("'confirm_before_shuffle' in config", src, "load_last_state 未读取 confirm_before_shuffle")
+        # 「存档」第三按钮在通用确认框上有渲染与事件处理
+        import gui.dialogs as dialogs  # noqa: E402
+        dsrc = inspect.getsource(dialogs)
+        self.assertIn('confirm_extra_btn', dsrc, "确认框未支持可选的第三按钮")
+        self.assertIn('confirm_extra_action', dsrc, "确认框未支持第三按钮回调")
 
 
 if __name__ == '__main__':
