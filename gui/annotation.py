@@ -36,7 +36,7 @@ import random
 import time
 import pygame
 
-from game import Block
+from game import Block, commit_shuffle_step
 from game_mi import blocks_from_cells as mi_blocks_from_cells  # noqa: E402
 from game_mi import any_overlap as mi_any_overlap  # noqa: E402
 from game_triangle import blocks_from_cells as tri_blocks_from_cells  # noqa: E402
@@ -2945,6 +2945,87 @@ class AnnotationMixin:
             from game_mi import GAP_DIRECTIONS
             return GAP_DIRECTIONS.get(gap_type, ())
         return {'h': ('a', 'd'), 'v': ('w', 's')}.get(gap_type, ())
+
+    def _ann_random_shuffle_move(self, step=None):
+        """从当前盘面随机取一步「合法且可逆」的打乱走法（无限打乱专用）。
+
+        与 game.shuffle 的取步方式不同，这是**穷举式的随机扫描**：
+        随机打乱缝 / 方向 / 块（连通分量）的顺序，逐一真试，命中即停；
+        整盘扫完仍无走法才返回 None。
+
+        为什么必须这样（2026-11-06 修）：
+            game.shuffle 每步只随机抽「一条缝 + 一个方向 + 一个块」，抽到
+            不能动的组合就空转，靠调用方 40 次重试兜底。盘面散开、步长
+            变大时单次命中率会低到几个百分点，40 次全空 → 无限打乱误判
+            「无可移动缝」而停机——实测 6×6/step3 连走 300 步出现 4 次，
+            而当时盘面还有 9+9 条有效缝、近 19 种合法走法。改为穷举扫描
+            后，「有可逆走法」⇒ 必取到，语义上不再可能误停。
+
+        代价控制：只试到第一条可逆走法就返回（实测方/三角 0.5~1ms、米字
+        3~5ms，最坏一格约 20ms），不做全量枚举；返回的记录格式与
+        record_shuffle_move 一致，可直接喂动画重放。
+
+        返回：dict 或 None（None = 当前盘面确实没有任何可逆走法）
+        """
+        game = self.game
+        blocks = game.blocks
+        step = self.current_step if step is None else step
+
+        def _clear_opt():
+            for b in blocks:
+                b.be_opted = False
+
+        try:
+            gaps = list(self._ann_all_valid_gaps())
+        except Exception:
+            gaps = []
+        if not gaps or len(blocks) < 2:
+            _clear_opt()
+            return None
+        random.shuffle(gaps)
+        try:
+            for gt, line in gaps:
+                dirs = tuple(self._ann_dirs_for_gap(gt))
+                if not dirs:
+                    continue
+                tried_dirs = list(dirs)
+                random.shuffle(tried_dirs)
+                visited = set()
+                order = list(blocks)
+                random.shuffle(order)
+                for blk in order:
+                    if id(blk) in visited:
+                        continue
+                    # opt 选中 blk 所在侧的整片连通分量；同片里的块不必再试
+                    game.opt(gt, line, blk)
+                    sel = [b for b in blocks if b.be_opted]
+                    for b in sel:
+                        visited.add(id(b))
+                    if not sel:
+                        continue
+                    for d in tried_dirs:
+                        try:
+                            fin = game.try_move(d, step)
+                        except Exception:
+                            fin = []
+                        if not fin:
+                            continue
+                        # commit_shuffle_step 以 be_opted 认「移动前那一组」，
+                        # 且会在提交后自己做可逆性校验——先恢复选中态再交它
+                        _clear_opt()
+                        game.opt(gt, line, blk)
+                        rec = []
+                        ok = commit_shuffle_step(
+                            game, gt, line, blk,
+                            d, step, dirs, [tuple(p) for p in fin], rec)
+                        _clear_opt()
+                        if ok and rec:
+                            return rec[0]
+                        # 不可逆（已回滚）：换下一个候选继续找
+                    _clear_opt()
+        finally:
+            _clear_opt()
+        return None
 
     def _ann_find_movable_blocks(self, step=None):
         """返回重建后的 game 中，参与过至少一次合法移动的滑块集合。

@@ -106,6 +106,8 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('picture/cover.png', 'picture'),
+           ('picture/boot', 'picture/boot'),
+           ('picture/splash.bmp', 'picture'),
            ('docs/player/操作说明.md', 'docs/player'),
            # 新手教程资源：文案 JSON + 关卡存档（新增关卡只加 json，无需改 spec）
            ('gui/tutorial_texts.json', 'gui'),
@@ -154,6 +156,9 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='picture/cover.ico',
+    # 启动图：exe 自解压/Python 启动那段（应用内动画够不著的最前段）显示，
+    # 窗口就绪后由 GUI.py 在 __init__ 里 pyi_splash.close() 关闭。仅打包后生效。
+    splash='picture/splash.bmp',
 )
 
 coll = COLLECT(

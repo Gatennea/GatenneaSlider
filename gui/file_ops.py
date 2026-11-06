@@ -213,6 +213,9 @@ class FileOpsMixin:
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'op_log_enabled': getattr(self, 'op_log_enabled', False),
+            'boot_animation': getattr(self, 'show_boot_animation', True),
+            'infinite_shuffle': getattr(self, 'infinite_shuffle', False),
+            'confirm_before_shuffle': getattr(self, 'confirm_before_shuffle', True),
             'use_compressed_save': getattr(self, 'use_compressed_save', False),
             'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
@@ -456,6 +459,15 @@ class FileOpsMixin:
                     # 箭头按键开关（缺省开）
                     if 'arrows_enabled' in config:
                         self.arrows_enabled = bool(config['arrows_enabled'])
+                    # 开机动画开关（缺省开）
+                    if 'boot_animation' in config:
+                        self.show_boot_animation = bool(config['boot_animation'])
+                    # 无限打乱开关（缺省关）
+                    if 'infinite_shuffle' in config:
+                        self.infinite_shuffle = bool(config['infinite_shuffle'])
+                    # 防意外打乱开关（缺省开）
+                    if 'confirm_before_shuffle' in config:
+                        self.confirm_before_shuffle = bool(config['confirm_before_shuffle'])
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])
@@ -830,17 +842,17 @@ class FileOpsMixin:
         )
         self._pending_save_as = True
 
-    def _save_to_path(self, path: str):
-        """将当前状态保存到指定路径"""
+    def _save_to_path(self, path: str) -> bool:
+        """将当前状态保存到指定路径。返回是否成功（供「存档后打乱」续接判断）。"""
         if self._med_save_blocked():
-            return
+            return False
         # 文件名校验：Windows 非法字符（如 * ? : 等）写盘必抛异常，先拦截并明确提示
         illegal = _find_illegal_filename_chars(os.path.basename(path))
         if illegal:
             self.macro_notify_msg = f"文件名含非法字符 {' '.join(illegal)}，保存取消"
             self.macro_notify_timer = 240
             print(f"保存失败: 文件名含非法字符 {' '.join(illegal)}: {path}")
-            return
+            return False
         save_data = self._build_save_data()
         try:
             os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
@@ -852,11 +864,13 @@ class FileOpsMixin:
             self.macro_notify_msg = f"已保存：{os.path.basename(path)}"
             self.macro_notify_timer = 120
             print(f"游戏已保存到 {path}")
+            return True
         except Exception as e:
             # 兜底：权限/磁盘/路径等任何异常都要转成用户可见提示，绝不静默
             self.macro_notify_msg = f"保存失败：{e}"
             self.macro_notify_timer = 240
             print(f"保存失败: {e}")
+            return False
 
     def load_from_file(self):
         """从文件打开：弹出 pygame 文件对话框"""
@@ -879,8 +893,16 @@ class FileOpsMixin:
             if getattr(self, '_pending_save_as', False):
                 self._pending_save_as = False
                 if self.file_dialog.result:
-                    self._save_to_path(self.file_dialog.result)
+                    ok = self._save_to_path(self.file_dialog.result)
                     self.save_dir = os.path.dirname(self.file_dialog.result)
+                    # 「存档后打乱」：另存为保存成功才续打乱；失败不续
+                    if getattr(self, '_pending_shuffle_after_save', False):
+                        self._pending_shuffle_after_save = False
+                        if ok:
+                            self.shuffle_puzzle(confirm=False)
+                else:
+                    # 取消另存为：放弃「存档后打乱」
+                    self._pending_shuffle_after_save = False
             if getattr(self, '_pending_load', False):
                 self._pending_load = False
                 if self.file_dialog.result:
