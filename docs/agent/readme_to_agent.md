@@ -159,6 +159,7 @@ gui/                   # 全是 Mixin，被 SliderGUI 繼承
   text_input.py        #   TextInput            自繪文字輸入框（游標/選取/剪貼簿）
   annotation.py        #   AnnotationMixin      標注模式（B/Z/M/S 隱藏入口）：標注取樣／手動構造畫布／跟蹤執行；創造模式：手動構造/隨機生成（造打亂局面）＋設計還原態/樣式庫（造還原態樣式，僅方形）
   tutorial_texts.json  #   新手教程文案（可脫離代碼修改）
+  audio.py             #   AudioMixin/音效管理器：bgm/slide/fail/solved 槽位、音樂+音效音量+總靜音；無頭環境靜默降級（見 §二十）
 
 engine/                # 幾何引擎（**最底層**：GUI 與 solver 都向下依賴它）
                        #   鐵律：本包不 import 任何 game*.py / gui/（詳見 docs/spec/幾何引擎.md）

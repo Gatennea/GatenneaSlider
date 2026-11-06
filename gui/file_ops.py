@@ -218,6 +218,12 @@ class FileOpsMixin:
             'confirm_before_shuffle': getattr(self, 'confirm_before_shuffle', True),
             'draw_grid': getattr(self, 'draw_grid', True),
             'use_compressed_save': getattr(self, 'use_compressed_save', False),
+            # 音效（见 gui/audio.py / docs S5）
+            'sfx_enabled': getattr(self, 'sfx_enabled', True),
+            'music_enabled': getattr(self, 'music_enabled', True),
+            'sound_muted': getattr(self, 'sound_muted', False),
+            'sfx_volume': int(getattr(self, 'sfx_volume', 70)),
+            'music_volume': int(getattr(self, 'music_volume', 50)),
             'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
@@ -474,6 +480,21 @@ class FileOpsMixin:
                         self.confirm_before_shuffle = bool(config['confirm_before_shuffle'])
                     if 'draw_grid' in config:
                         self.draw_grid = bool(config['draw_grid'])
+                    # 音效开关（见 gui/audio.py / docs S5）
+                    if 'sfx_enabled' in config:
+                        self.sfx_enabled = bool(config['sfx_enabled'])
+                    if 'music_enabled' in config:
+                        self.music_enabled = bool(config['music_enabled'])
+                    if 'sound_muted' in config:
+                        self.sound_muted = bool(config['sound_muted'])
+                    if 'sfx_volume' in config:
+                        self.sfx_volume = int(config['sfx_volume'])
+                    if 'music_volume' in config:
+                        self.music_volume = int(config['music_volume'])
+                    # 把读到的音效设置推送给音频管理器
+                    sync = getattr(self, '_sync_audio_settings', None)
+                    if callable(sync):
+                        sync()
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])
@@ -691,6 +712,17 @@ class FileOpsMixin:
         # 失败时当前局面保持原样。
         for snap in snapshots:
             validate_snapshot(snap, kind)
+
+        # §九：模型板型旧档（engine_state 落盘修复 2026-10-27 之前写下）静默损坏提示
+        # 缺 engine_state 时 restore_snapshot 回退 lossy 的 matrix 重建 → 盘面被压碎
+        # （块少一半、不单连通、打乱失效）。现在的存档每个快照都带，只有旧档会缺。
+        # 不阻断载入：盘面照旧载入，只让玩家知道发生了什么。
+        if kind not in ('square', 'numbered', 'triangle', 'mi'):
+            if any(snap.get('engine_state') is None for snap in snapshots):
+                self.macro_notify_msg = (
+                    '这是旧版本写下的模型存档，缺少无损键表，无法完整还原，块可能缺失')
+                self.macro_notify_timer = 300
+                print('旧模型存档缺 engine_state，已载入但块可能缺失')
 
         # 载入只读标志：带 readonly:true 的存档载入后为只读（校验通过后才设，
         # 避免载入失败却把当前局的只读标记改掉）

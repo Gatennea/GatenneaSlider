@@ -1653,14 +1653,27 @@ class EventsMixin:
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
         'op_log_enabled', 'show_boot_animation', 'infinite_shuffle',
         'confirm_before_shuffle', 'draw_grid',
+        # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
+        'sfx_enabled', 'music_enabled', 'sound_muted',
     )
-    _SETTINGS_INT_KEYS = ('animation_duration_ms',)
-    _ANIM_DURATION_RANGE = (50, 1000)
+    # 数值键：键 -> 合法范围；键 -> 对应 self 属性（与 http_server._SETTINGS_INT_RANGES 同口径）
+    _SETTINGS_INT_RANGES = {
+        'animation_duration_ms': (50, 1000),
+        'sfx_volume': (0, 100),
+        'music_volume': (0, 100),
+    }
+    _SETTINGS_INT_ATTRS = {
+        'animation_duration_ms': 'animation_duration',
+        'sfx_volume': 'sfx_volume',
+        'music_volume': 'music_volume',
+    }
 
     def _settings_get(self):
         """返回全部白名单设置键的当前值。"""
         data = {k: bool(getattr(self, k, False)) for k in self._SETTINGS_BOOL_KEYS}
         data['animation_duration_ms'] = int(getattr(self, 'animation_duration', 300))
+        data['sfx_volume'] = int(getattr(self, 'sfx_volume', 70))
+        data['music_volume'] = int(getattr(self, 'music_volume', 50))
         return data
 
     def _settings_apply(self, updates):
@@ -1671,20 +1684,21 @@ class EventsMixin:
         if not isinstance(updates, dict) or not updates:
             return False, "缺少设置项"
         bool_keys = set(self._SETTINGS_BOOL_KEYS)
-        int_keys = set(self._SETTINGS_INT_KEYS)
+        int_ranges = self._SETTINGS_INT_RANGES
+        int_attrs = self._SETTINGS_INT_ATTRS
         pending = []
         for key, val in updates.items():
             if key in bool_keys:
                 if not isinstance(val, bool):
                     return False, f"{key} 必须是 true/false"
                 pending.append((key, val))
-            elif key in int_keys:
+            elif key in int_ranges:
                 if isinstance(val, bool) or not isinstance(val, int):
                     return False, f"{key} 必须是整数"
-                lo, hi = self._ANIM_DURATION_RANGE
+                lo, hi = int_ranges[key]
                 if not (lo <= val <= hi):
                     return False, f"{key} 必须在 {lo}–{hi} 之间"
-                pending.append(('animation_duration', val))
+                pending.append((int_attrs[key], val))
             else:
                 return False, f"未知设置键: {key}"
         for attr, val in pending:
@@ -1692,6 +1706,10 @@ class EventsMixin:
         # 操作日志是模块级开关，属性赋值不触发 set_enabled，这里补一次
         if 'op_log_enabled' in updates:
             op_log.set_enabled(bool(self.op_log_enabled))
+        # 音效设置推送（GUI 才有 audio 属性；其它宿主无此方法是 no-op）
+        sync = getattr(self, '_sync_audio_settings', None)
+        if callable(sync):
+            sync()
         return True, f"已更新 {len(pending)} 项设置"
 
     def _solver_params_get(self):

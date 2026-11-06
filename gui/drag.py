@@ -326,6 +326,9 @@ class DragMixin:
         if not any(b.be_opted for b in self.game.blocks):
             self.macro_notify_msg = "这个方向滑不动（被其它滑块挡住或会断开）"
             self.macro_notify_timer = 90
+            # §二十：滑动被拒提示音（无素材时静默；同时是 §十九 最省事的失败反馈）
+            if getattr(self, 'audio', None):
+                self.audio.play_fail()
             return False
         gap_type, line = gap
         self.selected_block = block

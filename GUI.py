@@ -550,6 +550,21 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.show_boot_animation = True
         # 绘制网格开关（背景网格显示；缺省开；仅原版构型生效，几何模型不画网格）
         self.draw_grid = True
+        # 音效开关（接口骨架，素材由用户放到 sound/，见 gui/audio.py / docs S5）
+        # 三处布尔 + 两处音量（0..100）须与 gui/events.py / http_server.py 白名单同步
+        self.sfx_enabled = True
+        self.music_enabled = True
+        self.sound_muted = False
+        self.sfx_volume = 70
+        self.music_volume = 50
+        try:
+            from gui.audio import AudioManager
+            self.audio = AudioManager()
+            self.audio.load_all()
+            self._sync_audio_settings()
+        except Exception as e:
+            print(f'[audio] 初始化失败，音效停用：{e}')
+            self.audio = None
         # 无限打乱开关（开启后调用打乱=连续随机游走，再次调用打乱=停止；缺省关）
         self.infinite_shuffle = False
         # 控制模式开关（独立布尔，非互斥；对应 web 版 touch-gesture.md 的三种模式）：
@@ -1946,12 +1961,28 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if became_solved and not via_redo and not suppress and not self._tut_board_locked():
             self._solved_popup_active = True
             self._solved_popup_t = 0
+            # §二十：复原提示音（无素材时静默）
+            if getattr(self, 'audio', None):
+                self.audio.play_solved()
         # 新手教程：状态提交后推进教学进度（移动/撤销/重做/过关）
         self._tut_on_state_commit(via_redo=via_redo, suppress=suppress)
 
     def _macro_notify(self, msg):
         self.macro_notify_msg = msg
         self.macro_notify_timer = 90
+
+    def _sync_audio_settings(self):
+        """把当前音效开关/音量推送给 audio 管理器。"""
+        a = getattr(self, 'audio', None)
+        if a is None:
+            return
+        a.sync_settings(
+            sfx_enabled=getattr(self, 'sfx_enabled', True),
+            music_enabled=getattr(self, 'music_enabled', True),
+            muted=getattr(self, 'sound_muted', False),
+            sfx_volume=getattr(self, 'sfx_volume', 70),
+            music_volume=getattr(self, 'music_volume', 50),
+        )
 
     def close_all_menus(self):
         """关闭所有下拉菜单"""

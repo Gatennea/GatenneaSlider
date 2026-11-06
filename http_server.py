@@ -545,8 +545,14 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
         'show_boot_animation', 'infinite_shuffle', 'confirm_before_shuffle', 'draw_grid',
+        # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
+        'sfx_enabled', 'music_enabled', 'sound_muted',
     )
-    _SETTINGS_INT_RANGES = {'animation_duration_ms': (50, 1000)}
+    _SETTINGS_INT_RANGES = {
+        'animation_duration_ms': (50, 1000),
+        'sfx_volume': (0, 100),
+        'music_volume': (0, 100),
+    }
     # gather 参数白名单（须与 GUI.py gather_params 键一致）
     _SOLVER_PARAM_KEYS = (
         'max_steps', 'patience', 'max_wait_time',
