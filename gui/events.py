@@ -33,6 +33,7 @@ CLI_COMMANDS = [
     ('shuffle / reset', '打乱 / 复原到初始态', ['shuffle', 'reset']),
     ('new <m> <n> <step> [tri/num/mi]', '新开谜题', ['new']),
     ('quit', '退出游戏', ['quit']),
+    ('restart', '重启游戏（进程退出后自动重开）', ['restart']),
     ('solve / solve_cancel / solve_status', '求解 / 取消 / 进度',
      ['solve', 'solve_cancel', 'solve_status']),
     ('solver_algorithms / solver_status / solver_params', '求解器信息与参数',
@@ -425,13 +426,17 @@ class EventsMixin:
                     if self.handle_records_panel_event(event):
                         continue
 
-                # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解，及连续播放时的空格打断）
+                # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解，连续播放时
+                # 空格打断，以及无限打乱进行中按「打乱」快捷键以停止游走——
+                # 无限打乱每步都吃动画，否则启动它的快捷键被这里吞掉、永远停不下来）
                 if self.animating and event.type == pygame.KEYDOWN:
+                    _inf_active = getattr(self, '_infinite_shuffle_active', False)
                     if not self._is_action_triggered(event, 'undo') and \
                        not self._is_action_triggered(event, 'redo') and \
                        not self._is_action_triggered(event, 'auto_solve') and \
                        not (event.key == pygame.K_SPACE and
-                            (self._continuous_undo or self._continuous_redo)):
+                            (self._continuous_undo or self._continuous_redo)) and \
+                       not (_inf_active and self._is_action_triggered(event, 'shuffle')):
                         continue
 
                 # 求解器运行期间阻止用户改動滑塊（只能停止求解）
@@ -727,6 +732,12 @@ class EventsMixin:
                                         self.save_as()
                                     elif i == 3:
                                         self.convert_save()
+                                    elif i == 4:
+                                        # 间接自举重启：spawn 看门进程等本进程退出后
+                                        # 自动重拉起（游戏自己不能重启自己，见 gui/restart.py）
+                                        from gui import restart as _restart_mod
+                                        _restart_mod.request_restart()
+                                        self.running = False
                                     file_clicked = True
                                     break
                             self.close_all_menus()
@@ -1640,15 +1651,29 @@ class EventsMixin:
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
-        'op_log_enabled',
+        'op_log_enabled', 'show_boot_animation', 'infinite_shuffle',
+        'confirm_before_shuffle', 'draw_grid',
+        # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
+        'sfx_enabled', 'music_enabled', 'sound_muted',
     )
-    _SETTINGS_INT_KEYS = ('animation_duration_ms',)
-    _ANIM_DURATION_RANGE = (50, 1000)
+    # 数值键：键 -> 合法范围；键 -> 对应 self 属性（与 http_server._SETTINGS_INT_RANGES 同口径）
+    _SETTINGS_INT_RANGES = {
+        'animation_duration_ms': (50, 1000),
+        'sfx_volume': (0, 100),
+        'music_volume': (0, 100),
+    }
+    _SETTINGS_INT_ATTRS = {
+        'animation_duration_ms': 'animation_duration',
+        'sfx_volume': 'sfx_volume',
+        'music_volume': 'music_volume',
+    }
 
     def _settings_get(self):
         """返回全部白名单设置键的当前值。"""
         data = {k: bool(getattr(self, k, False)) for k in self._SETTINGS_BOOL_KEYS}
         data['animation_duration_ms'] = int(getattr(self, 'animation_duration', 300))
+        data['sfx_volume'] = int(getattr(self, 'sfx_volume', 70))
+        data['music_volume'] = int(getattr(self, 'music_volume', 50))
         return data
 
     def _settings_apply(self, updates):
@@ -1659,20 +1684,21 @@ class EventsMixin:
         if not isinstance(updates, dict) or not updates:
             return False, "缺少设置项"
         bool_keys = set(self._SETTINGS_BOOL_KEYS)
-        int_keys = set(self._SETTINGS_INT_KEYS)
+        int_ranges = self._SETTINGS_INT_RANGES
+        int_attrs = self._SETTINGS_INT_ATTRS
         pending = []
         for key, val in updates.items():
             if key in bool_keys:
                 if not isinstance(val, bool):
                     return False, f"{key} 必须是 true/false"
                 pending.append((key, val))
-            elif key in int_keys:
+            elif key in int_ranges:
                 if isinstance(val, bool) or not isinstance(val, int):
                     return False, f"{key} 必须是整数"
-                lo, hi = self._ANIM_DURATION_RANGE
+                lo, hi = int_ranges[key]
                 if not (lo <= val <= hi):
                     return False, f"{key} 必须在 {lo}–{hi} 之间"
-                pending.append(('animation_duration', val))
+                pending.append((int_attrs[key], val))
             else:
                 return False, f"未知设置键: {key}"
         for attr, val in pending:
@@ -1680,6 +1706,10 @@ class EventsMixin:
         # 操作日志是模块级开关，属性赋值不触发 set_enabled，这里补一次
         if 'op_log_enabled' in updates:
             op_log.set_enabled(bool(self.op_log_enabled))
+        # 音效设置推送（GUI 才有 audio 属性；其它宿主无此方法是 no-op）
+        sync = getattr(self, '_sync_audio_settings', None)
+        if callable(sync):
+            sync()
         return True, f"已更新 {len(pending)} 项设置"
 
     def _solver_params_get(self):
@@ -2031,7 +2061,9 @@ class EventsMixin:
                     continue
 
                 if action == 'shuffle':
-                    self.shuffle_puzzle()
+                    # 外部控制（HTTP / stdin）是显式指令：跳过「防意外打乱」确认框，
+                    # 否则模态弹窗会卡住自动化调用（无人点按钮）。
+                    self.shuffle_puzzle(confirm=False)
                     self._cmd_reply(resp_q, True, "已打乱")
                 
                 elif action == 'reset':
@@ -2542,6 +2574,14 @@ class EventsMixin:
                 elif action == 'quit':
                     self.running = False
                     self._cmd_reply(resp_q, True, "退出游戏")
+
+                elif action == 'restart':
+                    # 间接自举重启：先 spawn 看门进程（等本进程退出后重拉起），
+                    # 再正常退出。游戏自己不能重启自己，故走独立进程。
+                    from gui import restart as _restart_mod
+                    _restart_mod.request_restart()
+                    self.running = False
+                    self._cmd_reply(resp_q, True, "已安排重启，游戏退出后由看门进程自动重开")
 
                 # ========== 自动求解命令 ==========
                 elif action == 'solve':
@@ -3058,6 +3098,20 @@ class EventsMixin:
         new_zoom = self.min_zoom + normalized * (self.max_zoom - self.min_zoom)
         self._apply_zoom_centered(new_zoom)
 
+    def _update_settings_volume(self, mx, which):
+        """设置-视觉页音量滑条（水平）：0..100，写回 sfx_volume / music_volume。"""
+        track = getattr(self, f'_settings_{which}_vol_track_rect', None)
+        if not track or track.width <= 0:
+            return
+        x = max(track.x, min(track.x + track.width, mx))
+        normalized = (x - track.x) / track.width
+        vol = int(round(normalized * 100))
+        if which == 'sfx':
+            self.sfx_volume = vol
+        else:
+            self.music_volume = vol
+        self._sync_audio_settings()
+
     def _is_action_triggered(self, event, action_name):
         """
         检查事件是否匹配指定动作的快捷键配置。
@@ -3411,6 +3465,72 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 开机动画开关
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_boot_toggle_rect'):
+                if self._settings_boot_toggle_rect.collidepoint(mx, my):
+                    self.show_boot_animation = not getattr(self, 'show_boot_animation', True)
+                    status = '开' if self.show_boot_animation else '关'
+                    self.macro_notify_msg = f"开机动画：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 无限打乱开关
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_infinite_shuffle_toggle_rect'):
+                if self._settings_infinite_shuffle_toggle_rect.collidepoint(mx, my):
+                    self.infinite_shuffle = not getattr(self, 'infinite_shuffle', False)
+                    status = '开' if self.infinite_shuffle else '关'
+                    self.macro_notify_msg = f"无限打乱：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 防意外打乱开关（打乱前历史非空先确认）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_confirm_shuffle_toggle_rect'):
+                if self._settings_confirm_shuffle_toggle_rect.collidepoint(mx, my):
+                    self.confirm_before_shuffle = not getattr(self, 'confirm_before_shuffle', True)
+                    status = '开' if self.confirm_before_shuffle else '关'
+                    self.macro_notify_msg = f"防意外打乱：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 绘制网格开关（仅原版构型生效；几何模型板型不画网格，不受影响）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_grid_toggle_rect'):
+                if self._settings_grid_toggle_rect.collidepoint(mx, my):
+                    self.draw_grid = not getattr(self, 'draw_grid', True)
+                    status = '开' if self.draw_grid else '关'
+                    self.macro_notify_msg = f"绘制网格：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 视觉 Tab：音效开关（S5；无素材时开了也没声，属正常）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_sfx_toggle_rect'):
+                if self._settings_sfx_toggle_rect.collidepoint(mx, my):
+                    self.sfx_enabled = not getattr(self, 'sfx_enabled', True)
+                    self._sync_audio_settings()
+                    status = '开' if self.sfx_enabled else '关'
+                    self.macro_notify_msg = f"音效：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 视觉 Tab：背景音乐开关
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_music_toggle_rect'):
+                if self._settings_music_toggle_rect.collidepoint(mx, my):
+                    self.music_enabled = not getattr(self, 'music_enabled', True)
+                    self._sync_audio_settings()
+                    status = '开' if self.music_enabled else '关'
+                    self.macro_notify_msg = f"背景音乐：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 视觉 Tab：音效 / 音乐音量滑条（与动画时长滑条同一套拖拽逻辑）
+            for _key in ('sfx', 'music'):
+                _knob = getattr(self, f'_settings_{_key}_vol_knob_rect', None)
+                _track = getattr(self, f'_settings_{_key}_vol_track_rect', None)
+                if _knob is not None and _track is not None and \
+                   (_knob.collidepoint(mx, my) or _track.collidepoint(mx, my)):
+                    setattr(self, f'_settings_{_key}_vol_dragging', True)
+                    self._update_settings_volume(mx, _key)
+                    return
+
             # 控制 Tab：三种模式开关（独立布尔，可任意组合）
             if self.settings_active_tab == 'control':
                 if hasattr(self, '_settings_ctrl_single_rect') and self._settings_ctrl_single_rect.collidepoint(mx, my):
@@ -3617,6 +3737,8 @@ class EventsMixin:
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             self._settings_slider_dragging = False
             self._settings_zoom_dragging = False
+            self._settings_sfx_vol_dragging = False
+            self._settings_music_vol_dragging = False
             self.settings_scrollbar.on_mouse_up()
 
         # 鼠标拖动滑动条 / 滚动条
@@ -3627,6 +3749,12 @@ class EventsMixin:
             if getattr(self, '_settings_slider_dragging', False):
                 mx, my = event.pos
                 self._update_settings_slider(mx)
+            if getattr(self, '_settings_sfx_vol_dragging', False):
+                mx, my = event.pos
+                self._update_settings_volume(mx, 'sfx')
+            if getattr(self, '_settings_music_vol_dragging', False):
+                mx, my = event.pos
+                self._update_settings_volume(mx, 'music')
             self.settings_scrollbar.on_mouse_motion(event.pos)
 
         # 鼠标滚轮（设置对话框中）
@@ -3743,6 +3871,12 @@ class EventsMixin:
             self.board_marks_enabled = self.show_metrics_panel
             status = '开' if self.show_metrics_panel else '关'
             self.macro_notify_msg = f"调试面板：{status}"
+        elif key == 'draw_grid':
+            # 与设置·视觉页那一行是同一个开关（feature_index 的 toggle 动作
+            # 走这里；此前没有分支会落到「未知开关：draw_grid」）
+            self.draw_grid = not getattr(self, 'draw_grid', True)
+            status = '开' if self.draw_grid else '关'
+            self.macro_notify_msg = f"绘制网格：{status}"
         else:
             # 未知开关：明确报出来，别静默吞掉（否则就是「点了没反应」）
             self.macro_notify_msg = f"未知开关：{key}"
@@ -4584,6 +4718,9 @@ class EventsMixin:
         self.confirm_lines = menu_delete.describe(tgt)
         self.confirm_ok_text = '删除'
         self.confirm_danger = True
+        # 明确清掉可选第三按钮，避免误继承「打乱确认」的「存档」按钮
+        self.confirm_extra_text = ''
+        self.confirm_extra_action = None
         self.confirm_action = (lambda t=tgt: self._do_delete_preset(t))
         return True
 

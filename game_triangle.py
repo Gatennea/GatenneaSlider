@@ -59,6 +59,7 @@ resolve_drag() 完成選組與步數夾緊。因此日後換成 12 向的新形�
 
 from __future__ import annotations
 
+import anchor_shuffle
 from game import Block
 from game import commit_shuffle_step
 from game import record_shuffle_move
@@ -615,43 +616,59 @@ class TriangleSliderMatrix(BandageMixin):
         """散度 = 1 - compute_score（0 = 復原態，越大越散）。"""
         return 1.0 - self.compute_score()
 
-    def _random_move(self, step: int, bias: float, cur_scatter: float, record=None):
+    def _random_move(self, step: int, bias: float, cur_scatter: float,
+                     record=None, planner=None, closing: bool = False):
         """執行一次隨機合法滑動；回傳 (是否移動, 新的散度)。
 
         record 非 None 時按執行順序記錄該步（格式見 game.record_shuffle_move），
-        供 GUI 演示動畫重放。
+        供 GUI 演示動畫重放。planner 非 None 時走錨點式序列規劃。
         """
         import math
         import random
+        clear = lambda: anchor_shuffle.clear_flags(self.blocks)
         gaps = self.all_gaps()
         if not gaps:
             return False, cur_scatter
-        gap_type, line = random.choice(gaps)
-        direction = random.choice(GAP_DIRECTIONS[gap_type])
-        block = random.choice(self.blocks)
-        self.opt(gap_type, line, block)
-        final_positions = self.try_move(direction, step)
-        if not final_positions:
-            for b in self.blocks:
-                b.be_opted = False
+        if planner is not None and not closing:
+            gaps = planner.filter_gaps(gaps)
+        pk = planner.parallel_keys if planner is not None else None
+        cands = anchor_shuffle.draw_candidates(
+            self, step, gaps, lambda gt: GAP_DIRECTIONS[gt],
+            count=(planner.candidate_count(closing) if planner is not None
+                   else 1),
+            clear=clear, blocks=self.blocks, parallel_keys=pk, rng=random)
+        cand = (planner.select(cands, closing=closing)
+                if planner is not None else (cands[0] if cands else None))
+        if cand is None:
+            clear()
             return False, cur_scatter
+        got = anchor_shuffle.reapply(self, cand, step, clear=clear,
+                                     blocks=self.blocks, parallel_keys=pk)
+        if got is None:
+            clear()
+            return False, cur_scatter
+        final_positions, fresh = got
         if bias > 0:
             non_sel = {tri_key(b) for b in self.blocks if not b.be_opted}
             cand_scatter = self._scatter_of(non_sel | {tuple(p) for p in final_positions})
             # Metropolis：候選更緊湊（散度下降）時按概率拒絕，使打亂偏向深層狀態
             if cand_scatter < cur_scatter:
                 if random.random() >= math.exp(bias * (cand_scatter - cur_scatter)):
-                    for b in self.blocks:
-                        b.be_opted = False
+                    clear()
                     return False, cur_scatter
         # 安全打亂（對齊網頁版 shuffle_safe）：提交 + 可逆性校驗，不可逆
         # 自動回滾該步——整條路徑反轉即是合法解法，終態保證有解
-        if commit_shuffle_step(self, gap_type, line, block, direction, step,
-                               GAP_DIRECTIONS[gap_type], final_positions,
+        if commit_shuffle_step(self, fresh.gap_type, fresh.line, fresh.block,
+                               fresh.direction, step,
+                               GAP_DIRECTIONS[fresh.gap_type], final_positions,
                                record):
+            if planner is not None:
+                planner.commit(fresh, self.blocks,
+                               len(record) if record is not None else 0)
             if bias > 0:
                 cur_scatter = cand_scatter  # 校驗通過才真正接受該候選
             return True, cur_scatter
+        clear()
         return False, cur_scatter
 
     def _scatter_of(self, cells: set) -> float:
@@ -677,17 +694,33 @@ class TriangleSliderMatrix(BandageMixin):
         安全打亂（2026-10-18 起）：每步過可逆性校驗（見
         game.can_undo_shuffle_step），終態保證有解——整條打亂路徑反轉即是
         合法解法；約 15% 的隨機走法不可逆被丟棄，有效步數略少於 attempts。
+
+        錨點式序列（2026-11-06）：全程用 AnchorPlanner 挑合法步，末尾補幾步
+        把重心收回初始錨點；不改規則、不改玩家操作。
         """
+        planner = None
+        if anchor_shuffle.ENABLED:
+            planner = anchor_shuffle.AnchorPlanner(
+                self.blocks, step, max_drift=anchor_shuffle.MAX_DRIFT)
         cur_scatter = self._scatter()
+
         for _ in range(attempts):
-            _moved, cur_scatter = self._random_move(step, bias, cur_scatter, record)
-        if min_score is None:
-            return
-        for _ in range(attempts * 3):
-            if self.compute_score() <= min_score:
-                break
-            for _attempt in range(attempts):
-                _moved, cur_scatter = self._random_move(step, bias, cur_scatter, record)
+            _moved, cur_scatter = self._random_move(
+                step, bias, cur_scatter, record, planner)
+        if min_score is not None:
+            for _ in range(attempts * 3):
+                if self.compute_score() <= min_score:
+                    break
+                for _attempt in range(attempts):
+                    _moved, cur_scatter = self._random_move(
+                        step, bias, cur_scatter, record, planner)
+        if planner is not None:
+            guard = (lambda: self.compute_score() <= min_score) \
+                if min_score is not None else None
+            planner.finish(
+                lambda: self._random_move(step, bias, cur_scatter, record,
+                                          planner, closing=True),
+                self.blocks, record, guard=guard)
         for b in self.blocks:
             b.be_opted = False
 

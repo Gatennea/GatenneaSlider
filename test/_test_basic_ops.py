@@ -169,7 +169,7 @@ def run_form(gui, form, label):
 
     # ---- 打乱（非还原 + 仍单连通；极小概率洗完仍还原 → 重试） ----
     for _ in range(5):
-        gui.shuffle_puzzle()
+        gui.shuffle_puzzle(confirm=False)
         if not gui.game.is_solved():
             break
     check(f'[{label}] 打乱后非还原态', not gui.game.is_solved())

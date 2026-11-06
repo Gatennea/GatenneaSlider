@@ -213,7 +213,17 @@ class FileOpsMixin:
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
             'prevent_overwrite_flag': getattr(self, 'prevent_overwrite_flag', False),
             'op_log_enabled': getattr(self, 'op_log_enabled', False),
+            'boot_animation': getattr(self, 'show_boot_animation', True),
+            'infinite_shuffle': getattr(self, 'infinite_shuffle', False),
+            'confirm_before_shuffle': getattr(self, 'confirm_before_shuffle', True),
+            'draw_grid': getattr(self, 'draw_grid', True),
             'use_compressed_save': getattr(self, 'use_compressed_save', False),
+            # 音效（见 gui/audio.py / docs S5）
+            'sfx_enabled': getattr(self, 'sfx_enabled', True),
+            'music_enabled': getattr(self, 'music_enabled', True),
+            'sound_muted': getattr(self, 'sound_muted', False),
+            'sfx_volume': int(getattr(self, 'sfx_volume', 70)),
+            'music_volume': int(getattr(self, 'music_volume', 50)),
             'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
@@ -310,7 +320,10 @@ class FileOpsMixin:
             f"打开 {self._format_menu_shortcut('load')}",
             f"保存 {self._format_menu_shortcut('save')}",
             '另存为...',
-            '存档转换...'
+            '存档转换...',
+            # 间接自举重启：点下去会 spawn 看门进程等本进程退出后自动重拉起，
+            # 见 gui/restart.py。游戏自己不能重启自己，故走独立进程。
+            '重启（自动重开）'
         ]
         self.edit_menu_items = [
             f"撤销 {self._format_menu_shortcut('undo')}",
@@ -456,6 +469,32 @@ class FileOpsMixin:
                     # 箭头按键开关（缺省开）
                     if 'arrows_enabled' in config:
                         self.arrows_enabled = bool(config['arrows_enabled'])
+                    # 开机动画开关（缺省开）
+                    if 'boot_animation' in config:
+                        self.show_boot_animation = bool(config['boot_animation'])
+                    # 无限打乱开关（缺省关）
+                    if 'infinite_shuffle' in config:
+                        self.infinite_shuffle = bool(config['infinite_shuffle'])
+                    # 防意外打乱开关（缺省开）
+                    if 'confirm_before_shuffle' in config:
+                        self.confirm_before_shuffle = bool(config['confirm_before_shuffle'])
+                    if 'draw_grid' in config:
+                        self.draw_grid = bool(config['draw_grid'])
+                    # 音效开关（见 gui/audio.py / docs S5）
+                    if 'sfx_enabled' in config:
+                        self.sfx_enabled = bool(config['sfx_enabled'])
+                    if 'music_enabled' in config:
+                        self.music_enabled = bool(config['music_enabled'])
+                    if 'sound_muted' in config:
+                        self.sound_muted = bool(config['sound_muted'])
+                    if 'sfx_volume' in config:
+                        self.sfx_volume = int(config['sfx_volume'])
+                    if 'music_volume' in config:
+                        self.music_volume = int(config['music_volume'])
+                    # 把读到的音效设置推送给音频管理器
+                    sync = getattr(self, '_sync_audio_settings', None)
+                    if callable(sync):
+                        sync()
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])
@@ -674,6 +713,17 @@ class FileOpsMixin:
         for snap in snapshots:
             validate_snapshot(snap, kind)
 
+        # §九：模型板型旧档（engine_state 落盘修复 2026-10-27 之前写下）静默损坏提示
+        # 缺 engine_state 时 restore_snapshot 回退 lossy 的 matrix 重建 → 盘面被压碎
+        # （块少一半、不单连通、打乱失效）。现在的存档每个快照都带，只有旧档会缺。
+        # 不阻断载入：盘面照旧载入，只让玩家知道发生了什么。
+        if kind not in ('square', 'numbered', 'triangle', 'mi'):
+            if any(snap.get('engine_state') is None for snap in snapshots):
+                self.macro_notify_msg = (
+                    '这是旧版本写下的模型存档，缺少无损键表，无法完整还原，块可能缺失')
+                self.macro_notify_timer = 300
+                print('旧模型存档缺 engine_state，已载入但块可能缺失')
+
         # 载入只读标志：带 readonly:true 的存档载入后为只读（校验通过后才设，
         # 避免载入失败却把当前局的只读标记改掉）
         self._readonly = bool(save_data.get('readonly', False))
@@ -830,17 +880,17 @@ class FileOpsMixin:
         )
         self._pending_save_as = True
 
-    def _save_to_path(self, path: str):
-        """将当前状态保存到指定路径"""
+    def _save_to_path(self, path: str) -> bool:
+        """将当前状态保存到指定路径。返回是否成功（供「存档后打乱」续接判断）。"""
         if self._med_save_blocked():
-            return
+            return False
         # 文件名校验：Windows 非法字符（如 * ? : 等）写盘必抛异常，先拦截并明确提示
         illegal = _find_illegal_filename_chars(os.path.basename(path))
         if illegal:
             self.macro_notify_msg = f"文件名含非法字符 {' '.join(illegal)}，保存取消"
             self.macro_notify_timer = 240
             print(f"保存失败: 文件名含非法字符 {' '.join(illegal)}: {path}")
-            return
+            return False
         save_data = self._build_save_data()
         try:
             os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
@@ -852,11 +902,13 @@ class FileOpsMixin:
             self.macro_notify_msg = f"已保存：{os.path.basename(path)}"
             self.macro_notify_timer = 120
             print(f"游戏已保存到 {path}")
+            return True
         except Exception as e:
             # 兜底：权限/磁盘/路径等任何异常都要转成用户可见提示，绝不静默
             self.macro_notify_msg = f"保存失败：{e}"
             self.macro_notify_timer = 240
             print(f"保存失败: {e}")
+            return False
 
     def load_from_file(self):
         """从文件打开：弹出 pygame 文件对话框"""
@@ -879,8 +931,16 @@ class FileOpsMixin:
             if getattr(self, '_pending_save_as', False):
                 self._pending_save_as = False
                 if self.file_dialog.result:
-                    self._save_to_path(self.file_dialog.result)
+                    ok = self._save_to_path(self.file_dialog.result)
                     self.save_dir = os.path.dirname(self.file_dialog.result)
+                    # 「存档后打乱」：另存为保存成功才续打乱；失败不续
+                    if getattr(self, '_pending_shuffle_after_save', False):
+                        self._pending_shuffle_after_save = False
+                        if ok:
+                            self.shuffle_puzzle(confirm=False)
+                else:
+                    # 取消另存为：放弃「存档后打乱」
+                    self._pending_shuffle_after_save = False
             if getattr(self, '_pending_load', False):
                 self._pending_load = False
                 if self.file_dialog.result:

@@ -36,6 +36,50 @@ from .shatter_geometry import shatter_spec
 
 
 # ----------------------------------------------------------------------
+# 原版四盘的圆角半径（**设计像素**，zoom=1 世界单位）
+#
+# 圆角是板型的几何属性，跟块形状一起定死在这里，渲染器只做「× zoom」换算，
+# 不再自己按块最短边算比例（2026-10-24 用户定的原则：圆角归板型定义；
+# 2026-11-06 回归到这条口径，撤掉渲染器里硬写的 8.3% 比例）。
+#
+# 数值 = 该板型**单位块世界最短边 × 8.3%**（8.3% 来自方形 5/60 的老口径）：
+#   square 单位块边长 60.000 → 4.98 ≈ 5.0
+#   tri    单位块边长 53.072 → 4.41 ≈ 4.4
+#   mi     单位块最短边 35.598 → 2.95 ≈ 3.0
+# 世界边长不随盘面尺寸 / zoom 变（建局只改 zoom，不改 cell_size=60），
+# 故写固定设计像素即可；屏幕圆角 = 设计像素 × zoom，屏幕占比恒为 ~8.3%。
+#
+# 注意：这三个板型**不铺缝带底**（走手画路径），圆角不受「≤ 缝半宽」
+# 约束；模型盘（碎三角等）走通用多边形通道，圆角由各自 JSON 的
+# corner_radius / seam_width 管，与本表无关。
+# ----------------------------------------------------------------------
+CLASSIC_CORNER_RADIUS = {
+    'square': 5.0,     # 矩形 / 数字
+    'tri': 4.4,        # 三角
+    'mi': 3.0,         # 米字
+}
+
+
+def classic_corner_radius(game):
+    """原版四盘的圆角（设计像素）→ 零构造开销的类型分派。
+
+    与 ``gui.renderer.RendererMixin._spec_for_old_game`` 同一套类型判据，
+    但不构造完整 BoardSpec（每帧都要取，避免造 m×n 个 goal_blocks）。
+    非原版四盘（EngineGame / 模型盘）返回 None，由渲染器读 ``board.spec``。
+    """
+    from game import SliderMatrix
+    from game_mi import MiSliderMatrix
+    from game_triangle import TriangleSliderMatrix
+    if isinstance(game, TriangleSliderMatrix):
+        return CLASSIC_CORNER_RADIUS['tri']
+    if isinstance(game, MiSliderMatrix):
+        return CLASSIC_CORNER_RADIUS['mi']
+    if isinstance(game, SliderMatrix):
+        return CLASSIC_CORNER_RADIUS['square']
+    return None
+
+
+# ----------------------------------------------------------------------
 # cell_polygon：把「每个形态长什么样」写成数据（P3b 通用渲染的数据源头）
 #
 # 这三个函数是解释器路线的第一步：GUI 不该知道 square/tri/mi 各自怎么画，
@@ -150,6 +194,7 @@ def square_spec(m: int, n: int, name: str = 'square') -> BoardSpec:
         ),
         goal_blocks=tuple(Block((i, j)) for i in range(m) for j in range(n)),
         cell_polygon=_square_cell_polygon,
+        corner_radius=CLASSIC_CORNER_RADIUS['square'],
     )
     return spec
 
@@ -244,6 +289,7 @@ def mi_spec(m: int, n: int, name: str = 'mi') -> BoardSpec:
         seam_clear=lambda fam, t, board: not mi_geometry.seam_locked(fam, t, board),
         overlap=mi_geometry.has_overlap,
         cell_polygon=_mi_cell_polygon,
+        corner_radius=CLASSIC_CORNER_RADIUS['mi'],
     )
 
 
@@ -345,6 +391,7 @@ def tri_spec(k: int, name: str = 'tri', default_shape: bool = True) -> BoardSpec
         goal_blocks=_tri_goal_blocks(k),
         solved_check=_solved,
         cell_polygon=_tri_cell_polygon,
+        corner_radius=CLASSIC_CORNER_RADIUS['tri'],
     )
 
 

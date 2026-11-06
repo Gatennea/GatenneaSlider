@@ -65,6 +65,10 @@ def click_at(pos):
 
 
 def scroll_to_bottom():
+    # 滚动条的 content_size 取自上一帧记录的内容高（首帧只有兜底估值），
+    # 故先多画一帧把真实高度灌进去，再 set_scroll —— 否则夹紧用的是旧上限
+    # （§二十二 V2c「256 vs 436」的成因就是只画了一帧）。
+    gui.draw_settings_dialog()
     gui.settings_scrollbar.set_scroll(10 ** 6)   # set_scroll 内部夹紧
     gui.draw_settings_dialog()
 
@@ -90,6 +94,10 @@ _tab_row_attrs = {
     '悬停连锁提示': '_settings_chain_toggle_rect',
     '复原提示标记': '_settings_marks_toggle_rect',
     '调试面板': '_settings_metrics_toggle_rect',
+    '音效': '_settings_sfx_toggle_rect',
+    '背景音乐': '_settings_music_toggle_rect',
+    '音效音量': '_settings_sfx_vol_track_rect',
+    '音乐音量': '_settings_music_vol_track_rect',
 }
 check('V1a 缩放滑条 rect 已绘制',
       hasattr(gui, '_settings_zoom_track_rect')
@@ -145,13 +153,20 @@ for name, r in _rows.items():
     top = y0 - s_star
     if not (top + r.height > CONTENT_Y and top < CONTENT_Y + CONTENT_H):
         bad.append(f'{name}:y={top}~{top + r.height}')
-check('V2e 9 个控件全部可达（存在可见的滚动位置）', not bad, '; '.join(bad))
-# 悬停连锁提示的说明画在开关行下方 38px：行完整可见 ⇒ 说明必然在可见区内
-check('V2f 连锁提示行完整可见（说明不再被裁）',
-      _rows['悬停连锁提示'].bottom <= CONTENT_Y + CONTENT_H
-      and _rows['悬停连锁提示'].top >= CONTENT_Y,
-      f"y={_rows['悬停连锁提示'].y}~{_rows['悬停连锁提示'].bottom} "
-      f"limit={CONTENT_Y + CONTENT_H}")
+check(f'V2e {len(_rows)} 个控件全部可达（存在可见的滚动位置）', not bad, '; '.join(bad))
+# 悬停连锁提示的说明画在开关行下方 38px：行完整可见 ⇒ 说明必然在可见区内。
+# 页面后来加长了（音效/背景音乐/两条音量滑条），滚到底时这行已在上方，
+# 故不能要求「滚到底仍可见」，而要「存在一个滚动位置能让整行完整落进裁剪区」
+# —— 这才是 2026-10-13「说明被裁在可见区外」的真正判据。
+_chain = _rows['悬停连锁提示']
+_chain_y0 = _chain.y + max_scroll                 # scroll=0 时的 y
+_chain_scroll = max(0, min(max_scroll, _chain_y0 - CONTENT_Y))
+_chain_top = _chain_y0 - _chain_scroll
+check('V2f 连锁提示行可完整滚入可见区（说明不再被裁）',
+      _chain_top >= CONTENT_Y
+      and _chain_top + _chain.height <= CONTENT_Y + CONTENT_H,
+      f"y={_chain_top}~{_chain_top + _chain.height} "
+      f"content=[{CONTENT_Y},{CONTENT_Y + CONTENT_H}]")
 
 print("\n--- 视觉页：缩放滑条拖拽（与速度条同一套逻辑）---")
 gui.zoom = 1.0
@@ -219,6 +234,35 @@ click_at(gui._settings_marks_toggle_rect.center)
 check('V5a 点标记行 → 通知用新名字',
       '复原提示标记' in (gui.macro_notify_msg or ''),
       repr(gui.macro_notify_msg))
+
+# ================================================================ 音效（S5）
+print("\n--- 视觉页：音效 / 背景音乐开关与音量滑条 ---")
+check('V6a 音效与背景音乐开关已绘制',
+      hasattr(gui, '_settings_sfx_toggle_rect')
+      and hasattr(gui, '_settings_music_toggle_rect'))
+check('V6b 两条音量滑条与动画时长滑条同栏对齐（x 相同）',
+      gui._settings_sfx_vol_track_rect.x == gui._settings_slider_track_rect.x
+      and gui._settings_music_vol_track_rect.x == gui._settings_slider_track_rect.x,
+      f"{gui._settings_sfx_vol_track_rect.x} / "
+      f"{gui._settings_music_vol_track_rect.x} vs {gui._settings_slider_track_rect.x}")
+# 点音效开关：属性翻转，并真的推给音频管理器（没推的话改了设置还是没声）
+_sfx_before = gui.sfx_enabled
+click_at(gui._settings_sfx_toggle_rect.center)
+check('V6c 点「音效」→ 开关翻转且已推送到 AudioManager',
+      gui.sfx_enabled != _sfx_before
+      and getattr(gui.audio, 'sfx_enabled', None) == gui.sfx_enabled,
+      f"gui={gui.sfx_enabled} audio={getattr(gui.audio, 'sfx_enabled', None)}")
+click_at(gui._settings_sfx_toggle_rect.center)   # 还原
+# 点音量滑条最右端 → 100（右端像素属开区间，允许 99）
+_vtr = gui._settings_sfx_vol_track_rect
+click_at((_vtr.right - 1, _vtr.centery))
+check('V6d 拖音效音量到最右 → 接近满值且同步到管理器',
+      gui.sfx_volume >= 99
+      and abs(gui.audio.sfx_volume - gui.sfx_volume / 100.0) < 1e-6,
+      f"gui={gui.sfx_volume} audio={gui.audio.sfx_volume}")
+gui.sfx_volume = 70
+gui._sync_audio_settings()
+gui.draw_settings_dialog()
 
 # ================================================================ 求解器页
 print("\n--- 求解器：顺序重排 + 单次聚拢更名 ---")

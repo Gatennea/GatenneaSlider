@@ -37,6 +37,7 @@
 | `game.py` | `SliderMatrix`、`is_solved`、`try_move_ex(direction, step) -> (positions, reason)` | 方形纯逻辑；`reason` 含 `no_selection/bad_direction/collision/disconnected` |
 | `game_triangle.py` | `TriangleSliderMatrix`、`DIRECTIONS`/`GAP_DIRECTIONS`/`DIRECTION_SCREEN` | 三角密铺纯逻辑（3 族缝、6 向） |
 | `game_mi.py` | `MiSliderMatrix`、`lattice_of(key)` | 米字格纯逻辑（4 族缝、8 向、两晶格 A/B） |
+| `anchor_shuffle.py` | `AnchorPlanner`、`draw_candidates`、`reapply`、`select`、`rank`、`MAX_DRIFT` | 打乱序列规划：锚点=初始重心，偏移=Σ(块坐标−锚点) 的向量和（化简为坐标和之差），`MAX_DRIFT` 是**硬上限**（格，默认 1.0，过紧时至少留 1.25 个最小合法步；只有连续多次「候选全越界」才放一步打破僵局，放完立刻恢复），连续两步尽量不选平行缝，末尾几步把重心收回锚点。四套 `shuffle` 走 `select()`；**无限打乱**走 `rank()` 拿有序候选、按偏好逐个试提交，只借选步能力，不带有限次数/进度条/结束切屏，planner 跨帧存活、停止时清掉。`ENABLED=False` 退回旧随机路径。回归见 `test/_test_anchor_shuffle.py`、`test/_test_infinite_anchor.py` |
 
 > ⚠️ `game*.py` **不得引入 pygame**；交互代码只 import 它们的方向表/函数。
 
@@ -45,13 +46,17 @@
 | 现成符号 | 用途 |
 |---|---|
 | `gui/renderer.py` 的 `draw_board` / `draw_triangle_board` / `draw_mi_board` + `_game_dir_tables` | 三形态绘制与方向表取用（按形态从模块取，勿 getattr 实例） |
+| `gui/model_preview.py` 的 `request()` / `thumbs()` / `pump()` / `system_idle_ratio()` | 菜单悬停预览（复原态＋打乱态两张缩图）。磁盘缓存签名含内容哈希＋算法版本＋尺寸＋配色，**跨启动复用**；空闲预热由主循环每帧调 `_preview_pump()` → `pump()`：启动 1 秒后起常驻后台线程，按「游戏忙不忙 ＋ 系统 CPU 空闲率」逐个补齐菜单里**所有预设**（内置／模型／自定义样式），运行中新增档位或换主题会自动补算；悬停 `request()` 优先读盘、零等待。⚠️ `_preview_pump` 的 try 段必须在方法体内（2026-11-01 反缩进事故：方法只剩 docstring，预热一次都没跑）；回归见 `test/_test_model_preview.py` M 组 |
 | `gui/metrics_panel.py` 的剖面缺陷行 | 调试面板三形态统一行（调用 `profile_defect`） |
+| `gui/audio.py` 的 `AudioManager` | 音效（§S5，已实装出声）：槽位 `bgm/slide/fail/solved`，`sync_settings` 一次性推送开关+音量并起停 bgm；滑动在 `move_selected_blocks` 挂 `play_slide(步数)`（55ms 节流、回放时静音）、复原/滑动被拒分别挂 `play_solved`/`play_fail`。设置页「视觉」Tab 有音效/背景音乐开关 + 两条 0~100 音量滑条。无素材/无头环境静默 no-op。素材放 `assets/audio/{sound,music}/`，档名弹性发现（bgm 取 `music/` 下 `bgm.*` 或第一个音频档、slide 取所有 `slide*.*` 轮换、fail/solved 取精确名） |
 | `engine/cell_class.py` | mod 着色类 `cell_class` / `class_index`（step>1 才开，1 级退化见 `readme_to_agent.md` §2.1）。2026-10-30 从 `gui/` 下沉到 `engine/`（纯数学、零依赖，solver 也要用）；**`gui/cell_class.py` 只剩一行转发壳**，新代码一律指 engine |
 | `test/_check_gap_annot.py` | 三形态动效验收脚本 |
 
 ## 控制通道（程序化驱动游戏，别自己造）
 
 - **HTTP REST** `http://127.0.0.1:5050`（推荐）：`/status` `/move` `/select_gap` `/select_block` `/solve` `/analysis/*` 等，详见 `docs/agent/readme_to_agent.md` §6。
+- `GET /version` 回报当前进程的版本号、git 短提交、启动时刻、运行秒数与关键源码短哈希（`code_hashes`）；怀疑「界面跑的不是刚改的代码」时先查它，改完源码要重启才会变。
+- 只读 GET 免令牌（白名单见 `GET /help` 的 `public_readonly`）；写操作与 `GET /screenshot` 仍需令牌；「允许外部控制」关闭时一律 403，带了令牌的请求仍会校验。
 - **stdin CLI**：`status` `move` `select_gap` `solve` `solver_status` …（§7 全集），与 HTTP 1:1。
 - 一次完整移动 = `select_gap` → `select_block` → `move`（三角可省略 `select_gap`）。
 

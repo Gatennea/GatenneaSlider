@@ -6,9 +6,14 @@ HTTP Server Mixin
 通过命令队列与游戏主线程通信。
 """
 
+import hashlib
 import json
+import os
+import platform
 import queue
+import sys
 import threading
+import time
 import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -21,6 +26,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 API_INDEX = [
     ('/help', 'GET', '本索引：端点列表与第一条命令引导'),
     ('/help/<端点>', 'GET', '单个端点的详细用法：参数/返回/示例（如 /help/move）'),
+    ('/version', 'GET', '当前进程版本、代码提交与启动时间'),
     ('/status', 'GET', '当前局面与游戏状态（建议的第一条命令）'),
     ('/map', 'GET', '棋盘地图与编号'),
     ('/mode', 'BOTH', '查询/切换模式（练习/创造/竞速）'),
@@ -64,17 +70,40 @@ API_INDEX = [
     ('/command', 'POST', '通用命令通道（body: {"cmd": "<CLI 指令>"}）'),
 ]
 
+# 免令牌的只读 GET 白名单（2026-11-06 用户拍板：单机游戏，只读请求不必鉴权）。
+# ⚠️ 白名单制而非黑名单：新增 GET 端点默认仍需令牌，必须显式加进来才放行。
+# 排除项：
+#   /screenshot —— GET 也会把 PNG 写到 ?path= 指定的路径，不是只读；
+#   所有 POST    —— 一律仍需令牌（do_POST 不走豁免）。
+# 「允许外部控制」开关仍是总闸：关掉时这些端点一样 403。
+PUBLIC_GET_PATHS = frozenset({
+    '/help', '/version', '/status', '/map', '/mode', '/settings',
+    '/analysis/window', '/analysis/holes', '/analysis/actions',
+    '/solver/algorithms', '/solver/status', '/solver/params',
+    '/macro/list', '/macro/status',
+    '/timer/status', '/records',
+})
+PUBLIC_GET_PREFIXES = ('/help/',)   # /help/<端点>
+
+
+def is_public_readonly_get(path):
+    """该 GET 是否可免令牌（仍受「允许外部控制」总闸约束）。"""
+    return (path in PUBLIC_GET_PATHS
+            or any(path.startswith(p) for p in PUBLIC_GET_PREFIXES))
+
+
 # 复制给外部程序的连接话术模板（{token}/{port} 占位；GUI 设置-控制页「复制」用）
 # 措辞口径：请求方是「外部程序」（AI 助手只是其中一种），不把接口说成 AI 专属
 TOKEN_MESSAGE_TEMPLATE = (
     "令牌：{token}。把这段话发给可以在本机发送 http 请求的外部程序（AI 助手是"
     "其中一种），它就能学会控制本机的《貓九的滑塊遊戲》（Gatennea Slider）进程：\n"
-    "1. 所有请求的基址是 http://127.0.0.1:{port}，每个请求都要带请求头 "
-    "Authorization: Bearer {token}（或在 URL 末尾加 ?token={token}）。\n"
+    "1. 基址是 http://127.0.0.1:{port}。只读 GET（/help、/version、/status、/map 等）"
+    "不需要令牌；写操作与截图仍要带请求头 Authorization: Bearer {token}"
+    "（或在 URL 末尾加 ?token={token}）。\n"
     "2. 先 GET /help 拿到全部 API 索引，GET /help/<端点> 看单个端点的参数与示例，"
     "再 GET /status 查看当前局面，之后按索引自行调用。\n"
     "3. 它只能控制本机上的这个游戏进程；游戏重启后令牌失效，需要重新在游戏"
-    "「设置-控制」里复制新令牌。"
+    "「设置-控制」里复制新令牌；关闭「允许外部控制」后连只读 GET 也会被拒。"
 )
 
 # 单个端点详情（GET /help/<端点> 与游戏内「下载外部控制教程」同源生成）。
@@ -87,7 +116,8 @@ HELP_DETAILS = {
         'desc': '全部端点索引：路径、方法（GET/POST/BOTH）、一句话说明。'
                 '这是外部程序读到的第一份地图，先看它再决定调谁。',
         'params': [],
-        'returns': 'JSON：{ok, endpoints:[{path,method,summary}], auth, first_step, note}',
+        'returns': 'JSON：{ok, endpoints:[{path,method,summary}], auth, '
+                   'public_readonly:[<免令牌的只读 GET>], first_step, note}',
         'example': 'curl -H "Authorization: Bearer $TOKEN" $BASE/help',
     },
     '/help/<端点>': {
@@ -97,6 +127,20 @@ HELP_DETAILS = {
         'params': [],
         'returns': 'JSON：{ok, path, method, summary, description, params:[...], returns, example}',
         'example': 'curl -H "Authorization: Bearer $TOKEN" $BASE/help/move',
+    },
+    '/version': {
+        'desc': '当前进程的版本与启动信息：发版版本号、git 短提交、进程启动时刻、'
+                '已运行秒数、是否冻结包（exe）、启动入口、源码根目录、Python 版本，'
+                '以及关键源码文件的短哈希 code_hashes。'
+                '用来确认「屏幕上这个进程跑的是不是刚改过的代码」——改了源码必须重启'
+                '进程，commit 与 code_hashes 才会跟着变；发版版本号是日期号，'
+                '同一天内的多次改动靠 commit / code_hashes 区分。'
+                '本端点是进程级元数据直出，不进命令队列，GUI 繁忙时也能查。',
+        'params': [],
+        'returns': 'JSON：{ok, version, commit, started_at, started_at_epoch, '
+                   'uptime_seconds, frozen, entry, source_root, python, http_port, '
+                   'code_hashes:{<文件>:<12位哈希>}, note}',
+        'example': 'curl -H "Authorization: Bearer $TOKEN" $BASE/version',
     },
     '/status': {
         'desc': '当前局面全景：谜题描述、步数、是否已复原、矩阵、选中态、'
@@ -488,6 +532,10 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
     # enabled=False 或 token 为空时拒绝一切请求；开关重开会换新 token。
     ext_state = None
 
+    # 进程级元数据（build_server_meta() 的启动快照），由 start_http_server 设置。
+    # 放在类上而不是每次请求重建，保证 started_at 在一个进程里恒定。
+    server_meta = None
+
     # settings 白名单（须与 gui/events.py EventsMixin._SETTINGS_* 保持一致）
     _SETTINGS_BOOL_KEYS = (
         'coloring_enabled', 'chain_hint_enabled', 'show_metrics_panel',
@@ -496,8 +544,15 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
+        'show_boot_animation', 'infinite_shuffle', 'confirm_before_shuffle', 'draw_grid',
+        # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
+        'sfx_enabled', 'music_enabled', 'sound_muted',
     )
-    _SETTINGS_INT_RANGES = {'animation_duration_ms': (50, 1000)}
+    _SETTINGS_INT_RANGES = {
+        'animation_duration_ms': (50, 1000),
+        'sfx_volume': (0, 100),
+        'music_volume': (0, 100),
+    }
     # gather 参数白名单（须与 GUI.py gather_params 键一致）
     _SOLVER_PARAM_KEYS = (
         'max_steps', 'patience', 'max_wait_time',
@@ -526,17 +581,21 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         self.end_headers()
 
-    def _check_auth(self):
+    def _check_auth(self, public=False):
         """外部控制鉴权（每个业务请求调用）。
 
-        语义：
-            开关关闭（enabled=False 或 token 空） → 403 一切拒绝；
-            令牌缺失 → 401；令牌不匹配 → 401。
+        语义（2026-11-06 更新）：
+            开关关闭（enabled=False 或 token 空） → 403 一切拒绝（总闸不变）；
+            public=True 且请求未带令牌 → 放行（只读 GET 白名单）；
+            带了令牌但不匹配 → 401（旧/错令牌不会被静默放行）；
+            其余请求缺令牌 → 401。
+        public 只由 do_GET 依 is_public_readonly_get(path) 传入；do_POST 恒为 False。
         令牌传递（两种都支持）：
             Authorization: Bearer <token> 请求头（推荐）；
             URL 查询参数 ?token=<token>（不方便加头的客户端）。
         注：stdin 命令通道不设防——能写 stdin 的只有启动它的父进程，天然可信。
         """
+        from urllib.parse import urlparse, parse_qs
         ext = getattr(self, 'ext_state', None) or {}
         if not ext.get('enabled') or not ext.get('token'):
             self._send_json(
@@ -549,8 +608,9 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         if auth.lower().startswith('bearer '):
             tok = auth[7:].strip()
         if not tok:
-            from urllib.parse import urlparse, parse_qs
             tok = (parse_qs(urlparse(self.path).query).get('token') or [''])[0].strip()
+        if public and not tok:
+            return True
         if not tok:
             self._send_json(
                 {"ok": False,
@@ -609,7 +669,7 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         from urllib.parse import urlparse
         path = urlparse(self.path).path.rstrip('/')
         try:
-            if not self._check_auth():
+            if not self._check_auth(public=is_public_readonly_get(path)):
                 return
             self._dispatch_get(path)
         except Exception:
@@ -655,8 +715,11 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "ok": True,
                 "message": "Gatennea Slider 外部控制 API 索引",
-                "auth": "所有请求带请求头 Authorization: Bearer <token>，"
-                        "或 URL 加 ?token=<token>",
+                "auth": "只读 GET（public_readonly 所列）免令牌；其余请求需带 "
+                        "Authorization: Bearer <token>，或 URL 加 ?token=<token>；"
+                        "关闭「允许外部控制」后一律 403",
+                "public_readonly": sorted(
+                    PUBLIC_GET_PATHS | frozenset({'/help/<端点>'})),
                 "first_step": "GET /status 查看当前局面，再按下方索引调用",
                 "detail": "GET /help/<端点> 查看单个端点的参数/返回/示例，"
                           "如 GET /help/move",
@@ -672,6 +735,15 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         # '/help/<端点>'：单个端点的参数/返回/示例，如 GET /help/move
         elif path.startswith('/help/'):
             self._serve_help_detail(path[len('/help/'):])
+        elif path == '/version':
+            # 进程级元数据直出：不进命令队列，GUI 主线程忙/卡住时也能查。
+            meta = dict(getattr(self, 'server_meta', None) or build_server_meta())
+            meta['ok'] = True
+            meta['http_port'] = (getattr(self, 'ext_state', None) or {}).get('port')
+            meta['uptime_seconds'] = round(max(
+                0.0, time.time() - meta.get('started_at_epoch', time.time())), 3)
+            self._send_json(meta)
+            return
         # —— 局面分析 ——
         # 三角形密铺的洞/窗口/动作语义未实现：游戏侧回 reason=unsupported，
         # _send_analysis 映射为 400，让调用方能从状态码看出「该形态不支持」
@@ -1023,7 +1095,105 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "message": f"未知 POST 路径: {path}"}, 404)
 
 
-def start_http_server(cmd_queue, port=5050, ext_state=None):
+# ===== 进程元数据（GET /version 用）=====
+# 只在「真正启动游戏进程」时由 main.py 调一次；测试脚本直接调 start_http_server
+# 时由后者兜底生成一份，所以 /version 在任何启动方式下都有值。
+_META_CODE_FILES = (
+    'main.py', 'http_server.py', 'gui/renderer.py',
+    'engine/registry.py', 'gui/events.py',
+)
+
+
+def _project_root():
+    """源码根目录；冻结（PyInstaller）时退到 exe 所在目录。"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _read_version(root):
+    """发版版本号来自随包 version.json（build_release.py 打包后写）；源码跑取不到 → dev。"""
+    for p in (os.path.join(root, 'version.json'),
+              os.path.join(root, 'gui', 'version.json')):
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                v = json.load(f).get('version')
+            if v:
+                return str(v)
+        except Exception:
+            pass
+    return 'dev'
+
+
+def _git_commit(root):
+    """直接读 .git，不起子进程；worktree / packed-refs 都兜住，取不到返回 None。"""
+    try:
+        git = os.path.join(root, '.git')
+        if os.path.isfile(git):  # worktree：.git 是指到 gitdir 的文本文件
+            with open(git, 'r', encoding='utf-8') as f:
+                line = f.read().strip()
+            if line.startswith('gitdir:'):
+                git = os.path.normpath(os.path.join(root, line[7:].strip()))
+        with open(os.path.join(git, 'HEAD'), 'r', encoding='utf-8') as f:
+            head = f.read().strip()
+        sha = None
+        if head.startswith('ref:'):
+            ref = head[4:].strip()
+            ref_file = os.path.join(git, *ref.split('/'))
+            if os.path.isfile(ref_file):
+                with open(ref_file, 'r', encoding='utf-8') as f:
+                    sha = f.read().strip()
+            else:
+                packed = os.path.join(git, 'packed-refs')
+                if os.path.isfile(packed):
+                    with open(packed, 'r', encoding='utf-8') as f:
+                        for ln in f:
+                            if ln.startswith('#') or not ln.strip():
+                                continue
+                            parts = ln.split()
+                            if len(parts) >= 2 and parts[1] == ref:
+                                sha = parts[0]
+                                break
+        else:
+            sha = head
+        return sha[:12] if sha else None
+    except Exception:
+        return None
+
+
+def _code_hashes(root):
+    """关键源码内容短哈希：改了常数/渲染逻辑，重启后这里就会变。冻结包无 .py → {}。"""
+    out = {}
+    for rel in _META_CODE_FILES:
+        p = os.path.join(root, *rel.split('/'))
+        try:
+            with open(p, 'rb') as f:
+                out[rel] = hashlib.sha256(f.read()).hexdigest()[:12]
+        except Exception:
+            continue
+    return out
+
+
+def build_server_meta():
+    """进程启动快照：版本 + 代码指纹 + 启动时刻。由 main.py 在 __main__ 里调一次。"""
+    root = _project_root()
+    now = time.time()
+    return {
+        'version': _read_version(root),
+        'commit': _git_commit(root),
+        'started_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now)),
+        'started_at_epoch': now,
+        'frozen': bool(getattr(sys, 'frozen', False)),
+        'entry': os.path.basename(sys.argv[0]) if sys.argv else '',
+        'source_root': root,
+        'python': platform.python_version(),
+        'code_hashes': _code_hashes(root),
+        'note': '改了源码必须重启进程，commit 与 code_hashes 才会跟着变；'
+                'version 是发版日期号，同一天内的多次改动靠 commit / code_hashes 区分。',
+    }
+
+
+def start_http_server(cmd_queue, port=5050, ext_state=None, server_meta=None):
     """
     启动 HTTP 服务器（daemon 线程）
 
@@ -1031,12 +1201,15 @@ def start_http_server(cmd_queue, port=5050, ext_state=None):
         cmd_queue: 命令队列，HTTP 请求会转化为 (cmd, resp_q) 元组放入
         port: 监听端口，默认 5050
         ext_state: 外部控制共享状态 {'enabled': bool, 'token': str|None}
+        server_meta: build_server_meta() 的进程启动快照；缺省时在这里兜底生成
     返回：
         HTTPServer 实例
     """
     GameHTTPHandler.cmd_queue = cmd_queue
     GameHTTPHandler.ext_state = ext_state if ext_state is not None else {
         'enabled': False, 'token': None}
+    GameHTTPHandler.server_meta = (server_meta if server_meta is not None
+                                   else build_server_meta())
     server = HTTPServer(('127.0.0.1', port), GameHTTPHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

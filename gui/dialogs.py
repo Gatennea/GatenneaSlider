@@ -942,12 +942,19 @@ class DialogsMixin:
         btn_w, btn_h = 88, 34
         btn_y = y + height - pad - btn_h
         mouse_pos = pygame.mouse.get_pos()
+        extra_text = getattr(self, 'confirm_extra_text', '')
 
-        # 取消（左）/ 确定（右）：与其它对话框一致，确定在右
+        # 取消（左）/ 确定（右）：与其它对话框一致，确定在右。
+        # 可选第三按钮（如「存档」）排在取消左侧，仅在 confirm_extra_text 非空时出现。
         self.confirm_cancel_btn = pygame.Rect(
             x + width - pad - btn_w * 2 - 10, btn_y, btn_w, btn_h)
         self.confirm_ok_btn = pygame.Rect(
             x + width - pad - btn_w, btn_y, btn_w, btn_h)
+        if extra_text:
+            self.confirm_extra_btn = pygame.Rect(
+                x + width - pad - btn_w * 3 - 20, btn_y, btn_w, btn_h)
+        else:
+            self.confirm_extra_btn = None
 
         c = (self.colors['button_hover']
              if self.confirm_cancel_btn.collidepoint(mouse_pos)
@@ -955,6 +962,14 @@ class DialogsMixin:
         pygame.draw.rect(self.screen, c, self.confirm_cancel_btn, border_radius=4)
         s = self.dialog_font.render('取消', True, (255, 255, 255))
         self.screen.blit(s, s.get_rect(center=self.confirm_cancel_btn.center))
+
+        if extra_text:
+            c = (self.colors['button_hover']
+                 if self.confirm_extra_btn.collidepoint(mouse_pos)
+                 else self.colors['button_bg'])
+            pygame.draw.rect(self.screen, c, self.confirm_extra_btn, border_radius=4)
+            s = self.dialog_font.render(extra_text, True, (255, 255, 255))
+            self.screen.blit(s, s.get_rect(center=self.confirm_extra_btn.center))
 
         if getattr(self, 'confirm_danger', False):
             # 危险按钮：dialog_bg 与红线色混出暗红，悬停再亮一档
@@ -983,6 +998,10 @@ class DialogsMixin:
             self.show_confirm_dialog = False
             self.confirm_action = None
             self.confirm_lines = []
+            # 清掉可选的第三按钮，避免下一次普通确认框误显示「存档」
+            self.confirm_extra_text = ''
+            self.confirm_extra_action = None
+            self.confirm_extra_btn = None
 
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
@@ -997,10 +1016,17 @@ class DialogsMixin:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             ok_btn = getattr(self, 'confirm_ok_btn', None)
             cancel_btn = getattr(self, 'confirm_cancel_btn', None)
+            extra_btn = getattr(self, 'confirm_extra_btn', None)
             if ok_btn is None:
                 return True      # 还没画过一帧：没有可点区域，先吞掉
             if ok_btn.collidepoint(event.pos):
                 act = getattr(self, 'confirm_action', None)
+                _close()
+                if callable(act):
+                    act()
+                return True
+            if extra_btn is not None and extra_btn.collidepoint(event.pos):
+                act = getattr(self, 'confirm_extra_action', None)
                 _close()
                 if callable(act):
                     act()

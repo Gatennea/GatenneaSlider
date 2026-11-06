@@ -105,15 +105,20 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('picture/cover.png', 'picture'),
+    datas=[('assets/picture/cover.png', 'assets/picture'),
+           ('assets/picture/boot', 'assets/picture/boot'),
+           ('assets/picture/splash.bmp', 'assets/picture'),
            ('docs/player/操作说明.md', 'docs/player'),
            # 新手教程资源：文案 JSON + 关卡存档（新增关卡只加 json，无需改 spec）
            ('gui/tutorial_texts.json', 'gui'),
            # 打乱死局黑名单（solver.deadend_guard 运行时按 solver 包路径找它）
            ('solver/deadend_blacklist.json', 'solver'),
            ('beginner_archive', 'beginner_archive'),
-           # S1-4 箭头按键贴图（renderer._arrow_asset_path 按「仓库根/assets/...」
-           # 找，打包后根 = _MEIPASS，故整目录带过去；缺了箭头不显示）
+           # assets/ 是外部资源统一根，整树带过去（打包后根 = _MEIPASS）：
+           #   picture/ 封面·开机帧·splash（渲染期由 _gui_get_resource_path 读）
+           #   ui/arrows/ 方向键贴图（renderer._arrow_asset_path 读）
+           #   audio/{sound,music}/ 音效与背景乐（gui/audio.py 读）
+           # ⚠️ music/ 下 wav 体积较大（约 67MB），会原样进包；如要瘦身先转码或排除
            ('assets', 'assets')],
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -153,7 +158,10 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='picture/cover.ico',
+    icon='assets/picture/cover.ico',
+    # 启动图：exe 自解压/Python 启动那段（应用内动画够不著的最前段）显示，
+    # 窗口就绪后由 GUI.py 在 __init__ 里 pyi_splash.close() 关闭。仅打包后生效。
+    splash='assets/picture/splash.bmp',
 )
 
 coll = COLLECT(

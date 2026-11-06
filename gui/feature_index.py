@@ -97,6 +97,11 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='顶栏「文件」→「另存为...」，换文件名存一份新档。',
          confusion=''),
+    dict(id='restart', name='重启游戏', aliases=('重启', '重新启动', '重开', '自动重开', 'restart'),
+         kind='action', place=('menu_item', '文件', '重启（自动重开）'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='顶栏「文件」→「重启（自动重开）」；或命令面板搜「重启」。游戏退出后由看门进程自动重拉起，无需手动关掉再双击。',
+         confusion='重启会退出当前进程再重开：未保存的编辑器内容会丢失；已自动暂存的进度重启后会恢复。它与「退出」不同——退出后不会自动重开。'),
 
     # ---------------- 找功能（元功能：找不到别的入口时先来这里） ----------------
     # 排在清单最前：它是「不知道有没有 / 不知道在哪」时的兜底入口，检索时
@@ -197,6 +202,12 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='设置 → 视觉页「复原提示标记」；或右下角「复原标记」开关；F2 会连带切换它。',
          confusion='这是**独立于调试面板**的开关：只想要棋盘上的记号和框、不想要数据面板时，单独开它即可。'),
+    dict(id='draw_grid', name='绘制网格',
+         aliases=('网格', '背景网格', '显示网格', '方格'),
+         kind='setting', place=('settings', 'animation'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 视觉页「绘制网格」。控制四种原版谜题（矩形/数字/三角/米字）铺在背景、会横穿空位与洞口的整片网格：三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘的 grid_segments、方形/数字盘的整条灰色缝带。关掉后改为**只画相邻滑块相接处**的缝线——线宽、颜色与原版完全相同（同一根线），只是不再横穿空位/洞口，空位恢复纯背景。',
+         confusion='关闭后不是「网格全消失」：滑块与滑块相接的地方仍然有缝线（否则拼图看不出分块），消失的只是横穿空位/洞口的那部分。四种原版盘（矩形/数字/三角/米字）都会变，选中缝高亮不受影响；模型盘本就没有这层网格，不受开关影响。'),
     dict(id='animation_enabled', name='滑动动画',
          aliases=('滑动动画', '动画', '移动动画', '过渡'),
          kind='setting', place=('settings', 'animation'),
@@ -383,6 +394,7 @@ _ACTIONS = {
     'load': {'type': 'menu', 'name': '文件'},
     'save': {'type': 'menu', 'name': '文件'},
     'save_as': {'type': 'menu', 'name': '文件'},
+    'restart': {'type': 'menu', 'name': '文件'},
     # 编辑
     'undo': {'type': 'menu', 'name': '编辑'},
     'redo': {'type': 'menu', 'name': '编辑'},
@@ -401,6 +413,7 @@ _ACTIONS = {
     'coloring_enabled': {'type': 'toggle', 'key': 'coloring_enabled'},
     'chain_hint_enabled': {'type': 'toggle', 'key': 'chain_hint_enabled'},
     'board_marks_enabled': {'type': 'toggle', 'key': 'board_marks_enabled'},
+    'draw_grid': {'type': 'toggle', 'key': 'draw_grid'},
     'animation_enabled': {'type': 'toggle', 'key': 'animation_enabled'},
     'selection_animation_enabled': {'type': 'toggle', 'key': 'selection_animation_enabled'},
     # 设置页（跳页签）

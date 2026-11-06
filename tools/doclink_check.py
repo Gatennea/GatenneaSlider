@@ -27,8 +27,10 @@ import re
 import sys
 
 # 不扫的目录（历史草稿 / 临时产物 / 第三方）
+# archives/ 是本机未跟踪的旧构建归档（含多份同名 version.json / cell_class.py），
+# 参与 basename 索引会把仓库根的正常裸名引用误判成「同名多个」。
 SKIP_DIRS = {
-    '.git', '.workbuddy', 'archive', '__pycache__', 'node_modules',
+    '.git', '.workbuddy', 'archive', 'archives', '__pycache__', 'node_modules',
     'video', 'voice_demo', 'build', 'dist', '.venv', '.idea', '.vscode',
 }
 
@@ -117,7 +119,7 @@ PLACEHOLDER_RE = re.compile(r'(^|[_/])X(\.|$)')
 # 运行期资源 / 外部素材目录：仓库里没有也不算文档断链。
 # 注意这里存的是**去掉尾部斜杠**后的名字（与 norm 口径一致）。
 RESOURCE_DIRS = {
-    'voice_demo', 'screenshots', 'sound', 'img', 'Web/images',
+    'voice_demo', 'screenshots', 'assets/audio', 'img', 'Web/images',
     'GatenneaSlider/video/materials',
     # 下面这批是文档里「这些目录不该出现」的黑名单列举，不是引用
     '.clinerules', '.trae', '.vscode', '参考',

@@ -21,6 +21,8 @@ _test_model_style）。
   J. 磁盘缓存：空闲预热落盘、清内存后仍能立刻取图、签名带内容哈希。
   K. 所有预设都有预览：内置板型（矩形/三角/米字/数字）+ 模型；
      分组标题/分隔线/自定义样式不给；换图版本失效；打乱态≠复原态。
+  M. 空闲预热接线（2026-11-06）：入口真的调 pump、全部预设进预热队列、
+     悬停按需算的图也会落盘、CPU/游戏忙时按硬件压力等待。
 
 跑法：D:/python/python.exe test/_test_model_preview.py
 
@@ -110,6 +112,112 @@ def _model_items(gui, name='shield'):
         if len(it) >= 5 and isinstance(it[4], str) and it[4] == name:
             return i
     return -1
+
+
+def m_group(gui):
+    """M 组：空闲预热真的接上了、且按机器压力调度（2026-11-06）。
+
+    背景：7f14dc2 把 renderer._preview_pump 的 try 段反缩进到类体，方法
+    只剩 docstring —— 预热线程从不启动、缩图从不落盘、set_config_dir 也
+    从不执行；用户看到的就是「每次启动悬停才现算一遍」。这组钉住四件事：
+    入口真调 pump、全部预设进预热队列、按需算的图也会落盘、CPU 忙会等。
+    """
+    import tempfile
+
+    # ---- M1 / M2 入口与清单 ------------------------------------------
+    calls = []
+    real_pump = model_preview.pump
+    model_preview.pump = lambda *a, **k: calls.append((a, k)) or 0
+    try:
+        gui._preview_pump()
+    finally:
+        model_preview.pump = real_pump
+    check(len(calls) == 1,
+          'M1 _preview_pump 真的调用了 model_preview.pump',
+          f'calls={len(calls)}')
+    kw = calls[0][1] if calls else {}
+    targets = gui._preview_targets()
+    got_targets = list(kw.get('targets') or [])
+    check(bool(targets) and len(got_targets) == len(targets),
+          f'M2 入口把菜单里 {len(targets)} 个预设全交给预热',
+          f'got={len(got_targets)}')
+    check('busy' in kw, 'M2b 入口把「游戏正忙」也传给了规划器')
+
+    # 下面几项都在临时缓存目录做，别写脏真实的 config/preview_cache
+    real_dir = model_preview._disk_dir
+    tmp = tempfile.mkdtemp(prefix='preview_mtest_')
+    model_preview._disk_dir = lambda: tmp
+    real_started = model_preview._warm_started[0]
+    model_preview._warm_started[0] = True      # 不再多起常驻线程
+    try:
+        # ---- M3 全部预设进队列 ----------------------------------------
+        model_preview.clear_cache()
+        pal = model_preview._palette(gui.colors)
+        model_preview.pump(gui.colors, targets=targets, busy=False)
+        seen = set(t for t, _p in model_preview._warm_seen)
+        check(set(targets) <= seen,
+              f'M3 预热队列收下全部 {len(targets)} 个预设',
+              f'missing={sorted(set(targets) - seen)[:3]}')
+
+        # ---- M4 悬停按需算的图也要落盘 --------------------------------
+        model_preview.clear_cache()
+        model_preview._settled.clear()
+        tgt = ('board', 'square', 4, 4, 1)
+        key = (tgt, model_preview.THUMB_SIZE, pal)
+        gpic, spic = model_preview.thumbs(tgt, model_preview.THUMB_SIZE,
+                                          gui.colors)
+        check(gpic is not None and spic is not None
+              and key in model_preview._pics
+              and key in model_preview._surfs,
+              'M4a 悬停口径：多边形与 Surface 都已在内存')
+        check(not model_preview._disk_ok(key), 'M4b 此时盘上还没有这张图')
+        model_preview.pump(gui.colors, targets=[tgt], budget=8)
+        check(model_preview._disk_ok(key),
+              'M4c 悬停按需算的图也会被 pump 落盘（下次启动零等待）')
+
+        # ---- M5 硬件压力真的参与调度 -----------------------------------
+        real_idle = model_preview.system_idle_ratio
+        real_poll = model_preview._IDLE_POLL
+        real_wait = model_preview._MAX_IDLE_WAIT
+        model_preview._IDLE_POLL = 0.005
+        model_preview._MAX_IDLE_WAIT = 0.05
+        try:
+            model_preview._busy[0] = False
+            model_preview.system_idle_ratio = lambda: 0.0
+            t0 = time.time()
+            got = model_preview._wait_until_idle()
+            dt = time.time() - t0
+            check(got == 0.0 and dt >= 0.04,
+                  'M5 CPU 忙时预热会等一会儿再算', f'dt={dt:.3f}')
+
+            model_preview.system_idle_ratio = lambda: 1.0
+            t0 = time.time()
+            got = model_preview._wait_until_idle()
+            check(got == 1.0 and time.time() - t0 < 0.02,
+                  'M6 CPU 空闲时立刻放行')
+
+            model_preview._busy[0] = True
+            t0 = time.time()
+            model_preview._wait_until_idle()
+            check(time.time() - t0 >= 0.04,
+                  'M7 玩家正忙（动画/求解/无限打乱）时也会等')
+        finally:
+            model_preview.system_idle_ratio = real_idle
+            model_preview._IDLE_POLL = real_poll
+            model_preview._MAX_IDLE_WAIT = real_wait
+            model_preview._busy[0] = False
+
+        # ---- M8 标准库 CPU 采样可用 ------------------------------------
+        model_preview._cpu_prev[0] = None
+        model_preview.system_idle_ratio()
+        time.sleep(0.06)
+        ratio = model_preview.system_idle_ratio()
+        check(ratio is None or 0.0 <= ratio <= 1.0,
+              'M8 系统 CPU 空闲率采样不依赖第三方库', f'ratio={ratio}')
+    finally:
+        model_preview._disk_dir = real_dir
+        model_preview._warm_started[0] = real_started
+        model_preview.clear_cache()
 
 
 def main():
@@ -501,6 +609,9 @@ def main():
         check(len(cnt) <= 3,
               f'L6 {tag} 数字档位缩图无编号文字（颜色数≤3，与方形一致）',
               f'{sorted(cnt)}')
+
+    # ---- M. 空闲预热接线 + 硬件压力调度（2026-11-06） ------------------
+    m_group(gui)
 
     return _report()
 

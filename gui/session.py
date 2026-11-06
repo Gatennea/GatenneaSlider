@@ -8,6 +8,7 @@ _current_puzzle_label/_current_puzzle_form）被计时/记录/求解多处共用
 （from puzzle_types），其余均为 self.*。
 """
 from puzzle_types import puzzle_key
+import anchor_shuffle
 
 
 class SessionMixin:
@@ -20,8 +21,17 @@ class SessionMixin:
             return True
         return False
 
-    def shuffle_puzzle(self):
-        """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑"""
+    def shuffle_puzzle(self, confirm=True):
+        """打乱谜题 - 调用 game.py 的 shuffle 核心逻辑
+
+        confirm=True（交互入口默认）：若「防意外打乱」开关开着且当前历史非空，
+        先弹确认框（确定打乱 / 存档 / 取消），避免误触把可撤销的历史冲掉。
+        确认后与外部控制（API / stdin）都会以 confirm=False 再调一次直接执行。
+        """
+        # 无限打乱进行中：本次调用即为「停止」（优先于一切 guard）
+        if getattr(self, '_infinite_shuffle_active', False):
+            self._stop_infinite_shuffle()
+            return
         # 教程解法播放中：锁定棋盘操作
         if self._tut_board_locked():
             return
@@ -61,6 +71,18 @@ class SessionMixin:
         if gaps is not None and not gaps:
             self.macro_notify_msg = "无法打乱：这个盘面没有能选中的缝，滑块滑不动"
             self.macro_notify_timer = 90
+            return
+
+        # 防意外打乱：历史非空时先确认（打乱会清空历史、之后无法撤回）
+        if (confirm
+                and getattr(self, 'confirm_before_shuffle', True)
+                and self._shuffle_has_history()):
+            self._request_shuffle_confirm()
+            return
+
+        # 无限打乱模式：开启后首次调用打乱 -> 启动连续随机游走（再次调用停止）
+        if getattr(self, 'infinite_shuffle', False):
+            self._start_infinite_shuffle()
             return
 
         # 取消当前动画 / 打乱演示
@@ -126,6 +148,204 @@ class SessionMixin:
         else:
             self._fit_board_view()
             self.macro_notify_msg, self.macro_notify_timer = notify
+
+    # ------------------------------------------------------------------
+    # 无限打乱：开启后调用打乱即进入连续「单步随机游走」，再次调用打乱即停止。
+    #
+    # 实现是真正的逐格游走——完全绕开「打乱演示」管線：
+    #   · 每步用 _ann_random_shuffle_move 取一条合法且可逆的走法：随机顺序
+    #     穷举扫过每条缝两侧的每个连通分量，命中即停——只要盘面上还有可逆
+    #     走法就必取到（旧写法用 game.shuffle(1) 抽 40 次，盘面散开/步长大
+    #     时会误判「无可移动缝」而停机）。
+    #   · 2026-11-06：取步接 AnchorPlanner（_infinite_anchor），锚点＝进入
+    #     无限打乱时的盘面重心。只借「从合法步里挑哪一步」的能力——**不**
+    #     引入 game.shuffle 的有限次数、进度条、结束切屏；planner 跨帧存活，
+    #     停止 / 换盘 / 自动停止统一在 _restore_infinite_duration 里清掉。
+    #   · 把棋盘回退到这一步起点、用 start_animation 滑一格、落位后立刻
+    #     在 commit_animation 里续下一格——视觉就是无缝连续随机游走。
+    #   · 不设 _shuffle_demo_active -> 渲染层不会画进度条、不会走淡出切屏。
+    #   · 每步都从当前盘面取走法 -> 所有形态（方/三角/米字/自定義模型局）
+    #     通用；每步经 commit_shuffle_step 可逆校验 -> 终态恒有解。
+    # ------------------------------------------------------------------
+    def _start_infinite_shuffle(self):
+        """进入无限打乱：从当前态开始连续随机游走。"""
+        self._abort_shuffle_demo()
+        if self.animating:
+            self.cancel_animation()
+        self._infinite_shuffle_active = True
+        self._infinite_shuffle_game = self.game  # 换盘（新局/载入）即失效停止
+        self._infinite_prev_duration = self.animation_duration  # 停止时还原步长
+        # 锚点＝进入无限打乱时的盘面重心；planner 跨帧存活，游走全程靠选步
+        # 把重心钉在附近，不依赖被动居中。只借选步能力，不改游走的表现层。
+        self._infinite_anchor = (
+            anchor_shuffle.AnchorPlanner(
+                self.game.blocks, self.current_step,
+                max_drift=anchor_shuffle.MAX_DRIFT)
+            if anchor_shuffle.ENABLED else None)
+        self.selected_gap = None
+        self.selected_block = None
+        # 以当前态为根：清历史、步数归零（连续游走的历史无意义）
+        self.step_count = 0
+        self.game_history.reset()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+        self._last_timed_result = None
+        self.macro_notify_msg = "无限打乱中：再次打乱停止"
+        self.macro_notify_timer = 120
+        self._infinite_shuffle_step()
+
+    def _infinite_shuffle_step(self):
+        """无限打乱的下一格：从当前态取一步随机可逆走法并滑出。"""
+        if not getattr(self, '_infinite_shuffle_active', False):
+            return
+        # 运行中若被取消开关，立即收尾（否则开关关了还在走会让人困惑）
+        if not getattr(self, 'infinite_shuffle', False):
+            self._infinite_shuffle_active = False
+            self._restore_infinite_duration()
+            self._finalize_infinite_state()
+            self.macro_notify_msg = "已停止无限打乱（开关已关）"
+            self.macro_notify_timer = 90
+            return
+        # 游走会摊开盘面，仅在块滑出视口时才平移镜头跟随（不动整体缩放）
+        self.ensure_blocks_visible(only_if_invisible=True)
+        # 换盘（新局/载入/成绩回放）-> 无限模式立即结束，不碰新棋盘
+        if getattr(self, '_infinite_shuffle_game', None) is not self.game:
+            self._infinite_shuffle_active = False
+            self._restore_infinite_duration()
+            return
+        rec = None
+        # 先收掉上一格的选中高亮再取步：取步要自己用 be_opted 认「移动前
+        # 那一组」（_ann_random_shuffle_move -> game.opt），盘面上残留的
+        # 高亮会被当成选中片，取到错误的走法
+        self._clear_sel_anim()
+        # 取一步随机可逆走法：由 _ann_random_shuffle_move 穷举式随机扫描
+        # （随机顺序试遍每条缝两侧的每个连通分量），只要盘面上还有一条可逆
+        # 走法就必取到——不再用「game.shuffle(1) 抽 40 次」的抽样兜底。
+        # 旧写法在盘面散开、步长较大时单次命中率极低，40 次全空会误判
+        # 「无可移动缝」而意外停机（实测 6×6/step3 每 300 步约 4 次）。
+        blocks = []
+        for _ in range(2):  # 位置对不上（理论不发生）时再取一次，不递归
+            rec = self._ann_random_shuffle_move(
+                planner=getattr(self, '_infinite_anchor', None))
+            if rec is None:
+                break
+            blocks = self._find_blocks_at_positions(rec['final'])
+            if len(blocks) == len(rec['final']):
+                break
+            rec = None
+        if rec is None:
+            # 整盘扫完确实没有可逆走法（不是「抽不到」）：如实停止
+            self._infinite_shuffle_active = False
+            self._restore_infinite_duration()
+            self._finalize_infinite_state()
+            self.macro_notify_msg = "无限打乱：当前盘面已无可逆走法，已自动停止"
+            self.macro_notify_timer = 120
+            return
+        # 取步时棋盘已被推到该步终点；先回退到移动前位置，再滑回终点重放这一格
+        for b, p in zip(blocks, rec['moved']):
+            b.location = list(p)
+        # 步长跟随玩家速度但夹在 200ms 以内，保证游走连贯可看；动画关闭时
+        # 退化为 60ms 一格（无限打乱本质是视觉特效，仍让它可见地游走）
+        if getattr(self, 'animation_enabled', True) and self.animation_duration > 0:
+            dur = min(self.animation_duration, 200)
+        else:
+            dur = 60
+        self.animation_duration = dur
+        # 无限打乱只计步、不记历史：左下角步数持续增长，纯粹是游走进度
+        self.step_count += 1
+        self._infinite_shuffle_step_playing = True
+        self.start_animation(blocks, rec['final'])
+        # 选中动画：游走每一步同样画出用到的缝隙与滑块组
+        self._flash_shuffle_selection(rec.get('moved'), rec.get('gap'))
+
+    def _restore_infinite_duration(self):
+        """停止无限打乱时还原动画步长；所有结束路径都经这里清掉锚点规划器。"""
+        prev = getattr(self, '_infinite_prev_duration', None)
+        if prev is not None:
+            self.animation_duration = prev
+        self._infinite_prev_duration = None
+        self._infinite_shuffle_step_playing = False
+        self._infinite_anchor = None
+
+    def _stop_infinite_shuffle(self):
+        """停止无限打乱：对齐到当前态、还原步长、清状态。"""
+        self._infinite_shuffle_active = False
+        # 若正有一格在滑：把它落到**终点**再快照。此时 game 内部矩阵早已推进
+        # 到终点，若走 cancel_animation（放回起点）会让 blocks 与矩阵不一致，
+        # 快照出来的历史根就是错位盘面。
+        if getattr(self, '_infinite_shuffle_step_playing', False) and self.anim_blocks:
+            for i, b in enumerate(self.anim_blocks):
+                b.location = list(self.anim_end_pos[i])
+            self._reset_anim_state()
+        elif self.animating:
+            self.cancel_animation()
+        self._restore_infinite_duration()
+        self._abort_shuffle_demo()
+        self._finalize_infinite_state()
+        self.macro_notify_msg = "已停止无限打乱"
+        self.macro_notify_timer = 90
+        self.ensure_blocks_visible()
+
+    def _finalize_infinite_state(self):
+        """无限打乱结束的统一收尾：步数清零、历史以当前态为根（绝不可撤回）。
+
+        游走期间只计步、不写历史——历史里仍是最初为根的那一条快照。若不在
+        这时重置，撤销会把棋盘拉回游走起点。所以结束时把**当前态**存成唯一
+        快照（history_index=0，can_undo=False），与普通打乱后的语义一致。
+        """
+        self.step_count = 0
+        self.game_history.reset()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+        # 收起游走期间逐格续期的选中高亮（停止/自动停止/开关关闭都走这里）
+        self._clear_sel_anim()
+
+    # ------------------------------------------------------------------
+    # 防意外打乱：历史非空时先确认（确定打乱 / 存档 / 取消）
+    # ------------------------------------------------------------------
+    def _shuffle_has_history(self) -> bool:
+        """当前是否存在会被打乱清掉的历史（可撤销或可重做）。"""
+        h = getattr(self, 'game_history', None)
+        if h is None:
+            return False
+        try:
+            return bool(h.can_undo() or h.can_redo())
+        except Exception:
+            # 历史接口异常时保守放行（不因预检把正常打乱挡掉）
+            return False
+
+    def _request_shuffle_confirm(self):
+        """弹出「打乱前确认」：明确会清空历史，提供 确定打乱 / 存档 / 取消。"""
+        self.show_confirm_dialog = True
+        self.confirm_title = '打乱前确认'
+        self.confirm_lines = [
+            '打乱会清空当前的历史记录，之后将无法撤销回打乱前的局面。',
+            '建议先存档再打乱。',
+        ]
+        self.confirm_ok_text = '确定打乱'
+        self.confirm_danger = True
+        self.confirm_extra_text = '存档'
+        self.confirm_action = (lambda: self.shuffle_puzzle(confirm=False))
+        self.confirm_extra_action = self._save_then_shuffle
+
+    def _save_then_shuffle(self):
+        """确认框的「存档」：先存档，成功后再打乱（用户本意仍是打乱）。
+
+        无当前文件路径时走另存为对话框（异步）——先挂 `_pending_shuffle_after_save`
+        标记，等 handle_file_dialog_result 保存成功后再打乱；取消另存为则放弃打乱。
+        """
+        # 编辑器画布不能存成谜题存档（save_to_file 会拦截并提示）
+        if self._med_save_blocked():
+            return
+        if getattr(self, 'prevent_overwrite_flag', False) and self.current_file_path:
+            self._pending_shuffle_after_save = True
+            self.save_as()
+        elif self.current_file_path:
+            if self._save_to_path(self.current_file_path):
+                self.shuffle_puzzle(confirm=False)
+        else:
+            self._pending_shuffle_after_save = True
+            self.save_as()
 
     def _fit_board_view(self):
         """按当前盘面适配视图（打乱后 / 演示切终态时用）。"""

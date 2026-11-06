@@ -65,6 +65,7 @@ from __future__ import annotations
 import math
 from functools import lru_cache
 
+import anchor_shuffle
 from game import Block
 from game import commit_shuffle_step
 from game import record_shuffle_move
@@ -916,25 +917,44 @@ class MiSliderMatrix(BandageMixin):
             return 1.0
         return 1.0 - min(1.0, (4 * self.m * self.n) / area)
 
-    def _random_move(self, step: int, bias: float, cur_scatter: float, record=None):
+    def _random_move(self, step: int, bias: float, cur_scatter: float,
+                     record=None, planner=None, closing: bool = False):
         """執行一次隨機合法滑動；回傳 (是否移動, 新的散度)。
 
         record 非 None 時按執行順序記錄該步（格式見 game.record_shuffle_move），
         供 GUI 演示動畫重放。
+
+        planner 非 None 時走錨點式序列規劃（見 anchor_shuffle.py）：
+        從合法步裡挑，不選平行縫、偏移超閾值才軟偏置、收尾步壓回錨點。
+        安全打亂的三段式校驗完全不動。
         """
         import math
         import random
         gaps = self.all_gaps()
         if not gaps:
             return False, cur_scatter
-        gap_type, line = random.choice(gaps)
-        direction = random.choice(GAP_DIRECTIONS[gap_type])
-        block = random.choice(self.blocks)
-        self.opt(gap_type, line, block)
-        final_positions = self.try_move(direction, step)
-        if not final_positions:
+        if planner is not None and not closing:
+            gaps = planner.filter_gaps(gaps)
+        pk = planner.parallel_keys if planner is not None else None
+        cands = anchor_shuffle.draw_candidates(
+            self, step, gaps, lambda gt: GAP_DIRECTIONS[gt],
+            count=(planner.candidate_count(closing) if planner is not None
+                   else 1),
+            clear=self._clear_selection, blocks=self.blocks,
+            parallel_keys=pk, rng=random)
+        cand = (planner.select(cands, closing=closing)
+                if planner is not None else (cands[0] if cands else None))
+        if cand is None:
             self._clear_selection()
             return False, cur_scatter
+        # 抽候選時清過選中態，提交前必須用中選那步重新 opt + try_move
+        got = anchor_shuffle.reapply(
+            self, cand, step, clear=self._clear_selection,
+            blocks=self.blocks, parallel_keys=pk)
+        if got is None:
+            self._clear_selection()
+            return False, cur_scatter
+        final_positions, fresh = got
         if bias > 0:
             non_sel = {mi_key(b) for b in self.blocks if not b.be_opted}
             cand_scatter = self._scatter_of(
@@ -946,9 +966,13 @@ class MiSliderMatrix(BandageMixin):
                     return False, cur_scatter
         # 安全打亂（對齊網頁版 shuffle_safe）：提交 + 可逆性校驗，不可逆
         # 自動回滾該步——整條路徑反轉即是合法解法，終態保證有解
-        if commit_shuffle_step(self, gap_type, line, block, direction, step,
-                               GAP_DIRECTIONS[gap_type], final_positions,
+        if commit_shuffle_step(self, fresh.gap_type, fresh.line, fresh.block,
+                               fresh.direction, step,
+                               GAP_DIRECTIONS[fresh.gap_type], final_positions,
                                record):
+            if planner is not None:
+                planner.commit(fresh, self.blocks,
+                               len(record) if record is not None else 0)
             if bias > 0:
                 cur_scatter = cand_scatter  # 校驗通過才真正接受該候選
             self._clear_selection()
@@ -968,17 +992,33 @@ class MiSliderMatrix(BandageMixin):
         game.can_undo_shuffle_step，方向含斜向半格），終態保證有解——整條
         打亂路徑反轉即是合法解法；不可逆的隨機走法被丟棄，有效步數略少
         於 attempts。
+
+        錨點式序列（2026-11-06）：全程用 AnchorPlanner 挑合法步，末尾補幾步
+        把重心收回初始錨點；不改規則、不改玩家操作。
         """
+        planner = None
+        if anchor_shuffle.ENABLED:
+            planner = anchor_shuffle.AnchorPlanner(
+                self.blocks, step, max_drift=anchor_shuffle.MAX_DRIFT)
         cur_scatter = self._scatter()
+
         for _ in range(attempts):
-            _moved, cur_scatter = self._random_move(step, bias, cur_scatter, record)
-        if min_score is None:
-            return
-        for _ in range(attempts * 3):
-            if self.compute_score() <= min_score:
-                break
-            for _attempt in range(attempts):
-                _moved, cur_scatter = self._random_move(step, bias, cur_scatter, record)
+            _moved, cur_scatter = self._random_move(
+                step, bias, cur_scatter, record, planner)
+        if min_score is not None:
+            for _ in range(attempts * 3):
+                if self.compute_score() <= min_score:
+                    break
+                for _attempt in range(attempts):
+                    _moved, cur_scatter = self._random_move(
+                        step, bias, cur_scatter, record, planner)
+        if planner is not None:
+            guard = (lambda: self.compute_score() <= min_score) \
+                if min_score is not None else None
+            planner.finish(
+                lambda: self._random_move(step, bias, cur_scatter, record,
+                                          planner, closing=True),
+                self.blocks, record, guard=guard)
         self._clear_selection()
 
     # ---------- 連通性 ----------

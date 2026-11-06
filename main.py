@@ -13,6 +13,8 @@
 """
 
 import sys
+import os
+import subprocess
 import secrets
 
 
@@ -71,7 +73,7 @@ import queue
 from solver.deadend_guard import has_deadend_guard, is_deadend  # noqa: E402,F401
 
 from GUI import SliderGUI
-from http_server import start_http_server
+from http_server import build_server_meta, start_http_server
 
 
 def stdin_reader(cmd_queue: queue.Queue):
@@ -154,7 +156,29 @@ def parse_args():
 
 
 if __name__ == '__main__':
+    # 看门模式（间接自举重启）：本程序被「重启看门进程」以隐藏参数拉起时，
+    # 不等 GUI、只等父游戏进程退出，然后用相同命令行重拉起游戏，随即自己退出。
+    # 详见 gui/restart.py。
+    _argv = sys.argv[1:]
+    if '--_restart_watch' in _argv:
+        try:
+            _i = _argv.index('--_restart_watch')
+            _pid = int(_argv[_i + 1])
+            _j = _argv.index('--', _i + 2)
+            _relaunch = _argv[_j + 1:]
+        except (ValueError, IndexError):
+            print('参数错误: --_restart_watch 用法错误')
+            sys.exit(2)
+        from gui import restart as _restart_mod
+        _restart_mod._wait_for_pid_exit(_pid)
+        subprocess.Popen(_relaunch, cwd=os.getcwd(), env=dict(os.environ),
+                         creationflags=0x00000010)  # CREATE_NEW_CONSOLE
+        sys.exit(0)
+
     try:
+        # 进程启动快照：在拉起 GUI / HTTP 之前记一次，供 GET /version 回报。
+        # 看门进程（--_restart_watch）在上面已 sys.exit，不会走到这里。
+        server_meta = build_server_meta()
         _log_error('===== 游戏启动 =====', level='info')
         m, n, step, http_port, enable_http, kind = parse_args()
 
@@ -179,7 +203,7 @@ if __name__ == '__main__':
         # 启动 HTTP 服务
         http_server = None
         if enable_http:
-            http_server = start_http_server(cmd_queue, http_port, ext_state)
+            http_server = start_http_server(cmd_queue, http_port, ext_state, server_meta)
 
         gui = SliderGUI(m=m, n=n, step=step, cmd_queue=cmd_queue, kind=kind,
                         ext_state=ext_state)

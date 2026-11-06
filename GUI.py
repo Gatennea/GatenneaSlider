@@ -180,11 +180,40 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 设置窗口图标
         try:
-            icon_path = _gui_get_resource_path('picture/cover.png')
+            icon_path = _gui_get_resource_path('assets/picture/cover.png')
             icon_surface = pygame.image.load(icon_path)
             pygame.display.set_icon(icon_surface)
         except Exception:
             pass  # 图标加载失败不影响运行
+
+        # 开机标题画面：窗口一创建就绘出首帧，让后续重活在它底下进行（覆盖加载空缺，
+        # 而非叠加时长）。load_last_state 完整载入前不便读开关，这里快速读一次。
+        if self._boot_enabled_now():
+            try:
+                # 先画一张即时标题卡（无文件IO），杜绝黑屏
+                self._boot_frames = [self._make_fallback_boot_surf()]
+                self._paint_boot(self._boot_frames[0], 1.0)
+                pygame.display.flip()
+            except Exception:
+                self._boot_frames = [self._make_fallback_boot_surf()]
+            self._boot_paint_time = pygame.time.get_ticks()
+            # 再载真实预渲染帧（同步、很快），载完替换并补绘首帧
+            try:
+                real = self._load_boot_frames()
+                if real and len(real) > 1:
+                    self._boot_frames = real
+                    self._paint_boot(self._boot_frames[0], 1.0)
+                    pygame.display.flip()
+            except Exception:
+                pass
+        else:
+            self._boot_paint_time = 0
+        # 关闭 PyInstaller 启动图（若本次是打包运行且 spec 配了 splash=）
+        try:
+            import pyi_splash
+            pyi_splash.close()
+        except Exception:
+            pass
 
         # 颜色配置
         self.colors = {
@@ -517,6 +546,27 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 原本只跟着界面模式（enhanced）走、没有自己的开关，这里解耦出来，
         # 作为宣传中的五种操作方式之一独立可控。
         self.arrows_enabled = True
+        # 开机动画开关（启动时标题动画，可点击/任意键跳过；缺省开）
+        self.show_boot_animation = True
+        # 绘制网格开关（背景网格显示；缺省开；仅原版构型生效，几何模型不画网格）
+        self.draw_grid = True
+        # 音效开关（素材统一放 assets/audio/，见 gui/audio.py / docs S5）
+        # 三处布尔 + 两处音量（0..100）须与 gui/events.py / http_server.py 白名单同步
+        self.sfx_enabled = True
+        self.music_enabled = True
+        self.sound_muted = False
+        self.sfx_volume = 70
+        self.music_volume = 50
+        try:
+            from gui.audio import AudioManager
+            self.audio = AudioManager()
+            self.audio.load_all()
+            self._sync_audio_settings()
+        except Exception as e:
+            print(f'[audio] 初始化失败，音效停用：{e}')
+            self.audio = None
+        # 无限打乱开关（开启后调用打乱=连续随机游走，再次调用打乱=停止；缺省关）
+        self.infinite_shuffle = False
         # 控制模式开关（独立布尔，非互斥；对应 web 版 touch-gesture.md 的三种模式）：
         #  single_touch：直接拖拽滑塊即滑動（移动后清空选中）
         #  two_touch   ：点缝隙→点滑块→再拖拽/键盘（原版两次触控习惯）
@@ -570,6 +620,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.confirm_ok_text = '确定'
         self.confirm_danger = False
         self.confirm_action = None      # 无参可调用对象；确认后执行
+        self.confirm_extra_text = ''     # 可选第三按钮文字（如「存档」）；空=不显示
+        self.confirm_extra_action = None # 第三按钮点击后的无参可调用对象
+
+        # 防意外打乱：开启后，历史非空时点打乱先弹确认（可先存档）；关则直接打乱
+        self.confirm_before_shuffle = True
+        # 「存档后打乱」的挂起标记：另存为对话框保存成功后自动续打乱
+        self._pending_shuffle_after_save = False
 
         # 三角形密铺模式（Stage B）：self.game 为 TriangleSliderMatrix 时为 True
         self.triangle_mode = False
@@ -657,6 +714,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._shuffle_demo_total = 0        # 演示总步数
         self._shuffle_demo_fade_base = 0.0  # 淡出补足进度的起点
 
+        # 无限打乱：真正的「单步随机游走」，完全绕开上面的演示管線——
+        # 不设 _shuffle_demo_active，故不会画进度条、不会走淡出切屏；
+        # 每步从当前盘面的合法缝取一步、滑一格、落位后立刻续下一格。
+        self._infinite_shuffle_active = False       # 无限打乱进行中
+        self._infinite_shuffle_step_playing = False  # 正在播某一格随机游走
+        self._infinite_shuffle_game = None          # 绑定的棋局（换盘即停）
+        self._infinite_prev_duration = None         # 进入前玩家步长（停止时还原）
+
         # 连续撤销/重做（虚拟键盘一键连续播放）：True=连续模式进行中
         self._continuous_undo = False
         self._continuous_redo = False
@@ -720,6 +785,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.settings_editing_key = None  # 临时存储正在录制的按键
         self._settings_slider_dragging = False
         self._settings_zoom_dragging = False   # 视觉页缩放滑条拖拽中
+        self._settings_sfx_vol_dragging = False    # 视觉页音效音量滑条拖拽中
+        self._settings_music_vol_dragging = False  # 视觉页音乐音量滑条拖拽中
         self._settings_backup_keybindings = {}
         self._settings_ok_btn = None
         self._settings_cancel_btn = None
@@ -1896,12 +1963,33 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         if became_solved and not via_redo and not suppress and not self._tut_board_locked():
             self._solved_popup_active = True
             self._solved_popup_t = 0
+            # §二十：复原提示音（无素材时静默）
+            if getattr(self, 'audio', None):
+                self.audio.play_solved()
         # 新手教程：状态提交后推进教学进度（移动/撤销/重做/过关）
         self._tut_on_state_commit(via_redo=via_redo, suppress=suppress)
 
     def _macro_notify(self, msg):
         self.macro_notify_msg = msg
         self.macro_notify_timer = 90
+
+    def _sync_audio_settings(self):
+        """把当前音效开关/音量推送给 audio 管理器。"""
+        a = getattr(self, 'audio', None)
+        if a is None:
+            return
+        a.sync_settings(
+            sfx_enabled=getattr(self, 'sfx_enabled', True),
+            music_enabled=getattr(self, 'music_enabled', True),
+            muted=getattr(self, 'sound_muted', False),
+            sfx_volume=getattr(self, 'sfx_volume', 70),
+            music_volume=getattr(self, 'music_volume', 50),
+        )
+        # 背景音乐随开关起停：开就循环播（已在播则不重头），关/静音就停
+        if a.music_enabled and not a.muted:
+            a.play_bgm()
+        else:
+            a.stop_bgm()
 
     def close_all_menus(self):
         """关闭所有下拉菜单"""
@@ -1919,9 +2007,130 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         return self.get_block_at_pos(screen_x, screen_y) is None and \
                self.get_gap_at_pos(screen_x, screen_y) is None
 
+    # ------------------------------------------------------------------
+    # 开机动画：预渲染帧序列（assets/picture/boot/frame_*.png）
+    # 设计目标：覆盖「加载空缺」而非叠加时长。窗口一创建（__init__ 的 set_mode
+    # 之后）就立即绘出首帧，让后续所有重活（建盘/载资源）在它底下进行；run() 里的
+    # _run_boot_phase 只在「空闲时间」播动画 + 末尾淡出，整体时长≈真实加载时长。
+    # 想要覆盖「exe 自解压 / Python 启动」那段更前的空缺，需配合 PyInstaller
+    # splash（见 Gatenneaslider.spec 的 splash=），本类只在窗口就绪后关闭它。
+    # ------------------------------------------------------------------
+    def _boot_enabled_now(self):
+        """开窗口前快速读一次 config 的 boot_animation 开关（此时 load_last_state
+        尚未完整载入，这里只取这一项；读不到按默认开）。"""
+        try:
+            _base = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+                     else os.path.dirname(os.path.abspath(__file__)))
+            _p = os.path.join(_base, 'config', 'config.json')
+            if os.path.exists(_p):
+                with open(_p, 'r', encoding='utf-8') as f:
+                    _c = json.load(f)
+                if 'boot_animation' in _c:
+                    return bool(_c['boot_animation'])
+        except Exception:
+            pass
+        return True
+
+    def _make_fallback_boot_surf(self):
+        """无预渲染帧时的回退：代码画一张清晰大字标题卡（透明底，垫游戏同色背景）。"""
+        surf = pygame.Surface((960, 540), pygame.SRCALPHA)
+        try:
+            zh = _gui_safe_font('SimHei', 64).render('貓九的滑块游戏', True, (238, 242, 248))
+            en = _gui_safe_font('SimHei', 22).render('Gatennea Slider', True, (150, 205, 235))
+            hint = _gui_safe_font('SimHei', 16).render('加载中…', True, (170, 178, 188))
+            surf.blit(zh, zh.get_rect(center=(480, 270 - 18)))
+            surf.blit(en, en.get_rect(center=(480, 270 + 34)))
+            surf.blit(hint, hint.get_rect(center=(480, 270 + 72)))
+        except Exception:
+            pass
+        return surf
+
+    def _load_boot_frames(self):
+        """载入预渲染开机帧；缺失则回退到代码绘制的单帧标题卡。"""
+        frames = []
+        try:
+            import glob
+            d = _gui_get_resource_path('assets/picture/boot')
+            for p in sorted(glob.glob(os.path.join(d, 'frame_*.png'))):
+                frames.append(pygame.image.load(p).convert_alpha())
+        except Exception:
+            frames = []
+        if not frames:
+            frames = [self._make_fallback_boot_surf()]
+        return frames
+
+    def _paint_boot(self, frame_surf, overlay_alpha):
+        """绘制一帧开机画面：垫 (30,30,30) 同游戏背景，覆盖层按 overlay_alpha 淡出。"""
+        if overlay_alpha <= 0:
+            self.screen.fill((30, 30, 30))
+            return
+        sw, sh = self.screen.get_size()
+        self.screen.fill((30, 30, 30))
+        fw, fh = frame_surf.get_size()
+        scale = max(sw / fw, sh / fh)
+        bw, bh = int(fw * scale), int(fh * scale)
+        img = pygame.transform.smoothscale(frame_surf, (bw, bh))
+        img.set_alpha(int(255 * overlay_alpha))
+        self.screen.blit(img, ((sw - bw) // 2, (sh - bh) // 2))
+
+    def _run_boot_phase(self, clock):
+        """开机标题阶段：在加载之上播动画 + 末尾淡出，不额外加时。
+
+        窗口创建时 __init__ 已绘出首帧（self._boot_paint_time 记录那一刻）。
+        这里只在「空闲时间」(加载极快、还没到最短展示阈值时) 播完整动画；
+        若加载已很慢则不播、直接淡出——整体时长≈真实加载时长，不再像旧版
+        那样在加载之后平白叠加 2.4s。
+        """
+        if not getattr(self, 'show_boot_animation', True):
+            return
+        try:
+            frames = getattr(self, '_boot_frames', None)
+            if not frames:
+                frames = self._load_boot_frames()
+                self._boot_frames = frames
+            n = len(frames)
+            MIN_HOLD = 800   # 最短展示（加载极快时补到此时长，保证标题可读）
+            FADE = 400       # 淡出时长
+            paint_t = getattr(self, '_boot_paint_time', 0)
+            init_time = pygame.time.get_ticks() - paint_t
+            free = max(0, MIN_HOLD - init_time)  # 空闲时间：用来播动画
+            while self.running:
+                now = pygame.time.get_ticks()
+                since = now - paint_t
+                # 跳过：点击 / 任意键（纯鼠标亦可，§15）
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        self.running = False
+                        return
+                    if ev.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+                        return
+                if since <= init_time + free:
+                    a = since - init_time
+                    fidx = min(n - 1, int((a / free) * (n - 1))) if free > 0 else 0
+                    self._paint_boot(frames[fidx], 1.0)
+                elif since <= init_time + free + FADE:
+                    end_fidx = (n - 1) if free > 0 else 0
+                    fa = max(0.0, 1.0 - (since - init_time - free) / FADE)
+                    self._paint_boot(frames[end_fidx], fa)
+                else:
+                    break
+                pygame.display.flip()
+                clock.tick(60)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return
+
+    # 注：旧的 _play_boot_animation（代码绘制 + 固定 2.4s）已移除，改为预渲染
+    # 帧序列方案，见上方 _run_boot_phase / _load_boot_frames。
+
     def run(self):
         """游戏主循环"""
         clock = pygame.time.Clock()
+
+        # 开机标题阶段：窗口创建时已在 __init__ 绘出首帧，这里做动画 + 淡出，
+        # 覆盖加载空缺而非叠加时间（受 show_boot_animation 开关控制）
+        self._run_boot_phase(clock)
 
         while self.running:
             try:
@@ -2004,6 +2213,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                         self.macro_notify_msg = f"求解中... {elapsed:.1f}s"
                     self.macro_notify_timer = 180
                     self.macro_notify_persistent = True  # 持续显示不走淡出
+                elif getattr(self, '_infinite_shuffle_active', False):
+                    # 无限打乱进行中：复用同一套通知常驻提示（与求解等提示同款，
+                    # 右下角灰底），显示当前打乱快捷键，按它即停。停后
+                    # _infinite_shuffle_active 变 False，自然走 else 恢复普通淡出。
+                    _sc = self._format_menu_shortcut('shuffle')
+                    self.macro_notify_msg = (f"无限打乱中：再次按 {_sc} 停止"
+                                             if _sc else "无限打乱中：再次打乱停止")
+                    self.macro_notify_timer = 180
+                    self.macro_notify_persistent = True
                 else:
                     self.macro_notify_persistent = False
 

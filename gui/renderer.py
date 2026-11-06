@@ -51,18 +51,42 @@ class RendererMixin:
         return cell, gap, cell + gap
 
     def _slider_corner_radius(self):
-        """圓角半徑的**上限**（像素），方形直接用這個值。
+        """圓角半徑的**兜底上限**（像素），僅在板型沒定義圓角時使用。
 
         方形是 `pygame.draw.rect(border_radius=R)`，弧半徑就是 R，與塊的
-        60px 邊長之比約 8.3%。多邊形（三角/米字/碎三角）不用這個固定值，
-        而是走 `_corner_radius_for`：**按塊的最短邊給同一個比例**——它們的
-        塊小得多（碎三角最短邊只有 30px），照抄固定像素會被削掉三分之一。
+        60px 邊長之比約 8.3%。現在四款原版盤的圓角都從板型定義
+        ``BoardSpec.corner_radius`` 讀（見 `_board_corner_radius`），本函式
+        只作安全兜底，不再是四盤的取值來源。
 
         歷史上這裡統一的是「削進深度」（R·(√2−1) ≈ 2px），同樣 2px 削進下
         90° 角弧半徑 4.8px、45° 只有 1.2px、30° 只有 0.7px——角越尖越尖，
         這正是「方形跟三角/碎三角像兩種畫風」的根。改為統一弧半徑（2026-10-24）。
         """
         return max(1, int(round(5 * self.zoom)))
+
+    def _board_corner_radius(self):
+        """當前板型的圓角半徑（**螢幕像素**）——只做「設計像素 × zoom」。
+
+        圓角是**板型的幾何屬性**，寫在 ``engine/registry.py`` 的
+        ``BoardSpec.corner_radius`` 裡（原版四盤 5.0 / 4.4 / 3.0，模型盤
+        由各自 JSON 給），渲染器不該自己按塊最短邊重算比例
+        （2026-10-24 用戶定的原則；2026-11-06 撤掉渲染器硬寫的 8.3% 比例）。
+
+        兩個來源：
+          · 引擎/模型盤：`game.board.spec.corner_radius` 或 `game.spec`；
+          · 原版四盤（舊引擎 game 物件不帶 spec）：走 registry 的
+            `classic_corner_radius(game)` 按類型取同一張表，零構造開銷。
+        """
+        spec = getattr(getattr(self.game, 'board', None), 'spec', None)
+        if spec is None:
+            spec = getattr(self.game, 'spec', None)
+        cr = getattr(spec, 'corner_radius', None) if spec is not None else None
+        if cr is None:
+            from engine.registry import classic_corner_radius
+            cr = classic_corner_radius(self.game)
+        if cr is None:
+            return self._slider_corner_radius()
+        return max(1.5, float(cr) * self.zoom)
 
     def _rounded_polygon_points(self, pts, radius):
         """把凸多邊形每個頂點削成**固定弧半徑 radius** 的圓角（像素）。
@@ -181,13 +205,12 @@ class RendererMixin:
 
     @staticmethod
     def _corner_radius_for(pts, cap):
-        """按滑塊**最小邊長**給圓角半徑，比例與方形一致（5/60 ≈ 8.3%）。
+        """通用多邊形通道（模型盤）用：按滑塊最短邊給圓角，不超過 cap。
 
-        為什麼不能全盤用一個固定像素值：碎三角的塊邊長只有 30px、米字的
-        三角形短邊 83px、三角 91px，同給 10px 圓角時碎三角等於被削掉三分
-        之一，圓角弧上的描邊會在每個頂點伸出一圈「羽毛」（2026-10-24 放大
-        實測）。按最小邊的比例給，四種形態的「圓鈍感」才真的一致——方形
-        border_radius=5 對 60px 塊正好是 8.3%，本函數沿用同一個比例。
+        只服務「鋪縫帶底」的通用通道——那裡圓角還要再受縫半寬鉗制，故
+        保留最短邊比例作安全下限（小塊不被削掉三分之一）。原版四盤走
+        手畫路徑，圓角一律由 `_board_corner_radius()` 從板型定義讀，
+        不經本函式（2026-11-06 撤銷渲染器硬寫的 8.3% 比例）。
         """
         n = len(pts)
         if n < 3:
@@ -353,6 +376,69 @@ class RendererMixin:
         seg = view.gap_line_segment(gap_type, line, hull)
         self._draw_seam_through_screen(seg)
 
+    def _shared_edge_of(self, poly_a, poly_b, tol=1e-6):
+        """兩塊未內縮多邊形的公共邊（兩個端點）；不共邊回 None。"""
+        pts = []
+        for p in poly_a:
+            for q in poly_b:
+                if abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol:
+                    pts.append(p)
+                    break
+        if len(pts) != 2:
+            return None
+        return (pts[0], pts[1])
+
+    def _contact_seam_segments(self, view, cells, neighbors):
+        """回傳 (內縫段, 外輪廓段)，世界座標——「繪製網格」關閉時的縫線來源。
+
+        **只按塊與塊相接給線**：相接處有線，空位/洞口沒線。這就是用戶
+        2026-11-06 要的「所有滑塊相接的地方都有線、不接的地方都沒線」，
+        同時保留原版畫風——因為畫的仍是細線（線寬由調用方傳），
+        而不是把縫整片染灰。
+
+        ⚠️ 2026-10-25 定調（見 draw_triangle_board / draw_mi_board 裡的
+        「不鋪縫帶底，勿再加回」）：**灰色只能沿縫畫線**。用「未內縮形狀
+        鋪 gap 色當底」會把沒有滑塊的地方整片染灰，縫一寬整盤就發灰——
+        2026-11-06 又犯過一次，用戶判「畫風變了、很彆扭」。
+        """
+        cset = cells if isinstance(cells, (set, frozenset)) else set(cells)
+        cache_key = (type(view).__name__, frozenset(cset),
+                     round(view.cell_size, 6), round(view.gap_width, 6))
+        cached = getattr(self, '_seam_seg_cache', None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+        inner, outer = [], []
+        seen = set()
+        for a in cset:
+            pa = view.piece_polygon(*a, inset=False)
+            for b in neighbors(a):
+                if b in cset:
+                    pair = (a, b) if a <= b else (b, a)
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                seg = self._shared_edge_of(pa,
+                                           view.piece_polygon(*b, inset=False))
+                if seg is None:
+                    continue
+                (inner if b in cset else outer).append(seg)
+        result = (inner, outer)
+        self._seam_seg_cache = (cache_key, result)
+        return result
+
+    def _draw_contact_seams(self, view, cells, neighbors, width):
+        """把相接處的縫線畫出來（內縫 + 外輪廓），線寬與開啟態一致。"""
+        inner, outer = self._contact_seam_segments(view, cells, neighbors)
+        color = self.colors['gap']
+        for p1, p2 in inner:
+            pygame.draw.line(self.screen, color,
+                             self.world_to_screen(*p1),
+                             self.world_to_screen(*p2), width)
+        for p1, p2 in outer:
+            pygame.draw.line(self.screen, color,
+                             self.world_to_screen(*p1),
+                             self.world_to_screen(*p2), width)
+
     def _draw_triangle_gaps(self, view: TriangleBoardView, cells, hull):
         """繪製未選中的縫隙（灰色），與方形版一致：選中那條改畫紅線。
 
@@ -362,26 +448,37 @@ class RendererMixin:
         矩形四邊在原版裡也畫灰線，故這裡補上外輪廓，棋盤才有完整邊界。
         """
         width = max(1, int(self.gap_width * self.zoom))
-        for gap_type, line in self.game.all_gaps():
-            if self.selected_gap == (gap_type, line):
-                continue
-            seg = view.gap_line_segment(gap_type, line, hull)
-            if seg is None:
-                continue
-            pygame.draw.line(self.screen, self.colors['gap'],
-                             self.world_to_screen(*seg[0]),
-                             self.world_to_screen(*seg[1]), width)
-        for p1, p2 in view.boundary_edges(cells):
-            pygame.draw.line(self.screen, self.colors['gap'],
-                             self.world_to_screen(*p1),
-                             self.world_to_screen(*p2), width)
+        # 「繪製網格」開關（2026-11-06 最終口徑）：
+        #   開 = 縫線沿凸包拉通成整片晶格，**橫穿空位/洞口**（洞裡也留直線，
+        #        見 gap_line_segment 註釋）——這就是用戶所說的「網格」。
+        #   關 = **只畫塊與塊相接處的線**：相接處有線、空位/洞口沒線。
+        #        線寬/顏色與開啟態完全相同（同一根細線），所以畫風不變；
+        #        ⚠️ 不准改成「未內縮形狀鋪 gap 色」（2026-10-25 已明令移除：
+        #        那會把沒有滑塊的地方整片染灰，縫一寬整盤發灰，用戶判「彆扭」）。
+        if getattr(self, 'draw_grid', True):
+            for gap_type, line in self.game.all_gaps():
+                if self.selected_gap == (gap_type, line):
+                    continue
+                seg = view.gap_line_segment(gap_type, line, hull)
+                if seg is None:
+                    continue
+                pygame.draw.line(self.screen, self.colors['gap'],
+                                 self.world_to_screen(*seg[0]),
+                                 self.world_to_screen(*seg[1]), width)
+            for p1, p2 in view.boundary_edges(cells):
+                pygame.draw.line(self.screen, self.colors['gap'],
+                                 self.world_to_screen(*p1),
+                                 self.world_to_screen(*p2), width)
+        else:
+            self._draw_contact_seams(view, cells, tri_neighbors, width)
 
     def draw_triangle_board(self):
         """繪製三角形密鋪棋盤（含 B2 的拖拽實時預覽）。"""
         self.screen.fill(self.colors['background'])
 
         view = self._tri_view()
-        self._draw_triangle_grid(view)
+        if getattr(self, 'draw_grid', True):
+            self._draw_triangle_grid(view)
         cells = self.game.positions()
         hull = view.board_hull(cells)
         self._draw_triangle_gaps(view, cells, hull)
@@ -403,7 +500,7 @@ class RendererMixin:
         self._draw_triangle_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
-        radius = self._slider_corner_radius()  # 全形態統一圓角**半徑**
+        radius = self._board_corner_radius()  # 圓角由板型定義給，渲染器不重算
         # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）
         follow_map = {}
         if self.drag_following:
@@ -483,8 +580,7 @@ class RendererMixin:
                         ring_color = self._group_color_for((i, j))
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                rpoly = self._rounded_polygon_points(
-                    poly, self._corner_radius_for(poly, radius))
+                rpoly = self._rounded_polygon_points(poly, radius)
                 if self._slider_aa_on(scaled_cell):
                     self._draw_aa_polygon(rpoly, fill, border_color, border_w)
                 else:
@@ -530,8 +626,7 @@ class RendererMixin:
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
                 self._draw_hint_overlay(
-                    self._rounded_polygon_points(
-                        poly, self._corner_radius_for(poly, radius)),
+                    self._rounded_polygon_points(poly, radius),
                                        (i, j, up) == hint_hover)
 
         # 调试面板打开时：先画目标框（并把同一结果存到 self._target_region），
@@ -607,11 +702,21 @@ class RendererMixin:
         hull = view.board_hull(cells)
         # 背景層級由塊的邊導出（錯位態的橫豎格邊落在半整數層級上），
         # 只傳凸包的話畫出來的仍是對齊態的整數格，與塊對不齊
-        for p1, p2 in view.grid_segments(hull, cells):
-            pygame.draw.line(self.screen, self.colors['gap'],
-                             self.world_to_screen(*p1),
-                             self.world_to_screen(*p2),
-                             max(1, int(self.gap_width * self.zoom * 0.35)))
+        # 「繪製網格」開關：控制米字盤鋪在背景的整片晶格（grid_segments，
+        # 沿凸包裁切、洞裡也留線）。關掉後**只畫塊與塊相接處的線**：相接處
+        # 有線、空位/洞口無線；線寬與開啟態同一根細線（gap*0.35），畫風不變。
+        # ⚠️ 不准改成「未內縮形狀鋪 gap 色」——2026-10-25 已明令移除（見下方
+        # 那段「不鋪縫帶底」註釋），2026-11-06 又犯過，用戶判「畫風變了、彆扭」。
+        if getattr(self, 'draw_grid', True):
+            for p1, p2 in view.grid_segments(hull, cells):
+                pygame.draw.line(self.screen, self.colors['gap'],
+                                 self.world_to_screen(*p1),
+                                 self.world_to_screen(*p2),
+                                 max(1, int(self.gap_width * self.zoom * 0.35)))
+        else:
+            self._draw_contact_seams(
+                view, cells, mi_neighbors,
+                max(1, int(self.gap_width * self.zoom * 0.35)))
 
         # **不鋪縫帶底**（2026-10-25 移除，勿再加回）——與三角同一處置：
         # 灰色只用來沿縫畫線，縫帶露出背景。移除前這裡是用未內縮的精確形狀
@@ -623,7 +728,7 @@ class RendererMixin:
         self._draw_mi_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
-        radius = self._slider_corner_radius()  # 全形態統一圓角**半徑**
+        radius = self._board_corner_radius()  # 圓角由板型定義給，渲染器不重算
         selected = []
         normal = []
         for block in self.game.blocks:
@@ -668,8 +773,7 @@ class RendererMixin:
                     border_color, border_w = _play_head
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                rpoly = self._rounded_polygon_points(
-                    poly, self._corner_radius_for(poly, radius))
+                rpoly = self._rounded_polygon_points(poly, radius)
                 if self._slider_aa_on(scaled_cell):
                     self._draw_aa_polygon(rpoly, fill, border_color, border_w)
                 else:
@@ -703,8 +807,7 @@ class RendererMixin:
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 self._draw_hint_overlay(
-                    self._rounded_polygon_points(
-                        poly, self._corner_radius_for(poly, radius)),
+                    self._rounded_polygon_points(poly, radius),
                                        (r, c, q) == hint_hover)
 
         # 调试面板打开时：先画目标框（同一结果存进 self._target_region），
@@ -1443,23 +1546,45 @@ class RendererMixin:
                 pygame.draw.line(self.screen, self.colors['line'],
                                (line_x, 0), (line_x, self.screen_height), 3)
 
-        # 绘制未选中的横向缝隙
-        for i in range(min_row, max_row + 2):
-            band_y = board_y + i * step_px - scaled_gap + cam_y
+        # 「繪製網格」開關（方形/數字盤）：開 = 縫帶鋪滿棋盤範圍的整條線；
+        # 關 = 只畫**相鄰滑塊之間**的縫段（相接處有線、空位/洞口無線），
+        # 與三角/米字同一口徑，也與模型盤外觀統一。選中縫紅線不受影響。
+        _draw_grid = getattr(self, 'draw_grid', True)
+        if _draw_grid:
+            # 绘制未选中的横向缝隙
+            for i in range(min_row, max_row + 2):
+                band_y = board_y + i * step_px - scaled_gap + cam_y
 
-            if self.selected_gap != ('h', i - 1):
-                pygame.draw.rect(self.screen, self.colors['gap'],
-                                 pygame.Rect(gap_left, band_y,
-                                             gap_right - gap_left, scaled_gap))
+                if self.selected_gap != ('h', i - 1):
+                    pygame.draw.rect(self.screen, self.colors['gap'],
+                                     pygame.Rect(gap_left, band_y,
+                                                 gap_right - gap_left, scaled_gap))
 
-        # 绘制未选中的纵向缝隙
-        for j in range(min_col, max_col + 2):
-            band_x = board_x + j * step_px - scaled_gap + cam_x
+            # 绘制未选中的纵向缝隙
+            for j in range(min_col, max_col + 2):
+                band_x = board_x + j * step_px - scaled_gap + cam_x
 
-            if self.selected_gap != ('v', j - 1):
-                pygame.draw.rect(self.screen, self.colors['gap'],
-                                 pygame.Rect(band_x, gap_top,
-                                             scaled_gap, gap_bottom - gap_top))
+                if self.selected_gap != ('v', j - 1):
+                    pygame.draw.rect(self.screen, self.colors['gap'],
+                                     pygame.Rect(band_x, gap_top,
+                                                 scaled_gap, gap_bottom - gap_top))
+        else:
+            # 只按「兩個格子都有滑塊」畫那一段縫，長度恰為一格寬：
+            # 洞/空位兩側沒有塊，就不畫線（不再是橫貫整行整列的長線）。
+            occupied = {(b.location[0], b.location[1]) for b in self.game.blocks}
+            for (r, c) in occupied:
+                rx = int(round(board_x + c * step_px)) + cam_x
+                ry = int(round(board_y + r * step_px)) + cam_y
+                # 右鄰：豎縫段，只覆蓋這一行的高度
+                if (r, c + 1) in occupied and self.selected_gap != ('v', c):
+                    pygame.draw.rect(self.screen, self.colors['gap'],
+                                     pygame.Rect(rx + scaled_cell, ry,
+                                                 scaled_gap, scaled_cell))
+                # 下鄰：橫縫段，只覆蓋這一列的寬度
+                if (r + 1, c) in occupied and self.selected_gap != ('h', r):
+                    pygame.draw.rect(self.screen, self.colors['gap'],
+                                     pygame.Rect(rx, ry + scaled_cell,
+                                                 scaled_cell, scaled_gap))
 
         # 构建动画方块位置映射（使用统一偏移量，确保整组平移视觉一致）
         anim_map = {}
@@ -1489,6 +1614,12 @@ class RendererMixin:
         # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
         _play_head = self._play_head_border()
         _play_keys = self._play_head_keys() if _play_head is not None else ()
+
+        # 圓角由板型定義 BoardSpec.corner_radius 給（設計像素 × zoom），
+        # 四款原版盤 + 模型盤統一同源；渲染器不按塊尺寸重算比例
+        # （2026-10-24 用戶定的原則，2026-11-06 撤銷硬寫的 8.3% 比例）。
+        # 選中高亮框（下方）也用這個值，避免高亮框角與塊角錯位。
+        _block_corner = int(round(self._board_corner_radius()))
 
         # 绘制所有滑块
         for block in self.game.blocks:
@@ -1546,8 +1677,8 @@ class RendererMixin:
                     border_color = self.colors['border']
                     border_w = max(1, int(2 * self.zoom))
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
-            pygame.draw.rect(self.screen, fill, rect, border_radius=self._slider_corner_radius())
-            pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=self._slider_corner_radius())
+            pygame.draw.rect(self.screen, fill, rect, border_radius=_block_corner)
+            pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=_block_corner)
 
             # 连锁提示：同组格叠一层半透明白（hover 更亮），着色描边仍在最上层
             if hint_occ is not None and tuple(block.location) in hint_occ:
@@ -1595,7 +1726,7 @@ class RendererMixin:
             bx = board_x + bc * step_px + cam_x
             by = board_y + br * step_px + cam_y
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
-            pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=self._slider_corner_radius())
+            pygame.draw.rect(self.screen, (255, 200, 50), hl_rect, max(1, int(3 * self.zoom)), border_radius=_block_corner)
 
         # 调试面板打开时：先画目标窗口框（并把同一 region 存到 self），
         # 再以该 region 为基准画洞/缺口/凸起标记，两者严格一致。
@@ -1765,10 +1896,9 @@ class RendererMixin:
             return (x, y, scaled_cell)
 
         from .group_render import draw_group_chunks
-        # 与普通块完全一致的边框：颜色 / 宽度 / 圆角
+        # 与普通块完全一致的边框：颜色 / 宽度 / 圆角（同源，與單塊同口徑）
         border_color = self.colors['border']
         border_w = max(1, int(2 * self.zoom))
-        radius = self._slider_corner_radius()
 
         for gid, cells in groups.items():
             rs = [r for r, c in cells]
@@ -1787,9 +1917,10 @@ class RendererMixin:
                 h = (r1 - r0 + 1) * step_px - scaled_gap
                 fill = self.colors['block_selected'] if selected else self.colors['block']
                 rect = pygame.Rect(x, y, w, h)
-                pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
+                _grp_corner = int(round(self._board_corner_radius()))
+                pygame.draw.rect(self.screen, fill, rect, border_radius=_grp_corner)
                 pygame.draw.rect(self.screen, border_color, rect, border_w,
-                                 border_radius=radius)
+                                 border_radius=_grp_corner)
             else:
                 # 非矩形（L 形/折线）：通用原语——实心填充 + 仅外轮廓，无内部线
                 draw_group_chunks(self.screen, {gid: cells}, get_rect, scaled_gap,
@@ -1923,9 +2054,11 @@ class RendererMixin:
 
                 p = pf.get('block')
                 if p is not None:
-                    pygame.draw.rect(self.screen, gold, _bbox_rect(p),
+                    _r = _bbox_rect(p)
+                    _corner = int(round(self._board_corner_radius()))
+                    pygame.draw.rect(self.screen, gold, _r,
                                      max(1, int(3 * self.zoom)),
-                                     border_radius=self._slider_corner_radius())
+                                     border_radius=_corner)
                 hole = pf.get('hole')
                 if hole:
                     radius = max(3, int(scaled_cell * 0.35))
@@ -1949,9 +2082,10 @@ class RendererMixin:
             bx = board_x + p[1] * cell_step + cam_x
             by = board_y + p[0] * cell_step + cam_y
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
+            _corner = int(round(self._board_corner_radius()))
             pygame.draw.rect(self.screen, gold, hl_rect,
                              max(1, int(3 * self.zoom)),
-                             border_radius=self._slider_corner_radius())
+                             border_radius=_corner)
         hole = pf.get('hole')
         if hole:
             radius = max(3, int(scaled_cell * 0.35))
@@ -2712,13 +2846,29 @@ class RendererMixin:
 
         放在主循环里而不是悬停时：悬停只剩「读图」这一步，零等待也零风险。
         本身不抛异常（失败只是没有预览），这里再兜一层是防 import 级别的意外。
+
+        ⚠️ 整段 try 必须缩进 8 格留在方法体里。2026-11-01 的 7f14dc2 把它
+        反缩进到类体，方法只剩 docstring —— 类定义时那次 try 因 `self`
+        未定义被 except 吞掉，于是每帧调这里其实什么都没做：预热线程从不
+        启动、缩图从不落盘、set_config_dir 也从不执行。防再犯的断言见
+        test/_test_model_preview.py 的 M 组。
         """
-    try:
-        from gui import model_preview
-        model_preview.set_config_dir(self.config_dir)
-        model_preview.pump(self.colors, targets=self._preview_targets())
-    except Exception:      # noqa: BLE001 —— 见 docstring
-        pass
+        try:
+            from gui import model_preview
+            model_preview.set_config_dir(self.config_dir)
+            # 玩家正在动/看动画/求解时算预热是纯 Python 重活，会抢 GIL。
+            # 把「游戏正忙」告诉规划器，由它在空闲时再继续（另看系统 CPU）。
+            busy = bool(
+                getattr(self, 'animating', False)
+                or getattr(self, '_shuffle_demo_active', False)
+                or getattr(self, '_infinite_shuffle_active', False)
+                or getattr(self, '_auto_solve_running', False)
+                or getattr(self, '_med_active', False)
+            )
+            model_preview.pump(self.colors, targets=self._preview_targets(),
+                               busy=busy)
+        except Exception:      # noqa: BLE001 —— 见 docstring
+            pass
 
     def _draw_hover_preview(self, panel_x, panel_y):
         """悬停谜题条目时的预览面板。
@@ -3651,6 +3801,71 @@ class RendererMixin:
         self._settings_metrics_toggle_rect, ny = self._draw_switch_row(
             x, ny, "调试面板：", getattr(self, 'show_metrics_panel', False),
             "右下角的数据面板（聚拢度 / 剖面缺陷等），F2 亦可开关")
+
+        # 开机动画开关（启动时标题动画，可跳过）
+        self._settings_boot_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
+            "启动时播放标题动画，点击或按任意键可跳过")
+
+        # 无限打乱开关（开启后调用打乱=连续随机游走，再次调用打乱=停止）
+        self._settings_infinite_shuffle_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "无限打乱：", getattr(self, 'infinite_shuffle', False),
+            "开启后调用「打乱」会一直随机游走，再次调用「打乱」即停止")
+
+        # 防意外打乱开关（打乱会清空历史；历史非空时先弹确认，可先存档）
+        self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "防意外打乱：", getattr(self, 'confirm_before_shuffle', True),
+            "打乱会清空当前历史、无法再撤回；开启时历史非空先弹确认（可先存档），关闭则直接打乱")
+
+        # 绘制网格开关：控制四种原版谜题（矩形/数字/三角/米字）铺在背景、会横穿
+        # 空位与洞口的整片网格——三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘
+        # 的 grid_segments、方形/数字盘的整条灰色缝带。关掉后改为**只画相邻滑块
+        # 相接处**的缝线：线宽/颜色与原版完全相同（同一根线），只是不横穿空位/
+        # 洞口，空位恢复纯背景。选中缝高亮不受开关影响。
+        # ⚠️ 关闭态**不准**改成「未内缩形状铺 gap 色当底」（2026-10-25 明令移除）：
+        # 那会把没有滑块的地方整片染灰，缝一宽整盘发灰（2026-11-06 犯过一次）。
+        self._settings_grid_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
+            "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝线——线宽与原版相同，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
+
+        # ---- 音效（S5）：音效 / 背景音乐两个开关 + 两条音量滑条 ----
+        # 设计稿 S5-1 要求「音乐、音效两条音量滑条 + 总静音」。总静音（sound_muted）
+        # 目前只经 config / HTTP 暴露，这里给玩家最常用的两个开关和两条滑条。
+        self._settings_sfx_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "音效：", getattr(self, 'sfx_enabled', True),
+            "滑动摩擦声 / 复原音 / 滑动失败音。素材放 assets/audio/sound/，缺文件时静默不报错")
+
+        self._settings_music_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "背景音乐：", getattr(self, 'music_enabled', True),
+            "循环播放的背景乐。素材放 assets/audio/music/（目录里第一个音讯档即当作 bgm）")
+
+        # 音量滑条：与上面动画时长/缩放同一排版（左标签、右轨道 190px）
+        def _volume_row(ly, label, value, track_attr, knob_attr, dragging_attr):
+            self.screen.blit(self.dialog_font.render(label, True, self.colors['dialog_text']),
+                             (x + 15, ly + 6))
+            vtx = x + 220
+            vtw = 190
+            vs = self.input_font.render(f"{int(round(value))}%", True, self.colors['input_text'])
+            self.screen.blit(vs, (vtx + vtw - vs.get_width(), ly + 6))
+            vy = ly + 26
+            track = pygame.Rect(vtx, vy, vtw, 4)
+            setattr(self, track_attr, track)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], track)
+            vnorm = max(0.0, min(1.0, float(value) / 100.0))
+            knob_x = int(vtx + vnorm * vtw)
+            knob = pygame.Rect(knob_x - 8, vy - 6, 16, 16)
+            setattr(self, knob_attr, knob)
+            kcolor = (self.colors['button_hover']
+                      if getattr(self, dragging_attr, False) else self.colors['button_bg'])
+            pygame.draw.rect(self.screen, kcolor, knob, border_radius=8)
+            return ly + 72
+
+        ny = _volume_row(ny, "音效音量：", getattr(self, 'sfx_volume', 70),
+                         '_settings_sfx_vol_track_rect', '_settings_sfx_vol_knob_rect',
+                         '_settings_sfx_vol_dragging')
+        ny = _volume_row(ny, "音乐音量：", getattr(self, 'music_volume', 50),
+                         '_settings_music_vol_track_rect', '_settings_music_vol_knob_rect',
+                         '_settings_music_vol_dragging')
 
         # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
         # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
