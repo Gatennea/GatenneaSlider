@@ -51,18 +51,42 @@ class RendererMixin:
         return cell, gap, cell + gap
 
     def _slider_corner_radius(self):
-        """圓角半徑的**上限**（像素），方形直接用這個值。
+        """圓角半徑的**兜底上限**（像素），僅在板型沒定義圓角時使用。
 
         方形是 `pygame.draw.rect(border_radius=R)`，弧半徑就是 R，與塊的
-        60px 邊長之比約 8.3%。多邊形（三角/米字/碎三角）不用這個固定值，
-        而是走 `_corner_radius_for`：**按塊的最短邊給同一個比例**——它們的
-        塊小得多（碎三角最短邊只有 30px），照抄固定像素會被削掉三分之一。
+        60px 邊長之比約 8.3%。現在四款原版盤的圓角都從板型定義
+        ``BoardSpec.corner_radius`` 讀（見 `_board_corner_radius`），本函式
+        只作安全兜底，不再是四盤的取值來源。
 
         歷史上這裡統一的是「削進深度」（R·(√2−1) ≈ 2px），同樣 2px 削進下
         90° 角弧半徑 4.8px、45° 只有 1.2px、30° 只有 0.7px——角越尖越尖，
         這正是「方形跟三角/碎三角像兩種畫風」的根。改為統一弧半徑（2026-10-24）。
         """
         return max(1, int(round(5 * self.zoom)))
+
+    def _board_corner_radius(self):
+        """當前板型的圓角半徑（**螢幕像素**）——只做「設計像素 × zoom」。
+
+        圓角是**板型的幾何屬性**，寫在 ``engine/registry.py`` 的
+        ``BoardSpec.corner_radius`` 裡（原版四盤 5.0 / 4.4 / 3.0，模型盤
+        由各自 JSON 給），渲染器不該自己按塊最短邊重算比例
+        （2026-10-24 用戶定的原則；2026-11-06 撤掉渲染器硬寫的 8.3% 比例）。
+
+        兩個來源：
+          · 引擎/模型盤：`game.board.spec.corner_radius` 或 `game.spec`；
+          · 原版四盤（舊引擎 game 物件不帶 spec）：走 registry 的
+            `classic_corner_radius(game)` 按類型取同一張表，零構造開銷。
+        """
+        spec = getattr(getattr(self.game, 'board', None), 'spec', None)
+        if spec is None:
+            spec = getattr(self.game, 'spec', None)
+        cr = getattr(spec, 'corner_radius', None) if spec is not None else None
+        if cr is None:
+            from engine.registry import classic_corner_radius
+            cr = classic_corner_radius(self.game)
+        if cr is None:
+            return self._slider_corner_radius()
+        return max(1.5, float(cr) * self.zoom)
 
     def _rounded_polygon_points(self, pts, radius):
         """把凸多邊形每個頂點削成**固定弧半徑 radius** 的圓角（像素）。
@@ -180,14 +204,13 @@ class RendererMixin:
         return max(1, min(int(round(cap)), int(round(shortest * 0.033))))
 
     @staticmethod
-    def _corner_radius_for(pts, cap=None):
-        """按滑塊**最小邊長**給圓角半徑，比例與方形一致（5/60 ≈ 8.3%）。
+    def _corner_radius_for(pts, cap):
+        """通用多邊形通道（模型盤）用：按滑塊最短邊給圓角，不超過 cap。
 
-        純比例：圓角 = 最短邊 × 8.3%，四種形態的「圓鈍感」因此完全一致——
-        小塊（碎三角 30px）自然得 2.5px、大塊（三角盤 200px+）得 17px，
-        相對弧度都是 8.3%，不會因塊大小不同而顯得有的過圓、有的過尖。
-        cap 僅作安全上限（模型盤會傳入，並另受縫半寬鉗制）；一般三形態
-        不傳，走純比例。
+        只服務「鋪縫帶底」的通用通道——那裡圓角還要再受縫半寬鉗制，故
+        保留最短邊比例作安全下限（小塊不被削掉三分之一）。原版四盤走
+        手畫路徑，圓角一律由 `_board_corner_radius()` 從板型定義讀，
+        不經本函式（2026-11-06 撤銷渲染器硬寫的 8.3% 比例）。
         """
         n = len(pts)
         if n < 3:
@@ -195,10 +218,7 @@ class RendererMixin:
         shortest = min(math.hypot(pts[(k + 1) % n][0] - pts[k][0],
                                   pts[(k + 1) % n][1] - pts[k][1])
                        for k in range(n))
-        r = shortest * 0.083
-        if cap is not None:
-            r = min(r, float(cap))
-        return max(1.5, r)
+        return max(1.5, min(float(cap), shortest * 0.083))
 
     @staticmethod
     def _offset_polygon_px(pts, d):
@@ -480,7 +500,7 @@ class RendererMixin:
         self._draw_triangle_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
-        radius = None  # 純比例圓角（_corner_radius_for 不傳 cap = 最短邊×8.3%）
+        radius = self._board_corner_radius()  # 圓角由板型定義給，渲染器不重算
         # 拖拽跟隨：選中組沿鎖定方向平移 di/dj 格（斜座標，可為小數）
         follow_map = {}
         if self.drag_following:
@@ -560,8 +580,7 @@ class RendererMixin:
                         ring_color = self._group_color_for((i, j))
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
-                rpoly = self._rounded_polygon_points(
-                    poly, self._corner_radius_for(poly, radius))
+                rpoly = self._rounded_polygon_points(poly, radius)
                 if self._slider_aa_on(scaled_cell):
                     self._draw_aa_polygon(rpoly, fill, border_color, border_w)
                 else:
@@ -607,8 +626,7 @@ class RendererMixin:
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(i, j, up)]
                 self._draw_hint_overlay(
-                    self._rounded_polygon_points(
-                        poly, self._corner_radius_for(poly, radius)),
+                    self._rounded_polygon_points(poly, radius),
                                        (i, j, up) == hint_hover)
 
         # 调试面板打开时：先画目标框（并把同一结果存到 self._target_region），
@@ -710,7 +728,7 @@ class RendererMixin:
         self._draw_mi_selected_gap(view, hull)
 
         scaled_cell = self.cell_size * self.zoom
-        radius = None  # 純比例圓角（_corner_radius_for 不傳 cap = 最短邊×8.3%）
+        radius = self._board_corner_radius()  # 圓角由板型定義給，渲染器不重算
         selected = []
         normal = []
         for block in self.game.blocks:
@@ -755,8 +773,7 @@ class RendererMixin:
                     border_color, border_w = _play_head
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
-                rpoly = self._rounded_polygon_points(
-                    poly, self._corner_radius_for(poly, radius))
+                rpoly = self._rounded_polygon_points(poly, radius)
                 if self._slider_aa_on(scaled_cell):
                     self._draw_aa_polygon(rpoly, fill, border_color, border_w)
                 else:
@@ -790,8 +807,7 @@ class RendererMixin:
                 poly = [self.world_to_screen(*p)
                         for p in view.piece_polygon(r, c, q)]
                 self._draw_hint_overlay(
-                    self._rounded_polygon_points(
-                        poly, self._corner_radius_for(poly, radius)),
+                    self._rounded_polygon_points(poly, radius),
                                        (r, c, q) == hint_hover)
 
         # 调试面板打开时：先画目标框（同一结果存进 self._target_region），
@@ -1599,13 +1615,11 @@ class RendererMixin:
         _play_head = self._play_head_border()
         _play_keys = self._play_head_keys() if _play_head is not None else ()
 
-        # 圆角半徑與三角/米字/模型盤統一口徑：純比例「塊最短邊 × 8.3%」
-        # （_corner_radius_for 不傳 cap 即純比例）。舊寫法用固定 5px，在方塊
-        # 較小（60px）時佔 8.3%、在三角/米字大塊（120~200px）時只佔 2~4%，
-        # 故方形盤顯得比其它盤圓、視覺不一致。純比例後四種盤相對弧度一致。
+        # 圓角由板型定義 BoardSpec.corner_radius 給（設計像素 × zoom），
+        # 四款原版盤 + 模型盤統一同源；渲染器不按塊尺寸重算比例
+        # （2026-10-24 用戶定的原則，2026-11-06 撤銷硬寫的 8.3% 比例）。
         # 選中高亮框（下方）也用這個值，避免高亮框角與塊角錯位。
-        _block_corner = int(round(self._corner_radius_for(
-            [(0, 0), (scaled_cell, 0), (scaled_cell, scaled_cell), (0, scaled_cell)])))
+        _block_corner = int(round(self._board_corner_radius()))
 
         # 绘制所有滑块
         for block in self.game.blocks:
@@ -1882,7 +1896,7 @@ class RendererMixin:
             return (x, y, scaled_cell)
 
         from .group_render import draw_group_chunks
-        # 与普通块完全一致的边框：颜色 / 宽度 / 圆角（純比例，與單塊同口徑）
+        # 与普通块完全一致的边框：颜色 / 宽度 / 圆角（同源，與單塊同口徑）
         border_color = self.colors['border']
         border_w = max(1, int(2 * self.zoom))
 
@@ -1903,8 +1917,7 @@ class RendererMixin:
                 h = (r1 - r0 + 1) * step_px - scaled_gap
                 fill = self.colors['block_selected'] if selected else self.colors['block']
                 rect = pygame.Rect(x, y, w, h)
-                _grp_corner = int(round(self._corner_radius_for(
-                    [(0, 0), (w, 0), (w, h), (0, h)])))
+                _grp_corner = int(round(self._board_corner_radius()))
                 pygame.draw.rect(self.screen, fill, rect, border_radius=_grp_corner)
                 pygame.draw.rect(self.screen, border_color, rect, border_w,
                                  border_radius=_grp_corner)
@@ -2042,9 +2055,7 @@ class RendererMixin:
                 p = pf.get('block')
                 if p is not None:
                     _r = _bbox_rect(p)
-                    _corner = int(round(self._corner_radius_for(
-                        [( _r.x, _r.y), (_r.right, _r.y),
-                          (_r.right, _r.bottom), (_r.x, _r.bottom)])))
+                    _corner = int(round(self._board_corner_radius()))
                     pygame.draw.rect(self.screen, gold, _r,
                                      max(1, int(3 * self.zoom)),
                                      border_radius=_corner)
@@ -2071,9 +2082,7 @@ class RendererMixin:
             bx = board_x + p[1] * cell_step + cam_x
             by = board_y + p[0] * cell_step + cam_y
             hl_rect = pygame.Rect(bx - 3, by - 3, scaled_cell + 6, scaled_cell + 6)
-            _corner = int(round(self._corner_radius_for(
-                [(hl_rect.x, hl_rect.y), (hl_rect.right, hl_rect.y),
-                 (hl_rect.right, hl_rect.bottom), (hl_rect.x, hl_rect.bottom)])))
+            _corner = int(round(self._board_corner_radius()))
             pygame.draw.rect(self.screen, gold, hl_rect,
                              max(1, int(3 * self.zoom)),
                              border_radius=_corner)
