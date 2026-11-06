@@ -70,17 +70,40 @@ API_INDEX = [
     ('/command', 'POST', '通用命令通道（body: {"cmd": "<CLI 指令>"}）'),
 ]
 
+# 免令牌的只读 GET 白名单（2026-11-06 用户拍板：单机游戏，只读请求不必鉴权）。
+# ⚠️ 白名单制而非黑名单：新增 GET 端点默认仍需令牌，必须显式加进来才放行。
+# 排除项：
+#   /screenshot —— GET 也会把 PNG 写到 ?path= 指定的路径，不是只读；
+#   所有 POST    —— 一律仍需令牌（do_POST 不走豁免）。
+# 「允许外部控制」开关仍是总闸：关掉时这些端点一样 403。
+PUBLIC_GET_PATHS = frozenset({
+    '/help', '/version', '/status', '/map', '/mode', '/settings',
+    '/analysis/window', '/analysis/holes', '/analysis/actions',
+    '/solver/algorithms', '/solver/status', '/solver/params',
+    '/macro/list', '/macro/status',
+    '/timer/status', '/records',
+})
+PUBLIC_GET_PREFIXES = ('/help/',)   # /help/<端点>
+
+
+def is_public_readonly_get(path):
+    """该 GET 是否可免令牌（仍受「允许外部控制」总闸约束）。"""
+    return (path in PUBLIC_GET_PATHS
+            or any(path.startswith(p) for p in PUBLIC_GET_PREFIXES))
+
+
 # 复制给外部程序的连接话术模板（{token}/{port} 占位；GUI 设置-控制页「复制」用）
 # 措辞口径：请求方是「外部程序」（AI 助手只是其中一种），不把接口说成 AI 专属
 TOKEN_MESSAGE_TEMPLATE = (
     "令牌：{token}。把这段话发给可以在本机发送 http 请求的外部程序（AI 助手是"
     "其中一种），它就能学会控制本机的《貓九的滑塊遊戲》（Gatennea Slider）进程：\n"
-    "1. 所有请求的基址是 http://127.0.0.1:{port}，每个请求都要带请求头 "
-    "Authorization: Bearer {token}（或在 URL 末尾加 ?token={token}）。\n"
+    "1. 基址是 http://127.0.0.1:{port}。只读 GET（/help、/version、/status、/map 等）"
+    "不需要令牌；写操作与截图仍要带请求头 Authorization: Bearer {token}"
+    "（或在 URL 末尾加 ?token={token}）。\n"
     "2. 先 GET /help 拿到全部 API 索引，GET /help/<端点> 看单个端点的参数与示例，"
     "再 GET /status 查看当前局面，之后按索引自行调用。\n"
     "3. 它只能控制本机上的这个游戏进程；游戏重启后令牌失效，需要重新在游戏"
-    "「设置-控制」里复制新令牌。"
+    "「设置-控制」里复制新令牌；关闭「允许外部控制」后连只读 GET 也会被拒。"
 )
 
 # 单个端点详情（GET /help/<端点> 与游戏内「下载外部控制教程」同源生成）。
@@ -93,7 +116,8 @@ HELP_DETAILS = {
         'desc': '全部端点索引：路径、方法（GET/POST/BOTH）、一句话说明。'
                 '这是外部程序读到的第一份地图，先看它再决定调谁。',
         'params': [],
-        'returns': 'JSON：{ok, endpoints:[{path,method,summary}], auth, first_step, note}',
+        'returns': 'JSON：{ok, endpoints:[{path,method,summary}], auth, '
+                   'public_readonly:[<免令牌的只读 GET>], first_step, note}',
         'example': 'curl -H "Authorization: Bearer $TOKEN" $BASE/help',
     },
     '/help/<端点>': {
@@ -551,17 +575,21 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         self.end_headers()
 
-    def _check_auth(self):
+    def _check_auth(self, public=False):
         """外部控制鉴权（每个业务请求调用）。
 
-        语义：
-            开关关闭（enabled=False 或 token 空） → 403 一切拒绝；
-            令牌缺失 → 401；令牌不匹配 → 401。
+        语义（2026-11-06 更新）：
+            开关关闭（enabled=False 或 token 空） → 403 一切拒绝（总闸不变）；
+            public=True 且请求未带令牌 → 放行（只读 GET 白名单）；
+            带了令牌但不匹配 → 401（旧/错令牌不会被静默放行）；
+            其余请求缺令牌 → 401。
+        public 只由 do_GET 依 is_public_readonly_get(path) 传入；do_POST 恒为 False。
         令牌传递（两种都支持）：
             Authorization: Bearer <token> 请求头（推荐）；
             URL 查询参数 ?token=<token>（不方便加头的客户端）。
         注：stdin 命令通道不设防——能写 stdin 的只有启动它的父进程，天然可信。
         """
+        from urllib.parse import urlparse, parse_qs
         ext = getattr(self, 'ext_state', None) or {}
         if not ext.get('enabled') or not ext.get('token'):
             self._send_json(
@@ -574,8 +602,9 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         if auth.lower().startswith('bearer '):
             tok = auth[7:].strip()
         if not tok:
-            from urllib.parse import urlparse, parse_qs
             tok = (parse_qs(urlparse(self.path).query).get('token') or [''])[0].strip()
+        if public and not tok:
+            return True
         if not tok:
             self._send_json(
                 {"ok": False,
@@ -634,7 +663,7 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         from urllib.parse import urlparse
         path = urlparse(self.path).path.rstrip('/')
         try:
-            if not self._check_auth():
+            if not self._check_auth(public=is_public_readonly_get(path)):
                 return
             self._dispatch_get(path)
         except Exception:
@@ -680,8 +709,11 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "ok": True,
                 "message": "Gatennea Slider 外部控制 API 索引",
-                "auth": "所有请求带请求头 Authorization: Bearer <token>，"
-                        "或 URL 加 ?token=<token>",
+                "auth": "只读 GET（public_readonly 所列）免令牌；其余请求需带 "
+                        "Authorization: Bearer <token>，或 URL 加 ?token=<token>；"
+                        "关闭「允许外部控制」后一律 403",
+                "public_readonly": sorted(
+                    PUBLIC_GET_PATHS | frozenset({'/help/<端点>'})),
                 "first_step": "GET /status 查看当前局面，再按下方索引调用",
                 "detail": "GET /help/<端点> 查看单个端点的参数/返回/示例，"
                           "如 GET /help/move",

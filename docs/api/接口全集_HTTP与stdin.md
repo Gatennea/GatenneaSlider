@@ -30,7 +30,12 @@ curl -H "Authorization: Bearer <令牌>" http://127.0.0.1:5050/status
 curl "http://127.0.0.1:5050/status?token=<令牌>"
 ```
 
-**端點一覽**（舊端點全部保留，舊腳本無需修改；**全部端點都需要令牌**，含 `/help`）：
+**端點一覽**（舊端點全部保留，舊腳本無需修改）：
+
+2026-11-06 放寬鑑權：**只讀 GET 免令牌**（`/help` `/version` `/status` `/map` 等，
+以 `GET /help` 回傳的 `public_readonly` 清單為準）；寫操作與 `GET /screenshot`
+（會把 PNG 寫入 `?path=` 指定位置）仍需令牌。開關「允許外部控制」仍是總閘，
+關閉後一律 403。**帶了令牌的請求仍會校驗**，舊／錯令牌照樣回 401。
 
 | Method | Path | Body / 說明 |
 | --- | --- | --- |

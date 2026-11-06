@@ -55,6 +55,7 @@
 
 - **HTTP REST** `http://127.0.0.1:5050`（推荐）：`/status` `/move` `/select_gap` `/select_block` `/solve` `/analysis/*` 等，详见 `docs/agent/readme_to_agent.md` §6。
 - `GET /version` 回报当前进程的版本号、git 短提交、启动时刻、运行秒数与关键源码短哈希（`code_hashes`）；怀疑「界面跑的不是刚改的代码」时先查它，改完源码要重启才会变。
+- 只读 GET 免令牌（白名单见 `GET /help` 的 `public_readonly`）；写操作与 `GET /screenshot` 仍需令牌；「允许外部控制」关闭时一律 403，带了令牌的请求仍会校验。
 - **stdin CLI**：`status` `move` `select_gap` `solve` `solver_status` …（§7 全集），与 HTTP 1:1。
 - 一次完整移动 = `select_gap` → `select_block` → `move`（三角可省略 `select_gap`）。
 

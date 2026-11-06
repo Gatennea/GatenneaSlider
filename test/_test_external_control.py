@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """外部控制（HTTP 令牌鉴权 + help 索引 + 话术/教程）无头测试。
 
-对应设计决策（2026-10-13 用户拍板）：
-  一律 token（AI 经 stdout 自动交付，人类经设置页复制按钮）；
-  默认开：无 token 拒绝；关闭=403、错 token=401；
+对应设计决策：
+  2026-10-13 用户拍板：一律 token；关闭=403、错 token=401；
   /help 索引与游戏内下载教程同源；教程文件不含 token；
   stdin 通道不设防（父进程可信）。
+  2026-11-06 用户拍板放宽：只读 GET 免令牌（白名单制，/screenshot 与所有
+  POST 除外）；开关仍是总闸（关闭=403）；带了令牌仍校验（错/旧令牌=401）。
 """
 import os, sys, time, json, queue, threading, tempfile, urllib.request, urllib.error
 
@@ -77,8 +78,10 @@ AUTH = {'Authorization': 'Bearer TESTTOKEN123456'}
 
 # ---------------------------------------------------------------- AC-1~5 鉴权
 s, r = api('GET', '/status')
-check('AC-1 无令牌 → 401', s == 401, f'(got {s})')
-check('AC-1b 无令牌提示含获取途径', '设置-控制' in r.get('message', ''))
+check('AC-1 无令牌只读 GET → 200', s == 200 and 'step_count' in r, f'(got {s})')
+s2, r2 = api('GET', '/status', headers=AUTH)
+check('AC-1b 免令牌与带令牌返回同一局面',
+      r.get('step_count') == r2.get('step_count'))
 
 s, r = api('GET', '/status', headers={'Authorization': 'Bearer WRONG'})
 check('AC-2 错令牌 → 401', s == 401 and '无效' in r.get('message', ''))
@@ -113,7 +116,7 @@ AUTH = {'Authorization': 'Bearer TESTTOKEN123456'}
 
 # AC-7 /help 索引
 s, r = api('GET', '/help')
-check('AC-7a /help 无令牌 → 401', s == 401)
+check('AC-7a /help 无令牌 → 200', s == 200 and r.get('ok'), f'(got {s})')
 s, r = api('GET', '/help', headers=AUTH)
 ok = (s == 200 and r.get('ok') and isinstance(r.get('endpoints'), list)
       and len(r['endpoints']) > 20 and 'first_step' in r and 'auth' in r)
@@ -314,7 +317,8 @@ s, r = api('GET', '/help/nope', headers=AUTH)
 check('AC-20c 未知端点 → 404 且指回 /help',
       s == 404 and not r.get('ok') and '/help' in r.get('message', ''))
 s, r = api('GET', '/help/move')
-check('AC-20d 详情端点也要令牌 → 401', s == 401)
+check('AC-20d 详情端点无令牌 → 200',
+      s == 200 and r.get('path') == '/move', f'(got {s})')
 
 # AC-21 索引与详情一一对应（双向防腐烂：谁多谁少都失败）
 _index_paths = {p for p, _m, _s in API_INDEX}
@@ -365,6 +369,27 @@ check('AC-24c 代码指纹含渲染器/板型定义文件',
 s2, r2 = api('GET', '/version', headers=AUTH)
 check('AC-24d 两次请求启动时刻相同（进程单例）',
       s2 == 200 and r2.get('started_at_epoch') == r.get('started_at_epoch'))
+
+# AC-25 免令牌白名单边界（2026-11-06）：白名单制、写操作/截图仍要令牌、总闸仍生效
+import http_server as _hs
+
+_index_get = {p for p, m, _s in API_INDEX if m in ('GET', 'BOTH')}
+check('AC-25a 白名单条目都在 API_INDEX 内',
+      _hs.PUBLIC_GET_PATHS <= _index_get,
+      str(sorted(_hs.PUBLIC_GET_PATHS - _index_get)))
+check('AC-25b /screenshot 不在免令牌白名单（GET 会写文件）',
+      '/screenshot' not in _hs.PUBLIC_GET_PATHS)
+s3, _ = api('GET', '/screenshot')
+check('AC-25c 无令牌 GET /screenshot → 401', s3 == 401, f'(got {s3})')
+for p in ('/version', '/map', '/settings', '/solver/status'):
+    sp, _ = api('GET', p)
+    check(f'AC-25d 无令牌只读 {p} → 200', sp == 200, f'(got {sp})')
+s3, _ = api('POST', '/undo', body={})
+check('AC-25e 无令牌写操作 → 401', s3 == 401, f'(got {s3})')
+ext_state['enabled'] = False
+s3, _ = api('GET', '/version')
+check('AC-25f 开关关闭 → 免令牌端点也 403', s3 == 403, f'(got {s3})')
+ext_state['enabled'] = True
 
 print()
 if _failures:
