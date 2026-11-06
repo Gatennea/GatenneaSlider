@@ -496,7 +496,7 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
-        'show_boot_animation', 'infinite_shuffle', 'confirm_before_shuffle',
+        'show_boot_animation', 'infinite_shuffle', 'confirm_before_shuffle', 'draw_grid',
     )
     _SETTINGS_INT_RANGES = {'animation_duration_ms': (50, 1000)}
     # gather 参数白名单（须与 GUI.py gather_params 键一致）

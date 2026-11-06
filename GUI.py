@@ -548,6 +548,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.arrows_enabled = True
         # 开机动画开关（启动时标题动画，可点击/任意键跳过；缺省开）
         self.show_boot_animation = True
+        # 绘制网格开关（背景网格显示；缺省开；仅原版构型生效，几何模型不画网格）
+        self.draw_grid = True
         # 无限打乱开关（开启后调用打乱=连续随机游走，再次调用打乱=停止；缺省关）
         self.infinite_shuffle = False
         # 控制模式开关（独立布尔，非互斥；对应 web 版 touch-gesture.md 的三种模式）：

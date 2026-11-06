@@ -216,6 +216,7 @@ class FileOpsMixin:
             'boot_animation': getattr(self, 'show_boot_animation', True),
             'infinite_shuffle': getattr(self, 'infinite_shuffle', False),
             'confirm_before_shuffle': getattr(self, 'confirm_before_shuffle', True),
+            'draw_grid': getattr(self, 'draw_grid', True),
             'use_compressed_save': getattr(self, 'use_compressed_save', False),
             'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
@@ -468,6 +469,8 @@ class FileOpsMixin:
                     # 防意外打乱开关（缺省开）
                     if 'confirm_before_shuffle' in config:
                         self.confirm_before_shuffle = bool(config['confirm_before_shuffle'])
+                    if 'draw_grid' in config:
+                        self.draw_grid = bool(config['draw_grid'])
                     # 存档只读开关（保存时给存档打只读标记）
                     if 'save_readonly_flag' in config:
                         self.save_readonly_flag = bool(config['save_readonly_flag'])

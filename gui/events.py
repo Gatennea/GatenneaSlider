@@ -1645,7 +1645,7 @@ class EventsMixin:
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
         'op_log_enabled', 'show_boot_animation', 'infinite_shuffle',
-        'confirm_before_shuffle',
+        'confirm_before_shuffle', 'draw_grid',
     )
     _SETTINGS_INT_KEYS = ('animation_duration_ms',)
     _ANIM_DURATION_RANGE = (50, 1000)
@@ -3442,6 +3442,15 @@ class EventsMixin:
                     self.confirm_before_shuffle = not getattr(self, 'confirm_before_shuffle', True)
                     status = '开' if self.confirm_before_shuffle else '关'
                     self.macro_notify_msg = f"防意外打乱：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 绘制网格开关（仅原版构型生效；几何模型板型不画网格，不受影响）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_grid_toggle_rect'):
+                if self._settings_grid_toggle_rect.collidepoint(mx, my):
+                    self.draw_grid = not getattr(self, 'draw_grid', True)
+                    status = '开' if self.draw_grid else '关'
+                    self.macro_notify_msg = f"绘制网格：{status}"
                     self.macro_notify_timer = 90
                     return
 
