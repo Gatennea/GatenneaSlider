@@ -608,12 +608,11 @@ class RendererMixin:
         hull = view.board_hull(cells)
         # 背景層級由塊的邊導出（錯位態的橫豎格邊落在半整數層級上），
         # 只傳凸包的話畫出來的仍是對齊態的整數格，與塊對不齊
-        if getattr(self, 'draw_grid', True):
-            for p1, p2 in view.grid_segments(hull, cells):
-                pygame.draw.line(self.screen, self.colors['gap'],
-                                 self.world_to_screen(*p1),
-                                 self.world_to_screen(*p2),
-                                 max(1, int(self.gap_width * self.zoom * 0.35)))
+        for p1, p2 in view.grid_segments(hull, cells):
+            pygame.draw.line(self.screen, self.colors['gap'],
+                             self.world_to_screen(*p1),
+                             self.world_to_screen(*p2),
+                             max(1, int(self.gap_width * self.zoom * 0.35)))
 
         # **不鋪縫帶底**（2026-10-25 移除，勿再加回）——與三角同一處置：
         # 灰色只用來沿縫畫線，縫帶露出背景。移除前這裡是用未內縮的精確形狀
@@ -1445,24 +1444,23 @@ class RendererMixin:
                 pygame.draw.line(self.screen, self.colors['line'],
                                (line_x, 0), (line_x, self.screen_height), 3)
 
-        # 绘制未选中的横向缝隙（受「绘制网格」开关控制；选中的缝高亮恒显）
-        if getattr(self, 'draw_grid', True):
-            for i in range(min_row, max_row + 2):
-                band_y = board_y + i * step_px - scaled_gap + cam_y
+        # 绘制未选中的横向缝隙（滑块间的缝线，始终显示；选中缝高亮另画）
+        for i in range(min_row, max_row + 2):
+            band_y = board_y + i * step_px - scaled_gap + cam_y
 
-                if self.selected_gap != ('h', i - 1):
-                    pygame.draw.rect(self.screen, self.colors['gap'],
-                                     pygame.Rect(gap_left, band_y,
-                                                 gap_right - gap_left, scaled_gap))
+            if self.selected_gap != ('h', i - 1):
+                pygame.draw.rect(self.screen, self.colors['gap'],
+                                 pygame.Rect(gap_left, band_y,
+                                             gap_right - gap_left, scaled_gap))
 
-            # 绘制未选中的纵向缝隙
-            for j in range(min_col, max_col + 2):
-                band_x = board_x + j * step_px - scaled_gap + cam_x
+        # 绘制未选中的纵向缝隙
+        for j in range(min_col, max_col + 2):
+            band_x = board_x + j * step_px - scaled_gap + cam_x
 
-                if self.selected_gap != ('v', j - 1):
-                    pygame.draw.rect(self.screen, self.colors['gap'],
-                                     pygame.Rect(band_x, gap_top,
-                                                 scaled_gap, gap_bottom - gap_top))
+            if self.selected_gap != ('v', j - 1):
+                pygame.draw.rect(self.screen, self.colors['gap'],
+                                 pygame.Rect(band_x, gap_top,
+                                             scaled_gap, gap_bottom - gap_top))
 
         # 构建动画方块位置映射（使用统一偏移量，确保整组平移视觉一致）
         anim_map = {}
@@ -3686,11 +3684,13 @@ class RendererMixin:
             x, ny, "防意外打乱：", getattr(self, 'confirm_before_shuffle', True),
             "打乱会清空当前历史、无法再撤回；开启时历史非空先弹确认（可先存档），关闭则直接打乱")
 
-        # 绘制网格开关（仅原版构型生效：方形/三角/米字/数字；几何模型板型
-        # 本来就不画网格，不受此开关影响——见 draw_board 的板型调度）
+        # 绘制网格开关：只隐藏「棋盘外的背景网格」——即滑块范围之外的整片晶格
+        # （三角盘最明显，整张三角网铺满窗口空白区）；滑块之间的缝隙线始终显示，
+        # 方便选缝。方形/米字盘的网格与缝隙重合、都在滑块范围内，关掉后看不出变化。
+        # 几何模型板型本就不画网格，不受影响。
         self._settings_grid_toggle_rect, ny = self._draw_switch_row(
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
-            "显示背景网格（方形/三角/米字/数字）；几何模型板型本就不画网格，不受此开关影响")
+            "隐藏棋盘外多余的背景网格线（三角盘整片晶格最明显）；滑块之间的缝隙线始终保留，方便选缝。方形/米字盘的网格与缝隙重合，关掉后基本看不出变化；几何模型板型本就不画网格，不受影响")
 
         # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
         # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
