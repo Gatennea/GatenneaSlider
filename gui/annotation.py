@@ -37,6 +37,7 @@ import time
 import pygame
 
 from game import Block, commit_shuffle_step
+import anchor_shuffle  # noqa: E402
 from game_mi import blocks_from_cells as mi_blocks_from_cells  # noqa: E402
 from game_mi import any_overlap as mi_any_overlap  # noqa: E402
 from game_triangle import blocks_from_cells as tri_blocks_from_cells  # noqa: E402
@@ -2946,24 +2947,24 @@ class AnnotationMixin:
             return GAP_DIRECTIONS.get(gap_type, ())
         return {'h': ('a', 'd'), 'v': ('w', 's')}.get(gap_type, ())
 
-    def _ann_random_shuffle_move(self, step=None):
-        """从当前盘面随机取一步「合法且可逆」的打乱走法（无限打乱专用）。
+    def _ann_random_shuffle_move(self, step=None, planner=None):
+        """从当前盘面取一步「合法且可逆」的打乱走法（无限打乱专用）。
 
-        与 game.shuffle 的取步方式不同，这是**穷举式的随机扫描**：
-        随机打乱缝 / 方向 / 块（连通分量）的顺序，逐一真试，命中即停；
-        整盘扫完仍无走法才返回 None。
+        与 game.shuffle 不同，这是**穷举式的随机扫描**：随机打乱缝 / 方向 /
+        块（连通分量）的顺序，逐一真试，整盘扫完仍无走法才返回 None。
+        为什么不用 game.shuffle：它每步只随机抽一组候选，盘面散开、步长
+        大时命中率极低，抽样兜底会误判「无可移动缝」而停机（实测 6×6/step3
+        连走 300 步出现 4 次，当时还有 9+9 条有效缝、近 19 种合法走法）。
 
-        为什么必须这样（2026-11-06 修）：
-            game.shuffle 每步只随机抽「一条缝 + 一个方向 + 一个块」，抽到
-            不能动的组合就空转，靠调用方 40 次重试兜底。盘面散开、步长
-            变大时单次命中率会低到几个百分点，40 次全空 → 无限打乱误判
-            「无可移动缝」而停机——实测 6×6/step3 连走 300 步出现 4 次，
-            而当时盘面还有 9+9 条有效缝、近 19 种合法走法。改为穷举扫描
-            后，「有可逆走法」⇒ 必取到，语义上不再可能误停。
+        planner（AnchorPlanner，2026-11-06）：无限打乱也吃锚点规划，但**只
+        借选步能力**，不碰 game.shuffle 的「有限次数 / 进度条 / 结束切屏」。
+        取步仍是纯逻辑一步，动画照旧从 record 事后重放。做法是把只读候选
+        攒成一批，按 ``planner.rank()`` 的偏好排序后逐个试提交（可逆性只有
+        提交后才知道），命中第一条可逆步就返回并 ``planner.commit()``。
+        一批全不可逆就继续往下扫，所以「有可逆走法 ⇒ 必取到」不被破坏。
 
-        代价控制：只试到第一条可逆走法就返回（实测方/三角 0.5~1ms、米字
-        3~5ms，最坏一格约 20ms），不做全量枚举；返回的记录格式与
-        record_shuffle_move 一致，可直接喂动画重放。
+        planner=None（总开关关掉）时 batch=1、不排序，与旧版「命中即停」
+        完全等价，随机序列也不变。
 
         返回：dict 或 None（None = 当前盘面确实没有任何可逆走法）
         """
@@ -2983,7 +2984,9 @@ class AnnotationMixin:
             _clear_opt()
             return None
         random.shuffle(gaps)
-        try:
+
+        def _iter_candidates():
+            """只读试算：随机顺序扫遍每条缝两侧的每个连通分量 × 每个方向。"""
             for gt, line in gaps:
                 dirs = tuple(self._ann_dirs_for_gap(gt))
                 if not dirs:
@@ -2997,11 +3000,13 @@ class AnnotationMixin:
                     if id(blk) in visited:
                         continue
                     # opt 选中 blk 所在侧的整片连通分量；同片里的块不必再试
+                    _clear_opt()
                     game.opt(gt, line, blk)
-                    sel = [b for b in blocks if b.be_opted]
-                    for b in sel:
-                        visited.add(id(b))
-                    if not sel:
+                    moved = [tuple(b.location) for b in blocks if b.be_opted]
+                    for b in blocks:
+                        if b.be_opted:
+                            visited.add(id(b))
+                    if not moved:
                         continue
                     for d in tried_dirs:
                         try:
@@ -3010,19 +3015,50 @@ class AnnotationMixin:
                             fin = []
                         if not fin:
                             continue
-                        # commit_shuffle_step 以 be_opted 认「移动前那一组」，
-                        # 且会在提交后自己做可逆性校验——先恢复选中态再交它
-                        _clear_opt()
-                        game.opt(gt, line, blk)
-                        rec = []
-                        ok = commit_shuffle_step(
-                            game, gt, line, blk,
-                            d, step, dirs, [tuple(p) for p in fin], rec)
-                        _clear_opt()
-                        if ok and rec:
-                            return rec[0]
-                        # 不可逆（已回滚）：换下一个候选继续找
-                    _clear_opt()
+                        yield anchor_shuffle.StepCandidate(
+                            gt, line, d, blk, moved,
+                            [tuple(p) for p in fin], gt)
+                _clear_opt()
+
+        def _try_batch(batch):
+            """按锚点偏好逐个提交，返回第一条可逆步的 record。"""
+            cands = planner.rank(batch) if planner is not None else batch
+            for cand in cands:
+                # 提交前必须用中选步重新 opt + try_move，刷新 EngineGame 的
+                # _pending_board（否则 commit_move 拿到的是最后一次试算局面）
+                got = anchor_shuffle.reapply(
+                    game, cand, step, clear=_clear_opt, blocks=blocks)
+                if got is None:
+                    continue
+                final, fresh = got
+                rec = []
+                ok = commit_shuffle_step(
+                    game, fresh.gap_type, fresh.line, fresh.block,
+                    fresh.direction, step,
+                    tuple(self._ann_dirs_for_gap(fresh.gap_type)), final, rec)
+                _clear_opt()
+                if ok and rec:
+                    if planner is not None:
+                        planner.commit(fresh, blocks)
+                    return rec[0]
+            return None
+
+        batch_size = (1 if planner is None
+                      else anchor_shuffle.SOFT_DRAWS * 2)
+        batch = []
+        try:
+            for cand in _iter_candidates():
+                batch.append(cand)
+                if len(batch) < batch_size:
+                    continue
+                rec = _try_batch(batch)
+                if rec is not None:
+                    return rec
+                batch = []
+            if batch:
+                rec = _try_batch(batch)
+                if rec is not None:
+                    return rec
         finally:
             _clear_opt()
         return None

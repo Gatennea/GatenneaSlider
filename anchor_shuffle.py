@@ -16,6 +16,13 @@
   才收下离锚点最近的一步打破僵局，放完立刻恢复严格上限。
 * 全程只在「合法步里挑」，不改选中机制、不改玩家操作、不改安全打乱的
   「先提交 → 验可逆 → 不可逆回滚」链路。
+* **无限打乱也吃同一套规划**，但走 ``AnchorPlanner.rank()``：GUI 的
+  ``_ann_random_shuffle_move`` 把只读候选攒成一批，按锚点偏好排序后逐个
+  试提交（可逆性只有提交后才知道），命中第一条可逆步就返回并 commit。
+  只借「从合法步里挑哪一步」的能力，**不**引入 game.shuffle 的有限次数 /
+  进度条 / 结束切屏；planner 跨帧存活，停止时清掉。有限 shuffle 走
+  ``select()``，两者互不改动。无限打乱每帧都得走一步，所以全越界时
+  rank 不裁剪候选，只把「最小越界」排到最后兜底，下一步立刻往回收。
 
 ⚠️ 为什么做不到「正反向步数相等 ⇒ 重心精确为零」：一步的贡献是
 ``动块数 × step × 方向``，同一条缝两侧块数不同，a 与 a' 幅度不相等，
@@ -391,6 +398,42 @@ class AnchorPlanner:
             self.soft_hits += 1
             return self._weighted(pool, SOFT_ALPHA)
         return self.rng.choice(pool)
+
+    def rank(self, cands):
+        """按锚点偏好把候选**排好序返回**（不消耗选步状态、不提交）。
+
+        无限打乱专用：一步是否可逆只有提交后才知道，所以它得按偏好顺序
+        逐个试，拿到的是有序列表而不是单个中选步。有限 shuffle 的
+        ``select()`` 不走这里，行为完全不变。
+
+        分档（越靠前越优先），档内保持随机（先 shuffle 再稳定排序）：
+          ① 不是「正好撤销上一步」；② 不越过 cap()；③ 不与上一步平行；
+          ④ 越界档内按「离锚点最近」排，只做最小必要越界。
+
+        全越界时**不裁剪**候选：无限打乱每帧都得走一步，宁可最小越界也
+        不能因为上限停机；下一步的偏好会立刻把重心往回收。这是无限打乱
+        与有限 shuffle 唯一 intentionally 不同的地方（后者连续全拒 10 次
+        才放一步，因为它在重洗循环里空转得起）。
+        """
+        if not cands:
+            return []
+        self.observe_unit(cands)
+        pool = list(cands)
+        self.rng.shuffle(pool)
+        cap = self.cap()
+
+        def key(c):
+            drift = self._drift_after(c)
+            undo = (self.prev_moved is not None and
+                    c.moved_set == self.prev_final and
+                    c.final_set == self.prev_moved)
+            over = drift > cap
+            par = (self.prev_key is not None and
+                   is_parallel(c.parallel, self.prev_key))
+            return (1 if undo else 0, 1 if over else 0, 1 if par else 0,
+                    drift if over else 0.0)
+
+        return sorted(pool, key=key)
 
     # ---- 提交 / 收尾 ----------------------------------------------------
     def commit(self, cand, blocks, record_len=0):

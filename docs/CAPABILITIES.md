@@ -37,7 +37,7 @@
 | `game.py` | `SliderMatrix`、`is_solved`、`try_move_ex(direction, step) -> (positions, reason)` | 方形纯逻辑；`reason` 含 `no_selection/bad_direction/collision/disconnected` |
 | `game_triangle.py` | `TriangleSliderMatrix`、`DIRECTIONS`/`GAP_DIRECTIONS`/`DIRECTION_SCREEN` | 三角密铺纯逻辑（3 族缝、6 向） |
 | `game_mi.py` | `MiSliderMatrix`、`lattice_of(key)` | 米字格纯逻辑（4 族缝、8 向、两晶格 A/B） |
-| `anchor_shuffle.py` | `AnchorPlanner`、`draw_candidates`、`reapply`、`MAX_DRIFT` | 四套 `shuffle` 共用的打乱序列规划：锚点=初始重心，偏移=Σ(块坐标−锚点) 的向量和（化简为坐标和之差），`MAX_DRIFT` 是**硬上限**（格，默认 1.0，过紧时至少留 1.25 个最小合法步；只有连续多次「候选全越界」才放一步打破僵局，放完立刻恢复），连续两步尽量不选平行缝，末尾几步把重心收回锚点。`ENABLED=False` 可退回旧随机路径。回归见 `test/_test_anchor_shuffle.py` |
+| `anchor_shuffle.py` | `AnchorPlanner`、`draw_candidates`、`reapply`、`select`、`rank`、`MAX_DRIFT` | 打乱序列规划：锚点=初始重心，偏移=Σ(块坐标−锚点) 的向量和（化简为坐标和之差），`MAX_DRIFT` 是**硬上限**（格，默认 1.0，过紧时至少留 1.25 个最小合法步；只有连续多次「候选全越界」才放一步打破僵局，放完立刻恢复），连续两步尽量不选平行缝，末尾几步把重心收回锚点。四套 `shuffle` 走 `select()`；**无限打乱**走 `rank()` 拿有序候选、按偏好逐个试提交，只借选步能力，不带有限次数/进度条/结束切屏，planner 跨帧存活、停止时清掉。`ENABLED=False` 退回旧随机路径。回归见 `test/_test_anchor_shuffle.py`、`test/_test_infinite_anchor.py` |
 
 > ⚠️ `game*.py` **不得引入 pygame**；交互代码只 import 它们的方向表/函数。
 
