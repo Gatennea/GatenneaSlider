@@ -46,6 +46,18 @@ display 初始化之前创建，所以单元测试里无头就能跑。
 把「建 Surface + 画多边形」放进后台线程后，真实显示环境下与主线程的
 绘制/flip 撞车，悬停即崩。现在 `_build_pics` 纯 Python，Surface 由主线程
 的 `_surfaces` 建（一次 0.4ms，之后走缓存）。
+
+空闲预热才是「悬停不用等」的正解
+--------------------------------
+`pump()` 由主循环每帧调用：启动 1 秒后起一条常驻后台线程，把菜单里**所有
+预设**的两张缩图逐个算出、由主线程画 Surface 并存盘；之后每次启动悬停只
+读盘，连算都不算。2026-11-06 补：预热按机器压力走——游戏正忙（动画 /
+求解 / 无限打乱 / 编辑器）或系统 CPU 空闲率过低时先等，队列常驻，运行中
+新增档位 / 换主题自动补算。
+
+⚠️ 这条链路的开关在 `gui/renderer.py` 的 `_preview_pump()`：2026-11-01
+那次改动把方法体反缩进到类体，方法只剩 docstring，于是预热线程从不启动、
+缩图从不落盘、`set_config_dir` 也从不执行。改这里务必连回归 M 组一起看。
 """
 import hashlib
 import os
@@ -112,6 +124,9 @@ _inflight = set()
 # 缓存世代：clear_cache() 时 +1。后台线程算完发现世代变了就**不写回**——
 # 否则「编辑器存了新形状 → 清缓存 → 旧线程把旧图写回去」会留下旧预览。
 _gen = [0]
+# 已落盘（或本进程放弃落盘）的 key。pump 每帧扫 _pics 时用集合跳过，
+# 不必对同一张图反复 stat / 存盘；key 自带配色，换主题自然是新 key。
+_settled = set()
 
 # 自定义样式（捆绑谜题 / 自定义还原态）预览：样式数据落在 config/design_styles/，
 # 需要 config_dir 才能从名字取到几何。renderer 在每帧预热 / 悬停预览前把它设进来
@@ -132,16 +147,18 @@ def set_config_dir(config_dir):
 def clear_cache():
     """清空缓存（模型文件热更 / 换主题后调用）。
 
-    顺手把预热标记复位：下次 pump 会重扫一遍——改了形状的那个模型签名变了
-    会重算，没改的直接命中磁盘跳过，代价可忽略。
+    顺手把预热队列与「已排过」标记复位：下一帧 pump 会重扫一遍——改了
+    形状的那个模型签名变了会重算，没改的直接命中磁盘跳过，代价可忽略。
+    ⚠️ 不要复位 `_warm_started`：常驻预热线程只有一条，重扫靠队列，
+    再置 False 会重复起线程。
     """
     with _lock:
         _gen[0] += 1
         _pics.clear()
         _surfs.clear()
         _hash_cache.clear()
-        _warm_started[0] = False
-        _pump_t0[0] = 0.0      # 重新计时，还是等一秒再开始预热
+        _warm_queue.clear()
+        _warm_seen.clear()
 
 
 def forget_model(name):
@@ -767,6 +784,7 @@ def _load_disk(key):
         return None
     with _lock:
         _surfs[key] = (goal, scr)
+        _settled.add(key)       # 盘上已有，pump 不必再存一次
     return goal, scr
 
 
@@ -868,6 +886,13 @@ def request(model_name, size=THUMB_SIZE, colors=None):
 # 线程算几何 ③第二次启动连算都不算。
 # 预热对象由 GUI 传进来（renderer._preview_targets 扫自己菜单），这样
 # 「菜单里有哪些档位」只有一处真相；`warm_targets()` 只是无 GUI 时的兜底。
+#
+# 2026-11-06 补：预热按**机器当前压力**走，不是延迟一到就闷头算。
+#   · `_busy`：主循环每帧告诉「玩家正在动画 / 求解 / 无限打乱 / 编辑器」；
+#   · `system_idle_ratio()`：系统 CPU 空闲率，低于阈值先等、并拉长间隔；
+#   · 队列常驻：运行中新增的预设 / 换主题后的新配色会自动补算，不用重启。
+# 机器一直忙也不会把预热饿死：每个目标最多等 _MAX_IDLE_WAIT 秒就放行，
+# 只是把目标间隔拉到 _WARM_GAP_MAX，慢慢补。
 _warm_started = [False]
 # 预热起点：第一次 pump 的时刻。预热要错开开局那一下——后台跑打乱是纯 Python
 # 重活，会抢 GIL，实测单模型能把某一帧顶到 ~128ms（掉 7 帧）。等一秒再开始，
@@ -876,6 +901,90 @@ _pump_t0 = [0.0]
 _WARM_DELAY = 1.0
 # 目标之间让路：每个目标之间睡一下，把长卡顿摊成几次短卡顿
 _WARM_GAP = 0.12
+_WARM_GAP_MAX = 0.60
+_WARM_QUEUE_IDLE = 0.25      # 队列空时的轮询间隔（秒）
+
+# 硬件压力判据：CPU 空闲率低于 _MIN_CPU_IDLE 就先等；测不到（None）时
+# 退化为「只看游戏忙不忙」，不猜、不阻塞。
+_MIN_CPU_IDLE = 0.30
+_IDLE_POLL = 0.20
+_MAX_IDLE_WAIT = 2.0
+_busy = [False]
+_cpu_prev = [None]
+
+# 常驻预热队列：元素是 (target, pal)。pump 每帧按「目标 + 当前配色」
+# 增量入队，所以运行中新增档位 / 换主题都会自动补图；已排过的记在
+# _warm_seen 里，避免每帧重复入队。
+_warm_queue = []
+_warm_seen = set()
+
+
+def _cpu_times():
+    """取 (累计空闲, 累计总) CPU 时间；取不到返回 None。
+
+    纯标准库，不给打包加依赖。Windows 用 GetSystemTimes（kernel 已含
+    idle，多核是累加值），Linux 用 /proc/stat；其余平台返回 None。
+    """
+    if os.name == 'nt':
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _FT(ctypes.Structure):
+                _fields_ = [('low', wintypes.DWORD),
+                            ('high', wintypes.DWORD)]
+
+            def val(f):
+                return (f.high << 32) | f.low
+
+            get = ctypes.windll.kernel32.GetSystemTimes
+            get.argtypes = [ctypes.POINTER(_FT)] * 3
+            get.restype = wintypes.BOOL
+            idle, kern, user = _FT(), _FT(), _FT()
+            if not get(ctypes.byref(idle), ctypes.byref(kern),
+                       ctypes.byref(user)):
+                return None
+            return val(idle), val(kern) + val(user)
+        except Exception:      # noqa: BLE001 —— 取不到就退化为不按 CPU 调度
+            return None
+    try:
+        with open('/proc/stat', 'r', encoding='utf-8') as f:
+            vals = [int(x) for x in f.readline().split()[1:]]
+        idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+        return idle, sum(vals)
+    except Exception:      # noqa: BLE001
+        return None
+
+
+def system_idle_ratio():
+    """自上次调用以来的系统 CPU 空闲比例（0~1）；首次 / 测不到返回 None。
+
+    差分式：不额外阻塞一个采样窗口，预热循环本来就会在目标之间 sleep，
+    每次调用拿到的就是「上一段间隔」的真实空闲率。
+    """
+    cur = _cpu_times()
+    prev = _cpu_prev[0]
+    _cpu_prev[0] = cur
+    if cur is None or prev is None:
+        return None
+    di, dt = cur[0] - prev[0], cur[1] - prev[1]
+    if dt <= 0:
+        return None
+    return max(0.0, min(1.0, di / float(dt)))
+
+
+def _wait_until_idle():
+    """等「游戏不忙 + 机器有空」再算下一张，返回当次 CPU 空闲率。"""
+    waited = 0.0
+    while True:
+        idle = system_idle_ratio()      # 每轮都采样，维持差分窗口
+        cpu_busy = idle is not None and idle < _MIN_CPU_IDLE
+        if not _busy[0] and not cpu_busy:
+            return idle
+        if waited >= _MAX_IDLE_WAIT:
+            return idle
+        time.sleep(_IDLE_POLL)
+        waited += _IDLE_POLL
 
 
 def warm_targets():
@@ -892,24 +1001,45 @@ def warm_targets():
     return out
 
 
-def _warm_worker(targets, size, pal):
-    """后台：逐个算像素多边形（纯 Python）。已落盘且签名一致的直接跳过。"""
+def _warm_worker():
+    """常驻后台：从队列逐个算像素多边形（纯 Python），已落盘的跳过。
+
+    只算多边形；Surface 与 PNG 由主线程的 pump() 画 / 存（见模块头
+    「两级缓存」）。队列空就小睡轮询，运行中新增的预设也能被补上。
+    """
     try:
         _purge_stale()
     except Exception:      # noqa: BLE001 —— 清旧图失败不影响预热
         pass
-    for i, target in enumerate(targets):
-        # 每个目标用自己的缩图尺寸（数字谜题要大一号，见 thumb_size_for）：
-        # 预热若按 104 算，悬停要的却是 256 → 磁盘签名不命中、白算一遍。
+    system_idle_ratio()                 # 建立 CPU 差分基线
+    time.sleep(_WARM_GAP)               # 留一个采样窗口，首个目标也有真实空闲率
+    while True:
+        with _lock:
+            item = _warm_queue.pop(0) if _warm_queue else None
+        if item is None:
+            time.sleep(_WARM_QUEUE_IDLE)
+            continue
+        target, pal = item
+        # 每个目标用自己的缩图尺寸（见 thumb_size_for）：预热若按别的尺寸
+        # 算，悬停时签名对不上，等于白算。
         key = (target, thumb_size_for(target), pal)
         try:
             if _disk_ok(key):
                 continue
         except Exception:      # noqa: BLE001 —— 签名算不出来的目标直接跳过
             continue
-        if i:
-            time.sleep(_WARM_GAP)
+        idle = _wait_until_idle()
+        # 等的时候可能已被悬停 request() 顺手算好并存盘了
+        try:
+            if _disk_ok(key):
+                continue
+        except Exception:      # noqa: BLE001
+            continue
         _build_pics(key)
+        gap = _WARM_GAP
+        if idle is not None and idle < 0.5:
+            gap = min(_WARM_GAP_MAX, _WARM_GAP + (0.5 - idle) * 0.8)
+        time.sleep(gap)
 
 
 def _disk_ok(key):
@@ -917,36 +1047,52 @@ def _disk_ok(key):
     return gp is not None and os.path.exists(gp) and os.path.exists(sp)
 
 
-def pump(colors=None, size=THUMB_SIZE, budget=1, targets=None):
-    """**每帧调一次**：启动预热 + 把后台算好的图在主线程画出来并存盘。
+def pump(colors=None, size=THUMB_SIZE, budget=1, targets=None, busy=False):
+    """**每帧调一次**：空闲预热 + 把算好的图在主线程画出来并存盘。
 
     budget 限制单帧最多处理几个目标：画一张 0.4ms、存两张 PNG 约 2~5ms，
     一个目标 ~6ms 已够小；设上限是防止「第一次启动同时收到一批」把某一帧
     撑到 30ms 掉帧。返回本帧实际处理的数量（给测试用）。
 
-    尺寸按**目标各自**的来（`thumb_size_for`，数字谜题大一号），`size` 只是
-    兼容旧调用的缺省值：预热若按别的尺寸算，悬停时签名对不上，等于白算。
+    尺寸按**目标各自**的来（`thumb_size_for`）；`size` 只是保留旧调用签名，
+    预热若按别的尺寸算，悬停时签名对不上，等于白算。
+
+    `busy` 由主循环给「玩家正在动画 / 求解 / 无限打乱 / 编辑器」，交给
+    `_wait_until_idle` 和 CPU 空闲率一起决定何时开算。
 
     失败一律不抛：预热是纯锦上添花，绝不许影响主循环。
     """
     pal = _palette(colors)
+    _busy[0] = bool(busy)
     n = 0
     try:
         if not _pump_t0[0]:
             _pump_t0[0] = time.time()
         if not _warm_started[0] and time.time() - _pump_t0[0] >= _WARM_DELAY:
             _warm_started[0] = True
-            want = warm_targets() if targets is None else list(targets)
             threading.Thread(target=_warm_worker,
-                             args=(want, int(size), pal),
                              name='model-preview-warm', daemon=True).start()
+        # 菜单里所有预设按 (目标, 当前配色) 增量入队：新增档位 / 换主题
+        # 会在下一帧自动补上，不必等下次启动。
+        want = warm_targets() if targets is None else list(targets)
         with _lock:
+            for t in want:
+                token = (t, pal)
+                if token in _warm_seen:
+                    continue
+                _warm_seen.add(token)
+                _warm_queue.append(token)
+            # 已算好但还没落盘的都存：包括悬停 request() 先算的那批。
+            # 旧版只挑「还没建 Surface」的，而 request() 恰好先建 Surface，
+            # 于是那批图永远不落盘，下次启动还得重算一遍。
             pending = [(k, v) for k, v in _pics.items()
-                       if isinstance(v, tuple) and k not in _surfs]
-        for key, pics in pending[:budget]:
+                       if isinstance(v, tuple) and k not in _settled]
+        for key, pics in pending[:max(0, budget)]:
             val = _surfaces(key, pics)
             if isinstance(val, tuple):
                 _save_disk(key, val)
+            with _lock:
+                _settled.add(key)   # 存盘失败也别每帧重试，下次启动再试
             n += 1
     except Exception:      # noqa: BLE001 —— 见 docstring
         pass

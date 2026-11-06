@@ -2712,13 +2712,29 @@ class RendererMixin:
 
         放在主循环里而不是悬停时：悬停只剩「读图」这一步，零等待也零风险。
         本身不抛异常（失败只是没有预览），这里再兜一层是防 import 级别的意外。
+
+        ⚠️ 整段 try 必须缩进 8 格留在方法体里。2026-11-01 的 7f14dc2 把它
+        反缩进到类体，方法只剩 docstring —— 类定义时那次 try 因 `self`
+        未定义被 except 吞掉，于是每帧调这里其实什么都没做：预热线程从不
+        启动、缩图从不落盘、set_config_dir 也从不执行。防再犯的断言见
+        test/_test_model_preview.py 的 M 组。
         """
-    try:
-        from gui import model_preview
-        model_preview.set_config_dir(self.config_dir)
-        model_preview.pump(self.colors, targets=self._preview_targets())
-    except Exception:      # noqa: BLE001 —— 见 docstring
-        pass
+        try:
+            from gui import model_preview
+            model_preview.set_config_dir(self.config_dir)
+            # 玩家正在动/看动画/求解时算预热是纯 Python 重活，会抢 GIL。
+            # 把「游戏正忙」告诉规划器，由它在空闲时再继续（另看系统 CPU）。
+            busy = bool(
+                getattr(self, 'animating', False)
+                or getattr(self, '_shuffle_demo_active', False)
+                or getattr(self, '_infinite_shuffle_active', False)
+                or getattr(self, '_auto_solve_running', False)
+                or getattr(self, '_med_active', False)
+            )
+            model_preview.pump(self.colors, targets=self._preview_targets(),
+                               busy=busy)
+        except Exception:      # noqa: BLE001 —— 见 docstring
+            pass
 
     def _draw_hover_preview(self, panel_x, panel_y):
         """悬停谜题条目时的预览面板。

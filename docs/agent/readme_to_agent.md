@@ -146,7 +146,8 @@ gui/                   # 全是 Mixin，被 SliderGUI 繼承
   board_view.py        #   SquareBoardView      方形幾何（cell↔像素/命中/方向表/8 區表），事件與渲染委派
   triangle_view.py     #   TriangleBoardView    三角形幾何：(i,j,up)→像素、半平面命中、3 族縫命中、包圍盒
   mi_view.py           #   MiBoardView          米字格幾何：(r,c,q)→像素、內切圓縮放、4 族縫命中、半整數線號
-  renderer.py          #   RendererMixin        繪製棋盤（方形/三角形/米字格三套）/選單/面板/求解器選單/目標框與標記
+  renderer.py          #   RendererMixin        繪製棋盤（方形/三角形/米字格三套）/選單/面板/求解器選單/目標框與標記；_preview_pump 每幀驅動縮圖預熱
+  model_preview.py     #   模組函式            菜單懸停縮圖（復原態/打亂態）：磁碟快取跨啟動復用、空閒預熱（看 CPU 空閒率＋遊戲忙碌）、request 優先讀盤
   events.py            #   EventsMixin          滑鼠/鍵盤/快捷鍵/長按/面板互動/指令佇列處理
   animation.py         #   AnimationMixin       移動與 undo/redo 動畫、緩動
   dialogs.py           #   DialogsMixin         幫助/自訂謎題/PygameFileDialog/宏管理與命名框

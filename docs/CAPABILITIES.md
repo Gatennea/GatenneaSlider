@@ -46,6 +46,7 @@
 | 现成符号 | 用途 |
 |---|---|
 | `gui/renderer.py` 的 `draw_board` / `draw_triangle_board` / `draw_mi_board` + `_game_dir_tables` | 三形态绘制与方向表取用（按形态从模块取，勿 getattr 实例） |
+| `gui/model_preview.py` 的 `request()` / `thumbs()` / `pump()` / `system_idle_ratio()` | 菜单悬停预览（复原态＋打乱态两张缩图）。磁盘缓存签名含内容哈希＋算法版本＋尺寸＋配色，**跨启动复用**；空闲预热由主循环每帧调 `_preview_pump()` → `pump()`：启动 1 秒后起常驻后台线程，按「游戏忙不忙 ＋ 系统 CPU 空闲率」逐个补齐菜单里**所有预设**（内置／模型／自定义样式），运行中新增档位或换主题会自动补算；悬停 `request()` 优先读盘、零等待。⚠️ `_preview_pump` 的 try 段必须在方法体内（2026-11-01 反缩进事故：方法只剩 docstring，预热一次都没跑）；回归见 `test/_test_model_preview.py` M 组 |
 | `gui/metrics_panel.py` 的剖面缺陷行 | 调试面板三形态统一行（调用 `profile_defect`） |
 | `engine/cell_class.py` | mod 着色类 `cell_class` / `class_index`（step>1 才开，1 级退化见 `readme_to_agent.md` §2.1）。2026-10-30 从 `gui/` 下沉到 `engine/`（纯数学、零依赖，solver 也要用）；**`gui/cell_class.py` 只剩一行转发壳**，新代码一律指 engine |
 | `test/_check_gap_annot.py` | 三形态动效验收脚本 |
