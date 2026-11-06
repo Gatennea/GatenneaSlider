@@ -394,6 +394,7 @@ _ACTIONS = {
     'load': {'type': 'menu', 'name': '文件'},
     'save': {'type': 'menu', 'name': '文件'},
     'save_as': {'type': 'menu', 'name': '文件'},
+    'restart': {'type': 'menu', 'name': '文件'},
     # 编辑
     'undo': {'type': 'menu', 'name': '编辑'},
     'redo': {'type': 'menu', 'name': '编辑'},
