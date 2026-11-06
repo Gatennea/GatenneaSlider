@@ -33,6 +33,7 @@ CLI_COMMANDS = [
     ('shuffle / reset', '打乱 / 复原到初始态', ['shuffle', 'reset']),
     ('new <m> <n> <step> [tri/num/mi]', '新开谜题', ['new']),
     ('quit', '退出游戏', ['quit']),
+    ('restart', '重启游戏（进程退出后自动重开）', ['restart']),
     ('solve / solve_cancel / solve_status', '求解 / 取消 / 进度',
      ['solve', 'solve_cancel', 'solve_status']),
     ('solver_algorithms / solver_status / solver_params', '求解器信息与参数',
@@ -2549,6 +2550,14 @@ class EventsMixin:
                 elif action == 'quit':
                     self.running = False
                     self._cmd_reply(resp_q, True, "退出游戏")
+
+                elif action == 'restart':
+                    # 间接自举重启：先 spawn 看门进程（等本进程退出后重拉起），
+                    # 再正常退出。游戏自己不能重启自己，故走独立进程。
+                    from gui import restart as _restart_mod
+                    _restart_mod.request_restart()
+                    self.running = False
+                    self._cmd_reply(resp_q, True, "已安排重启，游戏退出后由看门进程自动重开")
 
                 # ========== 自动求解命令 ==========
                 elif action == 'solve':

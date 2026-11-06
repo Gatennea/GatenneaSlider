@@ -51,3 +51,5 @@
 版本號 ＝ **打包日期 `vYYYYMMDD`**（禁用 Git 提交數——會被 squash 壓小導致倒退回永不彈升級）；同日發兩版用 `--version vYYYYMMDDHHMM`；發版走 GitHub 網頁手動，zip 檔名固定。→ `docs/spec/打包与发版.md` §2
 ## 20. AI 自己能用的工具（先跑再改）
 視覺驗收走 **`GET /screenshot`**（開關類改動＝開 / 關兩張圖對比，別讀代碼猜）；多實例靠 `SO_REUSEADDR`（同端口能重複 bind → **驗新代碼別重啟用戶實例，換 `--http-port` 新開**）；測試直接 `python test\_test_xxx.py`（pytest 收集會漏）；交付時說清用哪條通道驗收，**不寫「無法驗證」**。→ `docs/api/AI使用API注意事项.md` §8
+## 21. 待辦歸檔紀律
+提及**新增待辦**必須寫入待辦文檔 `docs/agent/待办清单.md`，**不得只寫進軟體的記憶系統**（`.workbuddy/memory/` 的 MEMORY.md / 日誌，或個人記憶）。理由：記憶系統跨會話易丟、不便追蹤完成態；待辦清單才是唯一總賬（見工作記憶「待辦唯一總账」）。→ `docs/agent/待办清单.md`
