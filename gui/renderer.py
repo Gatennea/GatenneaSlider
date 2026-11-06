@@ -353,22 +353,68 @@ class RendererMixin:
         seg = view.gap_line_segment(gap_type, line, hull)
         self._draw_seam_through_screen(seg)
 
-    def _fill_block_backing(self, view, cells, color):
-        """復刻模型盤的「縫帶底」：每塊用**未內縮的精確形狀**鋪一層縫色。
+    def _shared_edge_of(self, poly_a, poly_b, tol=1e-6):
+        """兩塊未內縮多邊形的公共邊（兩個端點）；不共邊回 None。"""
+        pts = []
+        for p in poly_a:
+            for q in poly_b:
+                if abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol:
+                    pts.append(p)
+                    break
+        if len(pts) != 2:
+            return None
+        return (pts[0], pts[1])
 
-        模型盤（`_draw_polygon_board`）的縫就是這樣來的：底用精確形狀鋪
-        gap 色，塊本身內縮半個縫寬畫上去，露出來的那條才是縫。照抄到
-        原版三形態後——
-          * 相鄰塊的底連成一片 ⇒ 相接處有縫；
-          * 空位/洞口沒有任何塊 ⇒ 不鋪、一條線都沒有；
-          * 底的外沿就是塊的外沿 ⇒ 縫不會像拉通直線那樣戳出棋形之外。
-        這就是用戶 2026-11-06 要的「所有滑塊相接的地方都有線、不接的地方
-        都沒線」，也是他指定「直接復刻模型謎題的渲染方法」的字面做法。
+    def _contact_seam_segments(self, view, cells, neighbors):
+        """回傳 (內縫段, 外輪廓段)，世界座標——「繪製網格」關閉時的縫線來源。
+
+        **只按塊與塊相接給線**：相接處有線，空位/洞口沒線。這就是用戶
+        2026-11-06 要的「所有滑塊相接的地方都有線、不接的地方都沒線」，
+        同時保留原版畫風——因為畫的仍是細線（線寬由調用方傳），
+        而不是把縫整片染灰。
+
+        ⚠️ 2026-10-25 定調（見 draw_triangle_board / draw_mi_board 裡的
+        「不鋪縫帶底，勿再加回」）：**灰色只能沿縫畫線**。用「未內縮形狀
+        鋪 gap 色當底」會把沒有滑塊的地方整片染灰，縫一寬整盤就發灰——
+        2026-11-06 又犯過一次，用戶判「畫風變了、很彆扭」。
         """
-        for key in cells:
-            poly = [self.world_to_screen(*p)
-                    for p in view.piece_polygon(*key, inset=False)]
-            pygame.draw.polygon(self.screen, color, poly)
+        cset = cells if isinstance(cells, (set, frozenset)) else set(cells)
+        cache_key = (type(view).__name__, frozenset(cset),
+                     round(view.cell_size, 6), round(view.gap_width, 6))
+        cached = getattr(self, '_seam_seg_cache', None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+        inner, outer = [], []
+        seen = set()
+        for a in cset:
+            pa = view.piece_polygon(*a, inset=False)
+            for b in neighbors(a):
+                if b in cset:
+                    pair = (a, b) if a <= b else (b, a)
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                seg = self._shared_edge_of(pa,
+                                           view.piece_polygon(*b, inset=False))
+                if seg is None:
+                    continue
+                (inner if b in cset else outer).append(seg)
+        result = (inner, outer)
+        self._seam_seg_cache = (cache_key, result)
+        return result
+
+    def _draw_contact_seams(self, view, cells, neighbors, width):
+        """把相接處的縫線畫出來（內縫 + 外輪廓），線寬與開啟態一致。"""
+        inner, outer = self._contact_seam_segments(view, cells, neighbors)
+        color = self.colors['gap']
+        for p1, p2 in inner:
+            pygame.draw.line(self.screen, color,
+                             self.world_to_screen(*p1),
+                             self.world_to_screen(*p2), width)
+        for p1, p2 in outer:
+            pygame.draw.line(self.screen, color,
+                             self.world_to_screen(*p1),
+                             self.world_to_screen(*p2), width)
 
     def _draw_triangle_gaps(self, view: TriangleBoardView, cells, hull):
         """繪製未選中的縫隙（灰色），與方形版一致：選中那條改畫紅線。
@@ -379,13 +425,13 @@ class RendererMixin:
         矩形四邊在原版裡也畫灰線，故這裡補上外輪廓，棋盤才有完整邊界。
         """
         width = max(1, int(self.gap_width * self.zoom))
-        # 「繪製網格」開關（2026-11-06 用戶第四次校正後的口徑）：
+        # 「繪製網格」開關（2026-11-06 最終口徑）：
         #   開 = 縫線沿凸包拉通成整片晶格，**橫穿空位/洞口**（洞裡也留直線，
         #        見 gap_line_segment 註釋）——這就是用戶所說的「網格」。
-        #   關 = **復刻模型盤**：每塊用未內縮的精確形狀鋪一層縫色當底，塊本身
-        #        內縮半個縫寬畫上去，露出來的就是縫 ⇒ 相接處有線、空位/洞口
-        #        一律無線，且底的外沿就是棋形外沿（不會像拉通直線那樣戳出去）。
-        # 外輪廓 boundary_edges 只在「開」時另畫；「關」時由鋪底自動給出。
+        #   關 = **只畫塊與塊相接處的線**：相接處有線、空位/洞口沒線。
+        #        線寬/顏色與開啟態完全相同（同一根細線），所以畫風不變；
+        #        ⚠️ 不准改成「未內縮形狀鋪 gap 色」（2026-10-25 已明令移除：
+        #        那會把沒有滑塊的地方整片染灰，縫一寬整盤發灰，用戶判「彆扭」）。
         if getattr(self, 'draw_grid', True):
             for gap_type, line in self.game.all_gaps():
                 if self.selected_gap == (gap_type, line):
@@ -401,10 +447,7 @@ class RendererMixin:
                                  self.world_to_screen(*p1),
                                  self.world_to_screen(*p2), width)
         else:
-            # 關：復刻模型盤——每塊精確形狀鋪縫色當底，塊內縮後露出縫。
-            # 相接處有縫、空位/洞口無縫，底的外沿就是棋形外沿（外輪廓因此
-            # 由這層底自動給出，不必再畫 boundary_edges）。
-            self._fill_block_backing(view, cells, self.colors['gap'])
+            self._draw_contact_seams(view, cells, tri_neighbors, width)
 
     def draw_triangle_board(self):
         """繪製三角形密鋪棋盤（含 B2 的拖拽實時預覽）。"""
@@ -639,9 +682,10 @@ class RendererMixin:
         # 背景層級由塊的邊導出（錯位態的橫豎格邊落在半整數層級上），
         # 只傳凸包的話畫出來的仍是對齊態的整數格，與塊對不齊
         # 「繪製網格」開關：控制米字盤鋪在背景的整片晶格（grid_segments，
-        # 沿凸包裁切、洞裡也留線）。關掉後**復刻模型盤**：每塊未內縮的精確
-        # 形狀鋪縫色當底、塊內縮後露出縫 ⇒ 相接處有線、空位/洞口無線，與
-        # 三角/方形同一口徑。選中縫高亮由 _draw_mi_selected_gap 負責，不受影響。
+        # 沿凸包裁切、洞裡也留線）。關掉後**只畫塊與塊相接處的線**：相接處
+        # 有線、空位/洞口無線；線寬與開啟態同一根細線（gap*0.35），畫風不變。
+        # ⚠️ 不准改成「未內縮形狀鋪 gap 色」——2026-10-25 已明令移除（見下方
+        # 那段「不鋪縫帶底」註釋），2026-11-06 又犯過，用戶判「畫風變了、彆扭」。
         if getattr(self, 'draw_grid', True):
             for p1, p2 in view.grid_segments(hull, cells):
                 pygame.draw.line(self.screen, self.colors['gap'],
@@ -649,10 +693,9 @@ class RendererMixin:
                                  self.world_to_screen(*p2),
                                  max(1, int(self.gap_width * self.zoom * 0.35)))
         else:
-            # 關：復刻模型盤——每塊精確形狀鋪縫色當底，塊內縮後露出縫。
-            # 米字格頂點 8 塊交會、塊角縮得比縫還深，用「畫線」會在格角戳出
-            # 灰刺（實測），鋪底則天然只沿塊的外沿成縫、空位/洞口全無線。
-            self._fill_block_backing(view, cells, self.colors['gap'])
+            self._draw_contact_seams(
+                view, cells, mi_neighbors,
+                max(1, int(self.gap_width * self.zoom * 0.35)))
 
         # **不鋪縫帶底**（2026-10-25 移除，勿再加回）——與三角同一處置：
         # 灰色只用來沿縫畫線，縫帶露出背景。移除前這裡是用未內縮的精確形狀
@@ -3749,11 +3792,13 @@ class RendererMixin:
         # 绘制网格开关：控制四种原版谜题（矩形/数字/三角/米字）铺在背景、会横穿
         # 空位与洞口的整片网格——三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘
         # 的 grid_segments、方形/数字盘的整条灰色缝带。关掉后改为**只画相邻滑块
-        # 相接处**的缝（复刻几何模型盘：每块精确形状铺缝色当底、块内缩半缝宽），
-        # 空位/洞口一律无线。选中缝高亮不受开关影响。
+        # 相接处**的缝线：线宽/颜色与原版完全相同（同一根线），只是不横穿空位/
+        # 洞口，空位恢复纯背景。选中缝高亮不受开关影响。
+        # ⚠️ 关闭态**不准**改成「未内缩形状铺 gap 色当底」（2026-10-25 明令移除）：
+        # 那会把没有滑块的地方整片染灰，缝一宽整盘发灰（2026-11-06 犯过一次）。
         self._settings_grid_toggle_rect, ny = self._draw_switch_row(
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
-            "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝——复刻几何模型盘的画法，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
+            "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝线——线宽与原版相同，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
 
         # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
         # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
