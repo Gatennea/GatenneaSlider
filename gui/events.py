@@ -3801,6 +3801,12 @@ class EventsMixin:
             self.board_marks_enabled = self.show_metrics_panel
             status = '开' if self.show_metrics_panel else '关'
             self.macro_notify_msg = f"调试面板：{status}"
+        elif key == 'draw_grid':
+            # 与设置·视觉页那一行是同一个开关（feature_index 的 toggle 动作
+            # 走这里；此前没有分支会落到「未知开关：draw_grid」）
+            self.draw_grid = not getattr(self, 'draw_grid', True)
+            status = '开' if self.draw_grid else '关'
+            self.macro_notify_msg = f"绘制网格：{status}"
         else:
             # 未知开关：明确报出来，别静默吞掉（否则就是「点了没反应」）
             self.macro_notify_msg = f"未知开关：{key}"

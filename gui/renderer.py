@@ -353,6 +353,23 @@ class RendererMixin:
         seg = view.gap_line_segment(gap_type, line, hull)
         self._draw_seam_through_screen(seg)
 
+    def _fill_block_backing(self, view, cells, color):
+        """復刻模型盤的「縫帶底」：每塊用**未內縮的精確形狀**鋪一層縫色。
+
+        模型盤（`_draw_polygon_board`）的縫就是這樣來的：底用精確形狀鋪
+        gap 色，塊本身內縮半個縫寬畫上去，露出來的那條才是縫。照抄到
+        原版三形態後——
+          * 相鄰塊的底連成一片 ⇒ 相接處有縫；
+          * 空位/洞口沒有任何塊 ⇒ 不鋪、一條線都沒有；
+          * 底的外沿就是塊的外沿 ⇒ 縫不會像拉通直線那樣戳出棋形之外。
+        這就是用戶 2026-11-06 要的「所有滑塊相接的地方都有線、不接的地方
+        都沒線」，也是他指定「直接復刻模型謎題的渲染方法」的字面做法。
+        """
+        for key in cells:
+            poly = [self.world_to_screen(*p)
+                    for p in view.piece_polygon(*key, inset=False)]
+            pygame.draw.polygon(self.screen, color, poly)
+
     def _draw_triangle_gaps(self, view: TriangleBoardView, cells, hull):
         """繪製未選中的縫隙（灰色），與方形版一致：選中那條改畫紅線。
 
@@ -362,11 +379,13 @@ class RendererMixin:
         矩形四邊在原版裡也畫灰線，故這裡補上外輪廓，棋盤才有完整邊界。
         """
         width = max(1, int(self.gap_width * self.zoom))
-        # 「繪製網格」開關：這層縫線是沿凸包拉通的整條線、會橫穿空位（洞裡
-        # 也留直線，見 gap_line_segment 註釋），正是用戶所說的「網格」。
-        # 關掉後不再畫這些整條縫線，空位/洞口恢復乾淨背景；外輪廓仍畫（棋盤
-        # 要有完整邊界），塊與塊之間的縫由塊邊框 + 塊間距自然形成，與模型盤
-        # （只有塊 + 縫、無背景網格）一致。選中縫紅線另由 selected_gap 畫，不受影響。
+        # 「繪製網格」開關（2026-11-06 用戶第四次校正後的口徑）：
+        #   開 = 縫線沿凸包拉通成整片晶格，**橫穿空位/洞口**（洞裡也留直線，
+        #        見 gap_line_segment 註釋）——這就是用戶所說的「網格」。
+        #   關 = **復刻模型盤**：每塊用未內縮的精確形狀鋪一層縫色當底，塊本身
+        #        內縮半個縫寬畫上去，露出來的就是縫 ⇒ 相接處有線、空位/洞口
+        #        一律無線，且底的外沿就是棋形外沿（不會像拉通直線那樣戳出去）。
+        # 外輪廓 boundary_edges 只在「開」時另畫；「關」時由鋪底自動給出。
         if getattr(self, 'draw_grid', True):
             for gap_type, line in self.game.all_gaps():
                 if self.selected_gap == (gap_type, line):
@@ -377,10 +396,15 @@ class RendererMixin:
                 pygame.draw.line(self.screen, self.colors['gap'],
                                  self.world_to_screen(*seg[0]),
                                  self.world_to_screen(*seg[1]), width)
-        for p1, p2 in view.boundary_edges(cells):
-            pygame.draw.line(self.screen, self.colors['gap'],
-                             self.world_to_screen(*p1),
-                             self.world_to_screen(*p2), width)
+            for p1, p2 in view.boundary_edges(cells):
+                pygame.draw.line(self.screen, self.colors['gap'],
+                                 self.world_to_screen(*p1),
+                                 self.world_to_screen(*p2), width)
+        else:
+            # 關：復刻模型盤——每塊精確形狀鋪縫色當底，塊內縮後露出縫。
+            # 相接處有縫、空位/洞口無縫，底的外沿就是棋形外沿（外輪廓因此
+            # 由這層底自動給出，不必再畫 boundary_edges）。
+            self._fill_block_backing(view, cells, self.colors['gap'])
 
     def draw_triangle_board(self):
         """繪製三角形密鋪棋盤（含 B2 的拖拽實時預覽）。"""
@@ -614,15 +638,21 @@ class RendererMixin:
         hull = view.board_hull(cells)
         # 背景層級由塊的邊導出（錯位態的橫豎格邊落在半整數層級上），
         # 只傳凸包的話畫出來的仍是對齊態的整數格，與塊對不齊
-        # 「繪製網格」開關：控制米字盤鋪在背景的整片晶格（grid_segments）。
-        # 關掉後這層背景晶格消失，盤面只剩方塊與選中縫高亮，與模型盤統一；
-        # 選中縫高亮由 _draw_mi_selected_gap 負責，不在此處、不受開關影響。
+        # 「繪製網格」開關：控制米字盤鋪在背景的整片晶格（grid_segments，
+        # 沿凸包裁切、洞裡也留線）。關掉後**復刻模型盤**：每塊未內縮的精確
+        # 形狀鋪縫色當底、塊內縮後露出縫 ⇒ 相接處有線、空位/洞口無線，與
+        # 三角/方形同一口徑。選中縫高亮由 _draw_mi_selected_gap 負責，不受影響。
         if getattr(self, 'draw_grid', True):
             for p1, p2 in view.grid_segments(hull, cells):
                 pygame.draw.line(self.screen, self.colors['gap'],
                                  self.world_to_screen(*p1),
                                  self.world_to_screen(*p2),
                                  max(1, int(self.gap_width * self.zoom * 0.35)))
+        else:
+            # 關：復刻模型盤——每塊精確形狀鋪縫色當底，塊內縮後露出縫。
+            # 米字格頂點 8 塊交會、塊角縮得比縫還深，用「畫線」會在格角戳出
+            # 灰刺（實測），鋪底則天然只沿塊的外沿成縫、空位/洞口全無線。
+            self._fill_block_backing(view, cells, self.colors['gap'])
 
         # **不鋪縫帶底**（2026-10-25 移除，勿再加回）——與三角同一處置：
         # 灰色只用來沿縫畫線，縫帶露出背景。移除前這裡是用未內縮的精確形狀
@@ -1454,47 +1484,45 @@ class RendererMixin:
                 pygame.draw.line(self.screen, self.colors['line'],
                                (line_x, 0), (line_x, self.screen_height), 3)
 
-        # 「繪製網格」開關：控制方形/數字盤的灰色縫帶填充。關掉後不再鋪滿整條
-        # 灰帶，只沿縫中心畫一條細線（縫線仍保留，方便看縫與選縫），與模型盤
-        # 「方塊 + 細縫線、無背景網格」的外觀統一；選中縫紅線不受開關影響。
+        # 「繪製網格」開關（方形/數字盤）：開 = 縫帶鋪滿棋盤範圍的整條線；
+        # 關 = 只畫**相鄰滑塊之間**的縫段（相接處有線、空位/洞口無線），
+        # 與三角/米字同一口徑，也與模型盤外觀統一。選中縫紅線不受影響。
         _draw_grid = getattr(self, 'draw_grid', True)
-        _seam_lw = max(1, int(self.gap_width * self.zoom * 0.35))
-        # 關閉時細縫線裁到「盤面實際範圍」（不含縫帶原本的 ±20 留白），
-        # 否則細線兩端會多出一截小橫槓尾巴。
-        _bx0 = board_x + min_col * step_px + cam_x
-        _bx1 = board_x + (max_col + 1) * step_px + cam_x
-        _by0 = board_y + min_row * step_px + cam_y
-        _by1 = board_y + (max_row + 1) * step_px + cam_y
+        if _draw_grid:
+            # 绘制未选中的横向缝隙
+            for i in range(min_row, max_row + 2):
+                band_y = board_y + i * step_px - scaled_gap + cam_y
 
-        # 绘制未选中的横向缝隙
-        for i in range(min_row, max_row + 2):
-            band_y = board_y + i * step_px - scaled_gap + cam_y
-
-            if self.selected_gap != ('h', i - 1):
-                if _draw_grid:
+                if self.selected_gap != ('h', i - 1):
                     pygame.draw.rect(self.screen, self.colors['gap'],
                                      pygame.Rect(gap_left, band_y,
                                                  gap_right - gap_left, scaled_gap))
-                else:
-                    pygame.draw.line(self.screen, self.colors['gap'],
-                                     (_bx0, band_y + scaled_gap // 2),
-                                     (_bx1, band_y + scaled_gap // 2),
-                                     _seam_lw)
 
-        # 绘制未选中的纵向缝隙
-        for j in range(min_col, max_col + 2):
-            band_x = board_x + j * step_px - scaled_gap + cam_x
+            # 绘制未选中的纵向缝隙
+            for j in range(min_col, max_col + 2):
+                band_x = board_x + j * step_px - scaled_gap + cam_x
 
-            if self.selected_gap != ('v', j - 1):
-                if _draw_grid:
+                if self.selected_gap != ('v', j - 1):
                     pygame.draw.rect(self.screen, self.colors['gap'],
                                      pygame.Rect(band_x, gap_top,
                                                  scaled_gap, gap_bottom - gap_top))
-                else:
-                    pygame.draw.line(self.screen, self.colors['gap'],
-                                     (band_x + scaled_gap // 2, _by0),
-                                     (band_x + scaled_gap // 2, _by1),
-                                     _seam_lw)
+        else:
+            # 只按「兩個格子都有滑塊」畫那一段縫，長度恰為一格寬：
+            # 洞/空位兩側沒有塊，就不畫線（不再是橫貫整行整列的長線）。
+            occupied = {(b.location[0], b.location[1]) for b in self.game.blocks}
+            for (r, c) in occupied:
+                rx = int(round(board_x + c * step_px)) + cam_x
+                ry = int(round(board_y + r * step_px)) + cam_y
+                # 右鄰：豎縫段，只覆蓋這一行的高度
+                if (r, c + 1) in occupied and self.selected_gap != ('v', c):
+                    pygame.draw.rect(self.screen, self.colors['gap'],
+                                     pygame.Rect(rx + scaled_cell, ry,
+                                                 scaled_gap, scaled_cell))
+                # 下鄰：橫縫段，只覆蓋這一列的寬度
+                if (r + 1, c) in occupied and self.selected_gap != ('h', r):
+                    pygame.draw.rect(self.screen, self.colors['gap'],
+                                     pygame.Rect(rx, ry + scaled_cell,
+                                                 scaled_cell, scaled_gap))
 
         # 构建动画方块位置映射（使用统一偏移量，确保整组平移视觉一致）
         anim_map = {}
@@ -3719,13 +3747,13 @@ class RendererMixin:
             "打乱会清空当前历史、无法再撤回；开启时历史非空先弹确认（可先存档），关闭则直接打乱")
 
         # 绘制网格开关：控制四种原版谜题（矩形/数字/三角/米字）铺在背景、会横穿
-        # 空位/洞口的整片网格——三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘
-        # 的 grid_segments、方形/数字盘的灰色缝带填充。关掉后这层背景网格消失，
-        # 空位/洞口恢复纯背景，盘面只剩方块 + 块间细缝，与几何模型盘（只有块 + 缝、
-        # 无背景网格）视觉统一。选中缝高亮与块间细缝恒显。
+        # 空位与洞口的整片网格——三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘
+        # 的 grid_segments、方形/数字盘的整条灰色缝带。关掉后改为**只画相邻滑块
+        # 相接处**的缝（复刻几何模型盘：每块精确形状铺缝色当底、块内缩半缝宽），
+        # 空位/洞口一律无线。选中缝高亮不受开关影响。
         self._settings_grid_toggle_rect, ny = self._draw_switch_row(
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
-            "关闭后隐藏四种原版盘（矩形/数字/三角/米字）铺在背景、会横穿空位/洞口的整片网格：三角盘沿凸包拉通的整条缝线、米字盘 grid_segments、方形/数字盘灰色缝带均不再绘制，空位/洞口恢复纯背景，盘面只剩方块与块间细缝，与几何模型盘（无背景网格）统一；选中缝高亮与块间细缝始终保留")
+            "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝——复刻几何模型盘的画法，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
 
         # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
         # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」

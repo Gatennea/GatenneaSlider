@@ -303,10 +303,12 @@ check("GET /settings", code == 200 and r.get('ok')
       and 'animation_duration_ms' in r.get('settings', {}), str(r)[:80])
 s = r['settings']
 # 布尔键个数是「白名单有没有悄悄漂移」的守门数：新增一个开关就得改这里
-# （当前 16 个：新增 board_marks_enabled / arrows_enabled /
-#   show_virtual_keyboard / show_records_panel 四个开关）
-check("  含 16 个布尔键",
-      sum(1 for k, v in s.items() if isinstance(v, bool)) == 16,
+# （当前 20 个，取自 events._SETTINGS_BOOL_KEYS：16 个基础上新增
+#   show_boot_animation / infinite_shuffle / confirm_before_shuffle /
+#   draw_grid / op_log_enabled。注意 http_server 的 POST 白名单少一个
+#   op_log_enabled，是合并前就有的差异，不走这里。）
+check("  含 20 个布尔键",
+      sum(1 for k, v in s.items() if isinstance(v, bool)) == 20,
       str(sorted(s)))
 code, r = api('POST', '/settings', {'animation_duration_ms': 200})
 check("设置动画速度 ok", code == 200 and r.get('ok'), r.get('message', ''))
