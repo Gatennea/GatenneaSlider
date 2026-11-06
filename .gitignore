@@ -14,6 +14,12 @@ dist2/
 dist3/
 .pyinstaller_cache/
 
+# ===== 11-06 本机临时打包/归档目录（绕开批量删除保护，勿入库）=====
+build_new_1106/
+dist_new_1106/
+archives/build_old_20261102/
+archives/dist_old_20261102/
+
 # ===== 旧版本备份（已被 Git 取代）=====
 副本/
 
