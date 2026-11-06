@@ -362,15 +362,21 @@ class RendererMixin:
         矩形四邊在原版裡也畫灰線，故這裡補上外輪廓，棋盤才有完整邊界。
         """
         width = max(1, int(self.gap_width * self.zoom))
-        for gap_type, line in self.game.all_gaps():
-            if self.selected_gap == (gap_type, line):
-                continue
-            seg = view.gap_line_segment(gap_type, line, hull)
-            if seg is None:
-                continue
-            pygame.draw.line(self.screen, self.colors['gap'],
-                             self.world_to_screen(*seg[0]),
-                             self.world_to_screen(*seg[1]), width)
+        # 「繪製網格」開關：這層縫線是沿凸包拉通的整條線、會橫穿空位（洞裡
+        # 也留直線，見 gap_line_segment 註釋），正是用戶所說的「網格」。
+        # 關掉後不再畫這些整條縫線，空位/洞口恢復乾淨背景；外輪廓仍畫（棋盤
+        # 要有完整邊界），塊與塊之間的縫由塊邊框 + 塊間距自然形成，與模型盤
+        # （只有塊 + 縫、無背景網格）一致。選中縫紅線另由 selected_gap 畫，不受影響。
+        if getattr(self, 'draw_grid', True):
+            for gap_type, line in self.game.all_gaps():
+                if self.selected_gap == (gap_type, line):
+                    continue
+                seg = view.gap_line_segment(gap_type, line, hull)
+                if seg is None:
+                    continue
+                pygame.draw.line(self.screen, self.colors['gap'],
+                                 self.world_to_screen(*seg[0]),
+                                 self.world_to_screen(*seg[1]), width)
         for p1, p2 in view.boundary_edges(cells):
             pygame.draw.line(self.screen, self.colors['gap'],
                              self.world_to_screen(*p1),
@@ -1453,6 +1459,12 @@ class RendererMixin:
         # 「方塊 + 細縫線、無背景網格」的外觀統一；選中縫紅線不受開關影響。
         _draw_grid = getattr(self, 'draw_grid', True)
         _seam_lw = max(1, int(self.gap_width * self.zoom * 0.35))
+        # 關閉時細縫線裁到「盤面實際範圍」（不含縫帶原本的 ±20 留白），
+        # 否則細線兩端會多出一截小橫槓尾巴。
+        _bx0 = board_x + min_col * step_px + cam_x
+        _bx1 = board_x + (max_col + 1) * step_px + cam_x
+        _by0 = board_y + min_row * step_px + cam_y
+        _by1 = board_y + (max_row + 1) * step_px + cam_y
 
         # 绘制未选中的横向缝隙
         for i in range(min_row, max_row + 2):
@@ -1465,8 +1477,8 @@ class RendererMixin:
                                                  gap_right - gap_left, scaled_gap))
                 else:
                     pygame.draw.line(self.screen, self.colors['gap'],
-                                     (gap_left, band_y + scaled_gap // 2),
-                                     (gap_right, band_y + scaled_gap // 2),
+                                     (_bx0, band_y + scaled_gap // 2),
+                                     (_bx1, band_y + scaled_gap // 2),
                                      _seam_lw)
 
         # 绘制未选中的纵向缝隙
@@ -1480,8 +1492,8 @@ class RendererMixin:
                                                  scaled_gap, gap_bottom - gap_top))
                 else:
                     pygame.draw.line(self.screen, self.colors['gap'],
-                                     (band_x + scaled_gap // 2, gap_top),
-                                     (band_x + scaled_gap // 2, gap_bottom),
+                                     (band_x + scaled_gap // 2, _by0),
+                                     (band_x + scaled_gap // 2, _by1),
                                      _seam_lw)
 
         # 构建动画方块位置映射（使用统一偏移量，确保整组平移视觉一致）
@@ -3706,13 +3718,14 @@ class RendererMixin:
             x, ny, "防意外打乱：", getattr(self, 'confirm_before_shuffle', True),
             "打乱会清空当前历史、无法再撤回；开启时历史非空先弹确认（可先存档），关闭则直接打乱")
 
-        # 绘制网格开关：控制四种原版谜题（矩形/数字/三角/米字）铺在背景的整片
-        # 晶格——三角盘的背景三角晶格、米字盘的 grid_segments、方形/数字盘的灰色
-        # 缝带填充。关掉后这层背景网格消失，四种盘都只剩方块 + 细缝线，与几何模型
-        # 盘（本就只有方块 + 细缝线、无背景网格）视觉统一。选中缝高亮恒显。
+        # 绘制网格开关：控制四种原版谜题（矩形/数字/三角/米字）铺在背景、会横穿
+        # 空位/洞口的整片网格——三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘
+        # 的 grid_segments、方形/数字盘的灰色缝带填充。关掉后这层背景网格消失，
+        # 空位/洞口恢复纯背景，盘面只剩方块 + 块间细缝，与几何模型盘（只有块 + 缝、
+        # 无背景网格）视觉统一。选中缝高亮与块间细缝恒显。
         self._settings_grid_toggle_rect, ny = self._draw_switch_row(
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
-            "关闭后隐藏四种原版盘（矩形/数字/三角/米字）的背景网格：三角盘背景晶格、米字盘 grid_segments、方形/数字盘灰色缝带均不再铺满，盘面上只剩方块与细缝线，与几何模型盘（无背景网格）统一；选中缝高亮与细缝线始终保留")
+            "关闭后隐藏四种原版盘（矩形/数字/三角/米字）铺在背景、会横穿空位/洞口的整片网格：三角盘沿凸包拉通的整条缝线、米字盘 grid_segments、方形/数字盘灰色缝带均不再绘制，空位/洞口恢复纯背景，盘面只剩方块与块间细缝，与几何模型盘（无背景网格）统一；选中缝高亮与块间细缝始终保留")
 
         # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
         # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
