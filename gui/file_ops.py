@@ -314,7 +314,10 @@ class FileOpsMixin:
             f"打开 {self._format_menu_shortcut('load')}",
             f"保存 {self._format_menu_shortcut('save')}",
             '另存为...',
-            '存档转换...'
+            '存档转换...',
+            # 间接自举重启：点下去会 spawn 看门进程等本进程退出后自动重拉起，
+            # 见 gui/restart.py。游戏自己不能重启自己，故走独立进程。
+            '重启（自动重开）'
         ]
         self.edit_menu_items = [
             f"撤销 {self._format_menu_shortcut('undo')}",
