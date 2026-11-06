@@ -193,8 +193,9 @@ for g in sorted(locked):
     snap = set(gui.game.positions())
     click(sx, sy)
     m = gui.macro_notify_msg or ''
-    want = ('这条缝选不动（错位态切在块里）：'
-            + gui._mi_hv_left(g[0]))
+    # 文案指向常量而非抄字符串：2026-11-02 用户定调「一切选不动的提示原因一律写
+    # 缝没有贯穿滑块组」，原来按横向/主斜/副斜分三条专属文案的做法已废。
+    want = gui.GAP_UNSELECTABLE_MSG
     if m != want:
         bad_msg.append((g, m))
     if set(gui.game.positions()) != snap:

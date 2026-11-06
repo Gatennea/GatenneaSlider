@@ -21,9 +21,35 @@ from contextlib import contextmanager
 class AnimationMixin:
     """动画相关方法 Mixin"""
 
+    # 动画关闭（瞬时提交）时的摩擦声长度：短促，别拖到下一手
+    SLIDE_INSTANT_MS = 120
+
     def ease_out(self, t: float) -> float:
         """缓出插值函数"""
         return 1.0 - (1.0 - t) ** 2
+
+    def _play_slide_sound(self, steps=1, duration_ms=None):
+        """滑動摩擦聲：必須在 start_animation() **之後**呼叫。
+
+        兩個理由：
+        1. 拖拽接續（_apply_drag_origin）會把 animation_duration 按剩餘比例
+           縮短，先播就會比畫面長一大截——時長要取定稿後的值；
+        2. 無動畫路徑（瞬時提交）本身不會叫到這裡，呼叫方直接傳
+           SLIDE_INSTANT_MS 即可，兩條路都保證「一滑就有聲」。
+
+        打亂演示 / 無限打亂是連續視覺特效（每 60~200ms 一格、可持續幾十步），
+        照樣出聲會變成蜂鳴，這兩路一律靜音。
+        """
+        audio = getattr(self, 'audio', None)
+        if audio is None:
+            return
+        if getattr(self, '_shuffle_demo_playing', False):
+            return
+        if getattr(self, '_infinite_shuffle_step_playing', False):
+            return
+        if duration_ms is None:
+            duration_ms = getattr(self, 'animation_duration', 0) or self.SLIDE_INSTANT_MS
+        audio.play_slide(steps, duration_ms=duration_ms)
 
     def start_animation(self, selected, target_positions):
         """启动滑块移动动画"""
@@ -384,6 +410,8 @@ class AnimationMixin:
         self._anim_dr = self.anim_end_pos[0][0] - self.anim_start_pos[0][0]
         self._anim_dc = self.anim_end_pos[0][1] - self.anim_start_pos[0][1]
         self.animating = True
+        # 撤销/重做也是整组沿缝滑回去：一样有滑动动画就得有滑动声
+        self._play_slide_sound(move_info.get('step', 1))
         return True
 
     def _process_next_in_queue(self):

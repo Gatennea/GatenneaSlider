@@ -182,6 +182,46 @@ class EventsMixin:
             TextInput._text_input_mode = False
             self._ime_text_input_on = False
 
+    # ---- 输入事件音（click / keyboard 槽位，见 gui/audio.py）----
+    def _play_click_sound(self):
+        """鼠标点击声：与涟漪反馈同源，全 GUI 一次性挂接。
+
+        这不是「按钮音」而是「鼠标点击事件音」——棋盘、菜单、面板、对话框、
+        开关任意位置按下左键都响（用户 2026-11-07 明确 click 即此语义）。
+        """
+        audio = getattr(self, 'audio', None)
+        if audio is None:
+            return
+        audio.play_click()
+
+    def _is_move_key(self, key):
+        """该键当前是否绑定「移动滑块」——这类键只出滑动摩擦声，不叠按键声。"""
+        if key is None:
+            return False
+        if (getattr(self, 'control_mouse_kb', True)
+                and key in (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT)):
+            return True
+        kb = getattr(self, 'keybindings', None) or {}
+        for action in ('move_up', 'move_down', 'move_left', 'move_right'):
+            name = (kb.get(action) or {}).get('key', '')
+            if not name:
+                continue
+            try:
+                if pygame.key.name(key).lower() == str(name).lower():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _play_keyboard_sound(self, key):
+        """键盘按键声：打字、快捷键、Esc 都算；移动键交给滑动摩擦声。"""
+        audio = getattr(self, 'audio', None)
+        if audio is None or key is None:
+            return
+        if self._is_move_key(key):
+            return
+        audio.play_keyboard()
+
     def handle_events(self):
         """处理用户输入事件"""
         # 每帧同步 IME / SDL 文本输入模式（任一文本输入上下文激活时开启）
@@ -193,6 +233,12 @@ class EventsMixin:
                 if (event.type == pygame.MOUSEBUTTONDOWN
                         and getattr(event, 'button', None) == 1):
                     self.spawn_click_feedback(getattr(event, 'pos', None))
+                    self._play_click_sound()
+
+                # 键盘按键声：同样与命中的控件无关（打字、快捷键、Esc 都算）。
+                # 移动键交给滑动摩擦声，别叠成两下。
+                if event.type == pygame.KEYDOWN:
+                    self._play_keyboard_sound(getattr(event, 'key', None))
 
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -1655,6 +1701,9 @@ class EventsMixin:
         'confirm_before_shuffle', 'draw_grid',
         # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
         'sfx_enabled', 'music_enabled', 'sound_muted',
+        # 逐项音效开关（设置页「音效一览」：滑动 / 失败 / 复原 / 点击 / 键盘）
+        'sfx_slide_enabled', 'sfx_fail_enabled', 'sfx_solved_enabled',
+        'sfx_click_enabled', 'sfx_keyboard_enabled',
     )
     # 数值键：键 -> 合法范围；键 -> 对应 self 属性（与 http_server._SETTINGS_INT_RANGES 同口径）
     _SETTINGS_INT_RANGES = {
@@ -3326,6 +3375,12 @@ class EventsMixin:
                 self.settings_editing_value = None
                 self.settings_scrollbar.set_scroll(0)
                 return
+            if hasattr(self, '_settings_tab_audio_rect') and self._settings_tab_audio_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'audio'
+                self.settings_editing_action = None
+                self.settings_editing_value = None
+                self.settings_scrollbar.set_scroll(0)
+                return
             if hasattr(self, '_settings_tab_solver_rect') and self._settings_tab_solver_rect.collidepoint(mx, my):
                 self.settings_active_tab = 'solver'
                 self.settings_editing_action = None
@@ -3501,8 +3556,8 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
-            # 视觉 Tab：音效开关（S5；无素材时开了也没声，属正常）
-            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_sfx_toggle_rect'):
+            # 音频 Tab：音效总开关（S5；无素材时开了也没声，属正常）
+            if self.settings_active_tab == 'audio' and hasattr(self, '_settings_sfx_toggle_rect'):
                 if self._settings_sfx_toggle_rect.collidepoint(mx, my):
                     self.sfx_enabled = not getattr(self, 'sfx_enabled', True)
                     self._sync_audio_settings()
@@ -3511,8 +3566,8 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
-            # 视觉 Tab：背景音乐开关
-            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_music_toggle_rect'):
+            # 音频 Tab：背景音乐开关
+            if self.settings_active_tab == 'audio' and hasattr(self, '_settings_music_toggle_rect'):
                 if self._settings_music_toggle_rect.collidepoint(mx, my):
                     self.music_enabled = not getattr(self, 'music_enabled', True)
                     self._sync_audio_settings()
@@ -3521,7 +3576,35 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
-            # 视觉 Tab：音效 / 音乐音量滑条（与动画时长滑条同一套拖拽逻辑）
+            # 音频 Tab：音效一览的逐项开关（滑动 / 失败 / 复原 / 点击 / 键盘）
+            if self.settings_active_tab == 'audio':
+                for _slot, _rect in (getattr(self, '_settings_slot_toggle_rects', {}) or {}).items():
+                    if not _rect.collidepoint(mx, my):
+                        continue
+                    from gui.audio import SLOT_LABELS, SLOT_SETTING_KEYS
+                    _attr = SLOT_SETTING_KEYS[_slot]
+                    setattr(self, _attr, not getattr(self, _attr, True))
+                    self._sync_audio_settings()
+                    _st = '开' if getattr(self, _attr, True) else '关'
+                    self.macro_notify_msg = f"{SLOT_LABELS[_slot]}音效：{_st}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 音频 Tab：试听（无视开关与总静音，缺素材时提示）
+            if self.settings_active_tab == 'audio':
+                for _slot, _rect in (getattr(self, '_settings_slot_preview_rects', {}) or {}).items():
+                    if not _rect.collidepoint(mx, my):
+                        continue
+                    from gui.audio import SLOT_LABELS
+                    _audio = getattr(self, 'audio', None)
+                    _ok = bool(_audio is not None and _audio.preview(_slot))
+                    self.macro_notify_msg = (
+                        f"试听：{SLOT_LABELS[_slot]}" if _ok
+                        else f"{SLOT_LABELS[_slot]}：缺素材或音频设备不可用")
+                    self.macro_notify_timer = 90
+                    return
+
+            # 音频 Tab：音效 / 音乐音量滑条（与动画时长滑条同一套拖拽逻辑）
             for _key in ('sfx', 'music'):
                 _knob = getattr(self, f'_settings_{_key}_vol_knob_rect', None)
                 _track = getattr(self, f'_settings_{_key}_vol_track_rect', None)
@@ -4337,9 +4420,12 @@ class EventsMixin:
             # 播放动画或直接提交（无动画时循环执行后续步骤）
             if self.animation_enabled and self.animation_duration > 0:
                 self.start_animation(selected, final_positions)
+                # 宏播放的每一步也是滑动动画 → 同样出声（时长为定稿后的动画时长）
+                self._play_slide_sound(step)
                 return  # 动画结束由 commit_animation 中宏路径继续
 
             self.game.commit_move(final_positions)
+            self._play_slide_sound(step, duration_ms=self.SLIDE_INSTANT_MS)
             self.step_count += 1
             # 宏播放逐步留档（macro_executing=True → 不合并，保持每步可撤销）
             self.game_history.save_snapshot(self.game, move_info,

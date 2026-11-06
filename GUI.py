@@ -551,12 +551,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 绘制网格开关（背景网格显示；缺省开；仅原版构型生效，几何模型不画网格）
         self.draw_grid = True
         # 音效开关（素材统一放 assets/audio/，见 gui/audio.py / docs S5）
-        # 三处布尔 + 两处音量（0..100）须与 gui/events.py / http_server.py 白名单同步
+        # 三处布尔 + 两处音量（0..100）须与 gui/events.py / http_server.py 白名单同步；
+        # 下面 5 个是设置页「音效一览」的逐项开关（滑动 / 失败 / 复原 / 点击 / 键盘）
         self.sfx_enabled = True
         self.music_enabled = True
         self.sound_muted = False
         self.sfx_volume = 70
         self.music_volume = 50
+        self.sfx_slide_enabled = True
+        self.sfx_fail_enabled = True
+        self.sfx_solved_enabled = True
+        self.sfx_click_enabled = True
+        self.sfx_keyboard_enabled = True
         try:
             from gui.audio import AudioManager
             self.audio = AudioManager()
@@ -1974,16 +1980,20 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.macro_notify_timer = 90
 
     def _sync_audio_settings(self):
-        """把当前音效开关/音量推送给 audio 管理器。"""
+        """把当前音效开关/音量/逐项槽位开关推送给 audio 管理器。"""
         a = getattr(self, 'audio', None)
         if a is None:
             return
+        from gui.audio import SLOT_KEYS, SLOT_SETTING_KEYS
+        slot_flags = {k: bool(getattr(self, SLOT_SETTING_KEYS[k], True))
+                      for k in SLOT_KEYS}
         a.sync_settings(
             sfx_enabled=getattr(self, 'sfx_enabled', True),
             music_enabled=getattr(self, 'music_enabled', True),
             muted=getattr(self, 'sound_muted', False),
             sfx_volume=getattr(self, 'sfx_volume', 70),
             music_volume=getattr(self, 'music_volume', 50),
+            slot_flags=slot_flags,
         )
         # 背景音乐随开关起停：开就循环播（已在播则不重头），关/静音就停
         if a.music_enabled and not a.muted:

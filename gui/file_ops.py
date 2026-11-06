@@ -224,6 +224,12 @@ class FileOpsMixin:
             'sound_muted': getattr(self, 'sound_muted', False),
             'sfx_volume': int(getattr(self, 'sfx_volume', 70)),
             'music_volume': int(getattr(self, 'music_volume', 50)),
+            # 逐项音效开关（设置页「音效一览」）
+            'sfx_slide_enabled': getattr(self, 'sfx_slide_enabled', True),
+            'sfx_fail_enabled': getattr(self, 'sfx_fail_enabled', True),
+            'sfx_solved_enabled': getattr(self, 'sfx_solved_enabled', True),
+            'sfx_click_enabled': getattr(self, 'sfx_click_enabled', True),
+            'sfx_keyboard_enabled': getattr(self, 'sfx_keyboard_enabled', True),
             'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
@@ -491,6 +497,11 @@ class FileOpsMixin:
                         self.sfx_volume = int(config['sfx_volume'])
                     if 'music_volume' in config:
                         self.music_volume = int(config['music_volume'])
+                    # 逐项音效开关（旧档没有这些键就保持默认开）
+                    for _slot_key in ('slide', 'fail', 'solved', 'click', 'keyboard'):
+                        _cfg_key = f'sfx_{_slot_key}_enabled'
+                        if _cfg_key in config:
+                            setattr(self, _cfg_key, bool(config[_cfg_key]))
                     # 把读到的音效设置推送给音频管理器
                     sync = getattr(self, '_sync_audio_settings', None)
                     if callable(sync):

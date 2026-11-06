@@ -61,6 +61,7 @@ def place_text(place):
         _TAB = {
             'keybindings': '快捷键',
             'animation': '视觉',
+            'audio': '音频',
             'solver': '求解器',
             'gather': '聚拢参数',
             'file': '文件',
@@ -245,6 +246,27 @@ FEATURES = (
          howto='设置 → 视觉页拖「缩放」滑条（10%~400%）；右下角缩放滑条、Ctrl+滚轮同样可调，三者实时联动。',
          confusion='缩放只改视图、不动棋盘；换异形谜题时会按棋盘大小自动适配一次。'),
 
+    # ---------------- 音频（2026-11-07 单独成页） ----------------
+    dict(id='sfx_enabled', name='音效（总开关）',
+         aliases=('音效', '声音', '音效开关', '静音', 'sfx', '声音开关'),
+         kind='setting', place=('settings', 'audio'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 音频页「音效总开关」；关掉后下面每一项都不出声（背景音乐不受影响）。',
+         confusion='这是上级闸门：逐项开关开着、总开关关着，一样没声。素材在 assets/audio/sound/，缺文件不报错、只是那项不响。'),
+    dict(id='sfx_slots', name='音效一览（逐项开关 / 试听）',
+         aliases=('音效一览', '音效列表', '逐项音效', '滑动音效', '点击音效',
+                  '键盘音效', '失败音效', '复原音效', '试听'),
+         kind='setting', place=('settings', 'audio'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 音频页「音效一览」：滑动摩擦 / 滑动失败 / 复原 / 鼠标点击 / 键盘按键 各一行，独立开关，右侧「试听」可直接听。',
+         confusion='「试听」无视开关与总静音（就是要让你听完再决定开不开）。滑动摩擦声的音量跟着滑动的速度走——动画时越长（滑得越慢）声音越轻，就像真的转动魔方。'),
+    dict(id='music_enabled', name='背景音乐',
+         aliases=('背景音乐', 'bgm', '音乐', '背景乐', '循环音乐'),
+         kind='setting', place=('settings', 'audio'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 音频页「背景音乐」开关，音量用下面的「音乐音量」滑条。素材放 assets/audio/music/（目录里第一个音讯档即当作 bgm）。',
+         confusion='与音效共用同一个开关区但互不影响：关音效不会停背景音乐，反之亦然。'),
+
     # ---------------- 控制方式 ----------------
     dict(id='control_single_touch', name='单次触控',
          aliases=('单次触控', '单击拖动', '一次触控', '拖动跟随'),
@@ -421,6 +443,10 @@ _ACTIONS = {
     'ui_mode': {'type': 'settings', 'tab': 'animation'},
     'animation_duration': {'type': 'settings', 'tab': 'animation'},
     'zoom': {'type': 'settings', 'tab': 'animation'},
+    # 音频（设置页单独一页，见 gui/audio.py）
+    'sfx_enabled': {'type': 'settings', 'tab': 'audio'},
+    'sfx_slots': {'type': 'settings', 'tab': 'audio'},
+    'music_enabled': {'type': 'settings', 'tab': 'audio'},
     'control_single_touch': {'type': 'settings', 'tab': 'control'},
     'control_two_touch': {'type': 'settings', 'tab': 'control'},
     'control_mouse_kb': {'type': 'settings', 'tab': 'control'},

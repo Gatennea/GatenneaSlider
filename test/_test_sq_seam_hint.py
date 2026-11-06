@@ -4,8 +4,8 @@
 对标米字格的 _mi_click_query（错位态锁死缝 → 「这条缝选不动（…）：…」）：
 方形最外沿那圈缝只有一侧有滑块，点了既选不中也不该一声不响。
 本文件守四件事：
-  1. 点外沿缝 → 给「这条缝选不动（棋盘外沿，外侧没有滑块）」提示，
-     且不改变选中态（selected_gap 仍为空、不误当第二下触控）；
+  1. 点外沿缝 → 给「选不动」提示（文案取自 gui.GAP_UNSELECTABLE_MSG，
+     不锁具体措辞），且不改变选中态（selected_gap 仍为空、不误当第二下触控）；
   2. 点里面正常的缝 → 照旧选中，且不弹「选不动」；
   3. 点滑块 → 照旧选中滑块，不弹「选不动」；
   4. 缺块/异形外沿同样给提示（外沿判定走引擎 is_valid_*，不是写死矩形）。
@@ -24,7 +24,10 @@ import pygame  # noqa: E402
 
 from GUI import SliderGUI  # noqa: E402
 
-HINT = '这条缝选不动（棋盘外沿，外侧没有滑块）：请选里面的缝'
+# 文案指向常量而非抄字符串：2026-11-02 用户定调「一切选不动的提示原因一律写
+# 缝没有贯穿滑块组」，外沿缝也走这一句（原「棋盘外沿，外侧没有滑块」已废）。
+# 本文件只守「点了要给出提示、且不改变选中态」，不锁具体措辞。
+HINT = SliderGUI.GAP_UNSELECTABLE_MSG
 
 _failures = []
 
@@ -85,6 +88,7 @@ def on_rim(p):
 
 rim_pt = scan(gui, on_rim)
 check('1a 能扫到外沿缝的屏幕点', rim_pt is not None, f'{rim_pt}')
+check('1a2 选不动文案常量非空（防空断言）', bool(HINT), repr(HINT))
 gui.selected_gap = None
 gui.selected_block = None
 msg = click(gui, *rim_pt)

@@ -76,8 +76,8 @@ def scroll_to_bottom():
 # ================================================================ 视觉页
 print("\n--- 视觉页：tab 改名与控件齐全 ---")
 _rnd = open(os.path.join('gui', 'renderer.py'), encoding='utf-8').read()
-check('V0a 第三个 tab 标签为「视觉」',
-      'tab_anim_text = self.status_font.render("视觉"' in _rnd)
+check('V0a 页签里有「视觉」',
+      "('animation', '视觉', '_settings_tab_anim_rect')" in _rnd)
 # 「视觉」入口 = 顶栏「设置」→ 对话框 → 视觉 Tab（历史上的「设置」下拉菜单
 # 是死机制，已删；这里锁现行路径：点「设置」直接开对话框，不开下拉）。
 check('V0b 顶栏「设置」点击直达设置对话框', '设置' in gui.menu_items,
@@ -94,10 +94,6 @@ _tab_row_attrs = {
     '悬停连锁提示': '_settings_chain_toggle_rect',
     '复原提示标记': '_settings_marks_toggle_rect',
     '调试面板': '_settings_metrics_toggle_rect',
-    '音效': '_settings_sfx_toggle_rect',
-    '背景音乐': '_settings_music_toggle_rect',
-    '音效音量': '_settings_sfx_vol_track_rect',
-    '音乐音量': '_settings_music_vol_track_rect',
 }
 check('V1a 缩放滑条 rect 已绘制',
       hasattr(gui, '_settings_zoom_track_rect')
@@ -106,13 +102,17 @@ check('V1b 缩放滑条与动画时长滑条同栏对齐（x 相同）',
       gui._settings_zoom_track_rect.x == gui._settings_slider_track_rect.x,
       f"{gui._settings_zoom_track_rect.x} vs {gui._settings_slider_track_rect.x}")
 
-# tab 顺序：快捷键 < 控制 < 视觉 < 求解器 < 聚拢参数 < 文件
+# tab 顺序：快捷键 < 控制 < 视觉 < 音频 < 求解器 < 聚拢参数 < 文件
 _tabs = [gui._settings_tab_kb_rect, gui._settings_tab_control_rect,
-         gui._settings_tab_anim_rect, gui._settings_tab_solver_rect,
-         gui._settings_tab_gather_rect, gui._settings_tab_file_rect]
-check('V0c 视觉页排在第三个 tab',
-      _tabs[0].x < _tabs[1].x < _tabs[2].x < _tabs[3].x < _tabs[4].x < _tabs[5].x,
+         gui._settings_tab_anim_rect, gui._settings_tab_audio_rect,
+         gui._settings_tab_solver_rect, gui._settings_tab_gather_rect,
+         gui._settings_tab_file_rect]
+check('V0c 视觉页排在第三个 tab、音频页紧随其后',
+      all(a.x < b.x for a, b in zip(_tabs, _tabs[1:])),
       str([r.x for r in _tabs]))
+check('V0d 全部页签都在对话框内（不溢出右边界）',
+      _tabs[-1].right <= (gui.screen_width - 660) // 2 + 660 - 15,
+      f"last_right={_tabs[-1].right} limit={(gui.screen_width - 660) // 2 + 645}")
 
 # 「标记」已更名并入本页（用户：标记也应该加入这里，名为复原提示标记）
 check('V1c 标记行更名「复原提示标记」', '复原提示标记：' in _rnd
@@ -229,14 +229,18 @@ gui.zoom = 1.0
 
 print("\n--- 视觉页：复原提示标记开关点击 ---")
 open_settings('animation')
-scroll_to_bottom()
+# 音效四行搬去音频页后本页变短：复原提示标记在 scroll=0 时就落在可见区内，
+# 别再滚到底（滚到底反而把它顶出裁剪区，点到的是别的行）。
+gui.settings_scrollbar.set_scroll(0)
+gui.draw_settings_dialog()
 click_at(gui._settings_marks_toggle_rect.center)
 check('V5a 点标记行 → 通知用新名字',
       '复原提示标记' in (gui.macro_notify_msg or ''),
       repr(gui.macro_notify_msg))
 
-# ================================================================ 音效（S5）
-print("\n--- 视觉页：音效 / 背景音乐开关与音量滑条 ---")
+# ================================================================ 音频页（S5）
+print("\n--- 音频页：总开关 + 音效一览 + 音量滑条 ---")
+open_settings('audio')
 check('V6a 音效与背景音乐开关已绘制',
       hasattr(gui, '_settings_sfx_toggle_rect')
       and hasattr(gui, '_settings_music_toggle_rect'))
@@ -253,7 +257,10 @@ check('V6c 点「音效」→ 开关翻转且已推送到 AudioManager',
       and getattr(gui.audio, 'sfx_enabled', None) == gui.sfx_enabled,
       f"gui={gui.sfx_enabled} audio={getattr(gui.audio, 'sfx_enabled', None)}")
 click_at(gui._settings_sfx_toggle_rect.center)   # 还原
-# 点音量滑条最右端 → 100（右端像素属开区间，允许 99）
+# 音量滑条在本页下方，先滚到底再点（内容真实高度要画两帧才灌进滚动条上限）
+gui.draw_settings_dialog()
+gui.settings_scrollbar.set_scroll(10 ** 6)
+gui.draw_settings_dialog()
 _vtr = gui._settings_sfx_vol_track_rect
 click_at((_vtr.right - 1, _vtr.centery))
 check('V6d 拖音效音量到最右 → 接近满值且同步到管理器',
@@ -262,7 +269,61 @@ check('V6d 拖音效音量到最右 → 接近满值且同步到管理器',
       f"gui={gui.sfx_volume} audio={gui.audio.sfx_volume}")
 gui.sfx_volume = 70
 gui._sync_audio_settings()
+# 回到页首再验「音效一览」（那几行在上半页）
+gui.settings_scrollbar.set_scroll(0)
 gui.draw_settings_dialog()
+
+# ---- V7：音效一览（逐项开关 + 试听）----
+print("\n--- 音频页：音效一览（五类逐项开关）---")
+from gui.audio import SLOT_KEYS, SLOT_SETTING_KEYS  # noqa: E402
+_toggle_rects = getattr(gui, '_settings_slot_toggle_rects', {}) or {}
+_prev_rects = getattr(gui, '_settings_slot_preview_rects', {}) or {}
+check('V7a 五类音效各一行开关（滑动/失败/复原/点击/键盘）',
+      list(_toggle_rects) == list(SLOT_KEYS),
+      f'{list(_toggle_rects)} vs {list(SLOT_KEYS)}')
+check('V7b 每行都有「试听」按钮',
+      list(_prev_rects) == list(SLOT_KEYS) and all(
+          r.width > 0 for r in _prev_rects.values()))
+# 逐项开关：点「滑动摩擦」→ 只翻它自己，总开关和其它项不动
+_slide_before = gui.sfx_slide_enabled
+_other_before = gui.sfx_solved_enabled
+click_at(_toggle_rects['slide'].center)
+check('V7c 点「滑动摩擦」→ 只翻该项、已推送到 AudioManager',
+      gui.sfx_slide_enabled != _slide_before
+      and gui.sfx_solved_enabled == _other_before
+      and gui.sfx_enabled is True
+      and gui.audio.slot_enabled.get('slide') == gui.sfx_slide_enabled,
+      f"slide={gui.sfx_slide_enabled} audio={gui.audio.slot_enabled.get('slide')}")
+click_at(_toggle_rects['slide'].center)          # 还原
+# 试听：无素材的槽位要给出提示而不是崩
+_preview_calls = []
+_orig_preview = gui.audio.preview
+gui.audio.preview = lambda slot: _preview_calls.append(slot) or False
+try:
+    click_at(_prev_rects['fail'].center)
+finally:
+    gui.audio.preview = _orig_preview
+check('V7d 「试听」按钮真的调到 AudioManager.preview（无素材时给提示不崩）',
+      _preview_calls == ['fail'] and '缺素材' in (gui.macro_notify_msg or ''),
+      f"calls={_preview_calls} msg={gui.macro_notify_msg!r}")
+# 高度：一览 + 音量全画进去了，不能有内容落在裁剪区外
+draww = getattr(gui, '_settings_audio_height', 0)
+calcw = gui._calc_settings_content_height(CONTENT_H)
+check('V7e 音频页高度计算 ≥ 实际绘制高度', calcw >= draww - 1,
+      f"calc={calcw} drawn={draww}")
+
+# ---- V8：逐项开关的三处同步（config 存读 / 设置白名单 / HTTP 白名单）----
+from gui.audio import SLOT_SETTING_KEYS  # noqa: E402
+_keys = sorted(SLOT_SETTING_KEYS.values())
+check('V8a 五个逐项开关都进了设置白名单（GUI）',
+      set(_keys) <= set(SliderGUI._SETTINGS_BOOL_KEYS), str(_keys))
+from http_server import GameHTTPHandler  # noqa: E402
+check('V8b HTTP 白名单同名同口径',
+      set(_keys) <= set(GameHTTPHandler._SETTINGS_BOOL_KEYS), '')
+_fo_src = open(os.path.join('gui', 'file_ops.py'), encoding='utf-8').read()
+check('V8c config 存档写入五个键、载入按槽位回填',
+      all(k in _fo_src for k in _keys)
+      and "f'sfx_{_slot_key}_enabled'" in _fo_src, str(_keys))
 
 # ================================================================ 求解器页
 print("\n--- 求解器：顺序重排 + 单次聚拢更名 ---")

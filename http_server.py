@@ -547,6 +547,9 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         'show_boot_animation', 'infinite_shuffle', 'confirm_before_shuffle', 'draw_grid',
         # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
         'sfx_enabled', 'music_enabled', 'sound_muted',
+        # 逐项音效开关（设置页「音效一览」：滑动 / 失败 / 复原 / 点击 / 键盘）
+        'sfx_slide_enabled', 'sfx_fail_enabled', 'sfx_solved_enabled',
+        'sfx_click_enabled', 'sfx_keyboard_enabled',
     )
     _SETTINGS_INT_RANGES = {
         'animation_duration_ms': (50, 1000),

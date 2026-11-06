@@ -3158,79 +3158,32 @@ class RendererMixin:
                         (dialog_x + 15, line_y), (dialog_x + dialog_width - 15, line_y))
 
         # Tab 按钮区域
+        # 7 个页签按顺序排开（宽 84 + 间距 4：7*84+6*4=612，对话框 660 内放得下）。
+        # 2026-11-07 新增「音频」页：音效从「视觉」页挪出来单独成页，并做「音效
+        # 一览」（每类音效一行：开关 + 试听 + 素材名）——视觉页已经十几行，音效
+        # 挤在末尾要滚很久才看得见。
         tab_y = dialog_y + 58
         tab_height = 30
-        tab_width = 90
-
-        # 快捷键设置 Tab
-        tab_kb_rect = pygame.Rect(dialog_x + 15, tab_y, tab_width, tab_height)
-        if self.settings_active_tab == 'keybindings':
-            pygame.draw.rect(self.screen, self.colors['button_bg'], tab_kb_rect, border_radius=4)
-        else:
-            pygame.draw.rect(self.screen, self.colors['input_bg'], tab_kb_rect, border_radius=4)
-        tab_kb_text = self.status_font.render("快捷键", True, self.colors['input_text'])
-        tab_kb_text_rect = tab_kb_text.get_rect(center=tab_kb_rect.center)
-        self.screen.blit(tab_kb_text, tab_kb_text_rect)
-
-        # 视觉 Tab（新顺序第 3 位：动效 + 缩放 + 各类视觉提示）
-        # 2026-10-13 由「动画速度」改名：本页早已不只是动画速度——缩放、
-        # 着色、连锁提示、复原提示标记、调试面板都归它管。
-        tab_anim_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 2, tab_y, tab_width, tab_height)
-        if self.settings_active_tab == 'animation':
-            pygame.draw.rect(self.screen, self.colors['button_bg'], tab_anim_rect, border_radius=4)
-        else:
-            pygame.draw.rect(self.screen, self.colors['input_bg'], tab_anim_rect, border_radius=4)
-        tab_anim_text = self.status_font.render("视觉", True, self.colors['input_text'])
-        tab_anim_text_rect = tab_anim_text.get_rect(center=tab_anim_rect.center)
-        self.screen.blit(tab_anim_text, tab_anim_text_rect)
-
-        # 求解器 Tab（新顺序第 3 位，与「聚拢参数」相邻）
-        tab_solver_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 3, tab_y, tab_width, tab_height)
-        if self.settings_active_tab == 'solver':
-            pygame.draw.rect(self.screen, self.colors['button_bg'], tab_solver_rect, border_radius=4)
-        else:
-            pygame.draw.rect(self.screen, self.colors['input_bg'], tab_solver_rect, border_radius=4)
-        tab_solver_text = self.status_font.render("求解器", True, self.colors['input_text'])
-        tab_solver_text_rect = tab_solver_text.get_rect(center=tab_solver_rect.center)
-        self.screen.blit(tab_solver_text, tab_solver_text_rect)
-
-        # 聚拢参数 Tab（新顺序第 4 位，紧随「求解器」）
-        tab_gather_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 4, tab_y, tab_width, tab_height)
-        if self.settings_active_tab == 'gather':
-            pygame.draw.rect(self.screen, self.colors['button_bg'], tab_gather_rect, border_radius=4)
-        else:
-            pygame.draw.rect(self.screen, self.colors['input_bg'], tab_gather_rect, border_radius=4)
-        tab_gather_text = self.status_font.render("聚拢参数", True, self.colors['input_text'])
-        tab_gather_text_rect = tab_gather_text.get_rect(center=tab_gather_rect.center)
-        self.screen.blit(tab_gather_text, tab_gather_text_rect)
-
-        # 文件/存档 Tab（新顺序第 5 位，置末）
-        tab_file_rect = pygame.Rect(dialog_x + 15 + (tab_width + 5) * 5, tab_y, tab_width, tab_height)
-        if self.settings_active_tab == 'file':
-            pygame.draw.rect(self.screen, self.colors['button_bg'], tab_file_rect, border_radius=4)
-        else:
-            pygame.draw.rect(self.screen, self.colors['input_bg'], tab_file_rect, border_radius=4)
-        tab_file_text = self.status_font.render("文件", True, self.colors['input_text'])
-        tab_file_text_rect = tab_file_text.get_rect(center=tab_file_rect.center)
-        self.screen.blit(tab_file_text, tab_file_text_rect)
-
-        # 控制 Tab（新顺序第 1 位，紧随「快捷键」，同属操作类）
-        tab_control_rect = pygame.Rect(dialog_x + 15 + tab_width + 5, tab_y, tab_width, tab_height)
-        if self.settings_active_tab == 'control':
-            pygame.draw.rect(self.screen, self.colors['button_bg'], tab_control_rect, border_radius=4)
-        else:
-            pygame.draw.rect(self.screen, self.colors['input_bg'], tab_control_rect, border_radius=4)
-        tab_control_text = self.status_font.render("控制", True, self.colors['input_text'])
-        tab_control_text_rect = tab_control_text.get_rect(center=tab_control_rect.center)
-        self.screen.blit(tab_control_text, tab_control_text_rect)
-
-        # 存储 tab rect 用于点击检测
-        self._settings_tab_kb_rect = tab_kb_rect
-        self._settings_tab_anim_rect = tab_anim_rect
-        self._settings_tab_solver_rect = tab_solver_rect
-        self._settings_tab_gather_rect = tab_gather_rect
-        self._settings_tab_file_rect = tab_file_rect
-        self._settings_tab_control_rect = tab_control_rect
+        tab_width = 84
+        tab_gap = 4
+        tab_defs = (
+            ('keybindings', '快捷键', '_settings_tab_kb_rect'),
+            ('control', '控制', '_settings_tab_control_rect'),
+            ('animation', '视觉', '_settings_tab_anim_rect'),
+            ('audio', '音频', '_settings_tab_audio_rect'),
+            ('solver', '求解器', '_settings_tab_solver_rect'),
+            ('gather', '聚拢参数', '_settings_tab_gather_rect'),
+            ('file', '文件', '_settings_tab_file_rect'),
+        )
+        for _i, (_tid, _tlabel, _tattr) in enumerate(tab_defs):
+            _rect = pygame.Rect(dialog_x + 15 + (tab_width + tab_gap) * _i,
+                                tab_y, tab_width, tab_height)
+            _bg = self.colors['button_bg'] if self.settings_active_tab == _tid \
+                else self.colors['input_bg']
+            pygame.draw.rect(self.screen, _bg, _rect, border_radius=4)
+            _ts = self.status_font.render(_tlabel, True, self.colors['input_text'])
+            self.screen.blit(_ts, _ts.get_rect(center=_rect.center))
+            setattr(self, _tattr, _rect)
 
         # 内容区域
         content_y = tab_y + tab_height + 10
@@ -3257,6 +3210,8 @@ class RendererMixin:
                 self._draw_settings_keybindings(dialog_x, content_y - scroll, dialog_width - 30, total_content_height if sb.need_scroll() else content_height)
             elif self.settings_active_tab == 'animation':
                 self._draw_settings_animation(dialog_x, content_y - scroll, dialog_width - 30, content_height)
+            elif self.settings_active_tab == 'audio':
+                self._draw_settings_audio(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             elif self.settings_active_tab == 'gather':
                 self._draw_settings_gather(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             elif self.settings_active_tab == 'file':
@@ -3828,50 +3783,171 @@ class RendererMixin:
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
             "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝线——线宽与原版相同，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
 
-        # ---- 音效（S5）：音效 / 背景音乐两个开关 + 两条音量滑条 ----
-        # 设计稿 S5-1 要求「音乐、音效两条音量滑条 + 总静音」。总静音（sound_muted）
-        # 目前只经 config / HTTP 暴露，这里给玩家最常用的两个开关和两条滑条。
-        self._settings_sfx_toggle_rect, ny = self._draw_switch_row(
-            x, ny, "音效：", getattr(self, 'sfx_enabled', True),
-            "滑动摩擦声 / 复原音 / 滑动失败音。素材放 assets/audio/sound/，缺文件时静默不报错")
-
-        self._settings_music_toggle_rect, ny = self._draw_switch_row(
-            x, ny, "背景音乐：", getattr(self, 'music_enabled', True),
-            "循环播放的背景乐。素材放 assets/audio/music/（目录里第一个音讯档即当作 bgm）")
-
-        # 音量滑条：与上面动画时长/缩放同一排版（左标签、右轨道 190px）
-        def _volume_row(ly, label, value, track_attr, knob_attr, dragging_attr):
-            self.screen.blit(self.dialog_font.render(label, True, self.colors['dialog_text']),
-                             (x + 15, ly + 6))
-            vtx = x + 220
-            vtw = 190
-            vs = self.input_font.render(f"{int(round(value))}%", True, self.colors['input_text'])
-            self.screen.blit(vs, (vtx + vtw - vs.get_width(), ly + 6))
-            vy = ly + 26
-            track = pygame.Rect(vtx, vy, vtw, 4)
-            setattr(self, track_attr, track)
-            pygame.draw.rect(self.screen, self.colors['dialog_border'], track)
-            vnorm = max(0.0, min(1.0, float(value) / 100.0))
-            knob_x = int(vtx + vnorm * vtw)
-            knob = pygame.Rect(knob_x - 8, vy - 6, 16, 16)
-            setattr(self, knob_attr, knob)
-            kcolor = (self.colors['button_hover']
-                      if getattr(self, dragging_attr, False) else self.colors['button_bg'])
-            pygame.draw.rect(self.screen, kcolor, knob, border_radius=8)
-            return ly + 72
-
-        ny = _volume_row(ny, "音效音量：", getattr(self, 'sfx_volume', 70),
-                         '_settings_sfx_vol_track_rect', '_settings_sfx_vol_knob_rect',
-                         '_settings_sfx_vol_dragging')
-        ny = _volume_row(ny, "音乐音量：", getattr(self, 'music_volume', 50),
-                         '_settings_music_vol_track_rect', '_settings_music_vol_knob_rect',
-                         '_settings_music_vol_dragging')
+        # 音效 / 背景音乐与两条音量滑条已挪到「音频」页（2026-11-07）：
+        # 视觉页十几行，音效挤在末尾要滚很久才看得见；音频页要放「音效一览」，
+        # 逐项开关 + 试听，本来就装不进视觉页。
 
         # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
         # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
         # 的说明与下面的开关行整块落在裁剪区外，玩家根本看不到（2026-10-13
         # 用户实机反馈）。这里每帧记录真实高度，高度计算与绘制永不漂移。
         self._settings_anim_height = ny - y + 10
+
+    def _draw_settings_volume_row(self, x, y, label, value, which):
+        """音量滑条行：左标签 + 右轨道 190px（与动画时长/缩放同一排版）。
+
+        which='sfx' / 'music'，决定写入哪一族 rect 属性（events 的拖拽逻辑按
+        `_settings_{which}_vol_track_rect` 取名，两边必须一致）。
+        """
+        self.screen.blit(self.dialog_font.render(label, True, self.colors['dialog_text']),
+                         (x + 15, y + 6))
+        vtx = x + 220
+        vtw = 190
+        vs = self.input_font.render(f"{int(round(value))}%", True, self.colors['input_text'])
+        self.screen.blit(vs, (vtx + vtw - vs.get_width(), y + 6))
+        vy = y + 26
+        track = pygame.Rect(vtx, vy, vtw, 4)
+        setattr(self, f'_settings_{which}_vol_track_rect', track)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'], track)
+        vnorm = max(0.0, min(1.0, float(value) / 100.0))
+        knob_x = int(vtx + vnorm * vtw)
+        knob = pygame.Rect(knob_x - 8, vy - 6, 16, 16)
+        setattr(self, f'_settings_{which}_vol_knob_rect', knob)
+        kcolor = (self.colors['button_hover']
+                  if getattr(self, f'_settings_{which}_vol_dragging', False)
+                  else self.colors['button_bg'])
+        pygame.draw.rect(self.screen, kcolor, knob, border_radius=8)
+        return y + 72
+
+    def _ellipsize(self, text, font, max_w):
+        """按像素宽度截断并加省略号（素材名可能很长，不能顶出对话框）。"""
+        if max_w <= 0:
+            return ''
+        if font.size(text)[0] <= max_w:
+            return text
+        while text and font.size(text + '…')[0] > max_w:
+            text = text[:-1]
+        return text + '…'
+
+    def _draw_settings_audio(self, x, y, width, height):
+        """音频页：总开关 + 「音效一览」（逐项开关 / 试听 / 素材名）+ 两条音量滑条。
+
+        逐项开关的意义：贴图音效素材常是玩家自己换的，某一类不听（比如键盘声）
+        不该连带把滑动摩擦声也关掉。总开关（音效）仍是「一键全静音」的上级闸门。
+        """
+        from gui.audio import SLOT_KEYS, SLOT_LABELS, SLOT_HINTS
+
+        audio = getattr(self, 'audio', None)
+        if audio is not None:
+            rows = audio.slot_status()
+            bgm_detail = audio.bgm_detail()
+        else:
+            rows = [{'slot': k, 'label': SLOT_LABELS[k], 'hint': SLOT_HINTS[k],
+                     'enabled': bool(getattr(self, f'sfx_{k}_enabled', True)),
+                     'loaded': False, 'detail': '音频模块未启用'}
+                    for k in SLOT_KEYS]
+            bgm_detail = '音频模块未启用'
+
+        hint = ('素材放 assets/audio/sound/（音效）与 assets/audio/music/（背景乐）；'
+                '缺素材的项标「缺素材」，补上文件重启即生效')
+        _hint_lines = self._wrap_text(hint, self.status_font, width - 40)
+        for _i, _line in enumerate(_hint_lines):
+            self.screen.blit(self.status_font.render(_line, True, (150, 150, 150)),
+                             (x + 15, y + 4 + _i * 18))
+        ny = y + 6 + 18 * len(_hint_lines)
+
+        # 两个总开关并排一行 —— 本页要塞下「音效一览」五行，纵向空间得省着用
+        self.screen.blit(self.dialog_font.render("音效：", True, self.colors['dialog_text']),
+                         (x + 15, ny + 6))
+        _rect_sfx = pygame.Rect(x + 80, ny + 2, 64, 28)
+        _bg = self.colors['button_bg'] if getattr(self, 'sfx_enabled', True) else self.colors['input_bg']
+        pygame.draw.rect(self.screen, _bg, _rect_sfx, border_radius=4)
+        _s = self.status_font.render('ON' if getattr(self, 'sfx_enabled', True) else 'OFF',
+                                     True, (255, 255, 255) if getattr(self, 'sfx_enabled', True)
+                                     else (150, 150, 150))
+        self.screen.blit(_s, _s.get_rect(center=_rect_sfx.center))
+        self._settings_sfx_toggle_rect = _rect_sfx
+
+        self.screen.blit(self.dialog_font.render("背景音乐：", True, self.colors['dialog_text']),
+                         (x + 175, ny + 6))
+        _rect_music = pygame.Rect(x + 300, ny + 2, 64, 28)
+        _music_on = getattr(self, 'music_enabled', True)
+        _bg = self.colors['button_bg'] if _music_on else self.colors['input_bg']
+        pygame.draw.rect(self.screen, _bg, _rect_music, border_radius=4)
+        _s = self.status_font.render('ON' if _music_on else 'OFF', True,
+                                     (255, 255, 255) if _music_on else (150, 150, 150))
+        self.screen.blit(_s, _s.get_rect(center=_rect_music.center))
+        self._settings_music_toggle_rect = _rect_music
+        _bd = self.status_font.render(
+            self._ellipsize(bgm_detail, self.status_font, width - 387), True, (130, 130, 130))
+        self.screen.blit(_bd, (x + 372, ny + 9))
+        ny += 44
+
+        # ---- 音效一览 ----
+        pygame.draw.line(self.screen, (90, 90, 95), (x + 15, ny), (x + width - 15, ny))
+        ny += 10
+        mx, my = pygame.mouse.get_pos()
+        # 悬停判定先算（行高固定 36）：表头那句提示随悬停切换文案，就不必在列表
+        # 下方再挤一行说明——本页纵向空间得留给五行开关和两条音量滑条。
+        hovered = None
+        for _i, _row in enumerate(rows):
+            _ry = ny + 28 + _i * 36
+            if _ry <= my <= _ry + 32:
+                hovered = _row
+                break
+        self.screen.blit(self.dialog_font.render("音效一览", True, self.colors['dialog_title']),
+                         (x + 15, ny))
+        _tip_text = (f"{hovered['label']}：{hovered['hint']}" if hovered
+                     else "逐项独立开关；鼠标移到某一行可看它的触发时机")
+        self.screen.blit(
+            self.status_font.render(
+                self._ellipsize(_tip_text, self.status_font, width - 125),
+                True, (200, 200, 120) if hovered else (150, 150, 150)),
+            (x + 110, ny + 4))
+        ny += 28
+
+        self._settings_slot_toggle_rects = {}
+        self._settings_slot_preview_rects = {}
+        for row in rows:
+            slot = row['slot']
+            on = row['enabled']
+            self.screen.blit(
+                self.dialog_font.render(row['label'] + '：', True, self.colors['dialog_text']),
+                (x + 15, ny + 6))
+            # 开关
+            rect = pygame.Rect(x + 220, ny + 2, 64, 28)
+            bg = self.colors['button_bg'] if on else self.colors['input_bg']
+            pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+            ts = self.status_font.render('ON' if on else 'OFF', True,
+                                         (255, 255, 255) if on else (150, 150, 150))
+            self.screen.blit(ts, ts.get_rect(center=rect.center))
+            self._settings_slot_toggle_rects[slot] = rect
+            # 试听
+            prev = pygame.Rect(x + 292, ny + 2, 56, 28)
+            loaded = row['loaded']
+            pbg = self.colors['button_bg'] if loaded else self.colors['input_bg']
+            pygame.draw.rect(self.screen, pbg, prev, border_radius=4)
+            ptxt = self.status_font.render("试听", True,
+                                           self.colors['input_text'] if loaded else (110, 110, 110))
+            self.screen.blit(ptxt, ptxt.get_rect(center=prev.center))
+            self._settings_slot_preview_rects[slot] = prev
+            # 素材名 / 缺素材（过长截断，避免顶出对话框右边框）
+            dcol = (150, 150, 150) if loaded else (200, 120, 120)
+            self.screen.blit(
+                self.status_font.render(
+                    self._ellipsize(row['detail'], self.status_font, width - 375),
+                    True, dcol),
+                (x + 360, ny + 9))
+            ny += 36
+
+        # ---- 音量 ----
+        ny += 6
+        ny = self._draw_settings_volume_row(x, ny, "音效音量：",
+                                            getattr(self, 'sfx_volume', 70), 'sfx')
+        ny = self._draw_settings_volume_row(x, ny, "音乐音量：",
+                                            getattr(self, 'music_volume', 50), 'music')
+
+        self._settings_audio_height = ny - y + 10
 
     def _ext_feedback_lines(self, width: int) -> int:
         """控制页内联反馈当前占几行（高度计算与绘制共用同一算法，避免漂移）。"""
@@ -4239,6 +4315,12 @@ class RendererMixin:
             # 界面模式/滑动/选中 3 行开关(60) + 速度滑条(72) + 缩放滑条(72)
             # + 着色/连锁/标记/面板 4 行开关(60) + 余量。
             return getattr(self, '_settings_anim_height', 3 * 60 + 72 + 72 + 4 * 60 + 10)
+        elif self.settings_active_tab == 'audio':
+            # 音频页：真实绘制高度由 _draw_settings_audio 每帧记录
+            # （提示行 30 + 两行开关 120 + 分隔/标题 48 + 每项 40*5
+            #  + 悬停说明 26 + 两条音量 144 + 余量）
+            return getattr(self, '_settings_audio_height',
+                           30 + 120 + 48 + 200 + 26 + 144 + 10)
         elif self.settings_active_tab == 'gather':
             # 警告行 + 适用范围行 + 每个参数一行(52) + 余量
             return 26 + 22 + len(self._gather_param_specs) * 52 + 10

@@ -63,8 +63,6 @@
     "KB|docs/agent/待办清单.md|experiments/HANDSOFF_交接文档.md",
     "KB|docs/agent/待办清单.md|experiments/MATH_核心玩法形式化.md",
     "KB|docs/agent/待办清单.md|game_shatter.py",
-    "KB|docs/agent/待办清单.md|gui/audio.py",
-    "KB|docs/agent/待办清单.md|sound",
     "KB|docs/agent/待办清单.md|temp_history.json",
     "KB|docs/agent/待办清单.md|命名与集合关系_2026-10-16.md",
     "KB|docs/agent/待办清单.md|本機環境.md",
@@ -73,7 +71,6 @@
     "KB|docs/agent/踩坑与搁置.md|MATH_核心玩法形式化.md",
     "KB|docs/agent/踩坑与搁置.md|docs/豆包文档",
     "KB|docs/agent/踩坑与搁置.md|engine/shuffle_guard.py",
-    "KB|docs/agent/踩坑与搁置.md|gui/audio.py",
     "KB|docs/agent/踩坑与搁置.md|文档索引.md",
     "KB|docs/agent/踩坑与搁置.md|本機環境.md",
     "KB|docs/math/4_4_3_复现与死局刻画_2026-10-14.md|REPRO_REPORT_2.md",
@@ -106,8 +103,6 @@
     "KB|docs/math/论文中文草稿_2026-10-16.md|experiments/math_repro/sweep_results.csv",
     "KB|docs/spec/GUI解释器化接入计划_2026-10-23.md|config/engine.json",
     "KB|docs/spec/設計訪談總結.md|宣傳片劇本.md",
-    "KB|docs/ui/前端動效優化計劃.md|gui/audio.py",
-    "KB|docs/ui/前端動效優化計劃.md|sound",
     "KB|experiments/math_repro/full_A/README.md|../sweep_results.md",
     "KB|experiments/math_repro/full_A/README.md|read_full_A.py"
   ]

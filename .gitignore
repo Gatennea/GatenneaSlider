@@ -96,6 +96,9 @@ test/style_compare.png
 # 文件都还在磁盘上（文档里按路径引用依然有效），只是不进版本库。
 archive/_*
 archive/scratch_*/
+# 直接放在 archive/ 根下的 scratch_*.py / .png 也该忽略：原规则只匹配目录，
+# 探针脚本反倒漏进工作区（2026-11-07 补）
+archive/scratch_*
 archive/retained/
 out_*.txt
 

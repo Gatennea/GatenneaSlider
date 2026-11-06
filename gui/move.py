@@ -238,12 +238,12 @@ class MoveMixin:
                     side, direction, rep_cell
                 )
 
-        # 所有步骤都合法（S5：滑動摩擦聲，長短/音量跟著步數走；無素材時靜默）
-        # 記錄回放（_shuffle_demo_playing）連播幾十步，壓掉聲音免得像炒豆子（S5-3）
-        if getattr(self, 'audio', None) and not getattr(self, '_shuffle_demo_playing', False):
-            self.audio.play_slide(move_step)
+        # 所有步骤都合法（S5：滑動摩擦聲必須跟本次動畫同起同落；無素材時靜默）
         if self.animation_enabled and self.animation_duration > 0:
             self.start_animation(selected, final_positions)
+            # 必须排在 start_animation 之后：拖拽接续会把 animation_duration
+            # 按剩余比例缩短，声音长度要取定稿后的值（见 _play_slide_sound）
+            self._play_slide_sound(move_step)
             self.macro_notify_msg = f"向{self._dir_name(direction)}移动 {move_step}步"
             self.macro_notify_timer = 120
         else:
@@ -254,6 +254,8 @@ class MoveMixin:
             self.step_count += 1
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
+            # 动画关闭也要有滑动声：给一个短促的默认长度
+            self._play_slide_sound(move_step, duration_ms=self.SLIDE_INSTANT_MS)
             self._pending_move_info = None
             # 走一步后**不主动拽相机**：只在整盘滑到完全看不见时兜底拉回。
             # 旧口径「有一块碰到边缘就平移」会让碎三角每步都动镜头。
