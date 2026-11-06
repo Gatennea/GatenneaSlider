@@ -732,6 +732,12 @@ class EventsMixin:
                                         self.save_as()
                                     elif i == 3:
                                         self.convert_save()
+                                    elif i == 4:
+                                        # 间接自举重启：spawn 看门进程等本进程退出后
+                                        # 自动重拉起（游戏自己不能重启自己，见 gui/restart.py）
+                                        from gui import restart as _restart_mod
+                                        _restart_mod.request_restart()
+                                        self.running = False
                                     file_clicked = True
                                     break
                             self.close_all_menus()
