@@ -36,6 +36,7 @@ curl "http://127.0.0.1:5050/status?token=<令牌>"
 | --- | --- | --- |
 | GET | `/help` | API 索引 `{ok,message,auth,first_step,detail,endpoints:[{path,method,summary}]}`；需要令牌（與全部端點一致） |
 | GET | `/help/<端點>` | 單個端點詳情 `{ok,path,method,summary,description,params:[{name,type,required,desc}],returns,example}`；未知端點回 404。如 `/help/move` |
+| GET | `/version` | 當前進程版本與啟動資訊 `{ok,version,commit,started_at,started_at_epoch,uptime_seconds,frozen,entry,source_root,python,http_port,code_hashes,note}`；`code_hashes` 是關鍵源碼檔的短哈希，改了常數/渲染邏輯重啟後會變，用來確認跑的是不是剛改過的代碼。靜態直出，不進命令隊列 |
 | GET | `/status` | 完整狀態（§下方 schema，含求解器/宏/開關資訊） |
 | GET | `/map` | `{"ok":true,"map":"##__\n##__..."}`（按方塊包圍盒裁剪空邊）。**三角形**回 `#^v_` 四字符（菱形胞 2-bit）；方形/序號仍為 `#_` |
 | GET | `/analysis/window` | 目標聚攏視窗 `{ok,window:{r0,c0,rh,cw,overlap},m,n,step}`；**三角形形態不支援，回 HTTP 400** |

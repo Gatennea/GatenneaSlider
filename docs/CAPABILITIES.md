@@ -54,6 +54,7 @@
 ## 控制通道（程序化驱动游戏，别自己造）
 
 - **HTTP REST** `http://127.0.0.1:5050`（推荐）：`/status` `/move` `/select_gap` `/select_block` `/solve` `/analysis/*` 等，详见 `docs/agent/readme_to_agent.md` §6。
+- `GET /version` 回报当前进程的版本号、git 短提交、启动时刻、运行秒数与关键源码短哈希（`code_hashes`）；怀疑「界面跑的不是刚改的代码」时先查它，改完源码要重启才会变。
 - **stdin CLI**：`status` `move` `select_gap` `solve` `solver_status` …（§7 全集），与 HTTP 1:1。
 - 一次完整移动 = `select_gap` → `select_block` → `move`（三角可省略 `select_gap`）。
 

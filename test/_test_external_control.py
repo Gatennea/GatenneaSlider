@@ -349,6 +349,23 @@ with tempfile.TemporaryDirectory() as td:
     check('AC-23b 教程文件含 /help/<端点> 指路',
           ok and '/help/<端点>' in txt)
 
+# AC-24 /version：版本与启动时间（用来确认屏幕上跑的是不是刚改过的代码）
+s, r = api('GET', '/version', headers=AUTH)
+check('AC-24a /version → 200 且有版本号/启动时刻',
+      s == 200 and r.get('ok') and bool(r.get('version'))
+      and bool(r.get('started_at'))
+      and isinstance(r.get('started_at_epoch'), (int, float)))
+check('AC-24b 运行秒数非负且合理',
+      isinstance(r.get('uptime_seconds'), (int, float))
+      and 0 <= r['uptime_seconds'] < 300)
+check('AC-24c 代码指纹含渲染器/板型定义文件',
+      isinstance(r.get('code_hashes'), dict)
+      and 'engine/registry.py' in r['code_hashes']
+      and 'gui/renderer.py' in r['code_hashes'])
+s2, r2 = api('GET', '/version', headers=AUTH)
+check('AC-24d 两次请求启动时刻相同（进程单例）',
+      s2 == 200 and r2.get('started_at_epoch') == r.get('started_at_epoch'))
+
 print()
 if _failures:
     print(f"共 {len(_failures)} 项失败: {_failures}")

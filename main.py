@@ -73,7 +73,7 @@ import queue
 from solver.deadend_guard import has_deadend_guard, is_deadend  # noqa: E402,F401
 
 from GUI import SliderGUI
-from http_server import start_http_server
+from http_server import build_server_meta, start_http_server
 
 
 def stdin_reader(cmd_queue: queue.Queue):
@@ -176,6 +176,9 @@ if __name__ == '__main__':
         sys.exit(0)
 
     try:
+        # 进程启动快照：在拉起 GUI / HTTP 之前记一次，供 GET /version 回报。
+        # 看门进程（--_restart_watch）在上面已 sys.exit，不会走到这里。
+        server_meta = build_server_meta()
         _log_error('===== 游戏启动 =====', level='info')
         m, n, step, http_port, enable_http, kind = parse_args()
 
@@ -200,7 +203,7 @@ if __name__ == '__main__':
         # 启动 HTTP 服务
         http_server = None
         if enable_http:
-            http_server = start_http_server(cmd_queue, http_port, ext_state)
+            http_server = start_http_server(cmd_queue, http_port, ext_state, server_meta)
 
         gui = SliderGUI(m=m, n=n, step=step, cmd_queue=cmd_queue, kind=kind,
                         ext_state=ext_state)
