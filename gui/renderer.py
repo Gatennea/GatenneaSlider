@@ -3828,6 +3828,45 @@ class RendererMixin:
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
             "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝线——线宽与原版相同，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
 
+        # ---- 音效（S5）：音效 / 背景音乐两个开关 + 两条音量滑条 ----
+        # 设计稿 S5-1 要求「音乐、音效两条音量滑条 + 总静音」。总静音（sound_muted）
+        # 目前只经 config / HTTP 暴露，这里给玩家最常用的两个开关和两条滑条。
+        self._settings_sfx_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "音效：", getattr(self, 'sfx_enabled', True),
+            "滑动摩擦声 / 复原音 / 滑动失败音。素材放 assets/audio/sound/，缺文件时静默不报错")
+
+        self._settings_music_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "背景音乐：", getattr(self, 'music_enabled', True),
+            "循环播放的背景乐。素材放 assets/audio/music/（目录里第一个音讯档即当作 bgm）")
+
+        # 音量滑条：与上面动画时长/缩放同一排版（左标签、右轨道 190px）
+        def _volume_row(ly, label, value, track_attr, knob_attr, dragging_attr):
+            self.screen.blit(self.dialog_font.render(label, True, self.colors['dialog_text']),
+                             (x + 15, ly + 6))
+            vtx = x + 220
+            vtw = 190
+            vs = self.input_font.render(f"{int(round(value))}%", True, self.colors['input_text'])
+            self.screen.blit(vs, (vtx + vtw - vs.get_width(), ly + 6))
+            vy = ly + 26
+            track = pygame.Rect(vtx, vy, vtw, 4)
+            setattr(self, track_attr, track)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], track)
+            vnorm = max(0.0, min(1.0, float(value) / 100.0))
+            knob_x = int(vtx + vnorm * vtw)
+            knob = pygame.Rect(knob_x - 8, vy - 6, 16, 16)
+            setattr(self, knob_attr, knob)
+            kcolor = (self.colors['button_hover']
+                      if getattr(self, dragging_attr, False) else self.colors['button_bg'])
+            pygame.draw.rect(self.screen, kcolor, knob, border_radius=8)
+            return ly + 72
+
+        ny = _volume_row(ny, "音效音量：", getattr(self, 'sfx_volume', 70),
+                         '_settings_sfx_vol_track_rect', '_settings_sfx_vol_knob_rect',
+                         '_settings_sfx_vol_dragging')
+        ny = _volume_row(ny, "音乐音量：", getattr(self, 'music_volume', 50),
+                         '_settings_music_vol_track_rect', '_settings_music_vol_knob_rect',
+                         '_settings_music_vol_dragging')
+
         # 记录本页实际绘制高度：_calc_settings_content_height 曾把本页写死
         # 成 340，而真实内容有 660+ → 滚动最大只有 22px，「悬停连锁提示」
         # 的说明与下面的开关行整块落在裁剪区外，玩家根本看不到（2026-10-13

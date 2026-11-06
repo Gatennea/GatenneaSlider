@@ -2,13 +2,13 @@
 """生成开机动画占位资源（预渲染帧序列 + PyInstaller splash 启动图）。
 
 这是「占位」资源：先程序化产一组「动起来的标题卡」把整套机制跑通，
-作者之后用任意工具做出的真动画替换 picture/boot/ 下的帧即可（文件名保持
+作者之后用任意工具做出的真动画替换 assets/picture/boot/ 下的帧即可（文件名保持
 frame_000.png ... frame_NNN.png，按顺序播放）。
 
-- picture/boot/frame_*.png : RGBA 帧序列（封面暗底 + 标题 + 加载中…），
+- assets/picture/boot/frame_*.png : RGBA 帧序列（封面暗底 + 标题 + 加载中…），
   启动时按时间逐帧 blit；背景透明，运行时垫 (30,30,30) 同游戏背景，
   淡出时只把覆盖层 alpha 归零，无缝接到游戏画面。
-- picture/splash.bmp : PyInstaller 启动图（盖住 exe 自解压/Python 启动那段，
+- assets/picture/splash.bmp : PyInstaller 启动图（盖住 exe 自解压/Python 启动那段，
   应用内动画够不著的最前段）。无文字，纯品牌暗底，接到应用内标题画面更顺。
 
 运行：python tools/gen_boot_assets.py
@@ -18,9 +18,9 @@ import os
 import pygame
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-COVER = os.path.join(ROOT, 'picture', 'cover.png')
-BOOT_DIR = os.path.join(ROOT, 'picture', 'boot')
-SPLASH = os.path.join(ROOT, 'picture', 'splash.bmp')
+COVER = os.path.join(ROOT, 'assets', 'picture', 'cover.png')
+BOOT_DIR = os.path.join(ROOT, 'assets', 'picture', 'boot')
+SPLASH = os.path.join(ROOT, 'assets', 'picture', 'splash.bmp')
 
 DESIGN_W, DESIGN_H = 854, 480
 N_FRAMES = 24

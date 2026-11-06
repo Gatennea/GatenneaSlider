@@ -302,14 +302,15 @@ code, r = api('GET', '/settings')
 check("GET /settings", code == 200 and r.get('ok')
       and 'animation_duration_ms' in r.get('settings', {}), str(r)[:80])
 s = r['settings']
-# 布尔键个数是「白名单有没有悄悄漂移」的守门数：新增一个开关就得改这里
-# （当前 20 个，取自 events._SETTINGS_BOOL_KEYS：16 个基础上新增
-#   show_boot_animation / infinite_shuffle / confirm_before_shuffle /
-#   draw_grid / op_log_enabled。注意 http_server 的 POST 白名单少一个
-#   op_log_enabled，是合并前就有的差异，不走这里。）
-check("  含 20 个布尔键",
-      sum(1 for k, v in s.items() if isinstance(v, bool)) == 20,
-      str(sorted(s)))
+# 布尔键集合必须与 events 的白名单**逐项相等**：这不是数字游戏，是
+# 「开关被悄悄加漏/删错」的守门断言。写死数字每加一个开关就假红一次
+# （§二十二 的老毛病），改成直接对拍 _SETTINGS_BOOL_KEYS。
+from gui.events import EventsMixin  # noqa: E402
+_expect_bools = set(EventsMixin._SETTINGS_BOOL_KEYS)
+_got_bools = {k for k, v in s.items() if isinstance(v, bool)}
+check("  返回的布尔键 = events 白名单",
+      _got_bools == _expect_bools,
+      f"missing={sorted(_expect_bools - _got_bools)} extra={sorted(_got_bools - _expect_bools)}")
 code, r = api('POST', '/settings', {'animation_duration_ms': 200})
 check("设置动画速度 ok", code == 200 and r.get('ok'), r.get('message', ''))
 check("  gui.animation_duration=200", gui.animation_duration == 200,

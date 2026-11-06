@@ -3098,6 +3098,20 @@ class EventsMixin:
         new_zoom = self.min_zoom + normalized * (self.max_zoom - self.min_zoom)
         self._apply_zoom_centered(new_zoom)
 
+    def _update_settings_volume(self, mx, which):
+        """设置-视觉页音量滑条（水平）：0..100，写回 sfx_volume / music_volume。"""
+        track = getattr(self, f'_settings_{which}_vol_track_rect', None)
+        if not track or track.width <= 0:
+            return
+        x = max(track.x, min(track.x + track.width, mx))
+        normalized = (x - track.x) / track.width
+        vol = int(round(normalized * 100))
+        if which == 'sfx':
+            self.sfx_volume = vol
+        else:
+            self.music_volume = vol
+        self._sync_audio_settings()
+
     def _is_action_triggered(self, event, action_name):
         """
         检查事件是否匹配指定动作的快捷键配置。
@@ -3487,6 +3501,36 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 视觉 Tab：音效开关（S5；无素材时开了也没声，属正常）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_sfx_toggle_rect'):
+                if self._settings_sfx_toggle_rect.collidepoint(mx, my):
+                    self.sfx_enabled = not getattr(self, 'sfx_enabled', True)
+                    self._sync_audio_settings()
+                    status = '开' if self.sfx_enabled else '关'
+                    self.macro_notify_msg = f"音效：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 视觉 Tab：背景音乐开关
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_music_toggle_rect'):
+                if self._settings_music_toggle_rect.collidepoint(mx, my):
+                    self.music_enabled = not getattr(self, 'music_enabled', True)
+                    self._sync_audio_settings()
+                    status = '开' if self.music_enabled else '关'
+                    self.macro_notify_msg = f"背景音乐：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 视觉 Tab：音效 / 音乐音量滑条（与动画时长滑条同一套拖拽逻辑）
+            for _key in ('sfx', 'music'):
+                _knob = getattr(self, f'_settings_{_key}_vol_knob_rect', None)
+                _track = getattr(self, f'_settings_{_key}_vol_track_rect', None)
+                if _knob is not None and _track is not None and \
+                   (_knob.collidepoint(mx, my) or _track.collidepoint(mx, my)):
+                    setattr(self, f'_settings_{_key}_vol_dragging', True)
+                    self._update_settings_volume(mx, _key)
+                    return
+
             # 控制 Tab：三种模式开关（独立布尔，可任意组合）
             if self.settings_active_tab == 'control':
                 if hasattr(self, '_settings_ctrl_single_rect') and self._settings_ctrl_single_rect.collidepoint(mx, my):
@@ -3693,6 +3737,8 @@ class EventsMixin:
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             self._settings_slider_dragging = False
             self._settings_zoom_dragging = False
+            self._settings_sfx_vol_dragging = False
+            self._settings_music_vol_dragging = False
             self.settings_scrollbar.on_mouse_up()
 
         # 鼠标拖动滑动条 / 滚动条
@@ -3703,6 +3749,12 @@ class EventsMixin:
             if getattr(self, '_settings_slider_dragging', False):
                 mx, my = event.pos
                 self._update_settings_slider(mx)
+            if getattr(self, '_settings_sfx_vol_dragging', False):
+                mx, my = event.pos
+                self._update_settings_volume(mx, 'sfx')
+            if getattr(self, '_settings_music_vol_dragging', False):
+                mx, my = event.pos
+                self._update_settings_volume(mx, 'music')
             self.settings_scrollbar.on_mouse_motion(event.pos)
 
         # 鼠标滚轮（设置对话框中）

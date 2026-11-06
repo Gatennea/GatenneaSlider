@@ -180,7 +180,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 设置窗口图标
         try:
-            icon_path = _gui_get_resource_path('picture/cover.png')
+            icon_path = _gui_get_resource_path('assets/picture/cover.png')
             icon_surface = pygame.image.load(icon_path)
             pygame.display.set_icon(icon_surface)
         except Exception:
@@ -550,7 +550,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.show_boot_animation = True
         # 绘制网格开关（背景网格显示；缺省开；仅原版构型生效，几何模型不画网格）
         self.draw_grid = True
-        # 音效开关（接口骨架，素材由用户放到 sound/，见 gui/audio.py / docs S5）
+        # 音效开关（素材统一放 assets/audio/，见 gui/audio.py / docs S5）
         # 三处布尔 + 两处音量（0..100）须与 gui/events.py / http_server.py 白名单同步
         self.sfx_enabled = True
         self.music_enabled = True
@@ -785,6 +785,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.settings_editing_key = None  # 临时存储正在录制的按键
         self._settings_slider_dragging = False
         self._settings_zoom_dragging = False   # 视觉页缩放滑条拖拽中
+        self._settings_sfx_vol_dragging = False    # 视觉页音效音量滑条拖拽中
+        self._settings_music_vol_dragging = False  # 视觉页音乐音量滑条拖拽中
         self._settings_backup_keybindings = {}
         self._settings_ok_btn = None
         self._settings_cancel_btn = None
@@ -1983,6 +1985,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             sfx_volume=getattr(self, 'sfx_volume', 70),
             music_volume=getattr(self, 'music_volume', 50),
         )
+        # 背景音乐随开关起停：开就循环播（已在播则不重头），关/静音就停
+        if a.music_enabled and not a.muted:
+            a.play_bgm()
+        else:
+            a.stop_bgm()
 
     def close_all_menus(self):
         """关闭所有下拉菜单"""
@@ -2001,7 +2008,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                self.get_gap_at_pos(screen_x, screen_y) is None
 
     # ------------------------------------------------------------------
-    # 开机动画：预渲染帧序列（picture/boot/frame_*.png）
+    # 开机动画：预渲染帧序列（assets/picture/boot/frame_*.png）
     # 设计目标：覆盖「加载空缺」而非叠加时长。窗口一创建（__init__ 的 set_mode
     # 之后）就立即绘出首帧，让后续所有重活（建盘/载资源）在它底下进行；run() 里的
     # _run_boot_phase 只在「空闲时间」播动画 + 末尾淡出，整体时长≈真实加载时长。
@@ -2043,7 +2050,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         frames = []
         try:
             import glob
-            d = _gui_get_resource_path('picture/boot')
+            d = _gui_get_resource_path('assets/picture/boot')
             for p in sorted(glob.glob(os.path.join(d, 'frame_*.png'))):
                 frames.append(pygame.image.load(p).convert_alpha())
         except Exception:

@@ -238,7 +238,10 @@ class MoveMixin:
                     side, direction, rep_cell
                 )
 
-        # 所有步骤都合法
+        # 所有步骤都合法（S5：滑動摩擦聲，長短/音量跟著步數走；無素材時靜默）
+        # 記錄回放（_shuffle_demo_playing）連播幾十步，壓掉聲音免得像炒豆子（S5-3）
+        if getattr(self, 'audio', None) and not getattr(self, '_shuffle_demo_playing', False):
+            self.audio.play_slide(move_step)
         if self.animation_enabled and self.animation_duration > 0:
             self.start_animation(selected, final_positions)
             self.macro_notify_msg = f"向{self._dir_name(direction)}移动 {move_step}步"

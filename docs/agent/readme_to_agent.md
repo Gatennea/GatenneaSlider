@@ -159,7 +159,7 @@ gui/                   # 全是 Mixin，被 SliderGUI 繼承
   text_input.py        #   TextInput            自繪文字輸入框（游標/選取/剪貼簿）
   annotation.py        #   AnnotationMixin      標注模式（B/Z/M/S 隱藏入口）：標注取樣／手動構造畫布／跟蹤執行；創造模式：手動構造/隨機生成（造打亂局面）＋設計還原態/樣式庫（造還原態樣式，僅方形）
   tutorial_texts.json  #   新手教程文案（可脫離代碼修改）
-  audio.py             #   AudioMixin/音效管理器：bgm/slide/fail/solved 槽位、音樂+音效音量+總靜音；無頭環境靜默降級（見 §二十）
+  audio.py             #   AudioManager 音效管理器：bgm/slide/fail/solved 槽位、音樂+音效音量+總靜音；已挂滑动/复原/失败三处并随设置起停 bgm；无头环境静默降级（见 §二十）。素材在 assets/audio/{sound,music}/，档名弹性发现
 
 engine/                # 幾何引擎（**最底層**：GUI 與 solver 都向下依賴它）
                        #   鐵律：本包不 import 任何 game*.py / gui/（詳見 docs/spec/幾何引擎.md）
@@ -212,7 +212,10 @@ tools/                 # 倉庫內工具（非產品代碼）
 
 config/                # 執行期組態（§8）
 save/                  # 使用者存檔 *.json
-picture/               # cover.ico / cover.png（圖示）
+assets/                 # 外部資源統一根（執行期資源都收在此；spec 整樹打包）
+  picture/              #   cover.ico / cover.png / splash.bmp / boot/ 開機幀
+  audio/                #   音效與背景樂：sound/（slide*.wav 等）、music/（bgm）
+  ui/arrows/            #   方向鍵箭頭貼圖（renderer._arrow_asset_path 讀）
 test/                  # 無頭測試腳本（§9），命名 _test_*.py 或 test/
 web/                   # Web 版（TypeScript/靜態頁），**獨立 git 倉庫**，不隨本庫提交
 build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
@@ -497,7 +500,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 - `Gatenneaslider.spec`：PyInstaller 規格；`build_exe.bat` 一鍵打包（`--windowed`）。
 - **`--windowed` 無控制台時 `sys.stdin is None`**，`main.py::stdin_reader` 會檢查並跳過 stdin 監聽；HTTP 通道不受影響。
 - `package_zip.bat` / `package_zip.ps1`：把 exe + 必要資源壓成發布 zip。
-- 圖示：`picture/cover.ico`；運行期資源路徑統一走 `GUI.py::_gui_get_resource_path`（相容 frozen）。
+- 圖示：`assets/picture/cover.ico`；運行期資源路徑統一走 `GUI.py::_gui_get_resource_path`（相容 frozen）。
 
 ---
 

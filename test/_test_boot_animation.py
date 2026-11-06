@@ -61,11 +61,11 @@ class BootAnimationSmokeTest(unittest.TestCase):
     def test_boot_frame_assets_present(self):
         # 预渲染帧序列应已生成（作者之后可替换为真动画，保持 frame_NNN.png 命名）
         import glob
-        frames = sorted(glob.glob(os.path.join(_ROOT, 'picture', 'boot', 'frame_*.png')))
-        self.assertGreaterEqual(len(frames), 2, "picture/boot/ 下缺少预渲染帧序列")
+        frames = sorted(glob.glob(os.path.join(_ROOT, 'assets', 'picture', 'boot', 'frame_*.png')))
+        self.assertGreaterEqual(len(frames), 2, "assets/picture/boot/ 下缺少预渲染帧序列")
         self.assertTrue(
-            os.path.exists(os.path.join(_ROOT, 'picture', 'splash.bmp')),
-            "缺少 PyInstaller 启动图 picture/splash.bmp")
+            os.path.exists(os.path.join(_ROOT, 'assets', 'picture', 'splash.bmp')),
+            "缺少 PyInstaller 启动图 assets/picture/splash.bmp")
 
     def test_spec_bundles_boot_assets(self):
         # 打包铁律 §4：新资源必须进 spec 的 datas；启动图在 EXE 的 splash= 配置
@@ -73,7 +73,7 @@ class BootAnimationSmokeTest(unittest.TestCase):
         self.assertTrue(os.path.exists(spec_path), "找不到打包 spec")
         with open(spec_path, 'r', encoding='utf-8') as f:
             spec = f.read()
-        self.assertIn("'picture/boot'", spec, "spec datas 未打包 picture/boot 帧序列")
+        self.assertIn("'assets/picture/boot'", spec, "spec datas 未打包 assets/picture/boot 帧序列")
         self.assertIn('splash=', spec, "spec EXE 未配置 splash 启动图")
 
     def test_infinite_bypasses_demo_pipeline(self):
