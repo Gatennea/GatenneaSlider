@@ -9,12 +9,20 @@
 - bgm  ：`music/` 下 `bgm.*`；沒有就取該目錄第一個音訊檔。
 - slide：`sound/` 下所有 `slide*.*`，載入後輪換播放（S5-2 多樣本防識破，
   例如 slide1.wav … slide4.wav）；完全沒有才退回單一 `slide.*`。
-- fail / solved：`sound/` 下 `fail.*` / `solved.*`；`solved` 也認別名 `cheer.*`。
+- fail / solved：`sound/` 下 `fail.*`（**別名 `reject.*`**，2026-11-07 用戶給的
+  `reject.mp3` 就是填這個槽位）/ `solved.*`；`solved` 也認別名 `cheer.*`。
   都沒有則靜默 no-op。
 - click / keyboard：`sound/` 下 `click.*` / `keyboard.*`，是**獨立槽位**（鼠標點擊 /
-  鍵盤事件），不是 fail 的別名。觸發點：`handle_events` 的全局左鍵、KEYDOWN
-  （移動鍵跳過，避免和摩擦聲疊）。
+  鍵盤事件），不是 fail 的別名。觸發點：`handle_events` 的全局左鍵、KEYDOWN。
 副檔名任取 `.ogg` / `.wav` / `.mp3` 之一。
+
+一次交互只出一個聲音（2026-11-07 定）：
+  · 鍵盤音是「這一按被系統收到」的**兜底反饋**，不是每按必響。
+  · 一次推動若已有動作音（成功=滑動聲，被拒=拒絕聲），鍵盤音就不出，
+    絕不兩個一起響；若這一按沒產生任何動作音（打字、快捷鍵、Esc、
+    被狀態攔下又沒播拒絕聲），才補一聲鍵盤音。
+  · 判定靠 `AudioManager.last_action_ms`：滑動聲 / 拒絕聲播出（或拒絕聲被
+    節流攔下但素材在）時記時間戳；`handle_events` 幀末比對，見 `gui/events.py`。
 
 設計約束（agents.md §4 打包鐵律）：
 - 無素材時所有播放靜默 no-op，不報錯、不卡啟動。
@@ -31,7 +39,8 @@ api 概要：
 - slot_status() / bgm_detail()    設置頁「音效一覽」用：逐項開關狀態與素材名
 - preview(slot)                   試聽（无视开关与总静音）
 - play_fail() / play_solved() / play_click() / play_keyboard()
-                                  一次性音效（失敗 / 復原 / 鼠標點擊 / 鍵盤按鍵）
+                                  一次性音效（滑動被拒 / 復原 / 鼠標點擊 / 鍵盤按鍵）
+                                  play_fail 走獨佔聲道 + 節流，長按被拒不疊音
 - play_slide(distance=None, duration_ms=None)
                                   滑動聲：播**一次**原始 slide 樣本（單次魔方轉動聲），
                                   只按滑動速度調音量；不拉伸、不循環、不合成
@@ -65,9 +74,10 @@ _BGM_BASE = 'bgm'                       # music/ 下的優先檔名（無則取�
 _SLIDE_PREFIX = 'slide'                 # sound/ 下所有 slide*.* 做輪換
 _ONE_SHOT_SLOTS = ('fail', 'solved', 'click', 'keyboard')    # sound/ 下精確檔名
 # 槽位名之外的常用別名：素材常按「聲音內容」命名，按順序認。
-# ⚠️ click / keyboard 是**獨立槽位**（鼠標點擊 / 鍵盤事件），不是 fail 的別名；
-#    fail 素材用戶還在找，找到前 fail 保持靜音。
+# ⚠️ click / keyboard 是**獨立槽位**（鼠標點擊 / 鍵盤事件），不是 fail 的別名。
+#    fail 槽位認 `reject.*`：2026-11-07 用戶新增的「滑動被拒」素材。
 _ONE_SHOT_ALIASES = {
+    'fail': ('fail', 'reject'),
     'solved': ('solved', 'cheer'),
 }
 
@@ -75,10 +85,10 @@ _ONE_SHOT_ALIASES = {
 # (鍵, 名稱, 說明)；順序就是設置頁列出的順序。
 SLOT_SPECS = (
     ('slide',    '滑动声', '拖动 / 键盘移动 / 打乱时的单次转动声（原始样本播一次，越慢越轻）'),
-    ('fail',     '滑动失败', '拖拽被拒（走不通 / 没缝隙）时的短提示音'),
+    ('fail',     '滑动被拒', '尝试推动但走不通时播放（没选缝 / 方向不对 / 会断开或重叠）'),
     ('solved',   '复原',     '拼好复原时播放'),
     ('click',    '鼠标点击', '任意左键点击：棋盘、按钮、菜单、开关、对话框'),
-    ('keyboard', '键盘按键', '按键事件；移动键只出滑动摩擦声，不叠按键声'),
+    ('keyboard', '键盘按键', '按键反馈；这一按若已有滑动声或拒绝声，就不叠按键声'),
 )
 SLOT_KEYS = tuple(k for k, _l, _d in SLOT_SPECS)
 SLOT_LABELS = {k: l for k, l, _d in SLOT_SPECS}
@@ -95,6 +105,9 @@ _SLIDE_MIN_GAP_MS = 30
 # 點擊 / 按鍵聲的節流：只防同一事件被派發兩次，正常連點連打不吞
 _CLICK_MIN_GAP_MS = 25
 _KEY_MIN_GAP_MS = 15
+# 拒絕音素材約 1.2s：節流只防「同一次按鍵被多條路徑重複觸發」，
+# 長按連發靠專用聲道的 get_busy() 擋，聲音沒播完不重開頭。
+_FAIL_MIN_GAP_MS = 120
 
 # 滑動聲：單次事件音，只按速度調音量（見檔頭）
 _SLIDE_DEFAULT_MS = 160     # 沒給動畫時長時，用於速度→音量換算的基準值
@@ -102,9 +115,10 @@ _SLIDE_VOL_JITTER = 0.08    # 音量隨機擾動 ±8%
 _SLIDE_REF_CPS = 4.0        # 參考滑動速度（格/秒）：達到此速度音量才滿檔
 _SLIDE_MIN_SPEED_VOL = 0.15 # 慢速時的音量下限（再慢也留一絲轉動聲）
 
-# 專用聲道：0 = 滑動摩擦聲，1 = 背景樂；餘下留給 fail / solved
+# 專用聲道：0 = 滑動聲，1 = 保留（bgm 走 mixer.music 不佔 Channel），
+# 2 = 拒絕音；餘下留給 solved / click / keyboard 等一次性音效。
 _MIXER_CHANNELS = 8
-_MIXER_RESERVED = 2
+_MIXER_RESERVED = 3
 
 
 def _audio_resource_path(relative):
@@ -173,6 +187,11 @@ class AudioManager:
         self._slot_path = {}         # slot -> 實際載入的素材路徑
         self._slide_idx = -1         # 上一條用過的樣本（只用來避免連兩手同一個）
         self._slide_ch = None        # 專用聲道：新一手直接頂掉上一手，不疊音
+        self._fail_ch = None         # 拒絕音專用聲道：沒播完不重開，長按不疊音
+        # 「本次交互已經有動作音」的時間戳：事件層據此決定要不要補鍵盤音。
+        # 只有滑動聲 / 拒絕聲真的接管了這次反饋才更新（缺素材或關掉不更新）。
+        self.last_action_ms = -10 ** 9
+        self._last_fail_ms = -10 ** 9
         # bgm 只記路徑、不預載：播放走 mixer.music 串流（待办清单 §二十.2，
         # 67MB wav 若走 Sound 會整份解進常駐記憶體，實測 +67MB）
         self._bgm_path = None
@@ -195,6 +214,7 @@ class AudioManager:
             pygame.mixer.set_num_channels(_MIXER_CHANNELS)
             pygame.mixer.set_reserved(_MIXER_RESERVED)
             self._slide_ch = pygame.mixer.Channel(0)
+            self._fail_ch = pygame.mixer.Channel(2)
         except Exception as e:  # 無聲卡 / dummy 驅動 / 未安裝 => 靜默停用
             print(f'[audio] pygame.mixer 不可用，音效停用：{e}')
 
@@ -363,7 +383,40 @@ class AudioManager:
             print(f'[audio] 播放 {slot} 失敗：{e}')
 
     def play_fail(self):
-        self.play('fail')
+        """滑動被拒：`reject.*` / `fail.*` 短提示音。
+
+        兩件事一起做：
+        1. 登記 `last_action_ms` —— 只要在放（含被節流/忙碌攔下），這次按鍵
+           就由動作音說話，事件層不再補鍵盤音，杜絕兩個音同時響。
+        2. 獨佔聲道 + 節流 —— 素材約 1.2s，長按被拒時不重開頭、不疊成一片。
+        缺素材或該槽位關掉時**不登記**，鍵盤音照常補上，不會全靜音。
+        """
+        if not self._can_play_sfx():
+            return
+        if not self.slot_enabled.get('fail', True):
+            return
+        snd = self._sounds.get('fail')
+        if snd is None:
+            return
+        now = pygame.time.get_ticks()
+        self.last_action_ms = now
+        if now - self._last_fail_ms < _FAIL_MIN_GAP_MS:
+            return
+        ch = self._fail_ch
+        try:
+            if ch is not None and ch.get_busy():
+                return
+        except Exception:
+            pass
+        self._last_fail_ms = now
+        try:
+            snd.set_volume(self.sfx_volume)
+            if ch is not None:
+                ch.play(snd)
+            else:
+                snd.play()
+        except Exception as e:
+            print(f'[audio] 播放 fail 失敗：{e}')
 
     def play_solved(self):
         self.play('solved')
@@ -475,6 +528,7 @@ class AudioManager:
         if snd is None:
             return
         self._last_slide_ms = now
+        self.last_action_ms = now       # 這次按鍵已有滑動聲 → 壓掉鍵盤音
         vol = self._slide_volume(distance, duration_ms)
         try:
             ch = self._slide_ch

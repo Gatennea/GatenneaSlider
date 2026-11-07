@@ -132,14 +132,14 @@ class MoveMixin:
         move_step = step if step is not None else self.current_step
         # 教程解法播放中：锁定棋盘操作（不得打断回放）
         if self._tut_board_locked():
-            return False
+            return self._reject_move()
         # 手动移动会使已排队的梯度阶段失效 → 终止流水线
         self._stop_gradient_pipeline()
         # 手动滑动 = 打断连续撤销/重做
         self._stop_continuous_undo_redo()
         # 只读存档：禁止滑动（撤销重做除外）
         if self._readonly_blocked():
-            return False
+            return self._reject_move()
         # 创造模式：只造题不玩游戏（与练习模式功能解耦）
         if self.create_mode:
             if self.triangle_mode or self.mi_mode:
@@ -147,7 +147,7 @@ class MoveMixin:
             else:
                 self.macro_notify_msg = "创造模式：请用[随机生成]或[手动构造]造题"
             self.macro_notify_timer = 90
-            return False
+            return self._reject_move()
         # 标注模式的手动构造视图 / 高级选项设计画布：主棋盘是编辑画布，禁止滑动
         if (getattr(self, '_ann_design_session', False)
                 or (self.annotation_mode and self._ann_view == 'build')):
@@ -160,39 +160,39 @@ class MoveMixin:
                 _msg = "高级选项：点格增删/点缝捆绑，[存样式]后退出"
             self.macro_notify_msg = _msg
             self.macro_notify_timer = 90
-            return False
+            return self._reject_move()
         # 计时模式：就绪态（已打乱未开始）禁止滑动，保证公平
         if self.game_mode == 'timed' and self.timer_state == 'ready':
             self.macro_notify_msg = "计时模式：按空格开始计时后才能滑动"
             self.macro_notify_timer = 90
-            return False
+            return self._reject_move()
 
         # 计时模式：就绪态（已打乱未开始）禁止滑动，保证公平
         if self.game_mode == 'timed' and self.timer_state == 'ready':
             self.macro_notify_msg = "计时模式：按空格开始计时后才能滑动"
             self.macro_notify_timer = 90
-            return False
+            return self._reject_move()
 
         if getattr(self, 'mi_mode', False):
             prepared = self._mi_prepare_move(direction, move_step)
             if prepared is None:
-                return False
+                return self._reject_move()
             selected, final_positions, move_step = prepared
         elif getattr(self, 'triangle_mode', False):
             prepared = self._triangle_prepare_move(direction, move_step)
             if prepared is None:
-                return False
+                return self._reject_move()
             selected, final_positions, move_step = prepared
         else:
             selected = [b for b in self.game.blocks if b.be_opted]
             if not selected:
-                return False
+                return self._reject_move()
             # 选中了全部滑块 = 整体平移，形状不变，对还原毫无意义 → 禁止
             # （缝隙落在棋形外沿时会走到这里，见 _drag_slide 的前置拦截）
             if len(selected) == len(self.game.blocks):
                 self.macro_notify_msg = "不能整体移动所有滑块（形状不变，没有意义）"
                 self.macro_notify_timer = 120
-                return False
+                return self._reject_move()
 
             # 调用 game.py 的 try_move 进行纯逻辑验证（附带失败原因）
             final_positions, fail_reason = self.game.try_move_ex(direction, move_step)
@@ -204,7 +204,7 @@ class MoveMixin:
                 elif fail_reason == 'collision':
                     self.macro_notify_msg = "滑动失败：移动后滑块会重叠"
                     self.macro_notify_timer = 90
-                return False
+                return self._reject_move()
 
         # 构建移动元数据
         #
@@ -430,6 +430,7 @@ class MoveMixin:
                 else:
                     self.macro_notify_msg = "请先选中缝隙和滑块"
                     self.macro_notify_timer = 90
+                    self._play_reject_sound()
                 return True
         return False
 

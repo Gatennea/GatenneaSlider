@@ -185,6 +185,7 @@ class DragMixin:
             self.macro_notify_msg = (
                 f"这条缝选不动（错位态切在块里）：{self._mi_hv_left(gap_type)}")
             self.macro_notify_timer = 120
+            self._play_reject_sound()
             return False
 
         self.selected_gap = (gap_type, line)
@@ -249,6 +250,7 @@ class DragMixin:
                 'no_block': "滑动失败：找不到起始滑块",
             }.get(reason, "这个方向滑不动")
             self.macro_notify_timer = 90
+            self._play_reject_sound()
             return False
 
         self.selected_gap = (gap_type, line)
@@ -293,6 +295,7 @@ class DragMixin:
         if gap is None:
             self.macro_notify_msg = "先点选缝隙，再按住滑块拖动（两次触控）"
             self.macro_notify_timer = 120
+            self._play_reject_sound()
             return False
         if not getattr(self, 'control_two_touch', True):
             return False
@@ -326,9 +329,8 @@ class DragMixin:
         if not any(b.be_opted for b in self.game.blocks):
             self.macro_notify_msg = "这个方向滑不动（被其它滑块挡住或会断开）"
             self.macro_notify_timer = 90
-            # §二十：滑动被拒提示音（无素材时静默；同时是 §十九 最省事的失败反馈）
-            if getattr(self, 'audio', None):
-                self.audio.play_fail()
+            # 滑动被拒提示音（reject.mp3）：无素材时静默，同时压掉本帧键盘音
+            self._play_reject_sound()
             return False
         gap_type, line = gap
         self.selected_block = block
@@ -479,6 +481,7 @@ class DragMixin:
         # 把位移向量投到已选缝隙的切向定方向），能走到这里说明跟随便没起来
         if getattr(self, 'mi_mode', False):
             self._mi_blocked('拖拽', '先点选缝隙，再按住滑块拖动')
+            self._play_reject_sound()
             return False
         # 动画播放中：上一手的落点还没提交，此时再移一次会把正在播的动画
         # 整组替换掉（起点被改写、上一手被悄悄丢掉），画面表现为「滑块
@@ -489,6 +492,7 @@ class DragMixin:
         if self.animating:
             self.macro_notify_msg = "动画播放中，无法移动"
             self.macro_notify_timer = 90
+            self._play_reject_sound()
             return False
         # 三角形密铺有自己的跟随入口（_init_triangle_drag_follow）：这条
         # 8 区角度 + is_valid_h_line/v_line 全是方形两坐标的解法，三角棋盘
@@ -545,6 +549,7 @@ class DragMixin:
                 b.be_opted = False
             self.macro_notify_msg = "缝隙在棋形外沿：整体移动所有滑块没有意义"
             self.macro_notify_timer = 120
+            self._play_reject_sound()
             return False
 
         # 选中包含起点滑块的连通组

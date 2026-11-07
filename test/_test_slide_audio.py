@@ -38,7 +38,8 @@
   F1/F2 solved 认别名 cheer；click / keyboard 是独立槽位（不冒充 fail/solved）
   G1~G3 槽位表 / slot_status（五项、开关键、素材概况、缺素材标注）
   G4/G5 逐项开关真拦得住；试听无视逐项开关、总开关与静音
-  G6~G8 click/keyboard 的挂接点存在；移动键不出按键声（只留滑动声）
+  G6~G8 click/keyboard 挂接点 + 一次交互只出一个声音（动作音优先，键盘音兜底）
+  H1~H5 reject 素材认进 fail 槽位；滑动声/拒绝音登记动作音；拒绝出口不漏接
 
 执行：D:/python/python.exe -u test/_test_slide_audio.py
 """
@@ -309,16 +310,88 @@ if getattr(_g, 'audio', None) is not None:
     _orig_kb = _g.audio.play_keyboard
     _g.audio.play_keyboard = lambda: _calls_kb.append(1)
     try:
-        _g._play_keyboard_sound(pygame.K_LEFT)       # 移动键：交给滑动摩擦声
-        _move_only = len(_calls_kb)
-        _g._play_keyboard_sound(pygame.K_SPACE)      # 非移动键：出按键声
+        # ① 打字 / 快捷键：这一按没有动作音 → 帧末补一声按键声
+        _g.audio.last_action_ms = -10 ** 9
+        _g._play_keyboard_sound(pygame.K_SPACE)
+        _g._flush_keyboard_sound()
         _typed = len(_calls_kb)
+        # ② 方向键推动成功：同帧有滑动声 → 按键声不能叠上来
+        _g.audio.last_action_ms = -10 ** 9
+        _g._play_keyboard_sound(pygame.K_LEFT)
+        _g.audio.last_action_ms = pygame.time.get_ticks()
+        _g._flush_keyboard_sound()
+        _with_slide = len(_calls_kb)
+        # ③ 方向键被拒：同帧有拒绝声 → 同样不叠
+        _g.audio.last_action_ms = -10 ** 9
+        _g._play_keyboard_sound(pygame.K_LEFT)
+        _g._play_reject_sound()
+        _g.audio.last_action_ms = pygame.time.get_ticks()   # 动作音已登记
+        _g._flush_keyboard_sound()
+        _with_reject = len(_calls_kb)
     finally:
         _g.audio.play_keyboard = _orig_kb
-    check('G8 移动键不出按键声（只留滑动摩擦声），其它键出',
-          _move_only == 0 and _typed == 1, f'move={_move_only} other={_typed}')
+    check('G8 一次交互只出一个声音：无动作音补按键声，有滑动/拒绝声不叠',
+          _typed == 1 and _with_slide == 1 and _with_reject == 1,
+          f'typed={_typed} with_slide={_with_slide} with_reject={_with_reject}')
 else:
     print('   [skip] 音频模块不可用：G8 跳过')
+
+
+# ================================================================ H：拒绝音 + 动作音登记
+# H1：用户 2026-11-07 新增的 reject.mp3 真的被「滑动被拒」槽位认到
+check('H1 reject 素材认进 fail 槽位（别名表 + 实际载入）',
+      'reject' in A._ONE_SHOT_ALIASES.get('fail', ())
+      and os.path.basename(mgr._slot_path.get('fail', '')).lower().startswith('reject'),
+      f"aliases={A._ONE_SHOT_ALIASES.get('fail')} loaded={mgr._slot_path.get('fail')}")
+
+if mgr.available and mgr._sounds.get('fail') is not None:
+    class _FakeCh:
+        def __init__(self):
+            self.busy = False
+            self.snd = None
+
+        def get_busy(self):
+            return self.busy
+
+        def play(self, snd):
+            self.snd = snd
+            self.busy = True
+            snd.play()
+
+    _fake_fail = _FakeSnd()
+    _old_fail_snd = mgr._sounds.get('fail')
+    _old_fail_ch = mgr._fail_ch
+    mgr._sounds['fail'] = _fake_fail
+    mgr._fail_ch = _FakeCh()
+    mgr._last_fail_ms = -10 ** 9
+    mgr.last_action_ms = -10 ** 9
+    try:
+        mgr.play_fail()
+        _first = _fake_fail.plays
+        _marked = mgr.last_action_ms > 0
+        mgr.play_fail()               # 上一声还没播完（长按连发）：不重开头
+        _second = _fake_fail.plays
+        check('H2 拒绝音只播一次并登记动作音（长按被拒不叠成一片）',
+              _first == 1 and _second == 1 and _marked,
+              f'first={_first} second={_second} marked={_marked}')
+        mgr._last_slide_ms = -10 ** 9
+        mgr.last_action_ms = -10 ** 9
+        mgr.play_slide(1, duration_ms=160)
+        check('H3 滑动声同样登记动作音（帧末据此压掉按键声）',
+              mgr.last_action_ms > 0, f'last_action_ms={mgr.last_action_ms}')
+    finally:
+        mgr._sounds['fail'] = _old_fail_snd
+        mgr._fail_ch = _old_fail_ch
+else:
+    print('   [skip] 拒绝音素材 / mixer 不可用：H2/H3 跳过')
+
+_move_src = inspect.getsource(SliderGUI.move_selected_blocks)
+check('H4 移动入口的拒绝分支统一走 _reject_move（不会漏接某一条）',
+      '_reject_move()' in _move_src
+      and 'return False' not in _move_src.replace('return self._reject_move()', ''),
+      f'bare_returns={_move_src.count("return False")}')
+check('H5 键盘音在帧末结算，且键盘移动被拒的分支接了拒绝声',
+      '_flush_keyboard_sound()' in _ev_src and '_play_reject_sound()' in _ev_src, '')
 
 
 # ================================================================ C/D：触发点

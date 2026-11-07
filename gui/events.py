@@ -194,31 +194,38 @@ class EventsMixin:
             return
         audio.play_click()
 
-    def _is_move_key(self, key):
-        """该键当前是否绑定「移动滑块」——这类键只出滑动摩擦声，不叠按键声。"""
-        if key is None:
-            return False
-        if (getattr(self, 'control_mouse_kb', True)
-                and key in (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT)):
-            return True
-        kb = getattr(self, 'keybindings', None) or {}
-        for action in ('move_up', 'move_down', 'move_left', 'move_right'):
-            name = (kb.get(action) or {}).get('key', '')
-            if not name:
-                continue
-            try:
-                if pygame.key.name(key).lower() == str(name).lower():
-                    return True
-            except Exception:
-                continue
+    def _play_reject_sound(self):
+        """玩家尝试推动但被拒：出一声短提示，并登记「本次已有动作音」。"""
+        audio = getattr(self, 'audio', None)
+        if audio is not None:
+            audio.play_fail()
+
+    def _reject_move(self):
+        """move_selected_blocks / 拖拽的统一拒绝出口：出声 + 返回 False。"""
+        self._play_reject_sound()
         return False
 
     def _play_keyboard_sound(self, key):
-        """键盘按键声：打字、快捷键、Esc 都算；移动键交给滑动摩擦声。"""
-        audio = getattr(self, 'audio', None)
-        if audio is None or key is None:
+        """登记本帧有一次 KEYDOWN；出不出声由帧末 _flush_keyboard_sound 决定。
+
+        旧做法是「移动键一律跳过按键声」，但按方向键和推动 / 拒绝常常同一帧
+        发生，一旦这一按被状态拦下又没接到动作音，就整段静音。改成动作音
+        优先：同帧有滑动声或拒绝声 → 不补键盘音；否则补一声。
+        """
+        if key is None:
             return
-        if self._is_move_key(key):
+        self._pending_key_ms = pygame.time.get_ticks()
+
+    def _flush_keyboard_sound(self):
+        """帧末结算：这一按若没产生任何动作音，才补键盘音（绝不叠着响）。"""
+        pending = getattr(self, '_pending_key_ms', None)
+        if pending is None:
+            return
+        self._pending_key_ms = None
+        audio = getattr(self, 'audio', None)
+        if audio is None:
+            return
+        if getattr(audio, 'last_action_ms', -10 ** 9) >= pending:
             return
         audio.play_keyboard()
 
@@ -235,8 +242,8 @@ class EventsMixin:
                     self.spawn_click_feedback(getattr(event, 'pos', None))
                     self._play_click_sound()
 
-                # 键盘按键声：同样与命中的控件无关（打字、快捷键、Esc 都算）。
-                # 移动键交给滑动摩擦声，别叠成两下。
+                # 键盘按键声：先登记，帧末才知道这次按有没有产生动作音。
+                # 成功推动→滑动声、被拒→拒绝声，两种情况下都不再叠按键声。
                 if event.type == pygame.KEYDOWN:
                     self._play_keyboard_sound(getattr(event, 'key', None))
 
@@ -1400,6 +1407,7 @@ class EventsMixin:
                                     self.macro_notify_msg = (
                                         "米字格：方向请用虚拟键盘（或按住滑块拖动定方向）")
                                     self.macro_notify_timer = 90
+                                    self._play_reject_sound()
                                     break
                             continue
                         # 三角形密铺：6 向键盘映射（W E / A D / Z X，围住 S 成六边形）
@@ -1432,6 +1440,12 @@ class EventsMixin:
                                             can_move = True
                                         if can_move:
                                             self.move_selected_blocks(direction)
+                                        else:
+                                            # 方向跟缝不平行：这一按被拒，出拒绝声
+                                            self._play_reject_sound()
+                                    else:
+                                        # 没选缝 / 没选块：同样是「推了没动」
+                                        self._play_reject_sound()
                                     break
                 
                 # 键盘释放
@@ -1452,7 +1466,10 @@ class EventsMixin:
                 # 事件处理异常属非致命：仅输出到控制台（带完整堆栈），不中断游戏
                 traceback.print_exc()
                 print("Event error (non-fatal)")
-    
+
+        # 帧末结算键盘音：同帧有滑动声 / 拒绝声就不补，绝不两个一起响
+        self._flush_keyboard_sound()
+
     def _cmd_reply(self, resp_q, ok, message, data=None):
         """统一回复：有 resp_q 则通过队列回复（HTTP），否则打印到终端"""
         if resp_q:
