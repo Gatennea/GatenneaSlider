@@ -255,6 +255,8 @@ class SessionMixin:
         self.step_count += 1
         self._infinite_shuffle_step_playing = True
         self.start_animation(blocks, rec['final'])
+        # 無限打亂每一步同樣出摩擦聲（使用者 2026-11-07 明確要求補上）
+        self._play_slide_sound(len(rec['moved']))
         # 选中动画：游走每一步同样画出用到的缝隙与滑块组
         self._flash_shuffle_selection(rec.get('moved'), rec.get('gap'))
 
@@ -301,10 +303,10 @@ class SessionMixin:
         self._clear_sel_anim()
 
     # ------------------------------------------------------------------
-    # 防意外打乱：历史非空时先确认（确定打乱 / 存档 / 取消）
+    # 防意外打乱/重置：历史非空时先确认（确定执行 / 存档 / 取消）
     # ------------------------------------------------------------------
     def _shuffle_has_history(self) -> bool:
-        """当前是否存在会被打乱清掉的历史（可撤销或可重做）。"""
+        """当前是否存在会被打乱/重置清掉的历史（可撤销或可重做）。"""
         h = getattr(self, 'game_history', None)
         if h is None:
             return False
@@ -347,6 +349,38 @@ class SessionMixin:
             self._pending_shuffle_after_save = True
             self.save_as()
 
+    def _request_reset_confirm(self):
+        """弹出「重置前确认」：明确会丢掉当前进度并清空历史，提供 确定重置 / 存档 / 取消。"""
+        self.show_confirm_dialog = True
+        self.confirm_title = '重置前确认'
+        self.confirm_lines = [
+            '重置会丢掉当前的进度并清空历史，之后将无法撤销回当前的局面。',
+            '建议先存档再重置。',
+        ]
+        self.confirm_ok_text = '确定重置'
+        self.confirm_danger = True
+        self.confirm_extra_text = '存档'
+        self.confirm_action = (lambda: self.reset_puzzle(confirm=False))
+        self.confirm_extra_action = self._save_then_reset
+
+    def _save_then_reset(self):
+        """确认框的「存档」：先存档，成功后再重置（用户本意仍是重置）。
+
+        与 _save_then_shuffle 同构：无当前文件路径时走另存为对话框（异步），
+        挂 `_pending_reset_after_save` 标记等保存成功后续重置；取消则放弃。
+        """
+        if self._med_save_blocked():
+            return
+        if getattr(self, 'prevent_overwrite_flag', False) and self.current_file_path:
+            self._pending_reset_after_save = True
+            self.save_as()
+        elif self.current_file_path:
+            if self._save_to_path(self.current_file_path):
+                self.reset_puzzle(confirm=False)
+        else:
+            self._pending_reset_after_save = True
+            self.save_as()
+
     def _fit_board_view(self):
         """按当前盘面适配视图（打乱后 / 演示切终态时用）。"""
         if getattr(self, 'triangle_mode', False):
@@ -357,8 +391,14 @@ class SessionMixin:
             self.center_map()
         self.ensure_blocks_visible()
 
-    def reset_puzzle(self):
-        """重置谜题到初始状态"""
+    def reset_puzzle(self, confirm=True):
+        """重置谜题到初始状态
+
+        confirm=True（交互入口默认）：若「防意外打乱/重置」开关开着且当前
+        历史非空，先弹确认框（确定重置 / 存档 / 取消）——重置会丢掉当前
+        进度并清空历史，之后无法撤销回当前局面（与打乱同一套防护）。
+        确认后与外部控制（API / stdin）都会以 confirm=False 再调一次直接执行。
+        """
         # 教程解法播放中：锁定棋盘操作
         if self._tut_board_locked():
             return
@@ -369,6 +409,12 @@ class SessionMixin:
         if self.timer_state == 'running':
             self.macro_notify_msg = "计时中无法重置"
             self.macro_notify_timer = 90
+            return
+        # 防意外重置：历史非空时先确认（重置会丢掉当前进度、之后无法撤销）
+        if (confirm
+                and getattr(self, 'confirm_before_shuffle', True)
+                and self._shuffle_has_history()):
+            self._request_reset_confirm()
             return
         self._timer_cancel()
         # 高级选项样式局：复原 = 回到样式还原态，不是默认满矩形。

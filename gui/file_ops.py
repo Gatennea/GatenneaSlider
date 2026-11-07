@@ -944,14 +944,19 @@ class FileOpsMixin:
                 if self.file_dialog.result:
                     ok = self._save_to_path(self.file_dialog.result)
                     self.save_dir = os.path.dirname(self.file_dialog.result)
-                    # 「存档后打乱」：另存为保存成功才续打乱；失败不续
+                    # 「存档后打乱/重置」：另存为保存成功才续；失败不续
                     if getattr(self, '_pending_shuffle_after_save', False):
                         self._pending_shuffle_after_save = False
                         if ok:
                             self.shuffle_puzzle(confirm=False)
+                    if getattr(self, '_pending_reset_after_save', False):
+                        self._pending_reset_after_save = False
+                        if ok:
+                            self.reset_puzzle(confirm=False)
                 else:
-                    # 取消另存为：放弃「存档后打乱」
+                    # 取消另存为：放弃「存档后打乱/重置」
                     self._pending_shuffle_after_save = False
+                    self._pending_reset_after_save = False
             if getattr(self, '_pending_load', False):
                 self._pending_load = False
                 if self.file_dialog.result:

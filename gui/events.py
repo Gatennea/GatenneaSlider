@@ -2116,7 +2116,8 @@ class EventsMixin:
                     self._cmd_reply(resp_q, True, "已打乱")
                 
                 elif action == 'reset':
-                    self.reset_puzzle()
+                    # 外部控制是显式指令：跳过「防意外重置」确认框（与 shuffle 同理）
+                    self.reset_puzzle(confirm=False)
                     self._cmd_reply(resp_q, True, f"已重置为 {self.current_step}~{self.current_m}*{self.current_n}")
                 
                 elif action == 'move':
@@ -3543,7 +3544,7 @@ class EventsMixin:
                 if self._settings_confirm_shuffle_toggle_rect.collidepoint(mx, my):
                     self.confirm_before_shuffle = not getattr(self, 'confirm_before_shuffle', True)
                     status = '开' if self.confirm_before_shuffle else '关'
-                    self.macro_notify_msg = f"防意外打乱：{status}"
+                    self.macro_notify_msg = f"防意外打乱/重置：{status}"
                     self.macro_notify_timer = 90
                     return
 

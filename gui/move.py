@@ -34,8 +34,11 @@ class MoveMixin:
         · 走 ``get_gap_at_pos``（它已按形态分派，且通用通道还判了
           ``is_valid_gap`` + ``_generic_gap_live``，即「两侧都有块、且推得
           动」）；
-        · 通用通道的**宽兜底**（±28）也照搬——点偏进相邻块时点击会命中，悬停
-          就该亮，不然又是「看着能点、点了没反应」；
+        · **宽兜底**（±28）也照搬——点偏进相邻块时点击会命中，悬停
+          就该亮，不然又是「看着能点、点了没反应」。2026-11-07 起方形/数字
+          盘也接上（与通用通道一致；此前只有通用通道有宽兜底，方形盘悬停
+          命中带一直是 gap+10）。三角/米字分支暂不接，宽查询对它们是空操作
+          （get_gap_at_pos 的那两支忽略 tolerance，行为不变）；
         · 已选中缝后的第二步（点块定哪侧滑）与选块填空期间不算：那时点缝的
           语义是另一回事（见 ``_sq_click_query`` 的同一组闸门）。
 
@@ -57,7 +60,9 @@ class MoveMixin:
             if screen_y < getattr(self, 'menu_bar_height', 0):
                 return None
             gap = self.get_gap_at_pos(screen_x, screen_y)
-            if gap is None and self._generic_spec() is not None:
+            if gap is None:
+                # 宽兜底无条件重查：通用通道与方形盘拿 ±28，三角/米字因
+                # get_gap_at_pos 忽略 tolerance 而保持原命中带（空操作）
                 gap = self.get_gap_at_pos(screen_x, screen_y, tolerance=28.0)
             return gap
         except Exception:                     # noqa: BLE001 —— 悬停不许炸主循环
@@ -684,6 +689,11 @@ class MoveMixin:
              不能被誤判成「取消選縫」。
         通用通道的決策帶依次是：精準死縫 ±6 → 活縫 ±28 → 死縫 ±28 →
         貼邊灰線 ±8（±28 仍小於半格 30，不會跨格誤選對側縫）。
+        2026-11-07 起**方形/數字盤接上「活縫寬兜底 ±28」**（此前這段被
+        ``_generic_spec() is not None`` 閘在通用通道裡，方形盤點偏進相鄰塊
+        一直選不中縫）；只接活縫分支，死縫/貼邊提示機制不移植（那是為
+        通用通道射線法假陽性設的，方形塊命中是真實的）；三角形態不接，
+        窄帶仍是 gap+10。
         """
         gap = self.get_gap_at_pos(screen_x, screen_y)
         block = self.get_block_at_pos(screen_x, screen_y)
@@ -693,41 +703,52 @@ class MoveMixin:
         _dead_seam = None
         _edge_hint = None
         if (getattr(self, '_pick_fill', None) is None
-                and self._generic_spec() is not None
                 and gap is None and block is not None
                 and getattr(self, 'selected_gap', None) is None):
-            # 通用通道多邊形密鋪無縫隙：共享邊的中點對兩相鄰塊都在
-            # 「邊界內」（射線法對邊界點不設防），點縫時塊命中是假陽性。
-            # 「未選中縫時單獨點塊」本來就是 no-op（要選完縫才點塊定哪側
-            # 滑），所以這種點一律優先當點縫處理，且判定帶放大到 28
-            # （cell=60、半格 30，28 仍不跨格誤選對側縫）：
-            #   ① 精準壓在死縫上（±6）→ 收掉塊命中，下面提示說原因；
-            #   ② 附近有活縫（±28）→ 直接選中（細縫更好選）；
-            #   ③ 只有死縫（±28）→ 收掉塊命中並記下，走提示，絕不靜默。
-            # 已選中縫後的第二步（點塊選哪側滑）不進這裡，以免把點滑塊
-            # 誤判成「取消選縫」。
-            dead_near = self._rejected_seam_at(screen_x, screen_y)
-            if dead_near is not None:
-                block = None
-                _dead_seam = dead_near
-            else:
+            if self._generic_spec() is not None:
+                # 通用通道多邊形密鋪無縫隙：共享邊的中點對兩相鄰塊都在
+                # 「邊界內」（射線法對邊界點不設防），點縫時塊命中是假陽性。
+                # 「未選中縫時單獨點塊」本來就是 no-op（要選完縫才點塊定哪側
+                # 滑），所以這種點一律優先當點縫處理，且判定帶放大到 28
+                # （cell=60、半格 30，28 仍不跨格誤選對側縫）：
+                #   ① 精準壓在死縫上（±6）→ 收掉塊命中，下面提示說原因；
+                #   ② 附近有活縫（±28）→ 直接選中（細縫更好選）；
+                #   ③ 只有死縫（±28）→ 收掉塊命中並記下，走提示，絕不靜默。
+                # 已選中縫後的第二步（點塊選哪側滑）不進這裡，以免把點滑塊
+                # 誤判成「取消選縫」。
+                dead_near = self._rejected_seam_at(screen_x, screen_y)
+                if dead_near is not None:
+                    block = None
+                    _dead_seam = dead_near
+                else:
+                    near = self.get_gap_at_pos(screen_x, screen_y,
+                                               tolerance=28.0)
+                    if near is not None:
+                        gap = near
+                        block = None
+                    else:
+                        dead_wide = self._rejected_seam_at(
+                            screen_x, screen_y, tolerance=28.0)
+                        if dead_wide is not None:
+                            block = None
+                            _dead_seam = dead_wide
+                        elif self._click_on_nonplayable_edge(
+                                block, screen_x, screen_y):
+                            # 畫得出、卻不是可選縫的邊線（外沿 / 走位後的 T 接
+                            # 切口）：收掉塊命中，走下面的提示，絕不靜默。
+                            _edge_hint = block
+                            block = None
+            elif not getattr(self, 'triangle_mode', False):
+                # 方形/數字盤：只接「活縫寬兜底 ±28」（2026-11-07，與通用
+                # 通道同帶）——點偏進相鄰塊也能選縫，懸停同一判据（見
+                # _hover_gap_at）。死縫/貼邊提示機制不移植：外沿死縫的提示
+                # 仍走下面「塊未命中」的原路；方形縫帶 gap4+28=32 恰等於
+                # 半格距 64 的一半，`<` 嚴格比較不會同時吃兩側縫。
                 near = self.get_gap_at_pos(screen_x, screen_y,
                                            tolerance=28.0)
                 if near is not None:
                     gap = near
                     block = None
-                else:
-                    dead_wide = self._rejected_seam_at(
-                        screen_x, screen_y, tolerance=28.0)
-                    if dead_wide is not None:
-                        block = None
-                        _dead_seam = dead_wide
-                    elif self._click_on_nonplayable_edge(
-                            block, screen_x, screen_y):
-                        # 畫得出、卻不是可選縫的邊線（外沿 / 走位後的 T 接
-                        # 切口）：收掉塊命中，走下面的提示，絕不靜默。
-                        _edge_hint = block
-                        block = None
         # 选块填空的两下点击语义是「选哪块、填哪个坑」，不是滑动，
         # 此时别插嘴说缝选不动
         if (gap is None and block is None

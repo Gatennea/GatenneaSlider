@@ -58,19 +58,42 @@ def _read_env():
     return _truthy(raw)
 
 
+#: 文件档缓存：签名 ``(st_mtime_ns, st_size)`` -> 解析结果（见 `_read_file`）。
+#: ``None`` 也照存（文件缺失/损坏是常态，别每次重试解析）。
+_FILE_CACHE = {'sig': None, 'val': None}
+
+
 def _read_file():
-    """配置文件档：文件缺失/损坏返回 None。"""
+    """配置文件档：文件缺失/损坏返回 None。
+
+    按 ``(st_mtime_ns, st_size)`` 签名缓存解析结果（2026-11-07 帧级 profile：
+    状态栏每帧问 ``is_enabled()``，200 帧里 400 次 isfile+open+json.load，
+    占被采样帧约 7%）。现在每次只剩一次 ``os.stat``，外部改文件签名一变
+    立刻重读，语义与逐次重读一致。
+    """
     path = config_path()
-    if not os.path.isfile(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        _FILE_CACHE['sig'] = None
+        _FILE_CACHE['val'] = None
         return None
+    sig = (st.st_mtime_ns, st.st_size)
+    if _FILE_CACHE['sig'] == sig:
+        return _FILE_CACHE['val']
     try:
         with open(path, 'r', encoding='utf-8') as fp:
             data = json.load(fp)
     except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or 'enabled' not in data:
-        return None
-    return bool(data['enabled'])
+        val = None
+    else:
+        if isinstance(data, dict) and 'enabled' in data:
+            val = bool(data['enabled'])
+        else:
+            val = None
+    _FILE_CACHE['sig'] = sig
+    _FILE_CACHE['val'] = val
+    return val
 
 
 def is_enabled() -> bool:

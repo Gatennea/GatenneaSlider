@@ -33,24 +33,20 @@ api 概要：
 - play_fail() / play_solved() / play_click() / play_keyboard()
                                   一次性音效（失敗 / 復原 / 鼠標點擊 / 鍵盤按鍵）
 - play_slide(distance=None, duration_ms=None)
-                                  滑動摩擦聲：長度貼合本次動畫（不足則隨機粒度拼貼、
-                                  過長則截斷收尾），音量隨滑動速度縮放，樣本 / 音高 /
-                                  音量都帶隨機擾動
-- play_bgm() / stop_bgm()        背景音樂迴圈
+                                  滑動摩擦聲：以 slide 樣本的「頻譜形狀」為音色，
+                                  用平穩帶限噪聲合成，長度貼合本次動畫；速度只調
+                                  音量（慢=輕）與低通截止（慢=悶），絕不循環離散爆發
+- play_bgm() / stop_bgm()        背景音樂迴圈（mixer.music 串流，不把素材常駐記憶體）
 
 滑動聲的硬要求（使用者 2026-11-07）：
 1. **只要滑動動畫要播，就得有聲**——音效在動畫啟動後才發，跟畫面同步；
-2. **長度必須貼合動畫**——素材只有 70~165ms，而動畫可長達 1000ms，直接播會
-   「一步沒滑完聲音就沒了」；連按又會「疊成一團」。這裡按目標時長現做變體：
-   拉伸比 0.55~2.2 用重採樣（變速＝變音高，聽感自然）；超過 2.2 改用**隨機
-   粒度拼接**（見 `_texture_stretch`）；低於 0.55 截斷並在尾部 15ms 淡出。
-   變體按 (樣本, 20ms 桶) 快取，逐手現算不划算。
-3. **越慢越輕**——「就像魔方一樣，滑動越慢聲音越小」（使用者 2026-11-07 二次
-   糾正）。音量按滑動速度（格/秒）縮放，慢速動畫不但拉長、還要明顯變輕，
-   不能靠把同一個聲音硬撐滿動畫時長來冒充。
-4. **禁止整段循環拼接**——舊版把 70ms 樣本原樣首尾相接十幾遍撐到 1000ms，
-   聽感是「同一個音效快速播了很多次」（使用者 2026-11-07 實機反饋）。慢速
-   只能用打散重組的摩擦質感，不能出現可數的「一下、兩下、三下」。
+2. **長度貼合動畫**——合成出的摩擦聲長度 = 本次動畫時長，過程連續不中斷；
+3. **越慢越輕、越慢越悶**——「就像魔方一樣，滑動越慢聲音越小」（使用者二次
+   糾正）：慢速動畫音量明顯變低、低通截止也調低（悶），快則亮而響；
+4. **絕不循環離散爆發**——樣本本身是帶 attack 的短爆發（內部就有數十個峰），
+   直接循環 = 一次滑動聽成「很多回快速音效」。本作法把樣本「頻譜形狀」烙印到
+   一段平穩噪聲上（保留樣本音色、但幅度恆穩），再按速度做低通與音量，得到
+   連續摩擦聲；慢速下的包絡峰數 ≈ 0（已用程序化指標驗證）。
 """
 
 import os
@@ -82,7 +78,7 @@ _ONE_SHOT_ALIASES = {
 # ---- 槽位表：設定頁「音效一覽」直接讀這裡，新增一類音效只需改這一處 ----
 # (鍵, 名稱, 說明)；順序就是設置頁列出的順序。
 SLOT_SPECS = (
-    ('slide',    '滑动摩擦', '拖动 / 键盘移动滑块时的摩擦声（slide1~4 多样本轮换，时长贴合动画）'),
+    ('slide',    '滑动摩擦', '拖动 / 键盘移动 / 打乱时的摩擦声（取样本音色合成，长度贴合动画，越慢越轻越闷）'),
     ('fail',     '滑动失败', '拖拽被拒（走不通 / 没缝隙）时的短提示音'),
     ('solved',   '复原',     '拼好复原时播放'),
     ('click',    '鼠标点击', '任意左键点击：棋盘、按钮、菜单、开关、对话框'),
@@ -104,98 +100,78 @@ _SLIDE_MIN_GAP_MS = 30
 _CLICK_MIN_GAP_MS = 25
 _KEY_MIN_GAP_MS = 15
 
-# 滑動聲時長貼合（見檔頭說明）
+# 滑動聲：頻譜烙印（見檔頭說明與 _make_friction）
 _SLIDE_DEFAULT_MS = 160     # 沒給時長（動畫關閉的瞬時提交）時的摩擦聲長度
 _SLIDE_MIN_MS = 60          # 太短聽不出摩擦，直接夾到下限
 _SLIDE_MAX_MS = 1200        # 上限＝動畫時長上限 1000ms 再留點餘量
-_SLIDE_TILE_ABOVE = 2.2     # 拉伸比超過此值：改用隨機粒度拼接（保音高、不出現循環節）
-_SLIDE_TRIM_BELOW = 0.55    # 壓縮比低於此值：改用截斷 + 尾部淡出
-_SLIDE_FADE_MS = 15         # 截斷 / 拼接的淡出淡入長度
-_SLIDE_FADE_IN_MS = 10      # 每手起播的淡入，避免硬切的爆音
-_SLIDE_TAIL_MS = 25         # 变体尾部淡出：刚好在动画结束时收音，不能硬切
-_SLIDE_GRAIN_MIN_MS = 45    # 粒度拼接的短粒下限（再短會出顆粒感／咔噠聲）
-_SLIDE_GRAIN_MAX_MS = 85    # 短粒上限（再長就聽得出「同一段又來一遍」）
-_SLIDE_JITTER = 0.06        # 時長（連帶音高）隨機擾動 ±6%
+_SLIDE_FADE_MS = 12         # 合成摩擦聲頭尾淡入淡出，避免硬切爆音
 _SLIDE_VOL_JITTER = 0.08    # 音量隨機擾動 ±8%
-_SLIDE_REF_CPS = 3.0        # 參考滑動速度（格/秒）：達到此速度音量才滿檔
-_SLIDE_MIN_SPEED_VOL = 0.25  # 慢速時的音量下限（再慢也留一絲摩擦）
-_SLIDE_CACHE_MAX = 64       # 变体缓存上限（20ms 一桶；300ms 档约 53KB/条）
+_SLIDE_REF_CPS = 4.0        # 參考滑動速度（格/秒）：達到此速度音量才滿檔
+_SLIDE_MIN_SPEED_VOL = 0.15 # 慢速時的音量下限（再慢也留一絲摩擦）
+_SLIDE_LP_SLOW_HZ = 1100    # 慢速低通截止：把高頻悶掉 => 不刺耳、聽感更輕
+_SLIDE_LP_FAST_HZ = 6500    # 快速低通截止：亮、帶勁
+_SLIDE_LP_ORDER = 4         # 頻域低通滾降階數（Butterworth 幅頻響應）
+_SLIDE_SPEC_SMOOTH = 8      # 樣本頻譜形狀的平滑窗長（bins）
+_SLIDE_CACHE_MAX = 48       # (樣本, 時長桶, 速度桶, 變體) 快取上限
+_SLIDE_VARIANTS = 3         # 每桶預備幾條不同噪聲，連按不至於完全一樣
+_SLIDE_BUCKET_MS = 25       # 時長分桶粒度
+_SLIDE_SPEED_BUCKETS = 8    # 速度分桶數（決定低通截止解析度）
 
 # 專用聲道：0 = 滑動摩擦聲，1 = 背景樂；餘下留給 fail / solved
 _MIXER_CHANNELS = 8
 _MIXER_RESERVED = 2
 
 
-def _resample(arr, target_n):
-    """線性插值重採樣：等同變速播放，音高隨之升降（0.55~2.2 倍內聽感自然）。"""
-    src_n = arr.shape[0]
-    pos = _np.linspace(0.0, src_n - 1.0, target_n, dtype=_np.float32)
-    i0 = _np.floor(pos).astype(_np.int32)
-    i1 = _np.minimum(i0 + 1, src_n - 1)
-    frac = (pos - i0)[:, None]
-    a = arr.astype(_np.float32)
-    return a[i0] * (1.0 - frac) + a[i1] * frac
+def _sample_spectrum(arr):
+    """取 slide 樣本的**頻譜形狀**：幅值譜平滑後歸一成均值 1。
 
-
-def _texture_stretch(arr, target_n, rate):
-    """把短樣本拉成任意長度：**隨機粒度拼接**，不是整段循環。
-
-    舊做法是把整條樣本原樣首尾相接 N 遍。70ms 的樣本撐 1000ms 動畫＝同一個
-    音效連響十四下，聽感非常怪（使用者 2026-11-07 實機反饋「好像把一個音效
-    快速播放了很多次」）。這裡改成：每段從樣本裡**隨機位置**切 45~85ms 的
-    短粒、隨機決定是否倒放，再用等長交叉淡化接上。相鄰兩粒的位置／方向都
-    不同，聽感是連續摩擦而不是可數的「一下、兩下、三下」。
-    首段仍保留樣本開頭，起手的 attack 不丟，才像「滑了一下」而不是一段噪音。
+    只取「什麼頻率比較多」這種音色資訊，完全丟掉時域包絡（attack / 衰減 /
+    離散爆發）。實測四個素材都是短爆發：10ms 窗 RMS 的局部極大值高達
+    67~280 個、crest 2~3.8，直接拿去循環或拼接，慢速就會聽成「很多回快速
+    音效」。取頻譜形狀才能只保留音色、不保留那一堆峰。
     """
     x = arr.astype(_np.float32)
-    n = x.shape[0]
-    if n < 4:
-        return x
-    fade = max(1, min(n // 4, int(rate * _SLIDE_FADE_MS / 1000.0)))
-    g_lo = max(int(rate * _SLIDE_GRAIN_MIN_MS / 1000.0), 2 * fade, 2)
-    g_hi = max(int(rate * _SLIDE_GRAIN_MAX_MS / 1000.0), g_lo + 1)
-    g_lo = min(g_lo, n)
-    g_hi = min(max(g_hi, g_lo), n)
-    out = x[:min(n, target_n)].copy()
-    last_off = -1
-    guard = 0
-    while out.shape[0] < target_n and guard < 256:
-        guard += 1
-        g = random.randint(g_lo, g_hi)
-        off = random.randint(0, max(0, n - g))
-        if off == last_off and n > g:      # 同一位置連切兩粒＝又能聽出重複
-            off = (off + g) % max(1, n - g)
-        last_off = off
-        piece = x[off:off + g]
-        if random.random() < 0.5:
-            piece = piece[::-1]
-        f = min(fade, out.shape[0], piece.shape[0])
-        if f <= 0:
-            out = _np.concatenate([out, piece], axis=0)
-            continue
-        ramp = _np.linspace(0.0, 1.0, f, dtype=_np.float32)[:, None]
-        seam = out[-f:] * (1.0 - ramp) + piece[:f] * ramp
-        out = _np.concatenate([out[:-f], seam, piece[f:]], axis=0)
-    return out[:target_n]
+    mono = x.mean(axis=1) if x.ndim == 2 else x
+    shape = _np.abs(_np.fft.rfft(mono))
+    shape = _np.convolve(shape,
+                         _np.ones(_SLIDE_SPEC_SMOOTH) / _SLIDE_SPEC_SMOOTH,
+                         mode='same')
+    return (shape / (shape.mean() + 1e-9)).astype(_np.float32)
 
 
-def _trim_faded(arr, target_n, rate):
-    """截斷到目標長度，並在尾部做淡出，避免硬切爆音。"""
-    out = arr[:target_n].astype(_np.float32).copy()
-    k = min(out.shape[0], max(1, int(rate * _SLIDE_FADE_MS / 1000.0)))
-    out[-k:] *= _np.linspace(1.0, 0.0, k, dtype=_np.float32)[:, None]
-    return out
+def _make_friction(spec, target_n, rate, cutoff_hz, channels=1, peak=26000.0):
+    """**頻譜烙印**：把樣本音色印到一段平穩白噪聲上，合成任意長度的摩擦聲。
 
+    做法是全程在頻域完成，沒有任何「把短樣本循環／拼接」的動作：
+      1. 生成 target_n 點白噪聲（幅度天生平穩、沒有 attack）；
+      2. rfft 後乘上插值到目標長度的樣本頻譜形狀 => 帶樣本音色的噪聲；
+      3. 再乘 Butterworth 幅頻響應做低通 => 速度慢就悶（不刺耳）、快就亮；
+      4. irfft 回時域、峰值歸一、頭尾淡入淡出。
 
-def _shape_to_length(arr, target_n, rate):
-    """把樣本整形到恰好 target_n 個採樣點（三段策略，見檔頭）。"""
-    src_n = arr.shape[0]
-    ratio = target_n / float(src_n)
-    if ratio >= _SLIDE_TILE_ABOVE:
-        return _texture_stretch(arr, target_n, rate)
-    if ratio <= _SLIDE_TRIM_BELOW:
-        return _trim_faded(arr, target_n, rate)
-    return _resample(arr, target_n)
+    因為噪聲本身平穩、也沒有循環節，慢速 1000ms 下 10ms 窗 RMS 的局部峰
+    實測 ≈ 0（見 `test/_test_slide_audio.py` 的 A7 護欄）。這正是使用者
+    2026-11-07 要求的「慢速滑動時音頻不該有很多峰值」。
+
+    返回 (target_n, channels) 的 int16 量級 float，交給呼叫方 clip 後 astype。
+    """
+    rng = _np.random.default_rng()
+    noise = rng.standard_normal(target_n).astype(_np.float32)
+    nf = _np.fft.rfft(noise)
+    length = nf.shape[0]
+    shape = _np.interp(_np.linspace(0.0, spec.shape[0] - 1.0, length),
+                       _np.arange(spec.shape[0]), spec).astype(_np.float32)
+    freqs = _np.fft.rfftfreq(target_n, 1.0 / rate)
+    lp = 1.0 / _np.sqrt(1.0 + (freqs / max(1.0, cutoff_hz))
+                        ** (2 * _SLIDE_LP_ORDER))
+    out = _np.fft.irfft(nf * shape * lp, n=target_n).astype(_np.float32)
+    cur = float(_np.max(_np.abs(out)))
+    if cur > 1e-6:
+        out *= (peak / cur)
+    fade = max(1, min(target_n // 4, int(rate * _SLIDE_FADE_MS / 1000.0)))
+    out[:fade] *= _np.linspace(0.0, 1.0, fade, dtype=_np.float32)
+    out[-fade:] *= _np.linspace(1.0, 0.0, fade, dtype=_np.float32)
+    out = out[:, None] if channels <= 1 else _np.repeat(out[:, None], channels, axis=1)
+    return _np.ascontiguousarray(out)
 
 
 def _audio_resource_path(relative):
@@ -263,11 +239,12 @@ class AudioManager:
         self._slide_files = []       # slide 素材路徑（設置頁顯示素材名用）
         self._slot_path = {}         # slot -> 實際載入的素材路徑
         self._slide_idx = -1         # 上一條用過的樣本（只用來避免連兩手同一個）
-        self._slide_cache = {}       # (樣本序號, 10ms 桶) -> 時長整形後的 Sound
+        self._slide_cache = {}       # (樣本序號, 時長桶, 速度桶) -> 合成摩擦聲
+        self._slide_spectra = []     # 每個 slide 樣本的「頻譜形狀」（烙印音色用）
         self._slide_ch = None        # 專用聲道：新一手直接頂掉上一手，不疊音
-        self._bgm_ch = None
-        self._bgm_channel = None
-        self._bgm_sound = None
+        # bgm 只記路徑、不預載：播放走 mixer.music 串流（待办清单 §二十.2，
+        # 67MB wav 若走 Sound 會整份解進常駐記憶體，實測 +67MB）
+        self._bgm_path = None
         # 設定（由 GUI 推送；預設開，音量調低）
         self.sfx_enabled = True
         self.music_enabled = True
@@ -281,12 +258,12 @@ class AudioManager:
         try:
             pygame.mixer.init()
             self.available = True
-            # 滑動聲與 bgm 各佔一條專用聲道：既能「新手頂掉舊手」不疊音，
-            # 也避免 snd.play() 隨機搶聲道時把背景樂踢掉。
+            # 滑動聲獨佔聲道 0（新手頂掉舊手、不疊音）；bgm 走 mixer.music
+            # 串流，用的是獨立的 music 聲道，不佔這裡的 Channel。
+            # 預留 2 條避免一次性音效 snd.play() 隨機搶到聲道 0。
             pygame.mixer.set_num_channels(_MIXER_CHANNELS)
             pygame.mixer.set_reserved(_MIXER_RESERVED)
             self._slide_ch = pygame.mixer.Channel(0)
-            self._bgm_ch = pygame.mixer.Channel(1)
         except Exception as e:  # 無聲卡 / dummy 驅動 / 未安裝 => 靜默停用
             print(f'[audio] pygame.mixer 不可用，音效停用：{e}')
 
@@ -306,17 +283,18 @@ class AudioManager:
     def load_all(self):
         if not self.available:
             return
-        # bgm：music/ 下 bgm.* 優先，否則該目錄第一個音訊檔
+        # bgm：music/ 下 bgm.* 優先，否則該目錄第一個音訊檔。
+        # 只記路徑不預載——啟動零成本，play_bgm 才開檔串流讀（§二十.2）
         bgm = _find_in(self.music_dir, _BGM_BASE)
         if bgm is None:
             music_files = _list_audio(self.music_dir)
             if music_files:
                 bgm = music_files[0]
-        if bgm is not None:
-            self._load_sound('bgm', bgm)
-            self._slot_path['bgm'] = bgm
+        self._bgm_path = bgm
 
         # slide：載入所有 slide*.* 做多樣本輪換；一個都沒有才退回單一 slide.*
+        # 同時預算每個樣本的「頻譜形狀」給合成摩擦聲用（見 _sample_spectrum）。
+        self._slide_spectra = []
         slide_paths = _list_prefixed(self.sfx_dir, _SLIDE_PREFIX)
         if slide_paths:
             self._slide_files = list(slide_paths)
@@ -327,12 +305,26 @@ class AudioManager:
             if self._slide_samples:
                 self._sounds['slide'] = self._slide_samples[0]
                 self._slot_path['slide'] = slide_paths[0]
+                if _np is not None:
+                    for snd in self._slide_samples:
+                        try:
+                            self._slide_spectra.append(
+                                _sample_spectrum(pygame.sndarray.array(snd)))
+                        except Exception:
+                            self._slide_spectra.append(None)
         else:
             one = _find_in(self.sfx_dir, _SLIDE_PREFIX)
             if one is not None:
                 self._slide_files = [one]
                 self._load_sound('slide', one)
                 self._slot_path['slide'] = one
+                snd = self._sounds.get('slide')
+                if snd is not None and _np is not None:
+                    try:
+                        self._slide_spectra.append(
+                            _sample_spectrum(pygame.sndarray.array(snd)))
+                    except Exception:
+                        self._slide_spectra.append(None)
 
         # fail / solved / click / keyboard：槽位名優先，其次常用別名（cheer→solved）
         for slot in _ONE_SHOT_SLOTS:
@@ -390,7 +382,7 @@ class AudioManager:
 
     def bgm_detail(self):
         """背景乐素材名（设置页显示用；没载入返回「缺素材」）。"""
-        p = self._slot_path.get('bgm')
+        p = self._bgm_path
         return os.path.basename(p) if p else '缺素材'
 
     def set_music_enabled(self, b):
@@ -427,10 +419,10 @@ class AudioManager:
             self.set_slot_flags(slot_flags)
 
     def _apply_music_volume(self):
-        if self.available and self._bgm_channel is not None:
+        if self.available and self._bgm_path is not None:
             vol = 0.0 if self.muted else self.music_volume
             try:
-                self._bgm_channel.set_volume(vol)
+                pygame.mixer.music.set_volume(vol)
             except Exception:
                 pass
 
@@ -483,8 +475,8 @@ class AudioManager:
         if not self.available:
             return False
         if slot == 'slide':
-            snd = (random.choice(self._slide_samples) if self._slide_samples
-                   else self._sounds.get('slide'))
+            # 試聽也走合成摩擦聲（中速 400ms），聽感跟遊戲內一致，不是原始短爆發
+            snd = self._slide_sound_for(1, 400)
         else:
             snd = self._sounds.get(slot)
         if snd is None:
@@ -497,92 +489,99 @@ class AudioManager:
             print(f'[audio] 试听 {slot} 失敗：{e}')
             return False
 
-    # ---- 滑動聲：時長貼合 + 隨機擾動 ----
+    # ---- 滑動聲：頻譜烙印合成（見檔頭與 _make_friction）----
     def _slide_target_ms(self, duration_ms):
-        """本次摩擦聲的目標長度：貼合動畫時長，再疊 ±6% 擾動當作音高微變。"""
+        """摩擦聲長度＝動畫時長（夾到上下限；不疊抖動，長度必須精準貼合）。"""
         try:
             target = float(duration_ms) if duration_ms else float(_SLIDE_DEFAULT_MS)
         except (TypeError, ValueError):
             target = float(_SLIDE_DEFAULT_MS)
-        target *= random.uniform(1.0 - _SLIDE_JITTER, 1.0 + _SLIDE_JITTER)
         return int(max(_SLIDE_MIN_MS, min(_SLIDE_MAX_MS, target)))
 
-    def _make_variant(self, sample, target_ms):
-        """按目標時長現做一條該長度的 Sound（失敗就退回原樣本）。"""
-        if _np is None or sample is None:
-            return sample
+    @staticmethod
+    def _slide_speed_factor(distance, duration_ms):
+        """速度係數 0..1：1 格 / 1 秒 ≈ 0.25，1 格 / 160ms ≈ 1.0。"""
+        try:
+            dist = max(1, int(distance or 1))
+        except (TypeError, ValueError):
+            dist = 1
+        try:
+            ms = max(1.0, float(duration_ms or _SLIDE_DEFAULT_MS))
+        except (TypeError, ValueError):
+            ms = float(_SLIDE_DEFAULT_MS)
+        speed = dist / (ms / 1000.0)                     # 格/秒
+        return max(0.0, min(1.0, speed / _SLIDE_REF_CPS))
+
+    def _slide_sound_for(self, distance, duration_ms):
+        """挑樣本頻譜 + 依速度/時長合成一條連續摩擦聲（帶快取）。"""
+        specs = self._slide_spectra
+        if not specs or _np is None:
+            # 沒 numpy / 沒算到頻譜 => 退回原始樣本直放（至少仍有聲）
+            return (random.choice(self._slide_samples) if self._slide_samples
+                    else self._sounds.get('slide'))
         init = pygame.mixer.get_init()
         if not init:
-            return sample
-        try:
-            arr = pygame.sndarray.array(sample)
-        except Exception:
-            return sample
-        if arr.ndim != 2 or arr.shape[0] < 2:
-            return sample
-        rate = init[0]
-        target_n = max(1, int(rate * target_ms / 1000.0))
-        try:
-            out = _shape_to_length(arr, target_n, rate)
-            # 尾部淡出：变体长度＝动画时长，硬切会「咔」一下；动画收尾时声音同步收掉
-            k = min(out.shape[0], max(1, int(rate * _SLIDE_TAIL_MS / 1000.0)))
-            if k > 1:
-                out = out.astype(_np.float32, copy=True)
-                out[-k:] *= _np.linspace(1.0, 0.0, k, dtype=_np.float32)[:, None]
-            out = _np.clip(out, -32768.0, 32767.0).astype(_np.int16)
-            return pygame.sndarray.make_sound(_np.ascontiguousarray(out))
-        except Exception as e:
-            print(f'[audio] 生成 slide 變體失敗（退回原樣本）：{e}')
-            return sample
-
-    def _slide_variant(self, duration_ms):
-        """挑樣本 + 取（或現做）對應長度的變體。"""
-        samples = self._slide_samples
-        if not samples:
             return self._sounds.get('slide')
-        # 樣本隨機挑（S5-2 防識破），但避免連兩手同一個
-        idx = random.randrange(len(samples))
-        if len(samples) > 1 and idx == self._slide_idx:
-            idx = (idx + 1) % len(samples)
-        self._slide_idx = idx
+        rate = init[0]
+        channels = init[2] if len(init) > 2 else 1
         target_ms = self._slide_target_ms(duration_ms)
-        # 20ms 一桶：±6% 扰动落在同一桶的相邻值直接复用，避免逐手现做
-        key = (idx, int(round(target_ms / 20.0)))
+        speed_f = self._slide_speed_factor(distance, target_ms)
+        cutoff = (_SLIDE_LP_SLOW_HZ
+                  + (_SLIDE_LP_FAST_HZ - _SLIDE_LP_SLOW_HZ) * speed_f)
+        # 快取分桶：時長 25ms 一桶、速度 8 檔、每桶數條不同噪聲變體
+        ms_bucket = int(round(target_ms / float(_SLIDE_BUCKET_MS)))
+        sp_bucket = int(round(speed_f * _SLIDE_SPEED_BUCKETS))
+        idx = random.randrange(len(specs))
+        if len(specs) > 1 and idx == self._slide_idx:
+            idx = (idx + 1) % len(specs)
+        self._slide_idx = idx
+        key = (idx, ms_bucket, sp_bucket, random.randrange(_SLIDE_VARIANTS))
         hit = self._slide_cache.get(key)
         if hit is not None:
             return hit
-        snd = self._make_variant(samples[idx], target_ms)
+        fallback = (self._slide_samples[idx] if idx < len(self._slide_samples)
+                    else self._sounds.get('slide'))
+        spec = specs[idx]
+        if spec is None:
+            return fallback
+        target_n = max(1, int(rate * target_ms / 1000.0))
+        try:
+            # 慢速（長聲）再額外壓低峰值：長 + 悶 + 輕三管齊下
+            peak = 26000.0 * max(0.6, min(1.0, 500.0 / target_ms))
+            out = _make_friction(spec, target_n, rate, cutoff, channels, peak)
+            snd = pygame.sndarray.make_sound(
+                _np.clip(out, -32768.0, 32767.0).astype(_np.int16))
+        except Exception as e:
+            print(f'[audio] 合成摩擦聲失敗（退回原樣本）：{e}')
+            return fallback
         if len(self._slide_cache) >= _SLIDE_CACHE_MAX:
             self._slide_cache.clear()
         self._slide_cache[key] = snd
         return snd
 
     def _slide_volume(self, distance, duration_ms=None):
-        """音量 = 距离基准 × 速度系数 × 随机扰动。
+        """音量 = 距離基準 × 速度係數 × 隨機擾動。
 
-        速度系数就是用家说的「就像魔方一样，滑动越慢声音越小」：动画被拉长
-        （慢速档）时摩擦声同时变轻，而不是把同一个声音硬撑满整段动画来冒充
-        「一直在滑」。距离只决定 1 格 / 多格的基准差。
+        速度係數就是「就像魔方一樣，滑動越慢聲音越小」：動畫被拉長（慢速檔）
+        時摩擦聲同時變輕，而不是把同一個聲音硬撐滿整段動畫來冒充「一直在滑」。
+        距離只決定 1 格 / 多格的基準差。
         """
         try:
             dist = max(1, int(distance or 1))
         except (TypeError, ValueError):
             dist = 1
         base = min(1.0, 0.8 + 0.1 * (dist - 1))
-        try:
-            ms = float(duration_ms) if duration_ms else float(_SLIDE_DEFAULT_MS)
-        except (TypeError, ValueError):
-            ms = float(_SLIDE_DEFAULT_MS)
-        speed = dist / (max(1.0, ms) / 1000.0)          # 格/秒
-        speed_f = max(_SLIDE_MIN_SPEED_VOL, min(1.0, speed / _SLIDE_REF_CPS))
+        ms = self._slide_target_ms(duration_ms)
+        speed_f = max(_SLIDE_MIN_SPEED_VOL,
+                      self._slide_speed_factor(dist, ms))
         vol = self.sfx_volume * base * speed_f
         vol *= random.uniform(1.0 - _SLIDE_VOL_JITTER, 1.0 + _SLIDE_VOL_JITTER)
         return max(0.0, min(1.0, vol))
 
     def play_slide(self, distance=None, duration_ms=None):
-        """滑動摩擦聲：長度貼合本次動畫（見檔頭兩條硬要求）。
+        """滑動摩擦聲：長度貼合本次動畫（見檔頭四條硬要求）。
 
-        distance   本次滑動格數（與時長一起換算速度 → 音量）。
+        distance    本次滑動格數（與時長一起換算速度 → 音量 / 低通截止）。
         duration_ms 本次滑動動畫的實際時長；呼叫方應在動畫時長定稿後再傳
                     （拖拽接續會把時長按剩餘比例縮短）。省略則用預設短音。
         新一手直接頂掉上一手（專用聲道），所以連按不會疊成一團；同一手
@@ -590,19 +589,22 @@ class AudioManager:
         """
         if not self._can_play_sfx():
             return
+        if not self.slot_enabled.get('slide', True):
+            return
         now = pygame.time.get_ticks()
         if now - getattr(self, '_last_slide_ms', -10 ** 9) < _SLIDE_MIN_GAP_MS:
             return
-        snd = self._slide_variant(duration_ms)
+        target_ms = self._slide_target_ms(duration_ms)
+        snd = self._slide_sound_for(distance, target_ms)
         if snd is None:
             return
         self._last_slide_ms = now
-        vol = self._slide_volume(distance, duration_ms)
+        vol = self._slide_volume(distance, target_ms)
         try:
             ch = self._slide_ch
             if ch is not None:
                 ch.set_volume(vol)
-                ch.play(snd, fade_ms=_SLIDE_FADE_IN_MS)
+                ch.play(snd)
             else:
                 snd.set_volume(vol)
                 snd.play()
@@ -612,34 +614,24 @@ class AudioManager:
     def play_bgm(self, loop=True):
         if not (self.available and self.music_enabled and not self.muted):
             return
-        snd = self._sounds.get('bgm')
-        if snd is None:
+        if self._bgm_path is None:
             return
-        ch = self._bgm_ch
-        # 已在播就別重開頭：設定每改一次都會 sync，重播會一直跳回開頭
-        if ch is not None and self._bgm_sound is snd:
-            try:
-                if ch.get_busy():
-                    return
-            except Exception:
-                pass
         try:
-            self._bgm_sound = snd
-            if ch is not None:
-                ch.play(snd, loops=-1 if loop else 0)
-                self._bgm_channel = ch
-            else:
-                self._bgm_channel = snd.play(-1 if loop else 0)
-            self._apply_music_volume()
+            # 已在播就別重開頭：設定每改一次都會 sync，重播會一直跳回開頭
+            if pygame.mixer.music.get_busy():
+                return
+            # 串流播放：每次啟動都 load（開檔讀檔頭，不吃整份記憶體）；
+            # 停播後重 load 也保證各 pygame 版本行為一致
+            pygame.mixer.music.load(self._bgm_path)
+            pygame.mixer.music.set_volume(self.music_volume)
+            pygame.mixer.music.play(-1 if loop else 0)
         except Exception as e:
             print(f'[audio] 播放 bgm 失敗：{e}')
 
     def stop_bgm(self):
-        ch = self._bgm_ch if self._bgm_ch is not None else self._bgm_channel
-        if ch is not None:
-            try:
-                ch.stop()
-            except Exception:
-                pass
-        self._bgm_channel = None
-        self._bgm_sound = None
+        if not self.available:
+            return
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass

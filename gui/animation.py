@@ -37,15 +37,12 @@ class AnimationMixin:
         2. 無動畫路徑（瞬時提交）本身不會叫到這裡，呼叫方直接傳
            SLIDE_INSTANT_MS 即可，兩條路都保證「一滑就有聲」。
 
-        打亂演示 / 無限打亂是連續視覺特效（每 60~200ms 一格、可持續幾十步），
-        照樣出聲會變成蜂鳴，這兩路一律靜音。
+        打亂演示 / 無限打亂也照常出聲（使用者 2026-11-07 明確要求；先前
+        「維持靜音」是我擅自加的，已移除）。滑動聲獨佔聲道 0，新手會頂掉
+        舊手，連續幾十步也不會疊成蜂鳴。
         """
         audio = getattr(self, 'audio', None)
         if audio is None:
-            return
-        if getattr(self, '_shuffle_demo_playing', False):
-            return
-        if getattr(self, '_infinite_shuffle_step_playing', False):
             return
         if duration_ms is None:
             duration_ms = getattr(self, 'animation_duration', 0) or self.SLIDE_INSTANT_MS
@@ -561,6 +558,9 @@ class AnimationMixin:
             self.animation_duration = min(self.animation_duration,
                                           self.SHUFFLE_DEMO_STEP_MAX_MS)
             self.start_animation(blocks, rec['final'])
+            # 打亂演示每一步都是一次完整滑動動畫，照常出摩擦聲
+            # （必須在 start_animation 之後：此時 animation_duration 已定稿）
+            self._play_slide_sound(len(rec['moved']))
             # 选中动画：把「这一步选的是哪条缝、哪一片」也画出来
             self._flash_shuffle_selection(rec.get('moved'), rec.get('gap'))
             self._shuffle_demo_done += 1
@@ -607,6 +607,10 @@ class AnimationMixin:
                 # 此刻 progress 恰为 1.0——「切屏时正好 100%」
                 for b, p in zip(self.game.blocks, getattr(self, '_shuffle_demo_final', [])):
                     b.location = list(p)
+                # 切屏即收掉上一格的选中高亮：它是按打乱前盘面选的缝与片，
+                # 终态下块已换位、缝位失效，留到淡入里会闪出错误的选中标记
+                # （高亮计时器至少 45 帧，比整段淡入还长，不主动清必残留）
+                self._clear_sel_anim()
                 self._fit_board_view()
                 self._shuffle_demo_phase = 'fade_in'
         elif phase == 'fade_in':

@@ -149,24 +149,39 @@ class MetricsPanelMixin:
         if game is None or not getattr(game, 'blocks', None):
             return None
         step = getattr(self, 'current_step', 1)
+        # 纯函数 memo（2026-11-07 帧级 profile：记号/面板开着时**每帧**都要算，
+        # 200 帧 400 次 find_best_window 全从本函数出去，占被采样帧约 8%）。
+        # 三个分支的自变量只有「块坐标 + m/n/k + step + 形态」，全放进键：
+        # 局面一动键必变，绝无陈旧值；同一帧里第二次调用直接命中（那 400 次
+        # 里有一半就是同一帧重复算的）。
+        _mkey = (tuple(sorted(tuple(b.location) for b in game.blocks)),
+                 getattr(game, 'm', None), getattr(game, 'n', None),
+                 getattr(game, 'k', None), step,
+                 bool(getattr(self, 'triangle_mode', False)),
+                 bool(getattr(self, 'mi_mode', False)))
+        _memo = getattr(self, '_tr_memo', None)
+        if _memo is not None and _memo[0] == _mkey:
+            self._target_region = _memo[1]
+            return _memo[1]
         if getattr(self, 'triangle_mode', False):
             from solver.ml.tri_placement import best_placement_of_game
             best = best_placement_of_game(
                 game, k=getattr(game, 'k', None), step=step)
-            self._target_region = best
-            return best
-        if getattr(self, 'mi_mode', False):
+            result = best
+        elif getattr(self, 'mi_mode', False):
             from solver.ml.mi_placement import best_placement_of_game
             best = best_placement_of_game(
                 game, m=getattr(game, 'm', None), n=getattr(game, 'n', None),
                 step=step)
-            self._target_region = best
-            return best
-        from solver.ml.gather_solver import find_best_window, _game_coords
-        coords = _game_coords(game)
-        r0, c0, (rh, cw), _ = find_best_window(coords, game.m, game.n, step)
-        self._target_region = (r0, c0, (rh, cw))
-        return self._target_region
+            result = best
+        else:
+            from solver.ml.gather_solver import find_best_window, _game_coords
+            coords = _game_coords(game)
+            r0, c0, (rh, cw), _ = find_best_window(coords, game.m, game.n, step)
+            result = (r0, c0, (rh, cw))
+        self._target_region = result
+        self._tr_memo = (_mkey, result)
+        return result
 
     def _draw_debug_holes(self):
         """以目標窗口為基準繪製調試標記（與綠色目標框同一窗口）。
