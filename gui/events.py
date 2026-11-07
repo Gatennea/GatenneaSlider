@@ -206,22 +206,31 @@ class EventsMixin:
         return False
 
     def _play_keyboard_sound(self, key):
-        """登记本帧有一次 KEYDOWN；出不出声由帧末 _flush_keyboard_sound 决定。
+        """按下：只登记，不发声。出不出声由松开时的 _flush_keyboard_sound 决定。
 
-        旧做法是「移动键一律跳过按键声」，但按方向键和推动 / 拒绝常常同一帧
-        发生，一旦这一按被状态拦下又没接到动作音，就整段静音。改成动作音
-        优先：同帧有滑动声或拒绝声 → 不补键盘音；否则补一声。
+        2026-11-07 定：键盘音跟着键盘事件的响应走，在 **KEYUP（松开）** 才出，
+        不在按下那刻抢跑。pending 一直留到同一个键的 KEYUP 才结算。
+        动作音（滑动声 / 拒绝声）仍在按下那刻出，靠 last_action_ms 时间戳
+        压掉这次的按键声，保证一次交互只出一个声音。
         """
         if key is None:
             return
         self._pending_key_ms = pygame.time.get_ticks()
+        self._pending_key = key
 
-    def _flush_keyboard_sound(self):
-        """帧末结算：这一按若没产生任何动作音，才补键盘音（绝不叠着响）。"""
+    def _flush_keyboard_sound(self, key):
+        """松开：结算这一按；期间有过动作音就不补，绝不叠着响。
+
+        用「同一个键」配对：组合键（如 Ctrl+Z）只有最后按下的那个键会登记，
+        无论两个键谁先松开，最多补一声，不会响成双击。
+        """
+        if key is None or getattr(self, '_pending_key', None) != key:
+            return
         pending = getattr(self, '_pending_key_ms', None)
+        self._pending_key_ms = None
+        self._pending_key = None
         if pending is None:
             return
-        self._pending_key_ms = None
         audio = getattr(self, 'audio', None)
         if audio is None:
             return
@@ -242,10 +251,13 @@ class EventsMixin:
                     self.spawn_click_feedback(getattr(event, 'pos', None))
                     self._play_click_sound()
 
-                # 键盘按键声：先登记，帧末才知道这次按有没有产生动作音。
+                # 键盘按键声：按下只登记，松开（KEYUP）才结算出声。
                 # 成功推动→滑动声、被拒→拒绝声，两种情况下都不再叠按键声。
+                # 两条都放在所有模态 continue 之前，对话框/动画/面板下也不会漏。
                 if event.type == pygame.KEYDOWN:
                     self._play_keyboard_sound(getattr(event, 'key', None))
+                elif event.type == pygame.KEYUP:
+                    self._flush_keyboard_sound(getattr(event, 'key', None))
 
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -1474,9 +1486,6 @@ class EventsMixin:
                 # 事件处理异常属非致命：仅输出到控制台（带完整堆栈），不中断游戏
                 traceback.print_exc()
                 print("Event error (non-fatal)")
-
-        # 帧末结算键盘音：同帧有滑动声 / 拒绝声就不补，绝不两个一起响
-        self._flush_keyboard_sound()
 
     def _cmd_reply(self, resp_q, ok, message, data=None):
         """统一回复：有 resp_q 则通过队列回复（HTTP），否则打印到终端"""

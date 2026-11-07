@@ -38,7 +38,7 @@
   F1/F2 solved 认别名 cheer；click / keyboard 是独立槽位（不冒充 fail/solved）
   G1~G3 槽位表 / slot_status（五项、开关键、素材概况、缺素材标注）
   G4/G5 逐项开关真拦得住；试听无视逐项开关、总开关与静音
-  G6~G8 click/keyboard 挂接点 + 一次交互只出一个声音（动作音优先，键盘音兜底）
+  G6~G9 click/keyboard 挂接点 + 键盘音只在 KEYUP 出声 + 一次交互只出一个声音
   H1~H5 reject 素材认进 fail 槽位；滑动声/拒绝音登记动作音；拒绝出口不漏接
 
 执行：D:/python/python.exe -u test/_test_slide_audio.py
@@ -300,8 +300,10 @@ else:
 _ev_src = inspect.getsource(SliderGUI.handle_events)
 check('G6 左键点击挂到了全局点击声',
       '_play_click_sound()' in _ev_src and 'spawn_click_feedback' in _ev_src, '')
-check('G7 KEYDOWN 挂到了键盘按键声',
-      '_play_keyboard_sound(' in _ev_src, '')
+check('G7 KEYDOWN 只登记，KEYUP 才结算键盘音（帧末不得再无参结算）',
+      '_play_keyboard_sound(' in _ev_src
+      and '_flush_keyboard_sound(getattr(event' in _ev_src
+      and '_flush_keyboard_sound()' not in _ev_src, '')
 _g = SliderGUI(m=4, n=4, step=2, cmd_queue=queue.Queue())
 _g.tutorial_active = False
 _g.tut_show_prompt = False
@@ -309,32 +311,54 @@ if getattr(_g, 'audio', None) is not None:
     _calls_kb = []
     _orig_kb = _g.audio.play_keyboard
     _g.audio.play_keyboard = lambda: _calls_kb.append(1)
+
+    def _key(kind, key):
+        if kind == 'down':
+            ev = pygame.event.Event(pygame.KEYDOWN, key=key, mod=0, unicode='')
+        else:
+            ev = pygame.event.Event(pygame.KEYUP, key=key, mod=0)
+        pygame.event.post(ev)
+        _g.handle_events()
+
     try:
-        # ① 打字 / 快捷键：这一按没有动作音 → 帧末补一声按键声
+        # ① 打字 / 快捷键：按下不出声，松开才响一声
         _g.audio.last_action_ms = -10 ** 9
-        _g._play_keyboard_sound(pygame.K_SPACE)
-        _g._flush_keyboard_sound()
-        _typed = len(_calls_kb)
-        # ② 方向键推动成功：同帧有滑动声 → 按键声不能叠上来
+        _key('down', pygame.K_F2)
+        _at_down = len(_calls_kb)
+        _key('up', pygame.K_F2)
+        _at_up = len(_calls_kb)
+        # ② 同一个键多松一次不重复响
+        _key('up', pygame.K_F2)
+        _double_up = len(_calls_kb)
+        # ③ 有滑动声：按下后登记动作音，松开不补
         _g.audio.last_action_ms = -10 ** 9
-        _g._play_keyboard_sound(pygame.K_LEFT)
+        _key('down', pygame.K_F3)
         _g.audio.last_action_ms = pygame.time.get_ticks()
-        _g._flush_keyboard_sound()
+        _key('up', pygame.K_F3)
         _with_slide = len(_calls_kb)
-        # ③ 方向键被拒：同帧有拒绝声 → 同样不叠
+        # ④ 被拒（拒绝声）：同样不补
         _g.audio.last_action_ms = -10 ** 9
-        _g._play_keyboard_sound(pygame.K_LEFT)
+        _key('down', pygame.K_F4)
         _g._play_reject_sound()
-        _g.audio.last_action_ms = pygame.time.get_ticks()   # 动作音已登记
-        _g._flush_keyboard_sound()
+        _key('up', pygame.K_F4)
         _with_reject = len(_calls_kb)
+        # ⑤ 组合键：两个键先后按下、先后松开，最多一声
+        _g.audio.last_action_ms = -10 ** 9
+        _key('down', pygame.K_LCTRL)
+        _key('down', pygame.K_F5)
+        _key('up', pygame.K_LCTRL)
+        _key('up', pygame.K_F5)
+        _chord = len(_calls_kb) - _with_reject
     finally:
         _g.audio.play_keyboard = _orig_kb
-    check('G8 一次交互只出一个声音：无动作音补按键声，有滑动/拒绝声不叠',
-          _typed == 1 and _with_slide == 1 and _with_reject == 1,
-          f'typed={_typed} with_slide={_with_slide} with_reject={_with_reject}')
+    check('G8 键盘音只在松开时响，按下不响、重复松开不重响',
+          _at_down == 0 and _at_up == 1 and _double_up == 1,
+          f'down={_at_down} up={_at_up} up2={_double_up}')
+    check('G9 一次交互只出一个声音：有滑动/拒绝声或组合键都不叠',
+          _with_slide == 1 and _with_reject == 1 and _chord <= 1,
+          f'slide={_with_slide} reject={_with_reject} chord={_chord}')
 else:
-    print('   [skip] 音频模块不可用：G8 跳过')
+    print('   [skip] 音频模块不可用：G8/G9 跳过')
 
 
 # ================================================================ H：拒绝音 + 动作音登记
@@ -377,7 +401,7 @@ if mgr.available and mgr._sounds.get('fail') is not None:
         mgr._last_slide_ms = -10 ** 9
         mgr.last_action_ms = -10 ** 9
         mgr.play_slide(1, duration_ms=160)
-        check('H3 滑动声同样登记动作音（帧末据此压掉按键声）',
+        check('H3 滑动声同样登记动作音（KEYUP 结算时据此压掉按键声）',
               mgr.last_action_ms > 0, f'last_action_ms={mgr.last_action_ms}')
     finally:
         mgr._sounds['fail'] = _old_fail_snd
@@ -390,8 +414,9 @@ check('H4 移动入口的拒绝分支统一走 _reject_move（不会漏接某一
       '_reject_move()' in _move_src
       and 'return False' not in _move_src.replace('return self._reject_move()', ''),
       f'bare_returns={_move_src.count("return False")}')
-check('H5 键盘音在帧末结算，且键盘移动被拒的分支接了拒绝声',
-      '_flush_keyboard_sound()' in _ev_src and '_play_reject_sound()' in _ev_src, '')
+check('H5 键盘音在 KEYUP 结算，且键盘移动被拒的分支接了拒绝声',
+      '_flush_keyboard_sound(getattr(event' in _ev_src
+      and '_play_reject_sound()' in _ev_src, '')
 
 
 # ================================================================ C/D：触发点
