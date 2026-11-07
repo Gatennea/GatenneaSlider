@@ -420,9 +420,10 @@ python -m solver.ml.human_solver
 
 `test/` 內全部是無頭腳本（不開窗口，需 pygame 可於背景模式建立 surface），直接執行，通過會印 `ALL PASS`：
 
-> ⚠️ **直接跑文件，別用 pytest 收集**：多數腳本頂層就是測試體、結尾 `sys.exit(1)` 判失敗；
-> 帶 `if __name__ == '__main__'` 守衛的文件被 pytest 收集只會看到 1 項，容易誤判「沒測到」。
-> 正確姿勢：`python test\_test_xxx.py`。
+> 現狀（2026-10-18 起）：`test/conftest.py` 用 `pytest_collect_file` 接管所有 `_test_*.py`，
+> 一個檔案交給一個子進程跑、退出碼 0 算 PASS，因此 `pytest test/` 是正式全集跑法。
+> 單支驗收仍可直接 `python test\_test_xxx.py`。別用 `pytest test/_test_xxx.py` 這種顯式檔案參數
+> （歷史上與內置 Module 收集雙跑、搶 HTTP 端口造成假紅；`conftest.py` 雖已加去重護欄，目錄跑 + `-k` 最穩）。
 
 ```bash
 python test\_test_http_api.py           # HTTP REST 端到端（狀態/分析/求解/宏/存取/模式/開關，含真實求解與取消）
@@ -492,6 +493,64 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
   前綴與真實調用關係不符（漏改 import、加了前綴卻被人 import）；
   ③`python tools/doclink_check.py --baseline tools/doclink_baseline.json --strict`，
   擋「文檔引用到不存在的檔案」與「§X 節號不存在」兩類腐爛（存量見 待办清单.md §十六）。
+
+### 9.2 回歸範圍分級：本機別默認跑全套
+
+2026-11-07 定。全套要 20~35 分鐘，大半時間耗在求解器全圖腳本；而 **push / PR 時 CI 已自動
+跑全套**（上一節），本機再跑一次是重複勞動。局部改動的邊際價值很低，按下面分級跑。
+
+**一、「全套」到底有哪些**
+
+1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **147 個** `_test_*.py`，
+   一個檔案算一條用例，子進程執行、退出碼 0 算 PASS。其中 3 個收集即 skip：
+   `_test_full.py`（寫死舊專案路徑）、`_test_dent_inner.py`（缺未入庫的錄製存檔）、
+   `_test_bfs_explore.py`（純探測、估需兩小時）。實際跑 144 個。
+   `_smoke_exe.py` 不是 `_test_` 前綴、根本不收集，發版前手動跑。
+   耗時大頭：`_test_mi_gather.py` 12~15 分鐘、`_test_reject_text_only.py` 約 8 分鐘、
+   `_test_solver.py` 約 4 分鐘；CI 上限 120 分鐘。
+2. `python -m compileall -q GUI.py game.py game_triangle.py game_mi.py engine gui solver macro tools test`。
+3. 三項 lint：`tools/static_lint.runner --baseline tools/static_lint/baseline.json --strict`、
+   `python tools/experiments_index.py --check`、
+   `python tools/doclink_check.py --baseline tools/doclink_baseline.json --strict`。
+
+> 第 2、3 項幾十秒就跑完，**每次改代碼都跑**，不是只有跑全套時才跑。真正貴的只有第 1 項。
+
+**二、什麼時候本機跑全套（只有這幾種）**
+
+- 改跨包引用、公共 API（函式簽名 / 常數 / 模組名被多處呼叫）。
+- 批量改名、批量正則替換。
+- 一次改多個 `test/` 檔案，或改 `conftest.py`、`pytest.ini` 本身（收集機制）。
+- 改全域運行態：引擎開關、存檔格式、config schema 或讀寫路徑。
+- 合併遠端出現衝突後；發版前（另加手動 `_smoke_exe.py`）。
+
+其餘情況一律不跑。推送 / PR 交給 CI 兜底。
+
+**三、不跑全套、但仍要自動化測試：先跑底座，再按改動補**
+
+底座（每次改代碼，幾十秒）：
+
+- 全庫 grep 舊 API 名確認無殘留 —— `compileall` 加靜態檢查證明不了引用連得上。
+- `pytest test/ --collect-only -q`：約 1 秒，147 條全收集成功就代表 import 鏈沒斷。
+- compileall + 上面三項 lint。
+
+按改動補跑（從目錄跑，用 `pytest test/ -k <關鍵詞> -q` 篩；或直接 `python test\_test_xxx.py`）：
+
+- 只動某模組內部實作 / 註釋 / 單一測試：單跑該腳本或對應的 `-k`。
+- GUI 互動 / 設置頁 / 音效：對應腳本，加上相鄰的 HTTP、截圖、動畫類（容易被動畫時序、
+  面板捲動、聲道狀態帶到）。
+- 求解器 / 幾何引擎 / 數學：`_test_solver.py`、`_test_mi_gather.py`、
+  `_test_mod_constraint.py`、`_test_gradient_pipeline.py`（都慢，按需要挑，不必每次全上）。
+- 純 `docs/`：只跑 `doclink_check.py --strict`，不必跑任何 pytest。
+- 純 `experiments/`：只跑 `experiments_index.py --check`。
+
+**四、兩個常踩的坑**
+
+- `conftest.py` 在每個腳本前後自動清掉並復原 config 目錄裡的 engine.json、temp_history.json，
+  **不必手動刪**；手動刪是舊做法。
+- 全套基線 141 passed / 3 skipped。2026-11-07 那次 3 條紅是求解器機率斷言，用純遠端
+  worktree 對照跑同樣失敗，屬既有問題；別為了轉綠去調門檻或換種子。
+- 判斷「卡死」前先單獨計時：`_test_reject_text_only.py` 單跑就要 8 分鐘；
+  `conftest.py` 的慢速白名單只放寬了 `_test_solver.py` 與 `_test_mi_gather.py` 兩支。
 
 ---
 
