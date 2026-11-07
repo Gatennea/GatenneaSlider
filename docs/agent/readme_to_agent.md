@@ -213,7 +213,10 @@ tools/                 # 倉庫內工具（非產品代碼）
 config/                # 執行期組態（§8）
 save/                  # 使用者存檔 *.json
 assets/                 # 外部資源統一根（執行期資源都收在此；spec 整樹打包）
-  picture/              #   cover.ico / cover.png / splash.bmp / boot/ 開機幀（像素風標題 + 棋盤背景，tools/gen_boot_assets.py 生成）
+  picture/              #   cover.ico / cover.png（Logo 線稿源）/ splash.bmp / boot/ 開機幀
+                        #   像素風標題 + 封面摳出的小 Logo + 遊戲調色板棋盤背景，
+                        #   tools/gen_boot_assets.py 生成；字體只在重生成時讀系統字體，
+                        #   執行期與打包版只讀 PNG（詳 打包与发版.md §3）
   audio/                #   音效與背景樂：sound/（slide*.wav 等）、music/（bgm.ogg）
                         #   ⚠️ music/ 只收壓縮格式；wav 母帶不進庫也不進包（打包与发版.md §4）
   ui/arrows/            #   方向鍵箭頭貼圖（renderer._arrow_asset_path 讀）

@@ -3,48 +3,62 @@
 
 2026-11-07 换代，换掉最初那套「占位」画面：
 - 标题改成**硬边像素字**：小字号 `antialias=False` 渲染 → 最近邻整数倍放大。
-  中文、英文都走同一条路，不依赖字体文件、不联网，离线打包版效果一致。
+  字形**不是手绘点阵字库、也不从 assets 读**：脚本按绝对路径打开**开发机的
+  Windows 系统字体**（英文 `consola.ttf`、中文 `simhei.ttf` 等），不联网、
+  仓库里也不放字体文件。字体只在**重新生成帧**时用到；产物是 PNG，游戏运行时
+  与打包版都只读 PNG，目标机器装了什么字体都不影响画面。
+  缺中文字体时中文那行整行降级为英文，绝不画一排方框。
   视觉参照 `video/html_storyboard/index.html` 的 `.pixel` / `.neon` 标题
-  （那套用 Press Start 2P + Google Fonts CDN，网页能用，打包版用不上，
-  所以这里用系统字体自己造点阵，不读 video/）。
+  （那套用 Press Start 2P + Google Fonts CDN，网页能用，打包版用不上）。
 - 背景不再是 `assets/picture/cover.png` 那张机械魔方图标暗化铺满（太单调，
-  而且 logo 本来就不该当全屏底图）。改成程序化棋盘：配色直接取游戏调色板
+  而且 logo 本来就不该当全屏底图）。改成程序化棋盘：配色取游戏调色板
   （背景 30 / 蓝块 60,150,200 / 缝 80 / 描边 100），空位随帧补齐，
-  从「打乱」走向「还原」。`video/materials/cover_shuf.png`、
-  `video/materials/cover_rest.png` 只是视觉参照，脚本不读 video/，
-  clone 仓库后没有它也能重生成。
+  从「打乱」走向「还原」。
+- 但 Logo 本身要留着：从封面线稿**抽出主体**做成独立小图标（去白底、2px
+  颗粒化、蓝影+浅色线），放在标题上方，不再铺满全屏。源码就是
+  `assets/picture/cover.png`，clone 仓库后就能重生成，不读 video/。
+- 所有颜色都取自 `GUI.py::SliderGUI.__init__` 的 `self.colors`；这里不另造色相。
+  改游戏主题色时，改完这张表再重跑，开机画面才不会跟游戏里对不上。
 
 产物（作者要换动画就改这个脚本再重跑，不要手改某一帧）：
 - `assets/picture/boot/frame_000.png … frame_023.png` : 854×480 RGBA，
   运行时由 `GUI.py::_load_boot_frames` 按文件名排序载入，垫 (30,30,30) 底色。
-- `assets/picture/splash.bmp` : 640×360 无文字暗底，盖住 exe 自解压段，
+- `assets/picture/splash.bmp` : 640×360 暗底 + 低调 Logo，盖住 exe 自解压段，
   接到应用内标题更顺。
 
 运行：D:/python/python.exe tools/gen_boot_assets.py
-依赖：pygame（仅离屏渲染，不需要显示窗口）
+依赖：pygame（离屏渲染）、Pillow + numpy（封面线稿抠图）。
+      都只在开发机重生成时用；打包版不含这两个依赖也没关系。
 """
 import os
 
+import numpy as np
 import pygame
+from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOOT_DIR = os.path.join(ROOT, 'assets', 'picture', 'boot')
 SPLASH = os.path.join(ROOT, 'assets', 'picture', 'splash.bmp')
+COVER_SRC = os.path.join(ROOT, 'assets', 'picture', 'cover.png')
 
 DESIGN_W, DESIGN_H = 854, 480
 N_FRAMES = 24
 CELL = 58                       # 棋盘格边长（设计像素）
+LOGO_BOX = 148                  # Logo 边长（设计像素）
+LOGO_PIXEL = 2                  # 颗粒边长：先 BOX 降采样，再 NEAREST 放大
 
-# 与 renderer 的棋盘同一套色，别在这里另造颜色
-BG = (30, 30, 30)
-BLOCK = (60, 150, 200)
-SEAM = (80, 80, 80)
-EDGE = (100, 100, 100)
-INK = (240, 248, 255)          # 主标题白
-SUB = (150, 205, 235)          # 中文副标题浅蓝
-DIM = (192, 202, 214)          # 加载提示灰（深底上要看得见）
-SHADOW = (16, 62, 96)          # 像素字硬阴影（霓虹描边感）
-NEON = (120, 226, 255)
+# ⚠️ 全部照抄 GUI.py 的 self.colors，别在这里另造颜色。
+#    左侧注释写明对应的键，改主题色时两边一起改。
+BG = (30, 30, 30)              # background
+BLOCK = (60, 150, 200)         # block          —— 棋盘方块 / Logo 蓝影 / HUD 线
+SEAM = (80, 80, 80)            # gap
+EDGE = (100, 100, 100)         # border
+INK = (255, 255, 255)          # text           —— 英文主标题
+SUB = (90, 150, 200)           # button_hover   —— 中文副标题
+DIM = (200, 200, 200)          # status_text    —— 加载提示
+SHADOW = (50, 80, 160)         # selection_bg   —— 主标题的蓝色硬阴影
+NEON = BLOCK                   # block          —— 上下 HUD 像素线
+LOGO_LINE = (220, 220, 220)    # menu_text      —— Logo 线稿主体
 
 
 # ⚠️ 不用 pygame.font.SysFont / match_font：本機 Windows 字體註冊表裡混了 int 值，
@@ -84,15 +98,48 @@ def pixel_text(text, font, color, scale):
         small, (small.get_width() * scale, small.get_height() * scale))
 
 
-def pixel_text_shadow(text, font, color, scale, offset=4):
+def pixel_text_shadow(text, font, color, scale, offset=4, shadow=SHADOW):
     """硬阴影叠一层，呼应 storyboard 的 neon 标题；偏移按整像素走。"""
     fg = pixel_text(text, font, color, scale)
-    bg = pixel_text(text, font, SHADOW, scale)
+    bg = pixel_text(text, font, shadow, scale)
     w, h = fg.get_size()
     out = pygame.Surface((w + offset, h + offset), pygame.SRCALPHA)
     out.blit(bg, (offset, offset))
     out.blit(fg, (0, 0))
     return out
+
+
+def build_logo(size=LOGO_BOX, line=LOGO_LINE, shadow=BLOCK):
+    """从封面线稿抠出独立 Logo：白底→透明、黑线→浅色，蓝影偏移出 8-bit 描边。
+
+    cover.png 是白底黑色机械魔方线稿、四周一大圈白边。先按亮度反相算 alpha
+    并裁掉白边，居中贴进正方形；再 BOX 降采样到 `size / LOGO_PIXEL` 后
+    NEAREST 整数倍放大 —— 细线不会因直接缩小而断掉，又能得到硬边颗粒。
+    只做「抠图 + 染色」，不拿它当全屏底图。
+    """
+    gray = np.asarray(Image.open(COVER_SRC).convert('L'), dtype=np.int16)
+    alpha = np.clip((248 - gray) * 3, 0, 255).astype('uint8')
+    ys, xs = np.where(alpha > 16)
+    x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
+    crop = Image.fromarray(alpha[y0:y1 + 1, x0:x1 + 1], 'L')
+    side = max(crop.size)
+    square = Image.new('L', (side, side), 0)
+    square.paste(crop, ((side - crop.width) // 2, (side - crop.height) // 2))
+
+    unit = max(1, size // LOGO_PIXEL)
+    small = square.resize((unit, unit), Image.BOX)
+    mask = small.resize((size, size), Image.NEAREST)
+
+    off = 3
+    under = Image.new('RGBA', (size, size), shadow + (0,))
+    under.putalpha(mask)
+    over = Image.new('RGBA', (size, size), line + (0,))
+    over.putalpha(mask)
+    canvas = Image.new('RGBA', (size + off, size + off), (0, 0, 0, 0))
+    canvas.alpha_composite(under, (off, off))
+    canvas.alpha_composite(over, (0, 0))
+    return pygame.image.frombytes(canvas.tobytes(),
+                                  canvas.size, 'RGBA').convert_alpha()
 
 
 def _filled(r, c, t):
@@ -105,8 +152,11 @@ def _filled(r, c, t):
     return rank >= 0.30 or t >= 0.9 * (rank / 0.30)
 
 
-def draw_board(surf, t, cell=CELL, dark=115):
-    """铺一层暗化棋盘并缓慢平移；t 从 0（打乱）到 1（还原）。"""
+def draw_board(surf, t, cell=CELL, dark=85):
+    """铺一层暗化棋盘并缓慢平移；t 从 0（打乱）到 1（还原）。
+
+    dark 别调回 115 以上：蓝块会亮到把蓝色副标题吃掉，标题可读性靠这一层拉开。
+    """
     w, h = surf.get_size()
     board = pygame.Surface((w, h), pygame.SRCALPHA)
     ox = -int(t * cell * 0.6)
@@ -134,7 +184,7 @@ def build_title():
     zh_font = font_from(_ZH_FONTS, 16, allow_default=False)
     hint_font = font_from(_ZH_FONTS, 12, allow_default=False)
     en = pixel_text_shadow('GATENNEA SLIDER', en_font, INK, 5, 4)
-    zh = (pixel_text_shadow('貓九的滑块游戏', zh_font, SUB, 3, 3)
+    zh = (pixel_text_shadow('貓九的滑块游戏', zh_font, SUB, 3, 3, shadow=BG)
           if zh_font is not None else None)
     hint_text = '加载中' if hint_font is not None else 'LOADING'
     hint_font = hint_font or font_from(_EN_FONTS, 10)
@@ -144,6 +194,7 @@ def build_title():
 def build_frames():
     os.makedirs(BOOT_DIR, exist_ok=True)
     en, zh, hint_font, hint_text = build_title()
+    logo = build_logo()
     paths = []
     for i in range(N_FRAMES):
         t = i / (N_FRAMES - 1)
@@ -161,18 +212,20 @@ def build_frames():
         pygame.draw.rect(surf, (*NEON, 120), (0, 0, DESIGN_W, 3))
         pygame.draw.rect(surf, (*NEON, 120), (0, DESIGN_H - 3, DESIGN_W, 3))
 
-        # 标题：从第 0 帧起就完整显示（避免 init 静态帧与动画帧之间跳变），
+        # Logo + 标题：从第 0 帧起就完整显示（避免 init 静态帧与动画帧之间跳变），
         # 只做整像素的轻微上下浮动，不缩放（缩放会把像素块插值糊掉）
         bob = 0 if i % 8 < 4 else 1
-        en_y = DESIGN_H // 2 - 34 if zh is not None else DESIGN_H // 2 - 10
+        surf.blit(logo, logo.get_rect(center=(DESIGN_W // 2, 104 + bob)))
+        en_y = DESIGN_H // 2 - 18 if zh is not None else DESIGN_H // 2 + 0
         surf.blit(en, en.get_rect(center=(DESIGN_W // 2, en_y + bob)))
         if zh is not None:
-            surf.blit(zh, zh.get_rect(center=(DESIGN_W // 2, DESIGN_H // 2 + 40 + bob)))
+            surf.blit(zh, zh.get_rect(center=(DESIGN_W // 2, DESIGN_H // 2 + 50 + bob)))
 
         # 加载中：点号循环，像素小字
         dots = (i // 5) % 4
         hint = pixel_text(hint_text + ('.' * dots), hint_font, DIM, 2)
-        surf.blit(hint, hint.get_rect(center=(DESIGN_W // 2, DESIGN_H // 2 + 96)))
+        hint_y = DESIGN_H // 2 + 112 if zh is not None else DESIGN_H // 2 + 70
+        surf.blit(hint, hint.get_rect(center=(DESIGN_W // 2, hint_y)))
 
         path = os.path.join(BOOT_DIR, 'frame_%03d.png' % i)
         pygame.image.save(surf, path)
@@ -181,7 +234,7 @@ def build_frames():
 
 
 def build_splash():
-    """PyInstaller 启动图：同款棋盘、无文字、整体压暗，接到应用内标题更顺。"""
+    """PyInstaller 启动图：同款棋盘 + 压暗 Logo，无文字，接到应用内标题更顺。"""
     cw, ch = 640, 360
     surf = pygame.Surface((cw, ch))
     surf.fill(BG)
@@ -193,6 +246,9 @@ def build_splash():
             base = BLOCK if filled else SEAM
             col = tuple(int(v * 0.32) for v in base)
             pygame.draw.rect(surf, col, rect, 0 if filled else 2, border_radius=3)
+    logo = build_logo(size=112)
+    logo.set_alpha(110)
+    surf.blit(logo, logo.get_rect(center=(cw // 2, ch // 2)))
     pygame.image.save(surf, SPLASH)
     return SPLASH
 

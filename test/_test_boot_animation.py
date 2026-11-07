@@ -110,14 +110,81 @@ class BootAnimationSmokeTest(unittest.TestCase):
         self.assertIn('pygame.transform.scale(', src, '像素字缺最近邻放大')
         self.assertNotIn('pygame.transform.smoothscale(', src,
                          '像素字被平滑插值糊掉')
-        self.assertNotIn('pygame.image.load(COVER)', src,
-                         '背景又退回 cover.png 图标底')
+        # cover.png 只许当「抠出来的独立小 Logo」，不许再变回全屏底图
+        self.assertTrue(os.path.exists(os.path.join(_ROOT, 'assets', 'picture', 'cover.png')),
+                        '缺 Logo 源素材 assets/picture/cover.png')
+        self.assertIn('build_logo(', src, '开机画面缺独立 Logo')
+        self.assertIn('COVER_SRC', src, 'Logo 没指向 cover.png')
+        self.assertNotIn('blit(cover', src, '又拿 cover.png 当全屏底图')
         self.assertIn('_filled(', src, '棋盘打乱→还原逻辑不见了')
+
+        # 真把 Logo 画进帧里：按 GUI 的底色 (30,30,30) 做 alpha 合成后，
+        # 标题上方中央应有大片亮线稿像素，同尺寸的纯棋盘区域则几乎没有。
+        with Image.open(frames[len(frames) // 2]) as im:
+            rgba = np.asarray(im.convert('RGBA'), dtype=np.float32)
+        alpha = rgba[:, :, 3:4] / 255.0
+        comp = rgba[:, :, :3] * alpha + np.array([30, 30, 30], dtype=np.float32) * (1 - alpha)
+        logo_band = comp[20:185, 340:515]
+        board_band = comp[20:185, 40:215]
+        bright = int((logo_band.mean(axis=2) > 150).sum())
+        board_bright = int((board_band.mean(axis=2) > 150).sum())
+        self.assertGreater(bright, 2000, '标题上方看不到 Logo 线稿')
+        self.assertLess(board_bright, 500, '整屏都在发亮，不像暗化棋盘')
 
         paint = _inspect.getsource(_gui_class()._paint_boot)
         self.assertIn('pygame.transform.scale(', paint)
         self.assertNotIn('pygame.transform.smoothscale(', paint,
                          '_paint_boot 改回平滑缩放会把像素块抹成灰边')
+
+    def test_boot_palette_and_font_note(self):
+        """字色必须取自 GUI.py 的 self.colors；字体来源的注释不许再含糊。"""
+        import ast
+
+        def rgb_tuples(node):
+            """从 dict / 赋值里抠出所有 (r,g,b) 字面量。"""
+            out = {}
+            pairs = []
+            if isinstance(node, ast.Dict):
+                pairs = [(k.value if isinstance(k, ast.Constant) else None, v)
+                         for k, v in zip(node.keys, node.values)]
+            elif isinstance(node, ast.Module):
+                for stmt in node.body:
+                    if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                            and isinstance(stmt.targets[0], ast.Name)):
+                        pairs.append((stmt.targets[0].id, stmt.value))
+            for name, val in pairs:
+                if (isinstance(val, ast.Tuple) and len(val.elts) == 3
+                        and all(isinstance(e, ast.Constant) and isinstance(e.value, int)
+                                for e in val.elts)):
+                    out[name] = tuple(e.value for e in val.elts)
+            return out
+
+        with open(os.path.join(_ROOT, 'GUI.py'), 'r', encoding='utf-8') as f:
+            gui_tree = ast.parse(f.read())
+        game_colors = set()
+        for node in ast.walk(gui_tree):
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Attribute) and t.attr == 'colors'
+                            for t in node.targets)):
+                game_colors.update(rgb_tuples(node.value).values())
+        self.assertGreater(len(game_colors), 15, '没读到 GUI.py 的游戏调色板')
+
+        gen = os.path.join(_ROOT, 'tools', 'gen_boot_assets.py')
+        with open(gen, 'r', encoding='utf-8') as f:
+            src = f.read()
+        boot_colors = rgb_tuples(ast.parse(src))
+        for name in ('BG', 'BLOCK', 'SEAM', 'EDGE', 'INK', 'SUB',
+                     'DIM', 'SHADOW', 'LOGO_LINE'):
+            self.assertIn(name, boot_colors, f'开机脚本缺颜色常量 {name}')
+            self.assertIn(boot_colors[name], game_colors,
+                          f'{name}={boot_colors[name]} 不是游戏 self.colors 里的颜色')
+
+        # 上一版注释写「不依赖字体文件」会让人误以为字形是手绘点阵。
+        # 准确说法：只在重生成时读开发机 Windows 系统字体，运行时只读 PNG。
+        self.assertIn('Windows 系统字体', src, '注释没说清字体来自系统字体')
+        self.assertIn('只读 PNG', src, '注释没说清运行时不依赖字体')
+        self.assertNotIn('不依赖字体文件', src,
+                         '「不依赖字体文件」是错的：重生成时要读系统字体')
 
     def test_bgm_compressed_and_mixer_not_excluded(self):
         """背景乐正式素材是压缩格式；spec 不许把 mixer 排掉、不许带 music/*.wav。"""
