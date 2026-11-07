@@ -102,6 +102,12 @@ archive/scratch_*
 archive/retained/
 out_*.txt
 
+# ===== 背景樂母帶（2026-11-07 加）=====
+# assets/audio/music/ 只收壓縮格式（bgm.ogg / *.mp3）；原始 wav 體積大、zip 壓不動，
+# 留在本機當母帶即可，不進版本庫、也不進安裝包（spec 的 _collect_assets 一併跳過）。
+# ⚠️ 只管 music/：sound/ 下的 slide*.wav 是短音效，必須照常入庫。
+assets/audio/music/*.wav
+
 # ===== experiments/：**脚本全入库**（2026-10-31 用户拍板），只忽略产物 =====
 # 命名：script_* = 独立脚本（不被 import）；reuse_* = 既能独立跑又被 import；
 #       无前缀 = 库（被 import、不能独立跑）。

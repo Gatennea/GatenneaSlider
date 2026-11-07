@@ -91,6 +91,33 @@ def validate_version(vstr):
     return head.isdigit()                    # 其他数字型放行
 
 
+def warn_raw_music_assets():
+    """打包前提醒：music/ 下若留着 .wav 母带，安装包会白涨几十 MB。
+
+    不阻断发版（本机留母带是合理的），只把体积代价讲清楚，避免「明明 31MB
+    的包怎么突然 90MB」到上传 Release 才发现。正式素材格式见
+    docs/spec/打包与发版.md §4。
+    """
+    candidates = [
+        os.path.join(SRC_DIR, '_internal', 'assets', 'audio', 'music'),
+        os.path.join(ROOT, 'assets', 'audio', 'music'),
+    ]
+    hits = []
+    for d in candidates:
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if name.lower().endswith('.wav'):
+                hits.append(os.path.join(d, name))
+    if not hits:
+        return 0
+    total = sum(os.path.getsize(p) for p in hits) / 1048576
+    print(f'[WARN] music/ 下还有 {len(hits)} 个 wav（合计 {total:.0f}MB）。'
+          'PCM 用 zip 几乎压不动，安装包会白涨这么多。'
+          '正式素材请转成 ogg，见 docs/spec/打包与发版.md §4。')
+    return len(hits)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--version', default=None, help='版本号，如 v1.0.0')
@@ -100,6 +127,8 @@ def main():
         print(f'[ERROR] 找不到 {SRC_DIR}')
         print('        先跑 build_exe.bat 生成 onedir 产物，再执行本脚本。')
         return 1
+
+    warn_raw_music_assets()
 
     version = args.version or today_version()
     if args.version and not validate_version(version):

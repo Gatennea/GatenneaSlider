@@ -213,8 +213,9 @@ tools/                 # 倉庫內工具（非產品代碼）
 config/                # 執行期組態（§8）
 save/                  # 使用者存檔 *.json
 assets/                 # 外部資源統一根（執行期資源都收在此；spec 整樹打包）
-  picture/              #   cover.ico / cover.png / splash.bmp / boot/ 開機幀
-  audio/                #   音效與背景樂：sound/（slide*.wav 等）、music/（bgm）
+  picture/              #   cover.ico / cover.png / splash.bmp / boot/ 開機幀（像素風標題 + 棋盤背景，tools/gen_boot_assets.py 生成）
+  audio/                #   音效與背景樂：sound/（slide*.wav 等）、music/（bgm.ogg）
+                        #   ⚠️ music/ 只收壓縮格式；wav 母帶不進庫也不進包（打包与发版.md §4）
   ui/arrows/            #   方向鍵箭頭貼圖（renderer._arrow_asset_path 讀）
 test/                  # 無頭測試腳本（§9），命名 _test_*.py 或 test/
 web/                   # Web 版（TypeScript/靜態頁），**獨立 git 倉庫**，不隨本庫提交
@@ -557,6 +558,9 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 ## 10. 打包
 
 - `Gatenneaslider.spec`：PyInstaller 規格；`build_exe.bat` 一鍵打包（`--windowed`）。
+  ⚠️ `datas` 走 `_collect_assets()` 整樹收集、**主動跳過 `music/*.wav`**；`excludes` 裡
+  **不能再排 `pygame.mixer` / `pygame.mixer_music`**（音效功能已上線，排掉打包版全靜音）。
+  素材格式 / 體積約定與轉碼命令見 `docs/spec/打包与发版.md` §3、§4。
 - **`--windowed` 無控制台時 `sys.stdin is None`**，`main.py::stdin_reader` 會檢查並跳過 stdin 監聽；HTTP 通道不受影響。
 - `package_zip.bat` / `package_zip.ps1`：把 exe + 必要資源壓成發布 zip。
 - 圖示：`assets/picture/cover.ico`；運行期資源路徑統一走 `GUI.py::_gui_get_resource_path`（相容 frozen）。

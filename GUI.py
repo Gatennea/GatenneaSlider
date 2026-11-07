@@ -2084,7 +2084,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         fw, fh = frame_surf.get_size()
         scale = max(sw / fw, sh / fh)
         bw, bh = int(fw * scale), int(fh * scale)
-        img = pygame.transform.smoothscale(frame_surf, (bw, bh))
+        # 開機幀是硬邊像素字 + 硬邊棋盤：用最近鄰放大，別插值。
+        # smoothscale 適合照片，會把 8-bit 點陣的硬邊抹成灰邊（2026-11-07）。
+        img = pygame.transform.scale(frame_surf, (bw, bh))
         img.set_alpha(int(255 * overlay_alpha))
         self.screen.blit(img, ((sw - bw) // 2, (sh - bh) // 2))
 

@@ -76,6 +76,70 @@ class BootAnimationSmokeTest(unittest.TestCase):
         self.assertIn("'assets/picture/boot'", spec, "spec datas 未打包 assets/picture/boot 帧序列")
         self.assertIn('splash=', spec, "spec EXE 未配置 splash 启动图")
 
+    def test_boot_frames_are_pixel_art_not_static_icon(self):
+        """2026-11-07 换代护栏：像素风标题 + 棋盘动画，不许退回图标底 / 平滑缩放。
+
+        用像素级差分证明「打乱→还原」真的在动（首末帧空位数量差很多），
+        再静态钉住两条容易回流的写法：smoothscale 会糊掉硬边、cover.png 是旧图标底。
+        """
+        import glob as _glob
+        import inspect as _inspect
+        import numpy as np
+        from PIL import Image
+
+        frames = sorted(_glob.glob(
+            os.path.join(_ROOT, 'assets', 'picture', 'boot', 'frame_*.png')))
+        self.assertGreaterEqual(len(frames), 2)
+        sizes = set()
+        for p in frames:
+            with Image.open(p) as im:
+                sizes.add(im.size)
+        self.assertEqual(len(sizes), 1, '开机帧尺寸不一致')
+        self.assertEqual(sizes.pop(), (854, 480))
+
+        with Image.open(frames[0]) as a, Image.open(frames[-1]) as b:
+            diff = np.abs(np.asarray(a.convert('RGB'), dtype=np.int16)
+                          - np.asarray(b.convert('RGB'), dtype=np.int16))
+        changed = int((diff.max(axis=2) > 24).sum())
+        self.assertGreater(changed, 20000,
+                           '首末帧几乎一样：打乱→还原的棋盘动画没做出来')
+
+        gen = os.path.join(_ROOT, 'tools', 'gen_boot_assets.py')
+        with open(gen, 'r', encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('pygame.transform.scale(', src, '像素字缺最近邻放大')
+        self.assertNotIn('pygame.transform.smoothscale(', src,
+                         '像素字被平滑插值糊掉')
+        self.assertNotIn('pygame.image.load(COVER)', src,
+                         '背景又退回 cover.png 图标底')
+        self.assertIn('_filled(', src, '棋盘打乱→还原逻辑不见了')
+
+        paint = _inspect.getsource(_gui_class()._paint_boot)
+        self.assertIn('pygame.transform.scale(', paint)
+        self.assertNotIn('pygame.transform.smoothscale(', paint,
+                         '_paint_boot 改回平滑缩放会把像素块抹成灰边')
+
+    def test_bgm_compressed_and_mixer_not_excluded(self):
+        """背景乐正式素材是压缩格式；spec 不许把 mixer 排掉、不许带 music/*.wav。"""
+        import gui.audio as audio
+
+        music = os.path.join(_ROOT, 'assets', 'audio', 'music')
+        found = audio._find_in(music, 'bgm')
+        self.assertIsNotNone(found, 'music/ 下找不到 bgm.*')
+        self.assertTrue(found.lower().endswith(('.ogg', '.mp3')),
+                        f'背景乐退回未压缩格式：{found}')
+
+        spec_path = os.path.join(_ROOT, 'Gatenneaslider.spec')
+        with open(spec_path, 'r', encoding='utf-8') as f:
+            spec = f.read()
+        self.assertIn('_collect_assets()', spec, 'spec 没走 wav 过滤')
+        self.assertIn("name.lower().endswith('.wav')", spec)
+        excludes = spec.split('excludes = [', 1)[1].split(']', 1)[0]
+        self.assertNotIn("'pygame.mixer'", excludes,
+                         'pygame.mixer 被排除 → 打包版音效全静音')
+        self.assertNotIn("'pygame.mixer_music'", excludes,
+                         'pygame.mixer_music 被排除 → 打包版 bgm 静音')
+
     def test_infinite_bypasses_demo_pipeline(self):
         # 无限打乱必须是真·单步游走，不进入打乱演示管線
         # （否则会画进度条、走淡出切屏）—— commit_animation 续播入口改指

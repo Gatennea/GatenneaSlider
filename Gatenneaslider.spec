@@ -35,8 +35,9 @@ hiddenimports = [
 # 排除不需要的模块
 excludes = [
     # pygame 扩展（不需要的）
-    'pygame.mixer',
-    'pygame.mixer_music',
+    # ⚠️ pygame.mixer / pygame.mixer_music **不能排除**（2026-11-07 音效功能上線）：
+    #   gui/audio.py 的 Sound 與 mixer.music 全靠這兩個，排掉打包版會整體靜音。
+    #   這兩行是「還沒有音訊功能」時期的瘦身遺留，已移除。
     'pygame.movie',
     'pygame.cdrom',
     'pygame.overlay',
@@ -101,6 +102,24 @@ excludes = [
     'matplotlib',
 ]
 
+def _collect_assets(root='assets'):
+    """整樹收集 assets/，但 music/ 下的 .wav 不進包。
+
+    背景樂正式素材是壓縮格式（.ogg / .mp3）；原始 .wav 只當母帶留在本機，
+    PCM 體積大且 zip 幾乎壓不動（65MB 實測壓完仍有 61MB），進包會讓安裝包
+    從 ~31MB 直接翻到 90MB 以上。這裡直接跳過，順手擋住「以後又丟一個 wav
+    進 music/」這種回歸。回傳 PyInstaller datas 要的 (來源檔, 目標目錄) 列表。
+    """
+    out = []
+    for dirpath, _dirs, files in os.walk(root):
+        target = dirpath.replace(os.sep, '/')
+        for name in files:
+            if target == 'assets/audio/music' and name.lower().endswith('.wav'):
+                continue
+            out.append((os.path.join(dirpath, name), target))
+    return out
+
+
 a = Analysis(
     ['main.py'],
     pathex=[],
@@ -114,12 +133,12 @@ a = Analysis(
            # 打乱死局黑名单（solver.deadend_guard 运行时按 solver 包路径找它）
            ('solver/deadend_blacklist.json', 'solver'),
            ('beginner_archive', 'beginner_archive'),
-           # assets/ 是外部资源统一根，整树带过去（打包后根 = _MEIPASS）：
-           #   picture/ 封面·开机帧·splash（渲染期由 _gui_get_resource_path 读）
-           #   ui/arrows/ 方向键贴图（renderer._arrow_asset_path 读）
-           #   audio/{sound,music}/ 音效与背景乐（gui/audio.py 读）
-           # ⚠️ music/ 下 wav 体积较大（约 67MB），会原样进包；如要瘦身先转码或排除
-           ('assets', 'assets')],
+           # assets/ 是外部资源统一根（打包后根 = _MEIPASS）：
+           #   picture/ 封面·开机帧·splash、ui/arrows/ 方向键贴图、
+           #   audio/{sound,music}/ 音效与背景乐（gui/audio.py 读）。
+           # ⚠️ 走 _collect_assets() 过滤：music/ 下的 .wav 是母带、不进包，
+           #   正式素材是压缩格式 assets/audio/music/bgm.ogg（约 5MB）。
+           *_collect_assets()],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
