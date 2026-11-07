@@ -21,7 +21,8 @@ from contextlib import contextmanager
 class AnimationMixin:
     """动画相关方法 Mixin"""
 
-    # 动画关闭（瞬时提交）时的摩擦声长度：短促，别拖到下一手
+    # 動畫關閉（瞬時提交）時傳給音效的「動畫時長」基準：只用來換算滑動速度
+    # →音量（越慢越輕），**不是聲音長度**（聲音長度由原始採樣決定）。
     SLIDE_INSTANT_MS = 120
 
     def ease_out(self, t: float) -> float:
@@ -29,13 +30,16 @@ class AnimationMixin:
         return 1.0 - (1.0 - t) ** 2
 
     def _play_slide_sound(self, steps=1, duration_ms=None):
-        """滑動摩擦聲：必須在 start_animation() **之後**呼叫。
+        """滑動聲：必須在 start_animation() **之後**呼叫。
 
         兩個理由：
         1. 拖拽接續（_apply_drag_origin）會把 animation_duration 按剩餘比例
-           縮短，先播就會比畫面長一大截——時長要取定稿後的值；
+           縮短；這值只用來換算滑動速度→音量（越慢越輕），要取定稿後的值；
         2. 無動畫路徑（瞬時提交）本身不會叫到這裡，呼叫方直接傳
            SLIDE_INSTANT_MS 即可，兩條路都保證「一滑就有聲」。
+
+        ⚠️聲音本身是「單次魔方轉動聲」：duration_ms **不會**把聲音拉長、
+        循環或合成，音效層只播一次原始採樣。
 
         打亂演示 / 無限打亂也照常出聲（使用者 2026-11-07 明確要求；先前
         「維持靜音」是我擅自加的，已移除）。滑動聲獨佔聲道 0，新手會頂掉

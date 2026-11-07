@@ -1,32 +1,29 @@
 # -*- coding: utf-8 -*-
-"""无头验证：滑动摩擦声「跟着动画走」——每手都出声、长度贴合、慢速无爆发峰。
+"""无头验证：滑动声是「单次魔方转动声」，一次滑动只播一次原始采样。
 
-背景（使用者 2026-11-07 反复反馈，本文件守的就是这几条）
+背景（使用者 2026-11-07 反覆糾正，本文件守的就是這幾條）
 ========================================================
-  1. 声音跟动画脱节：素材只有 70~165ms，动画默认 300ms、最长 1000ms，
-     一步还没滑完声音就没了；连按又叠成一团。
-  2. 慢速「好像把一個音效快速播放了很多次」：素材本身是帶 attack 的短爆發
-     （實測 10ms 窗 RMS 的局部峰 slide1 有 67 個、slide4 有 280 個），
-     早期版本把這些爆發**循環／拼接**去撐長動畫，慢速自然聽成很多下。
-  3. 慢速刺耳、而且「聲音根本不小」。
+  1. 素材是**單次魔方轉動聲**（70~165ms 的一次事件音），不是持續摩擦噪聲。
+     前九輪把它們撐滿整段動畫：整段循環、粒度拼接、無縫 loop+低通、
+     甚至頻譜烙印成平穩白噪聲 —— 最後一種聽成「砂紙打磨聲」，完全不像原採樣。
+  2. 慢速「好像把一個音效快速播放了很多次」＝循環造成的，不是素材本身的問題。
+  3. 「像魔方一樣，滑動越慢聲音越小」：只調音量。
   4. 打亂演示 / 無限打亂也要出聲（使用者並沒要求靜音）。
 
-修法（頻譜烙印，見 gui/audio.py::_make_friction）：只取 slide 樣本的**頻譜形狀**
-給一段平穩白噪聲上色，全程不循環、不拼接任何時域爆發；頻域順手做低通
-（慢＝悶、快＝亮），頭尾淡入淡出，長度精準等於動畫時長。播放點仍在
-start_animation() 之後，滑動聲獨佔一條聲道，新手頂掉舊手。
+修法（工業做法，Unity `PlayOneShot` / `PlayOnceAudio`、Web Audio one-shot）：
+`play_slide` 直接播**一次原始 slide 樣本**，不拉伸、不循環、不拼接、不合成；
+動畫時長只用來換算速度 → 音量。真實魔方轉一下就是一聲，慢速不必鋪滿 1000ms。
+播放點仍在 `start_animation()` 之後，獨佔聲道，新手頂掉舊手。
 
 護欄
 ====
-  A1~A3 時長貼合：60/120/300/600/1000ms 請求 → 合成聲長度誤差 ≤ 12ms
-  A4    慢速長聲沒有塌掉的靜音縫（逐 100ms 窗 RMS 都不塌）
-  A5    不是整段樣本周期重複（相隔一個樣本長的兩段波形相似度低）
-  A6    滑得越慢越輕（1000ms 音量明顯低於 160ms；峰值也隨時長壓低）
-  A7 ★慢速沒有「很多峰值」：1000ms 合成聲 10ms 窗 RMS 的爆發數 ≤ 3；
-       A7a 先以「把原始樣本整段循環拼 1000ms」做對照組，確認指標確實數得出
-       十幾個爆發（證明不是恆真），A7b 再要求合成聲遠少於它——本輪核心驗收點
-  A8    慢速比快速悶（>3kHz 高頻佔比明顯更低），治「刺耳」
-  B1    時長不帶抖動、精準貼合動畫（同一入參恆等）
+  A1    實際播出的 Sound 就是原始樣本物件之一（不合成、不改音色）
+  A2    播放長度不隨動畫時長變化（1000ms 動畫仍是原來那一下，≤200ms）
+  A3    ★「一次滑動不會有很多回」：A3a 對照組（把原始樣本整段循環拼 1000ms）
+        確實數得出很多爆發，證明指標不是恆真；A3b 實際播出的聲音爆發數
+        不隨動畫變長而增加、遠少於對照組
+  A4    滑得越慢越輕（1000ms 音量明顯低於 160ms）
+  B1    慢/快動畫播的都是原始樣本，長度一致（時長只進音量計算）
   B2    音量擾動存在且不越界
   B3    樣本隨機挑、不連兩手同一個
   C1    普通移动：动画启动后出声，时长＝animation_duration
@@ -36,12 +33,12 @@ start_animation() 之後，滑動聲獨佔一條聲道，新手頂掉舊手。
   C6    宏播放路径静态引用 _play_slide_sound（防未来漏接）
   D1    打乱演示回放每一步都出声
   D2    无限打乱每一步都出声（无静音拦截）
-  D2b   session._infinite_shuffle_step 静态接线检查（防漏接）
-  E1    新手顶掉旧手：同一条声道，不排队叠音
+  D1b/D2b 两条播放路径静态接线检查（防漏接）
+  E1    新手顶掉旧手：同一条声道、无排队叠音，且播的是原始样本
   F1/F2 solved 认别名 cheer；click / keyboard 是独立槽位（不冒充 fail/solved）
   G1~G3 槽位表 / slot_status（五项、开关键、素材概况、缺素材标注）
   G4/G5 逐项开关真拦得住；试听无视逐项开关、总开关与静音
-  G6~G8 click/keyboard 的挂接点存在；移动键不出按键声（只留摩擦声）
+  G6~G8 click/keyboard 的挂接点存在；移动键不出按键声（只留滑动声）
 
 执行：D:/python/python.exe -u test/_test_slide_audio.py
 """
@@ -78,97 +75,70 @@ check('0a 音效可用且载入到 slide 样本', mgr.available and len(mgr._sli
 
 if mgr.available and mgr._slide_samples:
     _rate0 = (pygame.mixer.get_init() or (44100,))[0]
+    _raws = mgr._slide_samples
 
     def _snd_arr(snd):
         a = pygame.sndarray.array(snd).astype('float32')
         return a.mean(axis=1) if a.ndim == 2 else a
 
-    def _env(a, ms=10):
-        w = max(1, int(_rate0 * ms / 1000.0))
+    def _bursts(a, thr=1.5):
+        """10ms 窗 RMS 的明顯局部極大值＝可數的響度爆發（「一回」）。"""
+        w = max(1, int(_rate0 * 0.010))
         n = (len(a) // w) * w
-        return _np.sqrt((a[:n].reshape(-1, w) ** 2).mean(1))
-
-    def _local_peaks(env, thr=1.3):
+        env = _np.sqrt((a[:n].reshape(-1, w) ** 2).mean(1))
         med = float(_np.median(env)) + 1e-9
         return sum(1 for i in range(1, len(env) - 1)
                    if env[i] > env[i - 1] and env[i] > env[i + 1]
                    and env[i] > thr * med)
 
-    def _hf_frac(a):
-        spec = _np.abs(_np.fft.rfft(a))
-        fr = _np.fft.rfftfreq(len(a), 1.0 / _rate0)
-        hi = spec[fr > 3000].sum()
-        lo = spec[fr <= 3000].sum()
-        return float(hi / (hi + lo + 1e-9))
+    def _is_raw(snd):
+        return snd is not None and any(snd is r for r in _raws)
 
-    # ---- A1~A3 时长贴合 ----
-    bad = []
-    for target in (60, 120, 300, 600, 1000):
-        snd = mgr._slide_sound_for(1, mgr._slide_target_ms(target))
-        got = snd.get_length() * 1000.0
-        if abs(got - target) > 12:
-            bad.append((target, round(got)))
-    check('A1/A2/A3 请求 60/120/300/600/1000ms 都合成出长度相符的摩擦声',
-          not bad, str(bad))
+    def _played(dur):
+        """真正播出去的 Sound（清节流，模擬不同動畫時長各滑一手）。"""
+        mgr._last_slide_ms = -10 ** 9
+        mgr.play_slide(1, duration_ms=dur)
+        return mgr._slide_ch.get_sound() if mgr._slide_ch is not None else None
 
-    slow = _snd_arr(mgr._slide_sound_for(1, 1000))
-    fast = _snd_arr(mgr._slide_sound_for(1, 160))
+    # ---- A1：播的就是原始樣本，沒有任何合成 / 替換音色 ----
+    picks = [mgr._pick_slide_sample() for _ in range(20)]
+    check('A1 每次滑动播的就是原始采样之一（不合成、不改音色）',
+          all(_is_raw(p) for p in picks), f'non_raw={sum(not _is_raw(p) for p in picks)}')
 
-    # A4：慢速长声没有中途静音缝
-    win = max(1, int(_rate0 * 0.1))
-    rms = [float((slow[i:i + win] ** 2).mean() ** 0.5)
-           for i in range(0, slow.shape[0] - win, win)]
-    rms = [r for r in rms if r == r]
-    med = sorted(rms)[len(rms) // 2] if rms else 0.0
-    check('A4 慢速长声 1s 内没有塌掉的静音缝',
-          bool(rms) and med > 0 and min(rms) > 0.08 * med,
-          f'windows={len(rms)} min/med={min(rms) / med:.3f}' if med else 'no rms')
+    # ---- A2：聲音長度與動畫時長無關（不再「撐滿動畫」）----
+    played = {d: _played(d) for d in (160, 300, 600, 1000)}
+    lens = {d: (s.get_length() * 1000.0 if s is not None else -1)
+            for d, s in played.items()}
+    check('A2 声音长度不随动画变长（1000ms 动画仍只播原来那一下，≤200ms）',
+          all(_is_raw(s) and 0 < lens[d] <= 200 for d, s in played.items()),
+          f'lengths={ {d: round(v) for d, v in lens.items()} }')
 
-    # A5：不是整段样本周期重复
-    _n0 = int(round(mgr._slide_samples[0].get_length() * _rate0))
-    _a5, _b5 = slow[:max(1, _n0)], slow[_n0:_n0 + max(1, _n0)]
-    if _a5.shape[0] > 8 and _b5.shape[0] == _a5.shape[0]:
-        _dot = float((_a5 * _b5).sum())
-        _den = float((_a5 ** 2).sum() ** 0.5 * (_b5 ** 2).sum() ** 0.5) or 1.0
-        _corr = abs(_dot) / _den
-        check('A5 慢速声不是整段样本循环（隔一个样本长的两段不相像）',
-              _corr < 0.5, f'corr={_corr:.3f}')
-    else:
-        print('   [skip] 样本太短，A5 跳过')
-
-    # A6：越慢越轻
-    _vs = sorted(mgr._slide_volume(1, 1000) for _ in range(41))[20]
-    _vf = sorted(mgr._slide_volume(1, 160) for _ in range(41))[20]
-    check('A6 滑得越慢越轻（1000ms 音量明显低于 160ms）',
-          _vf > 0 and _vs < _vf * 0.6, f'slow={_vs:.3f} fast={_vf:.3f}')
-
-    # ★ A7：慢速「不会有很多峰值」——本轮用户点名要验证的硬指标。
-    #   用 10ms 窗 RMS 数「明顯高於中位數的局部極大值」＝可數的響度爆發。
-    #   對照組故意把原始短爆發樣本整段循環拼到 1000ms（正是舊版「一次滑動
-    #   播放了很多回快速音效」的成因）：指標必須先抓到它，才證明不是恆真斷言。
-    def _bursts(a, thr=1.5):
-        return _local_peaks(_env(a), thr)
-
-    _raw0 = _snd_arr(mgr._slide_samples[0])
+    # ---- A3：★一次滑動不會有「很多回」——帶對照組，證明指標不是恆真 ----
+    _raw0 = _snd_arr(_raws[0])
     _n1000 = int(_rate0 * 1.0)
     _ctrl = _np.tile(_raw0, (_n1000 + len(_raw0) - 1) // len(_raw0))[:_n1000]
-    _ctrl_b, _slow_b = _bursts(_ctrl), _bursts(slow)
-    check('A7a 对照组（整段循环拼 1000ms）确实数得出很多爆发，指标不是恒真',
+    _ctrl_b = _bursts(_ctrl)
+    check('A3a 对照组（把原始样本循环拼到 1000ms）确实数得出很多回，指标不是恒真',
           _ctrl_b >= 10, f'control_bursts={_ctrl_b}')
-    check('A7b 慢速 1000ms 合成摩擦声没有「很多回快速音效」（爆发数 ≤3 且远少于对照组）',
-          _slow_b <= 3 and _slow_b < _ctrl_b * 0.25,
-          f'slow_bursts={_slow_b} control_bursts={_ctrl_b}')
+    _played_b = {d: _bursts(_snd_arr(s)) for d, s in played.items() if s is not None}
+    check('A3b 实际播出的仍是「一次」转动声（爆发数不随动画变长、远少于对照组）',
+          bool(_played_b) and max(_played_b.values()) <= 6
+          and max(_played_b.values()) < _ctrl_b * 0.5,
+          f'played_bursts={_played_b} control_bursts={_ctrl_b}')
 
-    # A8：慢速比快速闷（高频占比显著更低），治「刺耳」
-    _hf_slow, _hf_fast = _hf_frac(slow), _hf_frac(fast)
-    check('A8 慢速比快速闷（>3kHz 高频占比显著更低）',
-          _hf_slow < _hf_fast * 0.6,
-          f'slow_hf={_hf_slow:.3f} fast_hf={_hf_fast:.3f}')
+    # ---- A4：越慢越輕 ----
+    _vs = sorted(mgr._slide_volume(1, 1000) for _ in range(41))[20]
+    _vf = sorted(mgr._slide_volume(1, 160) for _ in range(41))[20]
+    check('A4 滑得越慢越轻（1000ms 音量明显低于 160ms）',
+          _vf > 0 and _vs < _vf * 0.6, f'slow={_vs:.3f} fast={_vf:.3f}')
 
-    # ---- B. 时长不抖动 / 音量扰动 / 样本轮换 ----
-    targets = {mgr._slide_target_ms(300) for _ in range(20)}
-    check('B1 摩擦声长度精准贴合动画（同一入参恒等、不带抖动）',
-          targets == {300}, f'{sorted(targets)}')
+    # ---- B：靜態防回流 / 音量擾動 / 樣本輪換 ----
+    _audio_src = inspect.getsource(A)
+    _forbidden = [w for w in ('sndarray.make_sound', '_make_friction',
+                              '_texture_stretch', '_shape_to_length',
+                              'loops=-1') if w in _audio_src]
+    check('B1 音频模块里没有任何合成 / 循环 / 拉伸代码（防止再走回头路）',
+          not _forbidden, f'forbidden={_forbidden}')
 
     vols = [mgr._slide_volume(1) for _ in range(40)]
     base = mgr.sfx_volume * 0.8
@@ -177,27 +147,28 @@ if mgr.available and mgr._slide_samples:
           spread > 0.005 and all(0.0 <= v <= min(1.0, base * 1.09) + 1e-9 for v in vols),
           f'spread={spread:.3f} min={min(vols):.3f} max={max(vols):.3f}')
 
-    if len(mgr._slide_samples) > 1:
+    if len(_raws) > 1:
         seq = []
         for _ in range(24):
-            mgr._slide_sound_for(1, 300)
-            seq.append(mgr._slide_idx)
+            seq.append(_raws.index(mgr._pick_slide_sample()))
         repeat = any(a == b for a, b in zip(seq, seq[1:]))
         check('B3 样本随机挑选且不连两手同一个', not repeat and len(set(seq)) > 1,
               f'distinct={sorted(set(seq))}')
 
     # ---- E. 声道不叠 ----
     if mgr._slide_ch is not None:
+        mgr._last_slide_ms = -10 ** 9
         mgr.play_slide(1, duration_ms=300)
         pygame.time.wait(60)
+        mgr._last_slide_ms = -10 ** 9
         mgr.play_slide(1, duration_ms=600)
         pygame.time.wait(30)
         q = mgr._slide_ch.get_queue()
         cur = mgr._slide_ch.get_sound()
         cur_ms = cur.get_length() * 1000.0 if cur is not None else -1
-        check('E1 新手顶掉旧手（同一声道、无排队叠音）',
-              not q and 590 <= cur_ms <= 610,
-              f'queue={q} current={round(cur_ms)}ms')
+        check('E1 新手顶掉旧手（同一声道、无排队叠音，播的仍是原始样本）',
+              not q and _is_raw(cur) and 0 < cur_ms <= 200,
+              f'queue={q} current={round(cur_ms)}ms raw={_is_raw(cur)}')
 elif not mgr.available:
     print('   [skip] 无声卡/无 mixer：A/B/E 跳过')
 

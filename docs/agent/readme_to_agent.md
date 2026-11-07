@@ -159,7 +159,7 @@ gui/                   # 全是 Mixin，被 SliderGUI 繼承
   text_input.py        #   TextInput            自繪文字輸入框（游標/選取/剪貼簿）
   annotation.py        #   AnnotationMixin      標注模式（B/Z/M/S 隱藏入口）：標注取樣／手動構造畫布／跟蹤執行；創造模式：手動構造/隨機生成（造打亂局面）＋設計還原態/樣式庫（造還原態樣式，僅方形）
   tutorial_texts.json  #   新手教程文案（可脫離代碼修改）
-  audio.py             #   AudioManager 音效管理器：5 個槽位 slide/fail/solved/click/keyboard + bgm（mixer.music 串流）、音樂+音效音量；`SLOT_SPECS` 槽位表供設置頁「音頻·音效一覽」逐項開關與試聽；滑動聲由 `_play_slide_sound()` 在動畫啟動後觸發（全動畫路徑含打亂都出聲），`_make_friction` 用**頻譜烙印**把樣本音色印到平穩噪聲上、不循環短爆發，長度貼合動畫、低通與音量隨速度（越慢越輕越悶）；click/keyboard 掛在 `handle_events` 全局左鍵與 KEYDOWN；無頭環境靜默降級（見 §二十）。素材在 assets/audio/{sound,music}/，档名弹性发现
+  audio.py             #   AudioManager 音效管理器：5 個槽位 slide/fail/solved/click/keyboard + bgm（mixer.music 串流）、音樂+音效音量；`SLOT_SPECS` 槽位表供設置頁「音頻·音效一覽」逐項開關與試聽；滑動聲由 `_play_slide_sound()` 在動畫啟動後觸發（全動畫路徑含打亂都出聲）。⚠️slide 素材是**單次魔方轉動聲**（事件音），`play_slide` 只播一次原始採樣、按速度調音量，絕不拉伸／循環／合成（前九輪合成摩擦聲全廢，詳見 前端動效優化計劃.md S5 最終方案）；click/keyboard 掛在 `handle_events` 全局左鍵與 KEYDOWN；無頭環境靜默降級（見 §二十）。素材在 assets/audio/{sound,music}/，档名弹性发现
 
 engine/                # 幾何引擎（**最底層**：GUI 與 solver 都向下依賴它）
                        #   鐵律：本包不 import 任何 game*.py / gui/（詳見 docs/spec/幾何引擎.md）
