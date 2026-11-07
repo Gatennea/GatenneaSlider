@@ -623,10 +623,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.confirm_extra_text = ''     # 可选第三按钮文字（如「存档」）；空=不显示
         self.confirm_extra_action = None # 第三按钮点击后的无参可调用对象
 
-        # 防意外打乱：开启后，历史非空时点打乱先弹确认（可先存档）；关则直接打乱
+        # 防意外打乱/重置：开启后，历史非空时点打乱/重置先弹确认（可先存档）；关则直接执行
         self.confirm_before_shuffle = True
-        # 「存档后打乱」的挂起标记：另存为对话框保存成功后自动续打乱
+        # 「存档后打乱/重置」的挂起标记：另存为对话框保存成功后自动续执行
         self._pending_shuffle_after_save = False
+        self._pending_reset_after_save = False
 
         # 三角形密铺模式（Stage B）：self.game 为 TriangleSliderMatrix 时为 True
         self.triangle_mode = False
@@ -1780,13 +1781,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                        tolerance: float = None) -> tuple:
         """根据屏幕坐标获取缝隙位置
 
-        tolerance 仅对通用通道（多边形密铺）生效：放大它即放大「点缝的
-        可选命中带」。None 走默认 10 世界单位（≈12px@zoom1.21）——这是第一
-        击选缝的精准带；放大值只用于「没选中缝时、点偏进相邻块」的兜底检索，
-        绝不改变已选中缝后的第二步交互（见 _sq_click_query）。
+        tolerance 放大「点缝的可选命中带」：通用通道与**方形/数字盘**都吃
+        这个参数（方形 2026-11-07 起透传，此前只认通用通道）；三角/米字两支
+        忽略它（命中带仍各自默认）。None 走默认 10 世界单位（≈12px@zoom1.21）
+        ——这是第一击选缝的精准带；放大值只用于「没选中缝时、点偏进相邻块」
+        的兜底检索，绝不改变已选中缝后的第二步交互（见 _sq_click_query）。
         """
         try:
             world_x, world_y = self.screen_to_world(screen_x, screen_y)
+            # 解析成具体数值，供通用通道与方形回退共用（抬到分支外：
+            # 方形回退在通用分支未走时也要拿得到，之前定义在分支里会 NameError）
+            tol = 10.0 if tolerance is None else float(tolerance)
 
             if getattr(self, 'triangle_mode', False):
                 cells = self.game.positions()
@@ -1813,7 +1818,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 被多條候選縫共享（實測 1~4 條），歧義就按距離+族序決勝。
                 view = self._polygon_view()
                 origin = self._poly_view_origin(view)
-                tol = 10.0 if tolerance is None else float(tolerance)
                 for gap_type, line, _dist in view.gap_candidates(
                         world_x, world_y, self.game.board, origin,
                         tolerance=tol):
@@ -1832,7 +1836,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 return None
 
             bounds = self.game.get_boundaries()
-            for kind, idx in self.board_view.candidate_gaps(world_x, world_y, bounds):
+            for kind, idx in self.board_view.candidate_gaps(
+                    world_x, world_y, bounds, tolerance=tol):
                 if kind == 'h' and self.game.is_valid_h_line(idx):
                     return ('h', idx)
                 if kind == 'v' and self.game.is_valid_v_line(idx):

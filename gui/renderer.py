@@ -3812,10 +3812,10 @@ class RendererMixin:
             x, ny, "无限打乱：", getattr(self, 'infinite_shuffle', False),
             "开启后调用「打乱」会一直随机游走，再次调用「打乱」即停止")
 
-        # 防意外打乱开关（打乱会清空历史；历史非空时先弹确认，可先存档）
+        # 防意外打乱/重置开关（打乱/重置都会清空历史；历史非空时先弹确认，可先存档）
         self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
-            x, ny, "防意外打乱：", getattr(self, 'confirm_before_shuffle', True),
-            "打乱会清空当前历史、无法再撤回；开启时历史非空先弹确认（可先存档），关闭则直接打乱")
+            x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
+            "打乱与重置都会清空当前历史、无法再撤回；开启时历史非空先弹确认（可先存档），关闭则直接执行")
 
         # 绘制网格开关：控制四种原版谜题（矩形/数字/三角/米字）铺在背景、会横穿
         # 空位与洞口的整片网格——三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘

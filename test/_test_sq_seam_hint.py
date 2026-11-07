@@ -24,7 +24,10 @@ import pygame  # noqa: E402
 
 from GUI import SliderGUI  # noqa: E402
 
-HINT = '这条缝选不动（棋盘外沿，外侧没有滑块）：请选里面的缝'
+# 2026-11-02 用户定调：选不动提示统一为 GAP_UNSELECTABLE_MSG，不再分
+# 「外沿没有滑块 / 缝没贯穿滑块组」两套文案（原期望的外沿专属文案已随
+# 统一提示作废，本常量与 GUI 侧保持一致）
+HINT = '这条缝选不动（缝没有贯穿滑块组）：请选旁边的缝'
 
 _failures = []
 

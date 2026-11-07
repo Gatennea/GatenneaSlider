@@ -579,6 +579,10 @@ class AnimationMixin:
                 # 此刻 progress 恰为 1.0——「切屏时正好 100%」
                 for b, p in zip(self.game.blocks, getattr(self, '_shuffle_demo_final', [])):
                     b.location = list(p)
+                # 切屏即收掉上一格的选中高亮：它是按打乱前盘面选的缝与片，
+                # 终态下块已换位、缝位失效，留到淡入里会闪出错误的选中标记
+                # （高亮计时器至少 45 帧，比整段淡入还长，不主动清必残留）
+                self._clear_sel_anim()
                 self._fit_board_view()
                 self._shuffle_demo_phase = 'fade_in'
         elif phase == 'fade_in':
