@@ -26,7 +26,7 @@ api 概要：
 - sync_settings(...)              GUI 一次推送全部開關與音量
 - play_fail() / play_solved()    一次性音效（失敗 / 復原）
 - play_slide(distance=None)       滑動摩擦聲：多樣本輪換（素材備齊後可接 drag 長度）
-- play_bgm() / stop_bgm()        背景音樂迴圈
+- play_bgm() / stop_bgm()        背景音樂迴圈（mixer.music 串流，不把素材常駐記憶體）
 """
 
 import os
@@ -114,8 +114,9 @@ class AudioManager:
         self._sounds = {}            # slot -> pygame.mixer.Sound
         self._slide_samples = []     # slide 多樣本（S5-2），依序輪換
         self._slide_idx = 0
-        self._bgm_channel = None
-        self._bgm_sound = None
+        # bgm 只記路徑、不預載：播放走 mixer.music 串流（待办清单 §二十.2，
+        # 67MB wav 若走 Sound 會整份解進常駐記憶體，實測 +67MB）
+        self._bgm_path = None
         # 設定（由 GUI 推送；預設開，音量調低）
         self.sfx_enabled = True
         self.music_enabled = True
@@ -144,14 +145,14 @@ class AudioManager:
     def load_all(self):
         if not self.available:
             return
-        # bgm：music/ 下 bgm.* 優先，否則該目錄第一個音訊檔
+        # bgm：music/ 下 bgm.* 優先，否則該目錄第一個音訊檔。
+        # 只記路徑不預載——啟動零成本，play_bgm 才開檔串流讀（§二十.2）
         bgm = _find_in(self.music_dir, _BGM_BASE)
         if bgm is None:
             music_files = _list_audio(self.music_dir)
             if music_files:
                 bgm = music_files[0]
-        if bgm is not None:
-            self._load_sound('bgm', bgm)
+        self._bgm_path = bgm
 
         # slide：載入所有 slide*.* 做多樣本輪換；一個都沒有才退回單一 slide.*
         slide_paths = _list_prefixed(self.sfx_dir, _SLIDE_PREFIX)
@@ -213,10 +214,10 @@ class AudioManager:
         self.set_music_volume(music_volume)
 
     def _apply_music_volume(self):
-        if self.available and self._bgm_channel is not None:
+        if self.available and self._bgm_path is not None:
             vol = 0.0 if self.muted else self.music_volume
             try:
-                self._bgm_channel.set_volume(vol)
+                pygame.mixer.music.set_volume(vol)
             except Exception:
                 pass
 
@@ -284,29 +285,24 @@ class AudioManager:
     def play_bgm(self, loop=True):
         if not (self.available and self.music_enabled and not self.muted):
             return
-        snd = self._sounds.get('bgm')
-        if snd is None:
+        if self._bgm_path is None:
             return
-        # 已在播就別重開頭：設定每改一次都會 sync，重播會一直跳回開頭
-        ch = self._bgm_channel
-        if ch is not None and self._bgm_sound is snd:
-            try:
-                if ch.get_busy():
-                    return
-            except Exception:
-                pass
         try:
-            self._bgm_sound = snd
-            self._bgm_channel = snd.play(-1 if loop else 0)
-            self._apply_music_volume()
+            # 已在播就別重開頭：設定每改一次都會 sync，重播會一直跳回開頭
+            if pygame.mixer.music.get_busy():
+                return
+            # 串流播放：每次啟動都 load（開檔讀檔頭，不吃整份記憶體）；
+            # 停播後重 load 也保證各 pygame 版本行為一致
+            pygame.mixer.music.load(self._bgm_path)
+            pygame.mixer.music.set_volume(self.music_volume)
+            pygame.mixer.music.play(-1 if loop else 0)
         except Exception as e:
             print(f'[audio] 播放 bgm 失敗：{e}')
 
     def stop_bgm(self):
-        if self._bgm_channel is not None:
-            try:
-                self._bgm_channel.stop()
-            except Exception:
-                pass
-        self._bgm_channel = None
-        self._bgm_sound = None
+        if not self.available:
+            return
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
