@@ -686,7 +686,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.SPEED_MAX_MS = 1000
         self.animation_duration = 300  # 毫秒
         self.animation_enabled = True          # 滑动动画（滑块移动/撤销重做滑动）
-        self.selection_animation_enabled = True  # 选中动画（撤销/重做时高亮该步缝隙与滑块组）
+        self.selection_animation_enabled = True  # 选中动画（撤销/重做、求解/宏播放时的缝隙与滑块组高亮；判据见 renderer._selection_visuals_enabled）
         # GUI 模式总开关：plain=旧版朴素界面（等同未启用本计划的动效优化）；
         # enhanced=新版动效与视觉优化。各增强效果在 S1–S7 中按此开关分流。
         # 默认 enhanced（若用户想默认朴素，改此处的 'enhanced' 即可）。

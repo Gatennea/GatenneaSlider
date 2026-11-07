@@ -4328,6 +4328,24 @@ class EventsMixin:
         # 开始执行第一个操作
         self._execute_next_macro_step()
 
+    def _clear_macro_selection_if_disabled(self):
+        """关掉「选中动画」时，收掉宏/求解播放这一步留下的选中态视觉。
+
+        ⚠️ 只能在 ``game.opt`` / ``try_move`` / ``commit_move`` **之后**调：
+        ``be_opted`` 是移动执行的功能状态（try_move 靠它选组、commit_move
+        靠它把 final_positions 配对回块），不是 UI 开关能删的东西。这里清的
+        是「这一步已经用完」的那份，下一步会重新 opt，功能分毫不动。
+
+        管的是红缝（selected_gap）与整片选中色（be_opted）；求解演示的白色
+        光边不读这两个状态，由 renderer._play_head_border() 直接读同一开关。
+        开关开着时一个字节都不碰，手玩选中与撤销/重做行为完全不变。
+        """
+        if self._selection_visuals_enabled():
+            return
+        self.selected_gap = None
+        for b in getattr(self.game, 'blocks', ()):
+            b.be_opted = False
+
     def _execute_next_macro_step(self):
         """执行宏队列中的下一个操作（无动画时用循环迭代，避免长解法递归爆栈）"""
         while True:
@@ -4335,6 +4353,7 @@ class EventsMixin:
             if not self.macro_executing:
                 self.macro_exec_ops = []
                 self.macro_exec_index = 0
+                self._clear_macro_selection_if_disabled()
                 return
 
             # 聚拢播放：每步实时刷新当前聚拢度
@@ -4351,6 +4370,7 @@ class EventsMixin:
                 if _still_working or (
                         getattr(self, '_stream_queue', None) is not None
                         and not self._stream_queue.empty()):
+                    self._clear_macro_selection_if_disabled()
                     return
                 if getattr(self, '_gather_info', None) is not None:
                     self._finish_gather()
@@ -4369,6 +4389,7 @@ class EventsMixin:
                 self.macro_executing = False
                 self.macro_exec_ops = []
                 self.macro_exec_index = 0
+                self._clear_macro_selection_if_disabled()
                 # 宏执行（尤其关闭动画时）可能把滑块带出视野：执行完居中一次
                 self.center_map()
                 return
@@ -4392,6 +4413,7 @@ class EventsMixin:
                 self._set_macro_interrupted_notify()
                 self.macro_executing = False
                 self.macro_exec_ops = []
+                self._clear_macro_selection_if_disabled()
                 return
 
             # 选中缝隙
@@ -4425,6 +4447,7 @@ class EventsMixin:
                 self._set_macro_interrupted_notify()
                 self.macro_executing = False
                 self.macro_exec_ops = []
+                self._clear_macro_selection_if_disabled()
                 return
 
             # opt() 选中方块组
@@ -4439,6 +4462,7 @@ class EventsMixin:
                 self._set_macro_interrupted_notify()
                 self.macro_executing = False
                 self.macro_exec_ops = []
+                self._clear_macro_selection_if_disabled()
                 return
 
             # 构建 move_info
@@ -4457,9 +4481,16 @@ class EventsMixin:
                 self.start_animation(selected, final_positions)
                 # 宏播放的每一步也是滑动动画 → 同样出声（时长为定稿后的动画时长）
                 self._play_slide_sound(step)
+                # 动画已建立 anim_blocks（块引用，不再读 be_opted），这一步的
+                # 选中态用完了 —— 关掉「选中动画」就立刻收掉，别让它跟着整段
+                # 动画挂在盘上。
+                self._clear_macro_selection_if_disabled()
                 return  # 动画结束由 commit_animation 中宏路径继续
 
             self.game.commit_move(final_positions)
+            # 必须在 commit_move **之后**：它靠 be_opted 把 final_positions
+            # 一对一配对回块，提前清会让无动画回放错位。
+            self._clear_macro_selection_if_disabled()
             self._play_slide_sound(step, duration_ms=self.SLIDE_INSTANT_MS)
             self.step_count += 1
             # 宏播放逐步留档（macro_executing=True → 不合并，保持每步可撤销）

@@ -1949,12 +1949,23 @@ class RendererMixin:
     SEL_ANIM_BORDER_UNDO = (70, 150, 255)
     SEL_ANIM_BORDER_REDO = (255, 150, 50)
 
+    def _selection_visuals_enabled(self):
+        """「选中动画」总开关的共用判据（三形态 + 宏播放清理都读这一处）。
+
+        关闭时：撤销/重做的高亮边框、求解演示的白色光边都不画；宏/求解
+        播放每步用完的选中态（红缝 + 整片选中色）由
+        ``events._clear_macro_selection_if_disabled()`` 收掉。
+        """
+        return bool(getattr(self, 'selection_animation_enabled', True))
+
     def _sel_anim_border(self):
         """S1-2：撤销/重做高亮窗口内的边框配色 → (色, 线宽)，其余时段回 None。
 
         三形态共用同一处定义。调用方按优先级套用：
         拖拽越界 / 撞墙抖动 > 本反馈 > 分组着色。
         """
+        if not self._selection_visuals_enabled():
+            return None
         if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
             return None
         if getattr(self, '_sel_anim_timer', 0) <= 0:
@@ -1982,7 +1993,12 @@ class RendererMixin:
         亮度与线宽随进度收（起手最亮、落位回落），靠**纯 RGB 插值**而不是
         alpha —— pygame.draw 对不带 SRCALPHA 的目标面做 alpha 混合不可靠，
         插值出来的颜色无论底色深浅都稳定可读。
+
+        2026-11-07：这层光边也是「选中的是哪组」的提示，跟「选中动画」
+        总开关走同一判据——玩家关掉它后，求解播放不该还有一层白边在闪。
         """
+        if not self._selection_visuals_enabled():
+            return None
         if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
             return None
         if not getattr(self, 'animating', False):
@@ -3659,10 +3675,10 @@ class RendererMixin:
             x, ny, "滑动动画：", self.animation_enabled,
             "滑块移动时的补间动画过渡")
 
-        # 选中动画开关（撤销/重做时高亮该步缝隙与滑块组）
+        # 选中动画开关（撤销/重做、求解播放时高亮缝隙与滑块组）
         self._settings_sel_anim_toggle_rect, ny = self._draw_switch_row(
             x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
-            "撤销/重做时短暂高亮该步选中的缝隙与滑块组")
+            "撤销/重做、求解播放时高亮选中的缝隙与滑块组")
 
         # 动画时长滑动条（轨道与开关同一右栏对齐）
         speed_y = ny
