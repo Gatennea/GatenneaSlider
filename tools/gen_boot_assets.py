@@ -14,9 +14,12 @@
   而且 logo 本来就不该当全屏底图）。改成程序化棋盘：配色取游戏调色板
   （背景 30 / 蓝块 60,150,200 / 缝 80 / 描边 100），空位随帧补齐，
   从「打乱」走向「还原」。
-- 但 Logo 本身要留着：从封面线稿**抽出主体**做成独立小图标（去白底、2px
-  颗粒化、蓝影+浅色线），放在标题上方，不再铺满全屏。源码就是
-  `assets/picture/cover.png`，clone 仓库后就能重生成，不读 video/。
+- 但 Logo 本身要留着：从封面线稿**抽出主体**做成独立小图标（去白底、
+  平滑缩放、浅色线），放在标题上方，不再铺满全屏。⚠️ 封面是一张精细的
+  白底黑线稿，**不要故意做成像素风**：2px 颗粒化 + NEAREST 放大 + 蓝色硬描边
+  缩到 148px 只会糊成一团（2026-11-07 试过，效果不行，已去掉）。
+  标题和棋盘保持像素风，封面按原样清晰呈现，两者不冲突。
+  源码就是 `assets/picture/cover.png`，clone 仓库后就能重生成，不读 video/。
 - 所有颜色都取自 `GUI.py::SliderGUI.__init__` 的 `self.colors`；这里不另造色相。
   改游戏主题色时，改完这张表再重跑，开机画面才不会跟游戏里对不上。
 
@@ -45,12 +48,11 @@ DESIGN_W, DESIGN_H = 854, 480
 N_FRAMES = 24
 CELL = 58                       # 棋盘格边长（设计像素）
 LOGO_BOX = 148                  # Logo 边长（设计像素）
-LOGO_PIXEL = 2                  # 颗粒边长：先 BOX 降采样，再 NEAREST 放大
 
 # ⚠️ 全部照抄 GUI.py 的 self.colors，别在这里另造颜色。
 #    左侧注释写明对应的键，改主题色时两边一起改。
 BG = (30, 30, 30)              # background
-BLOCK = (60, 150, 200)         # block          —— 棋盘方块 / Logo 蓝影 / HUD 线
+BLOCK = (60, 150, 200)         # block          —— 棋盘方块 / HUD 线
 SEAM = (80, 80, 80)            # gap
 EDGE = (100, 100, 100)         # border
 INK = (255, 255, 255)          # text           —— 英文主标题
@@ -109,16 +111,20 @@ def pixel_text_shadow(text, font, color, scale, offset=4, shadow=SHADOW):
     return out
 
 
-def build_logo(size=LOGO_BOX, line=LOGO_LINE, shadow=BLOCK):
-    """从封面线稿抠出独立 Logo：白底→透明、黑线→浅色，蓝影偏移出 8-bit 描边。
+def build_logo(size=LOGO_BOX, line=LOGO_LINE):
+    """从封面线稿抠出独立 Logo：白底→透明、黑线→浅色，平滑缩放保留细节。
 
     cover.png 是白底黑色机械魔方线稿、四周一大圈白边。先按亮度反相算 alpha
-    并裁掉白边，居中贴进正方形；再 BOX 降采样到 `size / LOGO_PIXEL` 后
-    NEAREST 整数倍放大 —— 细线不会因直接缩小而断掉，又能得到硬边颗粒。
-    只做「抠图 + 染色」，不拿它当全屏底图。
+    并裁掉白边，居中贴进正方形；再用 LANCZOS 平滑缩放到目标尺寸。
+    ⚠️ 封面**不刻意做像素风**：试过 2px 颗粒化（BOX 降采样 + NEAREST 放大）
+    再叠一层蓝色硬描边，缩到 148px 后细线糊成一团、认不出是魔方。像素风
+    只留给标题字和棋盘；封面按它本来的线稿样子清晰呈现，只做「抠图 + 染色
+    + 平滑缩放」，不拿它当全屏底图。
+    alpha 保留 2 倍增益：原图线条很细，直接线性反相在 7 倍缩小后会淡到看不见，
+    增益只补可见度，不做二值化，边缘仍是平滑灰阶。
     """
     gray = np.asarray(Image.open(COVER_SRC).convert('L'), dtype=np.int16)
-    alpha = np.clip((248 - gray) * 3, 0, 255).astype('uint8')
+    alpha = np.clip((252 - gray) * 2, 0, 255).astype('uint8')
     ys, xs = np.where(alpha > 16)
     x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
     crop = Image.fromarray(alpha[y0:y1 + 1, x0:x1 + 1], 'L')
@@ -126,20 +132,11 @@ def build_logo(size=LOGO_BOX, line=LOGO_LINE, shadow=BLOCK):
     square = Image.new('L', (side, side), 0)
     square.paste(crop, ((side - crop.width) // 2, (side - crop.height) // 2))
 
-    unit = max(1, size // LOGO_PIXEL)
-    small = square.resize((unit, unit), Image.BOX)
-    mask = small.resize((size, size), Image.NEAREST)
-
-    off = 3
-    under = Image.new('RGBA', (size, size), shadow + (0,))
-    under.putalpha(mask)
-    over = Image.new('RGBA', (size, size), line + (0,))
-    over.putalpha(mask)
-    canvas = Image.new('RGBA', (size + off, size + off), (0, 0, 0, 0))
-    canvas.alpha_composite(under, (off, off))
-    canvas.alpha_composite(over, (0, 0))
-    return pygame.image.frombytes(canvas.tobytes(),
-                                  canvas.size, 'RGBA').convert_alpha()
+    mask = square.resize((size, size), Image.LANCZOS)
+    layer = Image.new('RGBA', (size, size), line + (0,))
+    layer.putalpha(mask)
+    return pygame.image.frombytes(layer.tobytes(),
+                                  layer.size, 'RGBA').convert_alpha()
 
 
 def _filled(r, c, t):
@@ -213,7 +210,7 @@ def build_frames():
         pygame.draw.rect(surf, (*NEON, 120), (0, DESIGN_H - 3, DESIGN_W, 3))
 
         # Logo + 标题：从第 0 帧起就完整显示（避免 init 静态帧与动画帧之间跳变），
-        # 只做整像素的轻微上下浮动，不缩放（缩放会把像素块插值糊掉）
+        # 只做整像素的轻微上下浮动，不缩放（标题像素字缩放会被插值糊掉）
         bob = 0 if i % 8 < 4 else 1
         surf.blit(logo, logo.get_rect(center=(DESIGN_W // 2, 104 + bob)))
         en_y = DESIGN_H // 2 - 18 if zh is not None else DESIGN_H // 2 + 0

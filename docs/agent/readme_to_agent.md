@@ -214,7 +214,8 @@ config/                # 執行期組態（§8）
 save/                  # 使用者存檔 *.json
 assets/                 # 外部資源統一根（執行期資源都收在此；spec 整樹打包）
   picture/              #   cover.ico / cover.png（Logo 線稿源）/ splash.bmp / boot/ 開機幀
-                        #   像素風標題 + 封面摳出的小 Logo + 遊戲調色板棋盤背景，
+                        #   像素風標題 + 封面摳出的小 Logo（平滑線稿、不做像素風）
+                        #   + 遊戲調色板棋盤背景，
                         #   tools/gen_boot_assets.py 生成；字體只在重生成時讀系統字體，
                         #   執行期與打包版只讀 PNG（詳 打包与发版.md §3）
   audio/                #   音效與背景樂：sound/（slide*.wav 等）、music/（bgm.ogg）

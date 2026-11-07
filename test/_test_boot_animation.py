@@ -77,10 +77,13 @@ class BootAnimationSmokeTest(unittest.TestCase):
         self.assertIn('splash=', spec, "spec EXE 未配置 splash 启动图")
 
     def test_boot_frames_are_pixel_art_not_static_icon(self):
-        """2026-11-07 换代护栏：像素风标题 + 棋盘动画，不许退回图标底 / 平滑缩放。
+        """2026-11-07 换代护栏：像素风标题 + 棋盘动画，不许退回图标底。
 
         用像素级差分证明「打乱→还原」真的在动（首末帧空位数量差很多），
-        再静态钉住两条容易回流的写法：smoothscale 会糊掉硬边、cover.png 是旧图标底。
+        再静态钉住两条容易回流的写法：标题像素字不许用 smoothscale 糊掉硬边、
+        cover.png 不许变回全屏图标底。
+        ⚠️ 这里禁的是 `pygame.transform.smoothscale`（整帧 / 标题插值）；封面
+        用 Pillow 的 `Image.LANCZOS` 平滑缩放是**故意**的，见下一条测试。
         """
         import glob as _glob
         import inspect as _inspect
@@ -135,6 +138,52 @@ class BootAnimationSmokeTest(unittest.TestCase):
         self.assertIn('pygame.transform.scale(', paint)
         self.assertNotIn('pygame.transform.smoothscale(', paint,
                          '_paint_boot 改回平滑缩放会把像素块抹成灰边')
+
+    def test_boot_cover_logo_not_pixelated(self):
+        """封面不再故意做像素风：清晰线稿 + 平滑缩放，护栏含反向验证。
+
+        2026-11-07 试过 2px 颗粒化（BOX 降采样 + NEAREST 放大）再叠一层蓝色
+        硬描边，缩到 148px 后细线糊成一团、认不出是魔方。现在封面按它本来的
+        线稿样子平滑缩放，像素风只留给标题字和棋盘。
+        静态钉住生成脚本不许回流到颗粒化 API；像素上用「中间灰阶像素数」
+        证明 Logo 是带抗锯齿的细线稿；末尾把同一帧强制 2×2 块化模拟旧效果，
+        断言判据确实会转红（反向验证）。
+        """
+        import glob as _glob
+        import numpy as np
+        from PIL import Image
+
+        gen = os.path.join(_ROOT, 'tools', 'gen_boot_assets.py')
+        with open(gen, 'r', encoding='utf-8') as f:
+            src = f.read()
+        # ⚠️ 只钉 API 字面量：注释里提到旧做法（「NEAREST 放大」）不算回流。
+        #    标题像素字仍走 pygame.transform.scale 最近邻，这里管的是封面。
+        self.assertIn('Image.LANCZOS', src, '封面没走平滑缩放')
+        for gone in ('Image.NEAREST', 'Image.BOX', 'LOGO_PIXEL',
+                     'alpha_composite'):
+            self.assertNotIn(gone, src, f'封面又回流到颗粒化 / 蓝影硬描边：{gone}')
+        self.assertIn('不刻意做像素风', src, '注释没写清封面不做像素风')
+
+        frames = sorted(_glob.glob(
+            os.path.join(_ROOT, 'assets', 'picture', 'boot', 'frame_*.png')))
+        with Image.open(frames[len(frames) // 2]) as im:
+            # 只看标题上方中央的 Logo 区，避开纯棋盘带
+            alpha = np.asarray(im.convert('RGBA'), dtype=np.int16)[25:180, 355:500, 3]
+
+        def mid_gray(a):
+            """抗锯齿细线的半透明灰阶像素数：平滑线稿多，2px 硬边块少。"""
+            return int(((a > 40) & (a < 215)).sum())
+
+        # 平滑版全 24 帧 15728~15930；旧颗粒化版 10424~10610；阈值 14000 留足余量
+        self.assertGreater(mid_gray(alpha), 14000,
+                           '封面细线糊成硬边块了，检查 build_logo 的缩放方式')
+
+        # 反向验证：把同一帧强制 2×2 块化（等价于旧的 NEAREST 颗粒化）
+        h, w = alpha.shape
+        blk = alpha[:h // 2 * 2, :w // 2 * 2].reshape(h // 2, 2, w // 2, 2).max(axis=(1, 3))
+        blk = np.repeat(np.repeat(blk, 2, axis=0), 2, axis=1)
+        self.assertLess(mid_gray(blk), 14000,
+                        '反向验证失效：块化后灰阶没掉，判据抓不住颗粒化回流')
 
     def test_boot_palette_and_font_note(self):
         """字色必须取自 GUI.py 的 self.colors；字体来源的注释不许再含糊。"""
