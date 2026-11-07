@@ -1120,6 +1120,14 @@ class EventsMixin:
                             # 选不动」的外沿缝时给提示（与米字格一致）
                             gap, block = self._sq_click_query(x, y)
 
+                        # 已选中缝后的第二下把缝隙命中带收窄了（便于选滑块），
+                        # 但捆绑「内部缝」的语义本来就是「点整组滑块」，不能跟着
+                        # 收窄：否则点在内部缝附近既不命中缝也不命中块，整组选不中。
+                        # 这里按默认带把内部缝单独捞回来，交给下面的 _bi 分支。
+                        if (gap is None and not op_locked
+                                and getattr(self, 'selected_gap', None) is not None):
+                            gap = self._internal_seam_at(x, y)
+
                         # 捆绑块渲染为「一整块」刚性体：点中其「内部缝」原位置应
                         # 判定为选滑块，而非弹「选不动」。只针对内部缝——块内部
                         # 本就 gap=None 走选块路径，组外侧相邻的外缝必须仍可选中

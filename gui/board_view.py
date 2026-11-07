@@ -13,6 +13,15 @@ from __future__ import annotations
 import math
 from typing import Tuple, Optional, Generator
 
+# 缝隙命中带（世界单位）。⚠️ 按交互阶段切换，别再让两下点击共用一条带：
+# · 第一击（还没选中缝）要能「点偏进相邻块」也选中细缝 → 精准带 10，
+#   另有调用方给的 ±28 宽兜底；
+# · 第二击（已选中缝，要选的是滑块）缝带必须收得很窄，否则点在滑块里、
+#   离缝十几像素也会被判成「重新选缝」，滑块永远选不中。
+# 2026-11-07 用户报：某次加大选缝范围后，选中缝反而难以选中滑块。
+GAP_TOL_FIRST = 10.0
+GAP_TOL_SECOND = 2.0
+
 
 class SquareBoardView:
     """正方形網格幾何輔助（接受浮點座標，支援動畫插值）。"""
@@ -46,7 +55,7 @@ class SquareBoardView:
         wx: float,
         wy: float,
         bounds: dict,
-        tolerance: float = 10.0,
+        tolerance: float = GAP_TOL_FIRST,
     ) -> Generator[Tuple[str, int], None, None]:
         """候選縫隙（未經遊戲邏輯驗證）。"""
         min_row, max_row = bounds['min_row'], bounds['max_row']

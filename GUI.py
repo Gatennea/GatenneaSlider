@@ -37,7 +37,8 @@ from gui.annotation import AnnotationMixin
 from gui.model_editor import ModelEditorMixin
 from gui.tutorial import TutorialMixin
 from gui.palette import PaletteMixin
-from gui.board_view import SquareBoardView, point_in_polygon
+from gui.board_view import (SquareBoardView, point_in_polygon,
+                            GAP_TOL_FIRST, GAP_TOL_SECOND)
 from gui.text_input import TextInput
 from gui.scrollbar import Scrollbar
 from gui import log_writer
@@ -1784,25 +1785,39 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         return None
 
     def get_gap_at_pos(self, screen_x: int, screen_y: int,
-                       tolerance: float = None) -> tuple:
-        """根据屏幕坐标获取缝隙位置
+                       tolerance: float = None, *, tight: bool = False) -> tuple:
+        """根据屏幕坐标获取缝隙位置。
 
-        tolerance 放大「点缝的可选命中带」：通用通道与**方形/数字盘**都吃
-        这个参数（方形 2026-11-07 起透传，此前只认通用通道）；三角/米字两支
-        忽略它（命中带仍各自默认）。None 走默认 10 世界单位（≈12px@zoom1.21）
-        ——这是第一击选缝的精准带；放大值只用于「没选中缝时、点偏进相邻块」
-        的兜底检索，绝不改变已选中缝后的第二步交互（见 _sq_click_query）。
+        ⚠️ 命中带按**交互阶段**分两套，别再让「第一击选缝」和「第二击选块」
+        共用一条（用户 2026-11-07 报：选中缝之后难以选中滑块）：
+
+        · `tight=False`（默认，第一击）：精准带 `GAP_TOL_FIRST` = 10 世界单位
+          （≈12px@zoom1.21）；调用方另可给 `tolerance=28` 做「点偏进相邻块」
+          的宽兜底。通用通道与**方形/数字盘**都吃这个参数；三角/米字对
+          *放大值* 仍是空操作（各自视图默认 10 / max(3, cell/12)），维持原行为。
+        · `tight=True`（已选中缝，第二下要点滑块）：**四种形态一律收窄**到
+          `GAP_TOL_SECOND` = 2 世界单位，且忽略放大 tolerance。缝带变小后，
+          点在滑块上就命中滑块；只有真的压在缝线上才会判成换缝/取消选中。
+          由 `_sq_click_query` 按 `selected_gap` 传入（米字格走 `_mi_click_query`
+          的同一常量）。
+
+        其它调用方（悬停高亮、选块填空、设计态、is_blank_area）都传默认值，
+        行为不变。
         """
         try:
             world_x, world_y = self.screen_to_world(screen_x, screen_y)
             # 解析成具体数值，供通用通道与方形回退共用（抬到分支外：
             # 方形回退在通用分支未走时也要拿得到，之前定义在分支里会 NameError）
-            tol = 10.0 if tolerance is None else float(tolerance)
+            tol = (GAP_TOL_SECOND if tight else
+                   (GAP_TOL_FIRST if tolerance is None else float(tolerance)))
+            # 三角/米字只吃「收窄」；第一击的 ±28 宽兜底对它们仍是空操作
+            tri_tol = GAP_TOL_SECOND if tight else GAP_TOL_FIRST
+            mi_tol = GAP_TOL_SECOND if tight else None
 
             if getattr(self, 'triangle_mode', False):
                 cells = self.game.positions()
                 for gap_type, line in self._tri_view().candidate_gaps(
-                        world_x, world_y, cells):
+                        world_x, world_y, cells, tolerance=tri_tol):
                     if self.game.is_valid_gap(gap_type, line):
                         return (gap_type, line)
                 return None
@@ -1811,7 +1826,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 米字格：最近單位邊裁定（等距取長邊）。命中的那條可能落在
                 # 棋形外沿（兩側不全有塊），這種縫整體平移沒有意義，捨棄
                 cells = self.game.positions()
-                gap = self._mi_view().gap_at(world_x, world_y, cells)
+                gap = self._mi_view().gap_at(world_x, world_y, cells,
+                                             tolerance=mi_tol)
                 if gap is None:
                     return None
                 if not self.game.is_valid_gap(*gap):

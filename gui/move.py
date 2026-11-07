@@ -13,7 +13,7 @@ from game_mi import mi_key
 from game_triangle import tri_key
 
 from gui import op_log
-from gui.board_view import _seg_dist
+from gui.board_view import _seg_dist, GAP_TOL_SECOND
 
 
 class MoveMixin:
@@ -607,6 +607,27 @@ class MoveMixin:
             print(f"_rejected_seam_at error: {e}")
         return None
 
+    def _internal_seam_at(self, screen_x: int, screen_y: int):
+        """已選中縫後的第二下：捆綁**內部縫**仍按默認命中帶認出來。
+
+        收窄只針對「可選活縫」——它們會跟「點塊」搶命中。捆綁內部縫不是
+        可選縫，事件層的 `_bi` 分支會把它當成「點中該組任一塊」（整組剛性
+        體），語義本來就是選滑塊。若連它一起收窄，點在內部縫附近就既不
+        命中縫、也不命中塊，整組反而選不中（`_test_bandage_click.py`）。
+
+        只回傳在 `bandage_internal_seams()` 集合裡的那一條；普通活縫一律
+        不認，否則收窄就白做了。
+        """
+        seams = (self.game.bandage_internal_seams()
+                 if hasattr(self.game, 'bandage_internal_seams') else ())
+        if not seams:
+            return None
+        try:
+            wide = self.get_gap_at_pos(screen_x, screen_y)
+        except Exception:
+            return None
+        return wide if wide is not None and tuple(wide) in seams else None
+
     def _click_on_nonplayable_edge(self, block, screen_x: int, screen_y: int,
                                    tolerance: float = 8.0) -> bool:
         """這次點擊是否壓在此塊某條邊線上，而那條邊不是可選縫。
@@ -695,8 +716,16 @@ class MoveMixin:
         一直選不中縫）；只接活縫分支，死縫/貼邊提示機制不移植（那是為
         通用通道射線法假陽性設的，方形塊命中是真實的）；三角形態不接，
         窄帶仍是 gap+10。
+
+        ⚠️ **兩下點擊的縫帶不共用**（2026-11-07 用戶報「選中縫之後難以選中
+        滑塊」）：第一擊沿用上面的寬/精準帶；**已選中縫後的第二下**傳
+        ``tight=True``，四種形態一律收到 `GAP_TOL_SECOND`（2 世界單位）。
+        事件層 ``if gap is not None`` 優先於「點塊」分支，縫帶一大，點在
+        滑塊裡、離縫十來像素就被判成「重新選縫」，滑塊永遠選不中。
+        收窄後只有真的壓在縫線上才會換縫/取消選中，其餘都落到選塊。
         """
-        gap = self.get_gap_at_pos(screen_x, screen_y)
+        second_step = getattr(self, 'selected_gap', None) is not None
+        gap = self.get_gap_at_pos(screen_x, screen_y, tight=second_step)
         block = self.get_block_at_pos(screen_x, screen_y)
         # 寬帶命中的死縫：塊被它收掉時記在這裡，供下面提示分支直接用——
         # 提示分支自己的查詢帶是窄的（6），不能重查一次就算了，否則寬帶
@@ -705,7 +734,7 @@ class MoveMixin:
         _edge_hint = None
         if (getattr(self, '_pick_fill', None) is None
                 and gap is None and block is not None
-                and getattr(self, 'selected_gap', None) is None):
+                and not second_step):
             if self._generic_spec() is not None:
                 # 通用通道多邊形密鋪無縫隙：共享邊的中點對兩相鄰塊都在
                 # 「邊界內」（射線法對邊界點不設防），點縫時塊命中是假陽性。
@@ -788,10 +817,18 @@ class MoveMixin:
         移動，方向還是由上一記落點瞎猜的（規劃 §5 手動驗收第 3 條：「而不是
         無反應」）。其餘情況與 get_gap_at_pos / get_block_at_pos 分別查詢
         等價（那兩個是純查詢，不發提示，供測試與其他地方複用）。
+
+        ⚠️ 與 `_sq_click_query` 同規則：**已選中縫後的第二下**把縫帶收到
+        `GAP_TOL_SECOND`，讓點滑塊落到選塊分支；第一擊仍用 `gap_at` 的
+        默認帶 max(3, cell_size/12)（那個值不能放寬，見 mi_view.gap_at
+        的實測說明：放寬會讓「點在方塊中間」被判成點縫）。
         """
         world_x, world_y = self.screen_to_world(screen_x, screen_y)
         cells = self.game.positions()
-        gap = self._mi_view().gap_at(world_x, world_y, cells)
+        second_step = getattr(self, 'selected_gap', None) is not None
+        gap = self._mi_view().gap_at(
+            world_x, world_y, cells,
+            tolerance=GAP_TOL_SECOND if second_step else None)
         if gap is not None and not self.game.is_valid_gap(*gap):
             if self._mi_locked_seam(gap, cells):
                 from game_mi import span

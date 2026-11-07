@@ -251,6 +251,14 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 | 兩次觸控 `control_two_touch` | 原版三段式：點縫隙 → 點方塊 → 再拖拽/鍵盤；**關閉時入口門禁，點擊不寫入任何選中狀態** | `gui/events.py` MOUSEBUTTONDOWN |
 | 鼠標鍵盤 `control_mouse_kb` | 方向鍵 / W/A/S/D 移動；關閉只屏蔽移動鍵，Ctrl+Z/Y 等快捷鍵不受影響 | `gui/events.py` KEYDOWN |
 
+- ⚠️ **兩下點擊的縫隙命中帶不共用**：第一擊（未選中縫）用精準帶 10 + 點偏進相鄰塊的
+  ±28 寬兜底；**已選中縫後的第二下**要點的是滑塊，四種形態一律收到 2 世界單位
+  （`get_gap_at_pos(..., tight=True)`；米字格走 `_mi_click_query` 的同一常量）。
+  事件層 `if gap is not None` 優先於「點塊」，縫帶一大，貼縫的滑塊就被判成
+  「重新選縫」甚至直接取消選中。只有真壓在縫線上才換縫/取消。
+  ⚠️ 例外：捆綁「內部縫」等於「點整組滑塊」，不跟著收窄，`events.py` 用
+  `_internal_seam_at()` 按默認帶單獨撈回（`_test_bandage_click.py` 守）。見
+  `docs/CAPABILITIES.md` 的 `get_gap_at_pos` 條目、`test/_test_gap_second_step.py`。
 - 拖拽判定：按下累計位移超過 `drag_threshold`（預設 14px）才算拖拽，否則視為點擊。
 - 桌面版一次拖拽滑動 = `step` 格（網頁版為 1 格）。
 - **拖拽提交的動畫要「接續」**：跟隨預覽已經把整組畫到近乎落點，松手時若動畫仍從 `b.location` 起算，整組會先跳回原位再滑一遍（玩家看到的「拖完又播一次」）。`_commit_drag_move` 把跟隨位移記進 `_drag_anim_origin`，`animation._apply_drag_origin` 按它在總位移中的佔比 s 把 `anim_start_pos` 前移，動畫只滑剩餘段、時長按同比例縮短（`_anim_duration_base` 記基準，commit/cancel 時還原）。s 夾在 [0,1]：跟隨量超過落點時退化成一幀落位，不會往回滑。**取消動畫要走 `_anim_true_start`（真實起點）**，不能用被前移過的 `anim_start_pos`。
