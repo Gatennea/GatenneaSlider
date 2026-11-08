@@ -1418,6 +1418,53 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
     def _mindist(S, q):
         return min(abs(r - q[0]) + abs(c - q[1]) for r, c in S)
 
+    # --- 連通判定提速（2026-11-07，硬局實測 _connected 佔全程 36%）---
+    # 記憶化：rest 的連通性與（不連通時）分量 id 表，按 rest 複用
+    _rest_conn_cache = {}
+    _rest_ids_cache = {}
+
+    def _union_connected(rest, mv_k):
+        """rest ∪ mv_k 是否連通（前提：mv_k ∩ rest = ∅、mv_k 內部連通）。
+
+        與原 `_connected(rest | mv_k)` 逐案等價的三級判定——滿 DFS 只留在
+        最後一級（2026-11-07 實測佔比：無接觸 28–35%、rest 連通 96–98%，
+        即 ~97% 的呼叫可免 DFS）：
+          1. mv_k 與 rest 無 4 鄰接接觸 → 兩個非空集合必然不連通 → False；
+          2. rest 連通（按 rest 記憶化，44 萬次檢查攤到 5.4 萬個不同 rest）
+             + 有接觸 → 併集連通 → True（兩個連通集有邊相鄰，並起來連通）；
+          3. rest 不連通 → 星形橋接：rest 各連通分量兩兩不鄰接（分量的極大
+             性質），且 mv_k 本身連通 → 併集連通 ⟺ mv_k 觸到**每一個**
+             分量（分量 id 表按 rest 記憶化）。
+        """
+        if not any((r + dr, c + dc) in rest
+                   for r, c in mv_k for dr, dc in _DIRS.values()):
+            return False                     # 快判1：不接觸 ⇒ 必不連通
+        rc = _rest_conn_cache.get(rest)
+        if rc is None:
+            rc = _connected(rest)
+            _rest_conn_cache[rest] = rc
+        if rc:
+            return True                      # 快判2：連通 + 接觸 ⇒ 連通
+        info = _rest_ids_cache.get(rest)     # 慢路徑：星形橋接
+        if info is None:
+            ids, nid = {}, 0
+            for comp_r in _comps(rest):
+                for cell in comp_r:
+                    ids[cell] = nid
+                nid += 1
+            info = (ids, nid)
+            _rest_ids_cache[rest] = info
+        ids, ncomp = info
+        touched = set()
+        for r, c in mv_k:
+            for dr, dc in _DIRS.values():
+                cid = ids.get((r + dr, c + dc))
+                if cid is not None:
+                    touched.add(cid)
+                    if len(touched) == ncomp:
+                        return True
+        return False
+
     def _legal_steps(cur):
         """全部合法 step 单步 → [(act5, comp, delta, nxt)]。
 
@@ -1456,7 +1503,7 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
                                     (q[0] + dr * k, q[1] + dc * k)
                                     for q in comp)
                                 if (mv_k & rest
-                                        or not _connected(rest | mv_k)):
+                                        or not _union_connected(rest, mv_k)):
                                     ok = False
                                     break
                             if not ok:

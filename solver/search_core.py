@@ -181,34 +181,69 @@ def component_of(coords, action, rep):
 
 
 # ---------- 启发 ----------
-def heuristic(coords, m, n, step):
+def heuristic_parts(coords, m, n, step):
+    """返回 (h, 洞数)：h 与 heuristic 逐位同值；洞数是它的第一项，单独返回
+    供 GBFS 出堆复用（入堆算启发时刚算过 fast_window，出堆的「填一洞」判定
+    不必再算一遍——2026-11-07 画像里 fast_window/canonicalize 出堆侧是纯
+    重复计算，合计约占搜索段 1/3）。"""
     _win, holes, protr = fast_window(coords, m, n)
     h = len(holes)
     for p in protr:
         if holes:
             d = min(abs(p[0] - q[0]) + abs(p[1] - q[1]) for q in holes)
             h += max(1, d // step)
-    return h
+    return h, len(holes)
+
+
+def heuristic(coords, m, n, step):
+    return heuristic_parts(coords, m, n, step)[0]
 
 
 # ---------- GBFS：至少填一个洞 ----------
-def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None):
+def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None,
+                      progress_cb=None, progress_every=2000):
+    """GBFS 搜一条「洞数严格变少」的路径。
+
+    progress_cb(expanded)：每 progress_every 个展开节点回调一次（供调用方
+    在长搜索期间持续刷新进度——2026-11-07 前搜索全程静默，界面表现为
+    「卡在聚攏+GBFS 不停機」）。默认 None，不影响既有调用方。
+
+    2026-11-07 等价去重（同值重算消除，输出与旧版逐位一致）：
+    · 堆元素携带**入堆时**算好的 canonical(ck) 与洞数——出堆的闭集查询、
+      「填一洞」判定不再重算 canonicalize/fast_window（画像两者合计 ~33%
+      tottime，出堆侧约一半是纯重复计算）；
+    · 路径改**父指针回溯**（came_from[cid]→入边），入堆不再复制 O(深度)
+      列表（画像 append 万级分配的主源）；cid 全堆唯一 → 元组比较止于
+      第 3 位，附加信息不参与堆序，堆行为与旧版一致。
+    """
     start = frozenset(coords)
     h0 = len(fast_window(start, m, n)[1])
     counter = 0
-    openq = [(h0, 0, 0, start, [])]
-    bestg = {canonicalize(start): 0}
+    # 堆元素：(f, g, cid, cur, ck, holes)；路径边存 came_from（cid→入边）
+    came_from = {}                      # cid -> (parent_cid, act, rep)
+    start_ck = canonicalize(start)
+    openq = [(h0, 0, 0, start, start_ck, h0)]   # 起点 f=h0（与旧版一致，
+    bestg = {start_ck: 0}               # 不是 heuristic(start)）
     closed = set()
     expanded = 0
     while openq:
-        _f, g, _, cur, path = heapq.heappop(openq)
-        ck = canonicalize(cur)
+        _f, g, cid, cur, ck, holes = heapq.heappop(openq)
         if g > bestg.get(ck, -1) or ck in closed:
             continue
-        if len(fast_window(cur, m, n)[1]) < h0:
+        if holes < h0:
+            # 回溯父指针拼路径：与旧版「入堆时 path+[(act,rep)]」逐位同构
+            path = []
+            node = cid
+            while node > 0:
+                p, a, r = came_from[node]
+                path.append((a, r))
+                node = p
+            path.reverse()
             return path, expanded
         closed.add(ck)
         expanded += 1
+        if progress_cb is not None and expanded % progress_every == 0:
+            progress_cb(expanded)
         if expanded > budget or (cancel_check and cancel_check()):
             return None, expanded
         for new, act, rep in expand(cur, step):
@@ -218,6 +253,7 @@ def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None):
                 continue
             bestg[nk] = ng
             counter += 1
-            heapq.heappush(openq, (heuristic(new, m, n, step), ng,
-                                   counter, new, path + [(act, rep)]))
+            h_new, holes_new = heuristic_parts(new, m, n, step)
+            came_from[counter] = (cid, act, rep)
+            heapq.heappush(openq, (h_new, ng, counter, new, nk, holes_new))
     return None, expanded

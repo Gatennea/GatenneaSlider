@@ -150,6 +150,10 @@ class AutoSolveMixin:
             self._auto_streamed = True
             self._auto_best = {'score': sc0, 'phi': phi0,
                                'snap': snapshot(self.game)}
+            # 已播步数累加器：macro_exec_index 会在宏播放收尾时归零
+            # （events._execute_next_macro_step 完成分支），收尾时读它恒为 0
+            # ——流式路径的 steps 锁存/通知因此一直是「0 步」。改为段级累加。
+            self._auto_stream_steps = 0
             self._auto_solve_running = True
             self._auto_solve_cancel = False
             self._auto_solve_start_time = time.time()
@@ -206,6 +210,13 @@ class AutoSolveMixin:
                             seg_q.put((label,
                                        [tuple(a) for a in acts5]))
                     kwargs['segment_cb'] = segment_cb
+                    # 时间上限复用设置页「最大等待秒数」（用户 2026-11-07 拍板
+                    # 由用户输入、复用聚拢停机参数）：启用=用户值（0=不限时），
+                    # 禁用=不传参 → 补缺/填洞各自内置 30s 安全帽（防求解线程
+                    # CPU 满载把界面拖死，见 gap_solver._GAP_GUI_TIME_BUDGET）。
+                    if self.gather_enabled.get('max_wait_time', True):
+                        kwargs['time_budget'] = self.gather_params.get(
+                            'max_wait_time')
                 solution = solver_func(
                     game_snapshot, step=self.current_step,
                     cancel_check=cancel_check,
@@ -396,9 +407,18 @@ class AutoSolveMixin:
             def progress_callback(info):
                 self._auto_solve_progress = info
 
+            # 每候选阶段墙钟上限复用「最大等待秒数」：启用=用户值
+            # （0=不限时）；禁用=不传 → auto_solve 内置默认 90s 安全帽
+            # （修复前混合直跑分支无自有时限，实测「卡在聚攏+GBFS不停機」）。
+            budget_kw = {}
+            if self.gather_enabled.get('max_wait_time', True):
+                budget_kw['stage_budget'] = self.gather_params.get(
+                    'max_wait_time')
+
             auto_solve(snap, step=step, cancel_check=cancel_check,
                        progress_callback=progress_callback,
-                       stage_cb=lambda s: self._auto_stage_queue.put((gen, s)))
+                       stage_cb=lambda s: self._auto_stage_queue.put((gen, s)),
+                       **budget_kw)
         except Exception as e:
             print(f"[自动规划·流式] 出错: {e}")
             import traceback
@@ -453,6 +473,8 @@ class AutoSolveMixin:
         self._update_auto_best(end, score, phi)
         if not ops:
             return
+        # 已播步数累加（finalize 读它，勿读会被播放收尾归零的 macro_exec_index）
+        self._auto_stream_steps = getattr(self, '_auto_stream_steps', 0) + len(ops)
         if self.macro_executing:
             self.macro_exec_ops.extend(ops)
         else:
@@ -532,7 +554,11 @@ class AutoSolveMixin:
 
     def _finalize_auto_streamed(self):
         """流式收尾：播放完成 / 求解结束，锁存结果并清空状态。"""
-        total = self.macro_exec_index
+        # 步数用段级累加器：macro_exec_index 在宏播放收尾（events
+        # _execute_next_macro_step 完成分支）已归零，读它恒得 0（2026-11-07 实测
+        # 「已复原：0 步」假通知的根因）。
+        total = getattr(self, '_auto_stream_steps', 0)
+        self._auto_stream_steps = 0
         self.macro_executing = False
         self.macro_exec_ops = []
         self.macro_exec_index = 0
