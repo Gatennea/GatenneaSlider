@@ -222,6 +222,8 @@ assets/                 # 外部資源統一根（執行期資源都收在此；
                         #   ⚠️ music/ 只收壓縮格式；wav 母帶不進庫也不進包（打包与发版.md §4）
   ui/arrows/            #   方向鍵箭頭貼圖（renderer._arrow_asset_path 讀）
 test/                  # 無頭測試腳本（§9），命名 _test_*.py 或 test/
+                       #   ⚠️ 2026-11-09 新增 `_test_solver_opt_equiv.py`：求解器優化護欄
+                       #   （三級判定雙算 / GBFS 抽象圖深層差分 / 流式鏈逐段重放 / 按時停機）
 web/                   # Web 版（TypeScript/靜態頁），**獨立 git 倉庫**，不隨本庫提交
 build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 ```
@@ -514,10 +516,14 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 **一、「全套」到底有哪些**
 
-1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **147 個** `_test_*.py`，
+1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **151 個** `_test_*.py`，
    一個檔案算一條用例，子進程執行、退出碼 0 算 PASS。其中 3 個收集即 skip：
    `_test_full.py`（寫死舊專案路徑）、`_test_dent_inner.py`（缺未入庫的錄製存檔）、
-   `_test_bfs_explore.py`（純探測、估需兩小時）。實際跑 144 個。
+   `_test_bfs_explore.py`（純探測、估需兩小時）。實際跑 148 個。
+   ⚠️ **本機 WorkBuddy 安全刪除鉤子**（2026-11-09）：conftest 每例最多 4 次
+   `os.remove`（清兩個運行態 json），同一 turn 累計 50 次即攔截，之後大批
+   腳本級聯假紅（stderr 刷 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`），單跑全綠。
+   別據此判回歸；全套結論以 CI 為準，詳 踩坑与搁置.md §二十一。
    `_smoke_exe.py` 不是 `_test_` 前綴、根本不收集，發版前手動跑。
    耗時大頭：`_test_mi_gather.py` 12~15 分鐘、`_test_reject_text_only.py` 約 8 分鐘、
    `_test_solver.py` 約 4 分鐘；CI 上限 120 分鐘。
@@ -543,7 +549,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 底座（每次改代碼，幾十秒）：
 
 - 全庫 grep 舊 API 名確認無殘留 —— `compileall` 加靜態檢查證明不了引用連得上。
-- `pytest test/ --collect-only -q`：約 1 秒，147 條全收集成功就代表 import 鏈沒斷。
+- `pytest test/ --collect-only -q`：約 1 秒，151 條全收集成功就代表 import 鏈沒斷。
 - compileall + 上面三項 lint。
 
 按改動補跑（從目錄跑，用 `pytest test/ -k <關鍵詞> -q` 篩；或直接 `python test\_test_xxx.py`）：

@@ -9,14 +9,17 @@
 方法（消方差三件套）：
   · PYTHONHASHSEED=0（集合迭代序決定 dfs 探索序，否則 0.7s↔30s 級方差）
   · random.seed(20261107)（每局固定）
-  · 舊版 = `git show HEAD:solver/ml/fill_macro.py`（只讀提取），逐輪交替運行，
-    finally 必還原新版（結束後再驗一次文件含 _union_connected）。
+  · 舊版 = **固定基線 commit** `BASELINE_REV`（= 優化提交的父提交）的
+    `solver/ml/fill_macro.py`，逐輪交替運行，finally 必還原新版。
+    ⚠️ 2026-11-09 審查修正：原寫 `git show HEAD:...`，但優化一旦提交，
+    HEAD 就是新版 → old/new 同一份源碼、ABAB 恆 ~1.000x（假結論）。
+    現在開跑前還會自檢「舊版不含 _union_connected、新版含」，不符即退出。
 
 ⚠️ 本腳本會**臨時覆寫 solver/ml/fill_macro.py**（每輪換版），結束 finally
 還原；中斷後可從打印的備份路徑（TEMP/fill_macro_union_bak.py）手工恢復。
 
-跑法：python experiments/_bench_gap_union.py [--rounds 3]
-結果落盤：experiments/_bench_gap_union_out.txt
+跑法：python experiments/script_bench_gap_union.py [--rounds 3]
+結果落盤：experiments/_bench_gap_union_out.txt（臨時產物、未入庫）
 """
 import argparse
 import os
@@ -29,6 +32,9 @@ sys.path.insert(0, ROOT)
 PROD = os.path.join(ROOT, 'solver', 'ml', 'fill_macro.py')
 BACKUP = os.path.join(os.environ.get('TEMP', '.'), 'fill_macro_union_bak.py')
 OUT = os.path.join(ROOT, 'experiments', '_bench_gap_union_out.txt')
+# 優化提交 255b8d3 的父提交 = 三級判定改動前的源碼。釘死 revision，
+# 絕不能用 HEAD（提交後 HEAD 就是新版，A/B 會退化成自己跟自己比）。
+BASELINE_REV = '255b8d3^'
 
 CASES = ['beginner_archive/5.1.json', 'archives/失败01.json',
          'archives/失败02.json', 'archives/失败03.json']
@@ -68,12 +74,15 @@ BENCH = (BENCH_TMPL.replace('__ROOT__', ROOT.replace('\\', '/'))
          .replace('__CASES__', repr(CASES)))
 
 
+def baseline_source():
+    return subprocess.check_output(
+        ['git', 'show', BASELINE_REV + ':solver/ml/fill_macro.py'], cwd=ROOT)
+
+
 def write_version(which):
     if which == 'old':
-        data = subprocess.check_output(
-            ['git', 'show', 'HEAD:solver/ml/fill_macro.py'], cwd=ROOT)
         with open(PROD, 'wb') as f:
-            f.write(data)
+            f.write(baseline_source())
     else:
         shutil.copyfile(BACKUP, PROD)
 
@@ -98,6 +107,17 @@ def main():
     args = ap.parse_args()
     shutil.copyfile(PROD, BACKUP)          # 新版備份（中斷恢復點）
     print('新版備份:', BACKUP, flush=True)
+    # 開跑前自檢：基線必須是「沒有三級判定」的舊版、工作區必須是新版，
+    # 否則 ABAB 是假的（2026-11-09 審查：原腳本用 HEAD 當舊版已失效）。
+    _new_src = open(PROD, 'rb').read()
+    _old_src = baseline_source()
+    if b'_union_connected' in _old_src or b'_union_connected' not in _new_src:
+        raise SystemExit('基線自檢失敗：%s 含三級判定=%s，工作區含三級判定=%s'
+                         % (BASELINE_REV,
+                            b'_union_connected' in _old_src,
+                            b'_union_connected' in _new_src))
+    print('基線自檢 OK：%s 為改動前版本、工作區為新版' % BASELINE_REV,
+          flush=True)
     lines = []
     results = {'old': [], 'new': []}
     try:

@@ -9,9 +9,13 @@
   2. ABAB 逐轮配对（交替先后，抵消机器漂移）：
      · GBFS 层：固定 6×6 状态 budget=3000（隔离 gather/重放方差，主力指标）
      · 端到端：5×5 两局 hybrid_solve 全链（体感指标）
-  3. 结果落盘 _bench_gbfs_dedup_out.txt。
+  3. 结果落盘 _bench_gbfs_dedup_out.txt（临时产物、未入库）。
+  4. **抽象图深层差分**（2026-11-09 审查补）：真实局面几乎都是
+     `ex=1`（走一步就填掉一个洞），父指针回溯 / closed / bestg 根本没被覆盖，
+     「零差异」证明力很弱。把四个几何依赖换成可控图，强迫走出 8 层路径、
+     展开数百节点，再与逐字旧版逐位对比。
 
-跑法：python experiments/_bench_gbfs_dedup.py [--rounds 8]
+跑法：python experiments/script_bench_gbfs_dedup.py [--rounds 8]
 """
 import argparse
 import heapq
@@ -92,6 +96,81 @@ def coords_of(m, n, seed, attempts):
     return frozenset(tuple(b.location) for b in g.blocks)
 
 
+def abstract_diff():
+    """抽象图差分：把 search_core 的几何依赖换成可控图，逼出深层回溯。
+
+    状态 = frozenset({编号})；洞数 = hval[编号]；expand 给出有向边。
+    0→1→…→8 是一条洞数恒为 h0 的链，末端才降到 1 ⇒ 必须回溯 8 层父指针
+    才能拼出路径；seed99 把目标洞数抹掉，逼搜索把整张图跑到堆空。
+    返回 (日志行, 差异数, 最大展开数, 最长路径)。
+    """
+    def build(seed, size=500):
+        rng = random.Random(seed)
+        hval = [rng.choice([3, 3, 3, 4, 4, 5]) for _ in range(size)]
+        hval[0] = 3
+        edges = {}
+        for s in range(size):
+            tgt = set(rng.randint(1, size - 1)
+                      for _ in range(rng.randint(1, 3)))
+            tgt.discard(s)
+            edges[frozenset({s})] = [(frozenset({t}), ('mv', s, t), None)
+                                     for t in sorted(tgt)]
+        for i in range(8):
+            edges[frozenset({i})].append(
+                (frozenset({i + 1}), ('chain', i, i + 1), None))
+            hval[i] = 3
+        hval[8] = 1
+        return hval, edges
+
+    def idx(s):
+        return next(iter(s))
+
+    self_mod = sys.modules[__name__]       # 旧版实现就在本模块全局
+    saved = {mod: {k: getattr(mod, k) for k in
+                   ('expand', 'fast_window', 'canonicalize')}
+             for mod in (sc, self_mod)}
+    saved_hp = sc.heuristic_parts
+    lines, diffs, exs, paths = [], 0, [], []
+    try:
+        for seed in (7, 17, 29, 43, 61, 99):
+            hval, edges = build(seed)
+            if seed == 99:                     # 无解图：跑满整张图
+                hval = [max(v, 3) for v in hval]
+
+            def fw(coords, m, n, _h=hval):
+                return None, [0] * _h[idx(coords)], []
+
+            def ex(cur, step, _e=edges):
+                return _e.get(cur, [])
+
+            def canon(s):
+                return s
+
+            def hp(coords, m, n, step, _h=hval):
+                v = _h[idx(coords)]
+                return v, v
+
+            for mod in (sc, self_mod):
+                mod.expand, mod.fast_window, mod.canonicalize = ex, fw, canon
+            sc.heuristic_parts = hp
+            st = frozenset({0})
+            po, xo = old_guided_reduce_one(st, 4, 4, 2, budget=10000)
+            pn, xn = sc.guided_reduce_one(st, 4, 4, 2, budget=10000)
+            same = (po == pn and xo == xn)
+            diffs += (not same)
+            exs.append(xo)
+            paths.append(len(pn or []))
+            lines.append('[抽象图] seed%-3d ex=%-5d path=%-3s %s'
+                         % (seed, xo, len(pn) if pn else None,
+                            'SAME' if same else '**DIFF**'))
+    finally:
+        for mod, orig in saved.items():
+            for k, v in orig.items():
+                setattr(mod, k, v)
+        sc.heuristic_parts = saved_hp
+    return lines, diffs, max(exs), max(paths)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--rounds', type=int, default=8)
@@ -108,8 +187,9 @@ def main():
     e2e = [(5, 5, 11), (5, 5, 5)]
 
     # ---- 1. 差分：GBFS 层（固定 6×6 状态） ----
-    #    全预算(80000) 差分已由改动前采的基线 JSON（Temp）覆盖，这里跑
-    #    中等预算即可复核路径逐位一致（省 ~3 分钟墙钟）。
+    #    ⚠️ 2026-11-09 审查：真实局面通常 ex=1（一步就填掉一个洞），
+    #    这条差分只能证明浅层一致；深层回溯靠下面 1b 的抽象图差分。
+    #    另：所谓「改动前采的基线 JSON」不在仓库里，无法复核，别当证据。
     for budget in (3000,):
         p_old, ex_old = old_guided_reduce_one(c66, 6, 6, 2, budget=budget)
         p_new, ex_new = sc.guided_reduce_one(c66, 6, 6, 2, budget=budget)
@@ -121,6 +201,17 @@ def main():
                       'SAME' if same else '**DIFF**'))
         if not same:
             fails += 1
+
+    # ---- 1b. 抽象图深层差分（父指针回溯 / closed / bestg） ----
+    ad_lines, ad_diffs, ad_ex, ad_path = abstract_diff()
+    for line in ad_lines:
+        log(line)
+    log('[抽象图] 覆盖：最大展开 %d 节点、最长路径 %d 步' % (ad_ex, ad_path))
+    ad_ok = (ad_diffs == 0 and ad_ex >= 100 and ad_path >= 4)
+    log('[抽象图] %s' % ('全部逐位一致且覆盖深层回溯'
+                       if ad_ok else '**FAIL** 差异=%d' % ad_diffs))
+    if not ad_ok:
+        fails += 1
 
     # ---- 2. 差分：端到端（5×5 两局全链） ----
     e2e_results = {}

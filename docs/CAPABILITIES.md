@@ -70,7 +70,7 @@
 |---|---|---|
 | `tools/static_lint/` | 静态审查：未用 import / 重复函数体 / 反向依赖 / mixin MRO 遮蔽死方法。`--baseline` 出 NEW / RESOLVED diff，`--strict` 给 CI 守门（非零退出 = 新引入问题）。基线锚定 61 条已知签名（2026-10-31 修正假阳性后从 81 降到 61），详 `tools/static_lint/README.md` | `python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json` |
 | `tools/doclink_check.py` | 文档引用校验：扫 `.md` 里的文件引用（存在性）与「§X」节号引用（目标有没有这一节）。产出 file_ref / sec_ref / ambiguous / artifact_ref / known_broken 五类；`--strict` 只让**新引入的**断链让 CI 变红。当前存量问题登记在 `docs/agent/待办清单.md` §十六 | `python tools/doclink_check.py --baseline tools/doclink_baseline.json` |
-| `tools/gen_feature_overview.py` | 从真源 `gui/feature_index.py` 重新生成 `docs/player/功能总览.md`（48 项）。改了功能索引后跑它，别手改产物 | `python tools/gen_feature_overview.py` |
+| `tools/gen_feature_overview.py` | 从真源 `gui/feature_index.py` 重新生成 `docs/player/功能总览.md`（54 项）。改了功能索引后跑它，别手改产物 | `python tools/gen_feature_overview.py` |
 | `tools/experiments_index.py` | experiments/ 索引生成 + 命名守门：`--emit` 重生成 `experiments/INDEX.md`（三类分组 + 被谁引用）；`--check` 用 AST 重新判定真实类别与文件名前缀比对，不符就非零退出（CI 已接）。改名/新增脚本后跑它 | `python tools/experiments_index.py --emit --check` |
 
 > 本环境 `& python x.py` 不执行，须 `Start-Process -Wait`（见该 README 的沙箱段）。
@@ -80,6 +80,13 @@
 - 微基准 ABAB 交替 + 逐轮配对（漂移 40% > 效应 14%）。
 - 后台 hybrid/auto_solve stdout 黑洞 → 评测 `-u` + 落盘。
 - 改求解器后至少重跑 `test/_test_mod_constraint.py` 与 `test/_test_gradient_pipeline.py`。
+- `test/_test_solver_opt_equiv.py`（2026-11-09）：远端求解器优化护栏。AST 抽生产源码双算
+  convoy 三级判定等价性、抽象图逼出 GBFS 8 层父指针回溯做逐位差分、流式链逐段重放 +
+  小预算按时收敛。`experiments/script_bench_gap_union.py` 会**临时覆写**生产源码做 ABAB，
+  别与全套 pytest 同时跑，跑完核对它打印的「已还原新版」。
 - CI 的 test job **排除了 `test/_test_tri_gather.py`**（C3c k=5 0/8 是已知红，用户拍板保持现状），
   真护栏是同文件的 C3e（k=4 ≥ 5/10）。见 `docs/agent/待办清单.md` §十五——别把它当回归，也别为了让
   它变绿去调门槛。
+- 本机跑 `pytest test/ -q` 会被 WorkBuddy 安全删除钩子误伤（conftest 每例清两个
+  运行态 json，同一轮累计 50 次删除后拦截，之后大批脚本级联假红、单跑却全绿）。
+  全套结论以 CI 为准，别为转绿改 conftest 的清理语义。见 `docs/agent/踩坑与搁置.md`。

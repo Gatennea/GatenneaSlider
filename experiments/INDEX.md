@@ -14,7 +14,7 @@
 > 注：判「是否被 import」只用 AST，**不看 `__main__`** —— 大量一次性探针
 > 顶层直接写执行代码、没有守卫，照样能 `python x.py` 跑。
 
-合计 164 个 .py —— 库 5 / reuse 11 / 独立脚本 148
+合计 168 个 .py —— 库 5 / reuse 11 / 独立脚本 152
 
 ## 库（被 import、不能独立跑）—— 保持无前缀（5）
 
@@ -65,7 +65,7 @@
   - 被 3 处引用：`experiments/script_exp11_fast_pipeline.py`、`experiments/script_exp12_guided_test.py`、`experiments/script_exp9_5x5_conj.py`
   - 有 `__main__`，可直接 `python experiments/reuse_exp_conj_search.py`
 
-## 独立脚本（不被任何脚本 import）—— 前缀 script_（148）
+## 独立脚本（不被任何脚本 import）—— 前缀 script_（152）
 
 - `experiments/mi_marks_fixed/script_render_fixed_marks.py`
   - 无引用（独立脚本）
@@ -312,6 +312,12 @@
 - `experiments/script_bench_disks.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_bench_disks.py`
+- `experiments/script_bench_gap_union.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench_gap_union.py`
+- `experiments/script_bench_gbfs_dedup.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench_gbfs_dedup.py`
 - `experiments/script_bench_hard.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_bench_hard.py`
@@ -324,6 +330,9 @@
 - `experiments/script_build_capped.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_build_capped.py`
+- `experiments/script_cap_reverify_alt.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_cap_reverify_alt.py`
 - `experiments/script_check_succ_pure.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_check_succ_pure.py`
@@ -427,6 +436,9 @@
 - `experiments/script_probe_transition.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_probe_transition.py`
+- `experiments/script_quantify_gap_optimality.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_quantify_gap_optimality.py`
 - `experiments/script_render_gallery.py`
   - 无引用（独立脚本）
 - `experiments/script_render_state.py`
