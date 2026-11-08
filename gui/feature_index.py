@@ -248,7 +248,7 @@ FEATURES = (
 
     # ---------------- 音频（2026-11-07 单独成页） ----------------
     dict(id='sfx_enabled', name='音效（总开关）',
-         aliases=('音效', '声音', '音效开关', '静音', 'sfx', '声音开关'),
+         aliases=('音效', '声音', '音效开关', 'sfx', '声音开关'),
          kind='setting', place=('settings', 'audio'),
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='设置 → 音频页「音效总开关」；关掉后下面每一项都不出声（背景音乐不受影响）。',
@@ -266,6 +266,12 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='设置 → 音频页「背景音乐」开关，音量用下面的「音乐音量」滑条。素材放 assets/audio/music/（目录里第一个音讯档即当作 bgm）。',
          confusion='与音效共用同一个开关区但互不影响：关音效不会停背景音乐，反之亦然。'),
+    dict(id='sound_muted', name='全部静音',
+         aliases=('全部静音', '总静音', '一键静音', '静音', 'mute', '声音总开关'),
+         kind='setting', place=('settings', 'audio'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 音频页「全部静音」开关，再点一次恢复。',
+         confusion='它压在音效和背景音乐两个总开关之上：开着时两路都不出声、正在响的那一声也会立刻停，但不改它们各自的开关状态，关掉静音后原样恢复。只想关音效就用「音效」总开关，别用它。「试听」按钮不受静音影响。'),
 
     # ---------------- 控制方式 ----------------
     dict(id='control_single_touch', name='单次触控',
@@ -447,6 +453,7 @@ _ACTIONS = {
     'sfx_enabled': {'type': 'settings', 'tab': 'audio'},
     'sfx_slots': {'type': 'settings', 'tab': 'audio'},
     'music_enabled': {'type': 'settings', 'tab': 'audio'},
+    'sound_muted': {'type': 'settings', 'tab': 'audio'},
     'control_single_touch': {'type': 'settings', 'tab': 'control'},
     'control_two_touch': {'type': 'settings', 'tab': 'control'},
     'control_mouse_kb': {'type': 'settings', 'tab': 'control'},

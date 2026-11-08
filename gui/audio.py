@@ -283,8 +283,17 @@ class AudioManager:
 
     # ---- 設定 ----
     def set_muted(self, b):
+        was_muted = self.muted
         self.muted = bool(b)
         self._apply_music_volume()
+        # 一键静音要「立刻」安静：_can_play_sfx 只挡住新播放，已经在响的那一声
+        # （reject / keyboard 约 1.2s）会一路拖到播完。停掉所有一次性音效声道；
+        # bgm 走 mixer.music 独立流，由 GUI._sync_audio_settings 起停，不在这里动。
+        if self.muted and not was_muted and self.available:
+            try:
+                pygame.mixer.stop()
+            except Exception:
+                pass
 
     def set_sfx_enabled(self, b):
         self.sfx_enabled = bool(b)

@@ -3846,10 +3846,11 @@ class RendererMixin:
         return text + '…'
 
     def _draw_settings_audio(self, x, y, width, height):
-        """音频页：总开关 + 「音效一览」（逐项开关 / 试听 / 素材名）+ 两条音量滑条。
+        """音频页：三个总开关（音效 / 背景音乐 / 全部静音）+「音效一览」+ 两条音量滑条。
 
         逐项开关的意义：贴图音效素材常是玩家自己换的，某一类不听（比如键盘声）
-        不该连带把滑动摩擦声也关掉。总开关（音效）仍是「一键全静音」的上级闸门。
+        不该连带把滑动摩擦声也关掉。「音效」是音效这一路的上级闸门；
+        要连背景音乐一起一键关掉，用上面的「全部静音」。
         """
         from gui.audio import SLOT_KEYS, SLOT_LABELS, SLOT_HINTS
 
@@ -3897,7 +3898,27 @@ class RendererMixin:
         _bd = self.status_font.render(
             self._ellipsize(bgm_detail, self.status_font, width - 387), True, (130, 130, 130))
         self.screen.blit(_bd, (x + 372, ny + 9))
-        ny += 44
+        ny += 36
+
+        # 全部静音：压在「音效 / 背景音乐」之上的一键开关。它只压播放，
+        # 不改两个总开关和五项逐项开关的状态，关掉静音后原样恢复。
+        self.screen.blit(self.dialog_font.render("全部静音：", True, self.colors['dialog_text']),
+                         (x + 15, ny + 6))
+        _rect_mute = pygame.Rect(x + 220, ny + 2, 64, 28)
+        _muted = bool(getattr(self, 'sound_muted', False))
+        _bg = self.colors['button_bg'] if _muted else self.colors['input_bg']
+        pygame.draw.rect(self.screen, _bg, _rect_mute, border_radius=4)
+        _s = self.status_font.render('ON' if _muted else 'OFF', True,
+                                     (255, 255, 255) if _muted else (150, 150, 150))
+        self.screen.blit(_s, _s.get_rect(center=_rect_mute.center))
+        self._settings_mute_toggle_rect = _rect_mute
+        self.screen.blit(
+            self.status_font.render(
+                self._ellipsize('一键关掉音效与背景乐，再点恢复原来的开关',
+                                self.status_font, width - 315),
+                True, (150, 150, 150)),
+            (x + 300, ny + 9))
+        ny += 36
 
         # ---- 音效一览 ----
         pygame.draw.line(self.screen, (90, 90, 95), (x + 15, ny), (x + width - 15, ny))
@@ -4332,9 +4353,9 @@ class RendererMixin:
             # + 着色/连锁/标记/面板 4 行开关(60) + 余量。
             return getattr(self, '_settings_anim_height', 3 * 60 + 72 + 72 + 4 * 60 + 10)
         elif self.settings_active_tab == 'audio':
-            # 音频页：真实绘制高度由 _draw_settings_audio 每帧记录
-            # （提示行 30 + 两行开关 120 + 分隔/标题 48 + 每项 40*5
-            #  + 悬停说明 26 + 两条音量 144 + 余量）
+            # 音频页：真实绘制高度由 _draw_settings_audio 每帧记录。
+            # 下面只是首帧的保守估算（提示行 + 三行总开关 + 分隔/标题 +
+            # 每项 40*5 + 悬停说明 + 两条音量 + 余量），别在这儿写死当真值。
             return getattr(self, '_settings_audio_height',
                            30 + 120 + 48 + 200 + 26 + 144 + 10)
         elif self.settings_active_tab == 'gather':

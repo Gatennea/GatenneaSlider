@@ -3611,6 +3611,16 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 音频 Tab：全部静音（一键关掉音效与背景乐；各开关原样保留，再点恢复）
+            if self.settings_active_tab == 'audio' and hasattr(self, '_settings_mute_toggle_rect'):
+                if self._settings_mute_toggle_rect.collidepoint(mx, my):
+                    self.sound_muted = not getattr(self, 'sound_muted', False)
+                    self._sync_audio_settings()
+                    status = '开' if self.sound_muted else '关'
+                    self.macro_notify_msg = f"全部静音：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 音频 Tab：音效一览的逐项开关（滑动 / 失败 / 复原 / 点击 / 键盘）
             if self.settings_active_tab == 'audio':
                 for _slot, _rect in (getattr(self, '_settings_slot_toggle_rects', {}) or {}).items():
@@ -3640,14 +3650,19 @@ class EventsMixin:
                     return
 
             # 音频 Tab：音效 / 音乐音量滑条（与动画时长滑条同一套拖拽逻辑）
-            for _key in ('sfx', 'music'):
-                _knob = getattr(self, f'_settings_{_key}_vol_knob_rect', None)
-                _track = getattr(self, f'_settings_{_key}_vol_track_rect', None)
-                if _knob is not None and _track is not None and \
-                   (_knob.collidepoint(mx, my) or _track.collidepoint(mx, my)):
-                    setattr(self, f'_settings_{_key}_vol_dragging', True)
-                    self._update_settings_volume(mx, _key)
-                    return
+            # ⚠️ 闸门不能省：音量滑条的 rect 是实例属性，画过一次音频页就一直留着。
+            # 少了这一层，切到控制/视觉等任何页签后点同一屏幕坐标，仍会命中旧 rect
+            # 把音量悄悄改掉、置上拖拽旗标，还会 return 掉该处本来该响应的控件
+            # （2026-11-09 实测：control 页点 (534,445) 让音效音量 70 → 2，且无提示）。
+            if self.settings_active_tab == 'audio':
+                for _key in ('sfx', 'music'):
+                    _knob = getattr(self, f'_settings_{_key}_vol_knob_rect', None)
+                    _track = getattr(self, f'_settings_{_key}_vol_track_rect', None)
+                    if _knob is not None and _track is not None and \
+                       (_knob.collidepoint(mx, my) or _track.collidepoint(mx, my)):
+                        setattr(self, f'_settings_{_key}_vol_dragging', True)
+                        self._update_settings_volume(mx, _key)
+                        return
 
             # 控制 Tab：三种模式开关（独立布尔，可任意组合）
             if self.settings_active_tab == 'control':
@@ -3867,12 +3882,15 @@ class EventsMixin:
             if getattr(self, '_settings_slider_dragging', False):
                 mx, my = event.pos
                 self._update_settings_slider(mx)
-            if getattr(self, '_settings_sfx_vol_dragging', False):
-                mx, my = event.pos
-                self._update_settings_volume(mx, 'sfx')
-            if getattr(self, '_settings_music_vol_dragging', False):
-                mx, my = event.pos
-                self._update_settings_volume(mx, 'music')
+            # 音量拖拽同样只在音频页生效：旗标若因跨页误触被置上，切页后
+            # 移动鼠标还会接着改音量（与上面的按下判定成对守门）。
+            if self.settings_active_tab == 'audio':
+                if getattr(self, '_settings_sfx_vol_dragging', False):
+                    mx, my = event.pos
+                    self._update_settings_volume(mx, 'sfx')
+                if getattr(self, '_settings_music_vol_dragging', False):
+                    mx, my = event.pos
+                    self._update_settings_volume(mx, 'music')
             self.settings_scrollbar.on_mouse_motion(event.pos)
 
         # 鼠标滚轮（设置对话框中）
