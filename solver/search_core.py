@@ -201,7 +201,8 @@ def heuristic(coords, m, n, step):
 
 # ---------- GBFS：至少填一个洞 ----------
 def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None,
-                      progress_cb=None, progress_every=2000, scorer=None):
+                      progress_cb=None, progress_every=2000, scorer=None,
+                      stop_fn=None):
     """GBFS 搜一条「洞数严格变少」的路径。
 
     progress_cb(expanded)：每 progress_every 个展开节点回调一次（供调用方
@@ -213,6 +214,14 @@ def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None,
     的終止判據；預設 None = 內建 heuristic_parts，行為與舊版逐位一致
     （起點仍只取洞數，不重算啟發）。注入只影響排序，不改展開、閉集、
     父指標回溯與終止條件。
+
+    stop_fn（2026-11-10 D2 第二輪，可注入終止判據）：Callable(value, holes)
+    -> bool。value = 該節點**入堆時**的打分（對 scorer=None 即
+    heuristic_parts 的 h），holes = 入堆時的洞數；返回 True 表示「已達成
+    本段目標」，立即回溯路徑返回。預設 None = 洞數嚴格變少，與舊版逐位
+    一致。⚠️ 起點（cid=0）不呼叫 stop_fn：起點的 f 是洞數、與注入打分
+    不同量綱，且 holes0 < h0 恆假，跳過它不改變任何既有行為。
+    兩者都是實驗接縫，玩家側不傳；查表／補缺宏兩條候選不受影響。
 
     2026-11-07 等价去重（同值重算消除，输出与旧版逐位一致）：
     · 堆元素携带**入堆时**算好的 canonical(ck) 与洞数——出堆的闭集查询、
@@ -242,7 +251,11 @@ def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None,
         _f, g, cid, cur, ck, holes = heapq.heappop(openq)
         if g > bestg.get(ck, -1) or ck in closed:
             continue
-        if holes < h0:
+        # 終止判據（D2 接縫）：預設路徑仍走 holes < h0，逐位不變；
+        # 注入 stop_fn 時起點除外（見 docstring），其餘節點吃入堆打分。
+        improved = (holes < h0 if stop_fn is None or cid == 0
+                    else stop_fn(_f, holes))
+        if improved:
             # 回溯父指针拼路径：与旧版「入堆时 path+[(act,rep)]」逐位同构
             path = []
             node = cid

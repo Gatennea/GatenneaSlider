@@ -490,8 +490,11 @@ def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
 # 而先处理另一个缺口剩下的洞就是完美洞——并行让可行顺序更快暴露。
 _PROC_POOL = {}
 # 并行开关（默认关）：实测轮询层 hook 调用毫秒~秒级，进程池 spawn(~5s)+序列化
-# 开销为负收益；真正烧时间的 DFS 整形边（convoy 53s/次、粘补 15s/次）尚未
-# 并行化——待接入后打开此开关（或环境变量 GATENNEA_PARALLEL=1）。
+# 开销为负收益。⚠️ 2026-11-10 更正：DFS 整形边的并行**早就接好了** ——
+# solve_multi_search._couples() 调本模块 _run_couples_parallel 的
+# first_only=False 路径，本开关同时管它；原注释「尚未并行化／待接入」是旧的。
+# ABAB 实测开着反而 1.304× 慢（experiments/script_bench_dfs_parallel.py，
+# 4 局逐对全慢、解出数与展开节点逐位相同），故**维持默认关**，别再改默认值。
 _PARALLEL_ENABLED = os.environ.get('GATENNEA_PARALLEL') == '1'
 
 

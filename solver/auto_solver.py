@@ -140,7 +140,7 @@ def _phi_of(coords, m, n):
 def auto_solve(game, step, cancel_check=None, progress_callback=None,
                stage_cb=None, time_budget=None, stage_budget=None,
                rng_seed=None, total_budget=None, scorer=None,
-               route_fn=None, **_kwargs):
+               route_fn=None, stop_fn=None, **_kwargs):
     """自动规划入口：查表 → 补缺宏 → 混合流水线，全解即停，全败取最优部分。
 
     stage_cb（2026-10-10 新增）：分阶段流式回调。每当一个候选求解器产出可播的
@@ -172,8 +172,10 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     scorer / route_fn（2026-11-10，可注入实验接缝）：scorer 见
     search_core.guided_reduce_one（只经混合流水线生效）；route_fn 签名
     (holes, coords, m, n, step) -> bool，True=补缺宏先行，默认 None =
-    len(holes) >= 3。**预设注入与旧版逐位一致**，玩家侧不传；两者只把
-    「换一个打分 / 换一个路由」从改搜索核心降成换一个参数。
+    len(holes) >= 3。stop_fn（同轮 D2 第二轮）是 GBFS 的终止判据注入，
+    签名 (value, holes) -> bool，默认 None = 洞数严格变少，同样只经混合
+    流水线生效。**预设注入与旧版逐位一致**，玩家侧不传；三者只把
+    「换一个打分 / 换一个路由 / 换一个终止判据」从改搜索核心降成换一个参数。
     """
     t0 = time.time()
     total_deadline = (t0 + total_budget
@@ -414,7 +416,7 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
                                 cancel_check=stage_cancel,
                                 progress_callback=progress_callback,
                                 segment_cb=hseg, gather_seed=rng_seed,
-                                scorer=scorer)
+                                scorer=scorer, stop_fn=stop_fn)
         except Exception:
             traceback.print_exc()
             hres = False
