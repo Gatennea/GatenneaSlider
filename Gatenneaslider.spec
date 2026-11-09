@@ -130,8 +130,6 @@ a = Analysis(
            ('docs/player/操作说明.md', 'docs/player'),
            # 新手教程资源：文案 JSON + 关卡存档（新增关卡只加 json，无需改 spec）
            ('gui/tutorial_texts.json', 'gui'),
-           # 打乱死局黑名单（solver.deadend_guard 运行时按 solver 包路径找它）
-           ('solver/deadend_blacklist.json', 'solver'),
            ('beginner_archive', 'beginner_archive'),
            # assets/ 是外部资源统一根（打包后根 = _MEIPASS）：
            #   picture/ 封面·开机帧·splash、ui/arrows/ 方向键贴图、

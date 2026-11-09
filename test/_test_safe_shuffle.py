@@ -6,7 +6,7 @@ opt/try_move 判定合法、落点精确匹配），必须回到打乱前状态�
 「开局自带一条已知解法」的端到端证书，与网页版 certify-shuffle.mjs
 同口径。
 
-覆盖：三形态（方形/三角/米字）证书、死局黑名单退休（4_4_2 零命中）、
+覆盖：三形态（方形/三角/米字）证书、无黑名单防回流、
 打乱强度 A/B（安全不弱于普通）、record 与演示动画重放兼容。
 """
 import os
@@ -149,17 +149,10 @@ def main():
                         ok and after == pre and pre != final,
                         f'{len(recs)} 步')
 
-    # ---------- T4 死局黑名单退休（4_4_2 安全打乱下零命中） ----------
-    from solver.deadend_guard import is_deadend
-    hits = 0
-    trials = 30
-    for seed in range(trials):
-        random.seed(1000 + seed)
-        g = SliderMatrix(4, 4)
-        g.shuffle(4 * 4 * 10, 2)
-        if is_deadend(4, 4, 2, {tuple(b.location) for b in g.blocks}):
-            hits += 1
-    all_ok &= check('T4 死局黑名單零命中', hits == 0, f'{hits}/{trials}')
+    # ---------- T4 黑名單已移除（防回流靜態斷言） ----------
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _gone = not os.path.exists(os.path.join(_root, 'solver', 'deadend_guard.py'))
+    all_ok &= check('T4 死局黑名單模組已移除', _gone)
 
     # ---------- T5 强度 A/B：安全不弱于普通 ----------
     def _bypass_commit(game_, gap_type, line, block, direction, step_,

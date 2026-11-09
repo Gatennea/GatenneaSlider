@@ -993,52 +993,25 @@ class SliderMatrix:
         """
         随机打乱谜题（纯逻辑，不含动画/GUI状态重置）—— 对外入口。
 
-        死局黑名单防护：黑名单覆盖的谜题（当前仅方形 4_4_2，见
-        solver/deadend_guard）终态命中死局黑名单时，回到复原态重新打乱，
-        重试上限 100 次（命中概率约万分之 0.16，几乎不可能循环）；超限打印
-        警告并接受最后一次结果。其它谜题只跑一次 _shuffle_once，行为不变。
+        死局黑名单防护已于 2026-11-10 移除：它只覆 (4,4,2) 的 9 個態，
+        安全打亂下實測永不命中，留著只會讓 game / engine / solver 三層
+        多一條無用耦合。數學上的死局結論與實驗數據仍保留在 docs/math/、
+        experiments/math_repro/（詳 docs/agent/踩坑与搁置.md 第二十四節）。
 
         参数 record：传入 list 时，把每一次成功移动按执行顺序记录进去
         （格式见模块级 record_shuffle_move）。记录全程累积——打乱是从
         打乱前状态连续演变到终态的，GUI 可从打乱前快照按记录逐步重放出
-        完整过程；步数过多时由 GUI 决定只演前几步再淡入终局。死局重试
-        会回到复原态重打，此时记录已无意义，由调用方清空重取（GUI 在
-        重试路径外先存快照，不受影响）。
+        完整过程；步数过多时由 GUI 决定只演前几步再淡入终局。
 
         安全打乱（2026-10-18 起，对齐网页版 shuffle_safe）：每一步都过
         可逆性校验——同一条缝上存在某方向能把选中组精确推回移动前，否则
         该步作废（4_4_2 实测约 15% 的随机走法不可逆）。于是整条打乱路径
         反转即是一条合法解法，**终态保证有解**：开局自带已知解法，指示、
         自动求解、关卡生成永远有答案；也不可能撞死局（死局都在 cone\\B 里，
-        可逆可达的终态必然不在），死局黑名单因此只是冗余兜底。代价是
+        可逆可达的终态必然不在），因此不再需要任何黑名單防護。代价是
         有效步数略少于 attempts（约 -15%），min_score 兜底补打乱强度。
         """
-        from solver.deadend_guard import has_deadend_guard, is_deadend
-
-        if not has_deadend_guard(self.m, self.n, step):
-            self._shuffle_once(attempts, step, bias, min_score, record)
-            return
-
-        for retry in range(100):
-            if retry:
-                # 死局态向前封闭：从死局态出发的任何合法移动仍落在死局集合
-                # 里，不先回复原态就重打，重试永远出不去。
-                if self.goal_pattern is not None:
-                    # 自定义形态：回复到 goal 样式（而非默认满矩形）
-                    cells = sorted(self.goal_pattern)
-                    for i, b in enumerate(self.blocks):
-                        if i < len(cells):
-                            b.location = list(cells[i])
-                else:
-                    for i, b in enumerate(self.blocks):
-                        b.location = [i // self.n, i % self.n]
-                if record is not None:
-                    record.clear()  # 回到复原态重打：上一轮的记录作废
-            self._shuffle_once(attempts, step, bias, min_score, record)
-            if not is_deadend(self.m, self.n, step,
-                              {tuple(b.location) for b in self.blocks}):
-                return
-        print('警告: 打乱终态连续 100 次命中死局黑名单，接受最后一次结果')
+        self._shuffle_once(attempts, step, bias, min_score, record)
 
     def _shuffle_once(self, attempts: int, step: int, bias: float = 0.0, min_score: float = 0.75,
                       record=None):

@@ -139,7 +139,8 @@ def _phi_of(coords, m, n):
 
 def auto_solve(game, step, cancel_check=None, progress_callback=None,
                stage_cb=None, time_budget=None, stage_budget=None,
-               rng_seed=None, total_budget=None, **_kwargs):
+               rng_seed=None, total_budget=None, scorer=None,
+               route_fn=None, **_kwargs):
     """自动规划入口：查表 → 补缺宏 → 混合流水线，全解即停，全败取最优部分。
 
     stage_cb（2026-10-10 新增）：分阶段流式回调。每当一个候选求解器产出可播的
@@ -167,6 +168,12 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     的「每候选各一份」不同，这是整轮共享的单调 deadline，且会传进正在
     跑的候选的 cancel_check；首个候选最多占 _TOTAL_SHARE_FIRST。
     rng_seed：整数种子，注入补缺宏与混合聚拢轮；不传=旧随机行为。
+
+    scorer / route_fn（2026-11-10，可注入实验接缝）：scorer 见
+    search_core.guided_reduce_one（只经混合流水线生效）；route_fn 签名
+    (holes, coords, m, n, step) -> bool，True=补缺宏先行，默认 None =
+    len(holes) >= 3。**预设注入与旧版逐位一致**，玩家侧不传；两者只把
+    「换一个打分 / 换一个路由」从改搜索核心降成换一个参数。
     """
     t0 = time.time()
     total_deadline = (t0 + total_budget
@@ -286,7 +293,8 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     # ---- ②③ 按空位数路由（探针 2026-10-02：空位≤2 混合快（5.1: 1.4s vs 57.2s），
     #      空位≥3 补缺宏快（06: 1.0s / 07: 0.98s，混合均超时）。两路都尝试，只定先后）----
     _reg, _ov, holes, _out = window_of(coords0, m, n, step)
-    gap_first = len(holes) >= 3
+    gap_first = (route_fn(len(holes), coords0, m, n, step)
+                 if route_fn is not None else len(holes) >= 3)
 
     def run_gap(phase_deadline=None):
         """补缺宏：从 flow['end'] 续算（已播到哪、从哪算起），分段流式采纳。
@@ -405,7 +413,8 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             hres = hybrid_solve(build_game(seed, m, n), step,
                                 cancel_check=stage_cancel,
                                 progress_callback=progress_callback,
-                                segment_cb=hseg, gather_seed=rng_seed)
+                                segment_cb=hseg, gather_seed=rng_seed,
+                                scorer=scorer)
         except Exception:
             traceback.print_exc()
             hres = False

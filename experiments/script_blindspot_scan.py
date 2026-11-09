@@ -35,7 +35,6 @@ from game import SliderMatrix  # noqa: E402
 from experiments.harness import gen_state, load_game  # noqa: E402
 from solver.ml.fill_macro import build_game, _replay_apply  # noqa: E402
 from solver.auto_solver import auto_solve, _phi_of  # noqa: E402
-from solver.deadend_guard import has_deadend_guard, is_deadend  # noqa: E402
 from history import GameHistory  # noqa: E402
 
 RESULTS_DIR = os.path.join(ROOT, 'experiments', 'results', 'blindspot')
@@ -205,14 +204,9 @@ def run_one(coords0, m, n, step, budget):
         out['outcome'] = 'fail'
     else:
         out['outcome'] = 'unknown:%s' % type(r).__name__
-    # 死局标注（当前仅 (4,4,2) 有黑名单真值）
-    if has_deadend_guard(m, n, step):
-        try:
-            out['deadend'] = is_deadend(m, n, step, coords0)
-        except Exception:
-            out['deadend'] = 'unknown'
-    else:
-        out['deadend'] = 'unknown'
+    # 死局标注已退役（2026-11-10）：玩家局面由安全打乱产生、必然可解，
+    # 原先 (4,4,2) 黑名单标注不再有意义；历史 rounds.jsonl 的旧值仍可读。
+    out['deadend'] = 'n/a'
     return out
 
 

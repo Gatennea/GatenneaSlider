@@ -36,6 +36,7 @@
 
 **已做的临时修复**
 - `main.py` 顶部加预热 `from solver.deadend_guard import has_deadend_guard, is_deadend`（干净环境 2s 加载完）→ shuffle 实测 0.09s。
+  - **2026-11-10 補註**：死局黑名單已移除，預熱改成 `import solver`（實測仍會載入 numpy，死鎖不會回來）。本行是當時的臨時修復記錄。
 - ⚠️ 这只是把"首次 import"挪到安全时机，**其它未预热的懒加载路径（求解器、其他 solver.ml 模块）仍可能踩同一坑**。
 
 **建议（根治）**

@@ -14,7 +14,7 @@
 > 注：判「是否被 import」只用 AST，**不看 `__main__`** —— 大量一次性探针
 > 顶层直接写执行代码、没有守卫，照样能 `python x.py` 跑。
 
-合计 169 个 .py —— 库 5 / reuse 11 / 独立脚本 153
+合计 170 个 .py —— 库 5 / reuse 11 / 独立脚本 154
 
 ## 库（被 import、不能独立跑）—— 保持无前缀（5）
 
@@ -65,7 +65,7 @@
   - 被 3 处引用：`experiments/script_exp11_fast_pipeline.py`、`experiments/script_exp12_guided_test.py`、`experiments/script_exp9_5x5_conj.py`
   - 有 `__main__`，可直接 `python experiments/reuse_exp_conj_search.py`
 
-## 独立脚本（不被任何脚本 import）—— 前缀 script_（153）
+## 独立脚本（不被任何脚本 import）—— 前缀 script_（154）
 
 - `experiments/mi_marks_fixed/script_render_fixed_marks.py`
   - 无引用（独立脚本）
@@ -324,6 +324,9 @@
 - `experiments/script_bench_total_budget.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_bench_total_budget.py`
+- `experiments/script_bench_true_dist_scorer.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench_true_dist_scorer.py`
 - `experiments/script_blindspot_report.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_blindspot_report.py`

@@ -15,6 +15,7 @@
 ## 〇、落实前须知（重要）
 
 - **工作区当前有 1 处未提交改动**：`main.py` 顶部加了 7 行 `from solver.deadend_guard import has_deadend_guard, is_deadend`（修 shuffle 假死的临时预热）。请先决定**提交或回退**，再基于干净基线工作。
+  - **2026-11-10 補註**：本檔是歷史轉交，工作區狀態早已過時；死局黑名單現已整層移除，`main.py` 預熱改 `import solver`。別照本行動作。
 - 当前分支 `feat/api-info-layer`，已含 `/analysis/window`、`/analysis/holes`、`/analysis/actions`、`/analysis/preview`、`/solver/*`、`/solve/status`、`/macro/list` 等端点。
 - 本档"文件位置"均为模块级定位，落实时请先读源码确认当前实现，勿照行号硬套。
 

@@ -1106,47 +1106,12 @@ class EngineGame:
         参数与旧引擎逐项同义：bias>0 用 Metropolis 准则偏向更散的状态；
         min_score 为聚拢度下限，太高就重洗（最多 attempts*3 轮）。
 
-        ⚠️ 死局黑名单防护不可省（与 game.SliderMatrix.shuffle 同构）：
-        4_4_2 的死局态**向前封闭**——从死局出发的任何合法移动仍落在死局
-        集合里，一步都走不出去。所以终态命中黑名单时必须**先回复原态再
-        重打**，否则「从死局态开局打乱」永远出不来（_test_shuffle_guard
-        端到端就是卡在这里）。安全打乱的可逆性已能保证终态不在死局里，
-        这层只是冗余兜底（详见 solver/deadend_guard）。
+        死局黑名单防护已于 2026-11-10 移除：安全打乱每步都做可逆性校验，
+        终态必然落在可解核内，不可能撞死局；舊防護只覆 (4,4,2) 的 9 個態
+        且實測永不命中，留著只會讓 engine 反向依賴 solver（詳
+        docs/agent/踩坑与搁置.md 第二十四節）。數學死局結論不受影響。
         """
-        from solver.deadend_guard import has_deadend_guard, is_deadend
-
-        # ⚠️ 死局黑名单是**方形专属**：`solver/deadend_guard` 的 canonicalize
-        #    只吃 (r, c) 二元组，三角 (i,j,bool) / 米字 (r,c,q) 三元组喂进去
-        #    直接 `ValueError: too many values to unpack`（_test_tri_gui_solve
-        #    实测崩溃）。异形的死局语义不同（三角/米字没做过完备枚举），
-        #    这里按形态短路——不是静默降级，是本来就没有可用黑名单。
-        if self.kind not in ('square', 'numbered') or \
-                not has_deadend_guard(self.m, self.n, step):
-            self._shuffle_once(attempts, step, bias, min_score, record)
-            return
-
-        for retry in range(100):
-            if retry:
-                cells = (sorted(self.goal_pattern)
-                         if self.goal_pattern is not None else None)
-                if cells is None:
-                    # 默认满矩形（与 game 同式：第 i 块放 i//n 行 i%n 列）
-                    for i, b in enumerate(self._blocks):
-                        b.location = [i // self.n, i % self.n]
-                else:
-                    for i, b in enumerate(self._blocks):
-                        if i < len(cells):
-                            b.location = list(cells[i])
-                self._opted_keys = frozenset()
-                self._opted_t = None
-                self._sync(force=True)
-                if record is not None:
-                    record.clear()   # 回到复原态重打：上一轮记录作废
-            self._shuffle_once(attempts, step, bias, min_score, record)
-            if not is_deadend(self.m, self.n, step, self.positions()):
-                return
-        # 与 game 同口径：连续 100 次都命中才接受最后一次，并如实打印
-        print('警告: 打乱终态连续 100 次命中死局黑名单，接受最后一次结果')
+        self._shuffle_once(attempts, step, bias, min_score, record)
 
     # ------------------------------------------------------------------
     # 拖动（三角单指拖动：缝隙线穿手指）

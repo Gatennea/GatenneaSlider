@@ -201,12 +201,18 @@ def heuristic(coords, m, n, step):
 
 # ---------- GBFS：至少填一个洞 ----------
 def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None,
-                      progress_cb=None, progress_every=2000):
+                      progress_cb=None, progress_every=2000, scorer=None):
     """GBFS 搜一条「洞数严格变少」的路径。
 
     progress_cb(expanded)：每 progress_every 个展开节点回调一次（供调用方
     在长搜索期间持续刷新进度——2026-11-07 前搜索全程静默，界面表现为
     「卡在聚攏+GBFS 不停機」）。默认 None，不影响既有调用方。
+
+    scorer（2026-11-10，可注入打分）：Callable(coords, m, n, step) ->
+    (score, holes)。score 決定堆序，holes 仍用於起點 h0 與「洞數嚴格變少」
+    的終止判據；預設 None = 內建 heuristic_parts，行為與舊版逐位一致
+    （起點仍只取洞數，不重算啟發）。注入只影響排序，不改展開、閉集、
+    父指標回溯與終止條件。
 
     2026-11-07 等价去重（同值重算消除，输出与旧版逐位一致）：
     · 堆元素携带**入堆时**算好的 canonical(ck) 与洞数——出堆的闭集查询、
@@ -217,7 +223,13 @@ def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None,
       第 3 位，附加信息不参与堆序，堆行为与旧版一致。
     """
     start = frozenset(coords)
-    h0 = len(fast_window(start, m, n)[1])
+    if scorer is None:
+        # 預設路徑一個位元組都不動：舊版起點只取洞數，不重算啟發
+        score = heuristic_parts
+        h0 = len(fast_window(start, m, n)[1])
+    else:
+        score = scorer
+        h0 = score(start, m, n, step)[1]
     counter = 0
     # 堆元素：(f, g, cid, cur, ck, holes)；路径边存 came_from（cid→入边）
     came_from = {}                      # cid -> (parent_cid, act, rep)
@@ -253,7 +265,7 @@ def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None,
                 continue
             bestg[nk] = ng
             counter += 1
-            h_new, holes_new = heuristic_parts(new, m, n, step)
+            h_new, holes_new = score(new, m, n, step)
             came_from[counter] = (cid, act, rep)
             heapq.heappush(openq, (h_new, ng, counter, new, nk, holes_new))
     return None, expanded

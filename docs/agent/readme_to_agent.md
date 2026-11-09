@@ -310,10 +310,11 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 ## 5. 求解器子系統
 
 > ⚠️ **提求解器優化方向前先讀 `docs/solver/求解器優化方向_可行性判據.md`**（2026-11-10 新增）：
-> 六條硬約束 + 現況清單（哪些能力已在生產碼，別當新方向）+ 提方向前自檢 10 條。
+> 六條硬約束 + 現況清單（哪些能力已在生產碼，別當新方向）+ 提方向前自檢清單（11 條）。
 > 散落各處的否決結論以往沒有一個統一份入口，導致 AI 把 `docs/solver/求解器AI搜索优化方向.md`
 > （AI 原始建議種子、非結論）的 PDB / IDA\* / 死局剪枝照抄成方向；該檔開頭已補前提聲明。
 > 本章 5.1 起只描述**現有實作**，不構成「未來方向」的依據。
+> 2026-11-10 補：判據文檔 D1 已落地（打分／路由可注入，預設逐位一致）、第 4.1 節判定「複雜度目前無理論分析、估算難，先放一放」；死局黑名單防護整層移除，別再提基於它的方向。
 
 ### 5.1 演算法註冊表
 
@@ -522,7 +523,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 **一、「全套」到底有哪些**
 
-1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **152 個** `_test_*.py`，
+1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **153 個** `_test_*.py`，
    一個檔案算一條用例，子進程執行、退出碼 0 算 PASS。其中 3 個收集即 skip：
    `_test_full.py`（寫死舊專案路徑）、`_test_dent_inner.py`（缺未入庫的錄製存檔）、
    `_test_bfs_explore.py`（純探測、估需兩小時）。實際跑 149 個。
@@ -559,7 +560,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 底座（每次改代碼，幾十秒）：
 
 - 全庫 grep 舊 API 名確認無殘留 —— `compileall` 加靜態檢查證明不了引用連得上。
-- `pytest test/ --collect-only -q`：約 1 秒，152 條全收集成功就代表 import 鏈沒斷。
+- `pytest test/ --collect-only -q`：約 1 秒，153 條全收集成功就代表 import 鏈沒斷。
 - compileall + 上面三項 lint。
 
 按改動補跑（從目錄跑，用 `pytest test/ -k <關鍵詞> -q` 篩；或直接 `python test\_test_xxx.py`）：
@@ -576,7 +577,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 - `conftest.py` 在每個腳本前後自動清掉並復原 config 目錄裡的 engine.json、temp_history.json，
   **不必手動刪**；手動刪是舊做法。
-- 全套基線（2026-11-09 收口後）`145 passed / 3 skipped / 4 failed`。那 4 條紅是
+- 全套基線（2026-11-10 收口後）`146 passed / 3 skipped / 4 failed`（153 collected）。那 4 條紅是
   求解器機率斷言 / §二十五 既有紅，用純遠端 worktree `6763ba7` 對照跑同樣失敗，
   均非本輪回歸；別為了轉綠去調門檻或換種子。本機全套誤傷（原 106 紅）已根治，
   現在能正常跑出結果，不必一律等 CI。

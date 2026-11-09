@@ -1,21 +1,22 @@
 # -*- coding: utf-8 -*-
-"""打乱死局黑名单防护的 headless 验证（不启动 GUI / 不需要 pygame 显示）。
+"""打乱健壮性：死局黑名单移除后（2026-11-10，取代旧的黑名单有效性验证）。
 
-三项检查：
-  a. solver/deadend_blacklist.json 能加载、恰好 9 个哈希，且与
-     trap_paths_4_4_2.json 的结论逐项一致；
-  b. trap_paths 里 9 个死局态（traps[i].edges[-1].child_cells）全部被判为
-     命中黑名单 —— 防护有效性的直接证据；外加端到端检查：把棋盘置成死局态
-     再 shuffle，终态必须脱离黑名单（死局态向前封闭，防护不回复原态重打
-     就出不去，这条同时验证了重打前的复位逻辑）；
-  c. create_puzzle(4, 4, 2) 连跑 2000 次真实 shuffle：无终态落黑名单，
-     并粗测单次防护判定耗时远小于单次 shuffle 耗时。
+安全打乱每一步都过可逆性校验，整条路径反过来就是一条现成解法，终态
+必然落在可解核内，所以不再需要任何黑名单防护（2026-10-18 起实测
+30 局零命中，2026-11-10 移除）。本护栏守住「拿掉之后没有退化」：
+
+  a. 静态防回流：防护模块与数据档不存在，生产码 / 打包 / 实验 / 测试
+     里没有任何对它们的 import 或路径引用；
+  b. 4_4_2 连跑 2000 次真实 shuffle（与旧护栏同规模），每次终态确实
+     被打乱（不等于复原态）；
+  c. 抽样 30 局带 record：逆序重放每一步都能精确回到打乱前状态，
+     与 _test_safe_shuffle.py 同口径的端到端证书。
 
 用法：
-  python test/test_shuffle_guard.py
+  python test/_test_shuffle_guard.py
 """
 
-import json
+import random
 import sys
 import time
 from pathlib import Path
@@ -24,96 +25,123 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from puzzle_types import create_puzzle  # noqa: E402
-from solver import table_core as tc  # noqa: E402
-from solver.deadend_guard import (has_deadend_guard, is_deadend,  # noqa: E402
-                                  load_blacklist)
+from game import SliderMatrix  # noqa: E402
 
-TRAP_PATHS = ROOT / 'experiments' / 'math_repro' / 'trap_paths_4_4_2.json'
 M, N, STEP = 4, 4, 2
 N_SHUFFLE = 2000
+N_CERT = 30
 ATTEMPTS = M * N * 10  # 与 GUI 同参：attempts = m*n*10
 
-
-def trap_cells(trap):
-    """第 i 个死局态在规范坐标系下的格子集合 [(row, col), ...]。"""
-    return [tuple(c) for c in trap['edges'][-1]['child_cells']]
-
-
-def check_blacklist(traps):
-    """a. 黑名单文件可加载、恰好 9 个哈希、与 trap_paths 结论一致。"""
-    bl = load_blacklist()
-    assert set(bl) == {'4_4_2'}, f'黑名单 key 异常: {set(bl)}'
-    hashes = bl['4_4_2']
-    assert isinstance(hashes, frozenset) and len(hashes) == 9, \
-        f'应为恰好 9 个哈希，实际 {len(hashes)}'
-    assert hashes == {t['state'] for t in traps}, '黑名单与 trap_paths 死局哈希不一致'
-    assert tc.canonicalize(tc.goal_state(M, N)) not in hashes, '复原态不得进黑名单'
-    print(f'a 通过: 黑名单 4_4_2 恰好 {len(hashes)} 个死局哈希')
+# 只把这些文件当「接线」检查；docs/ 与 archive/ 里的历史记录不算回流。
+SCAN_FILES = (
+    'game.py', 'engine/adapter.py', 'main.py', 'Gatenneaslider.spec',
+    'experiments/script_blindspot_scan.py', 'test/_test_safe_shuffle.py',
+)
+FORBIDDEN = (
+    'from solver.deadend_guard import',
+    'import solver.deadend_guard',
+    'deadend_blacklist.json',
+    'has_deadend_guard',
+    'is_deadend(',
+)
 
 
-def check_traps(traps):
-    """b. 9 个死局态全部判为命中；死局态开局 shuffle 后必须脱离。"""
-    for i, trap in enumerate(traps):
-        cells = trap_cells(trap)
-        assert tc.canonicalize(cells) == trap['state'], \
-            f'trap[{i}] child_cells 规范化与 state 口径不符'
-        assert is_deadend(M, N, STEP, cells), f'trap[{i}] 未被判为死局命中'
-    assert not is_deadend(M, N, STEP, tc.goal_state(M, N)), '复原态不得判为死局'
-    assert not has_deadend_guard(6, 6, STEP), '非 4_4_2 谜题不该启用防护'
-    assert not is_deadend(6, 6, STEP, tc.goal_state(6, 6)), '非黑名单谜题不该命中'
-    print(f'b 通过: {len(traps)}/9 个死局态全部命中黑名单')
+def check(name, ok, detail=''):
+    print(('[PASS] ' if ok else '[FAIL] ') + name + (f'  {detail}' if detail else ''))
+    return ok
 
-    # 端到端：逐个把棋盘置成死局态再 shuffle，防护必须把终态带出黑名单。
-    g = create_puzzle(M, N, STEP)
-    for i, trap in enumerate(traps):
-        for b, (r, c) in zip(g.blocks, trap_cells(trap)):
-            b.location = [r, c]
-        g.shuffle(ATTEMPTS, STEP, bias=0.0, min_score=0.75)
-        final = {tuple(b.location) for b in g.blocks}
-        assert not is_deadend(M, N, STEP, final), \
-            f'从死局态 trap[{i}] 开局 shuffle 后终态仍是死局'
-    print(f'b 通过(端到端): 从 {len(traps)} 个死局态开局 shuffle 均脱离黑名单')
+
+def check_no_guard():
+    """a. 模块/数据档已删，且没有任何接线残留。"""
+    ok = True
+    ok &= check('a1 防护模块已删除',
+                not (ROOT / 'solver' / 'deadend_guard.py').exists())
+    ok &= check('a2 黑名单数据档已删除',
+                not (ROOT / 'solver' / 'deadend_blacklist.json').exists())
+    hits = []
+    for rel in SCAN_FILES:
+        text = (ROOT / rel).read_text(encoding='utf-8')
+        for token in FORBIDDEN:
+            if token in text:
+                hits.append(f'{rel}:{token}')
+    ok &= check('a3 生产码/打包/实验/测试无黑名直接线残留',
+                not hits, '; '.join(hits[:4]))
+    return ok
+
+
+def undo_with_record(g, records):
+    """把打乱记录逆序真的走一遍（方形；与 _test_safe_shuffle 同口径）。"""
+    for rec in reversed(records):
+        gap_type, line = rec['gap']
+        moved = {tuple(p) for p in rec['moved']}
+        final_set = set(rec['final'])
+        trig = next((b for b in g.blocks
+                     if tuple(b.location) in final_set), None)
+        if trig is None:
+            return False
+        g.opt(gap_type, line, trig)
+        if not any(b.be_opted for b in g.blocks):
+            return False
+        dirs = ('a', 'd') if gap_type == 'h' else ('w', 's')
+        ok = False
+        for d in dirs:
+            back = g.try_move(d, rec['step'])
+            if back and {tuple(p) for p in back} == moved:
+                g.commit_move(back)
+                ok = True
+                break
+        if not ok:
+            for b in g.blocks:
+                b.be_opted = False
+            return False
+    return True
 
 
 def check_shuffles():
-    """c. 2000 次真实 shuffle 无终态命中 + 防护开销可忽略。"""
-    import random
+    """b. 2000 次真实 shuffle：终态都确实被打乱。"""
     random.seed(20261012)
     g = create_puzzle(M, N, STEP)
-    g.shuffle(ATTEMPTS, STEP, bias=0.0, min_score=0.75)  # 预热（含 solver 包首次导入）
-    load_blacklist()  # 预热黑名单缓存，计时不含文件 IO
-
-    shuffle_ms, guard_ms = [], []
-    for _ in range(N_SHUFFLE):
-        t0 = time.perf_counter()
+    goal = {tuple(b.location) for b in g.blocks}
+    t0 = time.perf_counter()
+    for i in range(N_SHUFFLE):
         g.shuffle(ATTEMPTS, STEP, bias=0.0, min_score=0.75)
-        t1 = time.perf_counter()
-        coords = {tuple(b.location) for b in g.blocks}
-        t2 = time.perf_counter()
-        dead = is_deadend(M, N, STEP, coords)
-        t3 = time.perf_counter()
-        assert not dead, f'打乱终态落进黑名单: {sorted(coords)}'
-        shuffle_ms.append((t1 - t0) * 1000)
-        guard_ms.append((t3 - t2) * 1000)
+        final = {tuple(b.location) for b in g.blocks}
+        if final == goal:
+            return check(f'b {N_SHUFFLE} 次 shuffle 终态均被打乱', False,
+                         f'第 {i} 次等于复原态')
+    dt = time.perf_counter() - t0
+    return check(f'b {N_SHUFFLE} 次 shuffle 终态均被打乱', True,
+                 f'{dt:.1f}s')
 
-    avg_s = sum(shuffle_ms) / len(shuffle_ms)
-    avg_g = sum(guard_ms) / len(guard_ms)
-    print(f'c 通过: {N_SHUFFLE} 次 shuffle 无终态命中黑名单；'
-          f'单次 shuffle 均值 {avg_s:.3f}ms，单次防护判定均值 {avg_g:.3f}ms'
-          f'（占 {avg_g / avg_s * 100:.2f}%）')
-    assert avg_g < avg_s * 0.1, f'防护判定开销占比 {avg_g / avg_s:.2%}，超过 10%'
+
+def check_certificates():
+    """c. 抽样 30 局：逆序重放 record 精确回到打乱前状态。"""
+    ok = True
+    for seed in range(N_CERT):
+        random.seed(9000 + seed)
+        g = SliderMatrix(M, N)
+        pre = [tuple(b.location) for b in g.blocks]
+        recs = []
+        g.shuffle(ATTEMPTS, STEP, record=recs)
+        final = [tuple(b.location) for b in g.blocks]
+        undo = undo_with_record(g, recs)
+        after = [tuple(b.location) for b in g.blocks]
+        good = bool(recs) and pre != final and undo and after == pre
+        ok &= check(f'c seed={seed} 逆向证书', good,
+                    f'{len(recs)} 步')
+    return ok
 
 
 def main() -> int:
     t0 = time.perf_counter()
-    traps = json.loads(TRAP_PATHS.read_text(encoding='utf-8'))['traps']
-    assert len(traps) == 9, f'trap_paths 应有 9 个死局，实际 {len(traps)}'
-    check_blacklist(traps)
-    check_traps(traps)
-    check_shuffles()
-    print(f'全部通过，总耗时 {time.perf_counter() - t0:.1f}s')
-    return 0
+    all_ok = True
+    all_ok &= check_no_guard()
+    all_ok &= check_shuffles()
+    all_ok &= check_certificates()
+    print(f'{"[OK] 无黑名单打乱健壮性全部通过" if all_ok else "[FAILED] 存在失败项"}，'
+          f'总耗时 {time.perf_counter() - t0:.1f}s')
+    return 0 if all_ok else 1
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    sys.exit(main())

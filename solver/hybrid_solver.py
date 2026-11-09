@@ -74,7 +74,7 @@ def apply_with_rep(game, action, step, rep_cell):
 def hybrid_solve(game, step, cancel_check=None, progress_callback=None,
                  node_budget=80000, max_rounds=12,
                  pipeline='alt', alt_chunk=30, alt_max_rounds=8,
-                 segment_cb=None, gather_seed=None, **_kwargs):
+                 segment_cb=None, gather_seed=None, scorer=None, **_kwargs):
     base = deepcopy(game)
     m, n = game.m, game.n
 
@@ -193,7 +193,8 @@ def hybrid_solve(game, step, cancel_check=None, progress_callback=None,
         path, used = guided_reduce_one(coords, m, n, step,
                                        budget=node_budget,
                                        cancel_check=cancel_check,
-                                       progress_cb=gbfs_progress)
+                                       progress_cb=gbfs_progress,
+                                       scorer=scorer)
         if not path:
             return False
         tent = replay(steps + path)
