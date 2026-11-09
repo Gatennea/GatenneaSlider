@@ -523,7 +523,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 **一、「全套」到底有哪些**
 
-1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **153 個** `_test_*.py`，
+1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **155 個** `_test_*.py`，
    一個檔案算一條用例，子進程執行、退出碼 0 算 PASS。其中 3 個收集即 skip：
    `_test_full.py`（寫死舊專案路徑）、`_test_dent_inner.py`（缺未入庫的錄製存檔）、
    `_test_bfs_explore.py`（純探測、估需兩小時）。實際跑 149 個。
@@ -560,7 +560,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 底座（每次改代碼，幾十秒）：
 
 - 全庫 grep 舊 API 名確認無殘留 —— `compileall` 加靜態檢查證明不了引用連得上。
-- `pytest test/ --collect-only -q`：約 1 秒，153 條全收集成功就代表 import 鏈沒斷。
+- `pytest test/ --collect-only -q`：約 1 秒，155 條全收集成功就代表 import 鏈沒斷。
 - compileall + 上面三項 lint。
 
 按改動補跑（從目錄跑，用 `pytest test/ -k <關鍵詞> -q` 篩；或直接 `python test\_test_xxx.py`）：
@@ -577,10 +577,11 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 - `conftest.py` 在每個腳本前後自動清掉並復原 config 目錄裡的 engine.json、temp_history.json，
   **不必手動刪**；手動刪是舊做法。
-- 全套基線（2026-11-10 收口後）`146 passed / 3 skipped / 4 failed`（153 collected）。那 4 條紅是
-  求解器機率斷言 / §二十五 既有紅，用純遠端 worktree `6763ba7` 對照跑同樣失敗，
-  均非本輪回歸；別為了轉綠去調門檻或換種子。本機全套誤傷（原 106 紅）已根治，
-  現在能正常跑出結果，不必一律等 CI。
+- 全套基線（2026-11-10 D5 收口後）`148 passed / 3 skipped / 4 failed`（155 collected，
+  27m50s）。那 4 條紅是求解器機率斷言（`_test_mi_gather` / `_test_tri_gather` /
+  `_test_tri_gui_solve`）與 §二十五 既有紅（`_test_feature_index`），用純遠端
+  worktree `6763ba7` 對照跑同樣失敗，均非本輪回歸；別為了轉綠去調門檻或換種子。
+  本機全套誤傷（原 106 紅）已根治，現在能正常跑出結果，不必一律等 CI。
 - 判斷「卡死」前先單獨計時：`_test_reject_text_only.py` 單跑就要 8 分鐘；
   `conftest.py` 的慢速白名單只放寬了 `_test_solver.py` 與 `_test_mi_gather.py` 兩支。
 

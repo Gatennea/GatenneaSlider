@@ -10,7 +10,7 @@
 > ⚠️ **本文件只管「能力有没有」，不管「方向能不能做」**。要提求解器优化方向，先读
 > `docs/solver/求解器優化方向_可行性判據.md`：六条硬约束（玩家局面必然可解、
 > 真值只有两档、距离拟合已否决、并行轮询层已证负收益、出题机制已有、别把已有当空白）
-> + 现况清单 + 提方向前自检清单（11 条，第 11 条：复杂度先放一放）。2026-11-10 曾因跳过这一步，提了多条一经追问就站不住的方向。
+> + 现况清单 + 提方向前自检清单（12 条：第 11 条复杂度先放一放、第 12 条全量表/PDB 三关）。2026-11-10 曾因跳过这一步，提了多条一经追问就站不住的方向。D5 实测结论见该档 4.2 节。
 > 另注意 `docs/solver/求解器AI搜索优化方向.md` 是 **AI 原始建议种子、不是结论**，
 > 其开头已补前提声明；别把它的提议直接抄成方向。
 > 2026-11-10 起**死局黑名单防护整层移除**（安全打乱必然可解），`solver/` 下不再有任何防护模组；数学死局结论与数据仍在 `docs/math/`。
@@ -27,6 +27,7 @@
 | `auto_solve(game, ..., stage_cb=None)` | **多段播放**自动规划入口：查表/补缺宏/混合续算各段经 `emit_stage` 上报 `{label,actions,reps,end,score,phi,solved}` | `solver/auto_solver.py` |
 | `auto_solve(..., total_budget=T, rng_seed=N)` | 2026-11-09 新增两个可选参数：`total_budget` = **整轮**墙钟上限（GUI「最大等待秒数」的真实语义；`stage_budget` 是每候选各一份，两候选会吃成 2T），首候选最多占一半、余额让渡给续算（份额 0.5 经 6 局敏感性对照优于 0.6 / 0.7）；`rng_seed` = 整数种子，注入补缺宏 `random.Random` 与聚拢轮 `gather_solve.seed`，消除随机漂移（同局面解链通常逐位一致；带墙钟预算不作绝对保证，到点时机受调度影响）。护栏 `test/_test_solver_budget_seed.py` | `solver/auto_solver.py` |
 | `auto_solve(..., scorer=None, route_fn=None)` / `guided_reduce_one(..., scorer=None)` | 2026-11-10 新增实验接缝：`scorer(coords,m,n,step)->(score,holes)` 决定 GBFS 堆序，沿 `hybrid_solve` → `auto_solve` 透传；`route_fn(holes,coords,m,n,step)->bool` 决定两候选先后（默认 `len(holes)>=3`）。**预设不传与旧版逐位一致、玩家侧零变化**；护栏 `test/_test_solver_scorer_inject.py` 12 项 + 反向验证 4 例 | `solver/search_core.py`、`solver/hybrid_solver.py`、`solver/auto_solver.py` |
+| `build_quotient_pdb(...)` / `verify_admissible(...)` / `max_pdb_lookup(...)` | **D5 研究原型（不接生产）**：商图 BFS 可采纳 PDB，`h(s) <= dist[s]`；4_4_2 全表逐态零反例。⚠️ 只用有成品表+中继资料的尺寸，压缩比与 h 要一起读，跨尺寸/跨 step 有反例不能外推。见 `docs/solver/求解器優化方向_可行性判據.md` §4.2 | `solver/pdb.py` |
 | `_end_state(coords0, acts, reps, ...)` | 整链重放求最终坐标（续算必须从原点整链重放，别后缀单独重放） | `solver/auto_solver.py` |
 | `ShapeGather` | 方形/异形**共用贪心骨架**（patience/aggressiveness 等常数原样复用） | `solver/ml/shape_gather.py` |
 | `tri_placement.py` / `mi_placement.py` | 异形放置偏移域（mod 约束：`mod_auts` / `placement_offset_ok`） | `solver/ml/` |
@@ -105,6 +106,7 @@
   （spy 捕获多空位驱动的 rng、同种子两次解链逐位一致），另静态钉住 GUI 传参与
   conftest 只用 `os.replace`。改这几个参数前先跑它。
 - `test/_test_solver_scorer_inject.py`（2026-11-10）：12 项护栏钉住 scorer / route_fn 接线与预设等价；真刀反向验证 4 例撤接线转红。`test/_test_shuffle_guard.py` 同日改写为「无黑名单的打乱健壮性」（静态防回流 + 2000 次 shuffle + 30 局逆向证书）。
+- `test/_test_pdb_admissible.py`（2026-11-10，14 项）与 `test/_test_table_checkpoint_integrity.py`（17 项）：前者钉住商图可采纳性、边数完备、真压缩、防回流；后者钉住三个只有建表断点的档 **不是完整表**（抽样仍抓得到漏态）且建 PDB 脚本会拒绝它们。真刀反向验证 5 例。⚠️ `solver/table_solver.py` 的 `load_table` 会刻意回退 checkpoint（表内状态 dist 仍精确），别把它当完整表用。见 `docs/agent/踩坑与搁置.md` §二十五。
 - 求解器 A/B **必须注入固定 `rng_seed`**：内部多空位驱动是
   `rng = rng or random.Random()`（无参、系统时间播种），聚拢轮吃全局 random，
   同局面连跑两次可能一个解出、一个只回部分成果。只比成功数/墙钟、不比解链
