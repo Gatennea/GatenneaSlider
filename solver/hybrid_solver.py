@@ -74,7 +74,7 @@ def apply_with_rep(game, action, step, rep_cell):
 def hybrid_solve(game, step, cancel_check=None, progress_callback=None,
                  node_budget=80000, max_rounds=12,
                  pipeline='alt', alt_chunk=30, alt_max_rounds=8,
-                 segment_cb=None, **_kwargs):
+                 segment_cb=None, gather_seed=None, **_kwargs):
     base = deepcopy(game)
     m, n = game.m, game.n
 
@@ -135,7 +135,8 @@ def hybrid_solve(game, step, cancel_check=None, progress_callback=None,
                              patience=max(30, alt_chunk),
                              max_wait_time=20,
                              cancel_check=cancel_check,
-                             progress_callback=progress_callback)
+                             progress_callback=progress_callback,
+                             seed=gather_seed)
             cand = list(zip(r['actions'],
                             r.get('rep_cells')
                             or [None] * len(r['actions'])))

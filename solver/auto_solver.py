@@ -33,12 +33,29 @@
   后续候选从已播终态续算（棋盘播到哪、下一段从哪算起）。不传 stage_cb
   时仍整链返回（HTTP/headless 无感），但内部同样按流式链记账。
 · stage_budget（每候选阶段墙钟上限）：None=内置默认（混合 90s / 补缺宏
-  30s），0=不限时，>0=用户值——GUI 传设置页「最大等待秒数」
+  30s），0=不限时，>0=用户值——GUI 曾传设置页「最大等待秒数」
   （gather_params.max_wait_time，用户 2026-11-07 拍板由用户输入、复用
   聚拢停机参数）。到点停该阶段、已播段照常有效，落实「尽早发现、发现就停」。
+· total_budget（整轮墙钟上限，2026-11-09 新增）：设置页「最大等待秒数」
+  的**真实语义**。stage_budget 是「每个候选各一份」，两个候选最多 2T，
+  与「最多等 T 秒」的文案不符（实测 stage_budget=3 → 总墙钟 6.01s）。
+  total_budget 给整轮一个单调 deadline，首个候选最多占
+  _TOTAL_SHARE_FIRST 比例、余额让渡给后续候选；到点连正在跑的候选
+  也经 cancel_check 退出，已播段照常有效。GUI 改传这个参数；
+  stage_budget 保留原义供 HTTP/实验基线对照。
+· rng_seed（2026-11-09 新增）：整数随机种子，分别注入补缺宏链
+  （random.Random(seed)）与混合聚拢轮（gather_solve 的 seed），**消除
+  随机漂移**——同局面 / 同种子 / 同预算配置下解链通常逐位一致，A/B
+  才可比。⚠️ 带墙钟预算时**不作绝对保证**：到点切断的时机受 CPU 调度
+  影响，大盘 5 局种子探针里 4 局固定种子两次一致、1 局偶发不一致
+  （该局单独复跑、带预热复跑都一致）。故 A/B 比成功数 / 墙钟 /
+  聚拢度，别把 fp 相等当前提。不传时沿用旧行为：求解内部原本是
+  `rng = rng or random.Random()` 无参播种 + 聚拢轮吃全局 random，
+  同局面两次可能一个解出、一个只回部分成果（实测 6×6 seed=3）。
 · hybrid_solve 本身保持纯算法不动（experiments/ 基线不受影响，其分段
   回调为可选参数），hybrid_solve_with_table 保留为旧入口（固定「表→混合」两步）。
 """
+import random
 import time
 import traceback
 from copy import deepcopy
@@ -58,6 +75,15 @@ from solver.ml.invariants import profile_defect  # 平移无关 Φ（复用，�
 # GUI 侧由设置页「最大等待秒数」接管：启用=用户值（0=不限时），
 # 禁用=回退本默认（与补缺/填洞宏的 30s 内置帽同构）。
 _STAGE_BUDGET_DEFAULT = 90.0
+
+# 整轮预算（total_budget）下首个候选最多占用的比例。不能让第一候选吃满
+# 整轮：实测 6×6 补缺宏超时后，混合流水线仍能在续算里再播一段搜索段，
+# 直接共享 deadline 会把第二候选饿死。余额自动让渡（用绝对 deadline，
+# 第一候选提前结束时第二候选可用到整轮末尾）。
+# 0.5 = 均分：2026-11-09 份额敏感性对照（6 局边界案 × 3 档，固定 rng_seed）
+# 解出数 1/6 三档相同、墙钟均值 18.49/18.46/18.38s 基本持平，
+# 部分成果聚拢度 σ 均值 0.9669 / 0.9601 / 0.9567 单调递减 → 取 0.5。
+_TOTAL_SHARE_FIRST = 0.5
 
 
 def partial_better(sc_new, phi_new, sc_old, phi_old):
@@ -113,7 +139,7 @@ def _phi_of(coords, m, n):
 
 def auto_solve(game, step, cancel_check=None, progress_callback=None,
                stage_cb=None, time_budget=None, stage_budget=None,
-               **_kwargs):
+               rng_seed=None, total_budget=None, **_kwargs):
     """自动规划入口：查表 → 补缺宏 → 混合流水线，全解即停，全败取最优部分。
 
     stage_cb（2026-10-10 新增）：分阶段流式回调。每当一个候选求解器产出可播的
@@ -136,8 +162,16 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
 
     time_budget：整体会话上限（秒，沿用；headless/experiments 用，
     与候选间 out_of_time 配合），与 stage_budget 相互独立。
+
+    total_budget：整轮墙钟硬上限（秒，None/0=不限时）。与 stage_budget
+    的「每候选各一份」不同，这是整轮共享的单调 deadline，且会传进正在
+    跑的候选的 cancel_check；首个候选最多占 _TOTAL_SHARE_FIRST。
+    rng_seed：整数种子，注入补缺宏与混合聚拢轮；不传=旧随机行为。
     """
     t0 = time.time()
+    total_deadline = (t0 + total_budget
+                      if total_budget is not None and total_budget > 0
+                      else None)
     m, n = game.m, game.n
     coords0 = frozenset(tuple(b.location) for b in game.blocks)
 
@@ -169,7 +203,9 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             traceback.print_exc()   # §2：except 必须打 traceback，不许静默吞
 
     def out_of_time():
-        return time_budget is not None and (time.time() - t0) >= time_budget
+        if time_budget is not None and (time.time() - t0) >= time_budget:
+            return True
+        return total_deadline is not None and time.time() >= total_deadline
 
     def score_of(cs):
         return gather_metrics(cs, m, n)['score']
@@ -252,9 +288,12 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     _reg, _ov, holes, _out = window_of(coords0, m, n, step)
     gap_first = len(holes) >= 3
 
-    def run_gap():
+    def run_gap(phase_deadline=None):
         """补缺宏：从 flow['end'] 续算（已播到哪、从哪算起），分段流式采纳。
-        返回 ('solved', 全链 acts, 全链 reps) / ('partial',) / ('fail',)。"""
+        返回 ('solved', 全链 acts, 全链 reps) / ('partial',) / ('fail',)。
+
+        phase_deadline：整轮预算下本阶段的绝对截止时刻（None=沿用旧语义）。
+        """
         seed = flow['end']
         seg_base = len(flow['acts'])
         emit('自动规划·补缺宏',
@@ -275,9 +314,23 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         # 0=用户显式不限时；>0=用户值（设置页「最大等待秒数」）。
         gap_kwargs = ({} if stage_budget is None
                       else {'time_budget': stage_budget})
+        if rng_seed is not None:
+            # 每个候选各自从同一整数种子新建 Random，互不消耗状态，
+            # 与「先跑哪个候选」无关，同局面同种子解链逐位一致。
+            gap_kwargs['rng'] = random.Random(rng_seed)
+        gap_cancel = cancel_check
+        if phase_deadline is not None:
+            left = max(0.01, phase_deadline - time.time())
+            cur = gap_kwargs.get('time_budget')
+            gap_kwargs['time_budget'] = (left if cur in (None, 0)
+                                         else min(cur, left))
+
+            def gap_cancel(_inner=cancel_check, _dl=phase_deadline):
+                return ((_inner() if _inner is not None else False)
+                        or time.time() >= _dl)
         try:
             gres = solve_gap_macro(build_game(seed, m, n), step,
-                                   cancel_check=cancel_check,
+                                   cancel_check=gap_cancel,
                                    progress_callback=progress_callback,
                                    segment_cb=gseg, **gap_kwargs)
         except Exception as e:
@@ -311,9 +364,12 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             return stage_outcome(seg_base)
         return stage_outcome(seg_base)
 
-    def run_hybrid():
+    def run_hybrid(phase_deadline=None):
         """混合流水线：从 flow['end'] 续算，聚拢段/搜索段分段流式采纳。
-        全解 → ('solved', 全链 acts, 全链 reps)；否则见 stage_outcome。"""
+        全解 → ('solved', 全链 acts, 全链 reps)；否则见 stage_outcome。
+
+        phase_deadline：整轮预算下本阶段的绝对截止时刻（None=沿用旧语义）。
+        """
         seed = flow['end']
         seg_base = len(flow['acts'])
         if seed is coords0:
@@ -332,18 +388,24 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         # 分支无自有时限，实测「卡在聚攏+GBFS 不停機」）；0=不限时；>0=用户值。
         # 到点经 cancel_check 让聚拢逐轮、搜索逐节点退出，已播段照常有效。
         budget = _STAGE_BUDGET_DEFAULT if stage_budget is None else stage_budget
+        if phase_deadline is not None:
+            left = max(0.01, phase_deadline - time.time())
+            budget = left if not budget else min(budget, left)
         if budget:
             deadline = time.time() + budget
 
             def stage_cancel():
-                return cancelled() or time.time() >= deadline
+                if cancelled() or time.time() >= deadline:
+                    return True
+                return (total_deadline is not None
+                        and time.time() >= total_deadline)
         else:
             stage_cancel = cancelled
         try:
             hres = hybrid_solve(build_game(seed, m, n), step,
                                 cancel_check=stage_cancel,
                                 progress_callback=progress_callback,
-                                segment_cb=hseg)
+                                segment_cb=hseg, gather_seed=rng_seed)
         except Exception:
             traceback.print_exc()
             hres = False
@@ -358,13 +420,20 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
                 return ('fail',)   # 整链验证不过：不谎报全解，已播段保留
         return ('solved', flow['acts'], flow['reps'])
 
-    for which in (['gap', 'hybrid'] if gap_first else ['hybrid', 'gap']):
+    _order = ['gap', 'hybrid'] if gap_first else ['hybrid', 'gap']
+    for _idx, which in enumerate(_order):
         if cancelled() or out_of_time():
             break
+        phase_deadline = None
+        if total_deadline is not None:
+            # 首个候选让出 _TOTAL_SHARE_FIRST 之外的额度；第二候选直接用
+            # 整轮 deadline（首候选提前结束时余额自动落到这里）。
+            phase_deadline = (t0 + (total_deadline - t0) * _TOTAL_SHARE_FIRST
+                              if _idx == 0 else total_deadline)
         if which == 'gap':
-            outcome = run_gap()
+            outcome = run_gap(phase_deadline)
         else:
-            outcome = run_hybrid()
+            outcome = run_hybrid(phase_deadline)
         if outcome[0] == 'solved':
             return outcome[1], outcome[2]
         # partial / fail → 继续下一候选

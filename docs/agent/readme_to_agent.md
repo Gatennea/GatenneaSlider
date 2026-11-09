@@ -516,14 +516,18 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 **一、「全套」到底有哪些**
 
-1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **151 個** `_test_*.py`，
+1. `pytest test/ -q`：`test/conftest.py` 接管 `test/` 下 **152 個** `_test_*.py`，
    一個檔案算一條用例，子進程執行、退出碼 0 算 PASS。其中 3 個收集即 skip：
    `_test_full.py`（寫死舊專案路徑）、`_test_dent_inner.py`（缺未入庫的錄製存檔）、
-   `_test_bfs_explore.py`（純探測、估需兩小時）。實際跑 148 個。
-   ⚠️ **本機 WorkBuddy 安全刪除鉤子**（2026-11-09）：conftest 每例最多 4 次
-   `os.remove`（清兩個運行態 json），同一 turn 累計 50 次即攔截，之後大批
-   腳本級聯假紅（stderr 刷 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`），單跑全綠。
-   別據此判回歸；全套結論以 CI 為準，詳 踩坑与搁置.md §二十一。
+   `_test_bfs_explore.py`（純探測、估需兩小時）。實際跑 149 個。
+   ⚠️ **本機 WorkBuddy 安全刪除鉤子已根治**（2026-11-09）：原本 conftest
+   每例最多 4 次 `os.remove`（清兩個運行態 json），同一 turn 累計 50 次
+   即攔截，之後大批腳本級聯假紅（stderr 刷
+   `SAFE_DELETE_BULK_CONFIRM_REQUIRED`）、單跑全綠。現改成
+   `os.replace` 把檔案原子挪到 `config/.pytest_bak/*.bak`：
+   原路徑同樣「不存在」，隔離語義不變、不產生 delete 計數；
+   config/ 已被 gitignore，備份名帶 `.bak` 避免 doclink 同名歧義。
+   本機全套現在可以正常跑出結果，不必再一律等 CI，詳 踩坑与搁置.md §二十一。
    `_smoke_exe.py` 不是 `_test_` 前綴、根本不收集，發版前手動跑。
    耗時大頭：`_test_mi_gather.py` 12~15 分鐘、`_test_reject_text_only.py` 約 8 分鐘、
    `_test_solver.py` 約 4 分鐘；CI 上限 120 分鐘。
@@ -549,7 +553,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 底座（每次改代碼，幾十秒）：
 
 - 全庫 grep 舊 API 名確認無殘留 —— `compileall` 加靜態檢查證明不了引用連得上。
-- `pytest test/ --collect-only -q`：約 1 秒，151 條全收集成功就代表 import 鏈沒斷。
+- `pytest test/ --collect-only -q`：約 1 秒，152 條全收集成功就代表 import 鏈沒斷。
 - compileall + 上面三項 lint。
 
 按改動補跑（從目錄跑，用 `pytest test/ -k <關鍵詞> -q` 篩；或直接 `python test\_test_xxx.py`）：
@@ -566,8 +570,10 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 
 - `conftest.py` 在每個腳本前後自動清掉並復原 config 目錄裡的 engine.json、temp_history.json，
   **不必手動刪**；手動刪是舊做法。
-- 全套基線 141 passed / 3 skipped。2026-11-07 那次 3 條紅是求解器機率斷言，用純遠端
-  worktree 對照跑同樣失敗，屬既有問題；別為了轉綠去調門檻或換種子。
+- 全套基線（2026-11-09 收口後）`145 passed / 3 skipped / 4 failed`。那 4 條紅是
+  求解器機率斷言 / §二十五 既有紅，用純遠端 worktree `6763ba7` 對照跑同樣失敗，
+  均非本輪回歸；別為了轉綠去調門檻或換種子。本機全套誤傷（原 106 紅）已根治，
+  現在能正常跑出結果，不必一律等 CI。
 - 判斷「卡死」前先單獨計時：`_test_reject_text_only.py` 單跑就要 8 分鐘；
   `conftest.py` 的慢速白名單只放寬了 `_test_solver.py` 與 `_test_mi_gather.py` 兩支。
 

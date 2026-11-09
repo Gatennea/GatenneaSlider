@@ -1466,8 +1466,14 @@ _GAP_GUI_TIME_BUDGET = 30.0
 
 def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
                     stop_on_fail=False, segment_cb=None,
-                    time_budget=_GAP_GUI_TIME_BUDGET, **kwargs):
+                    time_budget=_GAP_GUI_TIME_BUDGET, rng=None, **kwargs):
     """补缺宏（GUI 入口）：单边缺口 → 封壳+内部共轭+拆壳；其余交填洞宏。
+
+    rng（2026-11-09 新增）：可选 random.Random 实例，透传到多空位贪心驱动
+    （solve_multi_vacancy → solve_multi_void）与填洞宏兜底。不传时沿用各
+    自「rng or random.Random()」的旧行为（系统时间播种）；传了则同局面、
+    同 rng 的解链逐位可复现（不带墙钟预算时），供 auto_solve 的 seed
+    注入与 A/B 基准使用。
 
     segment_cb：流式播放回调（label, actions5）——多空位贪心每解决一个
     couple 即回调，GUI 边算边播；返回协议含 fill_stream dict。
@@ -1500,7 +1506,7 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
     try:
         return _solve_gap_macro_inner(game, coords, m, n, step,
                                       _cc, progress_callback,
-                                      stop_on_fail, segment_cb)
+                                      stop_on_fail, segment_cb, rng=rng)
     except _Cancelled:
         if timed_out[0]:
             print('[补缺宏] 时间预算 %gs 到点，尽早停机' % time_budget)
@@ -1512,7 +1518,8 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
 
 
 def _solve_gap_macro_inner(game, coords, m, n, step, cancel_check,
-                           progress_callback, stop_on_fail, segment_cb=None):
+                           progress_callback, stop_on_fail, segment_cb=None,
+                           rng=None):
     """solve_gap_macro 主体（cancel 异常由外层捕获）。"""
     (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
     edge = None
@@ -1548,6 +1555,7 @@ def _solve_gap_macro_inner(game, coords, m, n, step, cancel_check,
             _emit(progress_callback, '多空位驱动', 0,
                   '洞%d 凸%d 统一couple' % (len(holes), len(_out)))
         acts, mst = solve_multi_vacancy(coords, m, n, step, mode='auto',
+                                        rng=rng,
                                         progress_callback=progress_callback,
                                         cancel_check=cancel_check,
                                         segment_cb=segment_cb)
@@ -1584,7 +1592,7 @@ def _solve_gap_macro_inner(game, coords, m, n, step, cancel_check,
                 'solver_name': '多空位驱动', 'fail_world': []}
     res = solve_fill_macro(game, step, cancel_check=cancel_check,
                            progress_callback=progress_callback,
-                           segment_cb=segment_cb)
+                           segment_cb=segment_cb, rng=rng)
     if isinstance(res, dict):
         res.setdefault('solver_name', '填洞宏')
         if use_gap:

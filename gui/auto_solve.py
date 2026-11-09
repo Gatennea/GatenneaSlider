@@ -407,12 +407,15 @@ class AutoSolveMixin:
             def progress_callback(info):
                 self._auto_solve_progress = info
 
-            # 每候选阶段墙钟上限复用「最大等待秒数」：启用=用户值
-            # （0=不限时）；禁用=不传 → auto_solve 内置默认 90s 安全帽
-            # （修复前混合直跑分支无自有时限，实测「卡在聚攏+GBFS不停機」）。
+            # 设置页「最大等待秒数」= **整轮**墙钟上限（2026-11-09 修）：
+            # 启用=用户值（0=不限时）；禁用=不传 → auto_solve 内置默认
+            # 90s 安全帽。修前传的是 stage_budget（每候选各一份），两个
+            # 候选会把 20s 吃成 40s，与「求解时间上限」的文案不符；
+            # total_budget 是整轮共享的单调 deadline，首候选最多占一半，
+            # 余额让渡给续算（份额 0.5 经敏感性对照优于 0.6 / 0.7）。
             budget_kw = {}
             if self.gather_enabled.get('max_wait_time', True):
-                budget_kw['stage_budget'] = self.gather_params.get(
+                budget_kw['total_budget'] = self.gather_params.get(
                     'max_wait_time')
 
             auto_solve(snap, step=step, cancel_check=cancel_check,

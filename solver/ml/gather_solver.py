@@ -528,7 +528,10 @@ def gather_solve(game, step: int, max_steps=500, patience=150,
     # 随机性（stochastic 探索）
     #   False（默认）→ 完全确定性，同盘同结果，便于回归。
     #   True         → ② band 内 ε-greedy 随机挑 + ③ 卡住随机踢；seed 用于可复现。
-    if stochastic:
+    #   显式给 seed → 无论 stochastic 与否，rchoice 都改走**局部** Random，
+    #     不再吃全局 random 模块的状态（2026-11-09：auto_solve 的可复现
+    #     注入需要；同 seed 同局面解链逐位一致）。不传 seed 时行为零变化。
+    if stochastic or seed is not None:
         if seed is None:
             seed = random.randrange(1 << 31)
         rng = random.Random(seed)

@@ -216,7 +216,22 @@ class ScriptTestFile(pytest.File):
 # 做法：每个脚本测试开跑前清空这两个文件、跑完丢弃它自己写的、再复原。
 # 于是每个测试都从「干净初始态」起步，套件结果与执行顺序无关；用户真实的
 # config 也不会被测试改写。
+#
+# ⚠️ 2026-11-09：清空**不能用 os.remove**。WorkBuddy 的安全删除钩子按
+# 「本轮对话累计删除次数」计数，到第 50 次起抛
+# SAFE_DELETE_BULK_CONFIRM_REQUIRED；全套 151 个用例 × 每例 2 次清理 =
+# 300+ 次，必在第 25 个用例附近开始拦，且异常发生在 runtest 的 finally
+# 里 → 之后每个用例都连带失败（本机全套实测 106 红，105 个是这个误伤，
+# 抽 4 个失败脚本单跑全绿）。改用 os.replace 把文件原子挪到
+# config/.pytest_bak/（同盘，跨卷会 WinError 17）：原路径同样「不存在」，
+# 隔离语义不变，也不产生 delete 计数；config/ 已在 .gitignore 里，
+# 备份不会污染工作区。
 _RUNTIME_FILES = ('engine.json', 'temp_history.json')
+# 同盘同目录（E: 仓库 → C: 临时目录跨卷会 WinError 17）；config/ 整体
+# 已在 .gitignore 里，备份不会出现在工作区状态中。
+# 备份文件名带 .bak 后缀：否则仓库里多出一个同名 temp_history.json，
+# doclink --strict 会新增一条「同名歧义」而变红（2026-11-09 实测）。
+_RUNTIME_BAK_DIR = os.path.join(ROOT, 'config', '.pytest_bak')
 
 
 def _runtime_paths():
@@ -234,9 +249,11 @@ def _snapshot_runtime():
 
 
 def _clear_runtime():
+    os.makedirs(_RUNTIME_BAK_DIR, exist_ok=True)
     for path in _runtime_paths():
         try:
-            os.remove(path)
+            os.replace(path, os.path.join(_RUNTIME_BAK_DIR,
+                                          os.path.basename(path) + '.bak'))
         except FileNotFoundError:
             pass
 

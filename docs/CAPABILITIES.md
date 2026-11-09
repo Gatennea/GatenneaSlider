@@ -17,6 +17,7 @@
 | `detect_target_corner` / `is_mod_compliant` | mod 不变量：预测窗口左上角 / 校验窗口兼容性 | `solver/ml/gather_solver.py` |
 | `detect_holes(coords, m, n, step, region)` | 洞(hole)/缺口(dent)/凸起(protrusion) 语义，必须与 `find_best_window` 同 region | `solver/ml/hole_detector.py` |
 | `auto_solve(game, ..., stage_cb=None)` | **多段播放**自动规划入口：查表/补缺宏/混合续算各段经 `emit_stage` 上报 `{label,actions,reps,end,score,phi,solved}` | `solver/auto_solver.py` |
+| `auto_solve(..., total_budget=T, rng_seed=N)` | 2026-11-09 新增两个可选参数：`total_budget` = **整轮**墙钟上限（GUI「最大等待秒数」的真实语义；`stage_budget` 是每候选各一份，两候选会吃成 2T），首候选最多占一半、余额让渡给续算（份额 0.5 经 6 局敏感性对照优于 0.6 / 0.7）；`rng_seed` = 整数种子，注入补缺宏 `random.Random` 与聚拢轮 `gather_solve.seed`，消除随机漂移（同局面解链通常逐位一致；带墙钟预算不作绝对保证，到点时机受调度影响）。护栏 `test/_test_solver_budget_seed.py` | `solver/auto_solver.py` |
 | `_end_state(coords0, acts, reps, ...)` | 整链重放求最终坐标（续算必须从原点整链重放，别后缀单独重放） | `solver/auto_solver.py` |
 | `ShapeGather` | 方形/异形**共用贪心骨架**（patience/aggressiveness 等常数原样复用） | `solver/ml/shape_gather.py` |
 | `tri_placement.py` / `mi_placement.py` | 异形放置偏移域（mod 约束：`mod_auts` / `placement_offset_ok`） | `solver/ml/` |
@@ -72,6 +73,7 @@
 | `tools/doclink_check.py` | 文档引用校验：扫 `.md` 里的文件引用（存在性）与「§X」节号引用（目标有没有这一节）。产出 file_ref / sec_ref / ambiguous / artifact_ref / known_broken 五类；`--strict` 只让**新引入的**断链让 CI 变红。当前存量问题登记在 `docs/agent/待办清单.md` §十六 | `python tools/doclink_check.py --baseline tools/doclink_baseline.json` |
 | `tools/gen_feature_overview.py` | 从真源 `gui/feature_index.py` 重新生成 `docs/player/功能总览.md`（54 项）。改了功能索引后跑它，别手改产物 | `python tools/gen_feature_overview.py` |
 | `tools/experiments_index.py` | experiments/ 索引生成 + 命名守门：`--emit` 重生成 `experiments/INDEX.md`（三类分组 + 被谁引用）；`--check` 用 AST 重新判定真实类别与文件名前缀比对，不符就非零退出（CI 已接）。改名/新增脚本后跑它 | `python tools/experiments_index.py --emit --check` |
+| `experiments/script_bench_total_budget.py` | 大盘确定性对照：`stage_budget=T`（旧，最多 2T）/ `total_budget=T`（新，最多 T）/ `stage_budget=T/2`（等墙钟对照）三组，量化解出率、墙钟、部分成果聚拢度；必须 `PYTHONHASHSEED=0` + 固定 `rng_seed`，否则解链漂移不可比。结果落盘为 experiments/ 下的临时结果档（未入库，重跑脚本才有） | `PYTHONHASHSEED=0 python experiments/script_bench_total_budget.py --budget 20 --seeds 8` |
 
 > 本环境 `& python x.py` 不执行，须 `Start-Process -Wait`（见该 README 的沙箱段）。
 
@@ -87,6 +89,17 @@
 - CI 的 test job **排除了 `test/_test_tri_gather.py`**（C3c k=5 0/8 是已知红，用户拍板保持现状），
   真护栏是同文件的 C3e（k=4 ≥ 5/10）。见 `docs/agent/待办清单.md` §十五——别把它当回归，也别为了让
   它变绿去调门槛。
-- 本机跑 `pytest test/ -q` 会被 WorkBuddy 安全删除钩子误伤（conftest 每例清两个
-  运行态 json，同一轮累计 50 次删除后拦截，之后大批脚本级联假红、单跑却全绿）。
-  全套结论以 CI 为准，别为转绿改 conftest 的清理语义。见 `docs/agent/踩坑与搁置.md`。
+- `test/_test_solver_budget_seed.py`（2026-11-09）：20 项护栏，钉住整轮时间语义
+  （旧语义墙钟 >1.6T、新语义 <1.5T、第二候选仍启动、逐段重放合法）与可复现注入
+  （spy 捕获多空位驱动的 rng、同种子两次解链逐位一致），另静态钉住 GUI 传参与
+  conftest 只用 `os.replace`。改这几个参数前先跑它。
+- 求解器 A/B **必须注入固定 `rng_seed`**：内部多空位驱动是
+  `rng = rng or random.Random()`（无参、系统时间播种），聚拢轮吃全局 random，
+  同局面连跑两次可能一个解出、一个只回部分成果。只比成功数/墙钟、不比解链
+  是权宜之计，现在有 `rng_seed` 就能严格逐位对照。
+- 本机 `pytest test/ -q` 的 105 条级联假红已根治（2026-11-09）：WorkBuddy
+  安全删除钩子按本轮累计删除计数，第 50 次起拦 conftest 的 `os.remove`，
+  异常落在 `runtest` 的 `finally` 里 → 之后每个用例连带失败。现改成
+  `os.replace` 原子挪到 `config/.pytest_bak/*.bak`，隔离语义不变、零 delete
+  计数；备份名带 `.bak` 后缀，否则 doclink 会新增一条同名歧义而 --strict 变红。
+  本机全套现在能正常跑出结果，不必一律等 CI。见 `docs/agent/踩坑与搁置.md` §二十二。

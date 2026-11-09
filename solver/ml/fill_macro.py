@@ -2756,7 +2756,7 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
     try:
         return _solve_fill_macro_inner(coords, m, n, step, holes, outside,
                                        _cc, progress_callback,
-                                       segment_cb)
+                                       segment_cb, rng=kwargs.get('rng'))
     except _Cancelled:
         if timed_out[0]:
             _emit(progress_callback, '填洞宏', 0,
@@ -2770,8 +2770,14 @@ def solve_fill_macro(game, step, cancel_check=None, progress_callback=None,
 
 
 def _solve_fill_macro_inner(coords, m, n, step, holes, outside,
-                            cancel_check, progress_callback, segment_cb):
-    """solve_fill_macro 主体（cancel 异常由外层捕获）。"""
+                           cancel_check, progress_callback, segment_cb,
+                           rng=None):
+    """solve_fill_macro 主体（cancel 异常由外层捕获）。
+
+    rng：auto_solve 的可复现注入（2026-11-09），只交给多洞贪心驱动；
+    不传时沿用旧的无参播种。⚠️ 原先这里误用了不存在的 `kwargs`，
+    且外层没往下传 —— 只有补缺宏的多空位分支走到时看不出来。
+    """
     if len(holes) == 1 and len(outside) == 1:
         acts, stats = solve_single_void(coords, m, n, step, keep_partial=True,
                                         cancel_check=cancel_check)
@@ -2802,6 +2808,7 @@ def _solve_fill_macro_inner(coords, m, n, step, holes, outside,
         return [], []   # 已还原
     _emit(progress_callback, '多洞驱动', 0, '贪心逐couple填')
     acts, stats = solve_multi_void(coords, m, n, step,
+                                   rng=rng,
                                    cancel_check=cancel_check,
                                    segment_cb=segment_cb)
     streamed = stats.get('streamed', 0)
