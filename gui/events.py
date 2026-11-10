@@ -1733,6 +1733,7 @@ class EventsMixin:
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
         'op_log_enabled', 'show_boot_animation', 'infinite_shuffle',
         'confirm_before_shuffle', 'draw_grid',
+        'anti_drift_enabled',
         # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
         'sfx_enabled', 'music_enabled', 'sound_muted',
         # 逐项音效开关（设置页「音效一览」：滑动 / 失败 / 复原 / 点击 / 键盘）
@@ -3591,6 +3592,15 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 防偏移演示开关（求解/回放期间把整盘质心锁在起点，纯视觉）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_anti_drift_toggle_rect'):
+                if self._settings_anti_drift_toggle_rect.collidepoint(mx, my):
+                    self.anti_drift_enabled = not getattr(self, 'anti_drift_enabled', True)
+                    status = '开' if self.anti_drift_enabled else '关'
+                    self.macro_notify_msg = f"防偏移演示：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 音频 Tab：音效总开关（S5；无素材时开了也没声，属正常）
             if self.settings_active_tab == 'audio' and hasattr(self, '_settings_sfx_toggle_rect'):
                 if self._settings_sfx_toggle_rect.collidepoint(mx, my):
@@ -4013,6 +4023,11 @@ class EventsMixin:
             self.draw_grid = not getattr(self, 'draw_grid', True)
             status = '开' if self.draw_grid else '关'
             self.macro_notify_msg = f"绘制网格：{status}"
+        elif key == 'anti_drift':
+            # 与设置·视觉页「防偏移演示」同一开关；纯视觉，不改变解法/盘面
+            self.anti_drift_enabled = not getattr(self, 'anti_drift_enabled', True)
+            status = '开' if self.anti_drift_enabled else '关'
+            self.macro_notify_msg = f"防偏移演示：{status}"
         else:
             # 未知开关：明确报出来，别静默吞掉（否则就是「点了没反应」）
             self.macro_notify_msg = f"未知开关：{key}"

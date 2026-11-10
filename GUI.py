@@ -283,6 +283,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.camera_x = 0
         self.camera_y = 0
 
+        # 防偏移（anti-drift）演示：求解/回放时用相机偏移把整盘质心锁在初始
+        # 位置，纯视觉、不动解法与盘面逻辑。见 solver/anti_drift.py 与
+        # renderer.draw_board。_anti_drift_origin 缓存「演示开始时的质心」，
+        # 非演示态置 None（见 renderer）。
+        self.anti_drift_enabled = True
+        self._anti_drift_origin = None
+
         # 拖拽状态
         self.is_dragging = False
         self.drag_start = (0, 0)
@@ -1532,6 +1539,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         位置立刻跑掉（2026-10-24 用户实测「每次滑動都調整相機，體驗非常差」）。
         兜底仍保留：真滑到整盘看不见了，至少还能拉回来。
         """
+        # 防偏移演示期间（macro_executing 且 anti_drift_enabled）：整盘质心已由
+        # renderer 用相机偏移锁在起点，无需（也不能）再用「世界漂移后的盘」去调
+        # 相机——否则会和偏移叠加成双倍位移、把盘推歪。此时偏移是唯一权威；
+        # 普通走子 macro_executing 为 False，不触发，原行为不变。
+        if (getattr(self, 'macro_executing', False)
+                and getattr(self, 'anti_drift_enabled', True)):
+            return
         if not self.game.blocks:
             return
 

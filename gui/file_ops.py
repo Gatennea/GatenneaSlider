@@ -217,6 +217,7 @@ class FileOpsMixin:
             'infinite_shuffle': getattr(self, 'infinite_shuffle', False),
             'confirm_before_shuffle': getattr(self, 'confirm_before_shuffle', True),
             'draw_grid': getattr(self, 'draw_grid', True),
+            'anti_drift_enabled': getattr(self, 'anti_drift_enabled', True),
             'use_compressed_save': getattr(self, 'use_compressed_save', False),
             # 音效（见 gui/audio.py / docs S5）
             'sfx_enabled': getattr(self, 'sfx_enabled', True),
@@ -486,6 +487,8 @@ class FileOpsMixin:
                         self.confirm_before_shuffle = bool(config['confirm_before_shuffle'])
                     if 'draw_grid' in config:
                         self.draw_grid = bool(config['draw_grid'])
+                    if 'anti_drift_enabled' in config:
+                        self.anti_drift_enabled = bool(config['anti_drift_enabled'])
                     # 音效开关（见 gui/audio.py / docs S5）
                     if 'sfx_enabled' in config:
                         self.sfx_enabled = bool(config['sfx_enabled'])

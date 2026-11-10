@@ -1489,6 +1489,34 @@ class RendererMixin:
         if antialias:
             pygame.draw.aaline(self.screen, col, a, b)
 
+    def _anti_drift_cam_offset(self, step_px):
+        """防偏移（anti-drift）演示的相机偏移（像素）。
+
+        宏播放（求解器动画 / 存档回放）期间，把整盘质心锁在「演示开始时」
+        的位置：返回应叠加到相机（像素）的 (ox, oy)；并把起点质心缓存在
+        self._anti_drift_origin。非演示态返回 (0, 0) 并清空缓存。
+
+        纯几何、无副作用到解法/盘面；与 solver/anti_drift 同语义（见其模块
+        文档）。仅方形盘调用（三角/米字几何不同）。step_px = 每格像素步距。
+        """
+        if (getattr(self, 'anti_drift_enabled', True)
+                and getattr(self, 'macro_executing', False)
+                and not getattr(self, 'macro_selecting_base', False)):
+            blocks = self.game.blocks
+            if blocks:
+                cx = sum(b.location[1] for b in blocks) / len(blocks)  # 质心列
+                cy = sum(b.location[0] for b in blocks) / len(blocks)  # 质心行
+                origin = getattr(self, '_anti_drift_origin', None)
+                if origin is None:
+                    self._anti_drift_origin = (cx, cy)
+                    origin = (cx, cy)
+                return (int(round(-(cx - origin[0]) * step_px)),
+                        int(round(-(cy - origin[1]) * step_px)))
+            self._anti_drift_origin = None
+            return (0, 0)
+        self._anti_drift_origin = None
+        return (0, 0)
+
     def draw_board(self):
         """绘制游戏主界面"""
         _pv = self._polygon_view()
@@ -1513,6 +1541,15 @@ class RendererMixin:
         # 相机偏移一次取整，随后的格坐标就都是整数 → 缝隙严格等宽
         cam_x = int(round(self.camera_x))
         cam_y = int(round(self.camera_y))
+
+        # 防偏移（anti-drift）演示：求解器动画 / 存档回放等宏播放期间，
+        # 用相机偏移把整盘质心锁在「演示开始时」的位置，纯视觉——解法与盘
+        # 面逻辑完全不动（等价改写见 solver/anti_drift.transform_sequence_square）。
+        # 仅在方形盘生效（三角/米字几何不同，留待后续；等同 draw_grid 仅原版构型生效）。
+        # 关键：在画缝/画块之前就算好并加进 cam_x/cam_y，保证缝与块同步偏移、不错位。
+        ox, oy = self._anti_drift_cam_offset(step_px)
+        cam_x += ox
+        cam_y += oy
 
         bounds = self.game.get_boundaries()
         min_row, max_row = bounds['min_row'], bounds['max_row']
@@ -3798,6 +3835,12 @@ class RendererMixin:
         self._settings_grid_toggle_rect, ny = self._draw_switch_row(
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
             "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝线——线宽与原版相同，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
+
+        # 防偏移演示开关（求解器动画 / 存档回放期间把整盘质心锁在起点，纯视觉
+        # 优化，不改变解法与盘面；仅方形盘生效）。见 solver/anti_drift.py。
+        self._settings_anti_drift_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "防偏移演示：", getattr(self, 'anti_drift_enabled', True),
+            "求解器演示与存档回放时，用相机偏移把整盘质心锁在起点、不再整体漂走（纯视觉，不改变解法与盘面）；仅方形盘生效")
 
         # 音效 / 背景音乐与两条音量滑条已挪到「音频」页（2026-11-07）：
         # 视觉页十几行，音效挤在末尾要滚很久才看得见；音频页要放「音效一览」，
