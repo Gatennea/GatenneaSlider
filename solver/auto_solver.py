@@ -10,7 +10,9 @@
 `experiments/_auto_route_probe.py` 的实测）：
     ① 查表 table_solve        亚秒级、保证最优——有表必跑，不可能吃亏
     ② 按空位数路由（洞数 = 窗口内空位数，毫秒级可测）：
-        空位 ≤ 2 → 混合流水线先行（实测 5.1：混合 1.4s vs 补缺宏 57.2s）
+        空位 = 1 → 补缺宏先行（单洞 ⟺ 恰 1 块在窗外，补缺宏确定性直解；
+                   2026-11-11 修：内外洞一律，先前只覆盖贴边/角）
+        空位 = 2 → 混合流水线先行（实测 5.1：混合 1.4s vs 补缺宏 57.2s）
         空位 ≥ 3 → 补缺宏先行（实测 06: 1.0s / 07: 0.98s，混合均超时）
       两路都会尝试，路由只定先后；落败方照常接力。
     ③ 全败时按聚拢度（并列 Φ 最小，见 partial_better）评估部分成果，
@@ -63,7 +65,7 @@ from copy import deepcopy
 from solver.table_solver import table_solve
 from solver.ml.gather_solver import gather_metrics
 from solver.ml.fill_macro import build_game, _replay_apply, window_of
-from solver.ml.gap_solver import solve_gap_macro, _edge_of
+from solver.ml.gap_solver import solve_gap_macro
 from solver.hybrid_solver import hybrid_solve
 from solver.ml.invariants import profile_defect  # 平移无关 Φ（复用，非重写）
 
@@ -172,7 +174,8 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     scorer / route_fn（2026-11-10，可注入实验接缝）：scorer 见
     search_core.guided_reduce_one（只经混合流水线生效）；route_fn 签名
     (holes, coords, m, n, step) -> bool，True=补缺宏先行，默认 None =
-    len(holes) >= 3。stop_fn（同轮 D2 第二轮）是 GBFS 的终止判据注入，
+    len(holes) >= 3 or len(holes) == 1（2026-11-11 起单洞一律补缺宏先）。
+    stop_fn（同轮 D2 第二轮）是 GBFS 的终止判据注入，
     签名 (value, holes) -> bool，默认 None = 洞数严格变少，同样只经混合
     流水线生效。**预设注入与旧版逐位一致**，玩家侧不传；三者只把
     「换一个打分 / 换一个路由 / 换一个终止判据」从改搜索核心降成换一个参数。
@@ -301,16 +304,14 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     # ---- ②③ 按空位数路由（探针 2026-10-02：空位≤2 混合快（5.1: 1.4s vs 57.2s），
     #      空位≥3 补缺宏快（06: 1.0s / 07: 0.98s，混合均超时）。两路都尝试，只定先后）----
     _reg, _ov, holes, _out = window_of(coords0, m, n, step)
-    # 默认路由：空位≥3 补缺宏先（更快）；空位≤2 混合先（探针 5.1/06/07）。
-    # 例外：单洞且贴边/角（edge∈L/R/U/D/CORNER）本就是补缺宏 solve_gap_any
-    # 的确定性快路径（0.0s 解），显式走补缺宏先，避免被默认「混合先」然后
-    # 吃光预算、补缺宏没机会（盲区 CORNER 误判的根因之一，2026-11-10）。
-    _gap_first_default = len(holes) >= 3
-    if len(holes) == 1 and not _gap_first_default:
-        _h = next(iter(holes))
-        _edge = _edge_of(_h, _reg[0], _reg[1], _reg[2][0], _reg[2][1])
-        if _edge in ('L', 'R', 'U', 'D', 'CORNER'):
-            _gap_first_default = True
+    # 默认路由：空位≥3 补缺宏先、空位=2 混合先（探针 5.1/06/07）。
+    # 例外（2026-11-11）：单洞一律补缺宏先，与空位≥3 合并为 gap_first 初值。
+    # 单洞时窗口必恰缺 1 格、等价于恰好 1 块在窗外，补缺宏(solve_gap_any)是
+    # 确定性直解（0.0s）；若默认走混合(聚攏)先，会白烧聚攏/GBFS 时间再才填洞
+    # （实测 5×5 s2 单内洞默认路由 7.5s、填洞先 0.01s，解同长却浪费时间）。
+    # 先前只覆盖「单洞+贴边/角」漏了单内洞；现对内外洞一律强制补缺宏先
+    # （盲区 CORNER 修复同一逻辑，范围放宽）。
+    _gap_first_default = len(holes) >= 3 or len(holes) == 1
     gap_first = (route_fn(len(holes), coords0, m, n, step)
                  if route_fn is not None else _gap_first_default)
 
