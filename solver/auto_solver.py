@@ -63,7 +63,7 @@ from copy import deepcopy
 from solver.table_solver import table_solve
 from solver.ml.gather_solver import gather_metrics
 from solver.ml.fill_macro import build_game, _replay_apply, window_of
-from solver.ml.gap_solver import solve_gap_macro
+from solver.ml.gap_solver import solve_gap_macro, _edge_of
 from solver.hybrid_solver import hybrid_solve
 from solver.ml.invariants import profile_defect  # 平移无关 Φ（复用，非重写）
 
@@ -178,9 +178,15 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     「换一个打分 / 换一个路由 / 换一个终止判据」从改搜索核心降成换一个参数。
     """
     t0 = time.time()
-    total_deadline = (t0 + total_budget
-                      if total_budget is not None and total_budget > 0
-                      else None)
+    # 共享总预算（phase-sharing）：显式 total_budget 优先；否则若调用方只给了
+    # time_budget（GUI/实验的常态），把它当作共享总预算，使「第二个候选」
+    # 必然分到份额、不被第一个吃光——这是 2026-11-10 从盲区实测收回 7/8 局
+    # 的根因修复（原默认不传 total_budget，混合流水线先跑会耗尽全部预算，
+    # 补缺宏（对角缺口 0.0s 确定性可解）始终没机会，被误判为公式盲区）。
+    _shared = total_budget if (total_budget is not None and total_budget > 0) \
+        else (time_budget if (time_budget is not None and time_budget > 0)
+              else None)
+    total_deadline = (t0 + _shared) if _shared is not None else None
     m, n = game.m, game.n
     coords0 = frozenset(tuple(b.location) for b in game.blocks)
 
@@ -295,8 +301,18 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     # ---- ②③ 按空位数路由（探针 2026-10-02：空位≤2 混合快（5.1: 1.4s vs 57.2s），
     #      空位≥3 补缺宏快（06: 1.0s / 07: 0.98s，混合均超时）。两路都尝试，只定先后）----
     _reg, _ov, holes, _out = window_of(coords0, m, n, step)
+    # 默认路由：空位≥3 补缺宏先（更快）；空位≤2 混合先（探针 5.1/06/07）。
+    # 例外：单洞且贴边/角（edge∈L/R/U/D/CORNER）本就是补缺宏 solve_gap_any
+    # 的确定性快路径（0.0s 解），显式走补缺宏先，避免被默认「混合先」然后
+    # 吃光预算、补缺宏没机会（盲区 CORNER 误判的根因之一，2026-11-10）。
+    _gap_first_default = len(holes) >= 3
+    if len(holes) == 1 and not _gap_first_default:
+        _h = next(iter(holes))
+        _edge = _edge_of(_h, _reg[0], _reg[1], _reg[2][0], _reg[2][1])
+        if _edge in ('L', 'R', 'U', 'D', 'CORNER'):
+            _gap_first_default = True
     gap_first = (route_fn(len(holes), coords0, m, n, step)
-                 if route_fn is not None else len(holes) >= 3)
+                 if route_fn is not None else _gap_first_default)
 
     def run_gap(phase_deadline=None):
         """补缺宏：从 flow['end'] 续算（已播到哪、从哪算起），分段流式采纳。
@@ -347,9 +363,7 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             traceback.print_exc()
             gres = {'type': 'fill_fail', 'reason': '补缺宏异常: %s' % e}
         if isinstance(gres, tuple):
-            # 单洞快路径（自身不分段）：整段从当前终态验证采纳后即全解。
-            # 已有分段时元组按「余量」验证（契约上二者互斥，此分支只作
-            # 安全兜底：验证不过就保留已播段，绝不谎报全解）。
+            # 整段解（单洞快路径/自身不分段）：从当前已播终态验证采纳后即全解。
             if advance_from(flow['end'], '补缺宏', gres[0], gres[1]):
                 return ('solved', flow['acts'], flow['reps'])
             return stage_outcome(seg_base)
