@@ -9,8 +9,14 @@
   可消去」在本謎題的對應（整體平移 = 整體轉體，是零代價的對稱分量）。
 
 兩種用法（都不增不減步數）：
-* 顯示抵消（零風險，主路）：逐幀把質心偏移扣掉，質心鎖在初始位置；只動相機，
-  不動解法、不動盤面（見 GUI._anti_drift_recenter）。
+* 顯示抵消（零風險，主路）：逐幀按**本幀真實渲染位置**（含動畫插值）扣掉
+  質心偏移，把質心鎖在初始位置；只動相機，不動解法、不動盤面（見
+  ``gui.renderer.RendererMixin._anti_drift_cam_offset``）。
+  ⚠️ 必須逐幀連續：動畫期間 ``b.location`` 恆為起點（``commit_animation``
+  才寫終態），若按 location 離散計算，整段動畫偏移恆 0、commit 一瞬整盤
+  跳一格，就是「每步之後強制居中」的台階式抖動（2026-11-11 用戶實測）。
+  連續補償的淨效果＝等價改寫的視覺：一大片幾乎不動、少數塊相對滑動，
+  與打亂的錨點式防偏移同一觀感。
 * 序列改寫（可複用 / 存檔）：把「初始盤面」與「每步 act」按累積質心偏移的負值
   整體平移，得到自洽、居中、步數相同的序列（transform_sequence_square）。
   方形網格坐標為整數，質心偏移可能是分數——取整四捨五入後殘差 ≤ 0.5 格，
@@ -76,7 +82,7 @@ def transform_sequence_square(initial_coords, acts4, reps, m, n, step):
     證明：在「初始盤面逐幀按 offsets 重平移」的盤上回放 shifted 序列，終態 =
     原終態平移 −offsets[k]（k=步數），故終態質心 == 原初態質心（居中）。
     可複用於 headless 批處理 / 存檔；GUI 主路直接用顯示抵消（見
-    GUI._anti_drift_recenter），不走本函數的盤面重平移。
+    ``RendererMixin._anti_drift_cam_offset``），不走本函數的盤面重平移。
     """
     g = build_game(initial_coords, m, n)
     states = [frozenset(initial_coords)]

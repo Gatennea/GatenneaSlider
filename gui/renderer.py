@@ -1420,7 +1420,9 @@ class RendererMixin:
         if gt not in ('h', 'v'):
             return []
         _cell, scaled_gap, step_px = self._board_px()
-        cam_x, cam_y = int(round(self.camera_x)), int(round(self.camera_y))
+        _ox, _oy = self._cam_anti_drift_px()
+        cam_x = int(round(self.camera_x)) + _ox
+        cam_y = int(round(self.camera_y)) + _oy
         if gt == 'h':
             y = (line + 1) * step_px - scaled_gap + cam_y + scaled_gap // 2
             return [(self.screen_to_world(0, y),
@@ -1489,33 +1491,95 @@ class RendererMixin:
         if antialias:
             pygame.draw.aaline(self.screen, col, a, b)
 
-    def _anti_drift_cam_offset(self, step_px):
-        """防偏移（anti-drift）演示的相机偏移（像素）。
+    def _frame_render_positions(self):
+        """本帧每个块**实际画在屏幕上**的格坐标 {id(block): (r, c)}。
 
-        宏播放（求解器动画 / 存档回放）期间，把整盘质心锁在「演示开始时」
-        的位置：返回应叠加到相机（像素）的 (ox, oy)；并把起点质心缓存在
-        self._anti_drift_origin。非演示态返回 (0, 0) 并清空缓存。
+        ⚠️ 动画期间 ``b.location`` 仍是起点（``commit_animation`` 才写终态），
+        位移只在渲染层由 ``anim_start_pos + (dr,dc)*ease(t)`` 插值。防偏移
+        若按 location 算质心，整段动画偏移恒为 0、commit 一瞬整盘跳一格——
+        即用户实测的「每一步之后强制居中」抖动。这里与 draw_board 的滑块
+        循环共用同一份映射，相机补偿与滑块滑动严格同步、逐帧连续。
 
-        纯几何、无副作用到解法/盘面；与 solver/anti_drift 同语义（见其模块
-        文档）。仅方形盘调用（三角/米字几何不同）。step_px = 每格像素步距。
+        拖拽跟随优先于动画插值（与 draw_board 原有顺序一致）。
         """
-        if (getattr(self, 'anti_drift_enabled', True)
+        out = {}
+        if getattr(self, 'animating', False) and getattr(self, 'anim_blocks', None):
+            t = self.ease_out(getattr(self, 'anim_progress', 0.0))
+            dr = getattr(self, '_anim_dr', 0.0) * t
+            dc = getattr(self, '_anim_dc', 0.0) * t
+            starts = getattr(self, 'anim_start_pos', ()) or ()
+            for i, b in enumerate(self.anim_blocks):
+                if i < len(starts):
+                    sr, sc = starts[i]
+                    out[id(b)] = (sr + dr, sc + dc)
+        if getattr(self, 'drag_following', False):
+            dr, dc = getattr(self, 'drag_follow_offset', (0.0, 0.0))
+            if abs(dr) > 1e-9 or abs(dc) > 1e-9:
+                for b in getattr(self.game, 'blocks', ()):
+                    if b.be_opted:
+                        out[id(b)] = (b.location[0] + dr, b.location[1] + dc)
+        return out
+
+    def _cam_anti_drift_px(self):
+        """本帧防偏移偏移（像素），供 draw_board 之外的绘制 / 命中路径复用。
+
+        非演示态恒 (0,0)。缓存由 draw_board 每帧刷新；事件层命中读到的是
+        上一帧值（同帧内 draw_board 已刷新，最多差一帧，且只在演示期间）。
+        """
+        if not (getattr(self, 'anti_drift_enabled', True)
                 and getattr(self, 'macro_executing', False)
                 and not getattr(self, 'macro_selecting_base', False)):
-            blocks = self.game.blocks
-            if blocks:
-                cx = sum(b.location[1] for b in blocks) / len(blocks)  # 质心列
-                cy = sum(b.location[0] for b in blocks) / len(blocks)  # 质心行
-                origin = getattr(self, '_anti_drift_origin', None)
-                if origin is None:
-                    self._anti_drift_origin = (cx, cy)
-                    origin = (cx, cy)
-                return (int(round(-(cx - origin[0]) * step_px)),
-                        int(round(-(cy - origin[1]) * step_px)))
-            self._anti_drift_origin = None
             return (0, 0)
-        self._anti_drift_origin = None
-        return (0, 0)
+        v = getattr(self, '_anti_drift_cam', None)
+        return v if v else (0, 0)
+
+    def _anti_drift_cam_offset(self, step_px, pos_map=None):
+        """防偏移（anti-drift）演示的相机偏移（像素），**逐帧连续**。
+
+        宏播放（求解器动画 / 存档回放）期间，把整盘质心锁在「演示开始时」
+        的位置。``pos_map`` 是本帧真实渲染位置（见 ``_frame_render_positions``）；
+        不传时内部自取，保证与 draw_board 的滑块循环同源。
+
+        这是「序列等价改写」的逐帧视觉实现：一步动大半盘时，相机连续反向
+        补偿后，画面上大片几乎不动、只有少数块相对滑动——与打乱的锚点式
+        防偏移同一观感，且不动解法、不动盘面逻辑坐标。只动相机，零步数代价。
+
+        ⚠️ 绝不能退回按 ``b.location`` 离散计算（见 ``_frame_render_positions``
+        的说明）：那会在每步 commit 时台阶式跳变，观感是「一直抖动」。
+        """
+        active = (getattr(self, 'anti_drift_enabled', True)
+                  and getattr(self, 'macro_executing', False)
+                  and not getattr(self, 'macro_selecting_base', False))
+        # 演示开始（含选完基准那一瞬）重新定锚，避免复用上一轮的旧原点
+        prev = getattr(self, '_anti_drift_active_prev', False)
+        self._anti_drift_active_prev = active
+        if active and not prev:
+            self._anti_drift_origin = None
+        if not active:
+            self._anti_drift_origin = None
+            self._anti_drift_cam = (0, 0)
+            return (0, 0)
+        blocks = getattr(self.game, 'blocks', ())
+        if not blocks:
+            self._anti_drift_origin = None
+            self._anti_drift_cam = (0, 0)
+            return (0, 0)
+        if pos_map is None:
+            pos_map = self._frame_render_positions()
+        sx = sy = 0.0
+        for b in blocks:
+            r, c = pos_map.get(id(b), (b.location[0], b.location[1]))
+            sx += c
+            sy += r
+        cx, cy = sx / len(blocks), sy / len(blocks)
+        origin = getattr(self, '_anti_drift_origin', None)
+        if origin is None:
+            self._anti_drift_origin = (cx, cy)
+            origin = (cx, cy)
+        off = (int(round(-(cx - origin[0]) * step_px)),
+               int(round(-(cy - origin[1]) * step_px)))
+        self._anti_drift_cam = off
+        return off
 
     def draw_board(self):
         """绘制游戏主界面"""
@@ -1538,16 +1602,26 @@ class RendererMixin:
         self._board_y = board_y
 
         scaled_cell, scaled_gap, step_px = self._board_px()
+        # 本帧真实渲染位置（含动画插值 / 拖拽跟随）必须在算相机偏移之前备好：
+        # 防偏移看的是「画面上的质心」，不是 b.location（动画期间恒为起点）。
+        pos_map = self._frame_render_positions()
+        # 拖拽无效的变暗判据仍需要「本块处于跟随态」这个集合；口径与原先的
+        # follow_map 一致（跟随量为 0 时不算跟随态）
+        follow_ids = set()
+        if getattr(self, 'drag_following', False):
+            _dr, _dc = getattr(self, 'drag_follow_offset', (0.0, 0.0))
+            if abs(_dr) > 1e-9 or abs(_dc) > 1e-9:
+                follow_ids = {id(b) for b in self.game.blocks if b.be_opted}
         # 相机偏移一次取整，随后的格坐标就都是整数 → 缝隙严格等宽
         cam_x = int(round(self.camera_x))
         cam_y = int(round(self.camera_y))
 
         # 防偏移（anti-drift）演示：求解器动画 / 存档回放等宏播放期间，
-        # 用相机偏移把整盘质心锁在「演示开始时」的位置，纯视觉——解法与盘
-        # 面逻辑完全不动（等价改写见 solver/anti_drift.transform_sequence_square）。
-        # 仅在方形盘生效（三角/米字几何不同，留待后续；等同 draw_grid 仅原版构型生效）。
-        # 关键：在画缝/画块之前就算好并加进 cam_x/cam_y，保证缝与块同步偏移、不错位。
-        ox, oy = self._anti_drift_cam_offset(step_px)
+        # 用**逐帧连续**的相机偏移把整盘质心锁在「演示开始时」的位置，纯视觉
+        # ——解法与盘面逻辑完全不动（等价改写见 solver/anti_drift）。
+        # 仅在方形盘生效（三角/米字几何不同，留待后续）。
+        # 关键：在画缝/画块之前算好并加进 cam_x/cam_y，缝与块同步偏移、不错位。
+        ox, oy = self._anti_drift_cam_offset(step_px, pos_map)
         cam_x += ox
         cam_y += oy
 
@@ -1623,25 +1697,9 @@ class RendererMixin:
                                      pygame.Rect(rx, ry + scaled_cell,
                                                  scaled_cell, scaled_gap))
 
-        # 构建动画方块位置映射（使用统一偏移量，确保整组平移视觉一致）
-        anim_map = {}
-        if self.animating and self.anim_blocks:
-            t = self.ease_out(self.anim_progress)
-            dr = self._anim_dr * t
-            dc = self._anim_dc * t
-            for i, block in enumerate(self.anim_blocks):
-                sr, sc = self.anim_start_pos[i]
-                anim_map[id(block)] = (sr + dr, sc + dc)
-
-        # 构建拖拽跟随渲染位置映射（非整数格坐标，实时预览）
-        # 偏移已在 events.py 夹紧到 [0, max_cells]，此处直接使用（单一数据源）
-        follow_map = {}
-        if self.drag_following:
-            dr, dc = self.drag_follow_offset
-            if abs(dr) > 1e-9 or abs(dc) > 1e-9:
-                for block in self.game.blocks:
-                    if block.be_opted:
-                        follow_map[id(block)] = (block.location[0] + dr, block.location[1] + dc)
+        # 动画 / 拖拽的渲染位置映射已在函数开头由 _frame_render_positions()
+        # 统一构建（pos_map）——相机偏移和下面的滑块循环共用同一份，避免
+        # 「相机按 location、滑块按插值」不同步造成的相对抖动。
 
         # 悬停连锁提示：预计算高亮格集合（含空格），块循环中叠半透明白
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
@@ -1660,12 +1718,8 @@ class RendererMixin:
 
         # 绘制所有滑块
         for block in self.game.blocks:
-            if id(block) in follow_map:
-                lr, lc = follow_map[id(block)]
-            elif id(block) in anim_map:
-                lr, lc = anim_map[id(block)]
-            else:
-                lr, lc = block.location[0], block.location[1]
+            lr, lc = pos_map.get(id(block),
+                                 (block.location[0], block.location[1]))
 
             # 格坐标 → 整数像素：拖动/动画期间 lr/lc 为小数，round 后仍是逐像素平移
             screen_x = int(round(board_x + lc * step_px)) + cam_x
@@ -1691,7 +1745,7 @@ class RendererMixin:
             fill = self.colors['block_selected'] if block.be_opted else self.colors['block']
             # 拖拽跟随无效（碰撞/断开）时：变暗滑块 + 橙色边框提示不可移动
             if (self.drag_following and self.drag_follow_invalid
-                    and id(block) in follow_map):
+                    and id(block) in follow_ids):
                 fill = tuple(int(ch * 0.45) for ch in fill[:3])
                 border_color = (220, 80, 40)
                 border_w = max(1, int(3 * self.zoom))
@@ -1923,8 +1977,9 @@ class RendererMixin:
         if not groups:
             return
         step_px = scaled_cell + scaled_gap    # 两个参数已是整数像素（见 _board_px）
-        cam_x = int(round(self.camera_x))
-        cam_y = int(round(self.camera_y))
+        _ox, _oy = self._cam_anti_drift_px()
+        cam_x = int(round(self.camera_x)) + _ox
+        cam_y = int(round(self.camera_y)) + _oy
 
         def get_rect(r, c):
             # 与方块循环同口径：整数 step + round 到像素，缝宽才与普通块一致
@@ -2128,8 +2183,9 @@ class RendererMixin:
 
         board_x = getattr(self, '_board_x', 0)
         board_y = getattr(self, '_board_y', 0)
-        cam_x = int(round(self.camera_x))
-        cam_y = int(round(self.camera_y))
+        _ox, _oy = self._cam_anti_drift_px()
+        cam_x = int(round(self.camera_x)) + _ox
+        cam_y = int(round(self.camera_y)) + _oy
         p = pf.get('block')
         if p is not None:
             bx = board_x + p[1] * cell_step + cam_x
@@ -2178,8 +2234,11 @@ class RendererMixin:
             return self.world_to_screen(
                 *view.piece_center(key[0], key[1], key[2]))
         _, _, step_px = self._board_px()
-        return (key[1] * step_px + step_px / 2.0 + int(round(self.camera_x)),
-                key[0] * step_px + step_px / 2.0 + int(round(self.camera_y)))
+        _ox, _oy = self._cam_anti_drift_px()
+        return (key[1] * step_px + step_px / 2.0
+                + int(round(self.camera_x)) + _ox,
+                key[0] * step_px + step_px / 2.0
+                + int(round(self.camera_y)) + _oy)
 
     def _spec_gap_letters(self, spec):
         """板型 → {縫族名: (方向字母, 方向字母)}（引擎 parallel 反查字母表）。
@@ -3836,11 +3895,12 @@ class RendererMixin:
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
             "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝线——线宽与原版相同，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
 
-        # 防偏移演示开关（求解器动画 / 存档回放期间把整盘质心锁在起点，纯视觉
-        # 优化，不改变解法与盘面；仅方形盘生效）。见 solver/anti_drift.py。
+        # 防偏移演示开关（求解器动画 / 存档回放期间逐帧连续地把整盘质心锁在
+        # 起点，纯视觉优化，不改变解法与盘面；仅方形盘生效）。
+        # 见 solver/anti_drift.py。
         self._settings_anti_drift_toggle_rect, ny = self._draw_switch_row(
             x, ny, "防偏移演示：", getattr(self, 'anti_drift_enabled', True),
-            "求解器演示与存档回放时，用相机偏移把整盘质心锁在起点、不再整体漂走（纯视觉，不改变解法与盘面）；仅方形盘生效")
+            "求解器演示与存档回放时，随滑动逐帧平滑地把整盘质心锁在起点、不再整体漂走（纯视觉，不改变解法与盘面，步数不变）；仅方形盘生效")
 
         # 音效 / 背景音乐与两条音量滑条已挪到「音频」页（2026-11-07）：
         # 视觉页十几行，音效挤在末尾要滚很久才看得见；音频页要放「音效一览」，
