@@ -293,6 +293,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._anti_drift_cam = (0, 0)
         self._anti_drift_active_prev = False
 
+        # 求解器「思考」演示（待办 §三十四 第 4 条）：流式求解播完一段、
+        # 下一段还没算出来的等待期，在**渲染层**随机游走；下一段到货瞬间
+        # 按游走步逆序连续撤回到段末状态，再播下一段。纯视觉，绝不改
+        # block.location / 历史 / 步数 / 聚拢度。见 gui/think_walk.py。
+        from gui.think_walk import ThinkWalk
+        self.thinking_enabled = True
+        self._think_walk = ThinkWalk()
+
         # 拖拽状态
         self.is_dragging = False
         self.drag_start = (0, 0)
@@ -2245,20 +2253,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                             else:
                                 self.macro_notify_msg = f"聚拢中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%） | {elapsed:.1f}s"
                         else:
-                            stage = progress.get('stage', '')
-                            bound = progress.get('bound', 0)
-                            nodes = progress.get('nodes', 0)
-                            path_preview = progress.get('path_preview', '')
-                            # 「深度/节点」是 IDA*/BFS 一类搜索的标记：只有真在搜索
-                            # （bound/nodes 非 0）才有意义。不加判断会把「深度0
-                            # 节点0」这种空壳字样写进通知里。
-                            if nodes or bound:
-                                detail = f"深度{bound} 节点{nodes} {path_preview}"
-                            else:
-                                detail = path_preview
-                            head = f"[{stage}] " if stage else ''
-                            self.macro_notify_msg = (
-                                f"{head}{detail} | {elapsed:.1f}s")
+                            # 待办 §三十四 第 9 条：旧实现把 bound 当深度、
+                            # 还用 `if nodes or bound` 当门槛，于是贪心
+                            # （depth=len(path)/bound=0）显示「深度0」，
+                            # 没有深度概念的补缺宏被套上「深度0」空壳。
+                            # 改走纯函数：只认真实 depth，>0 才印深度，
+                            # nodes>0 才印节点，都没有就只留 path_preview。
+                            # 函数内 late import（与主循环其它 solver 调用同口径）。
+                            from gui.progress_text import format_solver_notice
+                            self.macro_notify_msg = format_solver_notice(
+                                progress, elapsed)
                     else:
                         self.macro_notify_msg = f"求解中... {elapsed:.1f}s"
                     self.macro_notify_timer = 180

@@ -1518,6 +1518,16 @@ class RendererMixin:
                 for b in getattr(self.game, 'blocks', ()):
                     if b.be_opted:
                         out[id(b)] = (b.location[0] + dr, b.location[1] + dc)
+        # 「思考」演示（待办 §三十四 第 4 条）：段间等待期在渲染层叠加的
+        # 游走偏移。绝不写 b.location；防偏移相机在段间 macro_executing=False
+        # 本就返回 (0,0)，不会跟着游走偏。撤回完毕偏移清空，画面严格回段末。
+        walk = getattr(self, '_think_walk', None)
+        if walk is not None and walk.offsets:
+            for b in getattr(self.game, 'blocks', ()):
+                off = walk.offsets.get(id(b))
+                if off:
+                    r, c = out.get(id(b), (b.location[0], b.location[1]))
+                    out[id(b)] = (r + off[0], c + off[1])
         return out
 
     def _cam_anti_drift_px(self):
@@ -3901,6 +3911,11 @@ class RendererMixin:
         self._settings_anti_drift_toggle_rect, ny = self._draw_switch_row(
             x, ny, "防偏移演示：", getattr(self, 'anti_drift_enabled', True),
             "求解器演示与存档回放时，随滑动逐帧平滑地把整盘质心锁在起点、不再整体漂走（纯视觉，不改变解法与盘面，步数不变）；仅方形盘生效")
+
+        # 求解器「思考」演示开关（段间等待期随机游走 + 连续撤回；纯视觉）
+        self._settings_thinking_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "思考演示：", getattr(self, 'thinking_enabled', True),
+            "流式求解播完一段、下一段还没算出来时，让滑块随机试着推几步，算出下一段的瞬间连续撤回到段末状态再播放（纯视觉，不改盘面/历史/解法/步数；撤回会多花一点点时间）")
 
         # 音效 / 背景音乐与两条音量滑条已挪到「音频」页（2026-11-07）：
         # 视觉页十几行，音效挤在末尾要滚很久才看得见；音频页要放「音效一览」，

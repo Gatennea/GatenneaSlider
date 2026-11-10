@@ -297,14 +297,17 @@ def _single_stage_solve(game: SliderMatrix, step: int, max_depth: int,
         start_time = time.time()
         
         # 進度回調：新深度層開始
+        # ⚠️ 待辦 §三十四 第 9 條：本層的「當前搜索深度」就是 bound，
+        # 舊代碼發 depth=0 會讓 GUI 顯示「深度0」空殼（或把 bound 誤當
+        # 深度）。見 gui/progress_text.py。
         if progress_callback and progress_ctx is not None:
             progress_ctx['total_nodes'] = 0
             progress_callback({
-                'depth': 0,
+                'depth': bound,
                 'bound': bound,
                 'nodes': 0,
                 'path_len': 0,
-                'path_preview': f'搜索深度 {bound}...',
+                'path_preview': '开始本层搜索',
                 'elapsed': 0,
                 'stage': progress_ctx.get('stage', ''),
             })

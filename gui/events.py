@@ -1733,7 +1733,7 @@ class EventsMixin:
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
         'op_log_enabled', 'show_boot_animation', 'infinite_shuffle',
         'confirm_before_shuffle', 'draw_grid',
-        'anti_drift_enabled',
+        'anti_drift_enabled', 'thinking_enabled',
         # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
         'sfx_enabled', 'music_enabled', 'sound_muted',
         # 逐项音效开关（设置页「音效一览」：滑动 / 失败 / 复原 / 点击 / 键盘）
@@ -3601,6 +3601,18 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 思考演示开关（段间等待期随机游走 + 连续撤回，纯视觉）
+            # 关掉时立即收掉残留渲染偏移，避免关了还画着歪掉的盘面。
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_thinking_toggle_rect'):
+                if self._settings_thinking_toggle_rect.collidepoint(mx, my):
+                    self.thinking_enabled = not getattr(self, 'thinking_enabled', True)
+                    if not self.thinking_enabled:
+                        self._think_walk.reset()
+                    status = '开' if self.thinking_enabled else '关'
+                    self.macro_notify_msg = f"思考演示：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 音频 Tab：音效总开关（S5；无素材时开了也没声，属正常）
             if self.settings_active_tab == 'audio' and hasattr(self, '_settings_sfx_toggle_rect'):
                 if self._settings_sfx_toggle_rect.collidepoint(mx, my):
@@ -4023,11 +4035,21 @@ class EventsMixin:
             self.draw_grid = not getattr(self, 'draw_grid', True)
             status = '开' if self.draw_grid else '关'
             self.macro_notify_msg = f"绘制网格：{status}"
-        elif key == 'anti_drift':
-            # 与设置·视觉页「防偏移演示」同一开关；纯视觉，不改变解法/盘面
+        elif key in ('anti_drift', 'anti_drift_enabled'):
+            # ⚠️ 两种 key 都要认：_activate_feature 传 _ACTIONS 里的**属性名**
+            # （anti_drift_enabled），右下角快捷开关传的是 feature id
+            # （anti_drift）。只认后者会让「一键到位」点了没反应，
+            # _test_feature_index 的 toggle 接线判据因此转红。
             self.anti_drift_enabled = not getattr(self, 'anti_drift_enabled', True)
             status = '开' if self.anti_drift_enabled else '关'
             self.macro_notify_msg = f"防偏移演示：{status}"
+        elif key in ('thinking', 'thinking_enabled'):
+            # 同上；关掉时立刻收掉渲染层残留偏移
+            self.thinking_enabled = not getattr(self, 'thinking_enabled', True)
+            if not self.thinking_enabled:
+                self._think_walk.reset()
+            status = '开' if self.thinking_enabled else '关'
+            self.macro_notify_msg = f"思考演示：{status}"
         else:
             # 未知开关：明确报出来，别静默吞掉（否则就是「点了没反应」）
             self.macro_notify_msg = f"未知开关：{key}"

@@ -433,15 +433,43 @@ class AutoSolveMixin:
             self._auto_solve_running = False
 
     def _pump_auto_stages(self):
-        """把后台算好的段接进宏播放管道（边算边播），并维护历史最优 checkpoint。"""
+        """把后台算好的段接进宏播放管道（边算边播），并维护历史最优 checkpoint。
+
+        「思考」演示（待办 §三十四 第 4 条）：一段播完、下一段还在算的等待
+        期，让状态机在渲染层随机游走；段到货（或求解结束）先按游走步逆序
+        连续撤回，撤完才播段 / 收尾。偏移只在 renderer 画滑块时叠加，绝不
+        改盘面/历史/步数/聚拢度——后台算好的下一段永远以段末真实盘面为起点。
+        """
         q = getattr(self, '_auto_stage_queue', None)
         if q is None:
             return
         gen = self._auto_stage_gen
         # 仅在空闲（无动画、无宏播放）时推进 / 收尾，避免打断正在播的段
         if self.macro_executing or self.animating:
+            self._think_walk.reset()
             return
         active = getattr(self, '_auto_stage_active', False)
+        walk = getattr(self, '_think_walk', None)
+        if walk is not None:
+            if not getattr(self, 'thinking_enabled', True):
+                # 开关关掉：立刻收掉残留偏移，不许把盘面画歪
+                if walk.is_active:
+                    walk.reset()
+            else:
+                has_item = not q.empty()
+                if walk.is_active:
+                    if has_item or not active:
+                        if walk.start_rewind() != 'rewound':
+                            walk.tick(None)
+                            return          # 还在连续撤回，段留在队列里
+                        walk.reset()
+                    else:
+                        walk.tick(self._think_find_move)
+                        return              # 还在等待 / 游走
+                elif active and not has_item:
+                    walk.begin()
+                    walk.tick(self._think_find_move)
+                    return
         if not active and q.empty():
             self._finalize_auto_streamed()
             return
@@ -457,6 +485,61 @@ class AutoSolveMixin:
             self._finalize_auto_streamed()
             return
         self._play_auto_stage(item)
+
+    def _think_find_move(self):
+        """只读找一步合法走法，返回 [(id(block), dr, dc), ...] 或 None。
+
+        ⚠️ 绝不改盘面：``game.opt`` 只设 ``be_opted``，``try_move`` 只预测
+        终态、不写 ``block.location``（写盘面的是 ``commit_move``，这里不调）。
+        走法来自真实缝/真实连通分量，所以渲染层的游走看起来确实是在推块，
+        而不是凭空抖动；结束后把 ``be_opted`` 清干净，不留下选中态污染
+        后续玩家操作或宏播放。
+        """
+        import random
+        game = self.game
+        blocks = game.blocks
+        try:
+            gaps = list(self._ann_all_valid_gaps())
+        except Exception:
+            return None
+        random.shuffle(gaps)
+        for gt, line in gaps:
+            dirs = list(self._ann_dirs_for_gap(gt))
+            random.shuffle(dirs)
+            order = list(blocks)
+            random.shuffle(order)
+            for blk in order:
+                for b in blocks:
+                    b.be_opted = False
+                try:
+                    game.opt(gt, line, blk)
+                except Exception:
+                    continue
+                sel = [b for b in blocks if b.be_opted]
+                # 全员选中 = 整盘纯平移，引擎层本就拒绝，跳过
+                if not sel or len(sel) == len(blocks):
+                    for b in blocks:
+                        b.be_opted = False
+                    continue
+                for d in dirs:
+                    try:
+                        fin = game.try_move(d, self.current_step)
+                    except Exception:
+                        fin = []
+                    if not fin:
+                        continue
+                    pairs = []
+                    for b, dst in zip(sel, fin):
+                        dr = dst[0] - b.location[0]
+                        dc = dst[1] - b.location[1]
+                        if dr or dc:
+                            pairs.append((id(b), dr, dc))
+                    for b in blocks:
+                        b.be_opted = False
+                    return pairs or None
+                for b in blocks:
+                    b.be_opted = False
+        return None
 
     def _play_auto_stage(self, item):
         """播放一段动作并刷新历史最优 checkpoint（聚拢度最高、并列 Φ 最小）。"""
@@ -530,6 +613,8 @@ class AutoSolveMixin:
         旧版只清了 hybrid 那一套，填洞/补缺宏播放中点「停止求解」因此毫无
         反应（段照旧播、macro_executing 一直 True、相机也拖不动）。
         """
+        # 思考演示：取消/打断同样要立刻收掉渲染偏移，别把盘面画歪
+        self._think_walk.reset()
         self._auto_stage_gen += 1          # 使已在队列的段失效
         self._auto_stage_active = False
         self._auto_solve_cancel = True
@@ -558,6 +643,7 @@ class AutoSolveMixin:
 
     def _finalize_auto_streamed(self):
         """流式收尾：播放完成 / 求解结束，锁存结果并清空状态。"""
+        self._think_walk.reset()
         # 步数用段级累加器：macro_exec_index 在宏播放收尾（events
         # _execute_next_macro_step 完成分支）已归零，读它恒得 0（2026-11-07 实测
         # 「已复原：0 步」假通知的根因）。
