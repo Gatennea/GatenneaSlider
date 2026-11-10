@@ -515,7 +515,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.gather_params = {
             'max_steps': 500,            # 最大步数上限
             'patience': 150,             # 连续无改进停机步数
-            'max_wait_time': 20,         # 求解时间上限（秒），0=不限时
+            'max_wait_time': 20,         # 连续无进展停机秒数（2026-11-11 起），0=不限时
             'target_gather_score': 1.0,  # 目标聚拢度，达到即停（1.0=完全还原）
             'aggressiveness': 0.2,       # 激进程度：允许聚拢度临时下降的幅度
         }
@@ -617,7 +617,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._gather_param_specs = [
             ('max_steps',           ('最大步数',     500,  100,   5000, 100,  '聚拢求解的步数上限，越大越可能深入但越慢')),
             ('patience',            ('停滞容忍步数', 150,  10,    1000, 10,   '连续多少步聚拢度无改进就停止，越大越能跳出短暂卡顿')),
-            ('max_wait_time',       ('最大等待秒数', 20,   0,     120,  5,    '求解时间上限（秒），0 表示不限时')),
+            ('max_wait_time',       ('无进展停机秒数', 20,   0,     120,  5,    '连续多少秒求解没有新进展才停（不是总时长），0 表示不限时')),
             ('target_gather_score', ('目标聚拢度',   1.0,  0.5,   1.0,  0.05, '聚拢度达到该值即停止，1.0 表示完全还原')),
             ('aggressiveness',      ('激进程度',     0.2,  0.0,   0.5,  0.05, '允许选择比最佳候选低多少的聚拢度，越大越敢于探索、越可能偏离')),
         ]

@@ -38,13 +38,29 @@
   30s），0=不限时，>0=用户值——GUI 曾传设置页「最大等待秒数」
   （gather_params.max_wait_time，用户 2026-11-07 拍板由用户输入、复用
   聚拢停机参数）。到点停该阶段、已播段照常有效，落实「尽早发现、发现就停」。
-· total_budget（整轮墙钟上限，2026-11-09 新增）：设置页「最大等待秒数」
-  的**真实语义**。stage_budget 是「每个候选各一份」，两个候选最多 2T，
-  与「最多等 T 秒」的文案不符（实测 stage_budget=3 → 总墙钟 6.01s）。
-  total_budget 给整轮一个单调 deadline，首个候选最多占
-  _TOTAL_SHARE_FIRST 比例、余额让渡给后续候选；到点连正在跑的候选
-  也经 cancel_check 退出，已播段照常有效。GUI 改传这个参数；
+· total_budget（整轮墙钟硬上限，2026-11-09 新增）：给整轮一个单调
+  deadline，首个候选最多占 _TOTAL_SHARE_FIRST 比例、余额让渡给后续候选；
+  到点连正在跑的候选也经 cancel_check 退出，已播段照常有效。
   stage_budget 保留原义供 HTTP/实验基线对照。
+· idle_budget（连续无进展停机，2026-11-11 用户拍板，GUI 现行语义）：
+  设置页「最大等待秒数」不再是「从开机到停机最多 T 秒」，而是**自上次
+  采纳一段定稿动作起、连续 T 秒没有新进展才停**。滑动窗口，有进展就
+  一直往后滑，绝不会因为「前面已经算久了」把快要复原的解砍掉
+  （用户实测：明明离复原很近、再启动一次几秒就解开）。
+  首个候选的无进展窗口取半，余额让渡给第二候选（沿用
+  _TOTAL_SHARE_FIRST 的防饿死语义）；两路都停了才收尾。
+  idle 模式下关掉候选自带的墙钟安全帽（补缺宏 30s / 混合 90s），
+  否则那些固定帽子会先于「连续 T 秒无进展」砍停，语义又退回硬上限。
+  total_budget 仍保留（可选硬上限，给 HTTP/实验用）；两者可并存，
+  谁先到谁生效。
+· 单洞收口（同轮，2026-11-11）：候选顺序按**初始局面**的洞数算死，
+  而流式第一候选可能已把 flow['end'] 推到「恰好 1 洞」——这时第二候选
+  仍按初始顺序走混合，单洞的补缺宏确定性快路径没被识别，停在
+  fill_partial；玩家再点一次求解（以单洞态为起点）却 0.01s 复原
+  （6×6 s2 三局实测 3/3）。故两候选跑完、未全解时用 flow['end'] 重测，
+  命中单洞就补跑一次补缺宏（自带 5s 短帽、不吃 idle 窗口），把
+  「再点一次」搬进本轮。⚠️ 这不是预算问题：只改 idle_budget 的 A/B
+  解出率仍是 3/6，加上收口才把这类局收回。
 · rng_seed（2026-11-09 新增）：整数随机种子，分别注入补缺宏链
   （random.Random(seed)）与混合聚拢轮（gather_solve 的 seed），**消除
   随机漂移**——同局面 / 同种子 / 同预算配置下解链通常逐位一致，A/B
@@ -86,6 +102,11 @@ _STAGE_BUDGET_DEFAULT = 90.0
 # 解出数 1/6 三档相同、墙钟均值 18.49/18.46/18.38s 基本持平，
 # 部分成果聚拢度 σ 均值 0.9669 / 0.9601 / 0.9567 单调递减 → 取 0.5。
 _TOTAL_SHARE_FIRST = 0.5
+
+# 单洞收口（2026-11-11）：两候选跑完、续算态恰好 1 洞时补跑一次补缺宏的
+# 墙钟短帽。单洞是 solve_gap_any 的确定性直解（实测 0.01s），5s 足够，
+# 且不吃 idle 窗口（否则窗口刚过期时收口会被 cancel_check 立刻掐掉）。
+_SINGLE_HOLE_CAP = 5.0
 
 
 def partial_better(sc_new, phi_new, sc_old, phi_old):
@@ -142,7 +163,7 @@ def _phi_of(coords, m, n):
 def auto_solve(game, step, cancel_check=None, progress_callback=None,
                stage_cb=None, time_budget=None, stage_budget=None,
                rng_seed=None, total_budget=None, scorer=None,
-               route_fn=None, stop_fn=None, **_kwargs):
+               route_fn=None, stop_fn=None, idle_budget=None, **_kwargs):
     """自动规划入口：查表 → 补缺宏 → 混合流水线，全解即停，全败取最优部分。
 
     stage_cb（2026-10-10 新增）：分阶段流式回调。每当一个候选求解器产出可播的
@@ -169,6 +190,11 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     total_budget：整轮墙钟硬上限（秒，None/0=不限时）。与 stage_budget
     的「每候选各一份」不同，这是整轮共享的单调 deadline，且会传进正在
     跑的候选的 cancel_check；首个候选最多占 _TOTAL_SHARE_FIRST。
+    idle_budget：连续无进展停机（秒，None/0=不启用，走 total_budget 旧
+    语义）。GUI 现行参数：每采纳一段定稿动作就把停机时刻往后推 T 秒，
+    连续 T 秒没有新段才停；首个候选窗口取半让给第二候选。详见模块
+    docstring。启用时关掉候选自带的 30s/90s 墙钟安全帽，改由动态
+    cancel_check 统一管。与 total_budget 可并存，谁先到谁生效。
     rng_seed：整数种子，注入补缺宏与混合聚拢轮；不传=旧随机行为。
 
     scorer / route_fn（2026-11-10，可注入实验接缝）：scorer 见
@@ -190,11 +216,27 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         else (time_budget if (time_budget is not None and time_budget > 0)
               else None)
     total_deadline = (t0 + _shared) if _shared is not None else None
+    # 连续无进展停机（2026-11-11）：滑动窗口，自上次「采纳一段定稿动作」起
+    # _idle 秒。首个候选窗口取半（防第二候选被饿死，同 _TOTAL_SHARE_FIRST），
+    # 有进展就不断往后滑 → 不再有「开机到停机最多 T 秒」的硬砍。
+    _idle = (idle_budget if (idle_budget is not None and idle_budget > 0)
+             else None)
+    idle_window = [_idle * _TOTAL_SHARE_FIRST] if _idle is not None else None
+    idle_deadline = ([t0 + idle_window[0]]
+                     if _idle is not None else None)
     m, n = game.m, game.n
     coords0 = frozenset(tuple(b.location) for b in game.blocks)
 
     def cancelled():
         return bool(cancel_check and cancel_check())
+
+    def touch_progress():
+        """采纳一段定稿动作 = 有进展 → 把停机窗口往后滑 T 秒。"""
+        if idle_deadline is not None:
+            idle_deadline[0] = time.time() + idle_window[0]
+
+    def idle_expired():
+        return idle_deadline is not None and time.time() >= idle_deadline[0]
 
     def emit(stage, note=''):
         if progress_callback is None:
@@ -268,6 +310,7 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
                     'reps': chain_reps, 'end': end, 'src': label}
         emit_stage(label, acts, reps, end, sc,
                    build_game(end, m, n).is_solved())
+        touch_progress()   # 定稿段被采纳 = 有进展，滑动停机窗口
 
     def advance_from(start_coords, label, acts, reps):
         """验证并采纳（从 start_coords 重放本段）。失败返回 False。"""
@@ -355,6 +398,17 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             def gap_cancel(_inner=cancel_check, _dl=phase_deadline):
                 return ((_inner() if _inner is not None else False)
                         or time.time() >= _dl)
+        elif idle_deadline is not None:
+            # 连续无进展语义：补缺宏自带的 30s 墙钟帽会先于「连续 T 秒无进展」
+            # 砍停，语义又退回硬上限 → 关掉，改由动态 cancel_check 统一管
+            # （外部取消 / idle 窗口 / 可选 total_deadline，谁先到谁生效）。
+            gap_kwargs['time_budget'] = 0
+
+            def gap_cancel(_inner=cancel_check):
+                return ((_inner() if _inner is not None else False)
+                        or idle_expired()
+                        or (total_deadline is not None
+                            and time.time() >= total_deadline))
         try:
             gres = solve_gap_macro(build_game(seed, m, n), step,
                                    cancel_check=gap_cancel,
@@ -416,6 +470,9 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         if phase_deadline is not None:
             left = max(0.01, phase_deadline - time.time())
             budget = left if not budget else min(budget, left)
+        elif idle_deadline is not None:
+            # 连续无进展语义：混合流水线自带的 90s 帽同样要关掉（见 run_gap）
+            budget = 0
         if budget:
             deadline = time.time() + budget
 
@@ -426,6 +483,13 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
                         and time.time() >= total_deadline)
         else:
             stage_cancel = cancelled
+        if idle_deadline is not None and phase_deadline is None:
+            _stage_cancel_base = stage_cancel
+
+            def stage_cancel(_base=_stage_cancel_base):
+                return (_base() or idle_expired()
+                        or (total_deadline is not None
+                            and time.time() >= total_deadline))
         try:
             hres = hybrid_solve(build_game(seed, m, n), step,
                                 cancel_check=stage_cancel,
@@ -450,6 +514,14 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     for _idx, which in enumerate(_order):
         if cancelled() or out_of_time():
             break
+        if idle_window is not None:
+            # 首个候选的无进展窗口取半、余额让给第二候选；每换一个候选都
+            # 重发一份窗口（否则第一候选耗尽后第二候选一进来就已过期）。
+            # ⚠️ idle 到期**不放进 out_of_time()**：那会让整轮直接 break，
+            # 第二候选（常是 0.0s 确定性直解的那个）反而永远没机会。
+            idle_window[0] = (_idle * _TOTAL_SHARE_FIRST
+                              if _idx == 0 else _idle)
+            idle_deadline[0] = time.time() + idle_window[0]
         phase_deadline = None
         if total_deadline is not None:
             # 首个候选让出 _TOTAL_SHARE_FIRST 之外的额度；第二候选直接用
@@ -463,6 +535,32 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         if outcome[0] == 'solved':
             return outcome[1], outcome[2]
         # partial / fail → 继续下一候选
+
+    # ---- 单洞收口（2026-11-11）：把「再点一次求解」搬进本轮 ----
+    # 实测（6×6 s2 seed 2000/2001/2005）：第一候选补缺宏流式跑到预算用尽，
+    # 已把局面推到「恰好 1 洞」，却停在 fill_partial；玩家再点一次求解，
+    # 新的一轮以单洞态为起点走补缺宏确定性快路径，3/3 都 0.01s 复原。
+    # 根因不是预算本身（把 20s 改成连续无进展停机，A/B 解出率仍 3/6），
+    # 而是候选顺序按**初始局面**算死，续算态的单洞没被重新识别。
+    # 这里在两候选跑完、尚未全解时用当前 flow['end'] 重测一次；命中单洞
+    # 就补跑一次补缺宏，把「再点一次」变成一次求解内部的事。
+    if (not cancelled() and not out_of_time()
+            and flow['end'] is not coords0
+            and flow['acts']
+            and not build_game(flow['end'], m, n).is_solved()):
+        _reg2, _ov2, holes2, _out2 = window_of(flow['end'], m, n, step)
+        if len(holes2) == 1:
+            seed2 = flow['end']
+            try:
+                gres2 = solve_gap_macro(build_game(seed2, m, n), step,
+                                        time_budget=_SINGLE_HOLE_CAP,
+                                        cancel_check=cancel_check)
+            except Exception:
+                traceback.print_exc()
+                gres2 = None
+            if isinstance(gres2, tuple) and advance_from(
+                    seed2, '补缺宏·单洞收口', gres2[0], gres2[1]):
+                return flow['acts'], flow['reps']
 
     # ---- 收尾：全败 ----
     if cancelled():

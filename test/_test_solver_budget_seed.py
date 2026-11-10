@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""护栏：求解「最大等待秒数」整轮语义 + 可复现随机源（2026-11-09）。
+"""护栏：求解时间预算语义 + 可复现随机源（2026-11-09）。
+
+⚠️ 2026-11-11 口径更新：GUI 的「最大等待秒数」按用户拍板改成
+「连续无进展停机」（idle_budget 滑动窗口），不再传 total_budget 硬上限；
+total_budget 参数与 C 组整轮语义护栏全部保留给 HTTP / 实验基线对照。
+A2 随之改盯新接线，「不许退回 stage_budget（每候选各一份）」这条原意不变。
 
 坐实过的两个真问题：
 1. stage_budget 是「每候选各一份」：补缺宏 T 秒 + 混合 T 秒 = 2T，
@@ -75,9 +80,10 @@ check('A1 auto_solve 同时保留 stage_budget 与新增 total_budget / rng_seed
       all(k in _sig for k in ('stage_budget', 'total_budget', 'rng_seed')),
       str(list(_sig)))
 _gui_src = src('gui/auto_solve.py')
-check('A2 GUI 传的是 total_budget（不再把设置值当每候选上限）',
-      "budget_kw['total_budget']" in _gui_src
-      and "budget_kw['stage_budget']" not in _gui_src)
+check('A2 GUI 传 idle_budget（连续无进展停机）且不再用每候选/硬上限',
+      "budget_kw['idle_budget']" in _gui_src
+      and "budget_kw['stage_budget']" not in _gui_src
+      and "budget_kw['total_budget']" not in _gui_src)
 _gather_src = src('solver/ml/gather_solver.py')
 check('A3 gather_solve 显式 seed 时改用局部 Random（不再吃全局状态）',
       'if stochastic or seed is not None:' in _gather_src

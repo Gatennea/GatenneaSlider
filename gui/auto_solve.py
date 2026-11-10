@@ -407,15 +407,16 @@ class AutoSolveMixin:
             def progress_callback(info):
                 self._auto_solve_progress = info
 
-            # 设置页「最大等待秒数」= **整轮**墙钟上限（2026-11-09 修）：
-            # 启用=用户值（0=不限时）；禁用=不传 → auto_solve 内置默认
-            # 90s 安全帽。修前传的是 stage_budget（每候选各一份），两个
-            # 候选会把 20s 吃成 40s，与「求解时间上限」的文案不符；
-            # total_budget 是整轮共享的单调 deadline，首候选最多占一半，
-            # 余额让渡给续算（份额 0.5 经敏感性对照优于 0.6 / 0.7）。
+            # 设置页「无进展停机秒数」= **连续无进展停机**（2026-11-11 用户
+            # 拍板）：不再是「开机到停机最多 T 秒」的硬 deadline——实测会
+            # 停在「离复原很近」的地方，再点一次几秒就复原。改成滑动窗口：
+            # auto_solve 每采纳一段定稿动作就把停机时刻往后推 T 秒，连续
+            # T 秒没有新段才停；首个候选窗口取半让给第二候选。
+            # 启用=用户值（0=不限时）；禁用=不传 → auto_solve 内置 90s 帽。
+            # total_budget（整轮硬上限）保留给 HTTP / 实验基线对照。
             budget_kw = {}
             if self.gather_enabled.get('max_wait_time', True):
-                budget_kw['total_budget'] = self.gather_params.get(
+                budget_kw['idle_budget'] = self.gather_params.get(
                     'max_wait_time')
 
             auto_solve(snap, step=step, cancel_check=cancel_check,
