@@ -16,6 +16,8 @@ import os
 import subprocess
 import sys
 import time
+import secrets
+import tempfile
 
 # CREATE_DETACHED_PROCESS：看门进程脱离父进程的控制台/进程组独立存活，
 # 父进程（游戏）退出不会把它一起带走。
@@ -37,21 +39,27 @@ def _relaunch_args():
     return [sys.executable] + sys.argv
 
 
-def _watcher_args(parent_pid):
-    """看门进程的命令行：本程序以 --_restart_watch 模式启动，尾部带真正的 relaunch。"""
+def _watcher_args(parent_pid, token):
+    """看门进程的命令行：本程序以 --_restart_watch 模式启动，并带 --_restart_token；
+    尾部 -- 之后是真正的 relaunch（新游戏命令）。token 用于新旧进程间的就绪哨兵。
+    """
     relaunch = _relaunch_args()
     if _is_frozen():
-        return [sys.executable, '--_restart_watch', str(parent_pid), '--'] + relaunch
-    return [sys.executable, sys.argv[0], '--_restart_watch', str(parent_pid), '--'] + relaunch
+        return [sys.executable, '--_restart_watch', str(parent_pid),
+                '--_restart_token', token, '--'] + relaunch
+    return [sys.executable, sys.argv[0], '--_restart_watch', str(parent_pid),
+            '--_restart_token', token, '--'] + relaunch
 
 
 def request_restart():
     """安排重启：spawn 看门进程（等自己退出后重启），调用方应随后退出游戏。
 
-    重定向看门进程的 stdout/stderr 到 DEVNULL——DETACHED 进程没有控制台，
-    任何输出都会失败；看门进程本身不打日志，无妨。
+    看门进程（gui.restart_manager）会显示一段「重启中」动画窗口覆盖空窗期，
+    旧进程退出后再重拉起游戏（带 --_restarted <token> 跳过冷启动开机封面），
+    待游戏就绪后淡出。stdout/stderr 重定向到 DEVNULL——DETACHED 进程无控制台。
     """
-    watcher = _watcher_args(os.getpid())
+    token = _gen_token()
+    watcher = _watcher_args(os.getpid(), token)
     subprocess.Popen(watcher, creationflags=DETACHED, close_fds=True,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      env=dict(os.environ))
@@ -79,3 +87,65 @@ def _wait_for_pid_exit(pid):
         except OSError:
             break
         time.sleep(0.2)
+
+
+# ---- 重启器可视动画的辅助（与 gui/restart_manager.py 共用） ----
+
+# 就绪哨兵文件名前缀：新游戏首帧绘出后写此文件，看门进程据此淡出
+READY_PREFIX = 'gatennea_restart_ready_'
+
+
+def _gen_token():
+    """生成一次性令牌，用于就绪哨兵文件命名，避免多次重启互相干扰。"""
+    try:
+        return secrets.token_hex(4)
+    except Exception:
+        return f"{os.getpid()}{int(time.time() * 1000)}"
+
+
+def ready_path(token):
+    """就绪哨兵文件路径。"""
+    return os.path.join(tempfile.gettempdir(), READY_PREFIX + (token or ''))
+
+
+def write_ready(token):
+    """写就绪哨兵（幂等，重复调用无害）。"""
+    if not token:
+        return
+    try:
+        with open(ready_path(token), 'w', encoding='utf-8') as f:
+            f.write('1')
+    except Exception:
+        pass
+
+
+def clear_ready(token):
+    """清理就绪哨兵。"""
+    try:
+        os.remove(ready_path(token))
+    except Exception:
+        pass
+
+
+def pid_alive(pid):
+    """非阻塞判断进程是否仍存活。Windows 用 ExitCode，其他平台轮询。"""
+    if sys.platform == 'win32':
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        SYNCHRONIZE = 0x00100000
+        PROCESS_QUERY_LIMITED = 0x1000
+        h = kernel32.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED, False, pid)
+        if not h:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return code.value == 0x103  # STILL_ACTIVE
+            return False
+        finally:
+            kernel32.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False

@@ -165,16 +165,36 @@ if __name__ == '__main__':
         try:
             _i = _argv.index('--_restart_watch')
             _pid = int(_argv[_i + 1])
+            _tk = _argv.index('--_restart_token')
+            _token = _argv[_tk + 1]
             _j = _argv.index('--', _i + 2)
             _relaunch = _argv[_j + 1:]
         except (ValueError, IndexError):
             print('参数错误: --_restart_watch 用法错误')
             sys.exit(2)
-        from gui import restart as _restart_mod
-        _restart_mod._wait_for_pid_exit(_pid)
-        subprocess.Popen(_relaunch, cwd=os.getcwd(), env=dict(os.environ),
-                         creationflags=0x00000010)  # CREATE_NEW_CONSOLE
+        # 看门进程本体：显示「重启中」动画窗口，覆盖旧进程退出→新进程就绪的空窗，
+        # 旧进程退出后再重拉起游戏（run() 内部补 --_restarted <token>）。
+        from gui import restart_manager
+        restart_manager.run(_pid, _relaunch, _token)
         sys.exit(0)
+
+    # 重启经看门进程拉起：剥离内部标记 --_restarted <token>，记录到环境变量，
+    # 供 GUI 跳过冷启动开机封面、写完首帧后写就绪哨兵（看门进程据此淡出）。
+    _restart_token = None
+    if '--_restarted' in sys.argv:
+        try:
+            _ri = sys.argv.index('--_restarted')
+            _restart_token = sys.argv[_ri + 1]
+            del sys.argv[_ri:_ri + 2]
+        except (ValueError, IndexError):
+            _restart_token = ''
+            try:
+                sys.argv.remove('--_restarted')
+            except Exception:
+                pass
+    if _restart_token is not None:
+        os.environ['GATENNEA_RESTARTED'] = '1'
+        os.environ['GATENNEA_RESTART_TOKEN'] = _restart_token or ''
 
     try:
         # 进程启动快照：在拉起 GUI / HTTP 之前记一次，供 GET /version 回报。

@@ -1,19 +1,21 @@
 # -*- coding: utf-8 -*-
-"""重启动画改为新进程开机封面（待办 §三十四 第 8 条，2026-11-11 改写）。
+"""重启器（看门进程）可视动画护栏（待办 §三十四 第 8 条，2026-11-11 改写）。
 
 重启是独立进程（看门进程机制，gui/restart.py 的 request_restart 在退出后重拉起
-游戏）。旧版在「本进程退出前」播一段 spinner，用户指出那不是他要的动画——他要的
-是**新进程开机**的动画。于是：
+游戏）。用户明确：重启动画应归**重启器本身**所有，覆盖「旧进程退出、新进程未起」的
+空窗期——既不是旧进程退出前的 spinner，也不是新进程冷启动的开机封面。于是：
 
 - 移除本进程退出前的 spinner（_run_restart_phase 及其 run() 调用）；
-- 重启动画由新进程的 _run_boot_phase 承担，并在其首屏新增「封面」阶段
-  （标题 + 副标题 + 弱化棋盘底纹，交叉淡入开机帧再淡出）。
+- 看门进程本体 gui/restart_manager.run() 显示「重启中」动画窗口；
+- 新进程经 --_restarted <token> 标记，跳过冷启动开机封面（那段动画归重启器）；
+- 冷启动的开机封面（_run_boot_phase + 封面阶段）仍保留，照常用于首次启动。
 
-本测试锁三项核心行为（无显示依赖，靠 fake self / fake clock + monkeypatch）：
+本测试锁核心行为（无显示依赖，靠 fake self / fake clock + monkeypatch）：
 
 - 启动入口确实先 request_restart()（看门进程由此 spawn），不再置 _pending_restart；
-- run() 退出前不再调用 _run_restart_phase（空窗由新进程 boot 封面填补）；
-- 开机封面方法存在且会绘制（封面淡入 / 交叉淡出确有 blit）。
+- run() 退出前不再调用 _run_restart_phase（旧 spinner 已移除）；
+- 开机封面方法存在且会绘制（封面淡入 / 交叉淡出确有 blit，仅用于冷启动）；
+- run() 在重启（带 _restart_token）时跳过冷启动开机封面，避免双动画。
 """
 import os
 import sys
@@ -101,6 +103,15 @@ class RestartAnimationTest(unittest.TestCase):
                          'run() 退出前仍调用 _run_restart_phase（旧 spinner 未移除）')
         self.assertNotIn('_pending_restart', src,
                          'run() 退出前仍检查 _pending_restart')
+
+    def test_run_skips_boot_on_restart(self):
+        import inspect
+        src = inspect.getsource(GUI.SliderGUI.run)
+        # 重启经看门进程拉起时（_restart_token 非空）应跳过冷启动开机封面，
+        # 那段标题动画归重启器所有，避免双动画
+        self.assertIn("getattr(self, '_restart_token', '')", src,
+                      'run() 未依据重启标记跳过冷启动开机封面')
+        self.assertIn('_run_boot_phase', src, 'run() 仍引用 _run_boot_phase（冷启动路径）')
 
     def test_cover_paints(self):
         """封面阶段确有绘制：淡入 / 交叉淡出都会 blit。"""

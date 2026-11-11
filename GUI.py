@@ -40,6 +40,7 @@ from gui.palette import PaletteMixin
 from gui.board_view import (SquareBoardView, point_in_polygon,
                             GAP_TOL_FIRST, GAP_TOL_SECOND)
 from gui.text_input import TextInput
+from gui.restart import write_ready
 from gui.scrollbar import Scrollbar
 from gui import log_writer
 from gui.log_writer import _gui_log_error
@@ -568,6 +569,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.arrows_enabled = True
         # 开机动画开关（启动时标题动画，可点击/任意键跳过；缺省开）
         self.show_boot_animation = True
+        # 重启经看门进程拉起时，本进程由 --_restarted <token> 标记：跳过冷启动
+        # 开机封面（那段动画归重启器所有），用完首帧后写就绪哨兵让重启器淡出。
+        self._restart_token = os.environ.get('GATENNEA_RESTART_TOKEN', '') or ''
+        self._restart_ready_signaled = False
         # 绘制网格开关（背景网格显示；缺省开；仅原版构型生效，几何模型不画网格）
         self.draw_grid = True
         # 音效开关（素材统一放 assets/audio/，见 gui/audio.py / docs S5）
@@ -2245,8 +2250,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         clock = pygame.time.Clock()
 
         # 开机标题阶段：窗口创建时已在 __init__ 绘出首帧，这里做动画 + 淡出，
-        # 覆盖加载空缺而非叠加时间（受 show_boot_animation 开关控制）
-        self._run_boot_phase(clock)
+        # 覆盖加载空缺而非叠加时间（受 show_boot_animation 开关控制）。
+        # 重启经看门进程拉起时跳过：那段标题动画归重启器所有，避免双动画。
+        if not getattr(self, '_restart_token', ''):
+            self._run_boot_phase(clock)
 
         while self.running:
             try:
@@ -2454,6 +2461,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.draw_shuffle_progress()
 
                 pygame.display.flip()
+                # 重启经看门进程拉起：首帧绘出后通知看门进程可以淡出（幂等）
+                if getattr(self, '_restart_token', '') and not self._restart_ready_signaled:
+                    try:
+                        write_ready(self._restart_token)
+                        self._restart_ready_signaled = True
+                    except Exception:
+                        pass
                 dt_ms = clock.tick(60)
 
                 # 更新文本输入闪烁
