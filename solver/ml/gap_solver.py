@@ -41,6 +41,7 @@ from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noq
                                   _capture_apply, _replay_apply, _Runner,
                                   replay_and_verify, solve_multi_void,
                                   _compact_rescue, _convoy_fill,
+                                  _band_shift_chain,
                                   solve_multi_search, _Cancelled, _emit)
 from solver.ml import view_rotate                                          # noqa: E402
 
@@ -1159,6 +1160,27 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
     return None, {'reason': '；'.join(reasons), 'prefix': best}
 
 
+def _edge_band_shift_attempt(coords, m, n, step, hole, verbose=False):
+    """用户链失败后的「粘上接走」加档（开洞几何）。
+
+    直接调用 fill_macro._band_shift_chain（洞带让位→源接应→带回位）把窗外凸
+    捎进洞。仅当盘上存在窗外凸起、且原语能产出「回放合法且整盘还原」的解时
+    才返回动作；否则返回 (None, 原因)。不抛异常，调用方据此回退 v1。
+    """
+    g0 = build_game(coords, m, n)
+    p_bump = _find_bump(g0)
+    if p_bump is None:
+        return None, '无窗外凸起'
+    acts_b, info_b = _band_shift_chain(
+        coords, m, n, step, hole, tuple(p_bump.location), verbose=verbose)
+    if acts_b is None:
+        return None, info_b
+    g = build_game(coords, m, n)
+    if _replay_apply(g, acts_b, m, n, step) and g.is_solved():
+        return acts_b, None
+    return None, '回放未还原'
+
+
 def solve_edge_gap(coords, m, n, step, verbose=False, hole=None,
                    anchor=None, require_solved=True):
     """单边缺口全链求解（用户算法）：缺口 → 上边缘 → _user_edge_chain。
@@ -1246,6 +1268,19 @@ def solve_edge_gap(coords, m, n, step, verbose=False, hole=None,
         return None, {'reason': u_reason, 'edge': edge, 'couple': True,
                       'fail_world': u_prefix,
                       'secs': round(time.time() - t0, 3)}
+
+    # ---- 加档：用户链失败且为单缺口时，试「粘上接走」原语（开洞几何）----
+    # _band_shift_chain 与封壳共轭并列的另一种策略：洞带让位→源接应→带回位，
+    # 把窗外凸捎进洞。它需「开洞」（洞在封壳前），故放在 _user_edge_chain
+    # 之后、v1 之前；仅非 couple（单缺口）路径尝试，couple 由上层多洞驱动
+    # 已覆盖，避免重复开销。洞 h 与凸 p 须同 mod，否则原语内部自行返回 None。
+    acts_b, info_b = _edge_band_shift_attempt(coords, m, n, step, h_w,
+                                              verbose=verbose)
+    if acts_b is not None:
+        return acts_b, {'steps': len(acts_b), 'route': 'band_shift',
+                        'edge': edge, 'secs': round(time.time() - t0, 3)}
+    if verbose:
+        print('  粘上接走档未成(%s)，仍回退 v1' % info_b)
 
     # ---- 回退 v1：左边缘规范型（专列/甩料封壳）----
     wall1, stats1 = _solve_edge_gap_v1(coords, m, n, step, verbose=verbose)

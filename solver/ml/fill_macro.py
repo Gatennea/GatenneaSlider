@@ -2348,6 +2348,108 @@ def _src_seams(p, axis):
     return [('v', p[1], 'left'), ('v', p[1] - 1, 'right')]
 
 
+def _relay_1d(g, p_cur, axis, k2, d2, step, cancel_check=None):
+    """单轴接运：把 g 中 p_cur 处凸起沿 axis 平移 k2 个 step 到目标位。
+    模式A（p 之分拣直接平移）；模式B（邻近分拣贴 p 后带回）。
+    返回 (sub_acts, g_after, new_p) 或 None。成功后以副本状态返回。"""
+    dr2, dc2 = _DIRS[d2]
+    target = (p_cur[0] + dr2 * k2 * step, p_cur[1] + dc2 * k2 * step)
+    for gap2, line2, side2 in _src_seams(p_cur, axis):
+        _chk(cancel_check)
+        # 模式A：p 所在分量直接平移（rep=p → opt 选中 p 的分量）
+        gA = build_game(gcoords(g), g.m, g.n)
+        okA, subA = _es_probe_run(gA, gap2, line2, side2,
+                                  tuple(p_cur), d2, k2, step, cancel_check)
+        if okA and (p_cur[0] + dr2 * k2 * step,
+                    p_cur[1] + dc2 * k2 * step) == target:
+            return subA, gA, target
+        # 模式B：邻近分量反向平移贴上 p → 正向平移带回
+        side_sel = (lambda q: q[0] <= line2 if side2 == 'above'
+                    else q[0] > line2) if gap2 == 'h' else \
+                   (lambda q: q[1] <= line2 if side2 == 'left'
+                    else q[1] > line2)
+        tried_comps = set()
+        for repC0 in sorted({tuple(b.location)
+                             for b in g.blocks
+                             if side_sel(tuple(b.location))
+                             and tuple(b.location) != tuple(p_cur)}):
+            _chk(cancel_check)
+            gB = build_game(gcoords(g), g.m, g.n)
+            blkC0 = None
+            for b in gB.blocks:
+                if tuple(b.location) == repC0:
+                    blkC0 = b
+                    break
+            if blkC0 is None:
+                continue
+            gB.opt(gap2, line2, blkC0)
+            comp0 = frozenset(tuple(b.location) for b in gB.blocks
+                              if b.be_opted)
+            for b in gB.blocks:
+                b.be_opted = False
+            if comp0 in tried_comps or tuple(p_cur) in comp0:
+                continue   # 重复分量 / 已含 p（模式 A 已试）
+            tried_comps.add(comp0)
+            ok_t, sub_t = _es_probe_run(gB, gap2, line2, side2,
+                                        repC0, _OPP_DIR[d2], k2, step,
+                                        cancel_check)
+            if not ok_t:
+                continue
+            # 贴上判定：p 与被移分量连通（p 在其 opt 分量内）
+            drT, dcT = _DIRS[_OPP_DIR[d2]]
+            cand = (repC0[0] + drT * k2 * step, repC0[1] + dcT * k2 * step)
+            blkC = None
+            for b in gB.blocks:
+                if tuple(b.location) == cand:
+                    blkC = b
+                    break
+            if blkC is None:
+                continue
+            gB.opt(gap2, line2, blkC)
+            stuck = any(b.be_opted and tuple(b.location) == tuple(p_cur)
+                        for b in gB.blocks)
+            for b in gB.blocks:
+                b.be_opted = False
+            if not stuck:
+                continue    # 没贴上 p → 换分量
+            # 带回：从 C 新代表位沿 d2 平移 k2 → p 落目标位
+            ok_b, sub_b = _es_probe_run(gB, gap2, line2, side2,
+                                        cand, d2, k2, step, cancel_check)
+            if ok_b:
+                return list(sub_t) + list(sub_b), gB, target
+    return None
+
+
+def _relay_bump(g1, p_src, h_new, step, cancel_check=None):
+    """把凸起 p_src 经整带接运送到 h_new（支持斜对角：逐轴分解，两序各试）。
+    返回 (sub_acts, g_after) 或 None。"""
+    for order in ((0, 1), (1, 0)):
+        g = build_game(gcoords(g1), g1.m, g1.n)   # 每轮重置工作副本
+        sub = []
+        p_cur = tuple(p_src)
+        ok = True
+        for axis in order:
+            comp = h_new[axis] - p_cur[axis]
+            if comp == 0:
+                continue
+            if comp % step or abs(comp) > 6 * step:
+                ok = False
+                break
+            k2 = abs(comp) // step
+            d2 = ('s' if comp > 0 else 'w') if axis == 0 else \
+                 ('d' if comp > 0 else 'a')
+            res = _relay_1d(g, p_cur, axis, k2, d2, step, cancel_check)
+            if res is None:
+                ok = False
+                break
+            sub1, g, new_p = res
+            sub += sub1
+            p_cur = new_p
+        if ok and p_cur == h_new:
+            return sub, g
+    return None
+
+
 def _band_shift_chain(coords, m, n, step, hole, p_src,
                       time_budget=_BAND_SHIFT_BUDGET,
                       verbose=False, cancel_check=None):
@@ -2419,95 +2521,15 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
                 if not ok1:
                     continue          # 幽灵盘能走真盘不能 → 保守拒绝
                 tried += 1
-                # ---- 源接应（粘上接走）：p 净位移 delta 到 h' ----
-                # 模式A（已粘连）：p 所在分量直接平移 delta；
-                # 模式B（用户 07 手解步2-3）：p 独立分量时，邻近分量先沿
-                #   -delta 平移「贴」上 p（p 粘进该分量），再沿 +delta 平移
-                #   「带回」——p 随分量被送到 h'。
-                delta = (h_new[0] - p_src[0], h_new[1] - p_src[1])
-                axis = 0 if delta[0] else (1 if delta[1] else None)
-                if axis is None or delta[axis] % step or abs(delta[axis]) > 6 * step:
+                # ---- 源接应（粘上接走）：p 逐轴接运到 h'（支持斜对角）----
+                # 旧实现只沿单一轴移动、丢弃斜对角另一轴分量，导致对角线
+                # 凸起永远到不了 h'。改为逐轴分解（行→列 与 列→行 两序各试），
+                # 复用模式A/B 单轴接运 _relay_1d。
+                relay = _relay_bump(g1, p_src, h_new, step, cancel_check)
+                if relay is None:
                     continue
-                k2 = abs(delta[axis]) // step
-                d2 = ('s' if delta[0] > 0 else 'w') if axis == 0 else \
-                     ('d' if delta[1] > 0 else 'a')
-                dr2, dc2 = _DIRS[d2]
-                got2 = None
-                for gap2, line2, side2 in _src_seams(p_src, axis):
-                    _chk(cancel_check)
-                    # 模式A：p 所在分量直接平移（rep=p → opt 选中 p 的分量）
-                    gA = build_game(gcoords(g1), m, n)
-                    okA, subA = _es_probe_run(gA, gap2, line2, side2,
-                                              tuple(p_src), d2, k2, step,
-                                              cancel_check)
-                    if okA and (p_src[0] + dr2 * k2 * step,
-                                p_src[1] + dc2 * k2 * step) == h_new:
-                        got2 = ('A', gA, subA, tuple(p_src))
-                        break
-                    # 模式B：邻近分量反向平移贴上 p → 正向平移带回
-                    # （枚举侧内连通分量为 C，复用分量去重）
-                    side_sel = (lambda q: q[0] <= line2 if side2 == 'above'
-                                else q[0] > line2) if gap2 == 'h' else \
-                               (lambda q: q[1] <= line2 if side2 == 'left'
-                                else q[1] > line2)
-                    tried_comps = set()
-                    for repC0 in sorted({tuple(b.location)
-                                         for b in g1.blocks
-                                         if side_sel(tuple(b.location))
-                                         and tuple(b.location) != tuple(p_src)}):
-                        _chk(cancel_check)
-                        gB = build_game(gcoords(g1), m, n)
-                        blkC0 = None
-                        for b in gB.blocks:
-                            if tuple(b.location) == repC0:
-                                blkC0 = b
-                                break
-                        if blkC0 is None:
-                            continue
-                        gB.opt(gap2, line2, blkC0)
-                        comp0 = frozenset(tuple(b.location) for b in gB.blocks
-                                          if b.be_opted)
-                        for b in gB.blocks:
-                            b.be_opted = False
-                        if comp0 in tried_comps or tuple(p_src) in comp0:
-                            continue   # 重复分量 / 已含 p（模式 A 已试）
-                        tried_comps.add(comp0)
-                        ok_t, sub_t = _es_probe_run(gB, gap2, line2, side2,
-                                                    repC0, opp[d2], k2, step,
-                                                    cancel_check)
-                        if not ok_t:
-                            continue
-                        # 贴上判定：p 与被移分量连通（p 在其 opt 分量内）
-                        drT, dcT = _DIRS[opp[d2]]
-                        cand = (repC0[0] + drT * k2 * step,
-                                repC0[1] + dcT * k2 * step)
-                        blkC = None
-                        for b in gB.blocks:
-                            if tuple(b.location) == cand:
-                                blkC = b
-                                break
-                        if blkC is None:
-                            continue
-                        gB.opt(gap2, line2, blkC)
-                        stuck = any(b.be_opted
-                                    and tuple(b.location) == tuple(p_src)
-                                    for b in gB.blocks)
-                        for b in gB.blocks:
-                            b.be_opted = False
-                        if not stuck:
-                            continue    # 没贴上 p → 换分量
-                        # 带回：从 C 新代表位沿 d2 平移 k2 → p 落 h'
-                        ok_b, sub_b = _es_probe_run(gB, gap2, line2, side2,
-                                                    cand, d2, k2, step,
-                                                    cancel_check)
-                        if ok_b:
-                            got2 = ('B', gB, list(sub_t) + list(sub_b), cand)
-                            break
-                    if got2 is not None:
-                        break
-                if got2 is None:
-                    continue
-                mode2, g2, sub2, repC_end = got2
+                sub2, g2 = relay
+                mode2, repC_end = 'relay', h_new
                 # ---- 洞带回位：p 随分量捎进原洞 ----
                 g3 = build_game(gcoords(g2), m, n)
                 ok3, sub3 = _es_probe_run(g3, gap_b, line_b, side_b,
