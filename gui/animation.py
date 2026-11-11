@@ -146,6 +146,22 @@ class AnimationMixin:
             self._play_next_shuffle_record()
             return
 
+        # 「思考」演示的真实走步 / 撤回动画（待办 §三十四 第 4 条）：
+        # 走步的真实提交已在 _think_do_walk 完成；撤回的真实 undo 推迟到这里
+        # （块已滑回原位），落位后再调 GameHistory.undo + 橙色高亮。两条路都
+        # **不碰** step_count / 全局历史 / 文件脏标记。
+        think_type = getattr(self, '_think_walk_anim', None)
+        if think_type:
+            self._think_walk_anim = None
+            if think_type == 'rewind':
+                try:
+                    self._think_undo_now()
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+            self._reset_anim_state()
+            return
+
         undo_redo_type = self._undo_redo_type
 
         if undo_redo_type == 'undo':

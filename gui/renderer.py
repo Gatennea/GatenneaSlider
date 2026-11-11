@@ -1531,9 +1531,15 @@ class RendererMixin:
         非演示态恒 (0,0)。缓存由 draw_board 每帧刷新；事件层命中读到的是
         上一帧值（同帧内 draw_board 已刷新，最多差一帧，且只在演示期间）。
         """
-        if not (getattr(self, 'anti_drift_enabled', True)
-                and getattr(self, 'macro_executing', False)
-                and not getattr(self, 'macro_selecting_base', False)):
+        # 演示态：宏播放（求解/回放）或「思考」游走动画，以及整个流式求解
+        # 会话（_auto_stage_active）。三者共用同一个相机原点，游走→段→撤回
+        # 不再各自重锚，杜绝「每步重新居中」的抖动（用户实测）。
+        _ad = (getattr(self, 'anti_drift_enabled', True)
+               and (getattr(self, 'macro_executing', False)
+                    or bool(getattr(self, '_think_walk_anim', None))
+                    or getattr(self, '_auto_stage_active', False))
+               and not getattr(self, 'macro_selecting_base', False))
+        if not _ad:
             return (0, 0)
         v = getattr(self, '_anti_drift_cam', None)
         return v if v else (0, 0)
@@ -1552,8 +1558,12 @@ class RendererMixin:
         ⚠️ 绝不能退回按 ``b.location`` 离散计算（见 ``_frame_render_positions``
         的说明）：那会在每步 commit 时台阶式跳变，观感是「一直抖动」。
         """
+        # 与 _cam_anti_drift_px 同口径：把「思考」游走动画与整个流式求解会话
+        # 都算作演示态，共用同一相机原点（否则游走与段之间会重锚 → 抖动）。
         active = (getattr(self, 'anti_drift_enabled', True)
-                  and getattr(self, 'macro_executing', False)
+                  and (getattr(self, 'macro_executing', False)
+                       or bool(getattr(self, '_think_walk_anim', None))
+                       or getattr(self, '_auto_stage_active', False))
                   and not getattr(self, 'macro_selecting_base', False))
         # 演示开始（含选完基准那一瞬）重新定锚，避免复用上一轮的旧原点
         prev = getattr(self, '_anti_drift_active_prev', False)

@@ -450,7 +450,10 @@ class AutoSolveMixin:
         gen = self._auto_stage_gen
         # 仅在空闲（无动画、无宏播放）时推进 / 收尾，避免打断正在播的段
         if self.macro_executing or self.animating:
-            if self._think_walk.is_active:
+            # 思考演示自己的滑动动画（_think_walk_anim）不算「外部动画抢盘」：
+            # 不能因此中止游走，只是等它播完（commit_animation 会清标记）。
+            if (self._think_walk.is_active
+                    and not getattr(self, '_think_walk_anim', None)):
                 if self.animating:
                     # 动画进行中不能重建 blocks（anim_blocks 是块引用），
                     # 只清状态机；正常流程段播放前必已撤完，此处仅兜底。
@@ -615,13 +618,24 @@ class AutoSolveMixin:
         self._think_walk.note_walk(move_info)
         for b in self.game.blocks:
             b.be_opted = False
+        # 视觉滑动（修复「游走根本没动画」）：提交已完成，这里只让渲染层
+        # 从 moved→final 插值，看起来像真在推块。关闭动画时退回瞬时（原行为）。
+        self._think_start_slide(selected, moved_positions, final, 'walk')
         return True
 
     def _think_do_rewind(self):
-        """真实撤回一步（求解器「思考」演示的撤回）：调本地历史的 undo(game)，
-        同一 ``GameHistory.undo`` 接口 = 真实撤销；并触发橙色高亮，与玩家按
-        Ctrl+Z 的视觉一致。撤回后把这一步从状态机 steps 弹栈。
+        """真实撤回一步（求解器「思考」演示的撤回）。
+
+        开动画时：先按该步 move_info 把块**滑回**移动前位置，真实 ``undo``
+        推迟到 ``commit_animation`` 的 think 分支再调（落位后再重建，视觉
+        连续、不再「一步跳回去」的卡顿）。关动画 / 找不到块时退回瞬时撤销。
         """
+        if self._think_start_slide_for_rewind():
+            return
+        self._think_undo_now()
+
+    def _think_undo_now(self):
+        """瞬时撤回一步：调本地历史 undo（真实接口）+ 橙色高亮 + 弹栈。"""
         ok, mi = self._think_history.undo(self.game)
         if ok:
             if mi:
@@ -632,6 +646,72 @@ class AutoSolveMixin:
             sel = getattr(self, 'selected_block', None)
             if sel is not None and sel not in self.game.blocks:
                 self.selected_block = None
+
+    def _think_anim_on(self):
+        """思考演示是否走滑动动画（真 GUI 且动画开着；headless/测试默认关）。"""
+        return bool(getattr(self, 'animation_enabled', False)
+                    and getattr(self, 'animation_duration', 0) > 0)
+
+    def _think_start_slide(self, blocks, start_pos, end_pos, kind):
+        """给思考演示搭一个**纯视觉**滑动动画（真实提交已由调用方完成）。
+
+        不碰 step_count / 全局历史 / 文件脏标记：``commit_animation`` 的
+        think 分支只清动画态并返回。``kind`` = 'walk' / 'rewind'，供提交
+        分支区分（rewind 要补调真实 undo）。
+        """
+        if not self._think_anim_on():
+            return False
+        try:
+            import pygame
+            blocks = list(blocks)
+            if not blocks or not end_pos or len(blocks) != len(end_pos):
+                return False
+            self.anim_blocks = blocks
+            self.anim_start_pos = [list(p) for p in start_pos]
+            self.anim_end_pos = [list(p) for p in end_pos]
+            self.anim_progress = 0.0
+            self.anim_start_time = pygame.time.get_ticks()
+            self._anim_dr = float(end_pos[0][0] - start_pos[0][0])
+            self._anim_dc = float(end_pos[0][1] - start_pos[0][1])
+            self._undo_redo_type = None
+            self._think_walk_anim = kind
+            self.animating = True
+            return True
+        except Exception:
+            traceback.print_exc()
+            self._think_walk_anim = None
+            return False
+
+    def _think_start_slide_for_rewind(self):
+        """撤回动画：把当前（移动后）位置的块滑回该步 moved_positions。"""
+        if not self._think_anim_on():
+            return False
+        hist = getattr(self, '_think_history', None)
+        if hist is None or not getattr(hist, 'history', None):
+            return False
+        try:
+            idx = getattr(hist, 'history_index', -1)
+            if idx < 0 or idx >= len(hist.history):
+                return False
+            mi = hist.history[idx].get('move_info')
+        except Exception:
+            mi = None
+        if not mi:
+            return False
+        moved = mi.get('moved_positions') or []
+        if not moved:
+            return False
+        try:
+            delta = self._move_delta(mi)
+            post = [self._shift_pos(p, delta) for p in moved]
+            blocks = self._find_blocks_at_positions(post)
+            if len(blocks) != len(moved):
+                return False
+            start_pos = [list(b.location) for b in blocks]
+            return self._think_start_slide(blocks, start_pos, moved, 'rewind')
+        except Exception:
+            traceback.print_exc()
+            return False
 
     def _play_auto_stage(self, item):
         """播放一段动作并刷新历史最优 checkpoint（聚拢度最高、并列 Φ 最小）。"""
