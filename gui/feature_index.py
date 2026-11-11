@@ -360,6 +360,11 @@ FEATURES = (
          forms=_RECT_AND_NUM, modes=ALL_MODES,
          howto='设置 → 控制页「逆序播放宏」。',
          confusion='这是全局开关，影响所有宏的回放方向。'),
+    dict(id='infinite_shuffle', name='无限打乱', aliases=('无限打乱', '随机游走', '连续打乱'),
+         kind='setting', place=('settings', 'control'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 控制页「无限打乱」。开启后调用「打乱」会一直随机游走，再次调用「打乱」即停止。'),
+
     dict(id='macro_manage', name='管理宏', aliases=('管理宏', '宏管理', '删除宏'),
          kind='action', place=('menu_item', '宏定义', '管理宏...'),
          forms=_RECT_AND_NUM, modes=ALL_MODES,
@@ -476,6 +481,7 @@ _ACTIONS = {
     'macro_execute': {'type': 'menu', 'name': '宏定义'},
     'macro_manage': {'type': 'menu', 'name': '宏定义'},
     'macro_reverse': {'type': 'settings', 'tab': 'control'},
+    'infinite_shuffle': {'type': 'settings', 'tab': 'control'},
     # 建局
     'preset_quick': {'type': 'puzzle', 'params': (6, 6, 2), 'kind': 'square'},
     'preset_rect': {'type': 'menu', 'name': '谜题'},

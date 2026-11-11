@@ -3884,11 +3884,6 @@ class RendererMixin:
             x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
             "启动时播放标题动画，点击或按任意键可跳过")
 
-        # 无限打乱开关（开启后调用打乱=连续随机游走，再次调用打乱=停止）
-        self._settings_infinite_shuffle_toggle_rect, ny = self._draw_switch_row(
-            x, ny, "无限打乱：", getattr(self, 'infinite_shuffle', False),
-            "开启后调用「打乱」会一直随机游走，再次调用「打乱」即停止")
-
         # 防意外打乱/重置开关（打乱/重置都会清空历史；历史非空时先弹确认，可先存档）
         self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
             x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
@@ -4143,6 +4138,11 @@ class RendererMixin:
         self._settings_ctrl_revmacro_rect, ny = self._draw_switch_row(
             x, ny, "逆序播放宏：", getattr(self, 'macro_reverse_mode', False),
             "宏指令倒着播一遍（本人用不上，故不放右下角常用区）")
+        # 无限打乱开关（开启后调用「打乱」=连续随机游走，再次调用「打乱」=停止）
+        # 原在「视觉」页，2026-11-11 移到「控制」页（属于操作方式而非视觉）
+        self._settings_infinite_shuffle_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "无限打乱：", getattr(self, 'infinite_shuffle', False),
+            "开启后调用「打乱」会一直随机游走，再次调用「打乱」即停止")
 
         # —— 外部控制（本机 HTTP API）——
         # 与五种操作方式分区：那是「人怎么玩」，这是「外部程序怎么接」。
@@ -4487,7 +4487,8 @@ class RendererMixin:
             # 反馈行数必须**当场按当前消息**算：等下一帧回填会把新行落在裁剪
             # 区外（内容长高但滚动量没跟上），玩家仍看不到反馈。
             # 宽度与 _draw_settings_control 收到的实参一致（对话框定宽 660-30）
-            return 34 + 6 * 60 + 8 + 60 + 22 + 32 + 10 \
+            # 7 个操作开关（含无限打乱，2026-11-11 从视觉页移入）
+            return 34 + 7 * 60 + 8 + 60 + 22 + 32 + 10 \
                 + 18 * self._ext_feedback_lines(660 - 30)
         else:
             # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）

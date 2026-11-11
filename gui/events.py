@@ -3565,15 +3565,6 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
-            # 无限打乱开关
-            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_infinite_shuffle_toggle_rect'):
-                if self._settings_infinite_shuffle_toggle_rect.collidepoint(mx, my):
-                    self.infinite_shuffle = not getattr(self, 'infinite_shuffle', False)
-                    status = '开' if self.infinite_shuffle else '关'
-                    self.macro_notify_msg = f"无限打乱：{status}"
-                    self.macro_notify_timer = 90
-                    return
-
             # 防意外打乱开关（打乱前历史非空先确认）
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_confirm_shuffle_toggle_rect'):
                 if self._settings_confirm_shuffle_toggle_rect.collidepoint(mx, my):
@@ -3754,6 +3745,13 @@ class EventsMixin:
                     self.macro_reverse_mode = not self.macro_reverse_mode
                     status = '开' if self.macro_reverse_mode else '关'
                     self.macro_notify_msg = f"逆序播放宏指令：{status}"
+                    self.macro_notify_timer = 90
+                    return
+                # 无限打乱开关（2026-11-11 从视觉页移到控制页）
+                if hasattr(self, '_settings_infinite_shuffle_toggle_rect') and self._settings_infinite_shuffle_toggle_rect.collidepoint(mx, my):
+                    self.infinite_shuffle = not getattr(self, 'infinite_shuffle', False)
+                    status = '开' if self.infinite_shuffle else '关'
+                    self.macro_notify_msg = f"无限打乱：{status}"
                     self.macro_notify_timer = 90
                     return
                 # —— 外部控制（HTTP API）——
