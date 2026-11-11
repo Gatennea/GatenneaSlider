@@ -1111,16 +1111,42 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
                  'inner': len(prefix) - len(seal4) - len(unseal4),
                  'unseal': len(unseal4), 'flag': flag,
                  'inner_mode': inner_mode,
-                 'squeeze': squeeze})
+                 'squeeze': squeeze,
+                 'ov_end': window_of(gcoords(g2), mv, nv, step)[1]})
 
     # 六级尝试：直解(直接共轭/自动/id) → 挤入(直接共轭/自动/id)
+    #
+    # couple 模式（require_solved=False）的「成功」原本只看洞有没有被填，
+    # 于是第一个机构只要填上洞就返回——哪怕整段把盘推散。8×8 近解残局
+    # 实测：直解(直接) 9 步把聚拢度 61→42，而排在后面的直解(自动/id)
+    # 11 步是 61→62 的正解，却被前者挡住；上层段级闸门拒收 42 的解，
+    # 就报「所有 couple 无成果」停机。
+    #
+    # 修法：couple 模式六级按「段末聚拢度是否提升」择优——一旦有机构
+    # 段末高于段首就立即采纳（原行为语义不变）；若六级都只做到「填上洞
+    # 但没提升」，返回其中段末聚拢度最高者作兜底（上层闸门仍会终裁）。
+    # require_solved=True（单边缺口全解）保持「首个成功即返回」不变。
     best = []
     reasons = []
+    ov_start = window_of(gcoords(vg), mv, nv, step)[1]
+    best_res = None
+    best_ov = None
     for squeeze in (False, True):
         for im in ('direct', None, 'id'):
             res = _run(squeeze, im)
             if res[0] is not None:
-                return res
+                if require_solved:
+                    return res
+                ov_end = res[1].get('ov_end')
+                if ov_end is not None and ov_end > ov_start:
+                    return res          # 真正有成果，早停（与原行为一致）
+                if best_ov is None or (ov_end or 0) > best_ov:
+                    best_ov, best_res = (ov_end or 0), res
+                reasons.append('%s(%s):填上洞但聚拢度未提升(%s→%s)'
+                               % ('直解' if not squeeze else '挤入',
+                                  {'direct': '直接', None: '自动', 'id': 'id'}[im],
+                                  ov_start, ov_end))
+                continue
             tag = '直解' if not squeeze else '挤入'
             im_tag = {'direct': '直接', None: '自动', 'id': 'id'}[im]
             reasons.append('%s(%s):%s' % (tag, im_tag, res[1]))
@@ -1128,6 +1154,8 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
                 best = res[2]
             if verbose:
                 print('  %s(%s)未成(%s)' % (tag, im_tag, res[1]))
+    if best_res is not None:
+        return best_res
     return None, {'reason': '；'.join(reasons), 'prefix': best}
 
 
