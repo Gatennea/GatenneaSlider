@@ -163,7 +163,8 @@ def _phi_of(coords, m, n):
 def auto_solve(game, step, cancel_check=None, progress_callback=None,
                stage_cb=None, time_budget=None, stage_budget=None,
                rng_seed=None, total_budget=None, scorer=None,
-               route_fn=None, stop_fn=None, idle_budget=None, **_kwargs):
+               route_fn=None, stop_fn=None, idle_budget=None,
+               bulk_static=True, **_kwargs):
     """自动规划入口：查表 → 补缺宏 → 混合流水线，全解即停，全败取最优部分。
 
     stage_cb（2026-10-10 新增）：分阶段流式回调。每当一个候选求解器产出可播的
@@ -226,6 +227,34 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
                      if _idle is not None else None)
     m, n = game.m, game.n
     coords0 = frozenset(tuple(b.location) for b in game.blocks)
+
+    # 整体平移消去（防偏移·序列改写，2026-11-11 用户要求）：
+    # 求解出的每步只确定「哪一片相对其余滑了 δ」，绝对位置还有一整个
+    # 整体平移的自由度（复原判定只看形状，见 game.is_solved / try_move_ex
+    # 的 all_selected 注释）。把它当魔方「整体转体」消去：能改成「推小片」
+    # 就改（大片在画面上完全不动），改不动的把这次整体平移记进后续步的
+    # 分割线坐标里吸收。写入 flow['acts'] 的因此是**改写后**的动作链（可
+    # 直接从 coords0 回放到改写终态，终态只是整体挪了整格 → 仍算还原）；
+    # 求解器自身续算仍用 flow['end'] 的原始绝对坐标。
+    _rw = None
+    if bulk_static:
+        from solver.anti_drift import BulkStaticRewriter
+        _rw = BulkStaticRewriter(coords0, m, n, step)
+
+    def emit_rewrite(acts, reps, end):
+        """→ (改写后 acts4, reps, 终态坐标)。关闭改写时原样返回。"""
+        if _rw is None:
+            return list(acts), list(reps or []), end
+        reps = list(reps or [])
+        if len(reps) < len(acts):
+            reps += [None] * (len(acts) - len(reps))
+        five = []
+        for i, a in enumerate(acts):
+            rp = reps[i]
+            five.append(tuple(a)[:4] + (tuple(rp) if rp else None,))
+        e_acts, e_end = _rw.feed(five)
+        return ([tuple(a[:4]) for a in e_acts], [a[4] for a in e_acts], e_end)
+
 
     def cancelled():
         return bool(cancel_check and cancel_check())
@@ -296,8 +325,11 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         reps = list(reps or [])
         if len(reps) < len(acts):
             reps += [None] * (len(acts) - len(reps))
-        chain_acts = flow['acts'] + acts
-        chain_reps = flow['reps'] + reps
+        # 改写（整体平移消去）必须在并链之前：flow['acts'] 存的是改写后的链，
+        # 与玩家盘面一致（可直接回放）；end 仍是求解器视角的原始终态。
+        e_acts, e_reps, e_end = emit_rewrite(acts, reps, end)
+        chain_acts = flow['acts'] + e_acts
+        chain_reps = flow['reps'] + e_reps
         flow['acts'] = chain_acts
         flow['reps'] = chain_reps
         flow['end'] = end
@@ -318,7 +350,7 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
                           best['phi'] if best else None):
             best = {'score': sc, 'phi': ph, 'actions': chain_acts,
                     'reps': chain_reps, 'end': end, 'src': label}
-        emit_stage(label, acts, reps, end, sc,
+        emit_stage(label, e_acts, e_reps, e_end, sc,
                    build_game(end, m, n).is_solved())
         touch_progress()   # 定稿段被采纳 = 有进展，滑动停机窗口
 
@@ -380,7 +412,9 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             # (path, rep_cells)；空表/异常路径已在函数内处理
             end, ok = _end_state(coords0, tres[0], tres[1], m, n, step)
             if ok:
-                emit_stage('①查表', tres[0], tres[1], end, 1.0, True)
+                e_acts, e_reps, e_end = emit_rewrite(tres[0], tres[1], end)
+                emit_stage('①查表', e_acts, e_reps, e_end, 1.0, True)
+                return e_acts, e_reps
             return tres[0], tres[1]
         # None=无表 / False=状态不在表中 → 落到下一候选
 
