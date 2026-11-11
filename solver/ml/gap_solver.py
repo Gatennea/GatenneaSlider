@@ -482,40 +482,74 @@ def _bumpcol_chain(vg, vh, step, verbose=False, trace=None):
     return None, '专列：候选全败'
 
 
+def _exec_segment(g2, acts, p0, step, flip=False):
+    """在 g2 上执行一段动作列表（4/5 元组，5 元组 rep 优先选块）。
+
+    返回 (out5_list, None) 成功；或 (partial_out, (index, a4, why)) 失败。
+    flip=True 时动作被拒先按 _FLIP_SIDE_DIR 换边重试——用于 _user_edge_chain
+    的拆壳等价表达（同缝异侧反向 ≡ 相对位移相同）。_run_chain 与
+    _user_edge_chain 共用此执行核心，避免封壳/拆壳循环被各写一遍。
+    """
+    out = []
+    for i, a4 in enumerate(acts):
+        a = a4 if len(a4) == 5 else a4 + (tuple(p0),)
+        okk, a5, why, _mv = _apply_dbg(g2, a, step)
+        if okk:
+            out.append(a5)
+            continue
+        if flip:
+            side2, d2 = _FLIP_SIDE_DIR[(a4[2], a4[3])]
+            okk, a5, why, _mv = _apply_dbg(
+                g2, (a4[0], a4[1], side2, d2, None), step)
+            if okk:
+                out.append(a5)
+                continue
+        return out, (i, a4, why)
+    return out, None
+
+
 def _run_chain(vg, seal4, inner4, unseal4, p0, step, trace=None,
-               require_solved=True, vh=(0, 0)):
+               require_solved=True, vh=(0, 0), unseal_flip=False,
+               pre=None, post_seal=None):
     """在副本上执行 封壳→内部→拆壳 三段（rep 动态跟踪凸起）。
 
+    inner4 可为动作列表，或 callable(g2)->列表（动态内层，封壳后按当前盘面
+    生成）。pre / post_seal 为 callable(g2)，分别在封壳前 / 封壳后插入专属处理
+    （如对齐凸起、挤入），返回 None 表示成功、str 表示失败原因。
+    unseal_flip=True 时拆壳段被拒不换边重试（_user_edge_chain 需此等价表达）。
     require_solved=True：全部动作合法且最终 solved 才成功；
     False（couple 模式）：成功判据 = 洞 vh 被填。
     返回 (view 动作5元组列表, stats) 或 (None, None)。
     trace 为 dict 时记录首个失败：seg/index/action/why/prefix(已成功动作)。
     """
     g2 = build_game(gcoords(vg), vg.m, vg.n)
-    p2 = None
-    for blk in g2.blocks:
-        if tuple(blk.location) == tuple(p0):
-            p2 = blk
-            break
     segs, nseg = [], {'seal': 0, 'inner': 0, 'unseal': 0}
-    for name, acts in (('seal', seal4), ('inner', inner4),
-                       ('unseal', unseal4)):
-        out = []
-        for a4 in acts:
-            a = a4 if len(a4) == 5 else a4 + (tuple(p2.location),)
-            if trace is None:
-                okk, a5 = _apply4(g2, a, step)
-                why = ''
-            else:
-                okk, a5, why, _mv = _apply_dbg(g2, a, step)
-            if not okk:
-                if trace is not None:
-                    trace.update(seg=name, index=len(out), action=a4,
-                                 why=why, prefix=segs + out)
-                return None, None
-            out.append(a5)
+    if pre is not None:
+        r = pre(g2)
+        if r is not None:
+            if trace is not None:
+                trace.update(seg='pre', index=-1, action=None,
+                             why=r, prefix=list(segs))
+            return None, None
+    for name, acts, flip in (('seal', seal4, False),
+                             ('inner', inner4, False),
+                             ('unseal', unseal4, unseal_flip)):
+        inner_list = acts(g2) if callable(acts) else acts
+        out, fail = _exec_segment(g2, inner_list, p0, step, flip=flip)
+        if fail is not None:
+            if trace is not None:
+                trace.update(seg=name, index=fail[0], action=fail[1],
+                             why=fail[2], prefix=segs + out)
+            return None, None
         segs += out
         nseg[name] = len(out)
+        if name == 'seal' and post_seal is not None:
+            r = post_seal(g2)
+            if r is not None:
+                if trace is not None:
+                    trace.update(seg='post_seal', index=-1, action=None,
+                                 why=r, prefix=list(segs))
+                return None, None
     if require_solved:
         if not g2.is_solved():
             if trace is not None:
@@ -1005,11 +1039,12 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
                 if verbose:
                     print('  setup：对齐凸起挪位 -> %s' % (tuple(p2.location),))
 
-        for i, a4 in enumerate(seal4):             # 封壳（外层共轭）
-            okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
-            if not okk:
-                return None, '封壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
-            prefix.append(a5)
+        # 封壳（外层共轭）——复用 _run_chain 的执行核心 _exec_segment
+        out, fail = _exec_segment(g2, seal4, p0, step, flip=False)
+        if fail is not None:
+            return None, '封壳第%d步被拒(%s)' % (fail[0] + 1, fail[2]), \
+                list(prefix)
+        prefix += out
         if not _hole_sealed(g2, vh):
             return None, '封壳完成但洞未封闭', list(prefix)
         if verbose:
@@ -1090,18 +1125,12 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
                     list(prefix) + list(iacts)
             prefix += list(iacts)
 
-        for i, a4 in enumerate(unseal4):           # 逆外层共轭
-            okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
-            if not okk:
-                # 换边等价表达（用户复原失败01实证）：同缝异侧反向 ≡
-                # 相对位移相同、绝对位置不同；is_solved 只看实心矩形
-                # 形状不钉死位置，故被拒时换边重试。
-                side2, d2 = _FLIP_SIDE_DIR[(a4[2], a4[3])]
-                okk, a5, why, _mvd = _apply_dbg(
-                    g2, (a4[0], a4[1], side2, d2, None), step)
-                if not okk:
-                    return None, '拆壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
-            prefix.append(a5)
+        # 逆外层共轭——复用 _exec_segment（flip=True 支持拆壳换边重试）
+        out, fail = _exec_segment(g2, unseal4, p0, step, flip=True)
+        if fail is not None:
+            return None, '拆壳第%d步被拒(%s)' % (fail[0] + 1, fail[2]), \
+                list(prefix)
+        prefix += out
         if require_solved:
             if not g2.is_solved():
                 return None, '链走通但未还原', list(prefix)
