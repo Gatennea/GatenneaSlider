@@ -363,7 +363,8 @@ FEATURES = (
     dict(id='infinite_shuffle', name='无限打乱', aliases=('无限打乱', '随机游走', '连续打乱'),
          kind='setting', place=('settings', 'control'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 控制页「无限打乱」。开启后调用「打乱」会一直随机游走，再次调用「打乱」即停止。'),
+         howto='设置 → 控制页「无限打乱」。开启后调用「打乱」会一直随机游走，再次调用「打乱」即停止。',
+         confusion='它只是「打乱」的持续模式，不是另一个打乱按钮；开了以后要再点一次「打乱」才停。'),
 
     dict(id='macro_manage', name='管理宏', aliases=('管理宏', '宏管理', '删除宏'),
          kind='action', place=('menu_item', '宏定义', '管理宏...'),
