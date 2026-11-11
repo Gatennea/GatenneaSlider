@@ -734,7 +734,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._shuffle_fade_last_ms = 0      # 上一帧时刻（淡入淡出按时间推进）
         self._shuffle_demo_notify = None    # 演示结束后补发的通知 (msg, timer)
         self._shuffle_demo_game = None      # 演示绑定的棋局对象（换盘即失效）
-        self._shuffle_demo_prev_duration = None  # 演示前玩家滑动步长（收尾恢复）
         self._shuffle_demo_progress = 0.0   # 「打乱中 xx%」进度 0~1（切屏瞬间=1）
         self._shuffle_demo_done = 0         # 已演步数
         self._shuffle_demo_total = 0        # 演示总步数
@@ -746,7 +745,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._infinite_shuffle_active = False       # 无限打乱进行中
         self._infinite_shuffle_step_playing = False  # 正在播某一格随机游走
         self._infinite_shuffle_game = None          # 绑定的棋局（换盘即停）
-        self._infinite_prev_duration = None         # 进入前玩家步长（停止时还原）
 
         # 连续撤销/重做（虚拟键盘一键连续播放）：True=连续模式进行中
         self._continuous_undo = False

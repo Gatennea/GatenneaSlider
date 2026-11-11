@@ -174,7 +174,6 @@ class SessionMixin:
             self.cancel_animation()
         self._infinite_shuffle_active = True
         self._infinite_shuffle_game = self.game  # 换盘（新局/载入）即失效停止
-        self._infinite_prev_duration = self.animation_duration  # 停止时还原步长
         # 锚点＝进入无限打乱时的盘面重心；planner 跨帧存活，游走全程靠选步
         # 把重心钉在附近，不依赖被动居中。只借选步能力，不改游走的表现层。
         self._infinite_anchor = (
@@ -244,13 +243,8 @@ class SessionMixin:
         # 取步时棋盘已被推到该步终点；先回退到移动前位置，再滑回终点重放这一格
         for b, p in zip(blocks, rec['moved']):
             b.location = list(p)
-        # 步长跟随玩家速度但夹在 200ms 以内，保证游走连贯可看；动画关闭时
-        # 退化为 60ms 一格（无限打乱本质是视觉特效，仍让它可见地游走）
-        if getattr(self, 'animation_enabled', True) and self.animation_duration > 0:
-            dur = min(self.animation_duration, 200)
-        else:
-            dur = 60
-        self.animation_duration = dur
+        # 步长直接跟随玩家设置（不再自动夹低 / 退化）：进入前与退出后都不改写
+        # animation_duration；玩家关动画时即瞬移游走，但每步照常出声 + 高亮。
         # 无限打乱只计步、不记历史：左下角步数持续增长，纯粹是游走进度
         self.step_count += 1
         self._infinite_shuffle_step_playing = True
@@ -261,11 +255,11 @@ class SessionMixin:
         self._flash_shuffle_selection(rec.get('moved'), rec.get('gap'))
 
     def _restore_infinite_duration(self):
-        """停止无限打乱时还原动画步长；所有结束路径都经这里清掉锚点规划器。"""
-        prev = getattr(self, '_infinite_prev_duration', None)
-        if prev is not None:
-            self.animation_duration = prev
-        self._infinite_prev_duration = None
+        """停止无限打乱的统一收尾：清掉正在播放标记与锚点规划器。
+
+        不再改写 animation_duration——进入前与退出后都用玩家设置的动画速度，
+        无限打乱期间也不自动夹低（见 _infinite_shuffle_step）。
+        """
         self._infinite_shuffle_step_playing = False
         self._infinite_anchor = None
 
