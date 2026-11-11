@@ -8,6 +8,7 @@
     guided_reduce_one               - GBFS 至少填一个洞（逐次消解多缺口）
 """
 import heapq
+import time
 
 from bitboard import is_connected
 from solver.table_core import (canonicalize, _side_components)
@@ -267,6 +268,15 @@ def guided_reduce_one(coords, m, n, step, budget=80000, cancel_check=None,
             return path, expanded
         closed.add(ck)
         expanded += 1
+        # 周期性让出 GIL：本函数是混合流水线最重的 GBFS 搜索核心（纯 Python
+        # 密集循环）。后台求解线程连续展开成百上千节点、全程持有 GIL 不主动
+        # 让出时，主线程（渲染+事件）被饿死 → 求解期游戏卡顿、进度/计时器几秒
+        # 不刷新（guides_reduce_one 旧注释亦自承「卡在聚攏+GBFS 不停機」）。
+        # 参考 fill_macro.py / model_preview.py 同款做法：每展开 256 节点主动
+        # 让出一次时间片，开销可忽略（<1% 求解时间），却让 GUI 持续刷新，
+        # 消除卡顿观感。不影响计算结果与 rng（仅让出调度，不改任何逻辑）。
+        if (expanded & 0xFF) == 0:
+            time.sleep(0)
         if progress_cb is not None and expanded % progress_every == 0:
             progress_cb(expanded)
         if expanded > budget or (cancel_check and cancel_check()):
