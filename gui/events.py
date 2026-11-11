@@ -567,12 +567,17 @@ class EventsMixin:
                                 if rect.collidepoint(mx, my):
                                     in_dropdown = True
                                     break
-                        # 如果不在菜单栏、下拉菜单或右侧面板，跳过事件
+                        # 如果不在菜单栏、下拉菜单或右侧面板：放行「移动相机视角」。
+                        # 求解期用户不能改滑块，游戏区左键一律当作拖拽视野（平移
+                        # 相机）；滚轮缩放本来就在守卫之外、始终可用。仍禁止改动
+                        # 滑块（选缝/选块/拖滑块）。点菜单层之外先收起下拉菜单。
                         if my >= self.menu_bar_height and mx < self.screen_width - self.right_panel_width and not in_dropdown:
-                            # 点空白（菜单层之外）即收起所有下拉菜单；谜题二级
-                            # 子菜单是「常驻」的——鼠标挪开不收，只有点空白才收。
                             if self.show_file_menu or self.show_edit_menu or self.show_puzzle_menu or self.show_macro_menu:
                                 self.close_all_menus()
+                            if event.button == 1:
+                                self.is_dragging = True
+                                self.drag_start = (mx, my)
+                                self.drag_offset = (self.camera_x, self.camera_y)
                             continue
                 
                 # 鼠标移动
