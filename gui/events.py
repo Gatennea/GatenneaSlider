@@ -1845,6 +1845,11 @@ class EventsMixin:
         """
         from solver import (SOLVER_ALGORITHMS, solver_supports,
                             unsupported_solver_msg)
+        # 无限打乱 × 自动求解互斥：与 _start_auto_solve 共用判据，让外部控制
+        # （HTTP / stdin）拿到结构化拒绝，而不是「已启动」的假成功回执。
+        conflict = self._mode_conflict_msg('solve')
+        if conflict:
+            return False, conflict
         if algorithm:
             if algorithm not in SOLVER_ALGORITHMS:
                 return False, f"未知算法: {algorithm}（可选: {', '.join(SOLVER_ALGORITHMS)}）"
@@ -2152,8 +2157,15 @@ class EventsMixin:
                 if action == 'shuffle':
                     # 外部控制（HTTP / stdin）是显式指令：跳过「防意外打乱」确认框，
                     # 否则模态弹窗会卡住自动化调用（无人点按钮）。
-                    self.shuffle_puzzle(confirm=False)
-                    self._cmd_reply(resp_q, True, "已打乱")
+                    # 互斥：无限打乱开关开着时，本次就是「启动连续游走」，
+                    # 求解中必须明确拒绝，别回「已打乱」的假成功。
+                    conflict = (self._mode_conflict_msg('infinite_shuffle')
+                                if getattr(self, 'infinite_shuffle', False) else '')
+                    if conflict:
+                        self._cmd_reply(resp_q, False, conflict)
+                    else:
+                        self.shuffle_puzzle(confirm=False)
+                        self._cmd_reply(resp_q, True, "已打乱")
                 
                 elif action == 'reset':
                     # 外部控制是显式指令：跳过「防意外重置」确认框（与 shuffle 同理）

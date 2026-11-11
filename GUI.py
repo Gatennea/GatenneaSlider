@@ -2296,7 +2296,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 新段还没到」这段窗口里计时/进度**不再被刷新**，通知 3 秒后淡出
                 # ——表现为「右下角没了、以为卡死，其实在算」。后台没结束就该一直
                 # 显示用时，故去掉该条件。
-                if self._auto_solve_running:
+                # 互斥拒绝提示优先：下面两条常驻通知每帧都会覆写
+                # macro_notify_msg，不留窗口的话玩家点「求解」被拒后看到的仍是
+                # 「无限打乱中…」，等于静默拒绝。窗口走完常驻通知自然恢复。
+                _conflict_frames = getattr(self, '_mode_conflict_notice_frames', 0)
+                if _conflict_frames > 0:
+                    self._mode_conflict_notice_frames = _conflict_frames - 1
+                    self.macro_notify_persistent = False
+                elif self._auto_solve_running:
                     elapsed = time.time() - self._auto_solve_start_time
                     progress = self._auto_solve_progress
                     if progress:

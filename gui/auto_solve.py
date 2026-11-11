@@ -22,6 +22,12 @@ class AutoSolveMixin:
         import time
         from copy import deepcopy
 
+        # 无限打乱 × 自动求解互斥（判据与提示在 SessionMixin._mode_conflict_msg）。
+        # 按钮 / 快捷键 / 教程 / 命令面板 / HTTP 都汇到这里，只堵这一处就够；
+        # 已在求解时判据返回 ''，取消路径照常放行。
+        if self._reject_mode_conflict('solve'):
+            return
+
         # 计时中禁止使用求解器
         if self._timer_blocked():
             self.macro_notify_msg = "计时中无法使用求解器"

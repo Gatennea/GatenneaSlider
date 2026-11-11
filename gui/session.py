@@ -10,9 +10,67 @@ _current_puzzle_label/_current_puzzle_form）被计时/记录/求解多处共用
 from puzzle_types import puzzle_key
 import anchor_shuffle
 
+# 无限打乱 × 自动求解：两个方向的启动判据和提示文案的唯一真源。
+# 无限打乱每一格都在滑动，求解期间又禁止滑动，两者同时开只会得到
+# 「一边继续打乱、一边显示正在求解」的假状态（用户 2026-11-12 报）。
+# 按钮 / 快捷键 / 命令面板 / HTTP 全部走这里的判据，不各堵各的。
+SOLVER_BLOCKED_BY_SHUFFLE_MSG = "无限打乱中：先停止打乱再使用求解器"
+SHUFFLE_BLOCKED_BY_SOLVER_MSG = "求解中：先停止求解再开启无限打乱"
+# 互斥拒绝提示要盖过「求解中…」/「无限打乱中…」的常驻通知（主循环每帧覆写
+# macro_notify_msg），留这么多个主循环帧的窗口，之后常驻通知自然恢复。
+MODE_CONFLICT_NOTICE_FRAMES = 150
+
 
 class SessionMixin:
     """对局会话操作与当前局信息（原 GUI.py 内联代码，整体搬迁）。"""
+
+    # ------------------------------------------------------------------
+    # 无限打乱 × 自动求解互斥（唯一判据）
+    # ------------------------------------------------------------------
+    def _infinite_shuffle_active_now(self) -> bool:
+        """无限打乱的连续游走是否真的在跑（不是设置开关开着就算）。"""
+        return bool(getattr(self, '_infinite_shuffle_active', False))
+
+    def _solver_active_now(self) -> bool:
+        """求解是否正在进行：后台计算 / 梯度 / 流式 / 解法宏播放。
+
+        与 events._get_solver_state() 的 'running' 判据同源；写在这里是让
+        打乱入口不必依赖 EventsMixin 也能用同一把尺。
+        """
+        if getattr(self, '_auto_solve_running', False) \
+                or getattr(self, '_gradient_busy', False):
+            return True
+        name = getattr(self, 'macro_exec_name', '') or ''
+        return bool(getattr(self, 'macro_executing', False)
+                    and not getattr(self, 'macro_recording', False)
+                    and (name in ('自动求解', '聚拢', '单次聚拢')
+                         or name.startswith('填洞宏')))
+
+    def _mode_conflict_msg(self, want: str) -> str:
+        """想启动 want（'solve' / 'infinite_shuffle'）时的互斥拒绝理由；'' = 放行。
+
+        ⚠️ 只判「两个功能是否真的在跑」：`infinite_shuffle` 是常驻设置开关，
+        开关开着但游走没开始时求解照常可用，不能误伤。已在求解时再来一次
+        `_start_auto_solve` 是「取消」，必须放行，不能把退出路径也堵死。
+        """
+        shuffle_running = self._infinite_shuffle_active_now()
+        solve_running = self._solver_active_now()
+        if want == 'solve' and shuffle_running and not solve_running:
+            return SOLVER_BLOCKED_BY_SHUFFLE_MSG
+        if want == 'infinite_shuffle' and solve_running and not shuffle_running:
+            return SHUFFLE_BLOCKED_BY_SOLVER_MSG
+        return ''
+
+    def _reject_mode_conflict(self, want: str) -> bool:
+        """写入明确提示并返回「是否拒绝」。GUI 侧入口共用，不静默。"""
+        msg = self._mode_conflict_msg(want)
+        if not msg:
+            return False
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = MODE_CONFLICT_NOTICE_FRAMES
+        self.macro_notify_persistent = False
+        self._mode_conflict_notice_frames = MODE_CONFLICT_NOTICE_FRAMES
+        return True
 
     def _space_interrupts_continuous(self) -> bool:
         """空格打斷：仅在连续播放进行中拦截空格，返回 True 表示本次空格已被消费。"""
@@ -31,6 +89,11 @@ class SessionMixin:
         # 无限打乱进行中：本次调用即为「停止」（优先于一切 guard）
         if getattr(self, '_infinite_shuffle_active', False):
             self._stop_infinite_shuffle()
+            return
+        # 互斥：求解进行中不能启动无限打乱。只拦「开关已开 → 本次要开游走」
+        # 这一条；普通打乱不归这条管，行为不变。判据见 _mode_conflict_msg。
+        if getattr(self, 'infinite_shuffle', False) \
+                and self._reject_mode_conflict('infinite_shuffle'):
             return
         # 教程解法播放中：锁定棋盘操作
         if self._tut_board_locked():
@@ -173,6 +236,9 @@ class SessionMixin:
     # ------------------------------------------------------------------
     def _start_infinite_shuffle(self):
         """进入无限打乱：从当前态开始连续随机游走。"""
+        # 兜底再判一次：直接调本方法（不经 shuffle_puzzle）的入口也要拦。
+        if self._reject_mode_conflict('infinite_shuffle'):
+            return
         self._abort_shuffle_demo()
         if self.animating:
             self.cancel_animation()
