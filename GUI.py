@@ -568,12 +568,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.arrows_enabled = True
         # 开机动画开关（启动时标题动画，可点击/任意键跳过；缺省开）
         self.show_boot_animation = True
-        # 重启等待期加载动画开关（点击重启到进程真正退出之间播一段轻量加载
-        # 动画；由看门进程机制驱动，不持久化、不设独立设置入口，缺省开）
-        self.show_restart_animation = True
-        # 重启触发标记：两个重启入口（文件菜单 / 命令面板）置 True 后，run()
-        # 主循环退出、save_config 之前会先播 _run_restart_phase 再退出。
-        self._pending_restart = False
         # 绘制网格开关（背景网格显示；缺省开；仅原版构型生效，几何模型不画网格）
         self.draw_grid = True
         # 音效开关（素材统一放 assets/audio/，见 gui/audio.py / docs S5）
@@ -2136,13 +2130,58 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         img.set_alpha(int(255 * overlay_alpha))
         self.screen.blit(img, ((sw - bw) // 2, (sh - bh) // 2))
 
-    def _run_boot_phase(self, clock):
-        """开机标题阶段：在加载之上播动画 + 末尾淡出，不额外加时。
+    def _make_boot_cover(self):
+        """开机 / 重启封面：标题 + 副标题 + 弱化棋盘底纹，作为新进程开机动画首屏。
 
-        窗口创建时 __init__ 已绘出首帧（self._boot_paint_time 记录那一刻）。
-        这里只在「空闲时间」(加载极快、还没到最短展示阈值时) 播完整动画；
-        若加载已很慢则不播、直接淡出——整体时长≈真实加载时长，不再像旧版
-        那样在加载之后平白叠加 2.4s。
+        旧版（待办 §三十四 第 8 条）在「本进程退出前」播一段 spinner，用户指出
+        那不是他要的动画——重启是独立进程（看门进程机制，gui/restart.py 的
+        request_restart 等本进程退出后重拉起游戏），他要的动画是**新进程开机**
+        的那一段。于是改由本函数画封面、连同开机帧序列一起由 ``_run_boot_phase``
+        在新进程里播：看门进程重拉起即天然触发，空窗被封面填补。
+        """
+        surf = pygame.Surface((960, 540), pygame.SRCALPHA)
+        sw, sh = surf.get_size()
+        # 弱化棋盘底纹：在透明底上画一层极淡格线，呼应「滑块」主题
+        grid = sw // 16
+        faint = (255, 255, 255, 12)
+        for x in range(0, sw, grid):
+            pygame.draw.line(surf, faint, (x, 0), (x, sh))
+        for y in range(0, sh, grid):
+            pygame.draw.line(surf, faint, (0, y), (sw, y))
+        try:
+            zh = _gui_safe_font('SimHei', 60).render('貓九的滑块游戏', True, (238, 242, 248))
+            en = _gui_safe_font('SimHei', 22).render('GATENNEA SLIDER', True, (150, 205, 235))
+            hint = _gui_safe_font('SimHei', 16).render('加载中…', True, (170, 178, 188))
+            surf.blit(zh, zh.get_rect(center=(sw // 2, sh // 2 - 24)))
+            surf.blit(en, en.get_rect(center=(sw // 2, sh // 2 + 30)))
+            surf.blit(hint, hint.get_rect(center=(sw // 2, sh // 2 + 70)))
+        except Exception:
+            pass
+        return surf
+
+    def _paint_boot_cover(self, cover, alpha):
+        """绘制封面帧：垫 (30,30,30) 同游戏背景，封面按 alpha 透明叠加。"""
+        if alpha <= 0:
+            self.screen.fill((30, 30, 30))
+            return
+        sw, sh = self.screen.get_size()
+        self.screen.fill((30, 30, 30))
+        cw, ch = cover.get_size()
+        scale = max(sw / cw, sh / ch)
+        bw, bh = int(cw * scale), int(ch * scale)
+        # 封面是清晰线稿，用最近邻放大保持硬边（与开机帧一致，别糊成灰边）
+        img = pygame.transform.scale(cover, (bw, bh))
+        img.set_alpha(int(255 * alpha))
+        self.screen.blit(img, ((sw - bw) // 2, (sh - bh) // 2))
+
+    def _run_boot_phase(self, clock):
+        """开机 / 重启封面阶段：新进程启动时播，覆盖加载空缺并充当重启动画。
+
+        流程：封面淡入 → 封面停留 → 封面与首帧交叉淡入 → 播开机帧序列 → 末尾淡出。
+        整体是一段固定时长的标题动画（约 2.3s），不再像旧版那样在加载之后平白
+        叠加——也取代了「本进程退出前」的 spinner（用户明确不要那段）。
+
+        受 ``show_boot_animation`` 开关控制（缺省开）；点击 / 任意键 / QUIT 可跳过。
         """
         if not getattr(self, 'show_boot_animation', True):
             return
@@ -2152,11 +2191,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 frames = self._load_boot_frames()
                 self._boot_frames = frames
             n = len(frames)
-            MIN_HOLD = 800   # 最短展示（加载极快时补到此时长，保证标题可读）
-            FADE = 400       # 淡出时长
+            # 时长参数（ms）
+            COVER_IN = 300     # 封面淡入（黑 → 封面）
+            COVER_HOLD = 520   # 封面停留
+            COVER_OUT = 420    # 封面淡出、首帧渐显（交叉淡入）
+            BOOT_PLAY = 700    # 开机帧序列播放
+            FADE = 400         # 末尾淡出
             paint_t = getattr(self, '_boot_paint_time', 0)
-            init_time = pygame.time.get_ticks() - paint_t
-            free = max(0, MIN_HOLD - init_time)  # 空闲时间：用来播动画
+            cover_total = COVER_IN + COVER_HOLD + COVER_OUT
+            cover = self._make_boot_cover()
             while self.running:
                 now = pygame.time.get_ticks()
                 since = now - paint_t
@@ -2167,14 +2210,24 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                         return
                     if ev.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
                         return
-                if since <= init_time + free:
-                    a = since - init_time
-                    fidx = min(n - 1, int((a / free) * (n - 1))) if free > 0 else 0
+                if since < COVER_IN:
+                    # 封面淡入
+                    self._paint_boot_cover(cover, since / COVER_IN)
+                elif since < COVER_IN + COVER_HOLD:
+                    self._paint_boot_cover(cover, 1.0)
+                elif since < cover_total:
+                    # 封面淡出 + 首帧渐显（交叉淡入）
+                    p = (since - COVER_IN - COVER_HOLD) / COVER_OUT
+                    self.screen.fill((30, 30, 30))
+                    self._paint_boot(frames[0], p)
+                    self._paint_boot_cover(cover, 1.0 - p)
+                elif since < cover_total + BOOT_PLAY:
+                    a = since - cover_total
+                    fidx = min(n - 1, int((a / BOOT_PLAY) * (n - 1))) if BOOT_PLAY > 0 else 0
                     self._paint_boot(frames[fidx], 1.0)
-                elif since <= init_time + free + FADE:
-                    end_fidx = (n - 1) if free > 0 else 0
-                    fa = max(0.0, 1.0 - (since - init_time - free) / FADE)
-                    self._paint_boot(frames[end_fidx], fa)
+                elif since < cover_total + BOOT_PLAY + FADE:
+                    fa = max(0.0, 1.0 - (since - cover_total - BOOT_PLAY) / FADE)
+                    self._paint_boot(frames[n - 1], fa)
                 else:
                     break
                 pygame.display.flip()
@@ -2186,63 +2239,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     # 注：旧的 _play_boot_animation（代码绘制 + 固定 2.4s）已移除，改为预渲染
     # 帧序列方案，见上方 _run_boot_phase / _load_boot_frames。
-
-    def _run_restart_phase(self, clock):
-        """重启等待期加载动画。
-
-        触发点（gui/events.py 的文件菜单 / 命令面板重启）已经先调用
-        ``restart.request_restart()`` 把看门进程 spawn 出来——它用内核句柄阻塞等
-        **本进程退出**后才重拉起游戏。于是这段动画播多久、看门进程就等多久，
-        动画结束本进程一退出立刻重拉起，空窗被填平。
-
-        设计约束（待办 §三十四 第 8 条）：
-        - 不挡住退出流程：本函数绝不再次调用 request_restart，也绝不向上抛异常
-          （任何异常都被吞掉、直接返回，让 run() 照常 save_config/quit/exit）。
-        - 不与 ``--_restart_watch`` 看门进程混淆：只在「主循环已退出、running 已为
-          False」之后被调用，是纯展示层。
-        - 受 ``show_restart_animation`` 开关控制（缺省开）；关掉就直接返回、跳过。
-
-        展示：深色底 + 旋转 spinner + 「正在重启…」文案，约 HOLD 毫秒后返回；
-        点击 / 任意键 / QUIT 事件可提前结束（不打断退出）。
-        """
-        if not getattr(self, 'show_restart_animation', True):
-            return
-        try:
-            import math
-            sw, sh = self.screen.get_size()
-            font = getattr(self, 'status_font', None)
-            HOLD = 1200  # ms，加载动画最短展示时长
-            r = max(18, min(34, sw // 24))
-            cx, cy = sw // 2, sh // 2 - (r + 44)
-            start = pygame.time.get_ticks()
-            while True:
-                now = pygame.time.get_ticks()
-                t = now - start
-                for ev in pygame.event.get():
-                    if ev.type == pygame.QUIT:
-                        return
-                    if ev.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
-                        return
-                if t >= HOLD:
-                    break
-                self.screen.fill((30, 30, 30))
-                ang = (t / 1000.0) * 6.0
-                for k in range(12):
-                    a0 = ang + k * (2 * math.pi / 12)
-                    a1 = a0 + math.pi / 9
-                    shade = 120 + int(120 * (k / 11.0))
-                    pygame.draw.arc(
-                        self.screen, (shade, min(235, shade + 30), 235),
-                        (cx - r, cy - r, r * 2, r * 2), a0, a1, 4)
-                if font:
-                    label = font.render('正在重启…', True, (238, 242, 248))
-                    self.screen.blit(label, label.get_rect(center=(cx, cy + r + 44)))
-                pygame.display.flip()
-                clock.tick(60)
-        except Exception:
-            import traceback
-            traceback.print_exc()
-            return
 
     def run(self):
         """游戏主循环"""
@@ -2487,11 +2483,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             else:
                 self._frame_error_streak = 0
 
-        # 重启等待期加载动画：看门进程已在 request_restart() 就位、正等待本进程
-        # 退出后重拉起游戏。这里先播一段轻量「正在重启…」动画（约 1.2s）再退出，
-        # 恰好填补「点击重启到真正重启成功」之间的空窗（见 _run_restart_phase）。
-        if getattr(self, '_pending_restart', False):
-            self._run_restart_phase(clock)
+        # 重启动画：重启是独立进程——看门进程（gui/restart.py 的 request_restart）
+        # 在事件层触发时已 spawn，正阻塞等本进程退出后重拉起游戏。因此「重启动画」
+        # 由**新进程**的 _run_boot_phase（含封面）承担，本进程退出前不再播 spinner；
+        # 新窗口一创建就绘出封面首帧，空窗被封面填补。
 
         # 退出前保存配置与成绩（成绩内存中维护，此时统一落盘）
         self.records.save()

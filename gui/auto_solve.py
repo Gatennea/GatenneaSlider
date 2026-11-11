@@ -519,6 +519,11 @@ class AutoSolveMixin:
         ``_think_do_walk`` 用 ``commit_move`` 真提交。找不到任何合法走法时
         才把所有 ``be_opted`` 清干净返回 None。走法来自真实缝/真实连通分量，
         所以游走看起来确实在推块，而不是凭空抖动。
+
+        启发式（待办 §三十四 第 4 条优化）：仍是随机抽步，但**优先选「做完之后
+        聚拢度几乎不变」的步**——避免游走把盘面越推越散，看起来像认真试推而非
+        乱晃。聚拢度取与 GUI 聚拢播放同一口径（``gather_metrics``，平移不变）。
+        gather 取不到（异形 / 引擎不支持 / 抛错）时退化回纯随机，绝不卡死。
         """
         import random
         game = self.game
@@ -527,13 +532,12 @@ class AutoSolveMixin:
             gaps = list(self._ann_all_valid_gaps())
         except Exception:
             return None
-        random.shuffle(gaps)
+
+        # 枚举全部合法候选（不提交），记下每步选中块与终态
+        cands = []  # (gt, line, d, fin, sel_blocks)
         for gt, line in gaps:
             dirs = list(self._ann_dirs_for_gap(gt))
-            random.shuffle(dirs)
-            order = list(blocks)
-            random.shuffle(order)
-            for blk in order:
+            for blk in blocks:
                 for b in blocks:
                     b.be_opted = False
                 try:
@@ -543,8 +547,6 @@ class AutoSolveMixin:
                 sel = [b for b in blocks if b.be_opted]
                 # 全员选中 = 整盘纯平移，引擎层本就拒绝，跳过
                 if not sel or len(sel) == len(blocks):
-                    for b in blocks:
-                        b.be_opted = False
                     continue
                 for d in dirs:
                     try:
@@ -553,13 +555,69 @@ class AutoSolveMixin:
                         fin = []
                     if not fin:
                         continue
-                    # 成功：返回规约，be_opted 留在盘上让 _think_do_walk 接管
-                    return (gt, line, d, fin)
+                    cands.append((gt, line, d, list(fin), list(sel)))
+
+        if not cands:
+            # 找不到任何合法走法：清掉枚举残留的选中态，返回 None
+            for b in blocks:
+                b.be_opted = False
+            return None
+
+        # —— 聚拢度稳定优先：按 |Δ聚拢度| 分档，档内随机；避开上一步反向 ——
+        m = getattr(game, 'm', 0)
+        n = getattr(game, 'n', 0)
+        if m > 0 and n > 0:
+            try:
+                from solver.ml.gather_solver import gather_metrics
+                pre = frozenset((b.location[0], b.location[1]) for b in blocks)
+                pre_score = gather_metrics(pre, m, n)['score']
+                unit = 1.0 / (m * n)  # 得分量化单元：每多/少一格重叠
+                scored = []
+                for (gt, line, d, fin, sel) in cands:
+                    # 用「选中块移到 final」推演终态坐标，不真正提交盘面
+                    moved = {id(b): fin[i] for i, b in enumerate(sel)}
+                    post = frozenset(
+                        (moved[id(b)][0], moved[id(b)][1])
+                        if id(b) in moved
+                        else (b.location[0], b.location[1])
+                        for b in blocks)
+                    post_score = gather_metrics(post, m, n)['score']
+                    scored.append((abs(post_score - pre_score),
+                                   (gt, line, d, fin, sel)))
+                scored.sort(key=lambda x: x[0])
+                best_d = scored[0][0]
+                # 得分是 unit 的整数倍，同 Δ 的算同一档（容浮点误差）
+                band = [s for s in scored
+                        if abs(s[0] - best_d) <= unit + 1e-9]
+                # 避开上一步正好反向：方向取反映射，同缝同线反向才排除
+                last = getattr(self, '_think_last_move', None)
+                if last:
+                    opp = {'a': 'd', 'd': 'a', 'w': 's', 's': 'w'}
+                    fwd = [s for s in band
+                           if not (s[1][0] == last[0] and s[1][1] == last[1]
+                                   and s[1][2] == opp.get(last[2], ''))]
+                    if fwd:
+                        band = fwd
+                pick = random.choice(band)[1]
+                # 选中态留给 _think_do_walk：只把被选中那组标亮，其余清掉
                 for b in blocks:
                     b.be_opted = False
+                for b in pick[4]:
+                    b.be_opted = True
+                self._think_last_move = (pick[0], pick[1], pick[2])
+                return (pick[0], pick[1], pick[2], pick[3])
+            except Exception:
+                # 退化到下面纯随机，绝不卡死
+                pass
+
+        # 退化：纯随机（保留旧行为），仍记录上一步用于反向避让
+        pick = random.choice(cands)
         for b in blocks:
             b.be_opted = False
-        return None
+        for b in pick[4]:
+            b.be_opted = True
+        self._think_last_move = (pick[0], pick[1], pick[2])
+        return (pick[0], pick[1], pick[2], pick[3])
 
     def _reset_think_history(self):
         """清空「思考」演示用的本地历史（真实撤销接口据此回退游走）。"""
@@ -574,6 +632,8 @@ class AutoSolveMixin:
         """
         self._reset_think_history()
         self._think_history.save_snapshot(self.game, None, None)
+        # 新一轮游走：清空「上一步方向」记忆，避免反向避让跨段串味
+        self._think_last_move = None
         self._think_walk.begin()
 
     def _think_abort_and_restore(self):
@@ -595,6 +655,17 @@ class AutoSolveMixin:
         if walk is not None:
             walk.reset()
         self._reset_think_history()
+        # 收尾清掉游走可能留下的选中高亮（be_opted / selected_gap），
+        # 避免退出演示后盘面还亮着缝隙红线 + 滑块组提亮。
+        try:
+            game = getattr(self, 'game', None)
+            if game is not None:
+                for b in getattr(game, 'blocks', []):
+                    b.be_opted = False
+            if getattr(self, 'selected_gap', None) is not None:
+                self.selected_gap = None
+        except Exception:
+            pass
 
     def _think_do_walk(self):
         """真实走一步（求解器「思考」演示的游走）：opt+try_move+commit_move，
@@ -602,6 +673,11 @@ class AutoSolveMixin:
 
         绝不碰玩家全局历史 / step_count / 聚拢度；聚拢度按 game.blocks 算，
         真实移动让它自然波动，正是「像在试推」的观感。
+
+        选中动画：让「假装思考」的游走也走游戏真实渲染途径——游走步落下后
+        短暂高亮选中缝隙（红线）+ 滑块组（提亮），看起来像人在选这组。这正是
+        用户指出的缺失点（旧实现没走渲染途径，游走全程无选中动画）。关掉选中
+        动画时退回旧行为：清掉 be_opted，不碰盘面，避免遗留高亮。
         """
         spec = self._think_find_move()
         if spec is None:
@@ -616,8 +692,13 @@ class AutoSolveMixin:
         # 本地历史：真实撤销接口据此回退（与橙色撤销同一 GameHistory.undo）
         self._think_history.save_snapshot(self.game, move_info, None)
         self._think_walk.note_walk(move_info)
-        for b in self.game.blocks:
-            b.be_opted = False
+        # 选中动画：通过真实渲染途径画高亮（be_opted 提亮 + selected_gap 红线）。
+        # 关掉选中动画时不碰盘面状态，只清掉 be_opted，避免遗留缝隙红线。
+        if getattr(self, 'selection_animation_enabled', False):
+            self._flash_move_selection(move_info, False, after_commit=True)
+        else:
+            for b in self.game.blocks:
+                b.be_opted = False
         # 视觉滑动（修复「游走根本没动画」）：提交已完成，这里只让渲染层
         # 从 moved→final 插值，看起来像真在推块。关闭动画时退回瞬时（原行为）。
         self._think_start_slide(selected, moved_positions, final, 'walk')
