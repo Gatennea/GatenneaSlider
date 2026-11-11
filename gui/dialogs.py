@@ -323,6 +323,14 @@ class PygameFileDialog:
             if self.text_input.handle_event(event):
                 return True
 
+        elif event.type == pygame.TEXTINPUT:
+            # IME / SDL 文本输入组字结果（含中文）。保存框打开时
+            # events._sync_ime_text_input 把 TextInput._text_input_mode 置 True，
+            # 此时打字只经 TEXTINPUT 投递，必须转发给 TextInput，否则出现
+            # 「能删字不能打字」（删除走 KEYDOWN 不受模式影响，故仍可用）。
+            if self.text_input.handle_event(event):
+                return True
+
         return False
     
     def _confirm(self):
@@ -1172,6 +1180,15 @@ class DialogsMixin:
                 self.custom_error = ''
                 return True
             elif event.key == pygame.K_RETURN:
+                # 回车：非末字段 → 进入下一字段；末字段 → 视为确定（提交）。
+                fields = self._custom_field_order()
+                if self.custom_active_field in fields:
+                    idx = fields.index(self.custom_active_field)
+                    if idx < len(fields) - 1:
+                        self.custom_active_field = fields[idx + 1]
+                        self.custom_error = ''
+                        return True
+                # 已在最后字段（或焦点不在字段上）：回车 = 确定
                 fake_event = pygame.event.Event(pygame.MOUSEBUTTONDOWN,
                     button=1, pos=self.custom_ok_btn.center)
                 return self.handle_custom_dialog_events(fake_event)
@@ -1188,13 +1205,24 @@ class DialogsMixin:
                     current = self.custom_fields[self.custom_active_field]
                     self.custom_fields[self.custom_active_field] = current[:-1]
                 return True
-            elif event.unicode.isdigit():
+            elif event.unicode.isdigit() and not TextInput._text_input_mode:
                 if self.custom_active_field:
                     current = self.custom_fields[self.custom_active_field]
                     if len(current) < 3:
                         self.custom_fields[self.custom_active_field] = current + event.unicode
                 return True
 
+            return True
+
+        elif event.type == pygame.TEXTINPUT:
+            # 数字经 IME / SDL 文本输入投递时（_text_input_mode 为 True）走这里；
+            # 该模式下 KEYDOWN 的数字分支被关闭，避免重复插入。仅接受数字。
+            if self.custom_active_field:
+                digits = ''.join(ch for ch in event.text if ch.isdigit())
+                if digits:
+                    current = self.custom_fields[self.custom_active_field]
+                    if len(current) < 3:
+                        self.custom_fields[self.custom_active_field] = (current + digits)[:3]
             return True
 
         return False
