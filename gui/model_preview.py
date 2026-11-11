@@ -95,7 +95,8 @@ _BIAS = 0.3
 # mi 8×8 每步 ~13ms，240 步要 3s，而 0.9s 之后再多走几步，104px 上也看不出
 # 差别了。
 _TIME_BUDGET = 0.6
-# 单张缩图最多打乱多少步（真打乱是 m*n*10，10×10 要 1000 步 ≈ 1s，太多）
+# 单张缩图最多打乱多少步（真打乱默认 default_shuffle_attempts，10×10 约 158 步，
+# 封顶这里 120 即可：缩图 104px 上步数再多也看不出差别）
 _MAX_ATTEMPTS = 120
 # 每片打乱步数：片间 sleep 让出 GIL。否则后台线程一口气跑几百步，
 # 主循环一段时间完全抢不到解释器锁，表现为持续掉帧。
@@ -408,23 +409,28 @@ def _step_of(target):
 
 
 def _attempts_for(target):
-    """该目标打乱多少步：真打乱口径 m*n*10，但封顶 _MAX_ATTEMPTS。
+    """该目标打乱多少步：复用 game.default_shuffle_attempts（随块数次线性增长），
+    但封顶 _MAX_ATTEMPTS。
 
-    封顶是为了让「预热全部预设」这件事有界：10×10 真打乱要 1000 步（≈1s），
-    而缩图 104px 上 240 步与 1000 步看不出差别。
+    封顶是为了让「预热全部预设」这件事有界：10×10 真打乱要 ~160 步（公式给出），
+    而缩图 104px 上步数再多也看不出差别。
     """
     if target[0] == 'model':
         m = n = 4
+        kind = 'square'
     elif target[0] == 'style':
         from gui import design_styles
         data = design_styles.load_style(_config_dir, target[1]) if _config_dir else None
         m = n = 4
+        kind = 'square'
         if data:
             m = max(2, int(data.get('m') or 4))
             n = max(2, int(data.get('n') or 4))
+            kind = str(data.get('kind') or 'square')
     else:
-        _, _kind, m, n, _step = target
-    return max(40, min(int(m) * int(n) * 10, _MAX_ATTEMPTS))
+        _, kind, m, n, _step = target
+    from game import default_shuffle_attempts
+    return min(default_shuffle_attempts(m, n, kind=kind), _MAX_ATTEMPTS)
 
 
 def _shape_set(polys):
@@ -500,7 +506,7 @@ def _polys_scrambled(target, goal_polys=None, size=THUMB_SIZE):
     走真引擎而不是「把块随机挪一挪」：模型板型的合法形态由缝族与朝向
     邻接表决定，随手挪出来的是**这题根本走不到的局面**，预览就成了骗人。
 
-    参数与 GUI 真打乱同源（bias 0.3），步数取 m*n*10（封顶 _MAX_ATTEMPTS），
+    参数与 GUI 真打乱同源（bias 0.3），步数取 default_shuffle_attempts（封顶 _MAX_ATTEMPTS），
     但**分片**执行：每片 `_MOVE_SLICE` 步之间 sleep 一下让出 GIL。一口气
     跑完时（mi 8×8 要 3s）主循环会被后台线程饿着，玩家看到的是持续掉帧。
 

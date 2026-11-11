@@ -90,7 +90,11 @@ class SessionMixin:
         if self.animating:
             self.cancel_animation()
 
-        attempts = self.current_m * self.current_n * 10  # 打乱尝试次数
+        # 打乱尝试次数：随盘面上块数次线性增长（game.default_shuffle_attempts），
+        # 小盘不冗余、大盘不爆炸；按当前谜题类型微调（见该函数注释）。
+        from game import default_shuffle_attempts
+        attempts = default_shuffle_attempts(
+            self.current_m, self.current_n, kind=self._current_kind())
 
         # 演示动画起点：打乱前各块位置。打乱本身是纯逻辑、瞬时完成的；
         # 「打乱过程动画」靠 game.shuffle 带 record 记录每步，从该状态重放

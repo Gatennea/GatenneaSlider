@@ -52,8 +52,9 @@ def main():
 
     g = gui.game
     records = []
-    # 与 GUI 同参：attempts = m*n*10（这是**尝试次数**，不是走成的步数——
-    # 不可逆走法会被跳过）。GUI 的「已打乱 N 步」现在按 records 长度报，
+    # 本测试用固定 attempts（不依赖 GUI 默认；GUI 现用 default_shuffle_attempts，
+    # 随块数次线性增长）。attempts 是**尝试次数**，不是走成的步数——
+    # 不可逆走法会被跳过。GUI 的「已打乱 N 步」按 records 长度报，
     # 所以这里顺便钉住「实走 ≤ 尝试」以及真实耗时可接受。
     target = 4 * 4 * 10
     t0 = time.perf_counter()

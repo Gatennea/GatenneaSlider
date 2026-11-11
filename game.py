@@ -197,6 +197,32 @@ def record_shuffle_move(record, game, gap_type, line, direction, step,
     })
 
 
+def default_shuffle_attempts(m, n, kind='square', tile_count=None):
+    """打乱尝试次数的通用默认值（= 近似成功步数，因约 15% 随机走法被可逆性校验跳过）。
+
+    公式：clamp( round(K · T**ALPHA · kind_factor), FLOOR, CAP )
+      T           = 块数（满矩形 = m·n；异形等传真实块数 tile_count）
+      K=5  ALPHA=0.75  FLOOR=40  CAP=300
+      kind_factor: square=1.0 / triangle=0.9 / mi=1.1（初版合理估值，均可用 diag 实测再校准）
+
+    为什么次线性（ALPHA=0.75）：盘面可达状态数随块数近似阶乘增长，打乱步数只需随块数
+    「温和」上升就能充分打散；线性 m*n*10 在大盘会爆炸式浪费时间（10×10 给 1000 步）。
+    下限 40 直接对上「2~4×4 约 40 步足够」的体验直觉。
+
+    min_score 闸（默认 0.75）会在终态过接近复原态时重洗（最多 3×），所以基准可以放心取
+    lean：万一某尺寸偏少导致太简单，闸会补，不会出 trivial 盘。
+
+    注意：这是「玩家默认」；可复现种子盘（script_disk_plan.py）的写死值不在此公式范围内。
+    """
+    T = int(tile_count) if tile_count is not None else int(m) * int(n)
+    if T <= 0:
+        T = 1
+    K, ALPHA, FLOOR, CAP = 5.0, 0.75, 40, 300
+    kind_factor = {'square': 1.0, 'triangle': 0.9, 'mi': 1.1}.get(kind, 1.0)
+    val = K * (T ** ALPHA) * kind_factor
+    return max(FLOOR, min(int(round(val)), CAP))
+
+
 class SliderMatrix:
     """
     滑块矩阵管理类

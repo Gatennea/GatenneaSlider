@@ -30,7 +30,7 @@ from game import SliderMatrix  # noqa: E402
 M, N, STEP = 4, 4, 2
 N_SHUFFLE = 2000
 N_CERT = 30
-ATTEMPTS = M * N * 10  # 与 GUI 同参：attempts = m*n*10
+ATTEMPTS = M * N * 10  # 本测试固定 attempts（不依赖 GUI 默认；GUI 现用 default_shuffle_attempts）
 
 # 只把这些文件当「接线」检查；docs/ 与 archive/ 里的历史记录不算回流。
 SCAN_FILES = (
