@@ -93,24 +93,24 @@ def _static_cases(step_px):
     check(f._anti_drift_origin == c0, 'A2 origin 缓存=初始质心',
           'c0=%s origin=%s' % (c0, f._anti_drift_origin))
 
-    # 盘整体平移 +2 行 +1 列
+    # 盘整体平移 +2 行 +1 列 → 死区 1 格：只补超出部分（行补 1 格、列在死区内不动）
     for b in blocks:
         b.location[0] += 2
         b.location[1] += 1
     ox, oy = f._anti_drift_cam_offset(step_px)
-    check(ox == -1 * step_px and oy == -2 * step_px,
-          'A3 盘平移后偏移恰好抵消质心漂移', 'ox=%s oy=%s' % (ox, oy))
+    check(ox == 0 and oy == -1 * step_px,
+          'A3 只补偿超出死区的部分（行 -1 格、列 0）', 'ox=%s oy=%s' % (ox, oy))
     c1 = _centroid(blocks)
-    check(abs((c1[0] + ox / step_px) - c0[0]) < 1e-9
-          and abs((c1[1] + oy / step_px) - c0[1]) < 1e-9,
-          'A4 屏幕质心锁回起点')
+    check(abs((c1[0] + ox / step_px) - c0[0]) <= 1.0 + 1e-9
+          and abs((c1[1] + oy / step_px) - c0[1]) <= 1.0 + 1e-9,
+          'A4 屏幕漂移被限制在死区内（≤1 格）')
     for b in blocks:
         b.location[0] += 1
     ox, oy = f._anti_drift_cam_offset(step_px)
     c2 = _centroid(blocks)
-    check(abs((c2[0] + ox / step_px) - c0[0]) < 1e-9
-          and abs((c2[1] + oy / step_px) - c0[1]) < 1e-9,
-          'A5 多步累积仍锁原点')
+    check(abs((c2[0] + ox / step_px) - c0[0]) <= 1.0 + 1e-9
+          and abs((c2[1] + oy / step_px) - c0[1]) <= 1.0 + 1e-9,
+          'A5 多步累积仍限制在死区内')
 
     # C. 非演示态：返回 0 且清空 origin
     f2 = _Fake(list(blocks), executing=False)
@@ -135,14 +135,12 @@ def _static_cases(step_px):
 
 
 def _animation_case(step_px):
-    """★ 抖动护栏：动画期间 location 恒为起点，只有渲染插值在动。"""
-    # 5×5 满盘：24 块右移一列，(0,0) 那块不动
+    """★ 抖动护栏：小漂移时相机必须**完全不动**（像打乱一样静止）；
+    大漂移只平滑补偿超出死区（1 格）的部分。"""
+    # 场景 1：24 块右移 1 列（漂移 24/25 = 0.96 格 ≤ 死区 1）→ 相机全程不动
     blocks = [_Block(r, c) for r in range(5) for c in range(5)]
     f = _Fake(list(blocks))
-    c0 = _centroid(blocks)
-    check(f._anti_drift_cam_offset(step_px) == (0, 0),
-          'E1 动画首帧偏移 0')
-
+    check(f._anti_drift_cam_offset(step_px) == (0, 0), 'E1 首帧偏移 0')
     moving = [b for b in blocks if not (b.location[0] == 0
                                        and b.location[1] == 0)]
     f.animating = True
@@ -150,38 +148,49 @@ def _animation_case(step_px):
     f.anim_start_pos = [[b.location[0], b.location[1]] for b in moving]
     f._anim_dr = 0.0
     f._anim_dc = 1.0
-
-    offsets, locked = [], True
+    offs = []
     for t in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0):
         f.anim_progress = t
-        pos_map = f._frame_render_positions()
-        # 本帧**渲染**质心（不是 location 质心）
-        sx = sum(pos_map.get(id(b), (b.location[0], b.location[1]))[1]
-                 for b in blocks) / len(blocks)
-        sy = sum(pos_map.get(id(b), (b.location[0], b.location[1]))[0]
-                 for b in blocks) / len(blocks)
-        ox, oy = f._anti_drift_cam_offset(step_px)
-        offsets.append((ox, oy))
-        # 屏幕质心 = 渲染质心 + 偏移 / 每格像素
-        if (abs((sx + ox / step_px) - c0[0]) > 0.02
-                or abs((sy + oy / step_px) - c0[1]) > 0.02):
-            locked = False
-    check(locked, 'E2 动画每一帧屏幕质心都锁在起点（逐帧连续补偿）',
-          'offsets=%s' % (offsets,))
-    check(len(set(offsets)) >= 5, 'E3 偏移逐帧变化而非台阶式跳变',
-          'distinct=%d offsets=%s' % (len(set(offsets)), offsets))
-    check(offsets[0] == (0, 0), 'E4 t=0 偏移为 0')
-    expect = int(round(-24.0 / 25 * step_px))
-    check(offsets[-1][0] == expect, 'E5 t=1 偏移 = -24/25 格',
-          'got=%s expect=%s' % (offsets[-1][0], expect))
+        offs.append(f._anti_drift_cam_offset(step_px))
+    check(all(o == (0, 0) for o in offs),
+          'E2 小漂移（<死区）相机全程不动（静止大片真静止）', 'offs=%s' % (offs,))
 
-    # commit：location 一次性跳到终态、动画结束；偏移必须与 t=1 相同
-    for b in moving:
-        b.location[1] += 1
-    f.animating = False
-    after = f._anti_drift_cam_offset(step_px)
-    check(after == offsets[-1], 'E6 commit 前后偏移一致（无跳变）',
-          'before=%s after=%s' % (offsets[-1], after))
+    # 场景 2：24 块右移 2 列（漂移 1.92 格 > 死区）→ 只补超出 1 格的部分
+    blocks2 = [_Block(r, c) for r in range(5) for c in range(5)]
+    f2 = _Fake(list(blocks2))
+    c0b = _centroid(blocks2)
+    f2._anti_drift_cam_offset(step_px)   # 定锚
+    moving2 = [b for b in blocks2 if not (b.location[0] == 0
+                                          and b.location[1] == 0)]
+    f2.animating = True
+    f2.anim_blocks = list(moving2)
+    f2.anim_start_pos = [[b.location[0], b.location[1]] for b in moving2]
+    f2._anim_dr = 0.0
+    f2._anim_dc = 2.0
+    offs2, capped = [], True
+    for t in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0):
+        f2.anim_progress = t
+        pos_map = f2._frame_render_positions()
+        sx = sum(pos_map.get(id(b), (b.location[0], b.location[1]))[1]
+                 for b in blocks2) / len(blocks2)
+        ox, oy = f2._anti_drift_cam_offset(step_px)
+        offs2.append((ox, oy))
+        if abs((sx + ox / step_px) - c0b[0]) > 1.0 + 0.02:
+            capped = False
+    check(capped, 'E3 大漂移时可见漂移被限制在死区内', 'offs=%s' % (offs2,))
+    check(len(set(offs2)) >= 4, 'E4 补偿逐帧连续而非台阶跳变',
+          'distinct=%d' % len(set(offs2)))
+    expect = int(round(-(2 * 24.0 / 25 - 1.0) * step_px))
+    check(offs2[-1][0] == expect, 'E5 t=1 只补超出死区的部分 = -(1.92-1) 格',
+          'got=%s expect=%s' % (offs2[-1][0], expect))
+
+    # commit：偏移与 t=1 一致（无跳变）
+    for b in moving2:
+        b.location[1] += 2
+    f2.animating = False
+    after = f2._anti_drift_cam_offset(step_px)
+    check(after == offs2[-1], 'E6 commit 前后偏移一致（无跳变）',
+          'before=%s after=%s' % (offs2[-1], after))
 
 
 def _cache_case():

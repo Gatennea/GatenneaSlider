@@ -31,6 +31,12 @@ from gui.triangle_view import TriangleBoardView
 from records import format_time
 
 
+# 防偏移死区（格）：质心漂移在此范围内时相机**完全不动**（与打乱的锚点式
+# 防偏移同观感：静止的大片真静止）；超出才平滑补偿超出部分。取 1.0 与
+# anchor_shuffle.MAX_DRIFT 同量级（打乱实测最大漂移 1 格，用户称「很完美」）。
+ANTI_DRIFT_DEAD_ZONE_CELLS = 1.0
+
+
 class RendererMixin:
     """渲染相关方法 Mixin"""
 
@@ -1591,8 +1597,20 @@ class RendererMixin:
         if origin is None:
             self._anti_drift_origin = (cx, cy)
             origin = (cx, cy)
-        off = (int(round(-(cx - origin[0]) * step_px)),
-               int(round(-(cy - origin[1]) * step_px)))
+        # 死区（2026-11-11 二次修，用户口径：打乱那套「做的很完美」）：
+        # 打乱走 anchor_shuffle —— 全程**不动相机**、静止的大片真静止，靠选步
+        # 把质心漂移钉在 ≤1 格。求解不能换步，但我们仍可照同一口径：
+        # 质心漂移在 DEAD_ZONE_CELLS 格内时相机**完全不动**（静止块真静止，
+        # 观感与打乱一致）；超出才平滑地**只补偿超出部分**，把可见漂移钉在
+        # 死区内。⚠️ 旧的「全量质心补偿」哪怕只有 k/N 格，也会让静止的大片
+        # 反方向滑 k/N 格 → 整盘在游、一直在抖（用户实测）。
+        dz = ANTI_DRIFT_DEAD_ZONE_CELLS
+
+        def _excess(v):
+            return 0.0 if abs(v) <= dz else (v - math.copysign(dz, v))
+
+        off = (int(round(-_excess(cx - origin[0]) * step_px)),
+               int(round(-_excess(cy - origin[1]) * step_px)))
         self._anti_drift_cam = off
         return off
 
