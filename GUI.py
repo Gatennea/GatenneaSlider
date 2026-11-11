@@ -568,6 +568,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.arrows_enabled = True
         # 开机动画开关（启动时标题动画，可点击/任意键跳过；缺省开）
         self.show_boot_animation = True
+        # 重启等待期加载动画开关（点击重启到进程真正退出之间播一段轻量加载
+        # 动画；由看门进程机制驱动，不持久化、不设独立设置入口，缺省开）
+        self.show_restart_animation = True
+        # 重启触发标记：两个重启入口（文件菜单 / 命令面板）置 True 后，run()
+        # 主循环退出、save_config 之前会先播 _run_restart_phase 再退出。
+        self._pending_restart = False
         # 绘制网格开关（背景网格显示；缺省开；仅原版构型生效，几何模型不画网格）
         self.draw_grid = True
         # 音效开关（素材统一放 assets/audio/，见 gui/audio.py / docs S5）
@@ -2181,6 +2187,63 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
     # 注：旧的 _play_boot_animation（代码绘制 + 固定 2.4s）已移除，改为预渲染
     # 帧序列方案，见上方 _run_boot_phase / _load_boot_frames。
 
+    def _run_restart_phase(self, clock):
+        """重启等待期加载动画。
+
+        触发点（gui/events.py 的文件菜单 / 命令面板重启）已经先调用
+        ``restart.request_restart()`` 把看门进程 spawn 出来——它用内核句柄阻塞等
+        **本进程退出**后才重拉起游戏。于是这段动画播多久、看门进程就等多久，
+        动画结束本进程一退出立刻重拉起，空窗被填平。
+
+        设计约束（待办 §三十四 第 8 条）：
+        - 不挡住退出流程：本函数绝不再次调用 request_restart，也绝不向上抛异常
+          （任何异常都被吞掉、直接返回，让 run() 照常 save_config/quit/exit）。
+        - 不与 ``--_restart_watch`` 看门进程混淆：只在「主循环已退出、running 已为
+          False」之后被调用，是纯展示层。
+        - 受 ``show_restart_animation`` 开关控制（缺省开）；关掉就直接返回、跳过。
+
+        展示：深色底 + 旋转 spinner + 「正在重启…」文案，约 HOLD 毫秒后返回；
+        点击 / 任意键 / QUIT 事件可提前结束（不打断退出）。
+        """
+        if not getattr(self, 'show_restart_animation', True):
+            return
+        try:
+            import math
+            sw, sh = self.screen.get_size()
+            font = getattr(self, 'status_font', None)
+            HOLD = 1200  # ms，加载动画最短展示时长
+            r = max(18, min(34, sw // 24))
+            cx, cy = sw // 2, sh // 2 - (r + 44)
+            start = pygame.time.get_ticks()
+            while True:
+                now = pygame.time.get_ticks()
+                t = now - start
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        return
+                    if ev.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+                        return
+                if t >= HOLD:
+                    break
+                self.screen.fill((30, 30, 30))
+                ang = (t / 1000.0) * 6.0
+                for k in range(12):
+                    a0 = ang + k * (2 * math.pi / 12)
+                    a1 = a0 + math.pi / 9
+                    shade = 120 + int(120 * (k / 11.0))
+                    pygame.draw.arc(
+                        self.screen, (shade, min(235, shade + 30), 235),
+                        (cx - r, cy - r, r * 2, r * 2), a0, a1, 4)
+                if font:
+                    label = font.render('正在重启…', True, (238, 242, 248))
+                    self.screen.blit(label, label.get_rect(center=(cx, cy + r + 44)))
+                pygame.display.flip()
+                clock.tick(60)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return
+
     def run(self):
         """游戏主循环"""
         clock = pygame.time.Clock()
@@ -2423,6 +2486,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     self.running = False
             else:
                 self._frame_error_streak = 0
+
+        # 重启等待期加载动画：看门进程已在 request_restart() 就位、正等待本进程
+        # 退出后重拉起游戏。这里先播一段轻量「正在重启…」动画（约 1.2s）再退出，
+        # 恰好填补「点击重启到真正重启成功」之间的空窗（见 _run_restart_phase）。
+        if getattr(self, '_pending_restart', False):
+            self._run_restart_phase(clock)
 
         # 退出前保存配置与成绩（成绩内存中维护，此时统一落盘）
         self.records.save()

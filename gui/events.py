@@ -802,6 +802,7 @@ class EventsMixin:
                                         # 自动重拉起（游戏自己不能重启自己，见 gui/restart.py）
                                         from gui import restart as _restart_mod
                                         _restart_mod.request_restart()
+                                        self._pending_restart = True
                                         self.running = False
                                     file_clicked = True
                                     break
@@ -2665,6 +2666,7 @@ class EventsMixin:
                     # 再正常退出。游戏自己不能重启自己，故走独立进程。
                     from gui import restart as _restart_mod
                     _restart_mod.request_restart()
+                    self._pending_restart = True
                     self.running = False
                     self._cmd_reply(resp_q, True, "已安排重启，游戏退出后由看门进程自动重开")
 
