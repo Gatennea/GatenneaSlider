@@ -135,6 +135,13 @@ def gather_solve_unified(game, step: int = None, cancel_check=None,
 
     三个被分发到的函数签名一致（含 `gather_params` 的 None 透传），
     所以 GUI 侧不需要为形态做任何特判。
+    随机探索四参数（`stochastic` / `seed` / `max_kicks` / `kick_moves`）
+    三形态同名同义，按形态分发的 kwargs 不会有一边被静默吞掉。
+    ⚠️ 异形的 `stochastic=None`（缺省）**不是**「关闭」：2026-11-11
+    起三角 / 米字默认只开「卡住随机踢」（关掉会打坏贪心的随机挑步），
+    实测平均最终聚拢度 0.8279 → 0.8427；显式 `stochastic=False` 才回到
+    移植前的确定性行为。方形仍默认关闭，详见
+    `solver/ml/shape_gather.py::shape_restart_kwargs`。
     """
     form = game_form(game)
     if form == 'mi':

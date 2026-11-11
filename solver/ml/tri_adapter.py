@@ -24,7 +24,7 @@
 异形从第一天就不埋（計劃 §3 明确要求）。
 """
 
-from solver.ml.shape_gather import ShapeGather
+from solver.ml.shape_gather import ShapeGather, shape_restart_kwargs
 from game_triangle import (
     GAP_DIRECTIONS, TriangleSliderMatrix, side_of,
 )
@@ -209,6 +209,7 @@ def restore(game: TriangleSliderMatrix, s: dict) -> None:
 def tri_gather_solve(game, step: int = None, cancel_check=None,
                      progress_callback=None, max_steps=500, patience=150,
                      max_wait_time=30.0, target_score=1.0, aggressiveness=0.2,
+                     stochastic=None, seed=None, max_kicks=3, kick_moves=3,
                      **kw):
     """三角聚拢求解——签名与方形 `gather_solve` 对齐。
 
@@ -218,6 +219,14 @@ def tri_gather_solve(game, step: int = None, cancel_check=None,
       · 方形版还吃 `gather_params`（max_steps / patience / ... 逐项可能为
         None 表示不设限），这里同样支持——**None 透传给 ShapeGather.solve**，
         它的每个停机条件都是「None = 不设限」，语义一致。
+
+    随机探索四个参数（stochastic / seed / max_kicks / kick_moves）与方形
+    `gather_solve` 同名同义，**必须真的往下传**：`gather_solve_unified`
+    按形态分发，三形态要能吃同一套 kwargs，否则异形会静默吞掉开关。
+    ⚠️ `stochastic=None`（异形默认）＝只开「卡住随机踢」、关掉会打坏
+    贪心的「band 内随机挑步」，并用初始坐标派生稳定 seed 保证可复现；
+    显式 False = 移植前逐位一致，True = 完整 stochastic。判据与数据见
+    `shape_gather.shape_restart_kwargs` 与待办 §三十四 第 6 条。
 
     `step` 缺省用 game 自己的（`TriangleSliderMatrix` 不存 step，从外部传入）。
     返回 dict 额外带 `type='gather'` 以便 GUI 走 `_handle_gather_result`
@@ -232,6 +241,10 @@ def tri_gather_solve(game, step: int = None, cancel_check=None,
                    max_wait_time=max_wait_time, target_score=target_score,
                    aggressiveness=aggressiveness).items()
               if v is not None}
+    # 随机探索：停机类参数的 None 要摘掉；这四个 + 三个形态专属开关由
+    # shape_restart_kwargs 统一翻译（异形默认只开随机踢，见该函数 docstring）。
+    params.update(shape_restart_kwargs(tri_coords(game), stochastic, seed,
+                                       max_kicks, kick_moves))
     res = sg.solve(game, spec, step, cancel_check=cancel_check,
                    progress_callback=progress_callback, **params)
     res['type'] = 'gather'

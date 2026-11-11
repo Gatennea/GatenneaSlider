@@ -27,10 +27,53 @@
     res = sg.solve(game, TriSpec(k=4, step=2))
 """
 
+import hashlib
 import random
 import time
 
-__all__ = ['ShapeGather', 'solve_gather']
+__all__ = ['ShapeGather', 'solve_gather', 'stable_seed',
+           'shape_restart_kwargs']
+
+
+def stable_seed(coords):
+    """由初始坐标派生**跨进程稳定**的随机种子。
+
+    不能用内置 `hash()`：集合迭代序与 PYTHONHASHSEED 会让它每次跑都变，
+    玩家同一盘连点两次求解会拿到不同结果。坐标一律转成字符串再排序，
+    米字格的半整数 / 三元组 rep 也照常稳定。
+    """
+    key = repr(sorted(tuple(map(str, c)) for c in coords)).encode('utf-8')
+    return int.from_bytes(hashlib.md5(key).digest()[:4], 'big')
+
+
+def shape_restart_kwargs(coords, stochastic=None, seed=None,
+                         max_kicks=3, kick_moves=3):
+    """把异形统一入口的 `stochastic` 翻译成 ShapeGather.solve 的参数。
+
+    三种语义（待办 §三十四 第 6 条，2026-11-11 生产参数 A/B 实测）：
+      · None（**异形默认**）＝只开 ③ 随机踢、关掉 ② 随机挑步。
+        实测完整 stochastic（②+③）会把贪心骨架打坏（平均聚拢度
+        0.8279 → 0.8170），只开 ③ 才提高（→ 0.8427）。seed 由初始
+        坐标稳定派生，同盘连点两次结果一致、可复现。
+      · True ＝完整 stochastic（与方形 `gather_solve` 同义），实验用。
+      · False＝全关，移植前逐位一致（回归 / 对照实验用）。
+
+    ⚠️ 返回的参数**只喂 ShapeGather.solve**，不经过 `gather_solve_unified`
+    的按形态分发：方形 `gather_solve` 没有 random_pick / kick /
+    restart_on_kick 这三个参数，透传过去会 TypeError。
+    """
+    if stochastic is None:
+        return dict(stochastic=False, random_pick=False, kick=True,
+                    restart_on_kick=False,
+                    seed=stable_seed(coords) if seed is None else seed,
+                    max_kicks=max_kicks, kick_moves=kick_moves)
+    if stochastic:
+        return dict(stochastic=True, random_pick=None, kick=None,
+                    restart_on_kick=False, seed=seed,
+                    max_kicks=max_kicks, kick_moves=kick_moves)
+    return dict(stochastic=False, random_pick=False, kick=False,
+                restart_on_kick=False, seed=None,
+                max_kicks=max_kicks, kick_moves=kick_moves)
 
 
 class ShapeGather:
@@ -76,7 +119,9 @@ class ShapeGather:
     # ------------------------------------------------------------------
     def solve(self, game, spec, step, max_steps=300, patience=150,
               max_wait_time=30.0, target_score=1.0, aggressiveness=0.2,
-              cancel_check=None, progress_callback=None):
+              cancel_check=None, progress_callback=None,
+              stochastic=False, seed=None, max_kicks=3, kick_moves=3,
+              random_pick=None, kick=None, restart_on_kick=False):
         """贪心聚拢主循环。
 
         参数与方形 `gather_solve` **同名同义、默认值也照抄**（patience=150、
@@ -85,12 +130,36 @@ class ShapeGather:
             不是拍脑袋的起点（把默认值当实验变量会导致「方形调参结论」与
             「异形默认值」互相污染）。
 
+        随机探索（2026-11-11 从方形 `gather_solve` 移植，待办 §三十四 第 6 条；
+        原先只有方形有，异形没有）：
+            stochastic : False（默认）= 完全确定性，与移植前**逐位一致**，
+                         便于回归与 A/B 对照；True = ② aggressiveness band
+                         内随机挑步 + ③ 卡住（连续 patience 步无改进历史最优）
+                         时随机踢 `kick_moves` 步跳出局部最优，最多
+                         `max_kicks` 脚（iterated local search）。
+            seed       : 固定随机源，保证同 seed 同盘可复现；None 且
+                         stochastic=True 时随机生成并写进返回字典。
+            random_pick / kick : 把 ②（band 内随机挑步）与 ③（卡住随机踢）
+                         **拆成两个独立开关**，None = 跟随 stochastic（此时
+                         与方形语义完全一致）。拆开是 2026-11-11 异形 A/B
+                         实测所需：完整 stochastic 的 ② 会破坏贪心骨架，
+                         只有 ③ 有希望提高平均最终聚拢度。
+            restart_on_kick : 踢完清空 visited 并把 stuck 归零。异形状态
+                         空间小，扰动后极易立刻撞回旧状态、被 `stuck > 5`
+                         掐断，等于「踢了白踢」；清掉去环集合才是一次真正
+                         的随机重启。默认 False = 与方形原实现一致。
+        与方形一样，随机源是**局部** `random.Random`，不吃全局 random 模块
+        的状态 —— 显式给 seed 时，即便调用方随后用了全局 random 也不漂移。
+
         返回 dict（与方形一致的键名，便于对照报告）：
             type / actions / solved / reason / score / best_score /
-            best_step / steps / elapsed
+            best_step / steps / elapsed，另带 stochastic / seed / kicks。
         """
         sc = self.shape_score
         started = time.time()
+
+        _random_pick = stochastic if random_pick is None else random_pick
+        _kick = stochastic if kick is None else kick
 
         actions = []
         trace = []
@@ -98,6 +167,54 @@ class ShapeGather:
         visited = set()
         stuck = 0
         no_improve = 0
+
+        # 随机性（stochastic 探索）：默认走全局 random.choice，与移植前
+        # 逐位一致；显式 seed 或开 stochastic 时改用局部 Random。
+        if stochastic or _random_pick or _kick or seed is not None:
+            if seed is None:
+                seed = random.randrange(1 << 31)
+            rng = random.Random(seed)
+        else:
+            rng = None
+        rchoice = rng.choice if rng is not None else random.choice
+        kick_count = 0
+
+        def _do_kick(k):
+            """随机扰动当前局面 k 步（iterated local search 的「踢」）。
+
+            与方形 `_do_kick` 同构：每步从真实合法动作里随机挑一个，
+            成功的步照常记进 actions / hashes / trace，末尾「回退到历史
+            最优」会把它们连同无改进尾步一起截掉，不会污染返回的解法。
+
+            ⚠️ **不能照抄方形的「失败即 break」**：异形（尤其米字错位态）
+            的 `enumerate_actions` 里大量动作当下不可执行（跨晶格碰撞 /
+            rep 落到别的分量），随机挑一个失败就把整脚废掉，实测每脚
+            平均只走 1 步 ⇒ 扰动强度约等于零，A/B 里「踢了白踢」。
+            这里改成失败还原后**继续重试**，每脚真的走满 k 步（或候选
+            试完 `3k` 次仍不够才收）。这是移植时按形态适配，不是改语义。
+            """
+            applied = 0
+            for _ in range(k * 3):
+                if applied >= k:
+                    break
+                cands = self.enumerate_actions(game, step)
+                if not cands:
+                    break
+                a = rchoice(cands)
+                snap_k = self.snap(game)
+                n_before = len(self.coords_of(game))
+                if not self.apply_action(game, a, step):
+                    self.restore(game, snap_k)
+                    continue
+                coords = self.coords_of(game)
+                if len(coords) != n_before:
+                    self.restore(game, snap_k)
+                    continue
+                actions.append(a)
+                hashes.append(self.canonicalize(coords))
+                trace.append(sc(coords, spec))
+                applied += 1
+            return applied > 0
 
         start_hash = self.canonicalize(self.coords_of(game))
         start_snap = self.snap(game)   # 路径优化重放验证的起点
@@ -140,7 +257,21 @@ class ShapeGather:
                     'n_actions': len(actions),
                 })
 
+            # 停机 / 随机踢：连续 patience 步没有改进历史最优。
+            # ③ 开 stochastic 时先随机踢一脚（最多 max_kicks 次）再判停机，
+            #   踢成功就重置 no_improve 继续贪心，等价于一次随机重启。
             if patience is not None and no_improve >= patience:
+                if _kick and kick_count < max_kicks and _do_kick(kick_moves):
+                    kick_count += 1
+                    no_improve = 0
+                    if restart_on_kick:
+                        # 新一轮局部搜索：旧的去环集合会把扰动后的路全堵死，
+                        # 清掉并把当前态设为新起点（不清会让下一轮立刻
+                        # stuck>5 停机，踢等于没发生）。
+                        visited.clear()
+                        stuck = 0
+                        visited.add(self.canonicalize(self.coords_of(game)))
+                    continue
                 reason = 'no_improve'
                 break
 
@@ -181,7 +312,7 @@ class ShapeGather:
                 # 全不可执行 → 随机走一步（可能解开「所有动作都撞墙」的死结）
                 picked = None
                 for _ in range(3):
-                    act = random.choice(candidates)
+                    act = rchoice(candidates)
                     if self.apply_action(game, act, step):
                         picked = act
                         break
@@ -208,8 +339,15 @@ class ShapeGather:
             # 跨形态通用，足以保证「同样分数取同一个动作」的可复现性。
             # mod_ok 排在聚拢度之后：与方形 `gather_solve` 的排序键
             # (visited, -score, -mod_ok, bbox_area) 同序同权。
-            pool.sort(key=lambda x: (x[1], -x[0], -x[4], x[2]))
-            act = pool[0][2]
+            # 选步：② stochastic 时在 band 内随机挑（优先没访问过的状态），
+            # 默认仍走原来的确定性排序，逐位一致。
+            if _random_pick and rng is not None and len(pool) > 1:
+                unvisited = [x for x in pool if not x[1]]
+                choose_from = unvisited if unvisited else pool
+                act = rchoice(choose_from)[2]
+            else:
+                pool.sort(key=lambda x: (x[1], -x[0], -x[4], x[2]))
+                act = pool[0][2]
 
             self.restore(game, snap0)
             if not self.apply_action(game, act, step):
@@ -267,6 +405,11 @@ class ShapeGather:
             'steps': len(actions),
             'trace': trace,
             'elapsed': time.time() - started,
+            'stochastic': stochastic,
+            'seed': seed,
+            'kicks': kick_count,
+            'random_pick': _random_pick,
+            'kick': _kick,
         }
 
 
