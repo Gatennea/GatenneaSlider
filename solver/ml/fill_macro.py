@@ -1350,7 +1350,7 @@ def _belt_shift_fill(coords, m, n, step, h, verbose=False):
 
 def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
                  max_depth=16, max_nodes=2500, max_comp=None, verbose=False,
-                 progress_callback=None, cancel_check=None):
+                 progress_callback=None, cancel_check=None, time_cap=None):
     r"""粘上接走宏（2026-10-01 失败03 教学「粘上接走」参数化）。
 
     标准 couple 宏解不动时的另一条填洞路：载运带靠上孤立凸起「粘上」
@@ -1518,7 +1518,8 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
                                         (dr * step, dc * step), rest | mv))
         return out
 
-    state = {'nodes': 0}
+    state = {'nodes': 0, 'timed_out': False}
+    _deadline = (time.time() + time_cap) if time_cap else None
     seen = {(coords, p)}
 
     def _corridor_occ(S):
@@ -1537,6 +1538,11 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
 
     def dfs(cur, pcur, prep_used, prefix, carried=False, last_march=None):
         if state['nodes'] >= max_nodes:
+            return None
+        # 墙钟上限（可选）：大盘上 convoy 常常是纯暴力、九成找不到；不设
+        # 上限会 2500 节点×多次 = 十几二十秒。到点即剪枝放弃（2026-11-11）。
+        if _deadline is not None and time.time() >= _deadline:
+            state['timed_out'] = True
             return None
         state['nodes'] += 1
         _chk(cancel_check)
@@ -2809,7 +2815,11 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                     cur, m, n, step, h_c, p_c,
                     max_nodes=min(2500, state['convoy_left']),
                     progress_callback=progress_callback,
-                    cancel_check=cancel_check)
+                    cancel_check=cancel_check,
+                    # 大棋盘上限 0.2s：实测 8×8 残局 convoy 2500 节点×3 组
+                    # 白烧 17~26 秒仍全败；0.2s 内找不到的直接放弃，把总耗时
+                    # 压回 2~3 秒。小盘（≤6×6，m*n<40）仍是 convoy 主场，不设限。
+                    time_cap=(0.2 if m * n >= 40 else None))
                 state['convoy_left'] -= used
                 if cacts:
                     out.append(cacts)
