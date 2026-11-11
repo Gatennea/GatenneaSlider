@@ -294,9 +294,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._anti_drift_active_prev = False
 
         # 求解器「思考」演示（待办 §三十四 第 4 条）：流式求解播完一段、
-        # 下一段还没算出来的等待期，在**渲染层**随机游走；下一段到货瞬间
-        # 按游走步逆序连续撤回到段末状态，再播下一段。纯视觉，绝不改
-        # block.location / 历史 / 步数 / 聚拢度。见 gui/think_walk.py。
+        # 下一段还没算出来的等待期，在**真实盘面**上随机试着推几步；下一段
+        # 到货瞬间按游走步逆序**真实撤销**（GameHistory.undo，与 Ctrl+Z 同源、
+        # 同样出橙色高亮）回段末，再播下一段。游走只进本地历史，不进玩家
+        # 全局历史 / step_count，所以回放与撤销链里不会多出这些步。
         from gui.think_walk import ThinkWalk
         self.thinking_enabled = True
         self._think_walk = ThinkWalk()

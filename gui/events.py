@@ -3592,13 +3592,13 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
-            # 思考演示开关（段间等待期随机游走 + 连续撤回，纯视觉）
-            # 关掉时立即收掉残留渲染偏移，避免关了还画着歪掉的盘面。
+            # 思考演示开关（段间等待期真实游走 + 真实撤销）
+            # 关掉时把游走留下的位移还原回基线，避免关了以后盘面停在歪掉的样子。
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_thinking_toggle_rect'):
                 if self._settings_thinking_toggle_rect.collidepoint(mx, my):
                     self.thinking_enabled = not getattr(self, 'thinking_enabled', True)
                     if not self.thinking_enabled:
-                        self._think_walk.reset()
+                        self._think_abort_and_restore()
                     status = '开' if self.thinking_enabled else '关'
                     self.macro_notify_msg = f"思考演示：{status}"
                     self.macro_notify_timer = 90
@@ -4042,10 +4042,10 @@ class EventsMixin:
             status = '开' if self.anti_drift_enabled else '关'
             self.macro_notify_msg = f"防偏移演示：{status}"
         elif key in ('thinking', 'thinking_enabled'):
-            # 同上；关掉时立刻收掉渲染层残留偏移
+            # 同上；关掉时立刻把游走位移还原回基线
             self.thinking_enabled = not getattr(self, 'thinking_enabled', True)
             if not self.thinking_enabled:
-                self._think_walk.reset()
+                self._think_abort_and_restore()
             status = '开' if self.thinking_enabled else '关'
             self.macro_notify_msg = f"思考演示：{status}"
         else:

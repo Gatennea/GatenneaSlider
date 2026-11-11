@@ -1518,16 +1518,11 @@ class RendererMixin:
                 for b in getattr(self.game, 'blocks', ()):
                     if b.be_opted:
                         out[id(b)] = (b.location[0] + dr, b.location[1] + dc)
-        # 「思考」演示（待办 §三十四 第 4 条）：段间等待期在渲染层叠加的
-        # 游走偏移。绝不写 b.location；防偏移相机在段间 macro_executing=False
-        # 本就返回 (0,0)，不会跟着游走偏。撤回完毕偏移清空，画面严格回段末。
-        walk = getattr(self, '_think_walk', None)
-        if walk is not None and walk.offsets:
-            for b in getattr(self.game, 'blocks', ()):
-                off = walk.offsets.get(id(b))
-                if off:
-                    r, c = out.get(id(b), (b.location[0], b.location[1]))
-                    out[id(b)] = (r + off[0], c + off[1])
+        # 「思考」演示（待办 §三十四 第 4 条）**不再**在这里叠加任何偏移：
+        # 游走已是真实移动（commit_move 写 b.location），撤回走真实撤销接口
+        # （GameHistory.undo + 橙色高亮）。渲染层只画真值，天然与相机 / 防偏移
+        # 同源。旧实现在这里叠 offsets，会在「下一段动画已开始、撤回还没清完」
+        # 时推偏插值位置 → 棋盘撕裂、块飞出网格（用户实测的渲染崩坏根因）。
         return out
 
     def _cam_anti_drift_px(self):

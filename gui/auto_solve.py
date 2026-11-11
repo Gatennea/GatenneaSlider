@@ -436,9 +436,13 @@ class AutoSolveMixin:
         """把后台算好的段接进宏播放管道（边算边播），并维护历史最优 checkpoint。
 
         「思考」演示（待办 §三十四 第 4 条）：一段播完、下一段还在算的等待
-        期，让状态机在渲染层随机游走；段到货（或求解结束）先按游走步逆序
-        连续撤回，撤完才播段 / 收尾。偏移只在 renderer 画滑块时叠加，绝不
-        改盘面/历史/步数/聚拢度——后台算好的下一段永远以段末真实盘面为起点。
+        期，在**真实盘面**上随机试着推几步（``opt``+``try_move``+``commit_move``，
+        落进**本地** ``GameHistory``）；段到货（或求解结束）先按游走步逆序
+        **真实撤销**（``GameHistory.undo``，与玩家 Ctrl+Z 同一接口、同样触发
+        橙色高亮），撤完才播段 / 收尾。
+
+        本地历史与玩家全局历史严格隔离：游走不进 ``game_history``、不加
+        ``step_count``，所以回放 / 撤销链里不会冒出求解过程没有的步骤。
         """
         q = getattr(self, '_auto_stage_queue', None)
         if q is None:
@@ -446,29 +450,46 @@ class AutoSolveMixin:
         gen = self._auto_stage_gen
         # 仅在空闲（无动画、无宏播放）时推进 / 收尾，避免打断正在播的段
         if self.macro_executing or self.animating:
-            self._think_walk.reset()
+            if self._think_walk.is_active:
+                if self.animating:
+                    # 动画进行中不能重建 blocks（anim_blocks 是块引用），
+                    # 只清状态机；正常流程段播放前必已撤完，此处仅兜底。
+                    self._think_walk.reset()
+                    self._reset_think_history()
+                else:
+                    self._think_abort_and_restore()
             return
         active = getattr(self, '_auto_stage_active', False)
         walk = getattr(self, '_think_walk', None)
         if walk is not None:
             if not getattr(self, 'thinking_enabled', True):
-                # 开关关掉：立刻收掉残留偏移，不许把盘面画歪
+                # 开关关掉：立刻把游走位移还原回基线 + 清本地历史
                 if walk.is_active:
-                    walk.reset()
+                    self._think_abort_and_restore()
             else:
                 has_item = not q.empty()
                 if walk.is_active:
                     if has_item or not active:
-                        if walk.start_rewind() != 'rewound':
-                            walk.tick(None)
-                            return          # 还在连续撤回，段留在队列里
-                        walk.reset()
+                        # 段到货 / 求解结束：先连续撤回（真实撤销接口）再播
+                        if walk.start_rewind() == 'rewound':
+                            # 没游走过（或已撤完）：清本地历史，直接继续播段
+                            self._reset_think_history()
+                        else:
+                            act = walk.tick()
+                            if act == 'rewind':
+                                self._think_do_rewind()
+                            elif act == 'rewound':
+                                # 撤完这一帧：盘面已回到段末，清本地历史
+                                self._reset_think_history()
+                            return          # 仍在撤回 / 等待 / 游走，段留队列
                     else:
-                        walk.tick(self._think_find_move)
-                        return              # 还在等待 / 游走
+                        # 段间等待：按节奏真实游走一步
+                        if walk.tick() == 'walk':
+                            self._think_do_walk()
+                        return
                 elif active and not has_item:
-                    walk.begin()
-                    walk.tick(self._think_find_move)
+                    # 进入段间等待：以段末盘面为基线快照，开始等待计时
+                    self._think_begin_wander()
                     return
         if not active and q.empty():
             self._finalize_auto_streamed()
@@ -487,13 +508,14 @@ class AutoSolveMixin:
         self._play_auto_stage(item)
 
     def _think_find_move(self):
-        """只读找一步合法走法，返回 [(id(block), dr, dc), ...] 或 None。
+        """只读找一步合法走法，返回 (gap_type, line, direction, final_positions)
+        或 None。
 
-        ⚠️ 绝不改盘面：``game.opt`` 只设 ``be_opted``，``try_move`` 只预测
-        终态、不写 ``block.location``（写盘面的是 ``commit_move``，这里不调）。
-        走法来自真实缝/真实连通分量，所以渲染层的游走看起来确实是在推块，
-        而不是凭空抖动；结束后把 ``be_opted`` 清干净，不留下选中态污染
-        后续玩家操作或宏播放。
+        ⚠️ 只预测、不提交：``game.opt`` 设好 ``be_opted``、``try_move`` 算出
+        终态 ``final_positions``；成功后**故意不清 ``be_opted``**，交给
+        ``_think_do_walk`` 用 ``commit_move`` 真提交。找不到任何合法走法时
+        才把所有 ``be_opted`` 清干净返回 None。走法来自真实缝/真实连通分量，
+        所以游走看起来确实在推块，而不是凭空抖动。
         """
         import random
         game = self.game
@@ -528,18 +550,88 @@ class AutoSolveMixin:
                         fin = []
                     if not fin:
                         continue
-                    pairs = []
-                    for b, dst in zip(sel, fin):
-                        dr = dst[0] - b.location[0]
-                        dc = dst[1] - b.location[1]
-                        if dr or dc:
-                            pairs.append((id(b), dr, dc))
-                    for b in blocks:
-                        b.be_opted = False
-                    return pairs or None
+                    # 成功：返回规约，be_opted 留在盘上让 _think_do_walk 接管
+                    return (gt, line, d, fin)
                 for b in blocks:
                     b.be_opted = False
+        for b in blocks:
+            b.be_opted = False
         return None
+
+    def _reset_think_history(self):
+        """清空「思考」演示用的本地历史（真实撤销接口据此回退游走）。"""
+        from history import GameHistory
+        self._think_history = GameHistory()
+
+    def _think_begin_wander(self):
+        """进入段间等待：以当前（段末）盘面为基线快照，开始计时。
+
+        基线快照让第一次真实走步之后仍能撤销回段末；与玩家全局历史完全隔离。
+        基线用 ``move_info=None``（参考态，steps=0），不冒充一步移动。
+        """
+        self._reset_think_history()
+        self._think_history.save_snapshot(self.game, None, None)
+        self._think_walk.begin()
+
+    def _think_abort_and_restore(self):
+        """取消 / 收尾 / 关开关：把游走留下的位移还原回基线，再清状态。
+
+        ⚠️ 不能只 ``reset()`` 状态机：游走是**真实移动**，状态机清空不会把
+        盘面挪回去，会留下被推歪的盘。这里直接用真实撤销同源的
+        ``restore_snapshot(game, 0)`` 一次性回到基线（基线 = 本次等待开始时的
+        段末盘面），再清本地历史。
+        """
+        walk = getattr(self, '_think_walk', None)
+        hist = getattr(self, '_think_history', None)
+        try:
+            if (walk is not None and walk.steps and hist is not None
+                    and getattr(hist, 'history', None)):
+                hist.restore_snapshot(self.game, 0)
+        except Exception:
+            pass
+        if walk is not None:
+            walk.reset()
+        self._reset_think_history()
+
+    def _think_do_walk(self):
+        """真实走一步（求解器「思考」演示的游走）：opt+try_move+commit_move，
+        落进本地 GameHistory，供撤销接口原样回退。
+
+        绝不碰玩家全局历史 / step_count / 聚拢度；聚拢度按 game.blocks 算，
+        真实移动让它自然波动，正是「像在试推」的观感。
+        """
+        spec = self._think_find_move()
+        if spec is None:
+            return False
+        gt, line, direction, final = spec
+        selected = [b for b in self.game.blocks if b.be_opted]
+        moved_positions = [list(b.location) for b in selected]
+        move_info = {'gap_type': gt, 'gap_line': line, 'direction': direction,
+                     'step': self.current_step,
+                     'moved_positions': moved_positions}
+        self.game.commit_move(final)
+        # 本地历史：真实撤销接口据此回退（与橙色撤销同一 GameHistory.undo）
+        self._think_history.save_snapshot(self.game, move_info, None)
+        self._think_walk.note_walk(move_info)
+        for b in self.game.blocks:
+            b.be_opted = False
+        return True
+
+    def _think_do_rewind(self):
+        """真实撤回一步（求解器「思考」演示的撤回）：调本地历史的 undo(game)，
+        同一 ``GameHistory.undo`` 接口 = 真实撤销；并触发橙色高亮，与玩家按
+        Ctrl+Z 的视觉一致。撤回后把这一步从状态机 steps 弹栈。
+        """
+        ok, mi = self._think_history.undo(self.game)
+        if ok:
+            if mi:
+                self._flash_move_selection(mi, True, after_commit=True)
+            self._think_walk.note_rewind()
+            # undo 会重建 game.blocks（restore_snapshot 造新 Block），旧的
+            # selected_block 已成悬空引用，及时清掉，免得后续命中/高亮读它。
+            sel = getattr(self, 'selected_block', None)
+            if sel is not None and sel not in self.game.blocks:
+                self.selected_block = None
 
     def _play_auto_stage(self, item):
         """播放一段动作并刷新历史最优 checkpoint（聚拢度最高、并列 Φ 最小）。"""
@@ -613,8 +705,8 @@ class AutoSolveMixin:
         旧版只清了 hybrid 那一套，填洞/补缺宏播放中点「停止求解」因此毫无
         反应（段照旧播、macro_executing 一直 True、相机也拖不动）。
         """
-        # 思考演示：取消/打断同样要立刻收掉渲染偏移，别把盘面画歪
-        self._think_walk.reset()
+        # 思考演示：取消/打断同样要把游走位移还原回基线，别把盘面带偏
+        self._think_abort_and_restore()
         self._auto_stage_gen += 1          # 使已在队列的段失效
         self._auto_stage_active = False
         self._auto_solve_cancel = True
@@ -643,7 +735,7 @@ class AutoSolveMixin:
 
     def _finalize_auto_streamed(self):
         """流式收尾：播放完成 / 求解结束，锁存结果并清空状态。"""
-        self._think_walk.reset()
+        self._think_abort_and_restore()
         # 步数用段级累加器：macro_exec_index 在宏播放收尾（events
         # _execute_next_macro_step 完成分支）已归零，读它恒得 0（2026-11-07 实测
         # 「已复原：0 步」假通知的根因）。
