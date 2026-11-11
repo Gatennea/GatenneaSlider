@@ -394,6 +394,36 @@ class RendererMixin:
             return None
         return (pts[0], pts[1])
 
+    def _seam_visual_cells(self, key_of):
+        """本幀「相接觸縫」用的格鍵集合：動畫／拖拽中的那一組用插值位置，其餘用原位。
+
+        ⚠️ 關掉「繪製網格」後，縫線是**貼在滑塊上**的，必須跟著塊一起走。
+        舊寫法一律拿 ``game.positions()``（＝ ``b.location``，動畫期間恆為起點），
+        塊卻按 ``anim_map`` / ``follow_map`` 的插值位置畫，於是整片縫線留在原地、
+        塊滑走了 —— 高速播放時看著就是上一幀的網格沒擦掉（用戶 2026-11-12
+        報的「網格殘影」）。方形盤同理，那邊直接用 ``pos_map``。
+
+        相鄰判據仍是「整數格偏移」，所以只有同一批一起平移的塊才互為鄰居；
+        一片在滑、一片沒動的那一對自然不再成縫（屏幕上確實分開了）。
+        靜態幀與 ``game.positions()`` 完全等價，不改變關網格後的畫風。
+        """
+        dr, dc = self._visual_offset()
+        if abs(dr) < 1e-9 and abs(dc) < 1e-9:
+            return frozenset(self.game.positions())
+        if getattr(self, 'drag_following', False):
+            moving = {id(b) for b in self.game.blocks if b.be_opted}
+        elif getattr(self, 'animating', False):
+            moving = {id(b) for b in (getattr(self, 'anim_blocks', None) or ())}
+        else:
+            moving = set()
+        out = set()
+        for b in self.game.blocks:
+            key = tuple(key_of(b))
+            if id(b) in moving:
+                key = (key[0] + dr, key[1] + dc) + tuple(key[2:])
+            out.add(key)
+        return frozenset(out)
+
     def _contact_seam_segments(self, view, cells, neighbors):
         """回傳 (內縫段, 外輪廓段)，世界座標——「繪製網格」關閉時的縫線來源。
 
@@ -408,6 +438,9 @@ class RendererMixin:
         2026-11-06 又犯過一次，用戶判「畫風變了、很彆扭」。
         """
         cset = cells if isinstance(cells, (set, frozenset)) else set(cells)
+        # ⚠️ 傳進來的可能是「本幀視覺格鍵」（含插值小數，見 _seam_visual_cells）。
+        # cache_key 帶 frozenset(cset)，動畫每幀都不同 → 快取按幀失效、逐幀重算，
+        # 這是刻意的：縫線必須跟著塊走，不能拿靜態盤面的快取結果湊合。
         cache_key = (type(view).__name__, frozenset(cset),
                      round(view.cell_size, 6), round(view.gap_width, 6))
         cached = getattr(self, '_seam_seg_cache', None)
@@ -445,7 +478,8 @@ class RendererMixin:
                              self.world_to_screen(*p1),
                              self.world_to_screen(*p2), width)
 
-    def _draw_triangle_gaps(self, view: TriangleBoardView, cells, hull):
+    def _draw_triangle_gaps(self, view: TriangleBoardView, cells, hull,
+                            seam_cells=None):
         """繪製未選中的縫隙（灰色），與方形版一致：選中那條改畫紅線。
 
         方形版把棋盤矩形範圍內每條 h/v 分割線畫成 colors['gap']；三角版的
@@ -476,7 +510,9 @@ class RendererMixin:
                                  self.world_to_screen(*p1),
                                  self.world_to_screen(*p2), width)
         else:
-            self._draw_contact_seams(view, cells, tri_neighbors, width)
+            self._draw_contact_seams(
+                view, cells if seam_cells is None else seam_cells,
+                tri_neighbors, width)
 
     def draw_triangle_board(self):
         """繪製三角形密鋪棋盤（含 B2 的拖拽實時預覽）。"""
@@ -487,7 +523,13 @@ class RendererMixin:
             self._draw_triangle_grid(view)
         cells = self.game.positions()
         hull = view.board_hull(cells)
-        self._draw_triangle_gaps(view, cells, hull)
+        # 關網格後的相接觸縫用本幀視覺格鍵（跟著動畫走）；開網格的整片晶格
+        # 與凸包仍用靜態 cells —— 晶格本來就是固定座標，不該跟著塊平移。
+        # 開網格時連 seam_cells 都不算，保持那條路徑零改動。
+        self._draw_triangle_gaps(
+            view, cells, hull,
+            seam_cells=(self._seam_visual_cells(tri_key)
+                        if not getattr(self, 'draw_grid', True) else None))
 
         # **不鋪縫帶底**（2026-10-25 移除，勿再加回）。
         #
@@ -720,8 +762,10 @@ class RendererMixin:
                                  self.world_to_screen(*p2),
                                  max(1, int(self.gap_width * self.zoom * 0.35)))
         else:
+            # 關網格後的相接觸縫用本幀視覺格鍵（跟著動畫走）；開網格的整片
+            # grid_segments 仍用靜態 cells —— 晶格是固定座標，不跟著塊平移。
             self._draw_contact_seams(
-                view, cells, mi_neighbors,
+                view, self._seam_visual_cells(mi_key), mi_neighbors,
                 max(1, int(self.gap_width * self.zoom * 0.35)))
 
         # **不鋪縫帶底**（2026-10-25 移除，勿再加回）——與三角同一處置：
@@ -1739,17 +1783,28 @@ class RendererMixin:
         else:
             # 只按「兩個格子都有滑塊」畫那一段縫，長度恰為一格寬：
             # 洞/空位兩側沒有塊，就不畫線（不再是橫貫整行整列的長線）。
-            occupied = {(b.location[0], b.location[1]) for b in self.game.blocks}
-            for (r, c) in occupied:
-                rx = int(round(board_x + c * step_px)) + cam_x
-                ry = int(round(board_y + r * step_px)) + cam_y
+            #
+            # ⚠️ 縫段位置一律取本幀渲染位置 pos_map（與下面畫塊共用同一份）：
+            # 動畫期間 b.location 恆為起點，舊寫法拿它算縫，塊卻按插值位置畫，
+            # 整片縫線留在原地不跟著走 —— 高速播放時看著就是上一幀的網格
+            # 沒擦掉（「網格殘影」）。相鄰判據用整數格偏移查本幀視覺座標，
+            # 所以一起平移的那組縫跟著走、正在分離的一對（一片在滑一片沒動）
+            # 自然不畫線。靜態幀 pos_map 為空，與舊口徑完全一致。
+            visual = {}
+            for b in self.game.blocks:
+                r, c = b.location[0], b.location[1]
+                visual[(r, c)] = tuple(pos_map.get(id(b), (r, c)))
+            occupied = set(visual.values())
+            for (r, c), (lr, lc) in visual.items():
+                rx = int(round(board_x + lc * step_px)) + cam_x
+                ry = int(round(board_y + lr * step_px)) + cam_y
                 # 右鄰：豎縫段，只覆蓋這一行的高度
-                if (r, c + 1) in occupied and self.selected_gap != ('v', c):
+                if (lr, lc + 1) in occupied and self.selected_gap != ('v', c):
                     pygame.draw.rect(self.screen, self.colors['gap'],
                                      pygame.Rect(rx + scaled_cell, ry,
                                                  scaled_gap, scaled_cell))
                 # 下鄰：橫縫段，只覆蓋這一列的寬度
-                if (r + 1, c) in occupied and self.selected_gap != ('h', r):
+                if (lr + 1, lc) in occupied and self.selected_gap != ('h', r):
                     pygame.draw.rect(self.screen, self.colors['gap'],
                                      pygame.Rect(rx, ry + scaled_cell,
                                                  scaled_cell, scaled_gap))
