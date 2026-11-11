@@ -1666,6 +1666,148 @@ def _comps_ml(S):
     return out
 
 
+_CARRY_NODE_BUDGET = 120
+"""`_rigid_fill` 里 carry 组的节点上限。
+
+carry（P 自己还能靠近）在大盘上一走就是几百节点还走不通，会把预算烧光
+轮不到「让路」。限额后超了就 break，改试 prep_follow。小盘 4×4 全解只用
+5 节点，远在限额内，行为不变。
+"""
+
+
+def _shape_rel(S):
+    """格集 → 平移归一化的相对形状（不做旋转/镜像归一化）。
+
+    刚体只能平移，所以横 2 格与竖 2 格是**不同**形状——归一化只扣掉
+    平移（减最小格），正是「能不能刚性填进去」的判据。
+    """
+    r0, c0 = min(S)
+    return tuple(sorted((r - r0, c - c0) for r, c in S))
+
+
+def _same_line(A, B):
+    """A 与 B 是否同一行或同一列（直线平移可达的必要条件）。"""
+    return ({r for r, _ in A} == {r for r, _ in B}
+            or {c for _, c in A} == {c for _, c in B})
+
+
+def _moves_of(coords, m, n, step, max_comp=None):
+    """枚举一步合法滑动：(act5, comp, delta, nxt)。
+
+    与 `_rigid_fill` 内部 `_legal_steps` 同语义（缝分割 → 连通分量 →
+    step 格平移，逐步验证目标不撞块且不破坏连通）。抽成模块级供定向
+    对齐宏复用，免得两套枚举各自漂移。
+    """
+    if max_comp is None:
+        max_comp = max(8, len(coords) // 2)
+    out = []
+    rows = [r for r, _ in coords]
+    cols = [c for _, c in coords]
+    for gap in ('h', 'v'):
+        lines = (range(min(rows) - 1, max(rows) + 2) if gap == 'h'
+                 else range(min(cols) - 1, max(cols) + 2))
+        for line in lines:
+            for side in (('above', 'below') if gap == 'h'
+                         else ('left', 'right')):
+                if gap == 'h':
+                    keep = (lambda q: q[0] <= line) if side == 'above' \
+                        else (lambda q: q[0] > line)
+                else:
+                    keep = (lambda q: q[1] <= line) if side == 'left' \
+                        else (lambda q: q[1] > line)
+                sel = frozenset(q for q in coords if keep(q))
+                if not sel or sel == coords:
+                    continue
+                for comp in _comps_ml(sel):
+                    rest = coords - comp
+                    if not rest or len(comp) > max_comp:
+                        continue
+                    rep = min(comp)
+                    for d, (dr, dc) in _DIRS.items():
+                        mv = frozenset((q[0] + dr * step, q[1] + dc * step)
+                                       for q in comp)
+                        ok = True
+                        for u in range(1, step + 1):
+                            mku = frozenset((q[0] + dr * u, q[1] + dc * u)
+                                            for q in comp)
+                            if (mku & rest) or not _connected_ml(rest | mku):
+                                ok = False
+                                break
+                        if not ok:
+                            continue
+                        out.append(((gap, line, side, d, rep), comp,
+                                    (dr * step, dc * step), rest | mv))
+    return out
+
+
+def _align_rigid(coords, m, n, step, H, P, max_steps=12, max_comp=None,
+                 verbose=False, cancel_check=None):
+    """定向对齐：把刚体凸起 P 平移到与洞 H 同行/同列（大洞填补的准备步）。
+
+    与 `_rigid_fill` 的盲 DFS 不同，这里**每一轴分支恒为 1**：在全部合法
+    滑动里只挑「含 P 的分量、且使该轴间距绝对值严格下降」的那一个。所以
+    大盘（>6×6）上也是几秒走完——盲 DFS 在 9×9 上 500 节点要 20s，且照样
+    搜不到（2026-11-11 实测 `stalled_bigger` 首局）。
+
+    轴的选择各有一次 parity 机会：step 只能整格平移，行差/列差必须被
+    step 整除才可能对齐；两轴都不整除 → 这个 (H, P) 对无解，直接返回。
+
+    前提与 `_rigid_fill` 一致：len(H) == len(P) 且相对形状全等。
+
+    返回 (acts, coords_after, P_after)；无法对齐返回 (None, None, None)。
+    """
+    H, P = frozenset(H), frozenset(P)
+    if len(H) != len(P) or _shape_rel(H) != _shape_rel(P):
+        return None, None, None
+    if _same_line(H, P):
+        return [], frozenset(coords), P        # 已共线，无需走位
+
+    cur, Pcur, acts = frozenset(coords), P, []
+    for _ in range(max_steps):
+        _chk(cancel_check)
+        if _same_line(Pcur, H):
+            return acts, cur, Pcur
+        pr, hr = min(r for r, _ in Pcur), min(r for r, _ in H)
+        pc, hc = min(c for _, c in Pcur), min(c for _, c in H)
+        # 两轴各一次机会（step 只能整格平移，差值必须被 step 整除），行优先。
+        # 行轴走不动时退回试列——这一支是**防御性**的：实务上「整列带一起
+        # 上滑」几乎总能走通（10×10 实测行对齐 4 步就到位），所以它的触发
+        # 场景极难构造，测试里没有对应护栏项，别把它当成已被覆盖的路径。
+        axes = []
+        if pr != hr and (pr - hr) % step == 0:
+            axes.append(('row', pr - hr))
+        if (pc - hc) % step == 0:
+            axes.append(('col', pc - hc))
+        if not axes:
+            return None, None, None       # 两轴 parity 都不对：填不进去
+        moves = _moves_of(cur, m, n, step, max_comp)
+        best = None
+        for axis, cur_gap in axes:
+            best = None
+            for act5, comp, delta, nxt in moves:
+                if not (Pcur <= comp):
+                    continue              # 只走「P 跟着整片动」的动作
+                nP = frozenset((r + delta[0], c + delta[1]) for r, c in Pcur)
+                if axis == 'row':
+                    ng = min(r for r, _ in nP) - hr
+                else:
+                    ng = min(c for _, c in nP) - hc
+                if abs(ng) >= abs(cur_gap):
+                    continue              # 必须严格靠近，否则算白走
+                key = (abs(ng), len(comp))
+                if best is None or key < best[0]:
+                    best = (key, act5, nxt, nP)
+            if best is not None:
+                break                     # 该轴走得动，就用它
+        if best is None:
+            return None, None, None       # 两轴都被挡死
+        _key, act5, cur, Pcur = best
+        acts.append(act5)
+        if verbose:
+            print('  大洞对齐: %s -> P=%s' % (act5, min(Pcur)))
+    return (acts, cur, Pcur) if _same_line(Pcur, H) else (None, None, None)
+
+
 def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
                 max_depth=20, max_nodes=3000, max_k=4, max_comp=None,
                 allow_appr=None, verbose=False, progress_callback=None,
@@ -1817,16 +1959,28 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
                     return r
             return None
         pickup_left = max_pickup = 6 - len(prefix) - rest_used
-        carry, appr, prep = [], [], []
+        carry, appr, prep, prep_follow = [], [], [], []
         for act5, comp, delta, nxt in moves:
+            moved = frozenset((q[0] + delta[0], q[1] + delta[1])
+                              for q in comp)
             if Pcur <= comp:
                 nP = _pset(Pcur, delta)
                 if _mdist(nP, H) < _mdist(Pcur, H):
                     carry.append((0, len(comp), act5, nxt, nP,
                                   prep_used, comp))
+                elif prep_used < max_prep:
+                    # 大洞「让路」：P 跟着整片一起动、离 H 并没更近，但只
+                    # 要这一动腾空了十字走廊就值得走——用户三步里的第 2 步
+                    # 「把上两行右移」正是此型。旧代码把它写在 `elif` 里，
+                    # P 在同分量时短路走不到，于是 9×9 上对齐完就 dead end。
+                    # ⚠️ nP 必须按 delta 更新：P 在 comp 内确实跟着走了。
+                    # 单独成组排在 carry 之后试：不然小盘会优先选这条绕路，
+                    # 4×4 实测步数 3 → 6。
+                    freed = _corridor_occ(comp) - _corridor_occ(moved)
+                    if freed > 0:
+                        prep_follow.append((0, len(comp), act5, nxt, nP,
+                                            prep_used + 1, comp))
             elif allow_appr and not carried and pickup_left > 0:
-                moved = frozenset((q[0] + delta[0], q[1] + delta[1])
-                                  for q in comp)
                 md_c, md_m = _mdist(comp, Pcur), _mdist(moved, Pcur)
                 if md_m < md_c:
                     # 行军纪律：一步贴上（与 P 相邻）或同分量连续行军
@@ -1842,8 +1996,17 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
                         prep.append((0, len(comp), act5, nxt, Pcur,
                                      prep_used + 1, comp))
         appr.sort(key=lambda x: (-x[0], x[1]))
-        for group in (appr, prep, carry):
+        # carry 非空 = P 还能自己靠近，先走正常推进（小盘 4×4 就 3 步）；
+        # carry 空 = P 被挡死，这时才轮到「让路」（大洞第 2 步）。顺序反了
+        # 会两端都吃亏：让路优先 → 4×4 绕成 6 步；让路垫底 → 9×9 预算烧光。
+        order = [appr, prep]
+        order += [carry, prep_follow] if carry else [prep_follow, carry]
+        for group in order:
+            _budget0 = state['nodes']
             for _k, _s, act5, nxt, nP, pu, lm in group:
+                if (group is carry
+                        and state['nodes'] - _budget0 > _CARRY_NODE_BUDGET):
+                    break        # carry 走不通，交给下一组（让路）
                 if (nxt, nP) in seen:
                     continue
                 seen.add((nxt, nP))
@@ -2575,16 +2738,42 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
                 for Pc in p_clusters:
                     if len(Hc) != len(Pc):
                         continue
+                    if _shape_rel(Hc) != _shape_rel(Pc):
+                        continue      # 形状不全等（如横洞 vs 竖凸）：填不进
+                    # ① 先走原路径：小盘上盲 DFS 本就够用（4×4 实测 5 节点），
+                    # 这条先试可以保证既有行为不被新逻辑改变
                     _emit(progress_callback, '刚体挤入', state['nodes'],
                           '洞%s←刚体%d格' % (min(Hc), len(Pc)))
                     racts, used = _rigid_fill(
                         cur, m, n, step, Hc, Pc,
-                        max_nodes=min(6000, state['convoy_left']),
+                        max_nodes=min(600, state['convoy_left']),
                         progress_callback=progress_callback,
                         cancel_check=cancel_check)
                     state['convoy_left'] -= used
                     if racts:
                         out.append(racts)
+                        continue
+                    # ② 不共线的大洞：补定向对齐（单轴走位，分支恒为 1），
+                    # 再交给刚体挤入做最后一段——大盘上盲 DFS 搜不到，
+                    # 定向对齐是唯一能在预算内到位的走法
+                    if _same_line(Hc, Pc) or state['convoy_left'] <= 0:
+                        continue
+                    _emit(progress_callback, '大洞对齐', state['nodes'],
+                          '凸%s→与洞%s共线' % (min(Pc), min(Hc)))
+                    base, cur2, P2 = _align_rigid(
+                        cur, m, n, step, Hc, Pc,
+                        max_comp=max(40, m * n),
+                        cancel_check=cancel_check)
+                    if base is None:
+                        continue
+                    racts2, used2 = _rigid_fill(
+                        cur2, m, n, step, Hc, P2,
+                        max_nodes=min(600, state['convoy_left']),
+                        progress_callback=progress_callback,
+                        cancel_check=cancel_check)
+                    state['convoy_left'] -= used2
+                    if racts2:
+                        out.append(list(base) + list(racts2))
         # ④ 临时粘一下（共轭让位）：只在存在不完美洞（8 邻有缺口）时
         # 探测——完美洞的局面让位基本无意义，省钱。整段=让位+标准填入
         # +复位，聚拢度提升才收。每次求解最多探测 paste_left 次。
