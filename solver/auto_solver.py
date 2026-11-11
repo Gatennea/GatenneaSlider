@@ -279,7 +279,7 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
 
     # 流式链（flow）：已采纳/已上报的累积前缀——只增不改，是「定稿段」的
     # 真源。后续候选一律从 flow['end'] 续算，返回的整链解也由它拼出。
-    flow = {'acts': [], 'reps': [], 'end': coords0}
+    flow = {'acts': [], 'reps': [], 'end': coords0, 'single_hole': False}
 
     def advance(label, acts, reps, end):
         """采纳一段已定稿动作：并入 flow → 按 partial_better 记整链部分
@@ -301,6 +301,16 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         flow['acts'] = chain_acts
         flow['reps'] = chain_reps
         flow['end'] = end
+        # 单洞预判（2026-11-11）：续算态一旦恰好 1 洞，就是 solve_gap_macro 的
+        # 确定性直解（0.0s）。标记下来，让正在跑的混合候选**立刻让位**，别在
+        # 1 洞态上再跑一遍 GBFS 白烧几秒（用户实测「最後階段硬靠 GBFS 搜一會
+        # 才發現能用填洞補」的根因：路由只按初始局面算一次，续算态没重测）。
+        try:
+            _solved_now = build_game(end, m, n).is_solved()
+            _hn = len(window_of(end, m, n, step)[2])
+        except Exception:
+            _solved_now, _hn = False, -1
+        flow['single_hole'] = (_hn == 1 and not _solved_now)
         sc = score_of(end)
         ph = _phi_of(end, m, n)
         if partial_better(sc, ph,
@@ -326,6 +336,36 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
         """候选结束时的返回分型：本阶段有新采纳段 → partial（成果保留），
         一段都没有 → fail。"""
         return ('partial',) if len(flow['acts']) > seg_base else ('fail',)
+
+    def try_single_hole_closeout():
+        """续算态恰好 1 洞时，直接跑确定性补缺宏收口（0.0s），返回 True=全解。
+
+        单洞是 ``solve_gap_macro`` / ``solve_gap_any`` 的确定性直解，比在
+        1 洞态上再跑一遍 GBFS 快几个数量级。用于两个时机：
+          ① 每个候选开跑前（已单洞就别再跑整个候选）；
+          ② 全部候选跑完的兜底。
+        """
+        if cancelled() or out_of_time():
+            return False
+        if not flow['acts'] or flow['end'] is coords0:
+            return False
+        if build_game(flow['end'], m, n).is_solved():
+            return False
+        _r, _o, holes2, _u = window_of(flow['end'], m, n, step)
+        if len(holes2) != 1:
+            return False
+        seed2 = flow['end']
+        try:
+            gres2 = solve_gap_macro(build_game(seed2, m, n), step,
+                                    time_budget=_SINGLE_HOLE_CAP,
+                                    cancel_check=cancel_check)
+        except Exception:
+            traceback.print_exc()
+            gres2 = None
+        if isinstance(gres2, tuple) and advance_from(
+                seed2, '补缺宏·单洞收口', gres2[0], gres2[1]):
+            return True
+        return False
 
     # ---- ① 查表：有表即最优，亚秒级，不可能吃亏 ----
     if not cancelled() and not out_of_time():
@@ -479,10 +519,15 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             def stage_cancel():
                 if cancelled() or time.time() >= deadline:
                     return True
+                # 续算态已单洞：立刻让位给确定性补缺宏快路径——别在 1 洞态
+                # 上再 GBFS 一遍（用户实测「最後階段白搜几秒」的根因）。
+                if flow.get('single_hole'):
+                    return True
                 return (total_deadline is not None
                         and time.time() >= total_deadline)
         else:
-            stage_cancel = cancelled
+            def stage_cancel():
+                return bool(cancelled()) or bool(flow.get('single_hole'))
         if idle_deadline is not None and phase_deadline is None:
             _stage_cancel_base = stage_cancel
 
@@ -514,6 +559,9 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     for _idx, which in enumerate(_order):
         if cancelled() or out_of_time():
             break
+        # 单洞预判：续算态已 1 洞 → 先跑确定性补缺宏，别让整个候选白跑。
+        if flow.get('single_hole') and try_single_hole_closeout():
+            return flow['acts'], flow['reps']
         if idle_window is not None:
             # 首个候选的无进展窗口取半、余额让给第二候选；每换一个候选都
             # 重发一份窗口（否则第一候选耗尽后第二候选一进来就已过期）。
@@ -544,23 +592,8 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     # 而是候选顺序按**初始局面**算死，续算态的单洞没被重新识别。
     # 这里在两候选跑完、尚未全解时用当前 flow['end'] 重测一次；命中单洞
     # 就补跑一次补缺宏，把「再点一次」变成一次求解内部的事。
-    if (not cancelled() and not out_of_time()
-            and flow['end'] is not coords0
-            and flow['acts']
-            and not build_game(flow['end'], m, n).is_solved()):
-        _reg2, _ov2, holes2, _out2 = window_of(flow['end'], m, n, step)
-        if len(holes2) == 1:
-            seed2 = flow['end']
-            try:
-                gres2 = solve_gap_macro(build_game(seed2, m, n), step,
-                                        time_budget=_SINGLE_HOLE_CAP,
-                                        cancel_check=cancel_check)
-            except Exception:
-                traceback.print_exc()
-                gres2 = None
-            if isinstance(gres2, tuple) and advance_from(
-                    seed2, '补缺宏·单洞收口', gres2[0], gres2[1]):
-                return flow['acts'], flow['reps']
+    if try_single_hole_closeout():
+        return flow['acts'], flow['reps']
 
     # ---- 收尾：全败 ----
     if cancelled():
