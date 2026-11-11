@@ -2189,6 +2189,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         受 ``show_boot_animation`` 开关控制（缺省开）；点击 / 任意键 / QUIT 可跳过。
         """
         if not getattr(self, 'show_boot_animation', True):
+            self._boot_frames = None
             return
         try:
             frames = getattr(self, '_boot_frames', None)
@@ -2241,12 +2242,23 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             import traceback
             traceback.print_exc()
             return
+        finally:
+            # 24 张 854×480 RGBA 实测 +38 MB，标题阶段一过就再没人读；
+            # 旧实现让它们整个会话常驻（见 docs/spec/内存开销排查_2026-11-12.md）。
+            self._boot_frames = None
 
     # 注：旧的 _play_boot_animation（代码绘制 + 固定 2.4s）已移除，改为预渲染
     # 帧序列方案，见上方 _run_boot_phase / _load_boot_frames。
 
     def run(self):
         """游戏主循环"""
+        # 可选内存采样：只有 GATENNEA_MEM_PROBE 打开时才 import 与起线程，
+        # 平时这一行只做一次环境变量读取（见 gui/mem_probe.py）。
+        try:
+            from gui.mem_probe import maybe_start
+            maybe_start(self)
+        except Exception:
+            pass
         clock = pygame.time.Clock()
 
         # 开机标题阶段：窗口创建时已在 __init__ 绘出首帧，这里做动画 + 淡出，
@@ -2254,6 +2266,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 重启经看门进程拉起时跳过：那段标题动画归重启器所有，避免双动画。
         if not getattr(self, '_restart_token', ''):
             self._run_boot_phase(clock)
+        # 重启路径跳过标题阶段，__init__ 载入的帧同样要释放
+        self._boot_frames = None
+        try:
+            from gui.mem_probe import mark as _mem_mark
+            _mem_mark('boot_done')
+        except Exception:
+            pass
 
         while self.running:
             try:

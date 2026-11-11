@@ -16,8 +16,60 @@ from solver import table_core as tc
 
 # ---------------------------------------------------------------------------
 # 表加载
+#
+# ⚠️ 内存预算（2026-11-12 实测，见 docs/spec/内存开销排查_2026-11-12.md）：
+#   dict[int, int] 每条约 95 B。4_4_1 断点表 5,135,644 条 = +475 MB，
+#   4_4_2 成品表 559,504 条 = +52.7 MB，5_5_2 断点表 612,563 条 = +67.5 MB。
+#   旧实现把每张表**永久**存进模块级 _table_cache、无上限也不释放。而
+#   solver/auto_solver.py 的第一步「①查表」无条件调 table_solve ⇒ 只要局面
+#   恰好落在某个 checkpoint 档位，一次求解就从 138 MB 涨到 613 MB；再点两个
+#   尺寸累积到 735 MB（用户偶发的 700MB），且是**常驻不回落**。
+#   ⇒ 超过单表预算的大表不进长期缓存，只由本次调用的局部变量持有，
+#     调用返回即释放；小表走有总预算的 LRU，避免多档累积。
 # ---------------------------------------------------------------------------
-_table_cache = {}  # (m, n, step) → dict[int, int]
+_TABLE_ENTRY_BYTES = 100                       # 保守估算，实测约 95 B/条
+TABLE_CACHE_MAX_SINGLE = 64 * 1024 * 1024     # 单表 > 64MB 不长期缓存
+TABLE_CACHE_MAX_TOTAL = 128 * 1024 * 1024     # 缓存总预算 128MB
+
+_table_cache = {}       # (m, n, step) → dict[int, int]
+_table_cache_lru = []   # 档位键，最近使用在后
+
+
+def _table_est_bytes(tbl):
+    """按条目数估算常驻字节数（不遍历整张表，避免为估算付出 500 万次迭代）。"""
+    try:
+        return len(tbl) * _TABLE_ENTRY_BYTES
+    except TypeError:
+        return 0
+
+
+def table_cache_stats():
+    """内存观测用：当前缓存了哪些档位、估算字节数、预算上限。"""
+    return {
+        'entries': [(k, len(v)) for k, v in _table_cache.items()],
+        'bytes': sum(_table_est_bytes(v) for v in _table_cache.values()),
+        'max_single': TABLE_CACHE_MAX_SINGLE,
+        'max_total': TABLE_CACHE_MAX_TOTAL,
+    }
+
+
+def release_table_cache(key=None):
+    """释放表缓存。key=None 清全部；返回释放掉的档位数。
+
+    供换局 / 切算法 / 求解收尾显式调用；大表本来就不进缓存，这里主要清小表。
+    """
+    global _table_cache_lru
+    if key is None:
+        n = len(_table_cache)
+        _table_cache.clear()
+        _table_cache_lru = []
+        return n
+    if key not in _table_cache:
+        return 0
+    del _table_cache[key]
+    if key in _table_cache_lru:
+        _table_cache_lru.remove(key)
+    return 1
 
 
 def _get_data_dir():
@@ -29,20 +81,71 @@ def _get_data_dir():
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 
 
+def _max_file_bytes():
+    """可选硬上限：GATENNEA_TABLE_MAX_FILE_MB，0 / 未设 = 不限。
+
+    默认不限（行为不变）。设置后，超过该大小的 table/checkpoint 直接跳过，
+    table_solve 返回 None → 自动求解落到下一候选。玩家若在意内存可用它
+    彻底避开「一次载入 164MB 断点表 = 瞬时 +475MB」这个固有峰值。
+    """
+    try:
+        v = float(os.environ.get('GATENNEA_TABLE_MAX_FILE_MB', '0'))
+    except (TypeError, ValueError):
+        return 0
+    return int(v * 1048576) if v > 0 else 0
+
+
 def load_table(m, n, step):
-    """加载距离表（带缓存）。优先 table.pkl，建表中回退 checkpoint.pkl。"""
+    """加载距离表（带预算缓存）。优先 table.pkl，建表中回退 checkpoint.pkl。
+
+    大表（估算 > TABLE_CACHE_MAX_SINGLE）**不进缓存**：返回的表只由调用方局部
+    变量持有，本次求解结束即释放。小表走 LRU，总字节数超过
+    TABLE_CACHE_MAX_TOTAL 时淘汰最久未用的档位。
+    """
     key = (m, n, step)
     if key in _table_cache:
+        if key in _table_cache_lru:
+            _table_cache_lru.remove(key)
+        _table_cache_lru.append(key)
         return _table_cache[key]
     data_dir = os.path.join(_get_data_dir(), f'{m}_{n}_{step}')
+    cap = _max_file_bytes()
     # 优先成品表，其次断点表
     for fname in ('table.pkl', 'checkpoint.pkl'):
         path = os.path.join(data_dir, fname)
         if os.path.exists(path):
+            fsize = os.path.getsize(path)
+            if cap and fsize > cap:
+                # PyInstaller --noconsole 下 sys.stdout 可能是 None，别让一句
+                # 诊断输出把求解路径带崩。
+                try:
+                    print('[table_solver] 跳过 %s（%.0f MB 超过'
+                          ' GATENNEA_TABLE_MAX_FILE_MB 上限 %.0f MB）'
+                          % (path, fsize / 1048576.0, cap / 1048576.0),
+                          flush=True)
+                except Exception:
+                    pass
+                return None
+            # 载入前粗判：文件比单表预算还大，内存里的表必然更大。
+            # 先清掉小表缓存，别让「已缓存的 112MB」和「本次临时的 475MB」
+            # 叠成 700MB 峰值（2026-11-12 离屏实测 727 → 615 MB）。
+            if fsize > TABLE_CACHE_MAX_SINGLE:
+                release_table_cache()
             with open(path, 'rb') as f:
                 data = pickle.load(f)
             tbl = data if fname == 'table.pkl' else data['dist']
-            _table_cache[key] = tbl
+            # 断点表顶层还有 meta / frontier / stats；只留 dist，
+            # 别让整包对象陪着表一起活到函数返回之后。
+            data = None
+            if _table_est_bytes(tbl) <= TABLE_CACHE_MAX_SINGLE:
+                _table_cache[key] = tbl
+                _table_cache_lru.append(key)
+                while (sum(_table_est_bytes(_table_cache[k])
+                           for k in _table_cache_lru if k in _table_cache)
+                       > TABLE_CACHE_MAX_TOTAL
+                       and len(_table_cache_lru) > 1):
+                    oldest = _table_cache_lru.pop(0)
+                    _table_cache.pop(oldest, None)
             return tbl
     return None
 
