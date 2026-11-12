@@ -421,12 +421,12 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     # ---- ②③ 按空位数路由（探针 2026-10-02：空位≤2 混合快（5.1: 1.4s vs 57.2s），
     #      空位≥3 补缺宏快（06: 1.0s / 07: 0.98s，混合均超时）。两路都尝试，只定先后）----
     _reg, _ov, holes, _out = window_of(coords0, m, n, step)
-    # 默认路由：空位≥2 补缺宏先（2026-11-12 从「空位=2 混合先」放宽）。
-    # 依据：step120（8×8 后半局 2 洞）实测——混合流水线先跑会把局面推成
-    # 1 洞单洞分支「A段受阻(需双层)」解不出的续算态，白烧 ~56s 仍 partial；
-    # 补缺宏多洞分支 + couple_hook 三招 26 步直解（9s）。单洞本就是确定性
-    # 直解（solve_gap_any，0.0s），一并 gap 先；0 洞已在上面 is_solved 提前返回。
-    _gap_first_default = len(holes) >= 2 or len(holes) == 1
+    # 默认路由：空位≥3 补缺宏先、空位=2 混合先（探针 5.1/06/07）。
+    # 例外（2026-11-11）：单洞一律补缺宏先，与空位≥3 合并为 gap_first 初值。
+    # 2026-11-12 曾放宽为 ≥2 让 step120 的 auto_solve 走补缺宏先，但那是
+    # auto_solve 的问题、不是用户点的 gap_macro 路径；且会劣化「2 洞混合快」
+    # 局面（探针 5.1: 1.4s vs 57.2s）。目标不对，已回退到原值。
+    _gap_first_default = len(holes) >= 3 or len(holes) == 1
     gap_first = (route_fn(len(holes), coords0, m, n, step)
                  if route_fn is not None else _gap_first_default)
 
