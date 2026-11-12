@@ -2323,7 +2323,11 @@ def _edge_setup_chain(coords, m, n, step, hole, time_budget=_EDGE_SETUP_BUDGET,
 # ---------------------------------------------------------------------------
 # 带移让位＋粘上接走链（2026-10-02 用户手解 07 归纳 + 幽灵块追踪提案）
 # ---------------------------------------------------------------------------
-_BAND_SHIFT_BUDGET = 10.0  # 单洞粘上接走（band_shift）搜索时间预算（秒；长共轭前置搜索需 ~8s）
+# 单洞粘上接走（band_shift）搜索时间预算（秒）。
+# 长共轭（如 step120 双洞：先让路 2 步再捎带 8 格）在慢机需 ~19s，
+# 旧值 10s 在集成路径（solve_multi_void / couple hook）里必然超时返回 None，
+# 导致「算法能解、自动求解解不出」。提到 40s 给足余量（快机仍按 ~8s 命中早退）。
+_BAND_SHIFT_BUDGET = 40.0
 
 _SIDE_SEAMS = (   # (gap, line, side) 组合：side 含 line+1 那行/列
     ('v', lambda q: (('v', q[1], 'left'), ('v', q[1] - 1, 'right'))),
