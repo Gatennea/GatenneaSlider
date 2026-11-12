@@ -4471,6 +4471,19 @@ class EventsMixin:
             direction = op['direction']
             step = op['step']
 
+            # 某些求解器原语（整线/整带动作）给 side=None：不指定缝隙侧、只靠
+            # rep_cell 定位目标块。播放器若直接拿 None 查 side_has_blocks 会判
+            # False 而「执行中断」（实测 step120 必断在第 13 步、只播到 ov=56，
+            # 而求解器内部 _capture_apply 用 rep 定位、绕过了 side，所以内部
+            # 回放永远通过、看不出这个断点）。有 rep_cell 时按块相对缝隙的
+            # 位置反推侧别，再走正常回放；无 rep 无法定位才退回原中断。
+            if side is None and op.get('rep_cell') is not None:
+                _rep = op['rep_cell']
+                if gap_type == 'h':
+                    side = 'above' if _rep[0] <= gap_line else 'below'
+                else:
+                    side = 'left' if _rep[1] <= gap_line else 'right'
+
             # 检查缝隙有效性 + 该侧有块 —— 走三形态共有的
             # `side_has_blocks`，不再直接调方形的 `is_valid_h_line/v_line`。
             # 那两个方法**只有方形引擎有**，异形上会 AttributeError；而它们

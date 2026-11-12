@@ -57,8 +57,10 @@ def main():
 
     # P1 auto_solve（自动求解按钮）入口，非流式，整轮预算 150s
     g = build_game(COORDS, M, N)
+    segs = []
     t = time.time()
-    res = auto_solve(g, STEP, time_budget=150)
+    # 模拟 GUI 真实入口：gui/auto_solve.py 调 auto_solve 时传 stage_cb 走流式分段。
+    res = auto_solve(g, STEP, time_budget=150, stage_cb=lambda s: segs.append(s))
     dt = time.time() - t
 
     if isinstance(res, tuple):
