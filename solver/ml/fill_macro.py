@@ -1404,20 +1404,6 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
             out.append(frozenset(comp))
         return out
 
-    def _connected(S):
-        S = set(S)
-        if not S:
-            return False
-        p0 = next(iter(S))
-        seen, stack = {p0}, [p0]
-        while stack:
-            r, c = stack.pop()
-            for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-                if nb in S and nb not in seen:
-                    seen.add(nb)
-                    stack.append(nb)
-        return len(seen) == len(S)
-
     def _mindist(S, q):
         return min(abs(r - q[0]) + abs(c - q[1]) for r, c in S)
 
@@ -1425,48 +1411,6 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
     # 記憶化：rest 的連通性與（不連通時）分量 id 表，按 rest 複用
     _rest_conn_cache = {}
     _rest_ids_cache = {}
-
-    def _union_connected(rest, mv_k):
-        """rest ∪ mv_k 是否連通（前提：mv_k ∩ rest = ∅、mv_k 內部連通）。
-
-        與原 `_connected(rest | mv_k)` 逐案等價的三級判定——滿 DFS 只留在
-        最後一級（2026-11-07 實測佔比：無接觸 28–35%、rest 連通 96–98%，
-        即 ~97% 的呼叫可免 DFS）：
-          1. mv_k 與 rest 無 4 鄰接接觸 → 兩個非空集合必然不連通 → False；
-          2. rest 連通（按 rest 記憶化，44 萬次檢查攤到 5.4 萬個不同 rest）
-             + 有接觸 → 併集連通 → True（兩個連通集有邊相鄰，並起來連通）；
-          3. rest 不連通 → 星形橋接：rest 各連通分量兩兩不鄰接（分量的極大
-             性質），且 mv_k 本身連通 → 併集連通 ⟺ mv_k 觸到**每一個**
-             分量（分量 id 表按 rest 記憶化）。
-        """
-        if not any((r + dr, c + dc) in rest
-                   for r, c in mv_k for dr, dc in _DIRS.values()):
-            return False                     # 快判1：不接觸 ⇒ 必不連通
-        rc = _rest_conn_cache.get(rest)
-        if rc is None:
-            rc = _connected(rest)
-            _rest_conn_cache[rest] = rc
-        if rc:
-            return True                      # 快判2：連通 + 接觸 ⇒ 連通
-        info = _rest_ids_cache.get(rest)     # 慢路徑：星形橋接
-        if info is None:
-            ids, nid = {}, 0
-            for comp_r in _comps(rest):
-                for cell in comp_r:
-                    ids[cell] = nid
-                nid += 1
-            info = (ids, nid)
-            _rest_ids_cache[rest] = info
-        ids, ncomp = info
-        touched = set()
-        for r, c in mv_k:
-            for dr, dc in _DIRS.values():
-                cid = ids.get((r + dr, c + dc))
-                if cid is not None:
-                    touched.add(cid)
-                    if len(touched) == ncomp:
-                        return True
-        return False
 
     def _legal_steps(cur):
         """全部合法 step 单步 → [(act5, comp, delta, nxt)]。
@@ -1506,7 +1450,9 @@ def _convoy_fill(coords, m, n, step, h, p, max_prep=2, max_pickup=4,
                                     (q[0] + dr * k, q[1] + dc * k)
                                     for q in comp)
                                 if (mv_k & rest
-                                        or not _union_connected(rest, mv_k)):
+                                        or not _union_connected(
+                                            rest, mv_k, _rest_conn_cache,
+                                            _rest_ids_cache)):
                                     ok = False
                                     break
                             if not ok:
@@ -1672,6 +1618,50 @@ def _comps_ml(S):
     return out
 
 
+def _union_connected(rest, mv_k, _rest_conn_cache, _rest_ids_cache):
+    """rest ∪ mv_k 是否連通（前提：mv_k ∩ rest = ∅、mv_k 內部連通）。
+
+    与满 DFS `_connected_ml(rest | mv_k)` 逐案等價的三級判定（2026-11-07
+    首落 convoy；2026-11-12 提升为模块级，convoy / rigid 两宏共用）：
+
+      1. mv_k 與 rest 無 4 鄰接接觸 → 兩個非空集合必然不連通 → False；
+      2. rest 連通（按 rest 記憶化） + 有接觸 → 併集連通 → True；
+      3. rest 不連通 → 星形橋接：mv_k 觸到 rest 的**每一個**分量才連通
+         （分量 id 表按 rest 記憶化）。
+
+    `_rest_conn_cache` / `_rest_ids_cache` 由调用方持有（每宏调用一份），
+    实现按 rest 形状的连通性 / 分量 id 记忆化，避免重复满 DFS。
+    """
+    if not any((r + dr, c + dc) in rest
+               for r, c in mv_k for dr, dc in _DIRS.values()):
+        return False                     # 快判1：不接觸 ⇒ 必不連通
+    rc = _rest_conn_cache.get(rest)
+    if rc is None:
+        rc = _connected_ml(rest)
+        _rest_conn_cache[rest] = rc
+    if rc:
+        return True                      # 快判2：連通 + 接觸 ⇒ 連通
+    info = _rest_ids_cache.get(rest)     # 慢路徑：星形橋接
+    if info is None:
+        ids, nid = {}, 0
+        for comp_r in _comps_ml(rest):
+            for cell in comp_r:
+                ids[cell] = nid
+            nid += 1
+        info = (ids, nid)
+        _rest_ids_cache[rest] = info
+    ids, ncomp = info
+    touched = set()
+    for r, c in mv_k:
+        for dr, dc in _DIRS.values():
+            cid = ids.get((r + dr, c + dc))
+            if cid is not None:
+                touched.add(cid)
+                if len(touched) == ncomp:
+                    return True
+    return False
+
+
 _CARRY_NODE_BUDGET = 120
 """`_rigid_fill` 里 carry 组的节点上限。
 
@@ -1817,7 +1807,7 @@ def _align_rigid(coords, m, n, step, H, P, max_steps=12, max_comp=None,
 def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
                 max_depth=20, max_nodes=3000, max_k=4, max_comp=None,
                 allow_appr=None, verbose=False, progress_callback=None,
-                cancel_check=None):
+                cancel_check=None, time_cap=None):
     """刚体挤入宏：k 格刚体凸起整体填入同形状洞（教程 5.1「直接挤进去」）。
 
     与粘上接走（_convoy_fill）同构，但：
@@ -1852,7 +1842,9 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
     if allow_appr is None:
         allow_appr = not attached
 
-    state = {'nodes': 0}
+    state = {'nodes': 0, 'timed_out': False}
+    _deadline = (time.time() + time_cap) if time_cap else None
+    _rest_conn_cache, _rest_ids_cache = {}, {}
     seen = {(coords, P)}
 
     def _pset(Pcur, delta):
@@ -1895,7 +1887,9 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
                                 mku = frozenset((q[0] + dr * u, q[1] + dc * u)
                                                 for q in comp)
                                 if (mku & rest
-                                        or not _connected_ml(rest | mku)):
+                                        or not _union_connected(
+                                            rest, mku, _rest_conn_cache,
+                                            _rest_ids_cache)):
                                     ok = False
                                     break
                             if not ok:
@@ -1926,6 +1920,11 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
     def dfs(cur, Pcur, prep_used, prefix, carried=False, last_march=None,
             rest_used=0):
         if state['nodes'] >= max_nodes:
+            return None
+        # 墙钟上限（可选）：大盘上 rigid 盲 DFS 分支因子几百、纯暴力，到点即
+        # 剪枝放弃（与 _convoy_fill 同款 time_cap 纪律，2026-11-12 补齐）。
+        if _deadline is not None and time.time() >= _deadline:
+            state['timed_out'] = True
             return None
         state['nodes'] += 1
         _chk(cancel_check)
@@ -2529,7 +2528,7 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
                 if relay is None:
                     continue
                 sub2, g2 = relay
-                mode2, repC_end = 'relay', h_new
+                mode2 = 'relay'
                 # ---- 洞带回位：p 随分量捎进原洞 ----
                 g3 = build_game(gcoords(g2), m, n)
                 ok3, sub3 = _es_probe_run(g3, gap_b, line_b, side_b,
@@ -2547,16 +2546,21 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
                     continue
                 if not _overlap_raised(coords, m, n, step, all_acts):
                     continue
+                # 接运是逐轴多段（_relay_bump），没有「单一缝/方向」可言；
+                # 诊断只记真实可得的：模式、目标洞位、接运动作数。别再引用
+                # helper 内部的 gap2/line2/side2/d2/k2——抽出 helper 后它们
+                # 已不在本作用域，成功返回时会直接抛 NameError（#47 残留，
+                # 由 _test_solver_opt_equiv 的 stderr 暴露）。
                 if verbose:
                     print('   [带移链] 洞%s←凸%s: 让位(%s,%d,%s,%s,%d格)'
-                          '→洞%s 接应%s(%s,%d,%s,%s,%d格) 回位 → %d 步'
+                          '→洞%s 接应%s(%d步) 回位 → %d 步'
                           % (hole, p_src, gap_b, line_b, side_b, d,
-                             k * step, h_new, mode2, gap2, line2, side2, d2,
-                             k2 * step, len(all_acts)))
+                             k * step, h_new, mode2, len(sub2),
+                             len(all_acts)))
                 return all_acts, {
                     'hole': hole, 'src': p_src, 'h_shifted': h_new,
                     'band': (gap_b, line_b, side_b, d, k * step),
-                    'relay': (mode2, gap2, line2, side2, d2, k2 * step),
+                    'relay': (mode2, h_new, len(sub2)),
                     'tries': tried}
     return None, '带移链：预算 %d 组内未找到' % tried
 
