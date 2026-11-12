@@ -117,8 +117,14 @@ def run():
     print('  主驱动: %s / 流式段 %d' %
           ('None' if a4 is None else '%d 步' % len(a4), len(segs)))
     check('P4 主驱动从 109 至少推进一段', len(segs) >= 1)
-    check('P4 主驱动终态聚拢 62', ov(frozenset(s4.get('end_coords', c))) == 62,
-          'end_ov=%s' % ov(frozenset(s4.get('end_coords', c))))
+    # 注：本测试入口是 solve_multi_void（单趟贪心）。#50 把粘上接走（band_shift）接进
+    # _vacancy_couple_hook 后，该盘单趟即可一路全解到 64（快机）/ 至少推进到
+    # 62（慢机 band_shift 在 10s 预算内超时降级）。修复前（#50 之前）主驱动在
+    # 109 零进展停机（终态停在 61）。锁「终态 >= 62」即捕获该回归，不强锁 64
+    # （机器速度依赖，易误报）。
+    end_ov = ov(frozenset(s4.get('end_coords', c)))
+    check('P4 主驱动终态聚拢 >= 62（修复前零进展停机在 61）',
+          end_ov >= 62, 'end_ov=%s' % end_ov)
 
     # P5 require_solved=True（单缺口全解路径）行为不变：仍是首个成功即返回
     # 该盘面是多空位，单缺口全解本就无解，只需确认不抛异常且返回结构正常

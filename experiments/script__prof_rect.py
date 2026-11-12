@@ -22,8 +22,8 @@ from solver.ml.fill_macro import build_game          # noqa: E402
 from solver.auto_solver import auto_solve            # noqa: E402
 
 CASES = [
-    ('archives/失败06.json', 0, 60, '06 死局(带移链后秒解)'),
-    ('archives/失败07.json', 0, 60, '07 死局(带移链后秒解)'),
+    ('archives/失败06.json', 0, 60, '06 死局(粘上接走（band_shift）后秒解)'),
+    ('archives/失败07.json', 0, 60, '07 死局(粘上接走（band_shift）后秒解)'),
     ('archives/2-7-8-20261001-185331.json', 31, 60, '2-7-8 停机局面'),
     ('archives/失败04.json', 0, 120, '04 死局(撞DFS预算)'),
 ]

@@ -41,6 +41,7 @@ from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noq
                                   _capture_apply, _replay_apply, _Runner,
                                   replay_and_verify, solve_multi_void,
                                   _compact_rescue, _convoy_fill,
+                                  _band_shift_chain, _BAND_SHIFT_BUDGET,
                                   solve_multi_search, _Cancelled, _emit)
 from solver.ml import view_rotate                                          # noqa: E402
 
@@ -481,40 +482,74 @@ def _bumpcol_chain(vg, vh, step, verbose=False, trace=None):
     return None, '专列：候选全败'
 
 
+def _exec_segment(g2, acts, p0, step, flip=False):
+    """在 g2 上执行一段动作列表（4/5 元组，5 元组 rep 优先选块）。
+
+    返回 (out5_list, None) 成功；或 (partial_out, (index, a4, why)) 失败。
+    flip=True 时动作被拒先按 _FLIP_SIDE_DIR 换边重试——用于 _user_edge_chain
+    的拆壳等价表达（同缝异侧反向 ≡ 相对位移相同）。_run_chain 与
+    _user_edge_chain 共用此执行核心，避免封壳/拆壳循环被各写一遍。
+    """
+    out = []
+    for i, a4 in enumerate(acts):
+        a = a4 if len(a4) == 5 else a4 + (tuple(p0),)
+        okk, a5, why, _mv = _apply_dbg(g2, a, step)
+        if okk:
+            out.append(a5)
+            continue
+        if flip:
+            side2, d2 = _FLIP_SIDE_DIR[(a4[2], a4[3])]
+            okk, a5, why, _mv = _apply_dbg(
+                g2, (a4[0], a4[1], side2, d2, None), step)
+            if okk:
+                out.append(a5)
+                continue
+        return out, (i, a4, why)
+    return out, None
+
+
 def _run_chain(vg, seal4, inner4, unseal4, p0, step, trace=None,
-               require_solved=True, vh=(0, 0)):
+               require_solved=True, vh=(0, 0), unseal_flip=False,
+               pre=None, post_seal=None):
     """在副本上执行 封壳→内部→拆壳 三段（rep 动态跟踪凸起）。
 
+    inner4 可为动作列表，或 callable(g2)->列表（动态内层，封壳后按当前盘面
+    生成）。pre / post_seal 为 callable(g2)，分别在封壳前 / 封壳后插入专属处理
+    （如对齐凸起、挤入），返回 None 表示成功、str 表示失败原因。
+    unseal_flip=True 时拆壳段被拒不换边重试（_user_edge_chain 需此等价表达）。
     require_solved=True：全部动作合法且最终 solved 才成功；
     False（couple 模式）：成功判据 = 洞 vh 被填。
     返回 (view 动作5元组列表, stats) 或 (None, None)。
     trace 为 dict 时记录首个失败：seg/index/action/why/prefix(已成功动作)。
     """
     g2 = build_game(gcoords(vg), vg.m, vg.n)
-    p2 = None
-    for blk in g2.blocks:
-        if tuple(blk.location) == tuple(p0):
-            p2 = blk
-            break
     segs, nseg = [], {'seal': 0, 'inner': 0, 'unseal': 0}
-    for name, acts in (('seal', seal4), ('inner', inner4),
-                       ('unseal', unseal4)):
-        out = []
-        for a4 in acts:
-            a = a4 if len(a4) == 5 else a4 + (tuple(p2.location),)
-            if trace is None:
-                okk, a5 = _apply4(g2, a, step)
-                why = ''
-            else:
-                okk, a5, why, _mv = _apply_dbg(g2, a, step)
-            if not okk:
-                if trace is not None:
-                    trace.update(seg=name, index=len(out), action=a4,
-                                 why=why, prefix=segs + out)
-                return None, None
-            out.append(a5)
+    if pre is not None:
+        r = pre(g2)
+        if r is not None:
+            if trace is not None:
+                trace.update(seg='pre', index=-1, action=None,
+                             why=r, prefix=list(segs))
+            return None, None
+    for name, acts, flip in (('seal', seal4, False),
+                             ('inner', inner4, False),
+                             ('unseal', unseal4, unseal_flip)):
+        inner_list = acts(g2) if callable(acts) else acts
+        out, fail = _exec_segment(g2, inner_list, p0, step, flip=flip)
+        if fail is not None:
+            if trace is not None:
+                trace.update(seg=name, index=fail[0], action=fail[1],
+                             why=fail[2], prefix=segs + out)
+            return None, None
         segs += out
         nseg[name] = len(out)
+        if name == 'seal' and post_seal is not None:
+            r = post_seal(g2)
+            if r is not None:
+                if trace is not None:
+                    trace.update(seg='post_seal', index=-1, action=None,
+                                 why=r, prefix=list(segs))
+                return None, None
     if require_solved:
         if not g2.is_solved():
             if trace is not None:
@@ -1004,11 +1039,12 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
                 if verbose:
                     print('  setup：对齐凸起挪位 -> %s' % (tuple(p2.location),))
 
-        for i, a4 in enumerate(seal4):             # 封壳（外层共轭）
-            okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
-            if not okk:
-                return None, '封壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
-            prefix.append(a5)
+        # 封壳（外层共轭）——复用 _run_chain 的执行核心 _exec_segment
+        out, fail = _exec_segment(g2, seal4, p0, step, flip=False)
+        if fail is not None:
+            return None, '封壳第%d步被拒(%s)' % (fail[0] + 1, fail[2]), \
+                list(prefix)
+        prefix += out
         if not _hole_sealed(g2, vh):
             return None, '封壳完成但洞未封闭', list(prefix)
         if verbose:
@@ -1089,18 +1125,12 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
                     list(prefix) + list(iacts)
             prefix += list(iacts)
 
-        for i, a4 in enumerate(unseal4):           # 逆外层共轭
-            okk, a5, why, _mvd = _apply_dbg(g2, a4, step)
-            if not okk:
-                # 换边等价表达（用户复原失败01实证）：同缝异侧反向 ≡
-                # 相对位移相同、绝对位置不同；is_solved 只看实心矩形
-                # 形状不钉死位置，故被拒时换边重试。
-                side2, d2 = _FLIP_SIDE_DIR[(a4[2], a4[3])]
-                okk, a5, why, _mvd = _apply_dbg(
-                    g2, (a4[0], a4[1], side2, d2, None), step)
-                if not okk:
-                    return None, '拆壳第%d步被拒(%s)' % (i + 1, why), list(prefix)
-            prefix.append(a5)
+        # 逆外层共轭——复用 _exec_segment（flip=True 支持拆壳换边重试）
+        out, fail = _exec_segment(g2, unseal4, p0, step, flip=True)
+        if fail is not None:
+            return None, '拆壳第%d步被拒(%s)' % (fail[0] + 1, fail[2]), \
+                list(prefix)
+        prefix += out
         if require_solved:
             if not g2.is_solved():
                 return None, '链走通但未还原', list(prefix)
@@ -1157,6 +1187,50 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
     if best_res is not None:
         return best_res
     return None, {'reason': '；'.join(reasons), 'prefix': best}
+
+
+def _edge_band_shift_attempt(coords, m, n, step, hole, verbose=False,
+                             anchor=None, require_solved=True,
+                             time_budget=None):
+    """用户链失败后的「粘上接走」加档（开洞几何）。
+
+    直接调用 fill_macro._band_shift_chain（洞带让位→源接应→带回位）把窗外凸
+    捎进洞。仅当原语能产出「回放合法 + 达成成功判据」的解时才返回动作；否则
+    返回 (None, 原因)。不抛异常，调用方据此回退别档。
+
+    anchor：指定窗外凸起位置（couple 模式由上层喂入）；缺省自动 _find_bump
+        取首个窗外块。
+    require_solved：成功判据。True（默认，单洞分支用）=整盘还原；
+        False（couple 模式用）=仅要求目标洞 hole 被填上，允许盘面仍余其他
+        洞（多洞局面下本次只填这一对，残局交给下一轮）。
+    time_budget：透传给 _band_shift_chain 的搜索预算；None = 用默认
+        _BAND_SHIFT_BUDGET。长共轭（如 step120 双洞）在慢机需 ~15s，调用方
+        可按需放宽。
+    """
+    g0 = build_game(coords, m, n)
+    if anchor is not None:
+        p_src = tuple(anchor)
+    else:
+        p_bump = _find_bump(g0)
+        if p_bump is None:
+            return None, '无窗外凸起'
+        p_src = tuple(p_bump.location)
+    acts_b, info_b = _band_shift_chain(
+        coords, m, n, step, hole, p_src, verbose=verbose,
+        time_budget=(_BAND_SHIFT_BUDGET if time_budget is None
+                     else time_budget))
+    if acts_b is None:
+        return None, info_b
+    g = build_game(coords, m, n)
+    ok = _replay_apply(g, acts_b, m, n, step)
+    if require_solved:
+        done = ok and g.is_solved()
+    else:
+        done = ok and tuple(hole) in gcoords(g)
+    if done:
+        return acts_b, {'route': 'band_shift',
+                        'require_solved': require_solved}
+    return None, '回放未还原' if require_solved else '回放未还原/洞未填'
 
 
 def solve_edge_gap(coords, m, n, step, verbose=False, hole=None,
@@ -1246,6 +1320,19 @@ def solve_edge_gap(coords, m, n, step, verbose=False, hole=None,
         return None, {'reason': u_reason, 'edge': edge, 'couple': True,
                       'fail_world': u_prefix,
                       'secs': round(time.time() - t0, 3)}
+
+    # ---- 加档：用户链失败且为单缺口时，试「粘上接走」原语（开洞几何）----
+    # _band_shift_chain 与封壳共轭并列的另一种策略：洞带让位→源接应→带回位，
+    # 把窗外凸捎进洞。它需「开洞」（洞在封壳前），故放在 _user_edge_chain
+    # 之后、v1 之前；仅非 couple（单缺口）路径尝试，couple 由上层多洞驱动
+    # 已覆盖，避免重复开销。洞 h 与凸 p 须同 mod，否则原语内部自行返回 None。
+    acts_b, info_b = _edge_band_shift_attempt(coords, m, n, step, h_w,
+                                              verbose=verbose)
+    if acts_b is not None:
+        return acts_b, {'steps': len(acts_b), 'route': 'band_shift',
+                        'edge': edge, 'secs': round(time.time() - t0, 3)}
+    if verbose:
+        print('  粘上接走档未成(%s)，仍回退 v1' % info_b)
 
     # ---- 回退 v1：左边缘规范型（专列/甩料封壳）----
     wall1, stats1 = _solve_edge_gap_v1(coords, m, n, step, verbose=verbose)
@@ -1649,6 +1736,15 @@ def _vacancy_couple_hook(gap_only, cancel_check=None):
                 # 主解读盲区（如凸起挂列 0）→ D4 轨道成员逐一试
                 acts, st2 = _couple_orbit_solve(coords, m, n, step, h, p, 'EDGE')
                 st = st2 if acts is None else st2
+            if acts is None:
+                # 长共轭兜底：粘上接走（band_shift）（#50 原语）。补缺链/轨道都吞不下这种
+                # 「直接推不进、须先让路再捎带」的硬洞——成功判据放宽到
+                # 「目标洞 h 被填上」即可，不要求整盘还原（多洞局面下本次
+                # 只填这一对，残局留待下一轮）。
+                acts, st2 = _edge_band_shift_attempt(
+                    coords, m, n, step, h, anchor=p, require_solved=False)
+                if acts is not None:
+                    st = st2
             return acts, st
         if edge == 'CORNER':
             acts, st = solve_corner_gap(coords, m, n, step, hole=h, anchor=p,

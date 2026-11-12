@@ -16,13 +16,11 @@
 
 执行：D:/python/python.exe -u test/_test_solver_opt_equiv.py
 """
-import ast
 import heapq
 import json
 import os
 import random
 import sys
-import textwrap
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,25 +48,17 @@ def check(name, cond, extra=''):
 DIR4 = tuple(_DIRS.values())
 
 # ---------------------------------------------------------------- 1. convoy
-fm_path = os.path.join(ROOT, 'solver', 'ml', 'fill_macro.py')
-fm_src = open(fm_path, encoding='utf-8').read()
-fm_tree = ast.parse(fm_src)
-funcs = {}
-for _node in ast.walk(fm_tree):
-    if (isinstance(_node, ast.FunctionDef)
-            and _node.name in ('_connected', '_comps', '_union_connected')
-            and _node.lineno > 1300 and _node.name not in funcs):
-        funcs[_node.name] = textwrap.dedent(
-            ast.get_source_segment(fm_src, _node))
-check('A1 生产源码仍有三级判定的三段函数', len(funcs) == 3,
-      str(sorted(funcs)))
+import solver.ml.fill_macro as _fm  # noqa: E402
 
-_ns = {'_DIRS': _DIRS, '_rest_conn_cache': {}, '_rest_ids_cache': {}}
-for _k in ('_comps', '_connected', '_union_connected'):
-    if _k in funcs:
-        exec(funcs[_k], _ns)
-old_connected = _ns.get('_connected')
-new_connected = _ns.get('_union_connected')
+# 2026-11-12：_union_connected 从 _convoy_fill 内的嵌套闭包提升为「模块级
+# 共用」——convoy / rigid 两宏的 _legal_steps 都调同一个带缓存的三级判定。
+# 护栏跟着改成直接钉模块级实现，不再从源码 AST 抽嵌套函数（那样既漏掉
+# rigid 是否真共用，也会在刚提升完就抽不到三个函数而恒红）。
+check('A1 模块级 _union_connected 存在且是 (rest, mv_k, 双缓存) 四参',
+      hasattr(_fm, '_connected_ml') and hasattr(_fm, '_union_connected')
+      and _fm._union_connected.__code__.co_argcount == 4)
+old_connected = _fm._connected_ml          # 满 DFS 基线
+new_connected = _fm._union_connected       # 共用三级判定
 
 
 def random_cases(rng, count, grid=9):
@@ -149,7 +139,7 @@ def double_run(label, cases, limit):
     for rest, mv in cases:
         if total >= limit:
             break
-        if old_connected(rest | mv) != new_connected(rest, mv):
+        if old_connected(rest | mv) != new_connected(rest, mv, {}, {}):
             diff += 1
         total += 1
     check(label, diff == 0 and total >= limit,
@@ -160,8 +150,41 @@ if old_connected and new_connected:
     _rng = random.Random(20261109)
     double_run('A2 随机网格双算等价', random_cases(_rng, 12000), 10000)
     double_run('A3 真实存档双算等价', real_cases(_rng, 12000), 10000)
-check('A4 _legal_steps 仍走三级判定且保留不相交短路',
-      'mv_k & rest' in fm_src and '_union_connected(rest, mv_k)' in fm_src)
+
+
+def _shared_calls():
+    """行为级：两个宏的 _legal_steps 是否真的都调共享 _union_connected。
+
+    旧判据查源码子串 `'...' in fm_src`——把调用撤掉、只留注释也恒绿，
+    是典型的假护栏。改成 spy 计数，直接盯「共享函数有没有被启动」。
+    """
+    calls = {'n': 0}
+    orig = _fm._union_connected
+
+    def spy(rest, mv_k, ca, ib):
+        calls['n'] += 1
+        return orig(rest, mv_k, ca, ib)
+
+    c4 = frozenset({(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 3),
+                    (2, 0), (2, 1), (2, 2), (2, 3), (3, 0), (3, 1),
+                    (3, 2), (3, 3), (3, 4), (3, 5)})
+    _fm._union_connected = spy
+    try:
+        _fm._convoy_fill(c4, 4, 4, 2, (1, 1), (3, 5), max_nodes=8)
+        convoy_hit = calls['n'] > 0
+        calls['n'] = 0
+        _fm._rigid_fill(c4, 4, 4, 2,
+                        frozenset({(1, 1), (1, 2)}),
+                        frozenset({(3, 4), (3, 5)}), max_nodes=8)
+        rigid_hit = calls['n'] > 0
+    finally:
+        _fm._union_connected = orig
+    return convoy_hit, rigid_hit
+
+
+_hits = _shared_calls()
+check('A4 convoy/rigid 的 _legal_steps 都实际调用共享 _union_connected',
+      _hits[0] and _hits[1], 'convoy=%s rigid=%s' % _hits)
 
 # ------------------------------------------------------------------ 2. GBFS
 def old_guided_reduce_one(coords, m, n, step, budget=80000,
