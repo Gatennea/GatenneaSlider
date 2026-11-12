@@ -16,7 +16,30 @@
 # ---------------------------------------------------------------------------
 # 占用掩码构建
 # ---------------------------------------------------------------------------
-def build_occupancy(cells):
+_COL_MASK_CACHE = {}
+
+
+def _col_masks(W, H):
+    """(列0 掩码, 列W-1 掩码)，按 (W,H) 缓存。
+
+    只依赖网格形状、与占用无关；求解热路径里同一形状被调用十万次量级，
+    每次重算要 2H 次位移，缓存后整段省掉。上限 512 项（形状种类极少）。
+    """
+    key = (W, H)
+    v = _COL_MASK_CACHE.get(key)
+    if v is None:
+        col0 = 0
+        colW = 0
+        for r in range(H):
+            col0 |= 1 << (r * W)
+            colW |= 1 << (r * W + (W - 1))
+        v = (col0, colW)
+        if len(_COL_MASK_CACHE) < 512:
+            _COL_MASK_CACHE[key] = v
+    return v
+
+
+def build_occupancy(cells, pad=0):
     """把 (r,c) 坐标集合打包成单个 int 位掩码。
 
     返回 (mask, W, H, col0, colW, off_r, off_c)：
@@ -24,24 +47,40 @@ def build_occupancy(cells):
       col0        : 最左列掩码（<<1 时防跨列绕回）
       colW        : 最右列掩码（>>1 时防跨列绕回）
     坐标可为任意整数（含负），自动加 offset 归一到非负网格。
+
+    pad > 0 时四周各留 pad 格空白（掩码本身不变，只是网格变大、偏移外扩）。
+    用于需要「把整片位移若干格后再判连通」的场合——位移后仍落在网格内，
+    越界位不会污染边界列掩码。连通性不受留白影响。
     """
     if not cells:
         return 0, 1, 0, 0, 0, 0, 0
-    rs = [r for r, _ in cells]
-    cs = [c for _, c in cells]
-    min_r, max_r = min(rs), max(rs)
-    min_c, max_c = min(cs), max(cs)
+    # 单趟扫出 min/max（原实现建 rs/cs 两个列表再各求 min/max，
+    # 在求解热路径（十万次量级）里列表分配本身就是可观开销）
+    it = iter(cells)
+    r0, c0 = next(it)
+    min_r = max_r = r0
+    min_c = max_c = c0
+    for r, c in it:
+        if r < min_r:
+            min_r = r
+        elif r > max_r:
+            max_r = r
+        if c < min_c:
+            min_c = c
+        elif c > max_c:
+            max_c = c
+    if pad:
+        min_r -= pad
+        max_r += pad
+        min_c -= pad
+        max_c += pad
     W = max_c - min_c + 1
     H = max_r - min_r + 1
+    base = min_r * W + min_c
     mask = 0
     for r, c in cells:
-        idx = (r - min_r) * W + (c - min_c)
-        mask |= 1 << idx
-    col0 = 0
-    colW = 0
-    for r in range(H):
-        col0 |= 1 << (r * W)              # 列 0
-        colW |= 1 << (r * W + (W - 1))    # 列 W-1
+        mask |= 1 << (r * W + c - base)
+    col0, colW = _col_masks(W, H)
     return mask, W, H, col0, colW, min_r, min_c
 
 
@@ -91,6 +130,26 @@ def component(mask, start_bit, W, col0, colW):
             break
         visited |= new
     return visited
+
+
+# ---------------------------------------------------------------------------
+# 全分量拆分（多处需要「这一侧一共有哪几片」）
+# ---------------------------------------------------------------------------
+def components(mask, W, col0, colW):
+    """把 mask 拆成它包含的**全部**连通分量（每分量一个掩码）。
+
+    用途：需要「这一侧一共有哪几片连通块」时，一次遍历即可拿到全部分量，
+    不必对每个候选块各调一次 component（每次都从零洪泛）。返回顺序按
+    各分量最低置位的升序排列，保证调用方遍历顺序稳定。
+    """
+    out = []
+    rest = mask
+    while rest:
+        seed = rest & -rest
+        c = component(mask, seed, W, col0, colW)
+        out.append(c)
+        rest &= ~c
+    return out
 
 
 # ---------------------------------------------------------------------------

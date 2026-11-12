@@ -64,30 +64,35 @@ def main():
     res = solve_gap_macro(g, STEP, segment_cb=seg_cb, time_budget=GUI_BUDGET)
     dt = time.time() - t
 
+    # ⚠️ 返回协议有两条，两条都代表「全解」，不能只认 tuple：
+    #   - 带 segment_cb 流式全解 → dict{'solved': True, 'streamed': N}
+    #   - 非流式全解 → (acts4, reps) 元组
+    # 曾经这里只判 isinstance(res, tuple)，把「流式全解」误判成失败
+    # （2026-11-12 实测 12/12 都是 dict+solved=True，护栏却 6/6 报红）。
     if isinstance(res, tuple):
-        check('P1 GUI 预算 %gs 内全解（tuple 返回）' % GUI_BUDGET, True,
-              'dt=%.1fs segs=%d' % (dt, len(segs)))
+        solved, reason = True, None
+        acts4, reps = res
+        five = []
+        for i, a in enumerate(acts4):
+            rp = reps[i] if i < len(reps) and reps[i] else None
+            rp = tuple(rp) if rp else None
+            five.append((a[0], a[1], a[2], a[3], rp))
     else:
-        check('P1 GUI 预算 %gs 内全解（tuple 返回）' % GUI_BUDGET, False,
-              'type=%s reason=%s dt=%.1fs segs=%d'
-              % (type(res).__name__,
-                 res.get('reason') if isinstance(res, dict) else res,
-                 dt, len(segs)))
+        solved = bool(res.get('solved'))
+        reason = res.get('reason')
+        five = [a for _, seg in segs for a in seg]
+    check('P1 GUI 预算 %gs 内全解' % GUI_BUDGET, solved,
+          'type=%s solved=%s reason=%s dt=%.1fs segs=%d steps=%d'
+          % (type(res).__name__, solved, reason, dt, len(segs), len(five)))
+    if not solved:
         print('\nFAILED:', _fails)
         return 1
-
-    acts4, reps = res
-    five = []
-    for i, a in enumerate(acts4):
-        rp = reps[i] if i < len(reps) and reps[i] else None
-        rp = tuple(rp) if rp else None
-        five.append((a[0], a[1], a[2], a[3], rp))
 
     g2 = build_game(COORDS, M, N)
     ok = _replay_apply(g2, five, M, N, STEP)
     ov1 = window_of(frozenset(gcoords(g2)), M, N, STEP)[1]
     check('P2 重放合法且全解 ov=64', ok and ov1 == M * N,
-          'replay_ok=%s end_ov=%s nsteps=%d' % (ok, ov1, len(acts4)))
+          'replay_ok=%s end_ov=%s nsteps=%d' % (ok, ov1, len(five)))
 
     if _fails:
         print('\nFAILED:', _fails)

@@ -41,11 +41,24 @@ _INV = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
 # 状态
 # ---------------------------------------------------------------------------
 def build_game(coords, m, n):
+    """按坐标集合构造求解器工作副本（不走 UI 初始化路径）。
+
+    性能：原先 SliderMatrix(m, n) 会先建 m*n 个块、跑一遍 update_matrix，
+    然后立刻被 blocks 覆盖、再跑第二遍 update_matrix。step120 一次求解里
+    build_game 被调约 9.7 万次，这一份冗余构造实测吃掉 ~20% 墙钟。
+    这里用 __new__ 直接填 __slots__，矩阵只建一遍。
+
+    语义不变：求解器只读 location / be_opted / matrix，从不读 numbered
+    （编号谜题）或 goal_pattern（设计态还原形状），故恒取匿名初值。
+    """
     from game import Block, SliderMatrix
-    g = SliderMatrix(m, n)
+    g = SliderMatrix.__new__(SliderMatrix)
     g.m, g.n = m, n
     g.blocks = [Block([r, c]) for r, c in sorted(coords)]
     g.matrix = None
+    g.matrix_bounds = None
+    g.numbered = False
+    g.goal_pattern = None
     g.update_matrix()
     return g
 
@@ -1583,19 +1596,16 @@ def _adj_clusters(cells):
 
 
 def _connected_ml(S):
-    """S 是否 4 邻接连通（模块级，供各宏共用）。"""
-    S = set(S)
+    """S 是否 4 邻接连通（模块级，供各宏共用）。
+
+    位棋盘实现（与 set 版 DFS 等价）：坐标先打包成位掩码再洪泛，省掉
+    Python 层的逐格 set 操作。求解热路径单次求解要判近万次。
+    """
     if not S:
         return False
-    p0 = next(iter(S))
-    seen, stk = {p0}, [p0]
-    while stk:
-        r, c = stk.pop()
-        for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-            if nb in S and nb not in seen:
-                seen.add(nb)
-                stk.append(nb)
-    return len(seen) == len(S)
+    from bitboard import build_occupancy, is_connected
+    mask, W, _H, col0, colW, _or, _oc = build_occupancy(S)
+    return is_connected(mask, W, col0, colW)
 
 
 def _comps_ml(S):
@@ -2085,6 +2095,80 @@ def _es_side_blocks(g, gap, line, side):
     return [x for x in g.blocks if sel(tuple(x.location))]
 
 
+_MOVE_DELTA = {'w': (-1, 0), 's': (1, 0), 'a': (0, -1), 'd': (0, 1)}
+
+
+def _sel_move(g, gap, line, sel_blk, d, step):
+    """等价 `g.opt(gap, line, sel_blk)` + `g.try_move(d, step)`，只建一次占用掩码。
+
+    为什么重写：求解内层（让位/接应探针）几乎每一步都是「选一片 + 整片平移
+    step 格」。原路径 opt 建一次占用掩码、try_move 又在每个单格步各建一次
+    （step=2 时共 3 次），实测占 step120 求解墙钟四成以上。这里把选中分量与
+    静态部分都做成位掩码，逐单格步只做位移 + 连通洪泛。
+
+    语义与引擎完全一致：碰撞 = 位移后与静态部分重叠；连通 = 位移后整体仍是
+    单一连通分量；全员选中（无可撞静态块）与选中为空一律判失败（引擎同样
+    拒绝）。成功后 be_opted 与 opt 一样标在选中片上，并返回按 blocks 顺序
+    排列的最终位置（与 `commit_move` 的读取顺序一致）。
+
+    捆绑组（自由捆绑模式）走原路径兜底——求解器自己 build_game 出来的盘
+    恒 group=0，只有外部传入的捆绑盘才会落到兜底分支。
+    """
+    from bitboard import (build_occupancy, component, grid_side_mask,
+                          is_connected)
+    blocks = g.blocks
+    for b in blocks:
+        b.be_opted = False
+    if not blocks:
+        return False, []
+    for b in blocks:
+        if b.group:
+            g.opt(gap, line, sel_blk)
+            fin = g.try_move(d, step)
+            return bool(fin), fin
+    if d not in _MOVE_DELTA:
+        return False, []
+    cells = [(b.location[0], b.location[1]) for b in blocks]
+    # 留 step 格空白：整片最多位移 step 格，位移后仍网格内，边界列掩码不失真
+    mask, W, H, col0, colW, off_r, off_c = build_occupancy(cells, pad=step)
+    if mask == 0:
+        return False, []
+    sr, sc = sel_blk.location
+    if gap == 'h':
+        side = 'above' if sr <= line else 'below'
+    else:
+        side = 'left' if sc <= line else 'right'
+    opt_mask = mask & grid_side_mask(W, H, off_r, off_c, gap, line, side)
+    start_bit = 1 << ((sr - off_r) * W + (sc - off_c))
+    if not (opt_mask & start_bit):
+        return False, []
+    comp = component(opt_mask, start_bit, W, col0, colW)
+    for b in blocks:
+        if comp >> ((b.location[0] - off_r) * W + (b.location[1] - off_c)) & 1:
+            b.be_opted = True
+    static = mask & ~comp
+    if static == 0:
+        return False, []          # 全员选中＝整体纯平移，引擎显式拒绝
+    moved = comp
+    for _ in range(step):
+        if d == 's':
+            moved <<= W
+        elif d == 'w':
+            moved >>= W
+        elif d == 'd':
+            moved = (moved & ~colW) << 1
+        else:                     # 'a'
+            moved = (moved & ~col0) >> 1
+        if moved & static:
+            return False, []      # 碰撞
+        if not is_connected(moved | static, W, col0, colW):
+            return False, []      # 断开
+    dr, dc = _MOVE_DELTA[d]
+    fin = [[b.location[0] + dr * step, b.location[1] + dc * step]
+           for b in blocks if b.be_opted]
+    return True, fin
+
+
 def _es_probe_run(g, gap, line, side, rep0, d, times, step, cancel_check=None):
     """在 g 上从 rep0 块选中分量连滑 times 个 step（多格滑的忠实语义：
     同一分量连续平移）。成功返回 (True, sub_acts)；中途任一步失败返回
@@ -2099,9 +2183,8 @@ def _es_probe_run(g, gap, line, side, rep0, d, times, step, cancel_check=None):
     sub = []
     for _ in range(times):
         _chk(cancel_check)
-        g.opt(gap, line, blk)
-        fin = g.try_move(d, step)
-        if not fin:
+        ok, fin = _sel_move(g, gap, line, blk, d, step)
+        if not ok:
             return False, []
         sub.append((gap, line, side, d, tuple(blk.location)))   # 移动前坐标
         g.commit_move(fin)
@@ -2351,6 +2434,36 @@ def _src_seams(p, axis):
     return [('v', p[1], 'left'), ('v', p[1] - 1, 'right')]
 
 
+def _side_components(g, gap, line, side):
+    """缝隙指定侧的连通分量分组 → {位置: frozenset(该分量所有位置)}。
+
+    与「逐块 opt 后读 be_opted」等价（同样把缝隙当墙、只在指定侧内连通），
+    但**一次洪泛算出全侧分组**：原先每个候选块都要调一次 opt（内部重建
+    占用掩码 + 从零洪泛），step120 一次求解里这类调用近 9 万次、占约 30%
+    墙钟。求解器的盘面没有捆绑组（build_game 恒 group=0），故无需 opt 的
+    捆绑扩展逻辑。
+    """
+    from bitboard import build_occupancy, components, grid_side_mask
+    cells = [(b.location[0], b.location[1]) for b in g.blocks]
+    mask, W, H, col0, colW, off_r, off_c = build_occupancy(cells)
+    if mask == 0:
+        return {}
+    sm = mask & grid_side_mask(W, H, off_r, off_c, gap, line, side)
+    out = {}
+    for cm in components(sm, W, col0, colW):
+        pos_list = []
+        bits = cm
+        while bits:
+            lsb = bits & -bits
+            idx = lsb.bit_length() - 1
+            pos_list.append((idx // W + off_r, idx % W + off_c))
+            bits &= ~lsb
+        comp = frozenset(pos_list)
+        for pos in comp:
+            out[pos] = comp
+    return out
+
+
 def _relay_1d(g, p_cur, axis, k2, d2, step, cancel_check=None):
     """单轴接运：把 g 中 p_cur 处凸起沿 axis 平移 k2 个 step 到目标位。
     模式A（p 之分拣直接平移）；模式B（邻近分拣贴 p 后带回）。
@@ -2372,27 +2485,21 @@ def _relay_1d(g, p_cur, axis, k2, d2, step, cancel_check=None):
                    (lambda q: q[1] <= line2 if side2 == 'left'
                     else q[1] > line2)
         tried_comps = set()
-        for repC0 in sorted({tuple(b.location)
-                             for b in g.blocks
-                             if side_sel(tuple(b.location))
-                             and tuple(b.location) != tuple(p_cur)}):
+        cand_pos = sorted({tuple(b.location)
+                           for b in g.blocks
+                           if side_sel(tuple(b.location))
+                           and tuple(b.location) != tuple(p_cur)})
+        # 一次洪泛拿到「该侧的全部连通分量」，供逐候选取代表（见 _side_components）
+        comp_of = _side_components(g, gap2, line2, side2) if cand_pos else {}
+        for repC0 in cand_pos:
             _chk(cancel_check)
-            gB = build_game(gcoords(g), g.m, g.n)
-            blkC0 = None
-            for b in gB.blocks:
-                if tuple(b.location) == repC0:
-                    blkC0 = b
-                    break
-            if blkC0 is None:
+            comp0 = comp_of.get(repC0)
+            if comp0 is None:
                 continue
-            gB.opt(gap2, line2, blkC0)
-            comp0 = frozenset(tuple(b.location) for b in gB.blocks
-                              if b.be_opted)
-            for b in gB.blocks:
-                b.be_opted = False
             if comp0 in tried_comps or tuple(p_cur) in comp0:
                 continue   # 重复分量 / 已含 p（模式 A 已试）
             tried_comps.add(comp0)
+            gB = build_game(gcoords(g), g.m, g.n)
             ok_t, sub_t = _es_probe_run(gB, gap2, line2, side2,
                                         repC0, _OPP_DIR[d2], k2, step,
                                         cancel_check)
@@ -2476,9 +2583,8 @@ def _probe_ride_depth(gg, gap, line, rep0, d, k, step, cancel_check=None):
     dep = 0
     for _ in range(k):
         _chk(cancel_check)
-        gg.opt(gap, line, blk)
-        fin = gg.try_move(d, step)
-        if not fin:
+        ok, fin = _sel_move(gg, gap, line, blk, d, step)
+        if not ok:
             break
         gg.commit_move(fin)
         dep += 1
