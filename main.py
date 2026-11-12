@@ -66,15 +66,13 @@ threading.excepthook = _thread_excepthook
 
 import queue
 
-# 预热 solver 全家桶（含 numpy 等重型依赖）：若在主循环运行中（SDL 线程
-# 活跃）首次导入 numpy，会在扩展模块 DLL 加载处死锁（实测 8 分钟无进展、
-# 独立进程仅 0.7s）。干净环境下提前导入约 2s，根治「HTTP 打乱卡死」。
-# 2026-11-10 死局黑名單移除後改為直接 import solver：實測它仍會載入
-# numpy，預熱效果不變，且不再依賴已刪的防護模組。
-import solver  # noqa: E402,F401
+# ⚠️ 重要：solver / GUI / http_server 等重型依赖**绝不**放在模块顶层——
+# 看门进程（--_restart_watch，由 gui/restart.request_restart 拉起）也会走到
+# 本模块 import 阶段，若在顶层 import solver 会触发约 2s 的 numpy 预热，
+# 导致「点重启 → 看到重启动画」凭空慢 2s。改为仅在「非看门分支」里才导入
+# （见 __main__ 看门判定之后）。看门分支只走 gui.restart_manager（仅 pygame，
+# 不引 solver），启动约 0.3s。
 
-from GUI import SliderGUI
-from http_server import build_server_meta, start_http_server
 
 
 def stdin_reader(cmd_queue: queue.Queue):
@@ -174,9 +172,20 @@ if __name__ == '__main__':
             sys.exit(2)
         # 看门进程本体：显示「重启中」动画窗口，覆盖旧进程退出→新进程就绪的空窗，
         # 旧进程退出后再重拉起游戏（run() 内部补 --_restarted <token>）。
+        # 此分支只走 gui.restart_manager（仅 pygame，不引 solver），避免 2s 预热。
         from gui import restart_manager
         restart_manager.run(_pid, _relaunch, _token)
         sys.exit(0)
+
+    # ---- 以下仅「非看门模式」（真正的游戏进程）才执行 ----
+    # 预热 solver 全家桶（含 numpy 等重型依赖）：若在主循环运行中（SDL 线程
+    # 活跃）首次导入 numpy，会在扩展模块 DLL 加载处死锁（实测 8 分钟无进展、
+    # 独立进程仅 0.7s）。干净环境下提前导入约 2s，根治「HTTP 打乱卡死」。
+    # 2026-11-10 死局黑名單移除後改為直接 import solver：實測它仍會載入
+    # numpy，預熱效果不變，且不再依賴已刪的防護模組。
+    import solver  # noqa: E402,F401
+    from GUI import SliderGUI  # noqa: E402
+    from http_server import build_server_meta, start_http_server  # noqa: E402
 
     # 重启经看门进程拉起：剥离内部标记 --_restarted <token>，记录到环境变量，
     # 供 GUI 跳过冷启动开机封面、写完首帧后写就绪哨兵（看门进程据此淡出）。

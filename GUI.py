@@ -255,9 +255,18 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_m = m
         self.current_n = n
         self.current_step = step
+        self.current_kind = kind
 
         # 游戏逻辑对象（带 kind；命令行走位若参数非法，会在下方显式报错而非静默方形）
         self.game = create_puzzle(m, n, step, kind=kind)
+
+        # 重启动画空闲预生成调度器：趁闲生成「不重样」的新一版动画（见
+        # gui/restart_idle）。失败无副作用——最坏只是看门进程回退旧版/spinner。
+        try:
+            from gui.restart_idle import RestartAnimScheduler
+            self._restart_anim_scheduler = RestartAnimScheduler()
+        except Exception:
+            self._restart_anim_scheduler = None
 
         # 幾何抽象（預設正方形；三角形將於 Stage B 替換為 TriangleBoardView）
         self.board_view = SquareBoardView(self.cell_size, self.gap_width)
@@ -1070,6 +1079,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 创建新的游戏对象
         kind = 'numbered' if numbered else 'square'
+        self.current_kind = kind
         self.game = create_puzzle(m, n, step, kind=kind)
         self.numbered = numbered
         # 形态标记同步到逻辑对象：编号谜题的整数矩阵靠 numbered 还原编号
@@ -1169,6 +1179,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.solver_algorithm = 'gather'
 
         self.game = create_puzzle(k, k, step, kind='triangle', triangle_side=k)
+        self.current_kind = 'triangle'
+        self.current_triangle_side = k
 
         # 重置状态
         self.zoom = self._fit_triangle_zoom()
@@ -1266,6 +1278,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.solver_algorithm = 'gather'
 
         self.game = create_puzzle(m, n, step, kind='mi')
+        self.current_kind = 'mi'
 
         # 重置状态
         self.zoom = self._fit_mi_zoom()
@@ -1365,6 +1378,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         from engine.adapter import create_adapter_puzzle
         self.game = create_adapter_puzzle(model_name, 4, 4, step)
+        self.current_kind = model_name
         # 把编辑器关掉的缝族带进谜题：HUD 据此提示（见 draw_seam_disable_hint）。
         # 非模型谜题的 game 不会设这个属性，getattr 回落 None → 不画提示。
         self.game.disabled_seams = model.disabled_seams
@@ -2136,13 +2150,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.screen.blit(img, ((sw - bw) // 2, (sh - bh) // 2))
 
     def _make_boot_cover(self):
-        """开机 / 重启封面：标题 + 副标题 + 弱化棋盘底纹，作为新进程开机动画首屏。
+        """冷启动开机封面：标题 + 副标题 + 弱化棋盘底纹，作为首启动画首屏。
 
-        旧版（待办 §三十四 第 8 条）在「本进程退出前」播一段 spinner，用户指出
-        那不是他要的动画——重启是独立进程（看门进程机制，gui/restart.py 的
-        request_restart 等本进程退出后重拉起游戏），他要的动画是**新进程开机**
-        的那一段。于是改由本函数画封面、连同开机帧序列一起由 ``_run_boot_phase``
-        在新进程里播：看门进程重拉起即天然触发，空窗被封面填补。
+        仅用于**冷启动**（首次开游戏）。重启走另一条路：看门进程
+        （gui/restart_manager）在旧进程退出 → 新进程就绪的空窗期播放预生成的无头
+        动画（tools/gen_restart_anim.py 生成的 PNG 序列）；新游戏经
+        ``--_restarted <token>`` 标记跳过本函数所属的 ``_run_boot_phase``，避免与
+        看门动画双播。
         """
         surf = pygame.Surface((960, 540), pygame.SRCALPHA)
         sw, sh = surf.get_size()
@@ -2433,6 +2447,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 模型悬停预览的空闲预热：每帧最多画+存一个模型（见 gui/model_preview）
                 self._preview_pump()
 
+                # 重启动画空闲预生成：趁闲生成「不重样」新一版（非阻塞子进程，
+                # 失败无副作用；系统负载门禁在调度器内，采样走后台线程不卡主循环）。
+                # 仅在游戏不求解 / 不无限打乱时触发，避免与重活抢 CPU。
+                if (self._restart_anim_scheduler is not None
+                        and not self._auto_solve_running
+                        and not getattr(self, '_infinite_shuffle_active', False)):
+                    self._restart_anim_scheduler.tick(
+                        self.current_m, self.current_n, self.current_step,
+                        self.current_kind,
+                        getattr(self, 'current_triangle_side', None))
+
                 # 菜单栏 + 下拉菜单：非模态最上层（下拉菜单盖住浮动面板）
                 self.draw_menu_bar()
 
@@ -2524,9 +2549,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self._frame_error_streak = 0
 
         # 重启动画：重启是独立进程——看门进程（gui/restart.py 的 request_restart）
-        # 在事件层触发时已 spawn，正阻塞等本进程退出后重拉起游戏。因此「重启动画」
-        # 由**新进程**的 _run_boot_phase（含封面）承担，本进程退出前不再播 spinner；
-        # 新窗口一创建就绘出封面首帧，空窗被封面填补。
+        # 在事件层触发时已 spawn，正阻塞等本进程退出后重拉起游戏。空窗期由**看门
+        # 进程自身**（gui/restart_manager）播放一段预生成的无头动画（PNG 序列，
+        # 由 tools/gen_restart_anim.py 在游戏空闲时生成并原子提交到
+        # assets/picture/restart/active）；无该缓存时回退旧版 spinner。本进程（新
+        # 游戏）经 --_restarted <token> 标记跳过冷启动开机封面，避免与看门动画双播。
 
         # 退出前保存配置与成绩（成绩内存中维护，此时统一落盘）
         self.records.save()

@@ -108,6 +108,13 @@ out_*.txt
 # ⚠️ 只管 music/：sound/ 下的 slide*.wav 是短音效，必須照常入庫。
 assets/audio/music/*.wav
 
+# ===== 重启动画运行时缓存（2026-11-12 加）=====
+# tools/gen_restart_anim.py 在游戏空闲时生成、原子提交到 active/；旧版在生成
+# 时被删、tmp_* 是生成中的临时目录。这是运行时产物，不进版本库（与 config/
+# temp_history.json 同属「磁盘运行态」），由空闲调度器随时重建。
+assets/picture/restart/active/
+assets/picture/restart/tmp_*/
+
 # ===== experiments/：**脚本全入库**（2026-10-31 用户拍板），只忽略产物 =====
 # 命名：script_* = 独立脚本（不被 import）；reuse_* = 既能独立跑又被 import；
 #       无前缀 = 库（被 import、不能独立跑）。

@@ -91,6 +91,15 @@ def _wait_for_pid_exit(pid):
 
 # ---- 重启器可视动画的辅助（与 gui/restart_manager.py 共用） ----
 
+# 项目根目录（gui/ 的上一级）
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 预生成「重启动画」帧序列的缓存目录（active = 当前生效版本）。
+# 由 tools/gen_restart_anim.py 在游戏空闲时生成并提交；看门进程（重启播放器）
+# 启动时若此目录存在则循环播放，否则回退旧版 spinner。
+RESTART_ANIM_DIR = os.path.join(
+    PROJECT_ROOT, 'assets', 'picture', 'restart', 'active')
+
 # 就绪哨兵文件名前缀：新游戏首帧绘出后写此文件，看门进程据此淡出
 READY_PREFIX = 'gatennea_restart_ready_'
 

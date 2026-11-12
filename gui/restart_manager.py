@@ -18,7 +18,7 @@ import sys
 import time
 import subprocess
 
-from gui.restart import ready_path, pid_alive
+from gui.restart import ready_path, pid_alive, RESTART_ANIM_DIR
 
 
 def build_relaunch(relaunch_cmd, token):
@@ -89,14 +89,63 @@ def _paint(screen, cover, alpha, now, w, h, font_hint, cy):
         pass
 
 
-def _fade_out(screen, cover, w, h, font_hint, cy):
-    """退场淡出。"""
+def _load_anim(anim_dir, w, h):
+    """加载预生成重启动画帧（RESTART_ANIM_DIR 下 frame_*.png + meta.json）。
+
+    预缩放并居中（letterbox 保持 854x480 设计比例）到当前窗口；返回
+    (frames, fps, ox, oy)，任一步失败则返回 (None, 0, 0, 0) —— 调用方据此
+    回退旧版 spinner。纯 I/O + 一次性缩放，运行期按 idx 直接 blit，零每帧开销。
+    """
+    import json
     import pygame
-    for i in range(20):
-        a = 1.0 - i / 20.0
-        _paint(screen, cover, a, pygame.time.get_ticks(), w, h, font_hint, cy)
-        pygame.display.flip()
-        pygame.time.delay(16)
+    if not anim_dir or not os.path.isdir(anim_dir):
+        return None, 0, 0, 0
+    files = sorted(
+        os.path.join(anim_dir, f) for f in os.listdir(anim_dir)
+        if f.startswith('frame_') and f.endswith('.png'))
+    if not files:
+        return None, 0, 0, 0
+    DESIGN_W, DESIGN_H = 854, 480
+    scale = min(w / DESIGN_W, h / DESIGN_H)
+    dw, dh = int(DESIGN_W * scale), int(DESIGN_H * scale)
+    ox, oy = (w - dw) // 2, (h - dh) // 2
+    frames = []
+    for fp in files:
+        try:
+            surf = pygame.image.load(fp)
+            # .convert() 需要已 set_mode（run() 里已设）；无显示环境时容错退回原面。
+            try:
+                surf = surf.convert()
+            except Exception:
+                pass
+            if (dw, dh) != (surf.get_width(), surf.get_height()):
+                surf = pygame.transform.smoothscale(surf, (dw, dh))
+            frames.append(surf)
+        except Exception:
+            return None, 0, 0, 0
+    if not frames:
+        return None, 0, 0, 0
+    fps = 30
+    mp = os.path.join(anim_dir, 'meta.json')
+    if os.path.exists(mp):
+        try:
+            with open(mp, 'r', encoding='utf-8') as f:
+                m = json.load(f)
+            fps = int(m.get('fps', 30))
+        except Exception:
+            pass
+    return frames, fps, ox, oy
+
+
+def _paint_anim(screen, frames, idx, alpha, w, h, ox, oy):
+    """绘制一帧预生成动画：letterbox 居中 + 可选淡入/淡出（alpha<1 时）。"""
+    import pygame
+    screen.fill((30, 30, 30))
+    f = frames[idx % len(frames)]
+    if alpha < 1.0:
+        f = f.copy()
+        f.set_alpha(int(255 * alpha))
+    screen.blit(f, (ox, oy))
 
 
 def _window_size_and_pos():
@@ -143,6 +192,18 @@ def run(parent_pid, relaunch_cmd, token):
     font_hint = _font(20)
     cy = h // 2 + 92
 
+    # 优先预生成动画（无头生成器在游戏空闲时产出）；无则回退旧版 spinner。
+    anim_frames, anim_fps, anim_ox, anim_oy = _load_anim(RESTART_ANIM_DIR, w, h)
+    use_anim = anim_frames is not None
+
+    def _draw(alpha, now):
+        """按当前分支绘制一帧（alpha 用于淡入/淡出）。"""
+        if use_anim:
+            idx = int(now / (1000.0 / anim_fps)) if anim_fps > 0 else 0
+            _paint_anim(screen, anim_frames, idx, alpha, w, h, anim_ox, anim_oy)
+        else:
+            _paint(screen, cover, alpha, now, w, h, font_hint, cy)
+
     spawned = False
     child = None
     start = pygame.time.get_ticks()
@@ -174,7 +235,7 @@ def run(parent_pid, relaunch_cmd, token):
                     try:
                         child = subprocess.Popen(cmd, cwd=os.getcwd(),
                                                  env=dict(os.environ),
-                                                 creationflags=0x00000010)
+                                                 creationflags=NEW_CONSOLE)
                     except Exception:
                         child = None
                     spawned = True
@@ -185,7 +246,7 @@ def run(parent_pid, relaunch_cmd, token):
                     mark_t = now
 
             alpha = min(1.0, elapsed / FADE_IN)
-            _paint(screen, cover, alpha, now, w, h, font_hint, cy)
+            _draw(alpha, now)
             pygame.display.flip()
 
             # 游戏就绪后淡出一小段；或总超时保护后退出
@@ -195,7 +256,12 @@ def run(parent_pid, relaunch_cmd, token):
                 break
             clock.tick(60)
     finally:
-        _fade_out(screen, cover, w, h, font_hint, cy)
+        # 淡出：按当前分支绘制逐渐透明，交还给新游戏
+        for i in range(20):
+            a = 1.0 - i / 20.0
+            _draw(a, pygame.time.get_ticks())
+            pygame.display.flip()
+            pygame.time.delay(16)
         try:
             from gui.restart import clear_ready
             clear_ready(token)
