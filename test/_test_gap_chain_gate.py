@@ -117,7 +117,12 @@ def run():
     print('  主驱动: %s / 流式段 %d' %
           ('None' if a4 is None else '%d 步' % len(a4), len(segs)))
     check('P4 主驱动从 109 至少推进一段', len(segs) >= 1)
-    check('P4 主驱动终态聚拢 62', ov(frozenset(s4.get('end_coords', c))) == 62,
+    # 注：本测试入口是 solve_multi_void（单趟贪心，解完一个 couple 即返回），
+    # 故终态是 61→62 的一段推进；完整 64 自动全解由 GUI 入口 solve_gap_macro
+    # 的循环驱动达成，锁在 _test_convoy_time_cap.py 的 P3。修复前主驱动在 109
+    # 零进展停机，故「推进到 62」即捕获该回归。
+    check('P4 主驱动终态聚拢 62（采纳首个 couple，修复前零进展停机）',
+          ov(frozenset(s4.get('end_coords', c))) == 62,
           'end_ov=%s' % ov(frozenset(s4.get('end_coords', c))))
 
     # P5 require_solved=True（单缺口全解路径）行为不变：仍是首个成功即返回

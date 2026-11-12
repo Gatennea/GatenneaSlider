@@ -136,21 +136,24 @@ def main():
               ok, 'raised=%r info=%s' % (raised, info))
 
     # ---- P2 反向：撤掉修复必抛 NameError ----
-    ns = dict(FM.__dict__)
-    tree = ast.parse(old_src)
-    node = next(n for n in tree.body
-                if isinstance(n, ast.FunctionDef)
-                and n.name == '_band_shift_chain')
-    mod = ast.Module(body=[node], type_ignores=[])
-    exec(compile(mod, FM_PATH, 'exec'), ns)   # noqa: S102
-    old_fn = ns['_band_shift_chain']
+    # （#50 起 info 构造移入 _band_shift_attempt，反向补丁瞄准该函数）
+    saved_attempt = FM._band_shift_attempt
     try:
-        _drive(old_fn, verbose=False)
-        raised2 = None
-    except NameError as e:
-        raised2 = e
-    except Exception as e:                    # noqa: BLE001
-        raised2 = e
+        tree = ast.parse(old_src)
+        node = next(n for n in tree.body
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == '_band_shift_attempt')
+        mod = ast.Module(body=[node], type_ignores=[])
+        exec(compile(mod, FM_PATH, 'exec'), FM.__dict__)   # noqa: S102
+        try:
+            _drive(FM._band_shift_chain, verbose=False)
+            raised2 = None
+        except NameError as e:
+            raised2 = e
+        except Exception as e:                    # noqa: BLE001
+            raised2 = e
+    finally:
+        FM._band_shift_attempt = saved_attempt
     check('P2 反向：info 行打回旧版必抛 NameError（判据有效）',
           isinstance(raised2, NameError), 'raised=%r' % raised2)
 

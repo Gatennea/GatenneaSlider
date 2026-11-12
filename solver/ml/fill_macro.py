@@ -2323,7 +2323,7 @@ def _edge_setup_chain(coords, m, n, step, hole, time_budget=_EDGE_SETUP_BUDGET,
 # ---------------------------------------------------------------------------
 # 带移让位＋粘上接走链（2026-10-02 用户手解 07 归纳 + 幽灵块追踪提案）
 # ---------------------------------------------------------------------------
-_BAND_SHIFT_BUDGET = 6.0   # 单洞带移链搜索时间预算（秒）
+_BAND_SHIFT_BUDGET = 10.0  # 单洞带移链搜索时间预算（秒；长共轭前置搜索需 ~8s）
 
 _SIDE_SEAMS = (   # (gap, line, side) 组合：side 含 line+1 那行/列
     ('v', lambda q: (('v', q[1], 'left'), ('v', q[1] - 1, 'right'))),
@@ -2449,9 +2449,181 @@ def _relay_bump(g1, p_src, h_new, step, cancel_check=None):
     return None
 
 
+def _undo_entry(act5, step):
+    """前置滑动 act5 的撤销条目 (gap, line, opp_d, rep_after)。
+
+    rep_after = rep 块随整步滑动后的新位置（引擎一步 = step 格）。
+    撤销 = 同缝同分量反向滑一步；若分量中途粘连由终裁整链重放兜底。
+    """
+    gap, line, _side, d, rep = act5
+    dr, dc = _DIRS[d]
+    return gap, line, _OPP_DIR[d], (rep[0] + dr * step, rep[1] + dc * step)
+
+
+def _probe_ride_depth(gg, gap, line, rep0, d, k, step, cancel_check=None):
+    """幽灵盘上让位滑动能连走几步（0..k）。gg 被推进，调用方弃盘。"""
+    blk = None
+    for b in gg.blocks:
+        if tuple(b.location) == tuple(rep0):
+            blk = b
+            break
+    if blk is None:
+        return 0
+    dep = 0
+    for _ in range(k):
+        _chk(cancel_check)
+        gg.opt(gap, line, blk)
+        fin = gg.try_move(d, step)
+        if not fin:
+            break
+        gg.commit_move(fin)
+        dep += 1
+    return dep
+
+
+def _prep_candidates(board, m, n, step, hole, radius, deadline, cancel_check):
+    """洞邻域合法单步滑动，按分量到洞的 Chebyshev 距离升序。
+
+    返回 [(act5, comp, coords_after, undo_entry)]，只收引擎实测可走通的
+    （枚举判据与引擎等价，仍以引擎实测为准）。min_size=1：长共轭的
+    第二前置常只挪 1~2 块的小分量（存档 step122 之前它只有 1 块），
+    默认 min_size=3 会漏。预算到点即截断。
+    """
+    cand = []
+    for act5, comp, _mv, _nxt in _enum_paste_moves(board, m, n, step,
+                                                   min_size=1):
+        _chk(cancel_check)
+        if time.time() > deadline:
+            break
+        dist = min(max(abs(r - hole[0]), abs(c - hole[1])) for r, c in comp)
+        if dist > radius:
+            continue
+        cand.append((dist, act5, comp))
+    cand.sort(key=lambda x: x[0])
+    res = []
+    for dist, act5, comp in cand:
+        if time.time() > deadline:
+            break
+        g = build_game(board, m, n)
+        ok, _sub = _es_probe_run(g, act5[0], act5[1], act5[2], act5[4],
+                                 act5[3], 1, step, cancel_check)
+        if ok:
+            res.append((dist, act5, comp, frozenset(gcoords(g)),
+                        _undo_entry(act5, step)))
+    return res
+
+
+def _apply_prep_slide(board, m, n, step, act5, cancel_check):
+    """在 board 上实走一步前置滑动。成功返回 (coords_after, act5_list)。"""
+    g = build_game(board, m, n)
+    ok, sub = _es_probe_run(g, act5[0], act5[1], act5[2], act5[4],
+                            act5[3], 1, step, cancel_check)
+    if not ok:
+        return None, None
+    return frozenset(gcoords(g)), list(sub)
+
+
+def _band_shift_attempt(c1, coords0, m, n, step, hole, p_src,
+                        gap_b, line_b, side_b, d, k,
+                        prep_acts, undo_plan, cancel_check, counter,
+                        nbs=None):
+    """单组（前置盘面 c1 × 洞带参数）的 让位→接运→回位→撤前置→终裁。
+
+    成功返回 (acts5, info)；该组不成返回 None。counter['tried'] 累计
+    真盘让位成功的组数（诊断用）。nbs：洞带代表块候选位置序列（洞的
+    4 邻），前置盘面可传按无前置深度排序的版本省探针；缺省现算。
+    """
+    if nbs is None:
+        nbs = [q for q in ((hole[0] - 1, hole[1]), (hole[0] + 1, hole[1]),
+                           (hole[0], hole[1] - 1), (hole[0], hole[1] + 1))
+               if q in c1]
+    nbs = [q for q in nbs if q in c1]
+    for nb in nbs:
+        # ---- 幽灵盘：让位段追踪洞身份 ----
+        gg = build_game(c1 | {hole}, m, n)
+        ghost = None
+        for b in gg.blocks:
+            if tuple(b.location) == tuple(hole):
+                ghost = b
+                break
+        if ghost is None:
+            continue
+        ok_g, _sub_g = _es_probe_run(gg, gap_b, line_b, side_b, nb, d, k,
+                                     step, cancel_check)
+        if not ok_g:
+            continue          # 幽灵盘让位不到 k 步 → 该 rep 不成
+        h_new = tuple(ghost.location)
+        if h_new == tuple(hole):
+            continue          # 幽灵块没动 → 洞不在该带运动路径上
+        # ---- 真盘让位（幽灵块只在追踪盘存在，真盘从无幽灵）----
+        g1 = build_game(c1, m, n)
+        ok1, sub1 = _es_probe_run(g1, gap_b, line_b, side_b, nb, d, k, step,
+                                  cancel_check)
+        if not ok1:
+            continue          # 幽灵盘能走真盘不能 → 保守拒绝
+        counter['tried'] += 1
+        # ---- 源接应（粘上接走）：p 逐轴接运到 h'（支持斜对角）----
+        # 复用模式A/B 单轴接运 _relay_1d（逐轴分解，行→列 与 列→行 两序各试）。
+        relay = _relay_bump(g1, p_src, h_new, step, cancel_check)
+        if relay is None:
+            continue
+        sub2, g2 = relay
+        mode2 = 'relay'
+        # ---- 洞带回位：p 随分量捎进原洞 ----
+        # rep 先试原洞位（旧口径：接应 collateral 恰好垫块时可用），失败
+        # 再试让位代表块的随动终点（长共轭情形：接应是净零往返，原洞位
+        # 仍是虚位，须从洞带分量里挑代表块）。
+        g3 = None
+        ok3 = False
+        sub3 = []
+        rep_end = (nb[0] + _DIRS[d][0] * step * k,
+                   nb[1] + _DIRS[d][1] * step * k)
+        for rep_try in (tuple(hole), rep_end):
+            g3 = build_game(gcoords(g2), m, n)
+            ok3, sub3 = _es_probe_run(g3, gap_b, line_b, side_b, rep_try,
+                                      _OPP_DIR[d], k, step, cancel_check)
+            if ok3:
+                break
+        if not ok3:
+            continue
+        if not any(tuple(b.location) == tuple(hole) for b in g3.blocks):
+            continue          # 原洞位没被填上 → 该组参数无效
+        # ---- 撤前置共轭（逆序）----
+        g4 = build_game(gcoords(g3), m, n)
+        unprep_acts = []
+        ok_u = True
+        for u_gap, u_line, u_d, u_rep in reversed(undo_plan):
+            ok_u1, sub_u = _es_probe_run(g4, u_gap, u_line, None, u_rep,
+                                         u_d, 1, step, cancel_check)
+            if not ok_u1:
+                ok_u = False
+                break
+            unprep_acts += sub_u
+        if not ok_u:
+            continue
+        all_acts = (list(prep_acts) + list(sub1) + list(sub2)
+                    + list(sub3) + unprep_acts)
+        # ---- 终裁：干净盘整链重放 + 聚拢度闸门 ----
+        # （闸门复用这次重放的终态，省一次整链回放；经 _overlap_raised
+        # 走，保留测试/护栏对该函数的打点能力）
+        gfull = build_game(coords0, m, n)
+        if not _replay_apply(gfull, all_acts, m, n, step):
+            continue
+        if not _overlap_raised(coords0, m, n, step, all_acts,
+                               _replayed=gfull):
+            continue
+        return all_acts, {
+            'hole': hole, 'src': p_src, 'h_shifted': h_new,
+            'band': (gap_b, line_b, side_b, d, k * step),
+            'relay': (mode2, h_new, len(sub2)),
+            'prep': len(prep_acts),
+            'tries': counter['tried']}
+    return None
+
+
 def _band_shift_chain(coords, m, n, step, hole, p_src,
                       time_budget=_BAND_SHIFT_BUDGET,
-                      verbose=False, cancel_check=None):
+                      verbose=False, cancel_check=None, max_prep=2):
     """带移让位＋粘上接走链。返回 (acts5, info) 或 (None, reason)。
 
     适用：洞 h 与窗外凸起 p 同 mod、但普通填洞过不去（途中块/缺口挡路）。
@@ -2463,106 +2635,144 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
          洞被误填。
       2) 源接应平移：p 所在带沿法线平移 |h'-p|，把 p 送进 h'——p 落位即
          与洞带连通（＝「粘上」，无需显式粘补）。
-      3) 洞带回位：让位的逆平移——p 随分量被捎进原洞。
+      3) 洞带回位：让位的逆平移——p 随分量被捎进原洞。回位代表块先试
+         原洞位（旧口径：接应 collateral 恰好垫块时可用），再试让位代表
+         块的随动终点（前置共轭情形接应是净零往返、原洞位仍是虚位）。
     幽灵块只当追踪器、永不当裁判（用户风险提醒 2026-10-02）：幽灵盘只
     用于让位段读洞身份；让位/接应/回位三段全部在真盘执行，最终整链在
     干净盘重放验证。成功判据 = 原洞位被填 ＋ 聚拢度闸门（防搅盘解；
     链终态窗内块数比链前恰多 1 = 填上的那洞）。
+
+    两阶段搜索（2026-11-12 补长共轭原语）：
+      阶段A 无前置＝原行为，多数盘在此成功；
+      阶段B 前置共轭——长共轭（存档 step120 的 121~134）里洞带深滑前
+      要先挪邻带「加长锚固／腾出顶隙」（121 右带下移把洞带加长 2 格、
+      122 底部凸出部左移对齐锚位；缺任一步第 4 滑被引擎 'disconnected'
+      拒，2026-11-12 解码实测）。只对「无前置让位半途而废」（1 ≤ 深度
+      < k）的候选搜前置：前置 1 步取洞邻域（Chebyshev ≤2，距离升序），
+      前置 2 步仅对距离 ≤1 的首步展开、且第二前置分量须与第一前置分量
+      重叠（＝「首步加长、次步对位」模式）。前置共轭在链尾逆序撤销，
+      终态由整链重放＋聚拢度闸门终裁，绝不偷换解。
     """
     coords = frozenset(coords)
     deadline = time.time() + time_budget
-    opp = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
     perp = {'v': ('s', 'w'), 'h': ('d', 'a')}
-    tried = 0
-    for gap_b, line_b, side_b in _hole_band_seams(hole):
-        # 洞带分量代表块：洞的 4 邻实块（它们必属洞带），逐个当 rep0 试
-        nbs = [q for q in ((hole[0] - 1, hole[1]), (hole[0] + 1, hole[1]),
-                           (hole[0], hole[1] - 1), (hole[0], hole[1] + 1))
-               if q in coords]
+    counter = {'tried': 0}
+    seams = _hole_band_seams(hole)
+
+    # ---- 阶段A：无前置（原行为）----
+    for gap_b, line_b, side_b in seams:
         for d in perp[gap_b]:
             for k in (1, 2, 3, 4):
                 _chk(cancel_check)
                 if time.time() > deadline:
                     return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
-                                  % (time_budget, tried))
-                # ---- 幽灵盘：让位段追踪洞身份 ----
-                gg = build_game(coords | {hole}, m, n)
-                ghost = None
-                for b in gg.blocks:
-                    if tuple(b.location) == tuple(hole):
-                        ghost = b
-                        break
-                if ghost is None:
-                    continue
-                rep0 = None
-                ok_g, _sub_g = False, []
-                for nb in nbs:   # 邻块逐个试：命中含幽灵块的分量即成
-                    ok_g, _sub_g = _es_probe_run(
-                        gg, gap_b, line_b, side_b, nb, d, k, step,
-                        cancel_check)
-                    if ok_g:
-                        rep0 = nb
-                        break
-                    gg = build_game(coords | {hole}, m, n)   # 弃半推进盘
+                                  % (time_budget, counter['tried']))
+                res = _band_shift_attempt(coords, coords, m, n, step, hole,
+                                          p_src, gap_b, line_b, side_b, d, k,
+                                          [], [], cancel_check, counter)
+                if res is not None:
+                    if verbose:
+                        print('   [带移链] 洞%s←凸%s: %d 步 %s'
+                              % (hole, p_src, len(res[0]), res[1]))
+                    return res
+
+    # ---- 阶段B：前置共轭（仅让位半途而废的候选）----
+    if max_prep <= 0:
+        return None, '带移链：预算 %d 组内未找到' % counter['tried']
+    partial = []
+    for gap_b, line_b, side_b in seams:
+        nbs_all = [q for q in ((hole[0] - 1, hole[1]), (hole[0] + 1, hole[1]),
+                               (hole[0], hole[1] - 1), (hole[0], hole[1] + 1))
+                   if q in coords]
+        for d in perp[gap_b]:
+            for k in (1, 2, 3, 4):
+                _chk(cancel_check)
+                if time.time() > deadline:
+                    return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
+                                  % (time_budget, counter['tried']))
+                dep_best, nb_best = 0, None
+                for nb in nbs_all:
+                    gg = build_game(coords | {hole}, m, n)
+                    d1 = _probe_ride_depth(gg, gap_b, line_b, nb, d, k, step,
+                                           cancel_check)
+                    if d1 > dep_best:
+                        dep_best, nb_best = d1, nb
+                if 1 <= dep_best < k:
+                    # 带宽 band_c：无前置幽灵盘上该代表块的让位分量；
+                    # 前置探测按「prep 分量 ∩ 带宽」跳过无关候选省探针。
+                    gg = build_game(coords | {hole}, m, n)
+                    blk0 = None
                     for b in gg.blocks:
-                        if tuple(b.location) == tuple(hole):
-                            ghost = b
+                        if tuple(b.location) == tuple(nb_best):
+                            blk0 = b
                             break
-                if not ok_g or rep0 is None:
-                    continue
-                h_new = tuple(ghost.location)
-                if h_new == tuple(hole):
-                    continue          # 幽灵块没动 → 洞不在该带运动路径上
-                # ---- 真盘让位（幽灵块只在追踪盘存在，真盘从无幽灵）----
-                g1 = build_game(coords, m, n)
-                ok1, sub1 = _es_probe_run(g1, gap_b, line_b, side_b,
-                                          rep0, d, k, step, cancel_check)
-                if not ok1:
-                    continue          # 幽灵盘能走真盘不能 → 保守拒绝
-                tried += 1
-                # ---- 源接应（粘上接走）：p 逐轴接运到 h'（支持斜对角）----
-                # 旧实现只沿单一轴移动、丢弃斜对角另一轴分量，导致对角线
-                # 凸起永远到不了 h'。改为逐轴分解（行→列 与 列→行 两序各试），
-                # 复用模式A/B 单轴接运 _relay_1d。
-                relay = _relay_bump(g1, p_src, h_new, step, cancel_check)
-                if relay is None:
-                    continue
-                sub2, g2 = relay
-                mode2 = 'relay'
-                # ---- 洞带回位：p 随分量捎进原洞 ----
-                g3 = build_game(gcoords(g2), m, n)
-                ok3, sub3 = _es_probe_run(g3, gap_b, line_b, side_b,
-                                          tuple(hole), opp[d], k, step,
-                                          cancel_check)
-                if not ok3:
-                    continue
-                if not any(tuple(b.location) == tuple(hole)
-                           for b in g3.blocks):
-                    continue      # 原洞位没被填上 → 该组参数无效
-                all_acts = list(sub1) + list(sub2) + list(sub3)
-                # ---- 终裁：干净盘整链重放 + 聚拢度闸门 ----
-                gfull = build_game(coords, m, n)
-                if not _replay_apply(gfull, all_acts, m, n, step):
-                    continue
-                if not _overlap_raised(coords, m, n, step, all_acts):
-                    continue
-                # 接运是逐轴多段（_relay_bump），没有「单一缝/方向」可言；
-                # 诊断只记真实可得的：模式、目标洞位、接运动作数。别再引用
-                # helper 内部的 gap2/line2/side2/d2/k2——抽出 helper 后它们
-                # 已不在本作用域，成功返回时会直接抛 NameError（#47 残留，
-                # 由 _test_solver_opt_equiv 的 stderr 暴露）。
+                    gg.opt(gap_b, line_b, blk0)
+                    band_c = frozenset(tuple(b.location)
+                                       for b in gg.blocks if b.be_opted)
+                    nbs_sorted = [nb_best] + [q for q in nbs_all
+                                              if q != nb_best]
+                    partial.append((dep_best, gap_b, line_b, side_b, d, k,
+                                    nbs_sorted, band_c))
+    partial.sort(key=lambda x: -x[0])   # 最接近成功的先试
+    if not partial:
+        return None, '带移链：预算 %d 组内未找到' % counter['tried']
+
+    def _try_partial(c1, prep_acts, undo_plan, comp_last):
+        for (dep0, gap_b, line_b, side_b, d, k, nbs_sorted, band_c) in partial:
+            _chk(cancel_check)
+            if time.time() > deadline:
+                return 'timeout'
+            # 前置分量须接触该候选的让位带（不接触则带深滑与它无关）
+            if not (set(comp_last) & band_c):
+                continue
+            # 快探针：首选代表块单探（1 次建盘），不到 k 不进整链
+            gg = build_game(c1 | {hole}, m, n)
+            if _probe_ride_depth(gg, gap_b, line_b, nbs_sorted[0], d, k,
+                                 step, cancel_check) < k:
+                continue
+            res = _band_shift_attempt(c1, coords, m, n, step, hole, p_src,
+                                      gap_b, line_b, side_b, d, k,
+                                      prep_acts, undo_plan, cancel_check,
+                                      counter, nbs=nbs_sorted)
+            if res is not None:
+                return res
+        return None
+
+    seen_boards = set()
+    for dist1, act1, comp1, c1, undo1 in _prep_candidates(
+            coords, m, n, step, hole, 2, deadline, cancel_check):
+        # 前置 1 步
+        res = _try_partial(c1, [act1], [undo1], comp1)
+        if res == 'timeout':
+            return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
+                          % (time_budget, counter['tried']))
+        if res is not None:
+            if verbose:
+                print('   [带移链] 洞%s←凸%s: 前置1步 %d 步 %s'
+                      % (hole, p_src, len(res[0]), res[1]))
+            return res
+        if max_prep <= 1 or dist1 > 1:
+            continue
+        # 前置 2 步：第二前置分量须与第一前置分量重叠（加长后对位模式），
+        # 且离洞更近（≤1）——第二前置是在首步加长出的带上做对位微调
+        for _d2, act2, comp2, c2, undo2 in _prep_candidates(
+                c1, m, n, step, hole, 1, deadline, cancel_check):
+            if not (set(comp2) & set(comp1)):
+                continue
+            if c2 in seen_boards:
+                continue          # 不同缝/分量滑出同一盘面，只评一次
+            seen_boards.add(c2)
+            res = _try_partial(c2, [act1, act2], [undo1, undo2], comp2)
+            if res == 'timeout':
+                return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
+                              % (time_budget, counter['tried']))
+            if res is not None:
                 if verbose:
-                    print('   [带移链] 洞%s←凸%s: 让位(%s,%d,%s,%s,%d格)'
-                          '→洞%s 接应%s(%d步) 回位 → %d 步'
-                          % (hole, p_src, gap_b, line_b, side_b, d,
-                             k * step, h_new, mode2, len(sub2),
-                             len(all_acts)))
-                return all_acts, {
-                    'hole': hole, 'src': p_src, 'h_shifted': h_new,
-                    'band': (gap_b, line_b, side_b, d, k * step),
-                    'relay': (mode2, h_new, len(sub2)),
-                    'tries': tried}
-    return None, '带移链：预算 %d 组内未找到' % tried
+                    print('   [带移链] 洞%s←凸%s: 前置2步 %d 步 %s'
+                          % (hole, p_src, len(res[0]), res[1]))
+                return res
+    return None, '带移链：预算 %d 组内未找到' % counter['tried']
 
 
 def _enum_paste_moves(coords, m, n, step, min_size=3):
@@ -3157,7 +3367,7 @@ def _ov_at(coords, rh, cw, r0, c0):
                if r0 <= q[0] < r0 + rh and c0 <= q[1] < c0 + cw)
 
 
-def _overlap_raised(coords, m, n, step, actions):
+def _overlap_raised(coords, m, n, step, actions, _replayed=None):
     """couple 成果判定（段级验收，2026-10-01 用户原则）。
 
     填洞/补缺都是公式生成器：验收只看公式段**结束后**的聚拢度是否
@@ -3165,11 +3375,16 @@ def _overlap_raised(coords, m, n, step, actions):
     必然波动，不作为拒绝理由）。聚拢度 = 最佳窗口覆盖数（段首段末
     各自按定义取）。对应「有成果的失败」——提升即接受为一步进展；
     回放失败视为无成果。
+
+    _replayed：调用方已用同一 actions 回放成功的终局（省一次整链
+    回放）；缺省自己回放。仅信任调用方如实传入。
     """
     _reg, ov0, _holes, _out = window_of(coords, m, n, step)
-    g = build_game(coords, m, n)
-    if not _replay_apply(g, actions, m, n, step):
-        return False
+    g = _replayed
+    if g is None:
+        g = build_game(coords, m, n)
+        if not _replay_apply(g, actions, m, n, step):
+            return False
     _reg2, ov1, _holes2, _out2 = window_of(gcoords(g), m, n, step)
     return ov1 > ov0
 
