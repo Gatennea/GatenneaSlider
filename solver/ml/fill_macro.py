@@ -3249,7 +3249,15 @@ def _solve_fill_macro_inner(coords, m, n, step, holes, outside,
     if not holes:
         return [], []   # 已还原
     _emit(progress_callback, '多洞驱动', 0, '贪心逐couple填')
+    # 与 solve_gap_macro（补缺宏）/ auto_solve 保持同一套原语：传 couple_hook
+    # 让每条边/角洞的 couple 能走「solve_edge_gap → orbit → 粘上接走」完整三招，
+    # 而不只是 solve_single_void（couple 模式在 solve_edge_gap 提前返回，会漏掉
+    # 需 orbit/粘上接走的洞，导致多洞只填一部分就「不完美洞」停机）。
+    from solver.ml.gap_solver import _vacancy_couple_hook
     acts, stats = solve_multi_void(coords, m, n, step,
+                                   couple_hook=_vacancy_couple_hook(
+                                       gap_only=False,
+                                       cancel_check=cancel_check),
                                    rng=rng,
                                    cancel_check=cancel_check,
                                    segment_cb=segment_cb)
@@ -3262,6 +3270,8 @@ def _solve_fill_macro_inner(coords, m, n, step, holes, outside,
         _emit(progress_callback, '宏级搜索', 0, '贪心未全解，DFS 回溯兜底')
         dacts, dstats = solve_multi_search(
             base, m, n, step,
+            couple_hook=_vacancy_couple_hook(
+                gap_only=False, cancel_check=cancel_check),
             progress_callback=progress_callback, cancel_check=cancel_check)
         if dacts is not None and not dstats.get('partial'):
             full = list(acts[streamed:] if acts else []) + list(dacts)
