@@ -1737,7 +1737,7 @@ def _vacancy_couple_hook(gap_only, cancel_check=None):
                 acts, st2 = _couple_orbit_solve(coords, m, n, step, h, p, 'EDGE')
                 st = st2 if acts is None else st2
             if acts is None:
-                # 长共轭兜底：带移链（#50 原语）。补缺链/轨道都吞不下这种
+                # 长共轭兜底：粘上接走（band_shift）（#50 原语）。补缺链/轨道都吞不下这种
                 # 「直接推不进、须先让路再捎带」的硬洞——成功判据放宽到
                 # 「目标洞 h 被填上」即可，不要求整盘还原（多洞局面下本次
                 # 只填这一对，残局留待下一轮）。

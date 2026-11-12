@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""带移链「粘上接走」底层修复护栏（task #47 ③ 修其底层 bug）。
+r"""粘上接走（band_shift）底层修复护栏（task #47 ③ 修其底层 bug）。
 
 覆盖两处修复：
   1) 单轴→对角：旧实现只沿单一轴移动源凸起、丢弃斜对角另一轴分量，导致
@@ -47,7 +47,7 @@ def check(name, cond, detail=''):
 
 def run():
     g = build_game(COORDS, M, N)
-    print('=== 带移链对角修复护栏（%d 块 / p=%s / h=%s）===' % (len(COORDS), P, H_NEW))
+    print('=== 粘上接走（band_shift）对角修复护栏（%d 块 / p=%s / h=%s）===' % (len(COORDS), P, H_NEW))
 
     # ---- P1：对角源接运应成功 ----
     res = _relay_bump(g, P, H_NEW, STEP)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""带移链前置共轭（长共轭原语）护栏 — 存档 step120 盘面回归锁。
+r"""粘上接走（band_shift）前置共轭（长共轭原语）护栏 — 存档 step120 盘面回归锁。
 
 来源：save/2-8-8-20261111-220716waiting_optimize.json 第 120 步（已内嵌
 盘面，不依赖存档文件）。该盘面聚拢度 62/64，两洞 (6,0) 与 (-1,-1)、
@@ -9,7 +9,7 @@ r"""带移链前置共轭（长共轭原语）护栏 — 存档 step120 盘面�
 修复前（2026-11-12 解码）：_band_shift_chain 无前置相位——洞带深滑第 4
 步被引擎以 'disconnected' 拒（121 右带下移加长锚固 + 122 底部凸出部左移
 对齐锚位缺一不可，实测「仅121」也在第 4 滑断开），所有 d='w' 候选只能
-产出 62→38/47 的搅盘解、被聚拢度闸门正确拒收 → 带移链返回 None。
+产出 62→38/47 的搅盘解、被聚拢度闸门正确拒收 → 粘上接走（band_shift）返回 None。
 
 修复后：两阶段搜索——阶段A 无前置（原行为）；阶段B 仅对「无前置让位
 半途而废」（1 ≤ 深度 < k）的候选搜前置共轭（1~2 步邻域滑动，链尾逆序
@@ -68,7 +68,7 @@ def run():
           len(COORDS) == M * N and ov0 == 62,
           '块=%d ov=%d' % (len(COORDS), ov0))
 
-    # P1 带移链默认参数（含前置共轭）：产出合法 14 步段，62→63
+    # P1 粘上接走（band_shift）默认参数（含前置共轭）：产出合法 14 步段，62→63
     # 注：测试只验证「长共轭原语正确性」，故显式放宽 time_budget；生产侧
     # _BAND_SHIFT_BUDGET 仍是约 10s 的延迟预算（用户机器实测约 8s 命中，
     # 慢机可能超时属可接受降级，不影响正确性护栏）。
@@ -78,7 +78,7 @@ def run():
     ok = fm._replay_apply(g, acts, M, N, STEP) if acts else False
     end = fm.gcoords(g)
     end_ov = fm.window_of(frozenset(end), M, N, STEP)[1] if ok else None
-    check('P1 带移链产出动作且整链重放合法', acts is not None and ok,
+    check('P1 粘上接走（band_shift）产出动作且整链重放合法', acts is not None and ok,
           '%s' % ('None' if acts is None else '%d 步' % len(acts)))
     check('P1 段末聚拢 62→63', end_ov == 63, '段末 ov=%s' % end_ov)
     check('P1 终态精确还原（== 段首 − 凸起 + 洞）',

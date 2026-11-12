@@ -1,23 +1,23 @@
 # -*- coding: utf-8 -*-
-r"""couple 分派接带移链兜底护栏 — 存档 step120 盘面。
+r"""couple 分派接粘上接走（band_shift）兜底护栏 — 存档 step120 盘面。
 
 来源：save/2-8-8-20261111-220716waiting_optimize.json 第 120 步（盘面已内嵌，
 不依赖存档文件）。该盘面聚拢度 62/64，两洞 (6,0)[D 边] 与 (-1,-1)[U 边]、
 窗外凸起 (-2,-2) 与 (7,3)。
 
-背景：带移链原语（#50）早在 solve_single_void 内部就接上了，所以 GUI 贪心
+背景：粘上接走（band_shift）原语（#50）早在 solve_single_void 内部就接上了，所以 GUI 贪心
 路径（solve_multi_vacancy → solve_multi_void，不带 couple_hook）本就能靠它
 推到 63。但另一条分派路径——_vacancy_couple_hook（DFS 搜索 / 并行 worker
 用它）——的 edge 分支此前只试「补缺链 → D4 轨道」，长共轭硬洞（直接推不进、
-须先让路再捎带）在 couple 模式下一律 None，带移链兜底从未被调到。
+须先让路再捎带）在 couple 模式下一律 None，粘上接走（band_shift）兜底从未被调到。
 
-本护栏锁死「edge 分支的带移链兜底确实接到了 hook」：
+本护栏锁死「edge 分支的粘上接走（band_shift）兜底确实接到了 hook」：
   P0 哨兵：monkeypatch _edge_band_shift_attempt 返回哨兵 → hook 必回哨兵，
       证明兜底分支已接入（有人删掉这行兜底，hook 退回 None，测试转红）。
-  P1 正控：放大预算让带移链在慢机也能解 step120 → hook 对 (6,0)/(-2,-2)
+  P1 正控：放大预算让粘上接走（band_shift）在慢机也能解 step120 → hook 对 (6,0)/(-2,-2)
       这对该回传合法动作且重放后 (6,0) 被填上（62→63，与手解同构）。
 
-反向验证口径：P0 直接盯「被绕开的带移链有没有被调用」（比静态判据可靠）。
+反向验证口径：P0 直接盯「被绕开的粘上接走（band_shift）有没有被调用」（比静态判据可靠）。
 """
 import os
 import sys
@@ -70,7 +70,7 @@ def run():
           '块=%d ov=%d' % (len(COORDS), ov0))
 
     # P0 哨兵：把 _edge_band_shift_attempt 换成哨兵，hook 必须回传哨兵
-    # —— 证明 edge 分支的带移链兜底分支当前是「活」的（有人删掉这行兜底，
+    # —— 证明 edge 分支的粘上接走（band_shift）兜底分支当前是「活」的（有人删掉这行兜底，
     # hook 退回 None，测试转红）。
     orig = gs._edge_band_shift_attempt
 
@@ -82,11 +82,11 @@ def run():
         acts_s, _ = _hook()(COORDS, M, N, STEP, HOLE, BUMP)
     finally:
         gs._edge_band_shift_attempt = orig
-    check('P0b 带移链兜底已接入 hook（哨兵被回传）',
+    check('P0b 粘上接走（band_shift）兜底已接入 hook（哨兵被回传）',
           acts_s == '__BS_SENTINEL__',
           'acts=%r' % (acts_s,))
 
-    # P1 正控：放大预算，slow 机也能让带移链跑出 step120 长共轭。
+    # P1 正控：放大预算，slow 机也能让粘上接走（band_shift）跑出 step120 长共轭。
     # 只验证「分派层能真把长共轭喂出来并填洞」，不验证生产侧延迟预算。
     saved = gs._BAND_SHIFT_BUDGET
     gs._BAND_SHIFT_BUDGET = 40.0
@@ -103,7 +103,7 @@ def run():
         end_ov = fm.window_of(frozenset(fm.gcoords(g)), M, N, STEP)[1]
         detail = '步数=%d 重放=%s 洞填=%s end_ov=%s' % (
             len(acts), replay_ok, filled, end_ov)
-    check('P1 hook 经带移链兜底解出 (6,0) 且重放填洞',
+    check('P1 hook 经粘上接走（band_shift）兜底解出 (6,0) 且重放填洞',
           ok and replay_ok and filled, detail)
 
     if FAILS:

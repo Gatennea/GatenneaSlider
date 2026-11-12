@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-r"""护栏：带移链「成功返回」分支不得引用已删除的接运局部变量。
+r"""护栏：粘上接走（band_shift）「成功返回」分支不得引用已删除的接运局部变量。
 
 背景（#49 ① 验证时由 _test_solver_opt_equiv 的 stderr 暴露）：
   #47 把源接运的单轴循环抽成 `_relay_1d` / `_relay_bump` 后，
   `_band_shift_chain` 成功分支的 verbose 打印与 `info['relay']` 仍引用
   `gap2/line2/side2/d2/k2`——这些变量已随抽出而不在本作用域。
-  ⚠️ `'relay': (...)` 那行在**非 verbose 路径也执行**，所以带移链一旦成功
+  ⚠️ `'relay': (...)` 那行在**非 verbose 路径也执行**，所以粘上接走（band_shift）一旦成功
   就抛 NameError；上层 `auto_solver.run_gap` 的 except 打 traceback 后降级，
   功能静默失效、所有既有护栏却全绿（P1~P4 只测 `_relay_bump` 与
   `_edge_band_shift_attempt`，从没让 `_band_shift_chain` 成功返回）。

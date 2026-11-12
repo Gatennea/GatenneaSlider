@@ -805,11 +805,11 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                     cancel_check=cancel_check)
                 if acts_b is None:
                     if verbose:
-                        print('   round%d 带移链 洞%s←凸%s: %s'
+                        print('   round%d 粘上接走（band_shift） 洞%s←凸%s: %s'
                               % (rounds, h, p, info_b))
                     continue
                 if not _replay_apply(g, acts_b, m, n, step):
-                    return _stop({'reason': '多洞停机：带移链推进活盘失败',
+                    return _stop({'reason': '多洞停机：粘上接走（band_shift）推进活盘失败',
                                   'rounds': rounds, 'steps': len(total)})
                 total.extend(acts_b)
                 progressed = True
@@ -821,7 +821,7 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                     except Exception:
                         pass   # 流式回调失败不拖垮求解
                 if verbose:
-                    print('   round%d 带移链 洞%s←凸%s → %d 步'
+                    print('   round%d 粘上接走（band_shift） 洞%s←凸%s → %d 步'
                           % (rounds, h, p, len(acts_b)))
                 break
             if progressed:
@@ -2323,7 +2323,7 @@ def _edge_setup_chain(coords, m, n, step, hole, time_budget=_EDGE_SETUP_BUDGET,
 # ---------------------------------------------------------------------------
 # 带移让位＋粘上接走链（2026-10-02 用户手解 07 归纳 + 幽灵块追踪提案）
 # ---------------------------------------------------------------------------
-_BAND_SHIFT_BUDGET = 10.0  # 单洞带移链搜索时间预算（秒；长共轭前置搜索需 ~8s）
+_BAND_SHIFT_BUDGET = 10.0  # 单洞粘上接走（band_shift）搜索时间预算（秒；长共轭前置搜索需 ~8s）
 
 _SIDE_SEAMS = (   # (gap, line, side) 组合：side 含 line+1 那行/列
     ('v', lambda q: (('v', q[1], 'left'), ('v', q[1] - 1, 'right'))),
@@ -2666,20 +2666,20 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
             for k in (1, 2, 3, 4):
                 _chk(cancel_check)
                 if time.time() > deadline:
-                    return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
+                    return None, ('粘上接走（band_shift）：%.0fs 预算内未找到（试 %d 组）'
                                   % (time_budget, counter['tried']))
                 res = _band_shift_attempt(coords, coords, m, n, step, hole,
                                           p_src, gap_b, line_b, side_b, d, k,
                                           [], [], cancel_check, counter)
                 if res is not None:
                     if verbose:
-                        print('   [带移链] 洞%s←凸%s: %d 步 %s'
+                        print('   [粘上接走（band_shift）] 洞%s←凸%s: %d 步 %s'
                               % (hole, p_src, len(res[0]), res[1]))
                     return res
 
     # ---- 阶段B：前置共轭（仅让位半途而废的候选）----
     if max_prep <= 0:
-        return None, '带移链：预算 %d 组内未找到' % counter['tried']
+        return None, '粘上接走（band_shift）：预算 %d 组内未找到' % counter['tried']
     partial = []
     for gap_b, line_b, side_b in seams:
         nbs_all = [q for q in ((hole[0] - 1, hole[1]), (hole[0] + 1, hole[1]),
@@ -2689,7 +2689,7 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
             for k in (1, 2, 3, 4):
                 _chk(cancel_check)
                 if time.time() > deadline:
-                    return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
+                    return None, ('粘上接走（band_shift）：%.0fs 预算内未找到（试 %d 组）'
                                   % (time_budget, counter['tried']))
                 dep_best, nb_best = 0, None
                 for nb in nbs_all:
@@ -2716,7 +2716,7 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
                                     nbs_sorted, band_c))
     partial.sort(key=lambda x: -x[0])   # 最接近成功的先试
     if not partial:
-        return None, '带移链：预算 %d 组内未找到' % counter['tried']
+        return None, '粘上接走（band_shift）：预算 %d 组内未找到' % counter['tried']
 
     def _try_partial(c1, prep_acts, undo_plan, comp_last):
         for (dep0, gap_b, line_b, side_b, d, k, nbs_sorted, band_c) in partial:
@@ -2745,11 +2745,11 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
         # 前置 1 步
         res = _try_partial(c1, [act1], [undo1], comp1)
         if res == 'timeout':
-            return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
+            return None, ('粘上接走（band_shift）：%.0fs 预算内未找到（试 %d 组）'
                           % (time_budget, counter['tried']))
         if res is not None:
             if verbose:
-                print('   [带移链] 洞%s←凸%s: 前置1步 %d 步 %s'
+                print('   [粘上接走（band_shift）] 洞%s←凸%s: 前置1步 %d 步 %s'
                       % (hole, p_src, len(res[0]), res[1]))
             return res
         if max_prep <= 1 or dist1 > 1:
@@ -2765,14 +2765,14 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
             seen_boards.add(c2)
             res = _try_partial(c2, [act1, act2], [undo1, undo2], comp2)
             if res == 'timeout':
-                return None, ('带移链：%.0fs 预算内未找到（试 %d 组）'
+                return None, ('粘上接走（band_shift）：%.0fs 预算内未找到（试 %d 组）'
                               % (time_budget, counter['tried']))
             if res is not None:
                 if verbose:
-                    print('   [带移链] 洞%s←凸%s: 前置2步 %d 步 %s'
+                    print('   [粘上接走（band_shift）] 洞%s←凸%s: 前置2步 %d 步 %s'
                           % (hole, p_src, len(res[0]), res[1]))
                 return res
-    return None, '带移链：预算 %d 组内未找到' % counter['tried']
+    return None, '粘上接走（band_shift）：预算 %d 组内未找到' % counter['tried']
 
 
 def _enum_paste_moves(coords, m, n, step, min_size=3):
