@@ -87,16 +87,19 @@ def build_occupancy(cells, pad=0):
 # ---------------------------------------------------------------------------
 # 位并行连通性
 # ---------------------------------------------------------------------------
-def is_connected(mask, W, col0, colW):
+def is_connected(mask, W, col0, colW, seed=0):
     """位并行 BFS 连通判定：mask 是否为单一连通分量。
 
     单 int 表示占用格；右/左/上/下邻居通过位移 + 边界列掩码求得。
+    seed 可指定洪泛起点（须在 mask 内）；不传则取最低置位。连通时两者
+    结果相同；**不连通时从「小而必然连通的那片」起洪泛能早退**——求解
+    热路径里多数判定是失败判定，调用方知道哪片一定连通时传 seed 更快。
     """
     if mask == 0:
         return True
     if mask & (mask - 1) == 0:  # 仅单格
         return True
-    visited = mask & -mask       # 最低置位 = 种子
+    visited = seed if (seed & mask) else (mask & -mask)
     while True:
         right = (visited & ~colW) << 1
         left = (visited & ~col0) >> 1

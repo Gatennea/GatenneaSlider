@@ -16,7 +16,9 @@
   P4 每次建盘的 Block 构造数是「块数级」而非「块数+整张 m*n 网格」
      （旧写法的 build_game 先 SliderMatrix(m,n) 建满 m*n 个块再替换，
       还跑两遍 update_matrix）
-  P5 挂死保护：单次墙钟 < 120s
+  P5 求解期间 update_matrix 次数 < 500（旧写法每次建盘都算一遍 0-1 矩阵，
+     之后改成惰性——求解器根本不读矩阵，要读的路径都先显式调用）
+  P6 挂死保护：单次墙钟 < 120s
 """
 import os
 import sys
@@ -59,10 +61,11 @@ def check(name, ok, detail=''):
 
 
 def solve_counted(budget=30.0):
-    """跑一次 gap_macro，统计期间 build_game 调用次数、Block 构造数与墙钟。"""
-    counter = {'build': 0, 'block': 0}
+    """跑一次 gap_macro，统计期间 build_game / Block / update_matrix 调用与墙钟。"""
+    counter = {'build': 0, 'block': 0, 'um': 0}
     real_build = fm.build_game
     real_block = _game.Block
+    real_um = _game.SliderMatrix.update_matrix
 
     class CountingBlock(real_block):
         def __init__(self, location, be_opted=False):
@@ -73,9 +76,14 @@ def solve_counted(budget=30.0):
         counter['build'] += 1
         return real_build(coords, m, n)
 
+    def counted_um(self):
+        counter['um'] += 1
+        return real_um(self)
+
     g = real_build(COORDS, M, N)             # 首局不计入搜索开销
     fm.build_game = counted
     _game.Block = CountingBlock
+    _game.SliderMatrix.update_matrix = counted_um
     try:
         segs = []
         t0 = time.time()
@@ -87,9 +95,11 @@ def solve_counted(budget=30.0):
     finally:
         fm.build_game = real_build
         _game.Block = real_block
+        _game.SliderMatrix.update_matrix = real_um
     solved = isinstance(res, tuple) or bool(
         res.get('solved') if isinstance(res, dict) else False)
-    return solved, res, segs, counter['build'], counter['block'], dt
+    return solved, res, segs, counter['build'], counter['block'], \
+        counter['um'], dt
 
 
 def five_of(res, segs):
@@ -115,15 +125,15 @@ def main():
     # 多洞贪心带随机性、偶发 partial：取第一次成功的尝试作计数口径
     best = None
     for _ in range(5):
-        solved, res, segs, nbuild, nblock, dt = solve_counted()
+        solved, res, segs, nbuild, nblock, num, dt = solve_counted()
         if solved:
-            best = (res, segs, nbuild, nblock, dt)
+            best = (res, segs, nbuild, nblock, num, dt)
             break
     check('P1 求解成功', best is not None, '')
     if best is None:
         print('\nFAILED:', _fails)
         return 1
-    res, segs, nbuild, nblock, dt = best
+    res, segs, nbuild, nblock, num, dt = best
     five = five_of(res, segs)
 
     g2 = fm.build_game(COORDS, M, N)
@@ -140,10 +150,13 @@ def main():
               per < BLOCKS_PER_BUILD_LIMIT,
               'blocks=%d builds=%d per_build=%.1f'
               % (nblock, nbuild, per))
-    check('P5 墙钟 < %.0fs（挂死保护）' % WALL_LIMIT, dt < WALL_LIMIT,
+    check('P5 update_matrix 次数 < 500（惰性矩阵；旧写法每次建盘一遍 ≈ '
+          '建盘数）', num < 500, 'update_matrix=%d builds=%d' % (num, nbuild))
+    check('P6 墙钟 < %.0fs（挂死保护）' % WALL_LIMIT, dt < WALL_LIMIT,
           'wall=%.2fs' % dt)
-    print('       （builds=%d blocks=%d wall=%.2fs ops=%d —— 提速前 ~97000 次 / '
-          '11~19s）' % (nbuild, nblock, dt, len(five)))
+    print('       （builds=%d blocks=%d update_matrix=%d wall=%.2fs ops=%d —— '
+          '提速前 ~97000 次建盘 / 11~19s）'
+          % (nbuild, nblock, num, dt, len(five)))
 
     if _fails:
         print('\nFAILED:', _fails)

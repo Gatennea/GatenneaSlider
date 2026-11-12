@@ -50,6 +50,9 @@ def build_game(coords, m, n):
 
     语义不变：求解器只读 location / be_opted / matrix，从不读 numbered
     （编号谜题）或 goal_pattern（设计态还原形状），故恒取匿名初值。
+    矩阵也改成惰性：原实现每次建盘都算一遍 0-1 矩阵（求解内层一次求解
+    两万多次），而求解器从不读它；真正要读的 `save_failure_archive` /
+    `export_map` 都先显式调 update_matrix（game.get_matrix 也会懒算）。
     """
     from game import Block, SliderMatrix
     g = SliderMatrix.__new__(SliderMatrix)
@@ -59,7 +62,6 @@ def build_game(coords, m, n):
     g.matrix_bounds = None
     g.numbered = False
     g.goal_pattern = None
-    g.update_matrix()
     return g
 
 
@@ -2117,18 +2119,22 @@ def _sel_move(g, gap, line, sel_blk, d, step):
     from bitboard import (build_occupancy, component, grid_side_mask,
                           is_connected)
     blocks = g.blocks
-    for b in blocks:
-        b.be_opted = False
     if not blocks:
         return False, []
+    # 一趟扫完三件事：清选中标记、收集坐标、检查捆绑组（有组就走原路径兜底）
+    cells = []
+    has_group = False
     for b in blocks:
+        b.be_opted = False
         if b.group:
-            g.opt(gap, line, sel_blk)
-            fin = g.try_move(d, step)
-            return bool(fin), fin
+            has_group = True
+        cells.append((b.location[0], b.location[1]))
+    if has_group:
+        g.opt(gap, line, sel_blk)
+        fin = g.try_move(d, step)
+        return bool(fin), fin
     if d not in _MOVE_DELTA:
         return False, []
-    cells = [(b.location[0], b.location[1]) for b in blocks]
     # 留 step 格空白：整片最多位移 step 格，位移后仍网格内，边界列掩码不失真
     mask, W, H, col0, colW, off_r, off_c = build_occupancy(cells, pad=step)
     if mask == 0:
@@ -2161,7 +2167,9 @@ def _sel_move(g, gap, line, sel_blk, d, step):
             moved = (moved & ~col0) >> 1
         if moved & static:
             return False, []      # 碰撞
-        if not is_connected(moved | static, W, col0, colW):
+        # 从「刚位移的这片」起洪泛：不连通时可早退，不必先走完静态部分
+        if not is_connected(moved | static, W, col0, colW,
+                            seed=moved & -moved):
             return False, []      # 断开
     dr, dc = _MOVE_DELTA[d]
     fin = [[b.location[0] + dr * step, b.location[1] + dc * step]
@@ -2411,6 +2419,9 @@ def _edge_setup_chain(coords, m, n, step, hole, time_budget=_EDGE_SETUP_BUDGET,
 # 旧值 10s 在集成路径（solve_multi_void / couple hook）里必然超时返回 None，
 # 导致「算法能解、自动求解解不出」。提到 40s 给足余量（快机仍按 ~8s 命中早退）。
 _BAND_SHIFT_BUDGET = 40.0
+# 让位带最多试探滑几格（k 的取值上界）。深度对 k 单调，前置共轭阶段用
+# 一次 K_MAX 探测推全部 k 的结果，见 _band_shift_chain 阶段B。
+_BAND_SHIFT_K_MAX = 4
 
 _SIDE_SEAMS = (   # (gap, line, side) 组合：side 含 line+1 那行/列
     ('v', lambda q: (('v', q[1], 'left'), ('v', q[1] - 1, 'right'))),
@@ -2795,23 +2806,32 @@ def _band_shift_chain(coords, m, n, step, hole, p_src,
         nbs_all = [q for q in ((hole[0] - 1, hole[1]), (hole[0] + 1, hole[1]),
                                (hole[0], hole[1] - 1), (hole[0], hole[1] + 1))
                    if q in coords]
+        ghost = coords | {hole}
         for d in perp[gap_b]:
-            for k in (1, 2, 3, 4):
+            # 深度对 k 单调：probe(k) == min(probe(K_MAX), k)。原先 k=1..4 各
+            # 从头探一遍，等于把同一段滑路重走四回；这里探一次 K_MAX，再按
+            # min 推出各 k 的结果（nb 仍按 nbs_all 顺序取「>」打破平局，
+            # 与逐 k 重探完全同解）。
+            depth_of = {}
+            for nb in nbs_all:
+                gg = build_game(ghost, m, n)
+                depth_of[nb] = _probe_ride_depth(gg, gap_b, line_b, nb, d,
+                                                 _BAND_SHIFT_K_MAX, step,
+                                                 cancel_check)
+            for k in range(1, _BAND_SHIFT_K_MAX + 1):
                 _chk(cancel_check)
                 if time.time() > deadline:
                     return None, ('粘上接走（band_shift）：%.0fs 预算内未找到（试 %d 组）'
                                   % (time_budget, counter['tried']))
                 dep_best, nb_best = 0, None
                 for nb in nbs_all:
-                    gg = build_game(coords | {hole}, m, n)
-                    d1 = _probe_ride_depth(gg, gap_b, line_b, nb, d, k, step,
-                                           cancel_check)
+                    d1 = min(depth_of[nb], k)
                     if d1 > dep_best:
                         dep_best, nb_best = d1, nb
                 if 1 <= dep_best < k:
                     # 带宽 band_c：无前置幽灵盘上该代表块的让位分量；
                     # 前置探测按「prep 分量 ∩ 带宽」跳过无关候选省探针。
-                    gg = build_game(coords | {hole}, m, n)
+                    gg = build_game(ghost, m, n)
                     blk0 = None
                     for b in gg.blocks:
                         if tuple(b.location) == tuple(nb_best):
