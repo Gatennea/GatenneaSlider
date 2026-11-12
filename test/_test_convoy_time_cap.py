@@ -116,9 +116,13 @@ def test_gap_macro_bounded_time():
     # 核心回归锁：修复前该残局零进展停机；修复后至少解出一个 couple
     # （fill_partial 带动作）或全部自动解出（tuple 回放到 64）。
     full_solve = False
-    if isinstance(res, tuple) and res[0]:
+    if isinstance(res, tuple) and res[0] and len(res) == 2:
+        a4, reps = res
+        # solve_gap_macro 返回的 actions4 已剥去 rep 单元（第 5 元），重放前
+        # 须与 reps 重组回 5 元组；否则 _replay_apply 按 4 元组解析会失败。
+        acts5 = [a + (reps[i],) for i, a in enumerate(a4)]
         g2 = build_game(COORDS, M, N)
-        if _replay_apply(g2, res[0], M, N, STEP):
+        if _replay_apply(g2, acts5, M, N, STEP):
             full_solve = (window_of(frozenset(gcoords(g2)), M, N, STEP)[1]
                           == M * N)
     progressed = (isinstance(res, dict)

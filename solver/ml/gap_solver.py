@@ -41,7 +41,7 @@ from solver.ml.fill_macro import (build_game, gcoords, window_of,          # noq
                                   _capture_apply, _replay_apply, _Runner,
                                   replay_and_verify, solve_multi_void,
                                   _compact_rescue, _convoy_fill,
-                                  _band_shift_chain,
+                                  _band_shift_chain, _BAND_SHIFT_BUDGET,
                                   solve_multi_search, _Cancelled, _emit)
 from solver.ml import view_rotate                                          # noqa: E402
 
@@ -1189,25 +1189,48 @@ def _user_edge_chain(vg, vh, step, verbose=False, p0=None,
     return None, {'reason': '；'.join(reasons), 'prefix': best}
 
 
-def _edge_band_shift_attempt(coords, m, n, step, hole, verbose=False):
+def _edge_band_shift_attempt(coords, m, n, step, hole, verbose=False,
+                             anchor=None, require_solved=True,
+                             time_budget=None):
     """用户链失败后的「粘上接走」加档（开洞几何）。
 
     直接调用 fill_macro._band_shift_chain（洞带让位→源接应→带回位）把窗外凸
-    捎进洞。仅当盘上存在窗外凸起、且原语能产出「回放合法且整盘还原」的解时
-    才返回动作；否则返回 (None, 原因)。不抛异常，调用方据此回退 v1。
+    捎进洞。仅当原语能产出「回放合法 + 达成成功判据」的解时才返回动作；否则
+    返回 (None, 原因)。不抛异常，调用方据此回退别档。
+
+    anchor：指定窗外凸起位置（couple 模式由上层喂入）；缺省自动 _find_bump
+        取首个窗外块。
+    require_solved：成功判据。True（默认，单洞分支用）=整盘还原；
+        False（couple 模式用）=仅要求目标洞 hole 被填上，允许盘面仍余其他
+        洞（多洞局面下本次只填这一对，残局交给下一轮）。
+    time_budget：透传给 _band_shift_chain 的搜索预算；None = 用默认
+        _BAND_SHIFT_BUDGET。长共轭（如 step120 双洞）在慢机需 ~15s，调用方
+        可按需放宽。
     """
     g0 = build_game(coords, m, n)
-    p_bump = _find_bump(g0)
-    if p_bump is None:
-        return None, '无窗外凸起'
+    if anchor is not None:
+        p_src = tuple(anchor)
+    else:
+        p_bump = _find_bump(g0)
+        if p_bump is None:
+            return None, '无窗外凸起'
+        p_src = tuple(p_bump.location)
     acts_b, info_b = _band_shift_chain(
-        coords, m, n, step, hole, tuple(p_bump.location), verbose=verbose)
+        coords, m, n, step, hole, p_src, verbose=verbose,
+        time_budget=(_BAND_SHIFT_BUDGET if time_budget is None
+                     else time_budget))
     if acts_b is None:
         return None, info_b
     g = build_game(coords, m, n)
-    if _replay_apply(g, acts_b, m, n, step) and g.is_solved():
-        return acts_b, None
-    return None, '回放未还原'
+    ok = _replay_apply(g, acts_b, m, n, step)
+    if require_solved:
+        done = ok and g.is_solved()
+    else:
+        done = ok and tuple(hole) in gcoords(g)
+    if done:
+        return acts_b, {'route': 'band_shift',
+                        'require_solved': require_solved}
+    return None, '回放未还原' if require_solved else '回放未还原/洞未填'
 
 
 def solve_edge_gap(coords, m, n, step, verbose=False, hole=None,
@@ -1713,6 +1736,15 @@ def _vacancy_couple_hook(gap_only, cancel_check=None):
                 # 主解读盲区（如凸起挂列 0）→ D4 轨道成员逐一试
                 acts, st2 = _couple_orbit_solve(coords, m, n, step, h, p, 'EDGE')
                 st = st2 if acts is None else st2
+            if acts is None:
+                # 长共轭兜底：带移链（#50 原语）。补缺链/轨道都吞不下这种
+                # 「直接推不进、须先让路再捎带」的硬洞——成功判据放宽到
+                # 「目标洞 h 被填上」即可，不要求整盘还原（多洞局面下本次
+                # 只填这一对，残局留待下一轮）。
+                acts, st2 = _edge_band_shift_attempt(
+                    coords, m, n, step, h, anchor=p, require_solved=False)
+                if acts is not None:
+                    st = st2
             return acts, st
         if edge == 'CORNER':
             acts, st = solve_corner_gap(coords, m, n, step, hole=h, anchor=p,
