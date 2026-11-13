@@ -57,7 +57,7 @@ class SpeedrunMixin:
         return {'timed': '竞速', 'create': '创造'}.get(mode, '练习')
 
     def _mode_name(self) -> str:
-        """当前模式的中文名（练习 / 竞速 / 创造）。"""
+        """当前模式的中文名（练习 / 竞速 / 创造 / 迷宫）。"""
         return self._mode_label(getattr(self, 'game_mode', 'practice'))
 
     def mode_allowed(self, mode: str) -> bool:
@@ -101,7 +101,7 @@ class SpeedrunMixin:
             return False
 
     def set_game_mode(self, mode: str) -> bool:
-        """设置模式：'practice' 练习 / 'timed' 竞速 / 'create' 创造（幂等）。
+        """设置模式：'practice' 练习 / 'timed' 竞速 / 'create' 创造。
 
         返回是否成功（计时进行中拒绝切换；当前盘型不支持该模式也拒绝，
         理由写在 macro_notify_msg 里）。形态判据见 mode_allowed()。
@@ -136,6 +136,7 @@ class SpeedrunMixin:
             self.annotation_mode = False
             self._ann_leave_to_home()
         self._timer_cancel()
+        _prev = self.game_mode
         self.game_mode = mode
         if mode == 'timed':
             self.macro_notify_msg = "竞速模式：打乱后需按空格开始计时"
@@ -148,7 +149,7 @@ class SpeedrunMixin:
         return True
 
     def toggle_game_mode(self):
-        """循环切换 练习 → 竞速 → 创造 → 练习（「模式」开关 / 谜题菜单入口）
+        """循环切换 练习 → 竞速 → 创造 → 迷宫 → 练习（「模式」开关 / 谜题菜单入口）
 
         ⚠️ 跳过当前盘型进不去的档位（2026-10-26 用户报的真 bug）：模型文件
         板型不支持竞速，旧实现「练习 → 竞速」被拒后就原地不动，于是模式开关

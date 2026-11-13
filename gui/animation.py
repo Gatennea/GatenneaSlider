@@ -115,6 +115,7 @@ class AnimationMixin:
             self._shake_t -= 1
             if self._shake_t == 0:
                 self._shake_blocks = set()
+                self._reject_reason = None
         if not self.animating:
             return
         elapsed = pygame.time.get_ticks() - self.anim_start_time
@@ -411,6 +412,12 @@ class AnimationMixin:
         self._sel_anim_gap = None
         # 清掉游走白色标记，避免残留到下一轮真实撤销/重做
         self._sel_anim_is_think = False
+        # 拒絕閃現同屬短時狀態：本方法是全專案八個「退出 / 重開 / 切關」分支的
+        # 共同清理點，一併清掉，免得舊局面的 block id 被新局面撿去誤閃 12 幀
+        # （2026-11-13 與拒絕配色同批加上）。
+        self._shake_t = 0
+        self._shake_blocks = set()
+        self._reject_reason = None
 
     def _start_undo_redo_animation(self, move_info, is_undo):
         """

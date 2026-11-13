@@ -131,6 +131,9 @@ curl http://127.0.0.1:5050/status
 
 ## 3. 目錄地圖（檔案 → 職責）
 
+> **我索引的是「源碼目錄」**：文檔索引見 `docs/README.md`，
+> 可複用模組見 `docs/CAPABILITIES.md`；三者對象不同，互不替代。
+
 ```
 main.py                # 入口：解析 CLI → 開 stdin 執行緒 + HTTP → SliderGUI().run()
 game.py                # 純遊戲邏輯（無 pygame 依賴）：Block、SliderMatrix、is_solved
@@ -193,7 +196,7 @@ solver/                # 求解器（詳見 §5）
   repair_table.py      #   修復不完整建表
   visualize_table.py   #   tkinter 瀏覽表內狀態
   ml/                  #   ML 子系統（訓練資料管線，見 §5.4）
-  data/{m}_{n}_{step}/ #   建表產物 table.pkl/checkpoint.pkl/meta.json（不入庫，需自行建表）
+  data/{m}_{n}_{step}/ #   建表產物 table.pkl/checkpoint.pkl/meta.json（不入庫，按需自建；需自行建表）
 
 macro/
   macro.py             #   宏系統：MacroManager / Macro / MacroStep（JSON 存 macro/*.json）
@@ -204,7 +207,7 @@ tools/                 # 倉庫內工具（非產品代碼）
                        #   `--baseline` 出 NEW/RESOLVED diff；CI 的 lint job 用 `--strict` 守門
                        #   用法見 tools/static_lint/README.md（本沙箱須 Start-Process -Wait）
   doclink_check.py    #   文檔引用校驗：掃 .md 裡的檔案引用（存在性）與「§X」節號引用
-                      #   `--baseline` 只看新增；存量問題見 待办清单.md §十六
+                      #   `--baseline` 只看新增；存量問題見 待办清单.md §十八
   gen_feature_overview.py  #  由真源 gui/feature_index.py 重新生成 docs/player/功能总览.md
   experiments_index.py  #  experiments/ 索引生成 + 命名守門：`--emit` 重生成
                         #  experiments/INDEX.md；`--check` 用 AST 判定真實類別與
@@ -354,7 +357,7 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
 
 ### 5.3 建表（`table` 算法前提）
 
-距離表以「等級」為單位，一次建好後該等級任意狀態 < 1s 求最短解；表資料放 `solver/data/{m}_{n}_{step}/`，**不進 git**（`.gitignore`），拿到新環境需自己重建：
+距離表以「等級」為單位，一次建好後該等級任意狀態 < 1s 求最短解；表資料放 `solver/data/{m}_{n}_{step}/`，**不入庫，按需自建**（`.gitignore`），拿到新環境需自己重建：
 
 ```bash
 python -m solver.build_table 4 4 2            # GUI 建表
@@ -515,7 +518,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
   ②`python tools/experiments_index.py --check`，擋 experiments/ 的 `script_` / `reuse_`
   前綴與真實調用關係不符（漏改 import、加了前綴卻被人 import）；
   ③`python tools/doclink_check.py --baseline tools/doclink_baseline.json --strict`，
-  擋「文檔引用到不存在的檔案」與「§X 節號不存在」兩類腐爛（存量見 待办清单.md §十六）。
+  擋「文檔引用到不存在的檔案」與「§X 節號不存在」兩類腐爛（存量見 待办清单.md §十八）。
 
 ### 9.2 回歸範圍分級：本機別默認跑全套
 
@@ -606,7 +609,7 @@ python -m pyflakes game.py GUI.py gui\*.py solver\*.py solver\ml\*.py
 - `game.py` 不得引入 pygame（保持純邏輯，可被求解器/solver.ml 直接 import）。**三角形密鋪同守此律**：`game_triangle.py` 亦為零 pygame 依賴的純邏輯模組（互動代碼只 import 它的 `DIRECTIONS` / `GAP_DIRECTIONS` / `DIRECTION_SCREEN` / `tri_key` 四張表或函式）。
 - 修改求解器/調試面板不得破壞 §2.1 mod 不變量；目標框與洞/凸起標記必須共用 `find_best_window`。
 - 三角形形態下 `/analysis/*` 一律回 400（降級），`solve`/建表/ML/宏等高級功能照 §12 禁用或暫不支援（創造模式手動構造已開放，隨機生成不支援）；新增進階功能前先確認形態分支。
-- 不大改 `solver/data/` 產物與 `.gitignore` 列出的個人檔（`.clinerules/`、`.trae/`、`.vscode/`、`参考/` 不入庫）。
+- 不大改 `solver/data/`（不入庫，按需自建）產物與 `.gitignore` 列出的個人檔（`.clinerules/`、`.trae/`、`.vscode/`、`参考/` 不入庫）。
 - 快取/執行期生成物（`__pycache__`、`config/records.dat`、`macro/*.json` 視情況）不要誤入 git。
 - 除錯優先無頭測試；只有在需要視覺驗證（目標框/標記位置）時才跑 GUI。
 

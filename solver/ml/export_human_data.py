@@ -30,7 +30,6 @@ import os
 import sys
 import json
 import math
-import glob
 import random
 
 from solver import table_core as tc

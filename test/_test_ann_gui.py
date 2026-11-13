@@ -280,7 +280,7 @@ def main():
         gui.config_dir = old_cfg
         shutil.rmtree(tmpc, ignore_errors=True)
 
-    # ---- 7. 创造模式：模式开关三态 + 造题即当前谜题 ----
+    # ---- 7. 创造模式：模式开关循环 + 造题即当前谜题 ----
     print('创造模式：')
     gui._ann_abort('清理')
     gui.annotation_mode = False
@@ -289,7 +289,9 @@ def main():
     for _ in range(3):
         gui.toggle_game_mode()
         seq.append(gui.game_mode)
-    assert seq == ['timed', 'create', 'practice'], f'模式循环异常：{seq}'
+    assert seq == ['timed', 'create', 'practice'], \
+        f'模式循环异常：{seq}'
+    gui.set_game_mode('practice')
     gui.set_game_mode('create')
     assert gui.create_mode and gui._ann_view == 'home', '进入创造模式应停在创造首页'
     # 创造模式全程禁止滑动（与练习模式功能解耦）

@@ -410,10 +410,14 @@ else:
     print('   [skip] 拒绝音素材 / mixer 不可用：H2/H3 跳过')
 
 _move_src = inspect.getsource(SliderGUI.move_selected_blocks)
+# 2026-11-13：拒绝出口新增 reason / visual 参数，裸 `_reject_move()` 已不存在；
+# 护栏改成「所有调用都带括号 + 无裸 return False」，语义仍是防漏接某一条分支。
+import re as _re
+_reject_calls = len(_re.findall(r'_reject_move\(', _move_src))
 check('H4 移动入口的拒绝分支统一走 _reject_move（不会漏接某一条）',
-      '_reject_move()' in _move_src
-      and 'return False' not in _move_src.replace('return self._reject_move()', ''),
-      f'bare_returns={_move_src.count("return False")}')
+      _reject_calls >= 10
+      and 'return False' not in _move_src,
+      f'calls={_reject_calls} bare_returns={_move_src.count("return False")}')
 check('H5 键盘音在 KEYUP 结算，且键盘移动被拒的分支接了拒绝声',
       '_flush_keyboard_sound(getattr(event' in _ev_src
       and '_play_reject_sound()' in _ev_src, '')

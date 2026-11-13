@@ -21,10 +21,14 @@ def test_watcher_args_dev():
         sys.argv = ['main.py', '6', '6', '2']
         rel = restart._relaunch_args()
         assert rel == [sys.executable, 'main.py', '6', '6', '2'], rel
-        wat = restart._watcher_args(1234)
+        # bc9bb28 起 _watcher_args 需要 token（新舊進程就緒哨兵的承重參數），
+        # dev 分支下標 2..6 = watch/pid/token 旗標，下標 7 起才是 relaunch。
+        # 這裡用固定 'TOK' 順帶把「旗標位置 + token 值透傳」一起斷言。
+        wat = restart._watcher_args(1234, 'TOK')
         assert wat[0] == sys.executable and wat[1] == 'main.py', wat
-        assert wat[2:5] == ['--_restart_watch', '1234', '--'], wat
-        assert wat[5:] == rel, wat
+        assert wat[2:7] == ['--_restart_watch', '1234',
+                            '--_restart_token', 'TOK', '--'], wat
+        assert wat[7:] == rel, wat
     finally:
         sys.argv = saved
         restart._is_frozen = real
@@ -38,10 +42,11 @@ def test_watcher_args_frozen():
         sys.argv = ['GatenneaSlider.exe', '6', '6', '2']
         rel = restart._relaunch_args()
         assert rel == ['GatenneaSlider.exe', '6', '6', '2'], rel
-        wat = restart._watcher_args(99)
+        wat = restart._watcher_args(99, 'TOK')
         # 注意：测试在源码 python 下跑，sys.executable 仍是 python 而非 exe；
         # 冻结分支只决定「首段用 sys.executable 还是 sys.argv[0]」，这里验分支结构。
-        assert wat == [sys.executable, '--_restart_watch', '99', '--',
+        assert wat == [sys.executable, '--_restart_watch', '99',
+                       '--_restart_token', 'TOK', '--',
                        'GatenneaSlider.exe', '6', '6', '2'], wat
     finally:
         sys.argv = saved

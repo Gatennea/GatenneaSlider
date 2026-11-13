@@ -36,6 +36,28 @@ from records import format_time
 # anchor_shuffle.MAX_DRIFT 同量级（打乱实测最大漂移 1 格，用户称「很完美」）。
 ANTI_DRIFT_DEAD_ZONE_CELLS = 1.0
 
+# 滑動被拒的邊框語義色（2026-11-13 定案 · 配色 A）。
+# 現有色板已佔用：紅＝選中縫、綠＝選中塊、冷藍＝撤銷、暖橙＝重做、琥珀＝未復原；
+# 冷紫完全未被佔用，暖珊瑚比舊暗橙 (220,80,40) 更貼淡藍塊 / 選中綠的亮度層。
+REJECT_BORDER_DISCONNECTED = (168, 130, 235)   # #A882EB 冷紫：會斷開
+REJECT_BORDER_COLLISION = (235, 125, 100)      # #EB7D64 暖珊瑚：會重疊
+REJECT_BORDER_UNKNOWN = (200, 200, 200)         # 中性灰白：原因判不明
+
+
+def reject_border_style(reason, zoom):
+    """拒絕視覺：只換邊框色 + 加粗，**填充一律不動**（UI 鐵律 §1 / S1-2）。
+
+    reason 只接受 'disconnected' / 'collision'；其它值（含 None）一律中性色，
+    絕不靜默歸進兩色之一——未知原因假裝知道，比不分色更糟。
+    """
+    if reason == 'disconnected':
+        color = REJECT_BORDER_DISCONNECTED
+    elif reason == 'collision':
+        color = REJECT_BORDER_COLLISION
+    else:
+        color = REJECT_BORDER_UNKNOWN
+    return color, max(1, int(3 * zoom))
+
 
 class RendererMixin:
     """渲染相关方法 Mixin"""
@@ -601,6 +623,10 @@ class RendererMixin:
         # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
         _play_head = self._play_head_border()
         _play_keys = self._play_head_keys() if _play_head is not None else ()
+        # 拒絕閃現（12 幀）：三角舊路徑原本沒接，2026-11-13 補上
+        _reject_flash = getattr(self, '_shake_t', 0) > 0
+        _reject_flash_ids = (getattr(self, '_shake_blocks', set())
+                             if _reject_flash else set())
 
         for group, is_selected in ((normal, False), (selected, True)):
             for block, i, j, up, is_follow in group:
@@ -608,11 +634,13 @@ class RendererMixin:
                 border_color = self.colors['border']
                 border_w = max(1, int(2 * self.zoom))
                 ring_color = None
-                # 拖拽越界（碰撞/斷開/超過可達上限）：變暗 + 橙色邊框提示不可移動
+                # 拖曳跟隨無效（超過可達上限，原因判不明）→ 中性色邊框；填充不動
                 if is_follow and self.drag_follow_invalid:
-                    fill = tuple(int(ch * 0.45) for ch in fill[:3])
-                    border_color = (220, 80, 40)
-                    border_w = max(1, int(3 * self.zoom))
+                    border_color, border_w = reject_border_style(None, self.zoom)
+                elif _reject_flash and id(block) in _reject_flash_ids:
+                    # 鍵盤／虛擬鍵盤／箭頭被拒：同一套樣式點亮 12 幀，按原因分色
+                    border_color, border_w = reject_border_style(
+                        getattr(self, '_reject_reason', None), self.zoom)
                 elif _sel_anim is not None and is_selected:
                     # S1-2：撤销冷色/重做暖色——只换边框，填充不动（整片高亮是特色）
                     border_color, border_w = _sel_anim
@@ -792,7 +820,8 @@ class RendererMixin:
             # 拖過可達上限：這一塊要變暗 + 橙框，連同組別一起畫
             warn = (self.drag_following and self.drag_follow_invalid
                     and id(block) in follow_map)
-            (selected if block.be_opted else normal).append(((r, c, q), warn))
+            (selected if block.be_opted else normal).append(
+                ((r, c, q), warn, id(block)))
 
         # 悬停连锁提示：同類（含朝向 q）的塊提亮、空位實心提亮
         hint_occ, hint_empty, hint_hover = self._chain_hint_cells()
@@ -803,18 +832,23 @@ class RendererMixin:
         # S2-1：求解演示「当前步」光边（一次性，随动画进度收；键集合三形态通用）
         _play_head = self._play_head_border()
         _play_keys = self._play_head_keys() if _play_head is not None else ()
+        _reject_flash = getattr(self, '_shake_t', 0) > 0
+        _reject_flash_ids = (getattr(self, '_shake_blocks', set())
+                             if _reject_flash else set())
 
         for gi, group in enumerate((normal, selected)):
             base = (self.colors['block_selected'] if gi
                     else self.colors['block'])
-            for (r, c, q), warn in group:
+            for (r, c, q), warn, bid in group:
                 fill = base
                 border_color = self.colors['border']
                 border_w = max(1, int(2 * self.zoom))
                 if warn:
-                    fill = tuple(int(ch * 0.45) for ch in base[:3])
-                    border_color = (220, 80, 40)
-                    border_w = max(1, int(3 * self.zoom))
+                    # 拖曳跟隨無效：原因判不明 → 中性色；填充不動
+                    border_color, border_w = reject_border_style(None, self.zoom)
+                elif _reject_flash and bid in _reject_flash_ids:
+                    border_color, border_w = reject_border_style(
+                        getattr(self, '_reject_reason', None), self.zoom)
                 elif _sel_anim is not None and gi:
                     # S1-2：撤销冷色/重做暖色——只换边框，填充不动（整片高亮是特色）
                     border_color, border_w = _sel_anim
@@ -1165,10 +1199,13 @@ class RendererMixin:
             fill = (self.colors['block_selected'] if getattr(
                 block, 'be_opted', False) else self.colors['block'])
             loc = tuple(block.location)
-            if id(block) in follow_ids or id(block) in _shake_ids:
-                # 拖拽無效 / 撞牆：變暗 + 橙色邊框（同一套反餽）
-                fill = tuple(int(ch * 0.45) for ch in fill[:3])
-                border_color, border_w = (220, 80, 40), max(1, int(3 * self.zoom))
+            if id(block) in follow_ids:
+                # 拖曳跟隨無效：原因判不明 → 中性色；填充不動
+                border_color, border_w = reject_border_style(None, self.zoom)
+            elif id(block) in _shake_ids:
+                # 拒絕閃現（鍵盤 / 鬆手越界）：同一套樣式，按原因分色
+                border_color, border_w = reject_border_style(
+                    getattr(self, '_reject_reason', None), self.zoom)
             elif _sel_anim is not None and block.be_opted:
                 border_color, border_w = _sel_anim
             elif _play_head is not None and loc in _play_keys:
@@ -1842,7 +1879,7 @@ class RendererMixin:
             if screen_y < -scaled_cell or screen_y > self.screen_height + scaled_cell:
                 continue
 
-            # S1-3：越界回弹——本块属于被选中切片时整体抖动偏移（仅增强模式）
+            # S1-3：越界回弹——本块属于被选中切片时整体抖动偏移（闪烁朴素也给）
             if getattr(self, '_shake_t', 0) > 0 and id(block) in getattr(self, '_shake_blocks', set()):
                 _sox, _soy = self._shake_offset()
                 screen_x += _sox
@@ -1855,17 +1892,15 @@ class RendererMixin:
             # S1-2 的撤销/重做**不碰填充**——整片 be_opted 提亮是原始设计特色，
             # 冷/暖语义改由边框承担（见下方 _sel_anim 分支）。
             fill = self.colors['block_selected'] if block.be_opted else self.colors['block']
-            # 拖拽跟随无效（碰撞/断开）时：变暗滑块 + 橙色边框提示不可移动
+            # 拒絕視覺一律只換邊框 + 加粗，填充保持 be_opted 提亮原樣
             if (self.drag_following and self.drag_follow_invalid
                     and id(block) in follow_ids):
-                fill = tuple(int(ch * 0.45) for ch in fill[:3])
-                border_color = (220, 80, 40)
-                border_w = max(1, int(3 * self.zoom))
+                # 跟隨期「超過可達上限」原因判不明 → 中性色
+                border_color, border_w = reject_border_style(None, self.zoom)
             elif _is_shaking:
-                # S1-3：越界回弹——抖动期间同样给「撞墙」橙色反馈（闪一次）
-                fill = tuple(int(ch * 0.45) for ch in fill[:3])
-                border_color = (220, 80, 40)
-                border_w = max(1, int(3 * self.zoom))
+                # 一次性閃現（鍵盤 / 鬆手越界）：按底層原因分色
+                border_color, border_w = reject_border_style(
+                    getattr(self, '_reject_reason', None), self.zoom)
             else:
                 # S1-2：撤销冷色/重做暖色只换边框，优先级高于分组着色
                 if _sel_anim is not None and block.be_opted:

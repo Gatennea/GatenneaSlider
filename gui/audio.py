@@ -409,22 +409,25 @@ class AudioManager:
            就由動作音說話，事件層不再補鍵盤音，杜絕兩個音同時響。
         2. 獨佔聲道 + 節流 —— 素材約 1.2s，長按被拒時不重開頭、不疊成一片。
         缺素材或該槽位關掉時**不登記**，鍵盤音照常補上，不會全靜音。
+        回傳 bool：本次是否**真的發聲**（False＝被 120ms 節流／聲道忙攔下）。
+        2026-11-13 起視覺**不再**復用此判定——聲音可節流，變色不許有冷卻；
+        回傳值只留給需要知道「這下有沒有響」的呼叫方。
         """
         if not self._can_play_sfx():
-            return
+            return True
         if not self.slot_enabled.get('fail', True):
-            return
+            return True
         snd = self._sounds.get('fail')
         if snd is None:
-            return
+            return True
         now = pygame.time.get_ticks()
         self.last_action_ms = now
         if now - self._last_fail_ms < _FAIL_MIN_GAP_MS:
-            return
+            return False
         ch = self._fail_ch
         try:
             if ch is not None and ch.get_busy():
-                return
+                return False
         except Exception:
             pass
         self._last_fail_ms = now
@@ -436,6 +439,7 @@ class AudioManager:
                 snd.play()
         except Exception as e:
             print(f'[audio] 播放 fail 失敗：{e}')
+        return True
 
     def play_solved(self):
         self.play('solved')
