@@ -8,9 +8,12 @@
 ## 1. 分工模型
 
 - **主目錄** `E:/program_project/other/wkbddtest/GatenneaSlider` 檢出 `main`，由管 main 的 AI 獨佔：
-  負責合併、合併後測試、（經用戶決策）推送。其他 AI **不得在自己目錄操作 main**
+  負責合併、合併後測試、（經用戶決策）推送。**主目錄只做合併與同步，完全不改代碼**——
+  管 main 的 AI 自己要改代碼時，同樣開 work 分支 + worktree，改完測完自己並回。
+  例外：純文檔小改（紅線 / 索引 / 待辦登記）允許主目錄直接改並**立即提交**（停留分鐘級，
+  `git add` 指定文件、不捲入他人半成品）。其他 AI **不得在自己目錄操作 main**
   （物理隔離：main 只在主目錄檢出，其他 AI 想誤提交都做不到）。
-- **其他 AI**：每個 AI 一個 worktree 目錄，命名 `GatenneaSlider-<後綴>`，檢出自己的分支開發。
+- **所有 AI（含管 main 的）改代碼一律走 worktree**：每個工作點一個目錄 `GatenneaSlider-<後綴>`，檢出自己的分支開發。
 - 現有範例（2026-11-13）：`GatenneaSlider-geo` → `feat/geometry-engine`、
   `GatenneaSlider-math` → `feat/math-research`（數學長分支，不合完即刪）、
   `GatenneaSlider-reuse` → `topic/solver-reuse-refactor`。
