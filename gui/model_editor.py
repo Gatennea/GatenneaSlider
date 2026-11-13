@@ -2305,6 +2305,12 @@ class ModelEditorMixin:
             # 右键 = 取消选择（与 ESC 取消选区同义）
             med['sel'] = set()
             med['ghost'] = None
+            # 这里的右键同样是「取消选中」：升级成完整右键反馈（内收环 + 轻音量）。
+            # 编辑器会话在全局分支之前就吞掉右键，不在这里补就只剩弱脉冲。
+            if hasattr(self, 'promote_click_feedback'):
+                self.promote_click_feedback()
+            if hasattr(self, '_play_click_sound'):
+                self._play_click_sound('right')
             return True
         if event.button != 1:
             med['ghost'] = None

@@ -115,6 +115,9 @@ _SLIDE_MIN_GAP_MS = 30
 # 點擊 / 按鍵聲的節流：只防同一事件被派發兩次，正常連點連打不吞
 _CLICK_MIN_GAP_MS = 25
 _KEY_MIN_GAP_MS = 15
+# 右鍵點擊聲：與左鍵共用 click 槽（不新增開關），靠更低的音量做區分；
+# 左右各用獨立節流時間戳，連點時不會互相吞
+_CLICK_RIGHT_VOLUME = 0.65
 # 拒絕音素材約 1.2s：節流只防「同一次按鍵被多條路徑重複觸發」，
 # 長按連發靠專用聲道的 get_busy() 擋，聲音沒播完不重開頭。
 _FAIL_MIN_GAP_MS = 120
@@ -386,8 +389,12 @@ class AudioManager:
         return (self.available and self.sfx_enabled and not self.muted
                 and self._sounds)
 
-    def play(self, slot):
-        """播放一次性音效（slide / fail / solved / click / keyboard）。"""
+    def play(self, slot, volume_scale=1.0):
+        """播放一次性音效（slide / fail / solved / click / keyboard）。
+
+        volume_scale 只按比例压低这一次的音量（右鍵點擊用，見 play_click）；
+        不改全域 sfx_volume，也不影響下一次播放。
+        """
         if not self._can_play_sfx():
             return
         if not self.slot_enabled.get(slot, True):
@@ -396,7 +403,7 @@ class AudioManager:
         if snd is None:
             return
         try:
-            snd.set_volume(self.sfx_volume)
+            snd.set_volume(self.sfx_volume * max(0.0, min(1.0, volume_scale)))
             snd.play()
         except Exception as e:
             print(f'[audio] 播放 {slot} 失敗：{e}')
@@ -447,8 +454,20 @@ class AudioManager:
         setattr(self, attr, now)
         self.play(slot)
 
-    def play_click(self):
-        """鼠标点击声（棋盘 / 按钮 / 开关 / 对话框，全 GUI 一次性挂接）。"""
+    def play_click(self, kind='left'):
+        """鼠标点击声（棋盘 / 按钮 / 开关 / 对话框，全 GUI 一次性挂接）。
+
+        kind='right' 走同一个 click 槽，但音量压到 _CLICK_RIGHT_VOLUME 并用
+        `_last_click_right_ms` 独立节流：左右各连点互不吞，设置页也只需要
+        一个「鼠标点击」开关。
+        """
+        if kind == 'right':
+            now = pygame.time.get_ticks()
+            if now - getattr(self, '_last_click_right_ms', -10 ** 9) < _CLICK_MIN_GAP_MS:
+                return
+            self._last_click_right_ms = now
+            self.play('click', volume_scale=_CLICK_RIGHT_VOLUME)
+            return
         self._play_throttled('click', '_last_click_ms', _CLICK_MIN_GAP_MS)
 
     def play_keyboard(self):

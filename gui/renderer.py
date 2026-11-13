@@ -5194,58 +5194,129 @@ class RendererMixin:
             pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
 
     # ==================================================================
-    # 左键单击反馈（全 GUI 生效的涟漪动效）
+    # 单击反馈（全 GUI 生效的涟漪动效）：左键外扩环、右键内收环
     # ==================================================================
-    CLICK_FEEDBACK_MS = 380          # 单次涟漪时长（毫秒）
-    CLICK_FEEDBACK_RADIUS = 34       # 涟漪最大半径（像素）
+    CLICK_FEEDBACK_MS = 380          # 左键外扩涟漪时长（毫秒）
+    CLICK_FEEDBACK_RADIUS = 34       # 左键涟漪最大半径（像素）
     CLICK_FEEDBACK_MAX = 12          # 同时存在的涟漪上限（防连点堆积）
+    # 右键＝取消选中：内收环（「收回去」），比左键更短更小、暖色，一眼分清左右
+    RIGHT_FEEDBACK_MS = 260
+    RIGHT_FEEDBACK_RADIUS = 26
+    RIGHT_FEEDBACK_MIN_RADIUS = 6
+    # 右键弱脉冲：右键被模态吞掉、什么都没取消时只点一个小点（不响、不画环）
+    RIGHT_WEAK_MS = 170
+    RIGHT_WEAK_RADIUS = 4
+    CLICK_FEEDBACK_COLOR_LEFT = (150, 220, 255)
+    CLICK_FEEDBACK_COLOR_RIGHT = (255, 208, 160)
 
-    def spawn_click_feedback(self, pos):
-        """记录一次左键单击的涟漪。
+    def spawn_click_feedback(self, pos, kind='left'):
+        """记录一次单击反馈（kind: left / right / right_weak）。
 
         在事件分发最前面调用，故与命中的控件无关：棋盘、菜单、面板、
-        对话框、教程面板等任意位置的左键单击都会有反馈。
+        对话框、教程面板等任意位置的单击都会有反馈。右键先记成 right_weak，
+        真的走到「取消选中」那一步再由 promote_click_feedback 升级成完整内收环——
+        模态对话框把右键吞掉时只剩这个弱脉冲，不冒充「取消了东西」。
         """
         if not pos:
-            return
+            return None
         fx = getattr(self, '_click_feedback', None)
         if fx is None:
             fx = self._click_feedback = []
-        fx.append({'x': int(pos[0]), 'y': int(pos[1]),
-                   't0': pygame.time.get_ticks()})
+        item = {'x': int(pos[0]), 'y': int(pos[1]),
+                't0': pygame.time.get_ticks(), 'kind': kind}
+        fx.append(item)
         if len(fx) > self.CLICK_FEEDBACK_MAX:
             del fx[:-self.CLICK_FEEDBACK_MAX]
+        return item
+
+    def promote_click_feedback(self, kind='right', span_ms=120):
+        """把最近一次右键弱脉冲升级成完整反馈（右键真的取消了选中时调用）。
+
+        只认「刚刚」的弱脉冲：右键事件在最前面先落一颗，同一事件里紧跟着
+        走到取消分支才升级。过期的老脉冲不动，免得一次真取消顺手点亮几秒前
+        那次没反应的点。返回是否升级成功（模态里右键被吞时为 False）。
+        """
+        now = pygame.time.get_ticks()
+        for item in reversed(getattr(self, '_click_feedback', None) or []):
+            if (item.get('kind') == 'right_weak'
+                    and now - item['t0'] <= span_ms):
+                item['kind'] = kind
+                return True
+        return False
 
     def draw_click_feedback(self):
-        """绘制左键单击涟漪：外扩圆环 + 中心亮点，随时间淡出。
+        """绘制单击反馈，在整帧绘制的最上层调用（模态对话框之上）。
 
-        在整帧绘制的最上层调用（模态对话框之上），保证任何界面都能看到。
+        left：外扩圆环 + 中心亮点，随时间淡出（原有形态，未改动）。
+        right：内收圆环（半径由大收到小）+ 亮点，暖色，与左键方向相反。
+        right_weak：只有一个小点在原地点一下，代表「这个右键没人接」。
+        本层是整屏覆盖绘制，与棋盘形态无关，三形态共用这一块。
         """
         fx = getattr(self, '_click_feedback', None)
         if not fx:
             return
         now = pygame.time.get_ticks()
-        r_max = self.CLICK_FEEDBACK_RADIUS
         alive = []
         for item in fx:
-            p = (now - item['t0']) / float(self.CLICK_FEEDBACK_MS)
-            if p >= 1.0:
-                continue
-            alive.append(item)
-            alpha = int(170 * (1.0 - p))
-            if alpha <= 0:
-                continue
-            # 缓出：半径先快后慢地扩张
-            radius = 6 + (r_max - 6) * (1.0 - (1.0 - p) ** 2)
-            size = int(radius) * 2 + 4
-            surf = pygame.Surface((size, size), pygame.SRCALPHA)
-            center = (size // 2, size // 2)
-            pygame.draw.circle(surf, (150, 220, 255, alpha), center, int(radius), 2)
-            # 中心亮点：快速收缩，让「点到了」更明确
-            dot_r = max(1, int(4 * (1.0 - p)))
-            pygame.draw.circle(surf, (225, 245, 255, min(255, alpha + 60)),
-                               center, dot_r)
-            self.screen.blit(surf, (item['x'] - center[0], item['y'] - center[1]))
+            kind = item.get('kind', 'left')
+            if kind == 'right':
+                p = (now - item['t0']) / float(self.RIGHT_FEEDBACK_MS)
+                if p >= 1.0:
+                    continue
+                alive.append(item)
+                alpha = int(150 * (1.0 - p))
+                if alpha <= 0:
+                    continue
+                # 缓出：半径先快后慢地收到最小（与左键的外扩方向相反）
+                q = 1.0 - (1.0 - p) ** 2
+                radius = self.RIGHT_FEEDBACK_RADIUS - (
+                    self.RIGHT_FEEDBACK_RADIUS - self.RIGHT_FEEDBACK_MIN_RADIUS) * q
+                size = int(radius) * 2 + 6
+                surf = pygame.Surface((size, size), pygame.SRCALPHA)
+                center = (size // 2, size // 2)
+                pygame.draw.circle(surf, (*self.CLICK_FEEDBACK_COLOR_RIGHT, alpha),
+                                   center, int(radius), 2)
+                # 中心亮点与环同色，比左键那颗小一档
+                dot_r = max(1, int(3 * (1.0 - p)))
+                pygame.draw.circle(surf,
+                                   (*self.CLICK_FEEDBACK_COLOR_RIGHT, min(255, alpha + 70)),
+                                   center, dot_r)
+                self.screen.blit(surf, (item['x'] - center[0], item['y'] - center[1]))
+            elif kind == 'right_weak':
+                p = (now - item['t0']) / float(self.RIGHT_WEAK_MS)
+                if p >= 1.0:
+                    continue
+                alive.append(item)
+                alpha = int(110 * (1.0 - p))
+                if alpha <= 0:
+                    continue
+                radius = max(1, int(self.RIGHT_WEAK_RADIUS * (1.0 - 0.6 * p)))
+                size = radius * 2 + 4
+                surf = pygame.Surface((size, size), pygame.SRCALPHA)
+                center = (size // 2, size // 2)
+                pygame.draw.circle(surf, (*self.CLICK_FEEDBACK_COLOR_RIGHT, alpha),
+                                   center, radius)
+                self.screen.blit(surf, (item['x'] - center[0], item['y'] - center[1]))
+            else:
+                p = (now - item['t0']) / float(self.CLICK_FEEDBACK_MS)
+                if p >= 1.0:
+                    continue
+                alive.append(item)
+                alpha = int(170 * (1.0 - p))
+                if alpha <= 0:
+                    continue
+                # 缓出：半径先快后慢地扩张
+                radius = 6 + (self.CLICK_FEEDBACK_RADIUS - 6) * (1.0 - (1.0 - p) ** 2)
+                size = int(radius) * 2 + 4
+                surf = pygame.Surface((size, size), pygame.SRCALPHA)
+                center = (size // 2, size // 2)
+                pygame.draw.circle(surf, (*self.CLICK_FEEDBACK_COLOR_LEFT, alpha),
+                                   center, int(radius), 2)
+                # 中心亮点：快速收缩，让「点到了」更明确
+                dot_r = max(1, int(4 * (1.0 - p)))
+                pygame.draw.circle(surf, (225, 245, 255, min(255, alpha + 60)),
+                                   center, dot_r)
+                self.screen.blit(surf, (item['x'] - center[0], item['y'] - center[1]))
         self._click_feedback = alive
 
     def draw_shuffle_fade(self):
