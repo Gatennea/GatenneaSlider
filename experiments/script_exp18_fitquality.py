@@ -35,7 +35,10 @@ sys.stdout.reconfigure(encoding="utf-8")
 from mig_feat import features as mig_features  # noqa: E402
 from sklearn.ensemble import HistGradientBoostingRegressor  # noqa: E402
 
-DATA_ROOT = Path(r"E:/program_project/other/doubaotest/slider/GatenneaSlider/solver/data")
+# 查表数据在仓库根的 solver/data（被 .gitignore 挡住，每个工作目录自己一份），不要硬编码别的工作目录。
+# 注意：这份数据**不随 git 检出**。目录为空时本脚本算不出任何结果，请向开发者索要现成的
+# checkpoint.pkl / table.pkl，不要自己重跑建表（耗时且容易和主目录数据版本漂移）。
+DATA_ROOT = Path(__file__).resolve().parents[1] / "solver" / "data"
 
 
 def load_dist(name: str):
@@ -44,6 +47,8 @@ def load_dist(name: str):
     if not p.exists():
         p = folder / "table.pkl"
     if not p.exists():
+        print(f"[缺数据] {folder} 下既没有 checkpoint.pkl 也没有 table.pkl；"
+              f"这份预建查表数据不随 git 检出，请向开发者索要，不要自己重建。")
         return None
     with p.open('rb') as fh:
         obj = pickle.load(fh)
@@ -121,7 +126,7 @@ def main():
     for name in sizes:
         d = load_dist(name)
         if d is None:
-            print(f"{name:<8} (无数据)")
+            print(f"{name:<8} (缺数据：请向开发者索要)")
             continue
         vals = np.fromiter(d.values(), dtype=np.int16, count=len(d))
         b = constant_baseline(vals)
@@ -148,6 +153,9 @@ def main():
     print("说明：exp17 的留出取自表头，而 BFS 表按层序写入 → 表头全是浅层状态，")
     print("      那次的 MAE=4.245 不成立，本组为修正值。")
     d = load_dist('4_4_2')
+    if d is None:
+        print("本节跳过：没有 4_4_2 的查表数据，无法重评。请向开发者索要 solver/data/4_4_2。")
+        return
     vals = np.fromiter(d.values(), dtype=np.int16, count=len(d))
     b = constant_baseline(vals)
     print(f"\n基线（猜常数 {b['mode']['pred']}）：MAE={b['mode']['mae']:.3f} "

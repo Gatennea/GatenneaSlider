@@ -19,7 +19,8 @@
   在自己目錄 checkout / 操作 main 一律禁止（main 只在主目錄檢出）。
 - 現有範例（2026-11-13）：`GatenneaSlider-geo` → `feat/geometry-engine`、
   `GatenneaSlider-math` → `feat/math-research`（數學長分支，不合完即刪）、
-  `GatenneaSlider-reuse` → `topic/solver-reuse-refactor`。
+  `GatenneaSlider-reuse` → `topic/solver-reuse-refactor`、
+  `GatenneaSlider-doubao`（`E:/program_project/other/doubaotest/slider`，原獨立 clone 改掛）→ `feat/doubao-scratch`。
 
 ## 2. worktree 基本操作
 
@@ -63,6 +64,9 @@ git worktree prune
 
 - **config 運行態 / build / dist 各目錄獨立**：worktree 裡跑測試、清運行態**不會碰到主目錄用戶
   正在玩的實例**（隱藏好處）；但 build / dist 是空的，打包要各自重建。
+- **求解器查表 / ML 數據不隨檢出過來**：`solver/data/`、`solver/ml/data/` 被 `.gitignore` 擋住，
+  新 worktree 檢出後只有代碼與文檔（實測約 20MB），這兩個目錄是空的。要用查表 / ML 功能就從主目錄
+  複製現成表（約 600MB），**別重跑建表**（耗時且容易和主目錄數據版本漂移）。
 - **分支快照滯後**：AGENTS.md / docs 在該 AI 開工那一刻定格，main 上新合入的約定**不會自動出現**
   在其目錄。重要約定更新後，各 AI 開工前先 `git merge main`（或由管 main 的 AI 在合併時提醒同步）。
 - **untracked 大產物別堆 worktree**：experiments 產物 / 打包輸出用完即清，

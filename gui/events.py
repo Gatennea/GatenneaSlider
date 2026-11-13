@@ -183,16 +183,18 @@ class EventsMixin:
             self._ime_text_input_on = False
 
     # ---- 输入事件音（click / keyboard 槽位，见 gui/audio.py）----
-    def _play_click_sound(self):
+    def _play_click_sound(self, kind='left'):
         """鼠标点击声：与涟漪反馈同源，全 GUI 一次性挂接。
 
         这不是「按钮音」而是「鼠标点击事件音」——棋盘、菜单、面板、对话框、
         开关任意位置按下左键都响（用户 2026-11-07 明确 click 即此语义）。
+        kind='right' 共用 click 槽、音量更低（右键取消选中时才响，模态里
+        右键被吞就没有声音，只留视觉弱脉冲）。
         """
         audio = getattr(self, 'audio', None)
         if audio is None:
             return
-        audio.play_click()
+        audio.play_click(kind)
 
     def _play_reject_sound(self):
         """玩家尝试推动但被拒：出一声短提示，并登记「本次已有动作音」。
@@ -281,12 +283,19 @@ class EventsMixin:
         self._sync_ime_text_input()
         for event in pygame.event.get():
             try:
-                # 左键单击反馈：先于所有界面分支记录，保证棋盘/菜单/面板/对话框
-                # 任意位置的左键单击都有涟漪（不受各分支 continue 影响）
-                if (event.type == pygame.MOUSEBUTTONDOWN
-                        and getattr(event, 'button', None) == 1):
-                    self.spawn_click_feedback(getattr(event, 'pos', None))
-                    self._play_click_sound()
+                # 单击反馈：先于所有界面分支记录，保证棋盘/菜单/面板/对话框
+                # 任意位置的单击都有反馈（不受各分支 continue 影响）。
+                # 左键＝外扩环 + 点击声；右键＝先记一颗弱脉冲，真的走到「取消
+                # 选中」那一步（下面 button == 3 分支）才升级成内收环并出声，
+                # 被模态吞掉的右键只剩弱脉冲，不冒充「取消了东西」。
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    _btn = getattr(event, 'button', None)
+                    if _btn == 1:
+                        self.spawn_click_feedback(getattr(event, 'pos', None))
+                        self._play_click_sound()
+                    elif _btn == 3:
+                        self.spawn_click_feedback(getattr(event, 'pos', None),
+                                                  kind='right_weak')
 
                 # 键盘按键声：按下只登记，松开（KEYUP）才结算出声。
                 # 成功推动→滑动声、被拒→拒绝声，两种情况下都不再叠按键声。
@@ -1333,6 +1342,9 @@ class EventsMixin:
                             b.be_opted = False
                         self.macro_notify_msg = "已取消选中"
                         self.macro_notify_timer = 90
+                        # 真的取消了：把最前面记下的弱脉冲升级成内收环，并出声
+                        self.promote_click_feedback()
+                        self._play_click_sound('right')
                 
                 # 鼠标释放
                 elif event.type == pygame.MOUSEBUTTONUP:

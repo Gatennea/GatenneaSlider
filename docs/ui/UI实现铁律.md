@@ -11,6 +11,10 @@
 - 任何視覺反饋 / 動效必須 **square / tri / mi 三形態同時生效**：一處 shared helper + 三個 draw
   （`draw_board` / `draw_triangle_board` / `draw_mi_board`）各接一次。寫一個 ≠ 三種都有；
   驗收走 `test/_check_gap_annot.py`。
+- **例外：全局覆蓋層不按形態各接一次**。整幀最後畫、蓋在模態之上的層與棋盤形態無關，
+  三形態共用一塊——`draw_click_feedback`（點擊反饋：左鍵外擴藍環 / 右鍵內收暖環 /
+  右鍵弱脈衝）、`draw_shuffle_fade`（打亂轉場蒙層）都屬此列。給點擊反饋加形態 = 改
+  `gui/renderer.py` 一處 + 事件層掛接點（`gui/events.py` 頂部），**不要照上一條加三份**。
 - **不給滑塊引入新的填充色表達狀態**（撤銷藍填充被否）；換邊框顏色 + 加粗，保留 `be_opted`
   提亮這個原始特色。
 - `DIRECTIONS` / `GAP_DIRECTIONS` 是**模組級常量**，不是 game 實例屬性（`getattr` 拿空 dict
