@@ -92,6 +92,7 @@ _tab_row_attrs = {
     '缩放': '_settings_zoom_track_rect',
     '分组着色': '_settings_coloring_toggle_rect',
     '悬停连锁提示': '_settings_chain_toggle_rect',
+    '悬停缝隙闪烁': '_settings_gap_hover_toggle_rect',
     '复原提示标记': '_settings_marks_toggle_rect',
     '调试面板': '_settings_metrics_toggle_rect',
 }
@@ -237,6 +238,14 @@ click_at(gui._settings_marks_toggle_rect.center)
 check('V5a 点标记行 → 通知用新名字',
       '复原提示标记' in (gui.macro_notify_msg or ''),
       repr(gui.macro_notify_msg))
+# 悬停缝隙闪烁开关（2026-11-14 用户新增）：行在标记行之上，scroll=0 可见
+_gap_before = gui.gap_hover_flash_enabled
+click_at(gui._settings_gap_hover_toggle_rect.center)
+check('V5b 点悬停缝隙闪烁行 → 开关翻转并提示',
+      gui.gap_hover_flash_enabled != _gap_before
+      and '悬停缝隙闪烁' in (gui.macro_notify_msg or ''),
+      f"{gui.gap_hover_flash_enabled} msg={gui.macro_notify_msg!r}")
+click_at(gui._settings_gap_hover_toggle_rect.center)     # 还原
 
 # ================================================================ 音频页（S5）
 print("\n--- 音频页：总开关 + 音效一览 + 音量滑条 ---")
@@ -320,6 +329,9 @@ check('V8a 五个逐项开关都进了设置白名单（GUI）',
 from http_server import GameHTTPHandler  # noqa: E402
 check('V8b HTTP 白名单同名同口径',
       set(_keys) <= set(GameHTTPHandler._SETTINGS_BOOL_KEYS), '')
+check('V8d 悬停缝隙闪烁开关进 GUI / HTTP 两处白名单',
+      'gap_hover_flash_enabled' in SliderGUI._SETTINGS_BOOL_KEYS
+      and 'gap_hover_flash_enabled' in GameHTTPHandler._SETTINGS_BOOL_KEYS, '')
 _fo_src = open(os.path.join('gui', 'file_ops.py'), encoding='utf-8').read()
 check('V8c config 存档写入五个键、载入按槽位回填',
       all(k in _fo_src for k in _keys)
@@ -347,6 +359,23 @@ check('S2a 求解器页按同一顺序绘制',
       str(list(gui._settings_solver_rects)))
 check('S2b 单次聚拢说明已更新',
       '单次聚拢（方形' in gui._solver_description('gather'))
+
+# S3 求解器日志开关（2026-11-14 用户要求）：说明区下方一行，滚到底可点
+gui.draw_settings_dialog()
+gui.settings_scrollbar.set_scroll(10 ** 6)
+gui.draw_settings_dialog()
+check('S3a 求解器页底画出日志开关',
+      hasattr(gui, '_settings_solver_log_toggle_rect'),
+      '未绘制 rect')
+_log_before = gui.solver_log_enabled
+click_at(gui._settings_solver_log_toggle_rect.center)
+check('S3b 点日志开关 → 翻转并给出提示',
+      gui.solver_log_enabled != _log_before
+      and '求解器日志' in (gui.macro_notify_msg or ''),
+      f'{gui.solver_log_enabled} msg={gui.macro_notify_msg!r}')
+click_at(gui._settings_solver_log_toggle_rect.center)   # 还原
+gui.settings_scrollbar.set_scroll(0)
+gui.draw_settings_dialog()
 
 # ================================================================ 聚拢参数页
 print("\n--- 聚拢参数：标明只给聚拢求解器用 ---")

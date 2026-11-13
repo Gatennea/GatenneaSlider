@@ -79,6 +79,34 @@ def probe(gui, tag, step=7, budget=40000):
     check(ok, f'{tag}：draw_board 应不炸')
 
 
+def probe_switch(gui, tag):
+    """悬停缝隙闪烁开关（2026-11-14 用户要求）：开=画、关=不画，判据不变。"""
+    gui.selected_gap = None
+    gui._hover_key = None
+    gap, pos = scan_gap(gui, step=7, budget=40000)
+    if not check(gap is not None, f'{tag}：开关测试需要一条有效缝'):
+        return
+    gui.hover_gap = gap
+    gui._hover_key = (tuple(pygame.mouse.get_pos()), gui.step_count,
+                      gui.selected_gap)
+    calls = []
+    real = gui._draw_seam_through_screen
+    gui._draw_seam_through_screen = lambda *a, **k: calls.append(a)
+    try:
+        gui.gap_hover_flash_enabled = True
+        gui._draw_hover_gap()
+        check(bool(calls), f'{tag}：开关打开时应画出悬停缝')
+        calls.clear()
+        gui.gap_hover_flash_enabled = False
+        gui._draw_hover_gap()
+        check(not calls, f'{tag}：开关关闭时不应再画悬停缝（仅视觉）')
+    finally:
+        gui._draw_seam_through_screen = real
+        gui.gap_hover_flash_enabled = True
+    check('gap_hover_flash_enabled' in gui._SETTINGS_BOOL_KEYS,
+          '开关必须进 _SETTINGS_BOOL_KEYS 白名单')
+
+
 def main():
     gui = SliderGUI(m=5, n=5, step=1)
     gui.animation_enabled = False
@@ -86,6 +114,7 @@ def main():
 
     gui.new_puzzle(5, 5, 1)
     probe(gui, '方形')
+    probe_switch(gui, '方形')
 
     gui.new_triangle_puzzle(3, 1)
     if hasattr(gui, '_fit_triangle_zoom'):

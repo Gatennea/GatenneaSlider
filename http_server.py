@@ -38,6 +38,7 @@ API_INDEX = [
     ('/solver/algorithms', 'GET', '求解器算法列表'),
     ('/solver/status', 'GET', '求解器运行状态'),
     ('/solver/params', 'BOTH', '查询/修改求解器参数'),
+    ('/solver/log', 'GET', '求解器运行日志：列表（?limit=N）或单次明细（?id=<id>）'),
     ('/solve', 'POST', '开始自动求解'),
     ('/solver/cancel', 'POST', '取消求解'),
     ('/solve/status', 'POST', '查询求解进度'),
@@ -175,13 +176,21 @@ HELP_DETAILS = {
     },
     '/settings': {
         'desc': '查询/修改设置项。GET 返回当前值；POST 批量修改，只接受白名单'
-                '键：16 个布尔开关（coloring_enabled / chain_hint_enabled / '
-                'show_metrics_panel / board_marks_enabled / arrows_enabled / '
+                '键：32 个布尔开关（coloring_enabled / chain_hint_enabled / '
+                'gap_hover_flash_enabled / show_metrics_panel / '
+                'board_marks_enabled / arrows_enabled / '
                 'show_virtual_keyboard / show_records_panel / animation_enabled / '
                 'selection_animation_enabled / control_single_touch / '
                 'control_two_touch / control_mouse_kb / macro_reverse_mode / '
-                'save_readonly_flag / prevent_overwrite_flag）加整数项 '
-                'animation_duration_ms（50~1000）。未知键或类型不对返回 400。',
+                'save_readonly_flag / prevent_overwrite_flag / op_log_enabled / '
+                'show_boot_animation / infinite_shuffle / confirm_before_shuffle / '
+                'draw_grid / anti_drift_enabled / thinking_enabled / '
+                'solver_log_enabled / '
+                'sfx_enabled / music_enabled / sound_muted / '
+                'sfx_slide_enabled / sfx_fail_enabled / sfx_solved_enabled / '
+                'sfx_click_enabled / sfx_keyboard_enabled）加整数项 '
+                'animation_duration_ms（50~1000）/ sfx_volume / music_volume（0~100）。'
+                '未知键或类型不对返回 400。',
         'params': [('<白名单键>', 'bool|int', True, '设置键值对（仅 POST 需要）')],
         'returns': 'JSON：{ok, settings:{...}, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
@@ -266,6 +275,19 @@ HELP_DETAILS = {
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
                    '-H "Content-Type: application/json" '
                    '-d \'{"patience":30}\' $BASE/solver/params',
+    },
+    '/solver/log': {
+        'desc': '求解器运行日志（设置 → 求解器页「求解器日志」打开后才有内容）。'
+                'GET 不带参数返回最近若干次求解的摘要列表；带 ?id=<id> 返回该次'
+                '求解的完整明细：算法、谜题形态与参数、开跑聚拢度、逐阶段动作数/'
+                '耗时/指标、停机原因、终态聚拢度。日志文件在 config/solver_log.jsonl。',
+        'params': [('limit', 'int', False, '列表条数（1~100，默认 20）'),
+                   ('id', 'string', False, '要取完整明细的日志 id（见列表返回）')],
+        'returns': 'JSON：列表 {ok, dir, path, count, entries:[{id, started_at, '
+                   'algorithm, form, m, n, step, outcome, reason, steps, '
+                   'duration_ms, stage_count}]}；明细 {ok, entry:{...}}；'
+                   'id 不存在时 404 {ok:false, message}',
+        'example': 'curl -H "Authorization: Bearer $TOKEN" $BASE/solver/log?limit=5',
     },
     '/solve': {
         'desc': '开始自动求解（混合求解自动规划）。body 的 algorithm 可选，'
@@ -538,13 +560,16 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
 
     # settings 白名单（须与 gui/events.py EventsMixin._SETTINGS_* 保持一致）
     _SETTINGS_BOOL_KEYS = (
-        'coloring_enabled', 'chain_hint_enabled', 'show_metrics_panel',
+        'coloring_enabled', 'chain_hint_enabled', 'gap_hover_flash_enabled',
+        'show_metrics_panel',
         'board_marks_enabled', 'arrows_enabled',
         'show_virtual_keyboard', 'show_records_panel',
         'animation_enabled', 'selection_animation_enabled',
         'control_single_touch', 'control_two_touch', 'control_mouse_kb',
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
+        'op_log_enabled',
         'show_boot_animation', 'infinite_shuffle', 'confirm_before_shuffle', 'draw_grid',
+        'anti_drift_enabled', 'thinking_enabled', 'solver_log_enabled',
         # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
         'sfx_enabled', 'music_enabled', 'sound_muted',
         # 逐项音效开关（设置页「音效一览」：滑动 / 失败 / 复原 / 点击 / 键盘）
@@ -763,6 +788,26 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(self._post_command('solver_status'))
         elif path == '/solver/params':
             self._send_json(self._post_command('solver_params'))
+        elif path == '/solver/log':
+            # 日志是纯文件读取：不进命令队列，GUI 主线程忙/卡住时也能查
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            from gui import solver_log
+            sid = (q.get('id') or [''])[0].strip()
+            if sid:
+                rec = solver_log.load_entry(sid)
+                if rec is None:
+                    self._send_json({"ok": False,
+                                     "message": f"没有这条求解日志: {sid}；"
+                                                "GET /solver/log 查看列表"}, 404)
+                else:
+                    self._send_json({"ok": True, "entry": rec})
+            else:
+                try:
+                    limit = max(1, min(100, int((q.get('limit') or ['20'])[0])))
+                except Exception:
+                    limit = 20
+                self._send_json(solver_log.list_entries(limit))
         # —— 宏 / 模式 / 设置 ——
         elif path == '/macro/status':
             self._send_json(self._post_command('macro_status'))

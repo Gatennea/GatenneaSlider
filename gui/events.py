@@ -1779,7 +1779,8 @@ class EventsMixin:
 
     # settings 白名单：布尔键 + 动画速度（映射 self.animation_duration）
     _SETTINGS_BOOL_KEYS = (
-        'coloring_enabled', 'chain_hint_enabled', 'show_metrics_panel',
+        'coloring_enabled', 'chain_hint_enabled', 'gap_hover_flash_enabled',
+        'show_metrics_panel',
         'board_marks_enabled', 'arrows_enabled',
         'show_virtual_keyboard', 'show_records_panel',
         'animation_enabled', 'selection_animation_enabled',
@@ -1787,7 +1788,7 @@ class EventsMixin:
         'macro_reverse_mode', 'save_readonly_flag', 'prevent_overwrite_flag',
         'op_log_enabled', 'show_boot_animation', 'infinite_shuffle',
         'confirm_before_shuffle', 'draw_grid',
-        'anti_drift_enabled', 'thinking_enabled',
+        'anti_drift_enabled', 'thinking_enabled', 'solver_log_enabled',
         # 音效（见 gui/audio.py / docs S5）：三布尔 + 两音量（0..100）
         'sfx_enabled', 'music_enabled', 'sound_muted',
         # 逐项音效开关（设置页「音效一览」：滑动 / 失败 / 复原 / 点击 / 键盘）
@@ -3606,6 +3607,16 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 视觉 Tab：悬停缝隙闪烁开关（2026-11-14 用户要求）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_gap_hover_toggle_rect'):
+                if self._settings_gap_hover_toggle_rect.collidepoint(mx, my):
+                    self.gap_hover_flash_enabled = not getattr(
+                        self, 'gap_hover_flash_enabled', True)
+                    status = '开' if self.gap_hover_flash_enabled else '关'
+                    self.macro_notify_msg = f"悬停缝隙闪烁：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 视觉 Tab：复原提示标记开关（视觉强化，与调试面板本体分开）
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_marks_toggle_rect'):
                 if self._settings_marks_toggle_rect.collidepoint(mx, my):
@@ -3899,6 +3910,17 @@ class EventsMixin:
                                 algo_key, form)
                         self.macro_notify_timer = 120
                         return
+
+            # 求解器 Tab：日志开关（2026-11-14 用户要求，纯记录不参与判定）
+            if self.settings_active_tab == 'solver' \
+                    and hasattr(self, '_settings_solver_log_toggle_rect'):
+                if self._settings_solver_log_toggle_rect.collidepoint(mx, my):
+                    self.solver_log_enabled = not getattr(
+                        self, 'solver_log_enabled', False)
+                    status = '开' if self.solver_log_enabled else '关'
+                    self.macro_notify_msg = f"求解器日志：{status}"
+                    self.macro_notify_timer = 120
+                    return
 
             # 聚拢参数 Tab：开关 / 输入框 / -/+ 按钮
             if self.settings_active_tab == 'gather' and hasattr(self, '_settings_gather_rects'):

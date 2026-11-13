@@ -90,6 +90,9 @@ class AutoSolveMixin:
                 'elapsed_ms': int((time.time() - self._auto_solve_start_time) * 1000)
                 if getattr(self, '_auto_solve_start_time', 0) else None,
             }
+            # 求解器日志：用户点停止 → 本次求解以取消收尾
+            from gui import solver_log as _solver_log
+            _solver_log.finish(self, 'cancelled', 'cancelled')
             if getattr(self, '_gradient_state', None) is not None:
                 # 梯度流水线：取消后台计算，丢弃已排队的结果
                 self._gradient_state = None
@@ -112,6 +115,8 @@ class AutoSolveMixin:
                     'elapsed_ms': int((time.time() - self._auto_solve_start_time) * 1000)
                     if getattr(self, '_auto_solve_start_time', 0) else None,
                 }
+                from gui import solver_log as _solver_log
+                _solver_log.finish(self, 'cancelled', 'cancelled')
                 self.macro_notify_msg = "梯度聚拢已停止"
                 self.macro_notify_timer = 90
             elif getattr(self, '_auto_streamed', False):
@@ -131,6 +136,10 @@ class AutoSolveMixin:
 
         game_snapshot = deepcopy(self.game)
         algorithm = self.solver_algorithm
+        # 求解器日志（2026-11-14 用户要求）：从这里开始记一次求解的完整过程
+        #（开关在 设置 → 求解器页；关着时 begin 不建目录、不写文件）。
+        from gui import solver_log as _solver_log
+        _solver_log.begin(self, algorithm)
 
         # 梯度聚拢：启动后台流水线（各阶段连续计算，主线程并行播放动画）
         if algorithm == 'gather_gradient':
@@ -326,6 +335,14 @@ class AutoSolveMixin:
                 continue  # 过期项（取消/重开）：丢弃
             if item is None:
                 # 后台全部算完且没有更多阶段：收尾
+                from gui import solver_log as _solver_log
+                _latch = getattr(self, '_api_solve_latch', None) or {}
+                _ok = bool(_latch.get('ok'))
+                _solver_log.finish(
+                    self, 'solved' if _ok else
+                    ('partial' if (_latch.get('steps') or 0) else 'failed'),
+                    _latch.get('reason', 'gradient_end'),
+                    None)   # 步数由 finish 按各阶段 actions 累加（gradient 无总账）
                 self._gradient_state = None
                 self.macro_notify_persistent = False
                 return
@@ -466,6 +483,8 @@ class AutoSolveMixin:
 
         本地历史与玩家全局历史严格隔离：游走不进 ``game_history``、不加
         ``step_count``，所以回放 / 撤销链里不会冒出求解过程没有的步骤。
+        但左下角**显示**的步数会跟着游走实时 +1 / 撤回 -1（只动
+        ``_think_display_steps``，2026-11-14 用户要求）。
         """
         q = getattr(self, '_auto_stage_queue', None)
         if q is None:
@@ -692,9 +711,14 @@ class AutoSolveMixin:
             traceback.print_exc()
 
     def _reset_think_history(self):
-        """清空「思考」演示用的本地历史（真实撤销接口据此回退游走）。"""
+        """清空「思考」演示用的本地历史（真实撤销接口据此回退游走）。
+
+        本地历史一清，游走就等同于没发生——左下角的游走步数也一起归零，
+        否则显示会残留「凭空多出来」的步数（2026-11-14 用户要求同步显示）。
+        """
         from history import GameHistory
         self._think_history = GameHistory()
+        self._think_display_steps = 0
 
     def _think_begin_wander(self):
         """进入段间等待：以当前（段末）盘面为基线快照，开始计时。
@@ -767,6 +791,10 @@ class AutoSolveMixin:
         # 本地历史：真实撤销接口据此回退（与橙色撤销同一 GameHistory.undo）
         self._think_history.save_snapshot(self.game, move_info, None)
         self._think_walk.note_walk(move_info)
+        # 左下角步数跟着游走动（2026-11-14 用户要求）：只加**显示**计数，
+        # 全局 step_count / 玩家历史 / 存档 / 聚拢度一律不碰。
+        self._think_display_steps = int(
+            getattr(self, '_think_display_steps', 0)) + 1
         # 选中动画：通过真实渲染途径画高亮（be_opted 提亮 + selected_gap 红线）。
         # 关掉选中动画时不碰盘面状态，只清掉 be_opted，避免遗留缝隙红线。
         if getattr(self, 'selection_animation_enabled', False):
@@ -805,6 +833,10 @@ class AutoSolveMixin:
         """
         ok, mi = self._think_history.undo(self.game)
         if ok:
+            # 撤回一步，显示用步数同步减小（2026-11-14 用户要求：
+            # 「撤回时也减小」；与盘面回退同一时刻发生，不会先减后动）。
+            self._think_display_steps = max(
+                0, int(getattr(self, '_think_display_steps', 0)) - 1)
             if with_sound:
                 self._play_slide_sound(self.current_step,
                                        duration_ms=self.SLIDE_INSTANT_MS)
@@ -914,6 +946,8 @@ class AutoSolveMixin:
 
     def _play_auto_stage(self, item):
         """播放一段动作并刷新历史最优 checkpoint（聚拢度最高、并列 Φ 最小）。"""
+        from gui import solver_log as _solver_log
+        _solver_log.stage(self, 'hybrid_stage', item)
         label = item['label']
         actions = item['actions']
         reps = item.get('reps') or []
@@ -984,6 +1018,9 @@ class AutoSolveMixin:
         旧版只清了 hybrid 那一套，填洞/补缺宏播放中点「停止求解」因此毫无
         反应（段照旧播、macro_executing 一直 True、相机也拖不动）。
         """
+        # 求解器日志：停止 = 本次求解以取消收尾（2026-11-14 用户要求）
+        from gui import solver_log as _solver_log
+        _solver_log.finish(self, 'cancelled', 'stopped')
         # 思考演示：取消/打断同样要把游走位移还原回基线，别把盘面带偏
         self._think_abort_and_restore()
         self._auto_stage_gen += 1          # 使已在队列的段失效
@@ -1037,6 +1074,9 @@ class AutoSolveMixin:
             'reason': 'solved' if solved else 'partial_best',
             'elapsed_ms': elapsed,
         }
+        from gui import solver_log as _solver_log
+        _solver_log.finish(self, 'solved' if solved else 'partial',
+                           'solved' if solved else 'partial_best', total)
         _name = solver_display_name('hybrid')
         if solved:
             self.macro_notify_msg = format_solve_done(_name, total, elapsed)
@@ -1067,6 +1107,8 @@ class AutoSolveMixin:
         if self._timer_blocked():
             self._auto_solve_done = False
             self._auto_solve_result = None
+            from gui import solver_log as _solver_log
+            _solver_log.finish(self, 'discarded', 'timer_blocked')
             return
 
         self._auto_solve_done = False
@@ -1079,9 +1121,13 @@ class AutoSolveMixin:
         _latch_elapsed = int((_time.time() - self._auto_solve_start_time) * 1000) \
             if getattr(self, '_auto_solve_start_time', 0) else None
         if isinstance(result, dict):
+            _steps = len(result.get('actions', []) or [])
+            if result.get('type') == 'fill_stream':
+                # 流式求解：已实时播过的段也在总步数里（与 /solver/status 同口径）
+                _steps += int(result.get('streamed', 0) or 0)
             self._api_solve_latch = {
                 'ok': bool(result.get('solved', False)),
-                'steps': len(result.get('actions', []) or []),
+                'steps': _steps,
                 'reason': result.get('reason', ''),
                 'elapsed_ms': _latch_elapsed,
             }
@@ -1098,6 +1144,22 @@ class AutoSolveMixin:
                 'reason': 'already_solved' if len(acts) == 0 else 'solved',
                 'elapsed_ms': _latch_elapsed,
             }
+
+        # 求解器日志（2026-11-14）：计算阶段到此结束，先落终态再播放。
+        # 播放（可能跨很多帧）不属于「求解」，日志要的是求解器本身的耗时与结果。
+        # 单次聚拢的「一段」就在这里补记：finish 之后 _handle_gather_result
+        # 才会被调用，若只在那边记，阶段会掉在收尾后面（实测 step_count=0）。
+        from gui import solver_log as _solver_log
+        if isinstance(result, dict) and result.get('type') in (
+                'gather', 'gather_gradient'):
+            _solver_log.stage(self, 'gather_stage', result)
+        _log_ok = bool(self._api_solve_latch.get('ok'))
+        _log_steps = self._api_solve_latch.get('steps') or 0
+        _solver_log.finish(
+            self,
+            'solved' if _log_ok else ('partial' if _log_steps else 'failed'),
+            self._api_solve_latch.get('reason', ''),
+            _log_steps)
 
         if result is None:
             self._gradient_state = None
@@ -1238,6 +1300,11 @@ class AutoSolveMixin:
 
     def _handle_gather_result(self, result):
         """处理聚拢求解结果：播放动作，并实时显示聚拢度。"""
+        # 求解器日志：梯度/单次聚拢的每一轮都记一条（2026-11-14 用户要求）
+        stage_idx = result.get('gradient_stage')
+        from gui import solver_log as _solver_log
+        _solver_log.stage(self, 'gather_stage' if stage_idx is None
+                          else f'gather_stage{stage_idx}', result)
         actions = result.get('actions', [])
         rep_cells = result.get('rep_cells', [])
         solved = result.get('solved', False)

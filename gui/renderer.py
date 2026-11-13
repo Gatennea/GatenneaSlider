@@ -1531,6 +1531,10 @@ class RendererMixin:
         segs = self._hover_seam_segments()
         if not segs:
             return
+        # 悬停缝隙闪烁开关（2026-11-14 用户要求）：关掉只影响这一层绘制，
+        # 悬停判据 / 点击判定一律不变（判据在 gui/move.py._hover_gap_at）。
+        if not getattr(self, 'gap_hover_flash_enabled', True):
+            return
         # 慢速灰闪：约 1.8s 周期，亮度在 dim↔bright 间平滑呼吸；灰色基调。
         # 用亮度脉冲而非 alpha（主屏 draw.line 不吃 alpha），低频正弦=温和
         # 不刺眼，正好压住「喧宾夺主」的观感。
@@ -3305,6 +3309,16 @@ class RendererMixin:
             text_rect.centery = y_pos + item_height // 2
             self.screen.blit(text_surface, text_rect)
 
+    def _status_step_text(self):
+        """左下角步数文本：真实步数 + 思考演示的游走显示步数。
+
+        游走是「求解器在思考」的装饰性试推，确实在动盘面，所以显示要跟着
+        变（2026-11-14 用户要求）；但它不进 ``step_count`` / 撤销链，故这里
+        只做一个**显示层**加法，别的地方读 step_count 仍是玩家真实步数。
+        """
+        extra = int(getattr(self, '_think_display_steps', 0))
+        return f"步数：{self.step_count + extra}"
+
     def draw_status_bar(self):
         """绘制底部状态栏"""
         status_y = self.screen_height - self.status_bar_height
@@ -3323,8 +3337,8 @@ class RendererMixin:
         status_surface = self.status_font.render(status_text, True, status_color)
         self.screen.blit(status_surface, (10, text_y))
 
-        # 左侧：步数
-        step_text = f"步数：{self.step_count}"
+        # 左侧：步数（含「思考演示」的游走步：只影响显示，step_count 不动）
+        step_text = self._status_step_text()
         step_surface = self.status_font.render(step_text, True, self.colors['status_text'])
         step_x = 10 + status_surface.get_width() + 30
         self.screen.blit(step_surface, (step_x, text_y))
@@ -4007,6 +4021,12 @@ class RendererMixin:
             x, ny, "悬停连锁提示：", getattr(self, 'chain_hint_enabled', False),
             "悬停滑块时，边界盒内同组位置（含空格）提亮提示，帮助找缺口")
 
+        # 悬停缝隙闪烁开关（2026-11-14 用户要求）：悬停在点得动的缝上时，
+        # 慢速灰闪先亮出来，点击前就知道这条缝能动。纯视觉，不影响判定。
+        self._settings_gap_hover_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "悬停缝隙闪烁：", getattr(self, 'gap_hover_flash_enabled', True),
+            "鼠标停在能滑动的缝隙上时，用慢速灰闪先亮出这条缝；关闭后不再提示（纯视觉，不影响点击判定）")
+
         # 复原提示标记：调试面板画在棋盘上的那些记号（目标框 / 洞位等）。
         # 它们是视觉强化而非调试数据，故与面板本体拆成两个开关：可以只关
         # 画面上的记号、留着面板看数字，也可以整块面板一起关掉。
@@ -4479,6 +4499,13 @@ class RendererMixin:
             line_surf = self.status_font.render(line, True, (160, 160, 160))
             self.screen.blit(line_surf, (x + 15, desc_y + i * 18))
 
+        # 求解器日志开关（2026-11-14 用户要求）：说明区下面一行，
+        # 打开后每次求解落一份详细过程，供 HTTP /solver/log 查询。
+        log_y = desc_y + len(wrapped) * 18 + 14
+        self._settings_solver_log_toggle_rect, _ny = self._draw_switch_row(
+            x, log_y, "求解器日志：", getattr(self, 'solver_log_enabled', False),
+            "每次求解记一份过程明细（算法/参数/各段耗时与指标/停机原因）到 config/solver_log.jsonl；HTTP GET /solver/log 可查")
+
     def _solver_description(self, algo_key: str) -> str:
         """当前求解算法的说明文字"""
         descriptions = {
@@ -4646,7 +4673,8 @@ class RendererMixin:
             desc = self._solver_description(getattr(self, 'solver_algorithm', 'hybrid'))
             desc_w = 500 - 30 - 20  # 内容宽 470 再减边距
             desc_h = len(self._wrap_text(desc, self.status_font, desc_w)) * 18 + 12
-            return title_h + options_h + desc_h
+            # + 求解器日志开关一行（60），2026-11-14 新增
+            return title_h + options_h + desc_h + 60
 
     def _wrap_text(self, text: str, font, max_width: int) -> list[str]:
         """自动换行：按给定宽度将文本拆分为多行"""

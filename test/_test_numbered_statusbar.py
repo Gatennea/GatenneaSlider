@@ -74,6 +74,16 @@ finally:
     SliderGUI.is_solved = orig_gui_is_solved
     game_cls.is_solved = orig_game_is_solved
 
+# 4. 左下角步数：思考演示的游走显示步数要叠进文本，但不改真实 step_count
+gui.step_count = 5
+gui._think_display_steps = 0
+assert gui._status_step_text() == '步数：5', gui._status_step_text()
+gui._think_display_steps = 3
+assert gui._status_step_text() == '步数：8', gui._status_step_text()
+assert gui.step_count == 5, '游走显示步数不得改真实 step_count'
+gui._think_display_steps = 0
+print('PASS: 左下角步数 = step_count + 游走显示步数（真实步数不动）')
+
 # 5. 对照组：编号正确时必须判胜
 gui.new_puzzle(6, 6, 2, numbered=True)
 assert gui.is_solved() is True

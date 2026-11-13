@@ -50,10 +50,11 @@ curl "http://127.0.0.1:5050/status?token=<令牌>"
 | GET | `/solver/algorithms` | `{ok,current,algorithms:[{key,name}]}`（9 種算法） |
 | GET | `/solver/status` | 結構化求解狀態 `{ok,state,algorithm,progress,gradient,result_steps,elapsed_ms}`；state=`idle/running/solved/failed/cancelled` |
 | GET | `/solver/params` | gather 參數 `{ok,params:{<key>:{value,enabled}}}` |
+| GET | `/solver/log` | 求解器運行日誌（設定 → 求解器頁「求解器日誌」打開後才有內容）：`?limit=N` 回最近 N 次求解摘要 `{ok,dir,path,count,entries:[{id,started_at,algorithm,form,m,n,step,outcome,reason,steps,duration_ms,stage_count}]}`；`?id=<id>` 回該次完整明細 `{ok,entry:{...}}`（算法、參數、開跑聚攏度、逐段動作數/耗時/指標、停機原因、終態聚攏度），id 不存在回 404。日誌檔在 `config/solver_log.jsonl`，超限自動只留最近若干條 |
 | GET | `/macro/list` | `{"ok":true,"macros":[{name,description,steps,recorded_step,base_point}]}` |
 | GET | `/macro/status` | `{ok,recording,executing,selecting_base,reverse_mode,recording_steps,current_macro}` |
 | GET | `/mode` | `{ok,mode:"practice"|"timed"}` |
-| GET | `/settings` | `{ok,settings:{<鍵>:<值>}}`（13 個 GUI 開關 + 動畫時長） |
+| GET | `/settings` | `{ok,settings:{<鍵>:<值>}}`（布林開關 + 動畫時長 + 音量；完整鍵名見 `GET /help/settings`） |
 | GET | `/records` | 目前謎題成績摘要 |
 | GET | `/timer/status` | `{"ok":true,...}` + `state`/`elapsed_ms` |
 | GET | `/screenshot` | 保存當前畫面為 PNG：`?path=<目標>` 指定路徑（缺 .png 後綴自動補）；缺省存遊戲目錄 `screenshots/` 下按時間戳命名（同秒連拍自動加 `_1/_2` 不覆蓋）。回 `{ok,path,width,height}`；保存的是最近一次繪製完成的畫面 |
