@@ -14,6 +14,11 @@
                    2026-11-11 修：内外洞一律，先前只覆盖贴边/角）
         空位 = 2 → 混合流水线先行（实测 5.1：混合 1.4s vs 补缺宏 57.2s）
         空位 ≥ 3 → 补缺宏先行（实测 06: 1.0s / 07: 0.98s，混合均超时）
+      大二级矩形（step=2 且最长边 ≥ _LARGE_STEP2_MIN_SIDE=10）→ **一律补缺宏
+        先行**（2026-11-14：混合最终阶段 GBFS 对大二级矩形易失败——§9.5 大盘
+        基准 8×8 s2 卡在「只差最后一两格」、加预算也解不开，而补缺宏/重跑能解；
+        用户实测失败集中在 10×10+。阈值取 10 以避开 8×8 的无头标定回归——见
+        _LARGE_STEP2_MIN_SIDE 注释；此路由切换让补缺宏（填洞补缺）先拿到满预算）。
       两路都会尝试，路由只定先后；落败方照常接力。
     ③ 全败时按聚拢度（并列 Φ 最小，见 partial_better）评估部分成果，
        续算或作断点返回。
@@ -108,6 +113,48 @@ _TOTAL_SHARE_FIRST = 0.5
 # 且不吃 idle 窗口（否则窗口刚过期时收口会被 cancel_check 立刻掐掉）。
 _SINGLE_HOLE_CAP = 5.0
 
+# 大二级矩形偏好补缺宏（填洞补缺）先跑（2026-11-14 用户报 + §9.5 大盘基准实证）：
+# 混合流水线在**最终阶段用 GBFS** 收尾，对「比较大的二级矩形谜题」GBFS 易失败——
+# §9.5 大盘基准 8×8 s2 有 2/4 卡在「只差最后一两格」、122~161s 自行收敛停机、
+# 加预算也解不开；但「从停机终态重跑 auto_solve（重新数洞·重新路由）」2/3 在 22.5s
+# 解开。根因 = 初始态 holes==2 把路由钉在「混合/GBFS 先跑」，而大二级矩形 GBFS
+# 不可靠，补缺宏（填洞补缺）反而能直接解。故大二级矩形一律 prefill 补缺宏先跑，
+# 让它在满预算下先出手，而不是先被 GBFS 吃掉预算再当兜底。
+# 阈值取 max(m,n) >= 10：用户实测失败集中在 10×10 及更大（step=2）；8×8 经无头
+# 标定（16 局近复原 8×8 s2）显示 GBFS 本就 0.1~6.7s 全解、强行改补缺宏先反而慢
+# 10~100 倍（解出盘面相同）→ 8×8 不触发，避免误伤快路径。10×10+ 才切补缺宏先。
+# 可调（见 _prefer_gap_large_step2）。
+_LARGE_STEP2_MIN_SIDE = 10
+
+
+def _prefer_gap_large_step2(m, n, step):
+    """大二级矩形：GBFS 最终阶段不可靠，优先走补缺宏（填洞补缺）。
+
+    仅当 step==2 且最长边 >= _LARGE_STEP2_MIN_SIDE 时触发；其余尺寸/步长
+    保持原有按洞数路由，不误伤。返回 True=补缺宏先跑。
+    """
+    return step == 2 and max(m, n) >= _LARGE_STEP2_MIN_SIDE
+
+
+def _decide_gap_first_default(holes, m, n, step):
+    """默认路由：返回 True=补缺宏先跑，False=混合(GBFS)先跑。
+
+    规则（依据路由探针 2026-10-02 + §9.5 大盘基准）：
+      · holes >= 3 或 holes == 1 → 补缺宏先（探针 5.1/06/07 + 2026-11-11
+        单洞确定性直解 solve_gap_any 0.0s）；
+      · 大二级矩形（step==2 且 max(m,n) >= _LARGE_STEP2_MIN_SIDE）→ 补缺宏先
+        （§9.5：8×8 s2 GBFS 卡在「只差最后一两格」；实测 §9.5 few-hole 卡死终态
+        重跑：holes==2 大二级矩形 补缺宏 0.0s 直解 vs 混合 22s 卡死式 churn，
+        见 experiments/_validate_holes2_route.py —— 这正是用户所述「GBFS 失败、
+        填洞补缺更好」的实锤）；
+      · 其余（含 holes==2 的小/中盘）→ 混合(GBFS)先（holes==2 混合明显更快，
+        探针 5.1：混合 1.4s vs 补缺宏 57.2s；近复原易解的 10×10 s2 holes==2 亦
+        实测 GBFS 0.2~4.8s 快于补缺宏 10~17s，故小/中盘不切，只对 10×10+ 生效）。
+    route_fn 注入时本函数被完全覆盖（D1 接缝：换一个路由 = 换一个参数，不动核心）。
+    """
+    return (len(holes) >= 3 or len(holes) == 1
+            or _prefer_gap_large_step2(m, n, step))
+
 
 def partial_better(sc_new, phi_new, sc_old, phi_old):
     """部分成果择优规则（单一真源，2026-10-15 解耦修复）。
@@ -201,7 +248,10 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     scorer / route_fn（2026-11-10，可注入实验接缝）：scorer 见
     search_core.guided_reduce_one（只经混合流水线生效）；route_fn 签名
     (holes, coords, m, n, step) -> bool，True=补缺宏先行，默认 None =
-    len(holes) >= 3 or len(holes) == 1（2026-11-11 起单洞一律补缺宏先）。
+    _decide_gap_first_default(holes, m, n, step)（2026-11-11 起单洞一律补缺宏
+    先；2026-11-14 起大二级矩形 step=2 且 max(m,n)>=_LARGE_STEP2_MIN_SIDE 亦
+    补缺宏先）。route_fn 注入时完全覆盖默认路由（D1 接缝：换一个路由 = 换一个
+    参数，不动核心）。
     stop_fn（同轮 D2 第二轮）是 GBFS 的终止判据注入，
     签名 (value, holes) -> bool，默认 None = 洞数严格变少，同样只经混合
     流水线生效。**预设注入与旧版逐位一致**，玩家侧不传；三者只把
@@ -421,12 +471,11 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
     # ---- ②③ 按空位数路由（探针 2026-10-02：空位≤2 混合快（5.1: 1.4s vs 57.2s），
     #      空位≥3 补缺宏快（06: 1.0s / 07: 0.98s，混合均超时）。两路都尝试，只定先后）----
     _reg, _ov, holes, _out = window_of(coords0, m, n, step)
-    # 默认路由：空位≥3 补缺宏先、空位=2 混合先（探针 5.1/06/07）。
-    # 例外（2026-11-11）：单洞一律补缺宏先，与空位≥3 合并为 gap_first 初值。
-    # 2026-11-12 曾放宽为 ≥2 让 step120 的 auto_solve 走补缺宏先，但那是
-    # auto_solve 的问题、不是用户点的 gap_macro 路径；且会劣化「2 洞混合快」
-    # 局面（探针 5.1: 1.4s vs 57.2s）。目标不对，已回退到原值。
-    _gap_first_default = len(holes) >= 3 or len(holes) == 1
+    # 默认路由见 _decide_gap_first_default：空位≥3 或 ==1 → 补缺宏先；
+    # 大二级矩形（step==2 且 max(m,n)>=_LARGE_STEP2_MIN_SIDE）→ 补缺宏先
+    # （§9.5：8×8 s2 GBFS 卡死、补缺宏能直接解）；其余（含 holes==2 的小/中
+    # 盘）混合(GBFS)先。route_fn 注入时完全覆盖本默认（D1 接缝）。
+    _gap_first_default = _decide_gap_first_default(holes, m, n, step)
     gap_first = (route_fn(len(holes), coords0, m, n, step)
                  if route_fn is not None else _gap_first_default)
 
