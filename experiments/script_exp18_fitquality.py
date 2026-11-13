@@ -35,7 +35,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 from mig_feat import features as mig_features  # noqa: E402
 from sklearn.ensemble import HistGradientBoostingRegressor  # noqa: E402
 
-DATA_ROOT = Path(r"E:/program_project/other/doubaotest/slider/GatenneaSlider/solver/data")
+# 查表數據在倉庫根的 solver/data（被 .gitignore 擋住，每個工作目錄自己一份），不要硬編碼別的工作目錄
+DATA_ROOT = Path(__file__).resolve().parents[1] / "solver" / "data"
 
 
 def load_dist(name: str):
