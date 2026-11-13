@@ -66,8 +66,29 @@ def main():
         # load_table 會刻意回退 checkpoint（docstring 明說「建表中回退」）：
         # 對已記錄狀態 dist 仍精確，只是覆蓋率低，所以這裡只釘住「不是空」，
         # 真正要擋的是拿它去建商圖（見 D2）。
-        check(f'B {case} load_table 回退到 checkpoint（非完整表）',
-              bool(load_table(m, n, step)))
+        #
+        # 2026-11-13 内存排查后加了一条默认上限：单表文件 >64MB 直接跳过
+        # （4_4_1 的 165MB 断点表要反序列化 8.9s、瞬时 RSS 513MB，且它本来就是
+        # 覆盖率最低的一档）。所以这里分两路：
+        #   · 超上限档：默认必须跳过；显式放开上限后仍要能回退（回退逻辑没坏）
+        #   · 其他档：照旧断言能回退
+        ck_path = os.path.join(d, 'checkpoint.pkl')
+        size_mb = os.path.getsize(ck_path) / 1048576.0
+        if size_mb > 64:
+            check(f'B {case} 超單表上限（{size_mb:.0f}MB）→ load_table 直接跳過',
+                  load_table(m, n, step) is None)
+            os.environ['GATENNEA_TABLE_MAX_FILE_MB'] = '0'
+            try:
+                back = bool(load_table(m, n, step))
+            finally:
+                os.environ.pop('GATENNEA_TABLE_MAX_FILE_MB', None)
+                from solver.table_solver import release_table_cache
+                release_table_cache()
+            check(f'B {case} 放開上限後仍回退到 checkpoint（回退邏輯還在）',
+                  back)
+        else:
+            check(f'B {case} load_table 回退到 checkpoint（非完整表）',
+                  bool(load_table(m, n, step)))
 
         # C. 飽和抽樣必須能抓到漏態（直接呼叫 table_core.predecessors）
         ck = os.path.join(d, 'checkpoint.pkl')

@@ -254,6 +254,8 @@ class AutoSolveMixin:
                     # 取消/切盘：丢弃未播的残留段（旧盘面的段不能播到新盘面）
                     self._stream_queue = None
                 self._stream_active = False   # 流式后台结束（pump 负责收尾）
+                # 先回收计算过程，再宣告结束（顺序见 _auto_stage_worker 同处注释）
+                self._release_solver_caches()
                 self._auto_solve_running = False
                 self._auto_solve_done = True
 
@@ -309,6 +311,7 @@ class AutoSolveMixin:
         finally:
             self._gradient_queue.put((gen, None))  # 结束哨兵
             self._gradient_busy = False
+            self._release_solver_caches()
             self._auto_solve_running = False
 
     def _pump_gradient_results(self):
@@ -447,6 +450,9 @@ class AutoSolveMixin:
         finally:
             self._auto_stage_queue.put((gen, None))  # 结束哨兵
             self._auto_stage_active = False
+            # 先回收计算过程，再宣告「求解结束」——否则主线程可能先看到
+            # running=False 就去收尾、断言/截图时缓存还没清（护栏实测踩到）。
+            self._release_solver_caches()
             self._auto_solve_running = False
 
     def _pump_auto_stages(self):
@@ -662,6 +668,28 @@ class AutoSolveMixin:
             b.be_opted = True
         self._think_last_move = (pick[0], pick[1], pick[2])
         return (pick[0], pick[1], pick[2], pick[3])
+
+    def _release_solver_caches(self):
+        """求解收尾：把**计算过程**留下的缓存全部丢掉，只保留玩家历史。
+
+        2026-11-13 实测：连续点几次自动求解，RSS 126MB → 550MB 不回落。真凶是
+        ``solver.table_core`` 的两张 lru_cache（规范态 100k 条 ≈ 21 万对象 /
+        ~400MB）——它们只服务单次求解的重复态命中，求解结束就毫无价值，却跨
+        求解一直活着。距离表缓存（``table_solver._table_cache``）同理按预算释放。
+
+        这里**不动** ``game_history`` / ``step_count`` / 存档：玩家撤销链是他
+        自己的记录，属于要保留的东西。本方法幂等，可被多处收尾反复调用。
+        """
+        try:
+            from solver import table_core
+            table_core.clear_caches()
+        except Exception:
+            traceback.print_exc()
+        try:
+            from solver.table_solver import release_table_cache
+            release_table_cache()
+        except Exception:
+            traceback.print_exc()
 
     def _reset_think_history(self):
         """清空「思考」演示用的本地历史（真实撤销接口据此回退游走）。"""
@@ -980,6 +1008,8 @@ class AutoSolveMixin:
         self._auto_streamed = False
         self._auto_solve_running = False
         self._auto_stage_queue = None
+        # 停止 / 取消也释放计算过程缓存（worker 可能还在收尾，这里先清一次）
+        self._release_solver_caches()
         if notify:
             self.macro_notify_msg = notify
             self.macro_notify_timer = 180
@@ -1017,6 +1047,8 @@ class AutoSolveMixin:
         self.macro_notify_timer = 300       # 5s（60fps）悬停
         # 清掉历史最优：不清的话它会残留到下一次求解，被停止逻辑误恢复
         self._auto_best = None
+        # 收尾再释放一次（worker 自己的 finally 已清过，这里幂等兜底）
+        self._release_solver_caches()
         self.center_map()
 
     def _check_auto_solve_result(self):

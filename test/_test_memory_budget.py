@@ -153,31 +153,47 @@ def forward():
     ts.TABLE_CACHE_MAX_TOTAL = orig_total
     ts.release_table_cache()
 
-    # 真实大表：调用返回后表必须被回收，且绝不进缓存
+    # 默认上限 = 单表预算：165MB 的 4_4_1 断点表直接跳过（2026-11-13 用户
+    # 复报「求解期间卡顿 + 内存 500MB」，实测就是它：反序列化 8.9s、
+    # 瞬时 RSS 513MB、主循环被切成 0.1~1s 的停顿）
+    check('A0 单表文件上限默认 = 单表缓存预算（不是「不限」）',
+          ts._max_file_bytes() == ts.TABLE_CACHE_MAX_SINGLE
+          and ts.TABLE_CACHE_MAX_SINGLE == 64 * 1024 * 1024,
+          'cap=%s max_single=%s' % (ts._max_file_bytes(),
+                                    ts.TABLE_CACHE_MAX_SINGLE))
+
     gc.collect()
     base = mem_probe.rss_mb()
+    skipped_big = ts.load_table(4, 4, 1)
+    gc.collect()
+    after_skip = mem_probe.rss_mb()
+    check('A4 默认跳过 165MB 断点表（不载入就不该有 500MB 峰值）',
+          skipped_big is None, repr(skipped_big))
+    check('A4b 跳过时 RSS 基本不动', after_skip - base < 40,
+          'delta=%.1f MB' % (after_skip - base))
 
-    def one_call():
-        tbl = ts.load_table(4, 4, 1)
-        return len(tbl) if tbl else 0
-
-    ln = one_call()
+    # 显式放开（=0）才真载入；载入完仍不许常驻
+    os.environ['GATENNEA_TABLE_MAX_FILE_MB'] = '0'
+    try:
+        ln = len(ts.load_table(4, 4, 1) or {})
+    finally:
+        os.environ.pop('GATENNEA_TABLE_MAX_FILE_MB', None)
     gc.collect()
     after = mem_probe.rss_mb()
     keys = [k for k, _ in ts.table_cache_stats()['entries']]
-    check('A4 4_4_1 大表载入后不进长期缓存',
+    check('A4c 显式放开才载入 4_4_1，且不进长期缓存',
           ln == 5135644 and (4, 4, 1) not in keys,
           'len=%s keys=%s' % (ln, keys))
-    check('A4b 475MB 的表在本次求解返回后 RSS 回落',
+    check('A4d 载入返回后 RSS 回落（一次性峰值，不常驻）',
           after - base < 80, 'delta=%.1f MB' % (after - base))
 
-    # 可选硬上限：默认关闭，打开后连峰值一起避开
+    # 自定义上限：1MB 时连 18MB 的表也跳
     os.environ['GATENNEA_TABLE_MAX_FILE_MB'] = '1'
     ts.release_table_cache()
     skipped = ts.load_table(4, 4, 2)
     os.environ.pop('GATENNEA_TABLE_MAX_FILE_MB', None)
-    check('A5 硬上限打开时超大表直接跳过', skipped is None, repr(skipped))
-    check('A5b 硬上限关掉后行为不变（仍能载入）',
+    check('A5 自定义上限（1MB）时超限表直接跳过', skipped is None, repr(skipped))
+    check('A5b 上限恢复默认后，小表（18MB）照常载入',
           len(ts.load_table(4, 4, 2) or {}) == 559504)
     ts.release_table_cache()
 
@@ -232,6 +248,69 @@ def forward():
     os.environ.pop(mem_probe.ENV_FLAG, None)
     check('A7c 未启用时 maybe_start 零开销返回 None',
           mem_probe.maybe_start(_fake_gui()) is None)
+
+    # 求解期缓存（2026-11-13 用户报「连续求解内存暴涨」的真凶）：
+    # 规范态 / 连通性 lru_cache 只服务单次求解，收尾必须丢掉，只留玩家历史。
+    import solver.table_core as TC
+    check('A8a 求解期缓存上限已收紧（不再是 10 万条 ≈ 400MB）',
+          TC._TC_CANON_CACHE_MAX <= 16384 and TC._TC_MASK_CACHE_MAX <= 16384,
+          'canon=%s mask=%s' % (TC._TC_CANON_CACHE_MAX,
+                                TC._TC_MASK_CACHE_MAX))
+    TC.clear_caches()
+    base_coords = frozenset({(0, 0), (0, 1), (1, 0)})
+    for i in range(64):
+        TC.canonicalize(frozenset({(0, i % 5), (1, i % 3)}) | base_coords)
+    filled = TC.cache_stats()['canonicalize']
+    TC.clear_caches()
+    check('A8b clear_caches 能把求解期缓存清干净',
+          filled > 0 and TC.cache_stats()['canonicalize'] == 0,
+          'filled=%d after=%d' % (filled, TC.cache_stats()['canonicalize']))
+
+    # 收尾接口本身：_release_solver_caches 得两张缓存 + 距离表缓存一起放
+    cls2 = GUI.SliderGUI
+    g_rel = _fake_gui()
+    g_rel._release_solver_caches = cls2._release_solver_caches.__get__(g_rel)
+    for i in range(64):
+        TC.canonicalize(frozenset({(0, i % 5), (1, i % 3)}) | base_coords)
+    ts.load_table(4, 4, 2)          # 塞一张小表进缓存
+    g_rel._release_solver_caches()
+    st = ts.table_cache_stats()
+    check('A8c 求解收尾接口同时清缓存与距离表',
+          TC.cache_stats()['canonicalize'] == 0 and st['entries'] == [],
+          'tc=%s tbl=%s' % (TC.cache_stats(), st['entries']))
+    ts.release_table_cache()        # 别把表留在缓存里污染后面的基线
+
+    # 真求解一次：跑完（含取消路径）缓存必须归零，玩家历史保留
+    g_live = GUI.SliderGUI(m=4, n=4, step=2)
+    g_live.animation_enabled = False
+    g_live.animation_duration = 0
+    g_live.thinking_enabled = False
+    g_live.solver_algorithm = 'hybrid'      # 流式收尾路径（快，几秒内跑完）
+    g_live.game.shuffle(attempts=20, step=2)
+    hist_before = len(getattr(g_live.game_history, 'history', []) or [])
+    g_live._start_auto_solve()
+    t_end = time.time() + 30
+    while time.time() < t_end:
+        g_live._pump_auto_stages()
+        g_live.update_animation()
+        q = getattr(g_live, '_auto_stage_queue', None)
+        qempty = True
+        if q is not None:
+            try:
+                qempty = q.empty()
+            except Exception:
+                pass
+        if not getattr(g_live, '_auto_solve_running', False) and qempty:
+            break
+        time.sleep(0.002)
+    check('A8d 真求解跑完后求解期缓存归零（计算过程用完即弃）',
+          TC.cache_stats()['canonicalize'] == 0,
+          'currsize=%d' % TC.cache_stats()['canonicalize'])
+    check('A8e 玩家历史照旧保留（只丢计算过程，不丢记录）',
+          len(getattr(g_live.game_history, 'history', []) or []) >= hist_before,
+          'before=%d after=%d'
+          % (hist_before,
+             len(getattr(g_live.game_history, 'history', []) or [])))
 
 
 # ---------------------------------------------------------------------------

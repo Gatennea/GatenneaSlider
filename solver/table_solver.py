@@ -33,6 +33,7 @@ TABLE_CACHE_MAX_TOTAL = 128 * 1024 * 1024     # 缓存总预算 128MB
 
 _table_cache = {}       # (m, n, step) → dict[int, int]
 _table_cache_lru = []   # 档位键，最近使用在后
+_skip_noticed = set()   # 已提示过「超大表跳过」的档位（每档只打印一次）
 
 
 def _table_est_bytes(tbl):
@@ -82,16 +83,25 @@ def _get_data_dir():
 
 
 def _max_file_bytes():
-    """可选硬上限：GATENNEA_TABLE_MAX_FILE_MB，0 / 未设 = 不限。
+    """单表文件硬上限（字节），返回 0 表示不限。
 
-    默认不限（行为不变）。设置后，超过该大小的 table/checkpoint 直接跳过，
-    table_solve 返回 None → 自动求解落到下一候选。玩家若在意内存可用它
-    彻底避开「一次载入 164MB 断点表 = 瞬时 +475MB」这个固有峰值。
+    **默认 = ``TABLE_CACHE_MAX_SINGLE``（64MB）**，不是「不限」。2026-11-13
+    复测确认：``4_4_1`` 的 165MB 断点表要 pickle 反序列化 8.9~11 秒、瞬时
+    RSS 冲到 513MB，期间后台线程持续抢 GIL，主循环被切成一段段 0.1~1 秒的
+    停顿（累计 2.2 秒）——这正是用户报的「自动求解期间卡顿 + 内存 500MB」。
+    而该档是**没建完的断点表**（无 table.pkl），覆盖率低，花这个代价不划算，
+    所以默认直接跳过，自动求解落到补缺宏 / 混合候选。
+
+    需要放开（实验脚本、或玩家自己愿意换内存）：设
+    ``GATENNEA_TABLE_MAX_FILE_MB=0`` 表示不限，设正数表示自定义 MB 上限。
     """
+    raw = os.environ.get('GATENNEA_TABLE_MAX_FILE_MB')
+    if raw is None or str(raw).strip() == '':
+        return TABLE_CACHE_MAX_SINGLE
     try:
-        v = float(os.environ.get('GATENNEA_TABLE_MAX_FILE_MB', '0'))
+        v = float(raw)
     except (TypeError, ValueError):
-        return 0
+        return TABLE_CACHE_MAX_SINGLE
     return int(v * 1048576) if v > 0 else 0
 
 
@@ -116,15 +126,18 @@ def load_table(m, n, step):
         if os.path.exists(path):
             fsize = os.path.getsize(path)
             if cap and fsize > cap:
+                # 每档只提示一次：自动求解每步都会来问表，重复打印会刷屏。
                 # PyInstaller --noconsole 下 sys.stdout 可能是 None，别让一句
                 # 诊断输出把求解路径带崩。
-                try:
-                    print('[table_solver] 跳过 %s（%.0f MB 超过'
-                          ' GATENNEA_TABLE_MAX_FILE_MB 上限 %.0f MB）'
-                          % (path, fsize / 1048576.0, cap / 1048576.0),
-                          flush=True)
-                except Exception:
-                    pass
+                if key not in _skip_noticed:
+                    _skip_noticed.add(key)
+                    try:
+                        print('[table_solver] 跳过 %s（%.0f MB 超过上限 %.0f MB；'
+                              '需要时设 GATENNEA_TABLE_MAX_FILE_MB=0 放开）'
+                              % (path, fsize / 1048576.0, cap / 1048576.0),
+                              flush=True)
+                    except Exception:
+                        pass
                 return None
             # 载入前粗判：文件比单表预算还大，内存里的表必然更大。
             # 先清掉小表缓存，别让「已缓存的 112MB」和「本次临时的 475MB」

@@ -17,7 +17,31 @@
 """
 
 import itertools
+import os
 from functools import lru_cache
+
+# 两张「只服务单次求解」的缓存上限（2026-11-13 内存排查）。
+#
+# 旧值是 50_000 / 100_000，理由只是「命中越多越好」，没算过内存：
+# 100k 条规范态 ≈ 21 万个对象、~400MB，一次求解就能把 RSS 顶到 550MB
+# （用户报的「自动求解期间内存暴涨」）。而它们的收益只是「同一次求解里
+# 重复访问相同规范态」省一次 D8 归一，属于**计算过程**，求解结束即无价值。
+#
+# 现在：上限压到 16k / 16k（内存 ~65MB 级，约为旧值的 1/6），并由
+# `clear_caches()` 在求解收尾全部丢弃。实测常规模拟局面（6×6 step2 聚拢）
+# 只用到 1.2k 条，三档上限（8k/32k/100k）耗时差异在噪声内——大上限只对
+# 超大搜索有边际收益，却要付几倍常驻内存，不划算。
+# 要复测更大/更小值可用环境变量覆盖（实验口，不是玩家开关）。
+def _env_cache_max(name, default):
+    try:
+        v = int(os.environ.get(name, '') or default)
+    except (TypeError, ValueError):
+        return default
+    return v if v > 0 else default
+
+
+_TC_CANON_CACHE_MAX = _env_cache_max('GATENNEA_TC_CANON_CACHE', 16_384)
+_TC_MASK_CACHE_MAX = _env_cache_max('GATENNEA_TC_MASK_CACHE', 16_384)
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +63,7 @@ def _col_masks(W, H):
     return col0, colW
 
 
-@lru_cache(maxsize=50_000)
+@lru_cache(maxsize=_TC_MASK_CACHE_MAX)
 def _mask_is_connected(mask, W, col0, colW):
     if mask == 0:
         return True
@@ -135,7 +159,7 @@ _PS = 21
 _PM = _PB - 1
 
 
-@lru_cache(maxsize=100_000)
+@lru_cache(maxsize=_TC_CANON_CACHE_MAX)
 def _canonicalize_fs(fs: frozenset) -> int:
     """規範化 + 8 個 D4 變體取字典序最小 → 位打包整數。
 
@@ -202,6 +226,34 @@ def canonicalize(coords) -> int:
     if isinstance(coords, frozenset):
         return _canonicalize_fs(coords)
     return _canonicalize_fs(frozenset(coords))
+
+
+def cache_stats():
+    """两张模块级缓存的条目数（观测 / 护栏用）。"""
+    return {
+        'canonicalize': _canonicalize_fs.cache_info().currsize,
+        'mask_connected': _mask_is_connected.cache_info().currsize,
+    }
+
+
+def clear_caches():
+    """清空模块级 lru_cache —— **计算过程用完即弃**。
+
+    2026-11-13 实测：连续点几次自动求解，RSS 从 126MB 冲到 550MB 且不再回落。
+    真凶不是距离表（那张已按 64MB 上限跳过），而是这两张**只服务于单次求解**
+    的规范态 / 连通性缓存：聚拢与混合求解会探索几十万个状态，
+    ``_canonicalize_fs`` 的 100k 上限被填满 → 约 21 万个对象、~400MB 常驻，
+    而且跨求解不释放。
+
+    它们的唯一收益是「同一次求解里重复访问相同规范态」时省一次 D8 归一，
+    求解一结束就没有任何价值。所以求解收尾（正常完成 / 取消 / 出错）统一
+    调用本函数，把计算过程丢掉——玩家历史（``game_history`` 快照）不受影响。
+    """
+    for fn in (_canonicalize_fs, _mask_is_connected):
+        try:
+            fn.cache_clear()
+        except Exception:
+            pass
 
 
 def int_to_coords(h: int, count: int):
