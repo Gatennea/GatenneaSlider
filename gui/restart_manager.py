@@ -18,7 +18,7 @@ import sys
 import time
 import subprocess
 
-from gui.restart import ready_path, pid_alive, RESTART_ANIM_DIR
+from gui.restart import (ready_path, pid_alive, RESTART_ANIM_DIR, NEW_CONSOLE)
 
 
 def build_relaunch(relaunch_cmd, token):
@@ -236,7 +236,15 @@ def run(parent_pid, relaunch_cmd, token):
                         child = subprocess.Popen(cmd, cwd=os.getcwd(),
                                                  env=dict(os.environ),
                                                  creationflags=NEW_CONSOLE)
-                    except Exception:
+                    except Exception as _e:
+                        # 拉起失败绝不能静默吞掉：曾因 NEW_CONSOLE 未导入导致
+                        # NameError 被此 except 吞掉、重启后主程序永远起不来。
+                        # 记入错误日志（看门进程无控制台），便于事后排查。
+                        try:
+                            from gui.log_writer import exception as _log_exc
+                            _log_exc('重启看门进程拉起新游戏失败', type(_e), _e, None)
+                        except Exception:
+                            pass
                         child = None
                     spawned = True
                     mark_t = now
