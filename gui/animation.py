@@ -148,8 +148,8 @@ class AnimationMixin:
 
         # 「思考」演示的真实走步 / 撤回动画（待办 §三十四 第 4 条）：
         # 走步的真实提交已在 _think_do_walk 完成；撤回的真实 undo 推迟到这里
-        # （块已滑回原位），落位后再调 GameHistory.undo + **白色**高亮
-        # （假装尝试不用撤销蓝/重做橙；见 _flash_move_selection 的 is_think）。
+        # （块已滑回原位），落位后再调 GameHistory.undo + 撤销蓝高亮（撤回
+        # 保持普通撤销配色；只有往前的「假装尝试」步用 is_think 走白边）。
         # 两条路都**不碰** step_count / 全局历史 / 文件脏标记。
         think_type = getattr(self, '_think_walk_anim', None)
         if think_type:

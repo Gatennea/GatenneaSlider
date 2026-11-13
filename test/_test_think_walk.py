@@ -368,9 +368,9 @@ def engine_route_tests():
           and mi.get('moved_positions') == [[0, 1]], repr(mi))
 
     h._think_do_rewind()
-    check('W9 撤回走真 undo + 白色高亮 + 弹栈',
+    check('W9 撤回走真 undo + 撤销蓝高亮 + 弹栈',
           h._think_history.undo_calls == 1
-          and h.flashes == [(True, True, True)]  # (is_undo, after_commit, is_think)
+          and h.flashes == [(True, True, False)]  # (is_undo, after_commit, is_think)
           and not h._think_walk.steps,
           'undo=%d flashes=%r' % (h._think_history.undo_calls, h.flashes))
     check('W9b 撤回也补了一声瞬时滑动声',
@@ -473,8 +473,8 @@ def real_engine_tests():
     check('E2 真引擎：撤完逐格回到基线（盘面没被推歪）',
           snappos(g) == base and not h._think_walk.steps,
           'same=%s rewinds_flash=%d' % (snappos(g) == base, len(h.flashes)))
-    check('E3 真引擎：每次撤回都出了「思考游走」白色高亮（不是重做橙）',
-          all(f == (True, True, True) for f in h.flashes) and h.flashes,
+    check('E3 真引擎：每次撤回都出撤销蓝高亮（不走白边）',
+          all(f == (True, True, False) for f in h.flashes) and h.flashes,
           repr(h.flashes[:3]))
 
     # 取消路径：游走中直接收尾，盘面也必须回基线

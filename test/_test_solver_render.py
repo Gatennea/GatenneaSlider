@@ -70,7 +70,11 @@ class SelAnimBorderTest(unittest.TestCase):
         self.assertEqual(color, RendererMixin.PLAY_HEAD_BORDER)
 
     def test_think_beats_undo(self):
-        """即使 is_undo 也是 True，只要 is_think 就仍画白色。"""
+        """白边优先级最高（防御）：即便同时带 is_undo 也画白。
+
+        生产里两者互斥——撤回不传 is_think（见 _test_think_walk_selection 的
+        「撤回走撤销蓝」用例），这里只钉住渲染层的取值顺序。
+        """
         h = _BorderHost(think=True, undo=True)
         color, _w = h._sel_anim_border()
         self.assertEqual(color, RendererMixin.PLAY_HEAD_BORDER)

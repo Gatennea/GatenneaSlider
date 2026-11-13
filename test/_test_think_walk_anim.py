@@ -182,11 +182,11 @@ def test_rewind_animates_then_undo():
     check('B2 撤回滑动方向正确：start=(0,3) → end=(0,1)',
           h.anim_start_pos == [[0, 3]] and h.anim_end_pos == [[0, 1]],
           'start=%r end=%r' % (h.anim_start_pos, h.anim_end_pos))
-    # 提交：应补调真实 undo + 白色（思考游走）+ 弹栈
+    # 提交：应补调真实 undo + 撤销蓝（撤回不走白边）+ 弹栈
     h.commit_animation()
-    check('B3 commit 后才真 undo + 白色 + 弹栈',
+    check('B3 commit 后才真 undo + 撤销蓝 + 弹栈',
           h._think_history.undo_calls == 1
-          and h.flashes == [(True, True, True)]  # (is_undo, after_commit, is_think)
+          and h.flashes == [(True, True, False)]  # (is_undo, after_commit, is_think)
           and not h._think_walk.steps,
           'undo=%d flashes=%r' % (h._think_history.undo_calls, h.flashes))
     check('B4 撤回动画态清零', h._think_walk_anim is None and not h.anim_blocks)

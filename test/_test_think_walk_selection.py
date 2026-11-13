@@ -44,13 +44,17 @@ class _FakeHistory:
     def __init__(self):
         self.history = []
         self.history_index = -1
+        # 非 None 时 undo 成功并回吐这条 move_info（供「撤回配色」用例驱动真路径）
+        self.undo_move_info = None
 
     def save_snapshot(self, game, move_info=None, key=None):
         self.history.append({'move_info': move_info})
         self.history_index = len(self.history) - 1
 
     def undo(self, game):
-        return (False, None)
+        if self.undo_move_info is None:
+            return (False, None)
+        return (True, self.undo_move_info)
 
     def restore_snapshot(self, game, index):
         pass
@@ -187,6 +191,21 @@ class ThinkWalkSelectionTest(unittest.TestCase):
         self.assertTrue(getattr(host, '_sel_anim_is_think', False))
         host._clear_sel_anim()
         self.assertFalse(getattr(host, '_sel_anim_is_think', False))
+
+    def test_rewind_uses_undo_blue_not_white(self):
+        """撤回不继承白边：渲染层应拿到 is_undo=True 且 is_think=False（撤销蓝）。
+
+        白色只标「往前假装走」；往回退按普通撤销配色，玩家一眼能分方向。
+        """
+        host = _Host(selection_enabled=True)
+        host._think_history.undo_move_info = {
+            'gap_type': 'h', 'gap_line': 0, 'direction': 'd',
+            'moved_positions': [[0, 2]],
+        }
+        host._think_undo_now(with_sound=False)
+        self.assertTrue(getattr(host, '_sel_anim_is_undo', False))
+        self.assertFalse(getattr(host, '_sel_anim_is_think', False))
+        self.assertGreater(getattr(host, '_sel_anim_timer', 0), 0)
 
 
 if __name__ == '__main__':

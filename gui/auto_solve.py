@@ -733,7 +733,7 @@ class AutoSolveMixin:
         self._think_undo_now()
 
     def _think_undo_now(self, with_sound=True):
-        """瞬时撤回一步：调本地历史 undo（真实接口）+ 白色高亮 + 弹栈。
+        """瞬时撤回一步：调本地历史 undo（真实接口）+ 撤销蓝高亮 + 弹栈。
 
         ``with_sound=False`` 供**带动画的撤回**在提交时复用本函数：那条路径
         已在 ``_think_start_slide`` 起手时播过滑动声，这里再播就成了双声。
@@ -745,9 +745,9 @@ class AutoSolveMixin:
                 self._play_slide_sound(self.current_step,
                                        duration_ms=self.SLIDE_INSTANT_MS)
             if mi:
-                # is_think=True：撤回同样是「假装尝试」的一环，边框也走白色
-                self._flash_move_selection(mi, True, after_commit=True,
-                                           is_think=True)
+                # 撤回保持默认（is_undo=True → 撤销蓝）：白边只标「往前假装走」，
+                # 往回退仍按普通撤销的配色，好让玩家一眼分清方向。
+                self._flash_move_selection(mi, True, after_commit=True)
             self._think_walk.note_rewind()
             # undo 会重建 game.blocks（restore_snapshot 造新 Block），旧的
             # selected_block 已成悬空引用，及时清掉，免得后续命中/高亮读它。
