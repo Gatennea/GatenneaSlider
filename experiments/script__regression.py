@@ -81,5 +81,30 @@ for case in CASES:
     elif expect == 'fail' and tag == 'solved':
         verdict = '?? 意外全解（信息）'
     print('%-42s %-12s %3d 步 %6.1fs  %s' % (rel, tag, n_steps, dt, verdict))
+# ---- 生成式护栏（2026-11-13 角缺口回归）：典例不入库，按几何直接构造 ----
+# 6×6 满盘缺左上角 (0,0)、窗外凸起挂 (0,6) = save/corner.json 的复现几何
+# （77f6aca 把动态 rep 抽成静态坐标的事故局）。这是「瞬解」案子：
+# 补缺宏角缺口链必须快路径解出，超时/回退填洞宏 partial 都算退化
+# （软回退会掩盖快路径损坏，故加时间与步数上限断言）。
+m, n, step = 6, 6, 2
+gen_coords = (frozenset((r, c) for r in range(m) for c in range(n))
+              - {(0, 0)} | {(0, 6)})
+g = build_game(gen_coords, m, n)
+t0 = time.time()
+res = solve_gap_macro(g, step)
+dt = time.time() - t0
+if isinstance(res, dict):
+    tag = 'partial' if res.get('type') == 'fill_partial' else 'fail'
+    n_steps = 0
+else:
+    tag = 'solved'
+    n_steps = len(res[0])
+verdict = 'OK'
+if tag != 'solved' or dt > 5.0 or n_steps > 20:
+    verdict = '!! 退化（角缺口典例应瞬解）'
+    fails += 1
+print('%-42s %-12s %3d 步 %6.1fs  %s'
+      % ('<generated> corner 6x6', tag, n_steps, dt, verdict))
+
 print('=' * 70)
 print('退化数: %d' % fails)
