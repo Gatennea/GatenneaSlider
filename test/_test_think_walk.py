@@ -316,6 +316,8 @@ def engine_route_tests():
     from gui.auto_solve import AutoSolveMixin
 
     class _Host(AutoSolveMixin):
+        SLIDE_INSTANT_MS = 120   # 与 AnimationMixin 同值（本 Host 不混入它）
+
         def __init__(self):
             self.game = _FakeGame()
             self.current_step = 2
@@ -323,7 +325,12 @@ def engine_route_tests():
                                          rewind_frames=1, max_steps=9)
             self._think_history = _FakeHistory()
             self.flashes = []
+            self.slide_sounds = []
             self.selected_block = None
+
+        def _play_slide_sound(self, steps=1, duration_ms=None):
+            """记录滑动声调用（真实 AnimationMixin 会去 audio 播，本 Host 无音频）。"""
+            self.slide_sounds.append((steps, duration_ms))
 
         def _reset_think_history(self):
             old = self._think_history
@@ -351,6 +358,9 @@ def engine_route_tests():
           and len(h._think_walk.steps) == 1,
           'committed=%r saved=%d' % (h.game.committed,
                                      len(h._think_history.saved)))
+    check('W7b 游走步有滑动声（修复「思考游走无声」）',
+          len(h.slide_sounds) == 1 and h.slide_sounds[0][0] == 2,
+          h.slide_sounds)
 
     mi = h._think_history.saved[-1][0]
     check('W8 落盘 move_info 是真的走法规约',
@@ -363,6 +373,8 @@ def engine_route_tests():
           and h.flashes == [(True, True, True)]  # (is_undo, after_commit, is_think)
           and not h._think_walk.steps,
           'undo=%d flashes=%r' % (h._think_history.undo_calls, h.flashes))
+    check('W9b 撤回也补了一声瞬时滑动声',
+          len(h.slide_sounds) >= 2, h.slide_sounds)
 
     # 取消 / 收尾：游走留下的位移必须还原回基线
     h2 = _Host()
@@ -388,6 +400,8 @@ def real_engine_tests():
     from history import GameHistory
 
     class _RealHost(AutoSolveMixin):
+        SLIDE_INSTANT_MS = 120   # 与 AnimationMixin 同值（本 Host 不混入它）
+
         def __init__(self, game):
             self.game = game
             self.current_step = 2
@@ -395,7 +409,12 @@ def real_engine_tests():
                                          rewind_frames=1, max_steps=5)
             self._think_history = GameHistory()
             self.flashes = []
+            self.slide_sounds = []
             self.selected_block = None
+
+        def _play_slide_sound(self, steps=1, duration_ms=None):
+            """记录滑动声调用（真实 AnimationMixin 会去 audio 播）。"""
+            self.slide_sounds.append((steps, duration_ms))
 
         def _think_find_move(self):
             """方形盘的最小真实找步（不自带 GUI 依赖，只用引擎接口）。"""

@@ -714,7 +714,11 @@ class AutoSolveMixin:
                 b.be_opted = False
         # 视觉滑动（修复「游走根本没动画」）：提交已完成，这里只让渲染层
         # 从 moved→final 插值，看起来像真在推块。关闭动画时退回瞬时（原行为）。
-        self._think_start_slide(selected, moved_positions, final, 'walk')
+        if not self._think_start_slide(selected, moved_positions, final, 'walk'):
+            # 关动画 / 无块可插值时是瞬时提交：补一声瞬时滑动声，
+            # 与 move.py 的瞬时路径同口径（一滑就有声）。
+            self._play_slide_sound(self.current_step,
+                                   duration_ms=self.SLIDE_INSTANT_MS)
         return True
 
     def _think_do_rewind(self):
@@ -728,10 +732,18 @@ class AutoSolveMixin:
             return
         self._think_undo_now()
 
-    def _think_undo_now(self):
-        """瞬时撤回一步：调本地历史 undo（真实接口）+ 白色高亮 + 弹栈。"""
+    def _think_undo_now(self, with_sound=True):
+        """瞬时撤回一步：调本地历史 undo（真实接口）+ 白色高亮 + 弹栈。
+
+        ``with_sound=False`` 供**带动画的撤回**在提交时复用本函数：那条路径
+        已在 ``_think_start_slide`` 起手时播过滑动声，这里再播就成了双声。
+        瞬时撤回（无动画）才由本函数补一声瞬时滑动声。
+        """
         ok, mi = self._think_history.undo(self.game)
         if ok:
+            if with_sound:
+                self._play_slide_sound(self.current_step,
+                                       duration_ms=self.SLIDE_INSTANT_MS)
             if mi:
                 # is_think=True：撤回同样是「假装尝试」的一环，边框也走白色
                 self._flash_move_selection(mi, True, after_commit=True,
@@ -772,6 +784,10 @@ class AutoSolveMixin:
             self._undo_redo_type = None
             self._think_walk_anim = kind
             self.animating = True
+            # 游走也是真实的整组滑动：有滑动动画就得有滑动声（与普通移动 /
+            # 宏播放 / 撤销重做同源）。此前漏接 → 用户实测「思考游走时没有
+            # 滑动音效」。走步与撤回都经这里，故一处补齐两条路径。
+            self._play_slide_sound(self.current_step)
             return True
         except Exception:
             traceback.print_exc()

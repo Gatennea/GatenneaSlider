@@ -112,6 +112,7 @@ class _AnimHost(AutoSolveMixin, AnimationMixin):
         self._think_walk_anim = None
         self.step_count = 0
         self.flashes = []
+        self.slide_sounds = []
         self.selected_block = None
         self.global_history_calls = 0
         self.dirty_marked = 0
@@ -126,6 +127,10 @@ class _AnimHost(AutoSolveMixin, AnimationMixin):
     def _flash_move_selection(self, mi, is_undo, after_commit=False,
                               is_think=False):
         self.flashes.append((is_undo, after_commit, bool(is_think)))
+
+    def _play_slide_sound(self, steps=1, duration_ms=None):
+        """记录滑动声（真实实现走 audio；本 Host 无音频，只记调用）。"""
+        self.slide_sounds.append((steps, duration_ms))
 
     def _reset_think_history(self):
         self._think_history = _FakeHistory()
@@ -159,6 +164,8 @@ def test_walk_animates():
           h.step_count == 0 and h.dirty_marked == 0,
           'step=%d dirty=%d' % (h.step_count, h.dirty_marked))
     check('A6 块落到 final', h.game.blocks[1].location == [0, 3])
+    check('A7 走步搭滑动动画时出了滑动声（修复「思考游走无声」）',
+          h.slide_sounds == [(2, None)], str(h.slide_sounds))
 
 
 def test_rewind_animates_then_undo():
@@ -183,6 +190,8 @@ def test_rewind_animates_then_undo():
           and not h._think_walk.steps,
           'undo=%d flashes=%r' % (h._think_history.undo_calls, h.flashes))
     check('B4 撤回动画态清零', h._think_walk_anim is None and not h.anim_blocks)
+    check('B5 动画撤回恰好两次声（走步+撤回），commit 不补响（防双声）',
+          h.slide_sounds == [(2, None), (2, None)], str(h.slide_sounds))
 
 
 def test_animation_off_is_instant():
@@ -194,6 +203,10 @@ def test_animation_off_is_instant():
     h._think_do_rewind()
     check('C2 关动画时撤回瞬时（立刻 undo）',
           h._think_history.undo_calls == 1 and h._think_walk_anim is None)
+    check('C3 关动画时走步/撤回各补一声瞬时滑动声',
+          [d for (_s, d) in h.slide_sounds] == [h.SLIDE_INSTANT_MS,
+                                                h.SLIDE_INSTANT_MS],
+          str(h.slide_sounds))
 
 
 def main():

@@ -156,7 +156,9 @@ class AnimationMixin:
             self._think_walk_anim = None
             if think_type == 'rewind':
                 try:
-                    self._think_undo_now()
+                    # with_sound=False：滑动声在 _think_start_slide 起手时已播，
+                    # 这里只补真实 undo，避免撤回动画一次响两声。
+                    self._think_undo_now(with_sound=False)
                 except Exception:
                     import traceback
                     traceback.print_exc()
