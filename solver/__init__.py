@@ -232,6 +232,12 @@ SOLVER_ALGORITHMS = {
     'greedy': ('  贪心爬山', solve_greedy),
 }
 
+# 只从 **GUI 设置页**隐藏的算法 key：三项旧搜索类（IDA* / 快速 / 贪心）已明标
+# 「低效、沉底备查」，摆在菜单里只会让玩家选到慢算法。key 仍保留在
+# SOLVER_ALGORITHMS 里 —— 老配置迁移、HTTP /solve 接口、教程内部调用都还能
+# 识别（关闭的只是 GUI 入口，不是算法本身）。
+GUI_HIDDEN_SOLVER_ALGORITHMS = ('ida_star', 'fast', 'greedy')
+
 # 注：'tri_gather' / 'mi_gather' 作为**独立入口已移除**（2026-10-05）——
 # 形态不该各占一个菜单项。两个函数仍保留（供统一入口分发与测试直接调用），
 # 但不再出现在注册表里。

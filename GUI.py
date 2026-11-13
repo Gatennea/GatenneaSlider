@@ -528,7 +528,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._auto_stage_active = False    # 后台是否仍在计算
         self._auto_streamed = False        # 本次是否为 hybrid 流式求解
         self._auto_best = None             # 历史最优 checkpoint {'score','phi','snap'}
-        self.solver_algorithm = 'ida_star' # 求解算法选择: 'ida_star', 'fast', 'greedy'
+        # 默认「混合求解」；旧搜索三项（ida_star/fast/greedy）已从 GUI 隐藏，
+        # 不再作默认（老配置由 gui.file_ops._migrate_solver_algorithm 迁过来）。
+        self.solver_algorithm = 'hybrid'
 
         # 聚拢求解器参数（GUI 设置对话框可调，保存到 config.json）
         self.gather_params = {

@@ -4383,7 +4383,7 @@ class RendererMixin:
 
     def _draw_settings_solver(self, x, y, width, height):
         """绘制求解器算法选择内容"""
-        from solver import SOLVER_ALGORITHMS
+        from solver import SOLVER_ALGORITHMS, GUI_HIDDEN_SOLVER_ALGORITHMS
 
         row_y = y + 20
         row_height = 36
@@ -4399,6 +4399,9 @@ class RendererMixin:
         self._settings_solver_rects = {}  # algorithm_key -> rect
 
         for algo_key, (algo_name, _) in SOLVER_ALGORITHMS.items():
+            # 旧搜索三项不在 GUI 列表里出现（key 仍在注册表，供老配置/HTTP）
+            if algo_key in GUI_HIDDEN_SOLVER_ALGORITHMS:
+                continue
             # 单选按钮
             radio_size = 12
             radio_x = x + 25
@@ -4599,10 +4602,12 @@ class RendererMixin:
                 + 18 * self._ext_feedback_lines(660 - 30)
         else:
             # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
-            from solver import SOLVER_ALGORITHMS
+            from solver import SOLVER_ALGORITHMS, GUI_HIDDEN_SOLVER_ALGORITHMS
             title_h = 20 + 36 + 10
-            options_h = len(SOLVER_ALGORITHMS) * 36
-            desc = self._solver_description(getattr(self, 'solver_algorithm', 'ida_star'))
+            # 高度按 GUI 实际显示的项算（旧搜索三项已隐藏，否则底部会多出空档）
+            options_h = len([k for k in SOLVER_ALGORITHMS
+                             if k not in GUI_HIDDEN_SOLVER_ALGORITHMS]) * 36
+            desc = self._solver_description(getattr(self, 'solver_algorithm', 'hybrid'))
             desc_w = 500 - 30 - 20  # 内容宽 470 再减边距
             desc_h = len(self._wrap_text(desc, self.status_font, desc_w)) * 18 + 12
             return title_h + options_h + desc_h

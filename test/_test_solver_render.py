@@ -91,5 +91,27 @@ class SelAnimBorderTest(unittest.TestCase):
         self.assertIsNone(h._sel_anim_border())
 
 
+class LegacyGuiTest(unittest.TestCase):
+    """旧搜索三项从 GUI 隐藏，但 key 仍保留（HTTP/老配置可识别）。"""
+
+    def test_hidden_set_keeps_keys(self):
+        from solver import (SOLVER_ALGORITHMS,
+                            GUI_HIDDEN_SOLVER_ALGORITHMS)
+        for k in ('ida_star', 'fast', 'greedy'):
+            self.assertIn(k, GUI_HIDDEN_SOLVER_ALGORITHMS)
+            self.assertIn(k, SOLVER_ALGORITHMS)   # 注册表仍认得
+        # 查表求解保留在 GUI（有数据库时亚秒级）
+        self.assertNotIn('table', GUI_HIDDEN_SOLVER_ALGORITHMS)
+
+    def test_migrate_legacy_to_hybrid(self):
+        from gui.file_ops import _migrate_solver_algorithm as m
+        for k in ('ida_star', 'fast', 'greedy'):
+            self.assertEqual(m(k), 'hybrid')
+        # 其它 key 原样保留
+        self.assertEqual(m('table'), 'table')
+        self.assertEqual(m('hybrid'), 'hybrid')
+        self.assertEqual(m('gather'), 'gather')
+
+
 if __name__ == '__main__':
     unittest.main()

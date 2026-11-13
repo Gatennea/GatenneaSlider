@@ -1882,7 +1882,9 @@ class EventsMixin:
         self._start_auto_solve()
         if active:
             return True, "已请求停止求解"
-        return True, f"已启动自动求解（算法: {self.solver_algorithm}）"
+        from gui.progress_text import solver_display_name
+        return True, '已启动自动求解（算法: %s）' % solver_display_name(
+            self.solver_algorithm)
 
     def _do_cancel_solve(self):
         """显式请求取消求解。返回 (ok, message)。"""
@@ -3836,9 +3838,10 @@ class EventsMixin:
                         # 操作提示：当前谜题形态不支持该算法时，直接把
                         # 「没有这个功能」讲出来（不然用户点了没反应、
                         # 或者到求解时才被拦，反馈太晚）。
-                        from solver import (SOLVER_ALGORITHMS, solver_supports,
+                        from solver import (solver_supports,
                                             unsupported_solver_msg)
-                        algo_name = SOLVER_ALGORITHMS.get(algo_key, ('求解器',))[0].strip()
+                        from gui.progress_text import solver_display_name
+                        algo_name = solver_display_name(algo_key)
                         form = self._current_puzzle_form()
                         if solver_supports(algo_key, form):
                             self.macro_notify_msg = f"求解算法：{algo_name}"

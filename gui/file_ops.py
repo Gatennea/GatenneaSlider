@@ -61,6 +61,12 @@ _LEGACY_SOLVER_ALGORITHM = {
     # 填洞宏已并入补缺宏（菜单改叫「填洞补缺」）：老配置里选了它的迁移过去，
     # 否则界面会显示一个已经不存在的算法 key。
     'fill_macro': 'gap_macro',
+    # 旧搜索三项已从 GUI 隐藏（低效、沉底备查；2026-11-13 用户拍板）：
+    # 老 config 若选着它们，迁到默认的混合求解，免得界面显示一个不在
+    # 列表里的 key（点开设置看不到任何选中项）。key 本身仍在注册表。
+    'ida_star': 'hybrid',
+    'fast': 'hybrid',
+    'greedy': 'hybrid',
 }
 
 
