@@ -14,6 +14,9 @@
   `git add` 指定文件、不捲入他人半成品）。其他 AI **不得在自己目錄操作 main**
   （物理隔離：main 只在主目錄檢出，其他 AI 想誤提交都做不到）。
 - **所有 AI（含管 main 的）改代碼一律走 worktree**：每個工作點一個目錄 `GatenneaSlider-<後綴>`，檢出自己的分支開發。
+- **worktree 側 AI 的動作邊界：只做本地 commit**（在自己分支上提交，含跑測試、落盤產物）——**不推送、不合併**。
+  合併由管 main 的 AI 統一執行（§3）；推送經用戶決策後，同樣由管 main 的 AI 走網關執行。
+  在自己目錄 checkout / 操作 main 一律禁止（main 只在主目錄檢出）。
 - 現有範例（2026-11-13）：`GatenneaSlider-geo` → `feat/geometry-engine`、
   `GatenneaSlider-math` → `feat/math-research`（數學長分支，不合完即刪）、
   `GatenneaSlider-reuse` → `topic/solver-reuse-refactor`。
