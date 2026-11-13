@@ -1843,6 +1843,11 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
         # 契约与全函数一致：主路径一律 (动作或None, 节点数) 元组——
         # 裸 None 会让调用方 `racts, used = _rigid_fill(...)` 解包炸
         return None, 0                       # 形状不全等 → 刚体填不进
+    # ⚠️ 2026-11-14 曾试过「奇偶不可 dock → 剪 carry 组」（P 平移相位守恒，
+    # min(H)-min(P) 不整除 step 则 Pcur==H 永不可达，12×12 实测白烧 385s），
+    # 被护栏打回：B8/T1 的 4×4 胜径正是不可 dock 对、且靠 carry 中间节点
+    # 抓到「别的块填洞」终局（快验 B8/D2/T1/T2/T5 五红）——奇偶区分不了
+    # 白烧与胜机，已回滚。白烧抑制改走 time_cap 方向，见待办 §三十四。
     if max_comp is None:
         max_comp = max(8, len(coords) // 2)
 
