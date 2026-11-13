@@ -19,10 +19,13 @@
       parity 拒绝、已共线空转）
   C 组 `_moves_of` 模拟 == 引擎回放（逐条核对，防两套枚举漂移）
   D 组 端到端：4×4 验收例子自动解出且步数不退化
-  E 组 形状不全等时**不白调** `_rigid_fill`（spy 计数）
+  E 组 形状不全等时**不白调** `_rigid_fill`（spy 参数断言：入参必全等）
+  F 组 搬洞整形 `_reshape_neutral`（搜路径+回放、终点接①②、已有全等对
+      空转、过期 deadline 快速放弃）
 """
 import os
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -198,11 +201,13 @@ def e2e_tests():
 # --------------------------------------------------------------------------
 def filter_tests():
     b_diff = board6(extra=((5, 6), (6, 6)))   # 横洞 vs 竖凸
-    calls = {'n': 0}
+    calls = []
     orig = fm._rigid_fill
 
     def spy(*a, **k):
-        calls['n'] += 1
+        H = a[4] if len(a) > 4 else k.get('H')
+        P = a[5] if len(a) > 5 else k.get('P')
+        calls.append((frozenset(H), frozenset(P)))
         return orig(*a, **k)
 
     fm._rigid_fill = spy
@@ -211,8 +216,78 @@ def filter_tests():
                               time_budget=6)
     finally:
         fm._rigid_fill = orig
-    check('E1 形状不全等的对不会被塞给 _rigid_fill（spy 计数 0）',
-          calls['n'] == 0, 'calls=%d' % calls['n'])
+    # 2026-11-14 刀三后语义升级：搬洞整形会给 _reshape_edges 交回「整形后
+    # 变出的全等对」，调用次数不再恒 0——不变量是**入参形状必须全等**
+    # （不全等的对永远进不了 _rigid_fill），按参数断言而不是按次数断言。
+    bad = [(sorted(H), sorted(P)) for H, P in calls
+           if fm._shape_rel(H) != fm._shape_rel(P)]
+    check('E1 _rigid_fill 从不收到形状不全等的对（spy 参数断言）',
+          not bad, 'calls=%d bad=%s' % (len(calls), bad[:2]))
+
+
+# --------------------------------------------------------------------------
+# F 组：搬洞整形（刀三，待办 §三十四）——生成式几何，不依赖未入库存档
+# --------------------------------------------------------------------------
+def reshape_tests():
+    # F1 横洞 vs 竖凸（生成式 6×6，experiments/_find_f1geom.py 全程搜索
+    #    749 个候选后挑中的走通几何）：
+    #    洞 = 横2 (1,1)(1,2) + 单格 (0,0)；凸 = 竖2 (6,0)(7,0) + 单格 (6,2)。
+    #    起手唯一 k>=2 对是 (横2,竖2) 不全等；整形 3 步（15 态）把洞重排成
+    #    横2 (0,4)(0,5)、凸侧重排出横2 (0,-2)(0,-1) → 全等对出现，
+    #    ①刚体直填 1 步收口，整链 4 步、ov 33→35。
+    #    几何坑位备忘：b_diff（洞(1,2)(1,3)/凸(5,6)(6,6)）只有 19 个可达态
+    #    （奇偶墙搜不到）；贴墙单格拼接会连成 L 形 3 连通块（没有独立
+    #    len=2 簇，_equal_pair 判空）——别拿这两种当 F1 几何。
+    coords_f = frozenset(
+        {(r, c) for r in range(6) for c in range(6)}
+        - {(0, 0), (1, 1), (1, 2)}
+        | {(6, 0), (6, 2), (7, 0)})
+    acts, st = fm._reshape_neutral(coords_f, 6, 6, 2, max_states=800)
+    ok_f1 = False
+    nxt = None
+    if acts:
+        g = fm.build_game(coords_f, 6, 6)
+        ok_f1 = fm._replay_apply(g, acts, 6, 6, 2)
+        if ok_f1:
+            nxt = frozenset(fm.gcoords(g))
+            _r, _o, hl, ot = fm.window_of(nxt, 6, 6, 2)
+            ok_f1 = fm._equal_pair(hl, ot) is not None
+    check('F1 搬洞整形搜出全等对且整链回放合法',
+          bool(acts) and ok_f1,
+          'acts=%d st=%s' % (len(acts) if acts is not None else -1, st))
+    if not ok_f1:
+        return
+    # F2 终点接生产 ①刚体直填 / ②对齐+填，产物回放合法
+    _r, _o, hl, ot = fm.window_of(nxt, 6, 6, 2)
+    H, P = fm._equal_pair(hl, ot)
+    tail = None
+    a1, _u1 = fm._rigid_fill(nxt, 6, 6, 2, H, P, max_nodes=600)
+    if a1:
+        tail = a1
+    else:
+        base, cur2, P2 = fm._align_rigid(nxt, 6, 6, 2, H, P)
+        if base is not None:
+            a2, _u2 = fm._rigid_fill(cur2, 6, 6, 2, H, P2, max_nodes=600)
+            if a2:
+                tail = list(base) + list(a2)
+    ok_f2 = False
+    if tail:
+        g2 = fm.build_game(coords_f, 6, 6)
+        ok_f2 = fm._replay_apply(g2, list(acts) + list(tail), 6, 6, 2)
+    check('F2 整形终点接 ①/② 刚体填，整链回放合法',
+          tail is not None and ok_f2, 'tail=%s' % (len(tail) if tail else None))
+
+    # F3 已有全等对 → 立即返回空动作，一态不烧
+    c4 = board44()
+    acts3, st3 = fm._reshape_neutral(c4, 4, 4, 2)
+    check('F3 已有全等对时整形空转（0 步、reason=已有全等对）',
+          acts3 == [] and st3.get('reason') == '已有全等对', str(st3))
+
+    # F4 过期 deadline → 立即放弃，不搜
+    t_early = time.time() - 1
+    acts4, st4 = fm._reshape_neutral(coords_f, 6, 6, 2, deadline=t_early)
+    check('F4 deadline 已过时快速放弃（reason=时间到点）',
+          acts4 is None and st4.get('reason') == '时间到点', str(st4))
 
 
 def main():
@@ -220,6 +295,7 @@ def main():
     align_tests()
     moves_tests()
     e2e_tests()
+    reshape_tests()
     filter_tests()
     print()
     if FAILS:
