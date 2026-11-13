@@ -1272,6 +1272,35 @@ class AutoSolveMixin:
             'stages_exhausted': '阶段耗尽',
         }.get(reason, reason or '完成')
 
+        # ---- 防偏移：把「推大片」改写成「推小片」的等价序列 ----
+        # 算法本体在 engine/drift.py（板型无关，方形/三角/米字/模型共用），
+        # 这里只对异形聚拢结果做换算 + 真盘回放终裁。步数与终态形状都不变，
+        # 变的是「哪一片在动」——大片静止，画面上不再整盘平移。
+        ad_note = ''
+        if getattr(self, 'anti_drift_enabled', True) and actions:
+            try:
+                from solver.anti_drift_engine import rewrite_gather_actions
+                _ad = rewrite_gather_actions(
+                    self.game, actions, self.current_step,
+                    result.get('start_coords'))
+            except Exception as _exc:      # 不拖垮求解播放，但必须留下痕迹
+                _ad = {'actions': actions, 'applied': False,
+                       'note': f'防偏移异常：{_exc}'}
+            if _ad.get('applied'):
+                actions = _ad['actions']
+                if rep_cells:
+                    # 旁挂 rep 数组与动作必须同步：改写后的代表块换了块，
+                    # 留着旧 rep 会让播放器去点一个不在选中片里的块。
+                    rep_cells = [a[4] if len(a) > 4 else None for a in actions]
+            else:
+                _note = _ad.get('note') or ''
+                # 正常分支不报成失败：①非异形（方形走旧的方形改写器）；
+                # ②本来是「越改越远，主动放弃」——那是判据在保护盘面，
+                # 不是故障。真正的换算/回放失败才提示。
+                _benign = ('非异形' in _note) or ('反而变大' in _note)
+                ad_note = '' if _benign else _note
+        self._anti_drift_note = ad_note
+
         if not actions:
             # 无可播放动作 = 梯度流程到此为止（同时停掉后台流水线）
             if getattr(self, '_gradient_state', None) is not None:
@@ -1325,6 +1354,11 @@ class AutoSolveMixin:
                       % (reason_text, s.get('score', 0)*100, e.get('score', 0)*100,
                          sh, sw, eh, ew)) + stages_info
             self.macro_notify_timer = 300
+
+        if ad_note:
+            # 防偏移没生效是「可感知的降级」：不静默吞掉（AGENTS.md §2），
+            # 但只给一行短提示，完整原因留在 _anti_drift_note 供排查。
+            self.macro_notify_msg += '；防偏移未生效'
 
         ops = []
         for i, action in enumerate(actions):

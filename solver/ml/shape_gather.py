@@ -95,7 +95,8 @@ class ShapeGather:
 
     def __init__(self, shape_score, enumerate_actions, apply_action,
                  snap, restore, coords_of, is_solved=None,
-                 canonicalize=None, mod_filter=None, optimize_path=None):
+                 canonicalize=None, mod_filter=None, optimize_path=None,
+                 merit=None):
         self.shape_score = shape_score
         self.enumerate_actions = enumerate_actions
         self.apply_action = apply_action
@@ -115,6 +116,12 @@ class ShapeGather:
         # optimize_path(actions, start_hash, hashes) -> actions：去环压缩
         # （方形 `_optimize_path`）。None = 不做。
         self.optimize_path = optimize_path
+        # merit(coords, spec) -> 可比较的元组（**越小越好**）：聚拢度并列时的
+        # 次级判据。方形靠 bbox_area；异形没有「矩形边界盒」这个形态量，
+        # 用形态自己的剖面缺陷 Φ / 离锚点的漂移。None = 退回动作字典序。
+        # ⚠️ 只做 tiebreak，**不参与** patience / best / target 的判定 ——
+        # 用户看到的聚拢度口径必须仍是 overlap，不能偷换成复合分。
+        self.merit = merit
 
     # ------------------------------------------------------------------
     def solve(self, game, spec, step, max_steps=300, patience=150,
@@ -305,7 +312,9 @@ class ShapeGather:
                 h = self.canonicalize(new_coords)
                 mod_ok = (self.mod_filter(new_coords, step)
                           if self.mod_filter is not None else True)
-                scored.append((s, h in visited, act, h, mod_ok))
+                mrt = (self.merit(new_coords, spec)
+                       if self.merit is not None else ())
+                scored.append((s, h in visited, act, h, mod_ok, mrt))
                 self.restore(game, snap0)
 
             if not scored:
@@ -346,7 +355,7 @@ class ShapeGather:
                 choose_from = unvisited if unvisited else pool
                 act = rchoice(choose_from)[2]
             else:
-                pool.sort(key=lambda x: (x[1], -x[0], -x[4], x[2]))
+                pool.sort(key=lambda x: (x[1], -x[0], x[5], -x[4], x[2]))
                 act = pool[0][2]
 
             self.restore(game, snap0)
@@ -411,6 +420,30 @@ class ShapeGather:
             'random_pick': _random_pick,
             'kick': _kick,
         }
+
+
+def prune_cycles(actions, start_hash, hashes):
+    """去环：删掉「回到走过的形状」的**整段**，其余动作原样保留。
+
+    与方形 `square_gatherer` 里那版逐条判重不同：形状 h 第 i 步又出现，
+    说明从上次出现处到第 i 步是一整圈；要删的是这一圈（回退到上次出现的
+    位置），只删第 i 步反而会让后面的动作接不上。安全由 `ShapeGather.solve`
+    的真盘重放终栽兜底：删完必须能从起点走到同一个末态才采纳。
+    """
+    seen = {start_hash: 0}
+    kept, kept_h = [], []
+    for a, h in zip(actions, hashes):
+        if h in seen:
+            k = seen[h]
+            kept, kept_h = kept[:k], kept_h[:k]
+            seen = {start_hash: 0}
+            for idx, x in enumerate(kept_h, 1):
+                seen[x] = idx
+            continue
+        kept.append(a)
+        kept_h.append(h)
+        seen[h] = len(kept)
+    return kept
 
 
 def square_gatherer():

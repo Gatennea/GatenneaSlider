@@ -33,7 +33,8 @@
    m×n 与 n×m（轉置算還原，計劃 §6 拍板），`enumerate_actions` 不受影响。
 """
 
-from solver.ml.shape_gather import ShapeGather, shape_restart_kwargs
+from solver.ml.shape_gather import (ShapeGather, prune_cycles,
+                                    shape_restart_kwargs)
 from game_mi import (
     GAP_DIRECTIONS, MiSliderMatrix, mi_key, neighbors as mi_neighbors,
     side_of,
@@ -100,6 +101,44 @@ def shape_score(coords, spec: MiSpec) -> float:
 def score_of_game(game, spec: MiSpec) -> float:
     """便捷入口：直接吃 game。"""
     return shape_score(mi_coords(game), spec)
+
+
+def mi_canonical(coords) -> frozenset:
+    """平移归一的状态键（r/c 各维减最小值；错位态的半整数照样成立）。
+
+    mi 的整盘平移是半格步进（规格里 (½,½) 也是一步），所以归一必须用
+    **实际最小值**做减法、不能取整——取整会把两个不同的半格平移并成一类。
+    与 `tri_canonical` 同因：不归一，整盘滑一格就是「新状态」，visited
+    永命不中，实测米字一局就这样沿对角线滑了 75 格、300 步分数不动。
+    """
+    if not coords:
+        return frozenset()
+    mr = min(c[0] for c in coords)
+    mc = min(c[1] for c in coords)
+    return frozenset((c[0] - mr, c[1] - mc, c[2]) for c in coords)
+
+
+def mi_merit(coords, spec, start_coords) -> tuple:
+    """聚拢度并列时的次级判据（越小越好）：(单元格剖面缺陷, 离锚点漂移)。
+
+    mi 的「剖面」取**格心占用**（同格 4 块算一格），与 m×n 矩形比 L1；
+    它不是「=0 ⟺ 还原」（还要求每格 4 块俱全），只作平台上的梯度用，
+    `score`/`patience`/`best` 一律仍看 overlap，语义不变。
+    漂移项用边界盒最小角与起始盘面的 L∞ 距离，压住整盘平移的等价游走。
+    """
+    from solver.ml.invariants import profile_defect
+    if not coords:
+        return (0, 0)
+    cells = {(c[0], c[1]) for c in coords}
+    mr = min(c[0] for c in coords)
+    mc = min(c[1] for c in coords)
+    if start_coords:
+        mr0 = min(c[0] for c in start_coords)
+        mc0 = min(c[1] for c in start_coords)
+        drift = max(abs(mr - mr0), abs(mc - mc0))
+    else:
+        drift = 0
+    return (profile_defect(cells, spec.m, spec.n), drift)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +281,7 @@ def restore(game: MiSliderMatrix, s: dict) -> None:
 def mi_gather_solve(game, step: int = None, cancel_check=None,
                     progress_callback=None, max_steps=500, patience=150,
                     max_wait_time=30.0, target_score=1.0, aggressiveness=0.2,
+                    target_gather_score=None,
                     stochastic=None, seed=None, max_kicks=3, kick_moves=3,
                     **kw):
     """米字格聚拢求解——签名与方形 `gather_solve`、tri `tri_gather_solve` 对齐。
@@ -264,8 +304,18 @@ def mi_gather_solve(game, step: int = None, cancel_check=None,
     返回 dict 额外带 `type='gather'` 以便 GUI 走 `_handle_gather_result`
     的同一条路径（計劃 §8 M4 的做法，mi 照搬）。
     """
+    # GUI 的 gather_params 用方形键名 target_gather_score（GUI.py:540 /
+    # gui/auto_solve.py:210）；以前它落进 **kw 被静默吞掉，异形永远用默认
+    # 1.0。这里做**显式**别名，不再靠 **kw 兜底（AGENTS.md §2）。
+    if target_gather_score is not None:
+        target_score = target_gather_score
+
+    coords0 = mi_coords(game)
     sg = ShapeGather(shape_score, enumerate_actions, apply_action,
-                     snap, restore, mi_coords)
+                     snap, restore, mi_coords,
+                     canonicalize=mi_canonical,
+                     optimize_path=prune_cycles,
+                     merit=lambda c, sp: mi_merit(c, sp, coords0))
     spec = MiSpec(m=game.m, n=game.n, step=step)
     # 方形侧「禁用的参数传 None」：把 None 从 kw 里摘掉，让 solve 用默认值
     params = {k: v for k, v in
@@ -280,6 +330,8 @@ def mi_gather_solve(game, step: int = None, cancel_check=None,
     res = sg.solve(game, spec, step, cancel_check=cancel_check,
                    progress_callback=progress_callback, **params)
     res['type'] = 'gather'
+    # 起点坐标：防偏移改写必须知道这段动作的出发点（理由见 tri_adapter）。
+    res['start_coords'] = sorted(coords0)
     # GUI 的 _handle_gather_result 会读 result['start'/'end'] 拿 bbox 做文案；
     # 异形没有这两段指标（见 GUI.py 的 is_shape 分支），不给键即可。
     return res
