@@ -54,4 +54,4 @@
 ## 21. 待辦歸檔紀律
 提及**新增待辦**必須寫入待辦文檔 `docs/agent/待办清单.md`，**不得只寫進軟體的記憶系統**（`.workbuddy/memory/` 的 MEMORY.md / 日誌，或個人記憶）。理由：記憶系統跨會話易丟、不便追蹤完成態；待辦清單才是唯一總賬（見工作記憶「待辦唯一總账」）。→ `docs/agent/待办清单.md`
 ## 22. 多 AI 協作與 worktree
-主目錄獨佔檢出 `main`，其他 AI 各開 worktree（`GatenneaSlider-<後綴>` 目錄 + 自己的分支）；**其他 AI 不得在自己目錄操作 main**，合併由管 main 的 AI 統一執行（串行、一次一個、並完跑底座測試、合完即刪含 `worktree remove`）。分支快照滯後，開工前先同步 main。→ `docs/agent/多AI协作与worktree.md`
+主目錄獨佔檢出 `main`，其他 AI 各開 worktree（`GatenneaSlider-<後綴>` 目錄 + 自己的分支）；**其他 AI 不得在自己目錄操作 main**，合併由管 main 的 AI 統一執行（串行、一次一個、**主目錄 tracked 工作區乾淨才開合併窗口——別的會話半成品在場就等它提交完**、並完跑底座測試、合完即刪含 `worktree remove`）。分支快照滯後，開工前先同步 main。→ `docs/agent/多AI协作与worktree.md`
