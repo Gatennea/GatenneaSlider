@@ -129,6 +129,9 @@ def main():
     ap.add_argument('--seeds', type=int, default=12)
     ap.add_argument('--quick', action='store_true')
     ap.add_argument('--no-seed-probe', action='store_true')
+    ap.add_argument('--only', choices=['5', '6', '7'], default=None,
+                    help='只跑指定边长的尺寸（如 --only 7 = 仅 7×7），'
+                         '配合 --seeds 控制局数；用于单尺寸定向复核（2026-11-13 §四十二.4）')
     args = ap.parse_args()
     if args.quick:
         sizes = [(5, 5, 2), (6, 6, 2), (7, 7, 1)]
@@ -136,6 +139,11 @@ def main():
     else:
         sizes = [(5, 5, args.seeds), (6, 6, args.seeds),
                  (7, 7, max(4, args.seeds * 2 // 3))]
+    if args.only:
+        want = int(args.only)
+        sizes = [s for s in sizes if s[0] == want]
+        if not sizes:
+            ap.error('--only 与 --quick 的尺寸集不匹配')
     lines = ['== 时间语义大盘对照  budget=%.1fs  rng_seed=%d  sizes=%s =='
              % (args.budget, FIXED_SEED, sizes)]
     print(lines[-1], flush=True)
