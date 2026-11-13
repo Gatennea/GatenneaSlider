@@ -24,7 +24,8 @@
 异形从第一天就不埋（計劃 §3 明确要求）。
 """
 
-from solver.ml.shape_gather import ShapeGather, shape_restart_kwargs
+from solver.ml.shape_gather import (ShapeGather, prune_cycles,
+                                    shape_restart_kwargs)
 from game_triangle import (
     GAP_DIRECTIONS, TriangleSliderMatrix, side_of,
 )
@@ -32,6 +33,7 @@ from game_triangle import (
 __all__ = [
     'TriSpec', 'shape_score', 'enumerate_actions', 'apply_action',
     'snap', 'restore', 'tri_coords', 'score_of_game', 'tri_gather_solve',
+    'tri_canonical', 'tri_merit',
 ]
 
 # act5 = (gap_type, line, side, dir, rep_key)
@@ -89,6 +91,50 @@ def shape_score(coords, spec: TriSpec) -> float:
 def score_of_game(game, spec: TriSpec) -> float:
     """便捷入口：直接吃 game。"""
     return shape_score(tri_coords(game), spec)
+
+
+def tri_canonical(coords) -> frozenset:
+    """平移归一的状态键（(i,j,up) 各维减最小值）。
+
+    三角的斜坐标是 Z²，整盘平移 (a,b) 只是两维各加常数。**必须归一**：
+    骨架的 visited 拿它判「同一局面」，不归一的话，整盘滑一格就成"新状态"，
+    去环与防徘徊全失效（2026-11-14 实测：归一一开，k=4 step2 的四局里
+    三局从 0.75 直接解到 1.0；不归一三局都停在 0.75 只吐 0~1 步）。
+
+    只做平移、不做旋转/翻面归一：三角的还原态有 120° 轨道（is_solved
+    另判），但求解器看到的是**同一坐标系**里的可达状态，过宽归一会把
+    「转过去」当成原地不动、反而砍掉合法路径。
+    """
+    if not coords:
+        return frozenset()
+    mi = min(c[0] for c in coords)
+    mj = min(c[1] for c in coords)
+    return frozenset((c[0] - mi, c[1] - mj, c[2]) for c in coords)
+
+
+def tri_merit(coords, spec, start_coords) -> tuple:
+    """聚拢度并列时的次级判据（越小越好）：(剖面缺陷 Φ, 离锚点漂移)。
+
+    Φ 不依赖位置、且有梯度（方形/三角同一口径），能在「重叠率相同」的
+    大片平台里指向更接近大三角轮廓的那一侧；漂移项用边界盒最小角与
+    起始盘面的 L∞ 距离，专门压住「整盘沿对角线滑、分数一动不动」的
+    等价游走（2026-11-14 实测 mi 一局 300 步这样滑掉 75 格）。
+
+    ⚠️ 只排序用，不参与 patience / best / target —— 对外报的聚拢度必须
+    仍是 overlap。
+    """
+    from solver.ml.tri_placement import tri_profile_defect
+    if not coords:
+        return (0, 0)
+    mi = min(c[0] for c in coords)
+    mj = min(c[1] for c in coords)
+    if start_coords:
+        mi0 = min(c[0] for c in start_coords)
+        mj0 = min(c[1] for c in start_coords)
+        drift = max(abs(mi - mi0), abs(mj - mj0))
+    else:
+        drift = 0
+    return (tri_profile_defect(coords, spec.k), drift)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +255,7 @@ def restore(game: TriangleSliderMatrix, s: dict) -> None:
 def tri_gather_solve(game, step: int = None, cancel_check=None,
                      progress_callback=None, max_steps=500, patience=150,
                      max_wait_time=30.0, target_score=1.0, aggressiveness=0.2,
+                     target_gather_score=None,
                      stochastic=None, seed=None, max_kicks=3, kick_moves=3,
                      **kw):
     """三角聚拢求解——签名与方形 `gather_solve` 对齐。
@@ -232,8 +279,18 @@ def tri_gather_solve(game, step: int = None, cancel_check=None,
     返回 dict 额外带 `type='gather'` 以便 GUI 走 `_handle_gather_result`
     的同一条路径（計劃 §8 M4：异形 GUI 放行走梯度聚拢）。
     """
+    # GUI 的 gather_params 用方形键名 target_gather_score（GUI.py:540 /
+    # gui/auto_solve.py:210）；以前它落进 **kw 被静默吞掉，异形永远用默认
+    # 1.0。这里做**显式**别名，不再靠 **kw 兜底（AGENTS.md §2）。
+    if target_gather_score is not None:
+        target_score = target_gather_score
+
+    coords0 = tri_coords(game)
     sg = ShapeGather(shape_score, enumerate_actions, apply_action,
-                     snap, restore, tri_coords)
+                     snap, restore, tri_coords,
+                     canonicalize=tri_canonical,
+                     optimize_path=prune_cycles,
+                     merit=lambda c, sp: tri_merit(c, sp, coords0))
     spec = TriSpec(k=game.k, step=step)
     # 方形侧「禁用的参数传 None」：把 None 从 kw 里摘掉，让 solve 用默认值
     params = {k: v for k, v in
@@ -248,6 +305,9 @@ def tri_gather_solve(game, step: int = None, cancel_check=None,
     res = sg.solve(game, spec, step, cancel_check=cancel_check,
                    progress_callback=progress_callback, **params)
     res['type'] = 'gather'
+    # 起点坐标：防偏移改写必须知道这段动作是从哪个局面出发的（梯度流水线
+    # 里 self.game 可能还在播上一段，不能拿它当起点）。
+    res['start_coords'] = sorted(coords0)
     # GUI 的 _handle_gather_result 会读 result['start'/'end'] 拿 bbox 做文案；
     # 异形没有这两段指标（见 GUI.py 的 is_shape 分支），不给键即可。
     return res
