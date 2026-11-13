@@ -107,6 +107,7 @@ class _AnimHost(AutoSolveMixin, AnimationMixin):
         self._anim_dr = 0.0
         self._anim_dc = 0.0
         self._anim_duration_base = None
+        self._anim_duration_override = None
         self._anim_true_start = None
         self._undo_redo_type = None
         self._think_walk_anim = None
@@ -165,7 +166,7 @@ def test_walk_animates():
           'step=%d dirty=%d' % (h.step_count, h.dirty_marked))
     check('A6 块落到 final', h.game.blocks[1].location == [0, 3])
     check('A7 走步搭滑动动画时出了滑动声（修复「思考游走无声」）',
-          h.slide_sounds == [(2, None)], str(h.slide_sounds))
+          h.slide_sounds == [(2, h.THINK_WALK_MS)], str(h.slide_sounds))
 
 
 def test_rewind_animates_then_undo():
@@ -190,8 +191,9 @@ def test_rewind_animates_then_undo():
           and not h._think_walk.steps,
           'undo=%d flashes=%r' % (h._think_history.undo_calls, h.flashes))
     check('B4 撤回动画态清零', h._think_walk_anim is None and not h.anim_blocks)
-    check('B5 动画撤回恰好两次声（走步+撤回），commit 不补响（防双声）',
-          h.slide_sounds == [(2, None), (2, None)], str(h.slide_sounds))
+    check('B5 动画撤回恰好两次声（走步+撤回，各按本步时长），commit 不补响',
+          h.slide_sounds == [(2, h.THINK_WALK_MS), (2, h.THINK_REWIND_MS)],
+          str(h.slide_sounds))
 
 
 def test_animation_off_is_instant():
@@ -209,10 +211,73 @@ def test_animation_off_is_instant():
           str(h.slide_sounds))
 
 
+def test_walk_slide_duration_fast():
+    """游走动画走专用短时长（一次性覆盖），且绝不改玩家设置。
+
+    否则每步都要等玩家设置的 200ms 动画播完才走下一步，观感就是用户说的
+    「隔一下走一步」。判据用**行为**：把起点时间回拨 100ms 后推进一帧，
+    动画应已播完（按 80ms 换算），而不是还停在中途（按 200ms）。
+    """
+    h = _AnimHost(animation_enabled=True)
+    h._think_do_walk()
+    check('D1 走步只设临时覆盖，不动玩家 animation_duration(200)',
+          h._anim_duration_override == h.THINK_WALK_MS
+          and h.animation_duration == 200,
+          'override=%r dur=%s' % (h._anim_duration_override,
+                                  h.animation_duration))
+    h.anim_start_time -= 100          # 120ms 已过（> 80ms 专用时长）
+    h.update_animation()
+    check('D2 行为：120ms 就该播完（按 80ms 换算，不是玩家的 200ms）',
+          h.animating is False and h._think_walk_anim is None,
+          'animating=%r anim=%r' % (h.animating, h._think_walk_anim))
+    check('D3 收尾清掉覆盖、玩家设置毫发无伤',
+          h._anim_duration_override is None and h.animation_duration == 200,
+          'override=%r dur=%s' % (h._anim_duration_override,
+                                  h.animation_duration))
+
+    hr = _AnimHost(animation_enabled=True)
+    hr._think_do_walk()
+    hr.commit_animation()
+    hr._think_do_rewind()
+    check('D4 撤回更短（THINK_REWIND_MS），仍不动玩家设置',
+          hr._anim_duration_override == hr.THINK_REWIND_MS
+          and hr.animation_duration == 200,
+          'override=%r dur=%s' % (hr._anim_duration_override,
+                                  hr.animation_duration))
+    hr.commit_animation()
+    check('D5 撤回收尾也清干净', hr._anim_duration_override is None,
+          'override=%r' % (hr._anim_duration_override,))
+
+    # 取消/收尾兜底：不经 commit 也要清掉覆盖（否则普通动画被带快）
+    h2 = _AnimHost(animation_enabled=True)
+    h2._think_do_walk()
+    h2._think_abort_and_restore()
+    check('D6 游走收尾（不经 commit）也清掉覆盖',
+          h2._anim_duration_override is None and h2.animation_duration == 200,
+          'override=%r dur=%s' % (h2._anim_duration_override,
+                                  h2.animation_duration))
+
+
+def test_player_faster_setting_kept():
+    """玩家把动画调得比专用值更快：保持他选的更快节奏（只缩短不放大）。"""
+    h = _AnimHost(animation_enabled=True)
+    h.animation_duration = 30
+    h._think_do_walk()
+    check('D7 玩家设置更快时不把游走放慢',
+          h._anim_duration_override == 30 and h.animation_duration == 30,
+          'override=%r dur=%s' % (h._anim_duration_override,
+                                  h.animation_duration))
+    h.commit_animation()
+    check('D8 收尾仍是玩家值', h.animation_duration == 30,
+          'dur=%s' % h.animation_duration)
+
+
 def main():
     test_walk_animates()
     test_rewind_animates_then_undo()
     test_animation_off_is_instant()
+    test_walk_slide_duration_fast()
+    test_player_faster_setting_kept()
     print('\nFAILS=%d %r' % (len(FAILS), FAILS))
     return 1 if FAILS else 0
 

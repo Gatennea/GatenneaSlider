@@ -102,6 +102,31 @@ class _FakeGame:
         return ('a', 'd') if gt == 'h' else ('s', 'w')
 
 
+class _WideGame(_FakeGame):
+    """大盘面替身：40 块 × 20 条缝全可动，用来量「抽样是否真压住了枚举量」。
+
+    全量枚举 = 20 缝 × 40 块 × 2 方向 = 800 次 opt；抽样应只有 3×6=18 次。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.opted = 0
+        self.blocks = [_Blk(r, c) for r in range(8) for c in range(5)]
+        self._gaps = ([('h', i) for i in range(10)]
+                      + [('v', i) for i in range(10)])
+
+    def opt(self, gt, line, blk):
+        self.opted += 1
+        super().opt(gt, line, blk)
+
+    def _ann_all_valid_gaps(self):
+        return list(self._gaps)
+
+    def try_move(self, d, step):
+        sel = [b for b in self.blocks if b.be_opted]
+        return [(b.location[0], b.location[1] + 1) for b in sel]
+
+
 class _Host(auto_solve.AutoSolveMixin, animation.AnimationMixin):
     def __init__(self, selection_enabled):
         self.game = _FakeGame()
@@ -206,6 +231,27 @@ class ThinkWalkSelectionTest(unittest.TestCase):
         self.assertTrue(getattr(host, '_sel_anim_is_undo', False))
         self.assertFalse(getattr(host, '_sel_anim_is_think', False))
         self.assertGreater(getattr(host, '_sel_anim_timer', 0), 0)
+
+    def test_sampling_bounds_engine_calls(self):
+        """选步必须抽样枚举，不能全量——全量在 6×6 上要 400ms/步，是「隔一下走一步」的真凶。
+
+        40 块 × 20 缝的大盘替身，全量会是 800 次 opt；抽样后应只有 3×6=18 次。
+        """
+        host = _Host(selection_enabled=True)
+        host.game = _WideGame()
+        spec = _run(host, {PRE_SET, A_POST})
+        self.assertIsNotNone(spec, '大盘面上也得找到一步')
+        self.assertLessEqual(host.game.opted, 3 * 6,
+                             '抽样没生效：opt 调了 %d 次' % host.game.opted)
+
+    def test_sampling_fallback_never_starves(self):
+        """抽样恰好全不合法时必须退回全量枚举，不能「找不到步」卡死。
+
+        _Host 的假盘只有 blocks[0] 能走；抽样 3 块有 1/4 概率漏掉它。
+        """
+        host = _Host(selection_enabled=True)
+        misses = [i for i in range(16) if _run(host, {PRE_SET, A_POST}) is None]
+        self.assertEqual(misses, [], '抽样抽空后没走全量兜底，游走会卡死')
 
 
 if __name__ == '__main__':

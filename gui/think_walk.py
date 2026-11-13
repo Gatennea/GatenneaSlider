@@ -32,24 +32,40 @@ WAITING = 'waiting'
 WALKING = 'walking'
 REWINDING = 'rewinding'
 
+# 默认节奏（帧，60fps 下一帧约 17ms）。用户 2026-11-13：「更连贯、试快一点、
+# 多撤回多重做」——旧默认（delay 45 / walk 14 / rewind 7 / max 12）每步要等
+# 半秒多，且走满 12 步就**彻底静止**干等下一段，观感是「隔一下走一步」。
+DEFAULT_DELAY_FRAMES = 10    # ≈0.17s 起手（旧 45≈0.75s）
+DEFAULT_WALK_FRAMES = 3      # ≈50ms 一步（旧 14≈233ms）
+DEFAULT_REWIND_FRAMES = 2    # ≈33ms 退一步（旧 7≈117ms）
+DEFAULT_MAX_STEPS = 10       # 一轮试推额度；走满自动撤回再来一轮
+
 
 class ThinkWalk:
     """段间等待的游走 / 撤回状态机。
 
     delay_frames：播完一段后先空等多少帧再开始游走（避免段间快速衔接时
     闪一下）。walk_frames / rewind_frames：每几帧走一步 / 撤一步。
-    max_steps：长等待时不许无限游走（撤回是连续的，步数越多撤回越久）。
+    max_steps：**单轮**额度——走满就自动撤回、再开一轮（``self_loop``），
+    而不是像旧版那样停住干等。
+
+    ``self_loop=True``（默认）：段间等待时自行「试几步 → 撤回 → 再试」，
+    满足用户「多撤回多重做」的要求；段一到货，调用方 ``start_rewind()``
+    会立刻打断这个循环，撤完返回 ``'rewound'`` 交还控制权。
 
     所有时间量都用「帧」而非秒：调用方每帧 tick 一次，不依赖 clock，
     便于护栏确定性推进（项目里 audio / 动画护栏同样口径）。
     """
 
-    def __init__(self, delay_frames=45, walk_frames=14, rewind_frames=7,
-                 max_steps=12, rng=None):
+    def __init__(self, delay_frames=DEFAULT_DELAY_FRAMES,
+                 walk_frames=DEFAULT_WALK_FRAMES,
+                 rewind_frames=DEFAULT_REWIND_FRAMES,
+                 max_steps=DEFAULT_MAX_STEPS, self_loop=True, rng=None):
         self.delay_frames = int(delay_frames)
         self.walk_frames = max(1, int(walk_frames))
         self.rewind_frames = max(1, int(rewind_frames))
         self.max_steps = int(max_steps)
+        self.self_loop = bool(self_loop)
         self.rng = rng or random.Random()
         self.state = IDLE
         # 按游走顺序记录的 move_info 列表；撤回时由调用方用真实撤销接口
@@ -57,6 +73,9 @@ class ThinkWalk:
         self.steps = []
         self._wait = 0
         self._frame = 0
+        # 本轮撤回是「走满额度自查」还是「段到货被动撤回」：前者撤完再开
+        # 一轮，后者撤完交权（绝不因自查循环把段卡在队列里）。
+        self._self_rewind = False
         # 观测用（护栏可断言「段到货前不许播段」）
         self.walked = 0
         self.rewound = 0
@@ -71,6 +90,7 @@ class ThinkWalk:
         self.steps = []
         self._wait = 0
         self._frame = 0
+        self._self_rewind = False
 
     def begin(self):
         """一段播完、下一段还没来：开始等待计时。重复调用不重置计时。"""
@@ -96,6 +116,12 @@ class ThinkWalk:
 
         if self.state == WALKING:
             if len(self.steps) >= self.max_steps:
+                if self.self_loop:
+                    # 走满本轮额度：自己撤回再重来。旧实现这里直接 return
+                    # None 永久静止，玩家看到的是「试几步就不动了」。
+                    self.state = REWINDING
+                    self._self_rewind = True
+                    self._frame = 0
                 return None
             self._frame += 1
             if self._frame < self.walk_frames:
@@ -110,10 +136,17 @@ class ThinkWalk:
             self._frame = 0
             if self.steps:
                 return 'rewind'
+            # 撤完：自查撤回 → 立刻再开一轮继续试推；被动撤回（段到货 /
+            # 求解结束）→ 归零交还控制权。
+            self.rewound += 1
+            if self._self_rewind and self.self_loop:
+                self._self_rewind = False
+                self.state = WALKING
+                self._frame = 0
+                return None
             # 兜底：严格归零，不允许残留
             self.state = IDLE
             self._wait = 0
-            self.rewound += 1
             return 'rewound'
 
         return None
@@ -123,7 +156,11 @@ class ThinkWalk:
 
         返回 ``'rewound'`` 表示根本没游走过（或已在撤回尾声），调用方可立即
         继续；否则 None，之后每帧 tick 直到返回 'rewound'。
+
+        ⚠️ 无论当前在走、在等、还是正在「自查撤回」，都先把 ``_self_rewind``
+        关掉——否则自查循环会在撤完后自动再开一轮，段永远播不出去。
         """
+        self._self_rewind = False
         if self.state == IDLE:
             return 'rewound'
         if self.state in (WAITING, WALKING):

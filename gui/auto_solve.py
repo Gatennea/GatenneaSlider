@@ -18,6 +18,12 @@ from gui.progress_text import format_solve_done, solver_display_name
 class AutoSolveMixin:
     """自动求解主管线（原 GUI.py 内联代码，整体搬迁）。"""
 
+    # 思考演示专用滑动时长（毫秒）。游走是段间等待的装饰性试推，必须跟得上
+    # 状态机节奏（每步约 100ms 级）；若沿用玩家设置的 300ms，每步都要等动画
+    # 播完才走下一步，观感就是「隔一下走一步」。撤回比往前走更快（收回要利落）。
+    THINK_WALK_MS = 80
+    THINK_REWIND_MS = 50
+
     def _start_auto_solve(self):
         """启动/停止自动求解"""
         import threading
@@ -497,9 +503,14 @@ class AutoSolveMixin:
                                 self._reset_think_history()
                             return          # 仍在撤回 / 等待 / 游走，段留队列
                     else:
-                        # 段间等待：按节奏真实游走一步
-                        if walk.tick() == 'walk':
+                        # 段间等待：按节奏真实游走一步。走满单轮额度后状态机
+                        # 会自己转撤回（自查撤回），所以这里也要接 'rewind'，
+                        # 否则撤不掉、盘面停在推歪态干等下一段。
+                        act = walk.tick()
+                        if act == 'walk':
                             self._think_do_walk()
+                        elif act == 'rewind':
+                            self._think_do_rewind()
                         return
                 elif active and not has_item:
                     # 进入段间等待：以段末盘面为基线快照，开始等待计时
@@ -544,29 +555,51 @@ class AutoSolveMixin:
         except Exception:
             return None
 
-        # 枚举全部合法候选（不提交），记下每步选中块与终态
-        cands = []  # (gt, line, d, fin, sel_blocks)
-        for gt, line in gaps:
-            dirs = list(self._ann_dirs_for_gap(gt))
-            for blk in blocks:
-                for b in blocks:
-                    b.be_opted = False
-                try:
-                    game.opt(gt, line, blk)
-                except Exception:
-                    continue
-                sel = [b for b in blocks if b.be_opted]
-                # 全员选中 = 整盘纯平移，引擎层本就拒绝，跳过
-                if not sel or len(sel) == len(blocks):
-                    continue
-                for d in dirs:
+        # 枚举合法候选（不提交），记下每步选中块与终态。
+        #
+        # ⚠️ 只**抽样**枚举，不穷举：6×6 上「全部缝 × 全部块 × 全部方向」是
+        # 上千次引擎调用（实测 ~400ms/步），这才是「隔一下走一步」的真凶——
+        # 状态机节奏再快也追不上选步。游走本来就是半随机的装饰性试推，随机
+        # 抽一部分完全够看，且每步能压到十几毫秒（用户 2026-11-13 明确同意）。
+        # 抽样规模是「一帧预算」定的：3×6×2 ≈ 36 次 try_move，约 10ms，
+        # 60fps 下不至于让主循环掉帧（抽太多会在走步那一帧卡出「一顿」）。
+        max_blocks = 3
+        max_gaps = 6
+        sample_blocks = (blocks if len(blocks) <= max_blocks
+                         else random.sample(blocks, max_blocks))
+        sample_gaps = (gaps if len(gaps) <= max_gaps
+                       else random.sample(gaps, max_gaps))
+
+        def _enum(block_pool, gap_pool):
+            out = []  # (gt, line, d, fin, sel_blocks)
+            for gt, line in gap_pool:
+                dirs = list(self._ann_dirs_for_gap(gt))
+                for blk in block_pool:
+                    for b in blocks:
+                        b.be_opted = False
                     try:
-                        fin = game.try_move(d, self.current_step)
+                        game.opt(gt, line, blk)
                     except Exception:
-                        fin = []
-                    if not fin:
                         continue
-                    cands.append((gt, line, d, list(fin), list(sel)))
+                    sel = [b for b in blocks if b.be_opted]
+                    # 全员选中 = 整盘纯平移，引擎层本就拒绝，跳过
+                    if not sel or len(sel) == len(blocks):
+                        continue
+                    for d in dirs:
+                        try:
+                            fin = game.try_move(d, self.current_step)
+                        except Exception:
+                            fin = []
+                        if not fin:
+                            continue
+                        out.append((gt, line, d, list(fin), list(sel)))
+            return out
+
+        cands = _enum(sample_blocks, sample_gaps)
+        if not cands:
+            # 抽样恰好全不合法（小盘面 / 假引擎很常见）：退回全量枚举。
+            # 宁可这一步慢一次，也不能让游走卡死在「找不到步」。
+            cands = _enum(blocks, gaps)
 
         if not cands:
             # 找不到任何合法走法：清掉枚举残留的选中态，返回 None
@@ -666,6 +699,9 @@ class AutoSolveMixin:
         if walk is not None:
             walk.reset()
         self._reset_think_history()
+        # 兜底清掉游走的临时时长覆盖：取消/关开关可能正好落在两步动画之间，
+        # 那时不会经过 commit_animation 的清理路径。
+        self._anim_duration_override = None
         # 收尾清掉游走可能留下的选中高亮（be_opted / selected_gap），
         # 避免退出演示后盘面还亮着缝隙红线 + 滑块组提亮。
         try:
@@ -760,6 +796,23 @@ class AutoSolveMixin:
         return bool(getattr(self, 'animation_enabled', False)
                     and getattr(self, 'animation_duration', 0) > 0)
 
+    def _think_apply_slide_duration(self, kind):
+        """把本步游走动画压到专用时长（``THINK_WALK_MS`` / ``THINK_REWIND_MS``）。
+
+        ⚠️ 不改 ``animation_duration``（那是玩家设置，改它会在收尾漏还原时把
+        全局动画永久变成 80ms——实测踩过）。这里只设一次性覆盖
+        ``_anim_duration_override``，仅在 ``update_animation`` 换算进度时生效；
+        ``_reset_anim_state`` / ``cancel_animation`` / 游走收尾都会清掉它。
+
+        只缩短、不放大：玩家把动画调到比专用值更快时，保持他选的节奏。
+        """
+        base = int(getattr(self, 'animation_duration', 0) or 0)
+        target = self.THINK_REWIND_MS if kind == 'rewind' else self.THINK_WALK_MS
+        target = int(target)
+        if base > 0:
+            target = min(target, base)
+        self._anim_duration_override = max(1, target)
+
     def _think_start_slide(self, blocks, start_pos, end_pos, kind):
         """给思考演示搭一个**纯视觉**滑动动画（真实提交已由调用方完成）。
 
@@ -774,6 +827,8 @@ class AutoSolveMixin:
             blocks = list(blocks)
             if not blocks or not end_pos or len(blocks) != len(end_pos):
                 return False
+            # 先定时长再起动画：anim_start_time 一落，进度就按新时长换算
+            self._think_apply_slide_duration(kind)
             self.anim_blocks = blocks
             self.anim_start_pos = [list(p) for p in start_pos]
             self.anim_end_pos = [list(p) for p in end_pos]
@@ -787,7 +842,11 @@ class AutoSolveMixin:
             # 游走也是真实的整组滑动：有滑动动画就得有滑动声（与普通移动 /
             # 宏播放 / 撤销重做同源）。此前漏接 → 用户实测「思考游走时没有
             # 滑动音效」。走步与撤回都经这里，故一处补齐两条路径。
-            self._play_slide_sound(self.current_step)
+            # 音量按**本步实际时长**换算（快速游走更短更脆），不用玩家设置
+            # 那个 300ms，否则快滑配轻音、听着脱节。
+            self._play_slide_sound(
+                self.current_step,
+                duration_ms=getattr(self, '_anim_duration_override', None))
             return True
         except Exception:
             traceback.print_exc()

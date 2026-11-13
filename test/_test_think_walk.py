@@ -84,9 +84,10 @@ def state_machine_tests():
                  'step': 2, 'moved_positions': [[1, 1]]})
     check('A7 两步在册', len(w.steps) == 2 and w.walked == 2)
 
-    # max_steps=2 已满：再等多久都不许走（撤回时长有界）
+    # max_steps=2 已满：不再往前走，转为**自查撤回**（不是旧版的静止干等）
     acts = [w.tick() for _ in range(10)]
-    check('A8 max_steps 封顶后不再游走', 'walk' not in acts, repr(acts))
+    check('A8 max_steps 封顶后不再游走、转自查撤回',
+          'walk' not in acts and w.state == REWINDING, repr(acts))
 
     # ---- 撤回
     w.start_rewind()
@@ -129,6 +130,57 @@ def state_machine_tests():
 
     w5 = make()
     check('A15 IDLE 态 tick 无动作', w5.tick() is None and w5.state == IDLE)
+
+    # ---- 自查循环（用户 2026-11-13：多撤回多重做，别走满就停住干等）
+    w6 = ThinkWalk(delay_frames=1, walk_frames=1, rewind_frames=1,
+                   max_steps=3, self_loop=True)
+    w6.begin()
+    walks = rewinds = rewound_returns = 0
+    for _ in range(120):
+        a = w6.tick()
+        if a == 'walk':
+            walks += 1
+            w6.note_walk({'gap_type': 'h', 'gap_line': 0})
+        elif a == 'rewind':
+            rewinds += 1
+            w6.note_rewind()
+        elif a == 'rewound':
+            rewound_returns += 1
+    check('A16 自查循环：走满额度自己撤回，撤完再开一轮（不停住/不交权）',
+          walks > 3 and rewinds > 0 and rewound_returns == 0 and w6.is_active,
+          'walks=%d rewinds=%d rewound=%d state=%s'
+          % (walks, rewinds, rewound_returns, w6.state))
+
+    # 段到货必须能打断自查循环：撤完返回 rewound 交还控制权
+    w7 = ThinkWalk(delay_frames=1, walk_frames=1, rewind_frames=1,
+                   max_steps=2, self_loop=True)
+    w7.begin()
+    for _ in range(40):
+        a = w7.tick()
+        if a == 'walk':
+            w7.note_walk({'gap_type': 'h', 'gap_line': 0})
+        elif a == 'rewind':
+            w7.note_rewind()
+    w7.start_rewind()
+    got = None
+    for _ in range(60):
+        a = w7.tick()
+        if a == 'rewind':
+            w7.note_rewind()
+        elif a == 'rewound':
+            got = 'rewound'
+            break
+    check('A17 段到货打断自查循环：撤完给 rewound（不无限试推）',
+          got == 'rewound' and w7.state == IDLE and not w7.steps,
+          'got=%r state=%s steps=%d' % (got, w7.state, len(w7.steps)))
+
+    # 默认节奏：要快（旧 45/14/7 每步半秒多）、一轮额度也不能只有两三步
+    d = ThinkWalk()
+    check('A18 默认节奏足够快（delay≤20、walk≤6、rewind≤4）',
+          d.delay_frames <= 20 and d.walk_frames <= 6 and d.rewind_frames <= 4,
+          'delay=%d walk=%d rewind=%d'
+          % (d.delay_frames, d.walk_frames, d.rewind_frames))
+    check('A19 默认一轮能试多步', d.max_steps >= 6, 'max=%d' % d.max_steps)
 
 
 # ---------------------------------------------------------------- B 组
@@ -309,6 +361,19 @@ def wiring_tests():
           f2._think_history.restored == [0] and not f2._think_walk.is_active,
           'restored=%r active=%r' % (f2._think_history.restored,
                                      f2._think_walk.is_active))
+
+    # W12 走满单轮额度：pump 必须把状态机给的 'rewind' 真正执行掉。
+    #    旧 pump 的等待分支只认 'walk'，自查撤回会被无声丢弃 → 盘面停在
+    #    推歪态干等下一段（用户看到的「试几步就不动了」）。
+    f3 = _PumpFake()
+    f3._think_walk = ThinkWalk(delay_frames=1, walk_frames=1,
+                               rewind_frames=1, max_steps=3, self_loop=True)
+    for _ in range(200):
+        pump(f3)
+    check('W12 走满额度后 pump 真的执行自查撤回（多撤回多重做接通）',
+          f3.walks > 3 and f3.rewinds > 0,
+          'walks=%d rewinds=%d state=%s'
+          % (f3.walks, f3.rewinds, f3._think_walk.state))
 
 
 def engine_route_tests():

@@ -118,7 +118,10 @@ class AnimationMixin:
         if not self.animating:
             return
         elapsed = pygame.time.get_ticks() - self.anim_start_time
-        self.anim_progress = min(1.0, elapsed / max(1, self.animation_duration))
+        # 思考游走会临时覆盖时长（``_think_apply_slide_duration``）：只影响
+        # 本步进度换算，不动玩家的 ``animation_duration``。
+        dur = getattr(self, '_anim_duration_override', None) or self.animation_duration
+        self.anim_progress = min(1.0, elapsed / max(1, dur))
         if self.anim_progress >= 1.0:
             self.commit_animation()
 
@@ -228,6 +231,8 @@ class AnimationMixin:
         self.anim_progress = 0.0
         self._anim_dr = 0.0
         self._anim_dc = 0.0
+        # 思考游走的临时时长覆盖只对本步有效，收尾即清（不碰玩家设置）
+        self._anim_duration_override = None
         self._restore_anim_duration()
 
     def cancel_animation(self):
@@ -253,6 +258,7 @@ class AnimationMixin:
         self._anim_dr = 0.0
         self._anim_dc = 0.0
         self._anim_true_start = None
+        self._anim_duration_override = None
         self._restore_anim_duration()
         # 取消动画时清空队列
         self._animation_queue.clear()
