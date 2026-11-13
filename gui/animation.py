@@ -148,8 +148,9 @@ class AnimationMixin:
 
         # 「思考」演示的真实走步 / 撤回动画（待办 §三十四 第 4 条）：
         # 走步的真实提交已在 _think_do_walk 完成；撤回的真实 undo 推迟到这里
-        # （块已滑回原位），落位后再调 GameHistory.undo + 橙色高亮。两条路都
-        # **不碰** step_count / 全局历史 / 文件脏标记。
+        # （块已滑回原位），落位后再调 GameHistory.undo + **白色**高亮
+        # （假装尝试不用撤销蓝/重做橙；见 _flash_move_selection 的 is_think）。
+        # 两条路都**不碰** step_count / 全局历史 / 文件脏标记。
         think_type = getattr(self, '_think_walk_anim', None)
         if think_type:
             self._think_walk_anim = None
@@ -310,13 +311,18 @@ class AnimationMixin:
         """位置 + 位移：只平移前兩個分量，其餘分量（▲/▼ 朝向）原樣保留。"""
         return (pos[0] + delta[0], pos[1] + delta[1]) + tuple(pos[2:])
 
-    def _flash_move_selection(self, move_info, is_undo, after_commit=False):
+    def _flash_move_selection(self, move_info, is_undo, after_commit=False,
+                              is_think=False):
         """选中动画：撤销/重做每一步，短暂高亮该步选中的缝隙与滑块组。
 
         after_commit=True 表示移动已提交（滑塊已停在终点），反之表示动画播放前。
         高亮目标位置对照表：
             已提交(after_commit=True)：undo → moved；redo → moved+delta
             未提交(after_commit=False)：undo → moved+delta；redo → moved
+
+        is_think=True 用于求解器的「思考游走」：那一步只是假装尝试、并非玩家
+        真正的撤销/重做，边框改画**白色**（与求解演示当前步同色），而不是
+        重做橙——否则玩家会误以为游走是把某步「重做」了一遍。
         """
         if not getattr(self, 'selection_animation_enabled', False):
             return
@@ -342,6 +348,9 @@ class AnimationMixin:
         # 保存元数据，供动画提交（commit_animation）后刷新高亮位置
         self._sel_anim_move_info = move_info
         self._sel_anim_is_undo = is_undo
+        # 思考游走标记：渲染层据此把边框画成白色（假装尝试），而不是
+        # 按 is_undo 取撤销蓝 / 重做橙。玩家真实撤销/重做时恒为 False。
+        self._sel_anim_is_think = bool(is_think)
         # 至少 0.75s；若正在滑动则盖过滑动时长，让高亮贯穿该步全程
         dur = max(45, (self.animation_duration + 300) // 17)
         self._sel_anim_timer = dur
@@ -378,6 +387,7 @@ class AnimationMixin:
         # 不借撤销/重做的边框色（那套冷/暖色是「往回走/往前走」的语义）。
         # 置 None 既不加边框，也避免上一轮撤销留下的颜色挂到打乱高亮上
         self._sel_anim_is_undo = None
+        self._sel_anim_is_think = False
         # 至少 0.75s：打乱演示每格只有 50~150ms，靠下一格不断续期，
         # 于是整段演示里高亮一直跟着当前这一格走
         self._sel_anim_timer = max(45, (self.animation_duration + 300) // 17)
@@ -391,6 +401,8 @@ class AnimationMixin:
             b.be_opted = False
         self._sel_anim_blocks = []
         self._sel_anim_gap = None
+        # 清掉游走白色标记，避免残留到下一轮真实撤销/重做
+        self._sel_anim_is_think = False
 
     def _start_undo_redo_animation(self, move_info, is_undo):
         """

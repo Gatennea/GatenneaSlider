@@ -2167,6 +2167,9 @@ class RendererMixin:
 
         三形态共用同一处定义。调用方按优先级套用：
         拖拽越界 / 撞墙抖动 > 本反馈 > 分组着色。
+
+        「思考游走」（求解器假装尝试的步骤）走 ``_sel_anim_is_think`` 标记，
+        统一画**白色**——那是加载/探索动画，不该借撤销蓝/重做橙的语义色。
         """
         if not self._selection_visuals_enabled():
             return None
@@ -2174,6 +2177,8 @@ class RendererMixin:
             return None
         if getattr(self, '_sel_anim_timer', 0) <= 0:
             return None
+        if getattr(self, '_sel_anim_is_think', False):
+            return (self.PLAY_HEAD_BORDER, max(2, int(4 * self.zoom)))
         undo = getattr(self, '_sel_anim_is_undo', None)
         if undo is None:
             return None
@@ -4915,15 +4920,21 @@ class RendererMixin:
                 box_y = tut_rect.bottom + 8
         self._macro_notify_rect.topleft = (box_x, box_y)
 
-        # 淡入淡出：持久模式不走淡出，否則前15帧淡入，后30帧淡出
+        # 淡入淡出：按**本条提示的初始帧数**算，别写死 180——求解完成提示是
+        # 300（5s 悬停），写死 180 会让它前 2 秒整片空白（alpha 被 clamp 成 0）。
         persistent = getattr(self, 'macro_notify_persistent', False)
         alpha = 220
         timer = self.macro_notify_timer
+        if getattr(self, '_macro_notify_msg_prev', None) != msg:
+            # 换了新提示：把当前帧数记为本条的初始总帧数（淡入基准）
+            self._macro_notify_msg_prev = msg
+            self._macro_notify_total = timer
+        total = max(1, int(getattr(self, '_macro_notify_total', timer) or timer))
         if persistent:
             alpha = 220
-        elif timer > 150:       # 前10帧淡入 (180→170)
-            alpha = int(220 * (180 - timer) / 10.0)
-        elif timer < 30:      # 后30帧淡出
+        elif timer > total - 10:      # 开头 10 帧淡入
+            alpha = int(220 * (total - timer) / 10.0)
+        elif timer < 30:              # 末尾 30 帧淡出
             alpha = int(220 * timer / 30.0)
         alpha = max(0, min(220, alpha))
 
@@ -4936,8 +4947,8 @@ class RendererMixin:
         # 文本（带透明度）
         text_alpha = max(0, min(255, int(alpha * 255 / 220)))
         text_surf_alpha = pygame.Surface((text_w, text_h), pygame.SRCALPHA)
-        # 根据成功/中断选择颜色
-        if '执行成功' in msg:
+        # 根据成功/中断选择颜色（求解完成用「已复原 / 已还原」表成功）
+        if '执行成功' in msg or '已复原' in msg or '已还原' in msg:
             color = (100, 230, 100, text_alpha)
         else:
             color = (255, 160, 80, text_alpha)

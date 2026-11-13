@@ -56,3 +56,49 @@ def format_solver_notice(progress, elapsed):
     stage = (progress.get('stage', '') if progress else '') or ''
     head = '[%s] ' % stage if stage else ''
     return '%s%s | %.1fs' % (head, format_solver_progress(progress), elapsed)
+
+
+# 求解算法 key → 简洁全称。完成提示 / 进度文案统一用这张表，避免各处
+# 一会儿写「自动规划」、一会儿写「混合求解」的口径漂移。
+SOLVER_DISPLAY_NAME = {
+    'hybrid': '混合求解',
+    'gather_gradient': '梯度聚拢',
+    'gap_macro': '填洞补缺',
+    'gather': '单次聚拢',
+    'pick_fill': '选块填空',
+    'table': '查表求解',
+    'ida_star': 'IDA*求解',
+    'fast': 'IDA*快速',
+    'greedy': '贪心爬山',
+}
+
+
+def solver_display_name(key):
+    """算法 key → 展示用全称（未知 key 原样返回，绝不编个假名字）。"""
+    return SOLVER_DISPLAY_NAME.get(key, key or '求解')
+
+
+def format_solve_done(name, total, elapsed_ms=None, solved=True, extra=''):
+    """求解完成提示：``算法全称：已复原/完成 · N 步 · 用时 · TPS``。
+
+    纯函数，便于护栏直接断言屏幕文案。``elapsed_ms`` 缺失或 ≤0 时**不印**
+    用时与 TPS（宁可少说，也不编假数字）；``extra`` 放各算法自己的补充
+    （如「停在聚拢度最高态 0.97」）。
+    """
+    try:
+        n = max(0, int(total or 0))
+    except (TypeError, ValueError):
+        n = 0
+    parts = ['%s：%s' % (name or '求解', '已复原' if solved else '完成'),
+             '· %d 步' % n]
+    try:
+        ms = int(elapsed_ms) if elapsed_ms is not None else 0
+    except (TypeError, ValueError):
+        ms = 0
+    if ms > 0:
+        sec = ms / 1000.0
+        parts.append('· 用时 %.1fs' % sec)
+        parts.append('· TPS %.1f' % (n / sec))
+    if extra:
+        parts.append('· ' + str(extra))
+    return ' '.join(parts)

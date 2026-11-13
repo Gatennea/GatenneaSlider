@@ -123,8 +123,9 @@ class _AnimHost(AutoSolveMixin, AnimationMixin):
         # 方形方向字母用 'd'（_move_delta 走方形表；'right' 会映射成 0 位移）
         return ('h', 0, 'd', [(0, 3)])
 
-    def _flash_move_selection(self, mi, is_undo, after_commit=False):
-        self.flashes.append((is_undo, after_commit))
+    def _flash_move_selection(self, mi, is_undo, after_commit=False,
+                              is_think=False):
+        self.flashes.append((is_undo, after_commit, bool(is_think)))
 
     def _reset_think_history(self):
         self._think_history = _FakeHistory()
@@ -174,11 +175,12 @@ def test_rewind_animates_then_undo():
     check('B2 撤回滑动方向正确：start=(0,3) → end=(0,1)',
           h.anim_start_pos == [[0, 3]] and h.anim_end_pos == [[0, 1]],
           'start=%r end=%r' % (h.anim_start_pos, h.anim_end_pos))
-    # 提交：应补调真实 undo + 橙色 + 弹栈
+    # 提交：应补调真实 undo + 白色（思考游走）+ 弹栈
     h.commit_animation()
-    check('B3 commit 后才真 undo + 橙色 + 弹栈',
+    check('B3 commit 后才真 undo + 白色 + 弹栈',
           h._think_history.undo_calls == 1
-          and h.flashes == [(True, True)] and not h._think_walk.steps,
+          and h.flashes == [(True, True, True)]  # (is_undo, after_commit, is_think)
+          and not h._think_walk.steps,
           'undo=%d flashes=%r' % (h._think_history.undo_calls, h.flashes))
     check('B4 撤回动画态清零', h._think_walk_anim is None and not h.anim_blocks)
 

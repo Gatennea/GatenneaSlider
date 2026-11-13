@@ -338,8 +338,9 @@ def engine_route_tests():
             self.game.blocks[1].be_opted = True
             return ('h', 0, 'right', [(0, 3)])
 
-        def _flash_move_selection(self, mi, is_undo, after_commit=False):
-            self.flashes.append((is_undo, after_commit))
+        def _flash_move_selection(self, mi, is_undo, after_commit=False,
+                                  is_think=False):
+            self.flashes.append((is_undo, after_commit, bool(is_think)))
 
     h = _Host()
     saved_before = len(h._think_history.saved)
@@ -357,8 +358,9 @@ def engine_route_tests():
           and mi.get('moved_positions') == [[0, 1]], repr(mi))
 
     h._think_do_rewind()
-    check('W9 撤回走真 undo + 橙色高亮 + 弹栈',
-          h._think_history.undo_calls == 1 and h.flashes == [(True, True)]
+    check('W9 撤回走真 undo + 白色高亮 + 弹栈',
+          h._think_history.undo_calls == 1
+          and h.flashes == [(True, True, True)]  # (is_undo, after_commit, is_think)
           and not h._think_walk.steps,
           'undo=%d flashes=%r' % (h._think_history.undo_calls, h.flashes))
 
@@ -417,8 +419,9 @@ def real_engine_tests():
                 b.be_opted = False
             return None
 
-        def _flash_move_selection(self, mi, is_undo, after_commit=False):
-            self.flashes.append((is_undo, after_commit))
+        def _flash_move_selection(self, mi, is_undo, after_commit=False,
+                                  is_think=False):
+            self.flashes.append((is_undo, after_commit, bool(is_think)))
 
     def snappos(game):
         return sorted(tuple(b.location) for b in game.blocks)
@@ -451,8 +454,9 @@ def real_engine_tests():
     check('E2 真引擎：撤完逐格回到基线（盘面没被推歪）',
           snappos(g) == base and not h._think_walk.steps,
           'same=%s rewinds_flash=%d' % (snappos(g) == base, len(h.flashes)))
-    check('E3 真引擎：每次撤回都出了「撤销」高亮（橙色同源）',
-          all(f == (True, True) for f in h.flashes) and h.flashes, repr(h.flashes[:3]))
+    check('E3 真引擎：每次撤回都出了「思考游走」白色高亮（不是重做橙）',
+          all(f == (True, True, True) for f in h.flashes) and h.flashes,
+          repr(h.flashes[:3]))
 
     # 取消路径：游走中直接收尾，盘面也必须回基线
     g2 = SliderMatrix(5, 5)

@@ -2337,7 +2337,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     self._mode_conflict_notice_frames = _conflict_frames - 1
                     self.macro_notify_persistent = False
                 elif self._auto_solve_running:
+                    from gui.progress_text import solver_display_name
                     elapsed = time.time() - self._auto_solve_start_time
+                    _algo_label = solver_display_name(
+                        getattr(self, 'solver_algorithm', ''))
                     progress = self._auto_solve_progress
                     if progress:
                         if progress.get('stage') == 'gradient_stage':
@@ -2352,11 +2355,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                             if bbox:
                                 bh, bw = bbox
                                 self.macro_notify_msg = (
-                                    f"聚拢中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%）"
+                                    f"{_algo_label}中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%）"
                                     f"边界盒 {bh}×{bw} 填充 {fill*100:.0f}% | {elapsed:.1f}s"
                                 )
                             else:
-                                self.macro_notify_msg = f"聚拢中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%） | {elapsed:.1f}s"
+                                self.macro_notify_msg = f"{_algo_label}中... 聚拢度 {score*100:.1f}%（最优 {best*100:.1f}%） | {elapsed:.1f}s"
                         else:
                             # 待办 §三十四 第 9 条：旧实现把 bound 当深度、
                             # 还用 `if nodes or bound` 当门槛，于是贪心
@@ -2369,7 +2372,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                             self.macro_notify_msg = format_solver_notice(
                                 progress, elapsed)
                     else:
-                        self.macro_notify_msg = f"求解中... {elapsed:.1f}s"
+                        self.macro_notify_msg = f"{_algo_label}中... {elapsed:.1f}s"
                     self.macro_notify_timer = 180
                     self.macro_notify_persistent = True  # 持续显示不走淡出
                 elif getattr(self, '_infinite_shuffle_active', False):

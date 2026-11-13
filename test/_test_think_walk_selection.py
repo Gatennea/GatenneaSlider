@@ -172,6 +172,22 @@ class ThinkWalkSelectionTest(unittest.TestCase):
         self.assertFalse(any(b.be_opted for b in host.game.blocks))
         self.assertIsNone(host.selected_gap)
 
+    def test_walk_marks_think_for_white_border(self):
+        """游走步必须打 is_think 标记——渲染层据此把边框画白，不是重做橙。"""
+        host = _Host(selection_enabled=True)
+        ok = _run_walk(host, {PRE_SET, A_POST})
+        self.assertTrue(ok)
+        self.assertTrue(getattr(host, '_sel_anim_is_think', False))
+        self.assertGreater(getattr(host, '_sel_anim_timer', 0), 0)
+
+    def test_clear_sel_anim_resets_think(self):
+        """收掉高亮时必须复位 is_think，避免白色残留到下一轮真实撤销/重做。"""
+        host = _Host(selection_enabled=True)
+        _run_walk(host, {PRE_SET, A_POST})
+        self.assertTrue(getattr(host, '_sel_anim_is_think', False))
+        host._clear_sel_anim()
+        self.assertFalse(getattr(host, '_sel_anim_is_think', False))
+
 
 if __name__ == '__main__':
     unittest.main()

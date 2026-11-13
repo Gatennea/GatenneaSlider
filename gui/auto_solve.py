@@ -12,6 +12,8 @@ import threading
 import time
 import traceback
 
+from gui.progress_text import format_solve_done, solver_display_name
+
 
 class AutoSolveMixin:
     """自动求解主管线（原 GUI.py 内联代码，整体搬迁）。"""
@@ -362,12 +364,15 @@ class AutoSolveMixin:
                 # 与启动时置位配对：填洞/补缺宏也用了 _auto_streamed，收尾要清掉，
                 # 否则残留会让「停止求解」分流到已结束的流式态。
                 self._auto_streamed = False
-                self.macro_notify_msg = ('[%s] 流水播放完成：%d 步'
-                                         % (self.macro_exec_name, total))
+                _elapsed = (int((time.time() - self._auto_solve_start_time) * 1000)
+                            if getattr(self, '_auto_solve_start_time', 0) else None)
+                _name = solver_display_name(getattr(self, 'solver_algorithm', ''))
+                self.macro_notify_msg = format_solve_done(
+                    _name, total, _elapsed, solved=bool(self.game.is_solved()))
                 # 带序号模式：求解器只复原形状，数字乱序是预期行为，提醒玩家自行调整
                 if getattr(self, 'numbered', False) and self.game.is_solved():
                     self.macro_notify_msg += '（形状已复原，数字排列未调整，请自行调整）'
-                self.macro_notify_timer = 180
+                self.macro_notify_timer = 300       # 5s 悬停
                 self.center_map()
             return
         kicked = False
@@ -701,7 +706,9 @@ class AutoSolveMixin:
         # 选中动画：通过真实渲染途径画高亮（be_opted 提亮 + selected_gap 红线）。
         # 关掉选中动画时不碰盘面状态，只清掉 be_opted，避免遗留缝隙红线。
         if getattr(self, 'selection_animation_enabled', False):
-            self._flash_move_selection(move_info, False, after_commit=True)
+            # is_think=True：假装尝试的游走步，边框走白色（不是重做橙）
+            self._flash_move_selection(move_info, False, after_commit=True,
+                                       is_think=True)
         else:
             for b in self.game.blocks:
                 b.be_opted = False
@@ -722,11 +729,13 @@ class AutoSolveMixin:
         self._think_undo_now()
 
     def _think_undo_now(self):
-        """瞬时撤回一步：调本地历史 undo（真实接口）+ 橙色高亮 + 弹栈。"""
+        """瞬时撤回一步：调本地历史 undo（真实接口）+ 白色高亮 + 弹栈。"""
         ok, mi = self._think_history.undo(self.game)
         if ok:
             if mi:
-                self._flash_move_selection(mi, True, after_commit=True)
+                # is_think=True：撤回同样是「假装尝试」的一环，边框也走白色
+                self._flash_move_selection(mi, True, after_commit=True,
+                                           is_think=True)
             self._think_walk.note_rewind()
             # undo 会重建 game.blocks（restore_snapshot 造新 Block），旧的
             # selected_block 已成悬空引用，及时清掉，免得后续命中/高亮读它。
@@ -830,7 +839,7 @@ class AutoSolveMixin:
             self.macro_exec_index = 0
             self.macro_exec_factor = 1
             self._execute_next_macro_step()
-        self.macro_notify_msg = ('[自动规划] %s（+%d 步，聚拢度 %.3f）'
+        self.macro_notify_msg = ('混合求解 %s（+%d 步，聚拢度 %.3f）'
                                  % (label, len(ops), score))
         self.macro_notify_timer = 120
 
@@ -923,12 +932,14 @@ class AutoSolveMixin:
             'reason': 'solved' if solved else 'partial_best',
             'elapsed_ms': elapsed,
         }
+        _name = solver_display_name('hybrid')
         if solved:
-            self.macro_notify_msg = '[自动规划] 已复原：%d 步' % total
+            self.macro_notify_msg = format_solve_done(_name, total, elapsed)
         else:
-            self.macro_notify_msg = ('[自动规划] 完成 %d 步，停在聚拢度最高态 %.3f'
-                                     % (total, best['score'] if best else 0))
-        self.macro_notify_timer = 200
+            self.macro_notify_msg = format_solve_done(
+                _name, total, elapsed, solved=False,
+                extra='停在聚拢度最高态 %.3f' % (best['score'] if best else 0))
+        self.macro_notify_timer = 300       # 5s（60fps）悬停
         # 清掉历史最优：不清的话它会残留到下一次求解，被停止逻辑误恢复
         self._auto_best = None
         self.center_map()
@@ -983,7 +994,8 @@ class AutoSolveMixin:
 
         if result is None:
             self._gradient_state = None
-            self.macro_notify_msg = "自动求解：未找到数据库"
+            self.macro_notify_msg = ('%s：未找到数据库'
+                                     % solver_display_name(self.solver_algorithm))
             self.macro_notify_timer = 180
             return
 
@@ -1076,12 +1088,14 @@ class AutoSolveMixin:
                 self.macro_notify_msg = ('已停止（流水已播 %d 步）' % played) \
                     if played else '已停止'
             else:
-                self.macro_notify_msg = "自动求解：未找到解法"
+                self.macro_notify_msg = ('%s：未找到解法'
+                                         % solver_display_name(self.solver_algorithm))
             self.macro_notify_timer = 180
             return
 
         if len(result) == 0:
-            self.macro_notify_msg = "自动求解：已是复原状态"
+            self.macro_notify_msg = ('%s：已是复原状态'
+                                     % solver_display_name(self.solver_algorithm))
             self.macro_notify_timer = 180
             return
 
@@ -1158,9 +1172,9 @@ class AutoSolveMixin:
                 self._auto_solve_cancel = True
                 self._gradient_gen += 1
             if solved:
-                self.macro_notify_msg = "聚拢：已是复原状态"
+                self.macro_notify_msg = "单次聚拢：已是复原状态"
             else:
-                self.macro_notify_msg = f"聚拢：无可移动动作（{reason_text}）"
+                self.macro_notify_msg = f"单次聚拢：无可移动动作（{reason_text}）"
             self.macro_notify_timer = 180
             return
 
@@ -1179,12 +1193,14 @@ class AutoSolveMixin:
                 f"梯度聚拢 第{gstage}/{gtotal}阶段完成（{reason_text}）· {len(actions)}步 · "
                 f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
             )
+            self.macro_notify_timer = 240
         elif is_shape:
             # 异形：只报能确定的量 —— 步数、终聚拢度、是否还原
-            self.macro_notify_msg = (
-                f"聚拢完成（{reason_text}）· 共{len(actions)}步 · "
-                f"聚拢度 {result.get('score', 0)*100:.1f}%"
-            )
+            self.macro_notify_msg = format_solve_done(
+                '单次聚拢', len(actions), _elapsed, solved=bool(solved),
+                extra='%s · 聚拢度 %.1f%%'
+                      % (reason_text, result.get('score', 0) * 100))
+            self.macro_notify_timer = 300
         else:
             stages_info = ''
             if result.get('stages'):
@@ -1196,12 +1212,12 @@ class AutoSolveMixin:
                     }.get(st.get('reason', ''), st.get('reason', ''))
                     parts.append(f"{st.get('stage')}:{st.get('steps')}步({rname})")
                 stages_info = ' · 阶段[' + '|'.join(parts) + ']'
-            self.macro_notify_msg = (
-                f"聚拢完成（{reason_text}）· 共{len(actions)}步 · "
-                f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}% "
-                f"· 边界盒 {sh}×{sw}→{eh}×{ew}{stages_info}"
-            )
-        self.macro_notify_timer = 240
+            self.macro_notify_msg = format_solve_done(
+                '单次聚拢', len(actions), _elapsed, solved=bool(solved),
+                extra='%s · 聚拢度 %.1f%%→%.1f%% · 边界盒 %d×%d→%d×%d'
+                      % (reason_text, s.get('score', 0)*100, e.get('score', 0)*100,
+                         sh, sw, eh, ew)) + stages_info
+            self.macro_notify_timer = 300
 
         ops = []
         for i, action in enumerate(actions):

@@ -4449,11 +4449,26 @@ class EventsMixin:
                     total_ops = len(self.macro_exec_ops)
                     macro_name = self.macro_exec_name
                     label = '逆序' if self.macro_exec_reverse else ''
-                    self.macro_notify_msg = f'[{macro_name}] {label}执行成功：{total_ops}步'
+                    # 求解器完成的宏名是「自动求解 / 自动规划…」：改用算法全称
+                    # + 总用时 + TPS，而不是笼统的 [自动求解] 执行成功。
+                    _is_solver = (macro_name == '自动求解'
+                                  or macro_name.startswith('自动规划'))
+                    if _is_solver:
+                        import time as _time
+                        from gui.progress_text import (format_solve_done,
+                                                       solver_display_name)
+                        _elapsed = (int((_time.time() - self._auto_solve_start_time) * 1000)
+                                    if getattr(self, '_auto_solve_start_time', 0) else None)
+                        self.macro_notify_msg = format_solve_done(
+                            solver_display_name(getattr(self, 'solver_algorithm', '')),
+                            total_ops, _elapsed, solved=bool(self.game.is_solved()))
+                        self.macro_notify_timer = 300  # 5秒悬停
+                    else:
+                        self.macro_notify_msg = f'[{macro_name}] {label}执行成功：{total_ops}步'
+                        self.macro_notify_timer = 180  # 3秒 (60fps)
                     # 带序号模式：求解器只复原形状，数字乱序是预期行为，提醒玩家自行调整
                     if getattr(self, 'numbered', False) and self.game.is_solved():
                         self.macro_notify_msg += '（形状已复原，数字排列未调整，请自行调整）'
-                    self.macro_notify_timer = 180  # 3秒 (60fps)
                 # 所有步骤执行完毕
                 # 梯度聚拢：后续阶段由后台流水线推送，无需在此启动
                 self.macro_executing = False
@@ -4618,6 +4633,11 @@ class EventsMixin:
         }.get(reason, reason or '完成')
         sh, sw = s.get('bbox', (0, 0))
         eh, ew = e.get('bbox', (0, 0))
+        # 总用时 / TPS：以本次求解起点算（与 /solver/status 同源）
+        import time as _time
+        from gui.progress_text import format_solve_done
+        _elapsed = (int((_time.time() - self._auto_solve_start_time) * 1000)
+                    if getattr(self, '_auto_solve_start_time', 0) else None)
         gs = getattr(self, '_gradient_state', None)
         if gs is not None:
             # 梯度聚拢：逐阶段播报；后续阶段由后台流水线自动推送
@@ -4625,13 +4645,14 @@ class EventsMixin:
             gtotal = info.get('gradient_total') or gs.get('max_stages', 4)
             cur = gstage if gstage else (gs.get('stage_idx', 0) + 1)
             if info.get('solved'):
-                self.macro_notify_msg = f"梯度聚拢：已复原！共{total}步"
+                self.macro_notify_msg = format_solve_done(
+                    '梯度聚拢', total, _elapsed, solved=True)
                 self._gradient_state = None
             elif gstage is not None and gstage >= gtotal:
-                self.macro_notify_msg = (
-                    f"梯度聚拢：{gtotal}阶段未复原 · "
-                    f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
-                )
+                self.macro_notify_msg = format_solve_done(
+                    '梯度聚拢', total, _elapsed, solved=False,
+                    extra='%d阶段未复原 · 聚拢度 %.1f%%→%.1f%%'
+                          % (gtotal, s.get('score', 0)*100, e.get('score', 0)*100))
                 self._gradient_state = None
             else:
                 self.macro_notify_msg = (
@@ -4639,14 +4660,15 @@ class EventsMixin:
                     f"{total}步 · 聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}%"
                 )
         elif info.get('solved'):
-            self.macro_notify_msg = f"聚拢完成：已复原（{total}步）"
+            self.macro_notify_msg = format_solve_done(
+                '单次聚拢', total, _elapsed, solved=True)
         else:
-            self.macro_notify_msg = (
-                f"聚拢完成（{reason_text}）· {total}步 · "
-                f"聚拢度 {s.get('score', 0)*100:.1f}%→{e.get('score', 0)*100:.1f}% "
-                f"· 边界盒 {sh}×{sw}→{eh}×{ew}"
-            )
-        self.macro_notify_timer = 240
+            self.macro_notify_msg = format_solve_done(
+                '单次聚拢', total, _elapsed, solved=False,
+                extra='%s · 聚拢度 %.1f%%→%.1f%% · 边界盒 %d×%d→%d×%d'
+                      % (reason_text, s.get('score', 0)*100, e.get('score', 0)*100,
+                         sh, sw, eh, ew))
+        self.macro_notify_timer = 300       # 5s 悬停
         self.macro_notify_persistent = False
         self._gather_info = None
 
