@@ -53,3 +53,5 @@
 視覺驗收走 **`GET /screenshot`**（開關類改動＝開 / 關兩張圖對比，別讀代碼猜）；多實例靠 `SO_REUSEADDR`（同端口能重複 bind → **驗新代碼別重啟用戶實例，換 `--http-port` 新開**）；測試直接 `python test\_test_xxx.py`（pytest 收集會漏）；交付時說清用哪條通道驗收，**不寫「無法驗證」**。→ `docs/api/AI使用API注意事项.md` §8
 ## 21. 待辦歸檔紀律
 提及**新增待辦**必須寫入待辦文檔 `docs/agent/待办清单.md`，**不得只寫進軟體的記憶系統**（`.workbuddy/memory/` 的 MEMORY.md / 日誌，或個人記憶）。理由：記憶系統跨會話易丟、不便追蹤完成態；待辦清單才是唯一總賬（見工作記憶「待辦唯一總账」）。→ `docs/agent/待办清单.md`
+## 22. 求解器鏈重構與合入閘門（2026-11-13 角缺口回歸）
+**動 `gap_solver` / `fill_macro` 的執行/選塊層：重構抽公共核心前先列「調用點語義清單」逐條對拍（動態 rep＝塊對象引用 ≠ 靜態座標快照，不許壓平成一種）；合入必跑三件套全綠——`script__regression` 全案（`PYTHONHASHSEED=0`）＋ `script_exp21_corner_random` 小批 ＋ 鏈單測，回歸紅燈先對拍未修基線再定性、不許直接當 flaky 收下；「瞬解」類案子加時間/步數上限斷言，防回退兜底掩蓋快路徑回歸；依賴未入庫存檔的測試＝無覆蓋，護欄用可生成的幾何典例（角缺口案由回歸腳本直接構造，不入庫）。** → `experiments/script__regression.py`、`experiments/script_exp21_corner_random.py`

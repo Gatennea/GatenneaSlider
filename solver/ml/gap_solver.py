@@ -485,6 +485,10 @@ def _bumpcol_chain(vg, vh, step, verbose=False, trace=None):
 def _exec_segment(g2, acts, p0, step, flip=False):
     """在 g2 上执行一段动作列表（4/5 元组，5 元组 rep 优先选块）。
 
+    p0 = 4 元组补 rep 的来源：块对象 → 动态读 .location（_run_chain 喂
+    凸起块引用，rep 恒跟踪凸起当前位置；静态坐标在凸起首步移动后即失效，
+    查块落空走侧首块兜底会选错目标，2026-11-13 角缺口回归即此因）；
+    坐标 → 静态；None → 不补 rep（侧首块语义）。
     返回 (out5_list, None) 成功；或 (partial_out, (index, a4, why)) 失败。
     flip=True 时动作被拒先按 _FLIP_SIDE_DIR 换边重试——用于 _user_edge_chain
     的拆壳等价表达（同缝异侧反向 ≡ 相对位移相同）。_run_chain 与
@@ -492,7 +496,17 @@ def _exec_segment(g2, acts, p0, step, flip=False):
     """
     out = []
     for i, a4 in enumerate(acts):
-        a = a4 if len(a4) == 5 else a4 + (tuple(p0),)
+        if len(a4) == 5:
+            a = a4
+        elif hasattr(p0, 'location'):
+            # ⚠️ 必须动态读（p0 是块对象）——勿改成静态坐标：凸起每步被
+            # commit_move 移动，静态 rep 首步后即失效 → 查块落空走侧首块
+            # 兜底选错目标，角缺口链整条崩（77f6aca 回归，2026-11-13 修复）。
+            a = a4 + (tuple(p0.location),)
+        elif p0 is None:
+            a = a4
+        else:
+            a = a4 + (tuple(p0),)
         okk, a5, why, _mv = _apply_dbg(g2, a, step)
         if okk:
             out.append(a5)
@@ -523,6 +537,15 @@ def _run_chain(vg, seal4, inner4, unseal4, p0, step, trace=None,
     trace 为 dict 时记录首个失败：seg/index/action/why/prefix(已成功动作)。
     """
     g2 = build_game(gcoords(vg), vg.m, vg.n)
+    # rep 动态跟踪（_exec_segment 协议）：p2 = 初始位置 p0 上的块对象，
+    # 通常为窗外凸起；commit 后 location 原地更新，读实例即得新位置。
+    # ⚠️ 勿改回静态坐标：凸起首步即动，静态 rep 失效会让 inner 段经侧首块
+    # 兜底选错目标（77f6aca 曾在此退化成静态坐标 → 角缺口全回归，2026-11-13 修复）。
+    p2 = None
+    for blk in g2.blocks:
+        if tuple(blk.location) == tuple(p0):
+            p2 = blk
+            break
     segs, nseg = [], {'seal': 0, 'inner': 0, 'unseal': 0}
     if pre is not None:
         r = pre(g2)
@@ -535,7 +558,7 @@ def _run_chain(vg, seal4, inner4, unseal4, p0, step, trace=None,
                              ('inner', inner4, False),
                              ('unseal', unseal4, unseal_flip)):
         inner_list = acts(g2) if callable(acts) else acts
-        out, fail = _exec_segment(g2, inner_list, p0, step, flip=flip)
+        out, fail = _exec_segment(g2, inner_list, p2, step, flip=flip)
         if fail is not None:
             if trace is not None:
                 trace.update(seg=name, index=fail[0], action=fail[1],
