@@ -6,6 +6,8 @@
 > 避免「没查就重写一个已有的工具」。本文件是**第一版人工索引**，随开发持续补充。
 > 行号/签名以代码为准；函数名都是检索锚点，可直接跳代码核实。
 > 配套红线见根目录 `agents.md` §6。
+> **我索引的是「可複用模組」**：文檔索引見 `docs/README.md`，
+> 源碼目錄地圖見 `docs/agent/readme_to_agent.md` §3；三者對象不同，互不替代。
 >
 > ⚠️ **本文件只管「能力有没有」，不管「方向能不能做」**。要提求解器优化方向，先读
 > `docs/solver/求解器優化方向_可行性判據.md`：六条硬约束（玩家局面必然可解、
@@ -81,7 +83,7 @@
 | 现成工具 | 用途 | 用法 |
 |---|---|---|
 | `tools/static_lint/` | 静态审查：未用 import / 重复函数体 / 反向依赖 / mixin MRO 遮蔽死方法。`--baseline` 出 NEW / RESOLVED diff，`--strict` 给 CI 守门（非零退出 = 新引入问题）。基线锚定 61 条已知签名（2026-10-31 修正假阳性后从 81 降到 61），详 `tools/static_lint/README.md` | `python -m tools.static_lint.runner --baseline tools/static_lint/baseline.json` |
-| `tools/doclink_check.py` | 文档引用校验：扫 `.md` 里的文件引用（存在性）与「§X」节号引用（目标有没有这一节）。产出 file_ref / sec_ref / ambiguous / artifact_ref / known_broken 五类；`--strict` 只让**新引入的**断链让 CI 变红。当前存量问题登记在 `docs/agent/待办清单.md` §十六 | `python tools/doclink_check.py --baseline tools/doclink_baseline.json` |
+| `tools/doclink_check.py` | 文档引用校验：扫 `.md` 里的文件引用（存在性）与「§X」节号引用（目标有没有这一节）。产出 file_ref / sec_ref / ambiguous / artifact_ref / known_broken 五类；`--strict` 只让**新引入的**断链让 CI 变红。当前存量问题登记在 `docs/agent/待办清单.md` §十八 | `python tools/doclink_check.py --baseline tools/doclink_baseline.json` |
 | `tools/gen_feature_overview.py` | 从真源 `gui/feature_index.py` 重新生成 `docs/player/功能总览.md`（54 项）。改了功能索引后跑它，别手改产物 | `python tools/gen_feature_overview.py` |
 | `tools/experiments_index.py` | experiments/ 索引生成 + 命名守门：`--emit` 重生成 `experiments/INDEX.md`（三类分组 + 被谁引用）；`--check` 用 AST 重新判定真实类别与文件名前缀比对，不符就非零退出（CI 已接）。改名/新增脚本后跑它 | `python tools/experiments_index.py --emit --check` |
 | `experiments/script_bench_total_budget.py` | 大盘确定性对照：`stage_budget=T`（旧，最多 2T）/ `total_budget=T`（新，最多 T）/ `stage_budget=T/2`（等墙钟对照）三组，量化解出率、墙钟、部分成果聚拢度；必须 `PYTHONHASHSEED=0` + 固定 `rng_seed`，否则解链漂移不可比。结果落盘为 experiments/ 下的临时结果档（未入库，重跑脚本才有） | `PYTHONHASHSEED=0 python experiments/script_bench_total_budget.py --budget 20 --seeds 8` |
@@ -99,9 +101,11 @@
   convoy 三级判定等价性、抽象图逼出 GBFS 8 层父指针回溯做逐位差分、流式链逐段重放 +
   小预算按时收敛。`experiments/script_bench_gap_union.py` 会**临时覆写**生产源码做 ABAB，
   别与全套 pytest 同时跑，跑完核对它打印的「已还原新版」。
-- CI 的 test job **排除了 `test/_test_tri_gather.py`**（C3c k=5 0/8 是已知红，用户拍板保持现状），
-  真护栏是同文件的 C3e（k=4 ≥ 5/10）。见 `docs/agent/待办清单.md` §十五——别把它当回归，也别为了让
-  它变绿去调门槛。
+- `test/_test_tri_gather.py` 的 C3c k=5 0/8 是已知红（用户拍板保持现状）；
+  **2026-10-31 起 CI 不再排除整个文件**，改走脚本内 `KNOWN_FAILS` 白名单：C3c 仍判、
+  仍打印 `[KNOWN-FAIL]`，只是不计入 exit code，同文件 C3a/C3b/C3d/C3e 等 20 条照跑。
+  真护栏是 C3e（k=4 ≥ 5/10）。见 `docs/agent/待办清单.md` §十五——别把它当回归，
+  也别为了让它变绿去调门槛；白名单项转绿会打 `[RECOVERED]` 并刻意非零退出逼人销账。
 - `test/_test_solver_budget_seed.py`（2026-11-09）：20 项护栏，钉住整轮时间语义
   （旧语义墙钟 >1.6T、新语义 <1.5T、第二候选仍启动、逐段重放合法）与可复现注入
   （spy 捕获多空位驱动的 rng、同种子两次解链逐位一致），另静态钉住 GUI 传参与

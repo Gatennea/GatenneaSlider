@@ -8,7 +8,7 @@
 只扫**产品代码**：`engine/` `gui/` `solver/` `macro/` 与根目录产品文件
 （`game.py` `GUI.py` `main.py` …）。`test/` 仅参与「未用 import」检查。
 
-**不扫**：`archive/` `experiments/` `video/` `voice_demo/` 等历史草稿与资产目录；
+**不扫**：`archive/` `experiments/` `video/`（不入庫，按需自建） `voice_demo/` 等历史草稿与资产目录；
 这些目录里成堆的临时脚本不在审查范围内。
 
 ## 检查项

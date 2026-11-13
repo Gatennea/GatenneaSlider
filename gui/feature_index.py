@@ -40,6 +40,7 @@ MODE_NAMES = {
 
 ALL_FORMS = ('square', 'numbered', 'triangle', 'mi')
 ALL_MODES = ('practice', 'create', 'timed')
+_PUSH_MODES = ('practice', 'create', 'timed')
 
 # 常见组合，减少重复
 _RECT_AND_NUM = ('square', 'numbered')
@@ -119,22 +120,22 @@ FEATURES = (
     # ---------------- 编辑 ----------------
     dict(id='undo', name='撤销', aliases=('撤销', '退回', '上一步', '反悔', 'undo'),
          kind='action', place=('menu_item', '编辑', '撤销'),
-         forms=ALL_FORMS, modes=ALL_MODES,
+         forms=ALL_FORMS, modes=_PUSH_MODES,
          howto='按 Ctrl+Z，或顶栏「编辑」→「撤销」。',
          confusion=''),
     dict(id='redo', name='重做', aliases=('重做', '恢复', '下一步', 'redo'),
          kind='action', place=('menu_item', '编辑', '重做'),
-         forms=ALL_FORMS, modes=ALL_MODES,
+         forms=ALL_FORMS, modes=_PUSH_MODES,
          howto='按 Ctrl+X，或顶栏「编辑」→「重做」。',
          confusion=''),
     dict(id='shuffle', name='打乱', aliases=('打乱', '洗牌', '乱序', '重新开始', 'shuffle'),
          kind='action', place=('menu_item', '编辑', '打乱'),
-         forms=ALL_FORMS, modes=ALL_MODES,
+         forms=ALL_FORMS, modes=_PUSH_MODES,
          howto='按 Alt+S，或顶栏「编辑」→「打乱」。',
          confusion='竞速计时中、只读存档下禁止打乱。'),
     dict(id='reset', name='重置', aliases=('重置', '还原', '复原', '回到初始', 'reset'),
          kind='action', place=('menu_item', '编辑', '重置'),
-         forms=ALL_FORMS, modes=ALL_MODES,
+         forms=ALL_FORMS, modes=_PUSH_MODES,
          howto='按 Ctrl+R，或顶栏「编辑」→「重置」，回到建局时的实心形状。',
          confusion='重置不等于解开——它只是把盘面退回起始状态。'),
     dict(id='center_view', name='居中', aliases=('居中', '回到屏幕', '拉回来', '看不到滑块', '重新居中', 'center'),
@@ -144,7 +145,7 @@ FEATURES = (
          confusion='找不到滑块组时用；它只挪视图，不动棋盘上的滑块。'),
     dict(id='auto_solve', name='自动求解', aliases=('自动求解', '求解', '自动', '让电脑解', 'solve'),
          kind='action', place=('menu_item', '编辑', '自动求解'),
-         forms=ALL_FORMS, modes=ALL_MODES,
+         forms=ALL_FORMS, modes=_PUSH_MODES,
          howto='选好算法后按 Ctrl+A；求解中再按一次可叫停。',
          confusion='竞速计时中、只读存档、标注录制中都禁止求解。'),
 
@@ -331,7 +332,7 @@ FEATURES = (
     dict(id='mode_practice', name='练习模式', aliases=('练习', '练习模式', '随便玩'),
          kind='setting', place=('right_panel', 'game_mode'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='点右下角「模式」开关循环切换：练习 → 竞速 → 创造。',
+         howto='点右下角「模式」开关循环切换：练习 → 竞速 → 创造 → 迷宫。',
          confusion='练习模式不限时、不计成绩，随便试。'),
     dict(id='mode_timed', name='竞速模式', aliases=('竞速', '计时', '限时', '比赛'),
          kind='setting', place=('right_panel', 'game_mode'),

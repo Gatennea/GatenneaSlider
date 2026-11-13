@@ -195,15 +195,52 @@ class EventsMixin:
         audio.play_click()
 
     def _play_reject_sound(self):
-        """玩家尝试推动但被拒：出一声短提示，并登记「本次已有动作音」。"""
-        audio = getattr(self, 'audio', None)
-        if audio is not None:
-            audio.play_fail()
+        """玩家尝试推动但被拒：出一声短提示，并登记「本次已有动作音」。
 
-    def _reject_move(self):
-        """move_selected_blocks / 拖拽的统一拒绝出口：出声 + 返回 False。"""
+        回傳 True＝本次真的發聲；False＝被音效節流攔下（連按防疊音）。
+        **只描述聲音**，不再當視覺的閘門（2026-11-13 用戶定：變色不准有冷卻）。
+        """
+        audio = getattr(self, 'audio', None)
+        if audio is None:
+            return True
+        return audio.play_fail()
+
+    def _reject_move(self, reason=None, blocks=None, visual=True):
+        """统一拒绝出口：出声 + 視覺閃現 + 返回 False。
+
+        聲音與視覺**各自獨立**：聲音保留 120ms 節流（防長按疊成一片），
+        視覺每次被拒都立刻閃——共用同一判定會讓連按的第二下起完全沒反應，
+        看起來像「判定不靈敏」，這正是 2026-11-13 改掉的行為。
+
+        reason 只接受 'disconnected' / 'collision'（底層 try_move_ex 或
+        三角/米字 prepare 透出）；其餘留 None → 中性色，不靜默歸進兩色之一。
+        visual=False 用在「時機錯 / 操作前提沒滿足」的拒絕（教程鎖定、只讀、
+        創造模式、計時未開始、全選、沒選縫）——只留文字 + 聲音，不閃整盤。
+        """
         self._play_reject_sound()
+        if visual:
+            self._flash_reject(reason, blocks)
         return False
+
+    def _flash_reject(self, reason=None, blocks=None):
+        """點亮被選組 12 幀——與拖拽越界同一套狀態與樣式。
+
+        沒有可靠被選組（沒選塊、時機錯）時不硬造整盤閃現，只留文字 + 聲音。
+        鍵盤／虛擬鍵盤／方向箭頭沒有「越界方向」可回彈，故只閃不位移。
+
+        觸發即重置到 12 幀，**沒有冷卻**：連按或按住不放時邊框會一直亮著，
+        這是「還在被拒」的正常讀數；放開後自然熄滅。
+        """
+        if blocks is None:
+            blocks = [b for b in getattr(self.game, 'blocks', ())
+                      if getattr(b, 'be_opted', False)]
+        if not blocks:
+            return
+        self._reject_reason = reason
+        self._shake_blocks = set(id(b) for b in blocks)
+        self._shake_dr = 0
+        self._shake_dc = 0
+        self._shake_t = 12
 
     def _play_keyboard_sound(self, key):
         """按下：只登记，不发声。出不出声由松开时的 _flush_keyboard_sound 决定。
