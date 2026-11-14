@@ -310,6 +310,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 全局历史 / step_count，所以回放与撤销链里不会多出这些步。
         from gui.think_walk import ThinkWalk
         self.thinking_enabled = True
+        # 思考演示期间左下角的「额外步数」（2026-11-14 用户要求：游走时步数
+        # 跟着动、撤回时减小）。**只影响显示**：真正的 step_count、撤销链、
+        # 存档、成绩一律不动（那是玩家自己的记录）。
+        self._think_display_steps = 0
         self._think_walk = ThinkWalk()
 
         # 拖拽状态
@@ -531,6 +535,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 默认「混合求解」；旧搜索三项（ida_star/fast/greedy）已从 GUI 隐藏，
         # 不再作默认（老配置由 gui.file_ops._migrate_solver_algorithm 迁过来）。
         self.solver_algorithm = 'hybrid'
+        # 求解器日志（2026-11-14 用户要求）：每次求解记一份详细过程到
+        # config/solver_log.jsonl；默认关，设置 → 求解器页可开。
+        self.solver_log_enabled = False
 
         # 聚拢求解器参数（GUI 设置对话框可调，保存到 config.json）
         self.gather_params = {
@@ -560,6 +567,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.coloring_enabled = False
         # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
         self.chain_hint_enabled = False
+        # 悬停缝隙闪烁：鼠标停在「点得动」的那条缝上时，慢速灰闪先亮出来
+        #（2026-11-14 用户要求做成开关）。纯视觉提示，判据仍在
+        # gui/move.py._hover_gap_at，关掉只影响绘制、不影响点击。
+        self.gap_hover_flash_enabled = True
         self.hover_cell = None
         # 选块填空（求解器列表里唯一要先点选才能算的算法）：
         # None = 没在选取；否则是 {'block': 坐标|None, 'hole': 洞|None}，

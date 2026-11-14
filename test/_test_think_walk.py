@@ -426,6 +426,11 @@ def engine_route_tests():
     check('W7b 游走步有滑动声（修复「思考游走无声」）',
           len(h.slide_sounds) == 1 and h.slide_sounds[0][0] == 2,
           h.slide_sounds)
+    check('W7c 游走步数进左下角显示计数（真实的 step_count 不动）',
+          getattr(h, '_think_display_steps', None) == 1
+          and getattr(h, 'step_count', 0) == 0,
+          'display=%r step_count=%r' % (getattr(h, '_think_display_steps', None),
+                                        getattr(h, 'step_count', 0)))
 
     mi = h._think_history.saved[-1][0]
     check('W8 落盘 move_info 是真的走法规约',
@@ -440,6 +445,9 @@ def engine_route_tests():
           'undo=%d flashes=%r' % (h._think_history.undo_calls, h.flashes))
     check('W9b 撤回也补了一声瞬时滑动声',
           len(h.slide_sounds) >= 2, h.slide_sounds)
+    check('W9c 撤回一步 → 显示步数同步减小回 0',
+          getattr(h, '_think_display_steps', None) == 0,
+          'display=%r' % (getattr(h, '_think_display_steps', None),))
 
     # 取消 / 收尾：游走留下的位移必须还原回基线
     h2 = _Host()
@@ -524,6 +532,10 @@ def real_engine_tests():
     check('E1 真引擎：游走真的推了块（盘面已变）',
           walked >= 1 and moved != base, 'walked=%d changed=%s'
           % (walked, moved != base))
+    check('E1b 真引擎：显示用游走步数与真实走步数一致',
+          getattr(h, '_think_display_steps', None) == walked,
+          'display=%r walked=%d' % (getattr(h, '_think_display_steps', None),
+                                    walked))
 
     # 逆向撤回到基线
     h._think_walk.start_rewind()
@@ -541,6 +553,9 @@ def real_engine_tests():
     check('E3 真引擎：每次撤回都出撤销蓝高亮（不走白边）',
           all(f == (True, True, False) for f in h.flashes) and h.flashes,
           repr(h.flashes[:3]))
+    check('E3b 真引擎：全部撤完，显示用游走步数归零',
+          getattr(h, '_think_display_steps', None) == 0,
+          'display=%r' % (getattr(h, '_think_display_steps', None),))
 
     # 取消路径：游走中直接收尾，盘面也必须回基线
     g2 = SliderMatrix(5, 5)
@@ -556,6 +571,9 @@ def real_engine_tests():
     check('E4 真引擎：游走中取消/收尾，盘面回基线',
           changed2 and snappos(g2) == base2 and not h2._think_walk.is_active,
           'changed=%s restored=%s' % (changed2, snappos(g2) == base2))
+    check('E4b 收尾时显示用游走步数一起归零（不留幽灵步数）',
+          getattr(h2, '_think_display_steps', None) == 0,
+          'display=%r' % (getattr(h2, '_think_display_steps', None),))
 
     # 游走绝不进玩家全局历史：本地历史独立，玩家历史里没有这些步
     check('E5 游走只落本地历史（不写玩家全局历史）',

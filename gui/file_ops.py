@@ -214,6 +214,8 @@ class FileOpsMixin:
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
+            'gap_hover_flash_enabled': getattr(self, 'gap_hover_flash_enabled', True),
+            'solver_log_enabled': getattr(self, 'solver_log_enabled', False),
             'board_marks_enabled': getattr(self, 'board_marks_enabled', True),
             'arrows_enabled': getattr(self, 'arrows_enabled', True),
             'save_readonly_flag': getattr(self, 'save_readonly_flag', False),
@@ -477,6 +479,14 @@ class FileOpsMixin:
                     # 悬停连锁提示开关
                     if 'chain_hint_enabled' in config:
                         self.chain_hint_enabled = bool(config['chain_hint_enabled'])
+                    # 悬停缝隙闪烁开关（缺省开；旧档没有该键就保持默认）
+                    if 'gap_hover_flash_enabled' in config:
+                        self.gap_hover_flash_enabled = bool(
+                            config['gap_hover_flash_enabled'])
+                    # 求解器日志开关（2026-11-14 新增；旧档没有该键保持默认关）
+                    if 'solver_log_enabled' in config:
+                        self.solver_log_enabled = bool(
+                            config['solver_log_enabled'])
                     # 棋盘标记开关（视觉强化，独立于调试面板本体；缺省开）
                     if 'board_marks_enabled' in config:
                         self.board_marks_enabled = bool(config['board_marks_enabled'])

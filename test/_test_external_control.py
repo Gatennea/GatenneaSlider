@@ -320,6 +320,16 @@ s, r = api('GET', '/help/move')
 check('AC-20d 详情端点无令牌 → 200',
       s == 200 and r.get('path') == '/move', f'(got {s})')
 
+# AC-20e 求解器日志端点（2026-11-14 新增）：列表可读、未知 id 404 给指路
+s, r = api('GET', '/solver/log?limit=5', headers=AUTH)
+check('AC-20e /solver/log 列表可读',
+      s == 200 and r.get('ok') and isinstance(r.get('entries'), list),
+      f'(got {s})')
+s, r = api('GET', '/solver/log?id=no-such-id', headers=AUTH)
+check('AC-20f /solver/log 未知 id → 404 且指路 /solver/log',
+      s == 404 and r.get('ok') is False
+      and '/solver/log' in (r.get('message') or ''), f'(got {s})')
+
 # AC-21 索引与详情一一对应（双向防腐烂：谁多谁少都失败）
 _index_paths = {p for p, _m, _s in API_INDEX}
 missing = [p for p in _index_paths if p not in HELP_DETAILS]
