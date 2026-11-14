@@ -91,7 +91,6 @@ def _append(rec):
 def _metrics(game, gui=None):
     """当前牌面的聚拢度 / Φ（算不出来就返回空 dict，绝不抛）。"""
     try:
-        from solver.state import snapshot
         from solver.ml.gather_solver import gather_metrics
         from solver.auto_solver import _phi_of
         coords = frozenset(tuple(b.location) for b in game.blocks)

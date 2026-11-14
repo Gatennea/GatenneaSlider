@@ -10,9 +10,9 @@ import time
 sys.path.insert(0, __import__('os').path.dirname(
     __import__('os').path.dirname(__import__('os').path.abspath(__file__))))
 
-from engine.registry import make_board, tri_spec, mi_spec, square_spec  # noqa: E402
+from engine.registry import make_board, tri_spec  # noqa: E402
 from engine.board import Board  # noqa: E402
-from engine.drift import (FrameRewriter, _centroid, rewrite_moves,  # noqa: E402
+from engine.drift import (_centroid, rewrite_moves,  # noqa: E402
                           shift_move)
 
 FAIL = []
