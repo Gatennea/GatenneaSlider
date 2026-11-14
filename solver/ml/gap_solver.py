@@ -1604,7 +1604,8 @@ _GAP_GUI_TIME_BUDGET = 30.0
 
 def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
                     stop_on_fail=False, segment_cb=None,
-                    time_budget=_GAP_GUI_TIME_BUDGET, rng=None, **kwargs):
+                    time_budget=_GAP_GUI_TIME_BUDGET, rng=None,
+                    band_budget=None, **kwargs):
     """补缺宏（GUI 入口）：单边缺口 → 封壳+内部共轭+拆壳；其余交填洞宏。
 
     rng（2026-11-09 新增）：可选 random.Random 实例，透传到多空位贪心驱动
@@ -1615,6 +1616,14 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
 
     segment_cb：流式播放回调（label, actions5）——多空位贪心每解决一个
     couple 即回调，GUI 边算边播；返回协议含 fill_stream dict。
+
+    band_budget（2026-11-14 新增，默认 None=完全不变）：只给「带移让位链」
+    (_edge_band_shift_attempt → _band_shift_chain) 的独立搜索预算（秒）。
+    该链自带 40s 预算且只在自己的循环里检查，不吃 solve_gap_macro 的
+    time_budget/cancel_check；实测「两洞慢盘」探测给 0.3s 仍会实跑 1.5s，
+    全部耗在这一条链。auto_solve 的短探测据此把它压到 0.03s（探测总预算
+    0.10s），保证探测有硬上界。None = 沿用 _BAND_SHIFT_BUDGET（原行为，
+    逐位不变）。
 
     返回协议与 solve_fill_macro 一致：
     · 成功 → (actions4, rep_cells)；
@@ -1644,7 +1653,8 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
     try:
         return _solve_gap_macro_inner(game, coords, m, n, step,
                                       _cc, progress_callback,
-                                      stop_on_fail, segment_cb, rng=rng)
+                                      stop_on_fail, segment_cb, rng=rng,
+                                      band_budget=band_budget)
     except _Cancelled:
         if timed_out[0]:
             print('[补缺宏] 时间预算 %gs 到点，尽早停机' % time_budget)
@@ -1657,7 +1667,7 @@ def solve_gap_macro(game, step, cancel_check=None, progress_callback=None,
 
 def _solve_gap_macro_inner(game, coords, m, n, step, cancel_check,
                            progress_callback, stop_on_fail, segment_cb=None,
-                           rng=None):
+                           rng=None, band_budget=None):
     """solve_gap_macro 主体（cancel 异常由外层捕获）。"""
     (r0, c0, wh), _ov, holes, _out = window_of(coords, m, n, step)
     edge = None
@@ -1696,7 +1706,8 @@ def _solve_gap_macro_inner(game, coords, m, n, step, cancel_check,
                                         rng=rng,
                                         progress_callback=progress_callback,
                                         cancel_check=cancel_check,
-                                        segment_cb=segment_cb)
+                                        segment_cb=segment_cb,
+                                        band_budget=band_budget)
         if isinstance(acts, dict) and acts.get('type') == 'fill_stream':
             # 流式：贪心段已实时播放。全解直接回传；未全解再试紧凑救援
             # （从已播后的局面 end_coords 续算，动作不错位）
@@ -1744,9 +1755,10 @@ def _solve_gap_macro_inner(game, coords, m, n, step, cancel_check,
 # 唯一差异在求解器分发——洞走填洞宏（A-B-A′ 单层共轭），缺口走补缺链
 # （封壳+内部共轭+拆壳 双层共轭）；验收闸门同一把（窗口方块数提升）。
 # ---------------------------------------------------------------------------
-def _vacancy_couple_hook(gap_only, cancel_check=None):
+def _vacancy_couple_hook(gap_only, cancel_check=None, band_budget=None):
     """构造统一 couple 求解器。gap_only=False：洞回落填洞宏（auto 模式）；
-    True：洞返回无成果（纯缺口模式）。cancel_check 注入填洞宏 A/B 段。"""
+    True：洞返回无成果（纯缺口模式）。cancel_check 注入填洞宏 A/B 段；
+    band_budget 透传给带移让位链（None=沿用其自带 40s 预算，原行为）。"""
     def hook(coords, m, n, step, h, p):
         _reg, _ov, holes, _out = window_of(coords, m, n, step)
         if h not in holes or p not in coords:
@@ -1765,7 +1777,8 @@ def _vacancy_couple_hook(gap_only, cancel_check=None):
                 # 「目标洞 h 被填上」即可，不要求整盘还原（多洞局面下本次
                 # 只填这一对，残局留待下一轮）。
                 acts, st2 = _edge_band_shift_attempt(
-                    coords, m, n, step, h, anchor=p, require_solved=False)
+                    coords, m, n, step, h, anchor=p, require_solved=False,
+                    time_budget=band_budget)
                 if acts is not None:
                     st = st2
             return acts, st
@@ -1905,7 +1918,7 @@ def solve_single_segment(game, step, p, cancel_check=None,
 
 def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
                         rng=None, progress_callback=None, cancel_check=None,
-                        segment_cb=None, **kwargs):
+                        segment_cb=None, band_budget=None, **kwargs):
     """多空位（洞+缺口）统一贪心驱动（用户设计：与多洞框架同一函数，
     参数决定填洞/补缺）。
 
@@ -1914,6 +1927,8 @@ def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
     segment_cb：流式播放回调（贪心每接受一个 couple 即回调）；此时
     DFS 兜底从「已播段之后的局面」（stats.end_coords）续算，返回协议
     变为 fill_stream dict（streamed=已实时播的步数）。
+    band_budget：只压「带移让位链」的独立预算（见 solve_gap_macro），
+    None=原行为；不进 **kwargs、不传给 solve_multi_void。
     返回协议同 solve_multi_void：(actions, stats) / (None, stats)。
     """
     coords = frozenset(coords)
@@ -1925,7 +1940,8 @@ def solve_multi_vacancy(coords, m, n, step, mode='auto', verbose=False,
     hook = None
     if mode in ('auto', 'gap'):
         hook = _vacancy_couple_hook(gap_only=(mode == 'gap'),
-                                    cancel_check=cancel_check)
+                                    cancel_check=cancel_check,
+                                    band_budget=band_budget)
     # 并行 couple 探测的 worker 侧描述（子进程重建求解器用）
     hook_spec = (('vacancy', mode == 'gap') if hook is not None
                  else (None, False))

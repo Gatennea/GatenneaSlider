@@ -12,11 +12,26 @@
     ② 按空位数路由（洞数 = 窗口内空位数，毫秒级可测）：
         空位 = 1 → 补缺宏先行（单洞 ⟺ 恰 1 块在窗外，补缺宏确定性直解；
                    2026-11-11 修：内外洞一律，先前只覆盖贴边/角）
-        空位 = 2 → 混合流水线先行（实测 5.1：混合 1.4s vs 补缺宏 57.2s）
-        空位 ≥ 3 → 补缺宏先行（实测 06: 1.0s / 07: 0.98s，混合均超时）
+        空位 ≥ 3 → 补缺宏先行
+        空位 = 2 → 混合流水线先行，**但先做一次短探测**（见下）
       两路都会尝试，路由只定先后；落败方照常接力。
     ③ 全败时按聚拢度（并列 Φ 最小，见 partial_better）评估部分成果，
        续算或作断点返回。
+
+短探测（2026-11-14，取代「按尺寸硬改先手」的做法）：
+    2026-10-02 探针定下的「2 洞混合快（1.4s vs 57.2s）」在当前代码已反转——
+    用入库 15 盘手解中间快照按当年口径复测，2 洞档补缺宏 8/12 全解（中位
+    1.53s）、混合 0/12；用户实际反例（2-8-8 存档第 148 步）补缺宏 0.01s
+    全解、默认路由却先跑 10s 聚拢。但同档内部两极分化：另几盘补缺宏要 8s
+    以上且未解，10 洞档反而是混合 2s 全解、补缺宏 0/2。所以「全部补缺先」
+    和「按尺寸切阈值」都会一边救一边伤（2026-11-14 审查实测：10×10 易解盘
+    强切补缺先慢 18.3 倍 / 5.0 倍，解出盘面相同）。
+    改法 = 把「猜」换成「试」：默认路由判混合先（只发生在 holes==2）时，
+    先给补缺宏一次 _GAP_PROBE_BUDGET 秒的短探测，能全解就直接采纳；试不动
+    立刻让位，两候选照原顺序与满预算跑。探测不带流式回调、不采纳部分成果，
+    失败对 flow / best / 播放完全无副作用；带移让位链另给极小预算，保证
+    探测有硬上界（实测 0.10s）。route_fn 注入时不探测（D1 接缝保持完全覆盖）。
+    规则只看洞数，不看尺寸 / 步长 / 形态，不放大 numbered 的语义错配。
 
 部分成果链接（chaining）：2026-11-07 泛化为「流式链」——补缺宏 partial
 不再只是混合的种子，而是**所有后续候选的起点**：谁播完一段，下一候选就
@@ -107,6 +122,68 @@ _TOTAL_SHARE_FIRST = 0.5
 # 墙钟短帽。单洞是 solve_gap_any 的确定性直解（实测 0.01s），5s 足够，
 # 且不吃 idle 窗口（否则窗口刚过期时收口会被 cancel_check 立刻掐掉）。
 _SINGLE_HOLE_CAP = 5.0
+
+# 短探测（2026-11-14）：holes==2 判混合先时，先给补缺宏一次极短的「试」。
+# 取 0.10s：入库快盘（含用户 2-8-8 第 148 步反例）补缺宏 0.01~0.02s 全解，
+# 0.10s 留 5 倍余量；慢盘实测最多付 0.10s 就换人，不改变两候选的满预算语义。
+# ⚠️ 预算敏感性标定（T / band / 快盘 / 慢盘实测）：
+#   0.30/0.05 → 快盘全解、慢盘 0.300s；0.10/0.03 → 快盘仍全解、慢盘 0.100s。
+#   A/B 里慢盘相对旧路由的额外耗时就是这个 T，故取最小仍稳的 0.10。
+_GAP_PROBE_BUDGET = 0.10
+
+# 带移让位链 (_band_shift_chain) 自带 40s 预算且不吃 solve_gap_macro 的
+# time_budget/cancel_check，是探测超支的唯一来源（实测 0.2s 预算实跑 1.5s）。
+# 透传 0.03s 后全档探测压到 0.10s 硬上界，且快盘全解不受影响。
+# 见 solver/ml/gap_solver.py 的 band_budget 参数。
+_GAP_PROBE_BAND_BUDGET = 0.03
+
+
+def _probe_gap_first(coords, m, n, step, stop, rng_seed):
+    """短探测：只认补缺宏的**非流式全解**，失败对调用方完全无副作用。
+
+    stop：() -> bool，组合外部取消与整轮预算到点；另加自己的墙钟上限。
+    不传 segment_cb / progress_callback / stage_cb，故探测不会播出任何段、
+    不会改动 flow / best；返回的动作链由调用方先回放验证再采纳。
+    """
+    deadline = time.time() + _GAP_PROBE_BUDGET
+
+    def _cc():
+        return stop() or time.time() >= deadline
+
+    kwargs = {}
+    if rng_seed is not None:
+        kwargs['rng'] = random.Random(rng_seed)
+    try:
+        res = solve_gap_macro(build_game(coords, m, n), step,
+                              time_budget=_GAP_PROBE_BUDGET,
+                              band_budget=_GAP_PROBE_BAND_BUDGET,
+                              cancel_check=_cc, **kwargs)
+    except Exception:
+        traceback.print_exc()
+        return None
+    if isinstance(res, tuple) and len(res) == 2 and res[0]:
+        return list(res[0]), list(res[1] or [])
+    return None
+
+
+def _decide_gap_first_default(holes, m, n, step):
+    """默认路由：返回 True=补缺宏先跑，False=混合(GBFS)先跑。
+
+    规则（2026-10-02 探针 + 2026-11-11 单洞收口）：
+      · holes >= 3 或 holes == 1 → 补缺宏先；
+      · holes == 2 → 混合(GBFS)先，但 auto_solve 会先做一次短探测
+        （见模块 docstring「短探测」与 _probe_gap_first）。
+
+    ⚠️ 2026-11-14 复测：探针当年「holes==2 混合 1.4s vs 补缺宏 57.2s」
+    在当前代码已反转，但同档两极分化、10 洞档又反过来，故**不按洞数或尺寸
+    硬改先手**，改为「先试一下」。此前那版「大二级矩形 step==2 且最长边>=10
+    一律补缺宏先」已被审查否决（10×10 易解盘实测慢 18.3 倍 / 5.0 倍、证据
+    样本全落在规则不触发的 8×8），勿沿用。
+
+    m / n / step 保留在签名里供 D1 注入与实验对照，本默认**不使用它们**——
+    规则只看洞数，不看尺寸 / 步长 / 形态。route_fn 注入时本函数被完全覆盖。
+    """
+    return len(holes) >= 3 or len(holes) == 1
 
 
 def partial_better(sc_new, phi_new, sc_old, phi_old):
@@ -200,8 +277,12 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
 
     scorer / route_fn（2026-11-10，可注入实验接缝）：scorer 见
     search_core.guided_reduce_one（只经混合流水线生效）；route_fn 签名
-    (holes, coords, m, n, step) -> bool，True=补缺宏先行，默认 None =
-    len(holes) >= 3 or len(holes) == 1（2026-11-11 起单洞一律补缺宏先）。
+    (holes, coords, m, n, step) -> bool（注意首参是**洞数 int**；默认路由
+    函数内部收到的是 window_of 返回的**洞坐标 list**，同名不同义），
+    True=补缺宏先行，默认 None = _decide_gap_first_default(holes, m, n, step)
+    （只看洞数，不看尺寸 / 步长 / 形态）。route_fn 注入时完全覆盖默认路由，
+    **且不做短探测**（D1 接缝：换一个路由 = 换一个参数，不动核心；实验 A/B
+    正是靠注入复现旧默认）。
     stop_fn（同轮 D2 第二轮）是 GBFS 的终止判据注入，
     签名 (value, holes) -> bool，默认 None = 洞数严格变少，同样只经混合
     流水线生效。**预设注入与旧版逐位一致**，玩家侧不传；三者只把
@@ -418,15 +499,12 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             return tres[0], tres[1]
         # None=无表 / False=状态不在表中 → 落到下一候选
 
-    # ---- ②③ 按空位数路由（探针 2026-10-02：空位≤2 混合快（5.1: 1.4s vs 57.2s），
-    #      空位≥3 补缺宏快（06: 1.0s / 07: 0.98s，混合均超时）。两路都尝试，只定先后）----
+    # ---- ②③ 按空位数路由（探针 2026-10-02 的历史口径已过时，见模块
+    #      docstring「短探测」）。两路都尝试，只定先后 ----
     _reg, _ov, holes, _out = window_of(coords0, m, n, step)
-    # 默认路由：空位≥3 补缺宏先、空位=2 混合先（探针 5.1/06/07）。
-    # 例外（2026-11-11）：单洞一律补缺宏先，与空位≥3 合并为 gap_first 初值。
-    # 2026-11-12 曾放宽为 ≥2 让 step120 的 auto_solve 走补缺宏先，但那是
-    # auto_solve 的问题、不是用户点的 gap_macro 路径；且会劣化「2 洞混合快」
-    # 局面（探针 5.1: 1.4s vs 57.2s）。目标不对，已回退到原值。
-    _gap_first_default = len(holes) >= 3 or len(holes) == 1
+    # 默认路由见 _decide_gap_first_default：空位≥3 或 ==1 → 补缺宏先；
+    # 空位==2 → 混合(GBFS)先。route_fn 注入时完全覆盖本默认（D1 接缝）。
+    _gap_first_default = _decide_gap_first_default(holes, m, n, step)
     gap_first = (route_fn(len(holes), coords0, m, n, step)
                  if route_fn is not None else _gap_first_default)
 
@@ -586,6 +664,21 @@ def auto_solve(game, step, cancel_check=None, progress_callback=None,
             if not advance_from(seed, label, hres[0], hres[1] or []):
                 return ('fail',)   # 整链验证不过：不谎报全解，已播段保留
         return ('solved', flow['acts'], flow['reps'])
+
+    # ---- 短探测（2026-11-14）：只在「默认路由判混合先」时启动，即 holes==2。
+    #      route_fn 注入时不探测（D1 接缝完全覆盖）；其它洞数本来就是补缺宏先，
+    #      不需要再试。命中就直接采纳全解，失败则完全无副作用地走原流程。----
+    if (route_fn is None and not gap_first and len(holes) == 2
+            and not cancelled() and not out_of_time()):
+        probed = _probe_gap_first(coords0, m, n, step,
+                                  lambda: cancelled() or out_of_time(),
+                                  rng_seed)
+        if probed is not None:
+            # 先回放验证再采纳：绝不让「探测声称全解」污染 flow（§2：不谎报）。
+            end, ok = _end_state(coords0, probed[0], probed[1], m, n, step)
+            if ok and end is not None and build_game(end, m, n).is_solved():
+                advance('补缺宏·短探测', probed[0], probed[1], end)
+                return flow['acts'], flow['reps']
 
     _order = ['gap', 'hybrid'] if gap_first else ['hybrid', 'gap']
     for _idx, which in enumerate(_order):
