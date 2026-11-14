@@ -162,6 +162,8 @@ _CASES_2D = (
     ('导出', 'save_as'),
     ('三角形', 'preset_exotic'),
     ('难度', 'concept_step'),
+    ('截图', 'screenshot'),
+    ('截屏', 'screenshot'),
 )
 for query, want in _CASES_2D:
     hits = [e['id'] for _s, e, _a in fi.search(query)]
@@ -202,10 +204,16 @@ gui.new_puzzle(6, 6, 2)
 
 _opened_urls = []
 _tutorial_starts = []
+_shots = []
 _orig_open = webbrowser.open
 _orig_tut_start = gui._tut_start
+_orig_shot = gui._do_screenshot
 webbrowser.open = lambda url, *a, **k: _opened_urls.append(url)
 gui._tut_start = lambda *a, **k: _tutorial_starts.append(1)
+# 截图条目会真的写 PNG 到 screenshots/：本节只验接线，换成桩记录调用，
+# 别让测试在仓库里撒垃圾文件。
+gui._do_screenshot = lambda target='': (_shots.append(target),
+                                       (True, '[测试桩] 已保存截图', {}))[1]
 try:
     for entry in fi.FEATURES:
         kind = entry['action']['type']
@@ -229,6 +237,7 @@ try:
 finally:
     webbrowser.open = _orig_open
     gui._tut_start = _orig_tut_start
+    gui._do_screenshot = _orig_shot
     # 还原开关文件（见文件头的重定向说明），并清掉临时文件
     _ecfg.clear_override()
     try:
@@ -246,6 +255,7 @@ finally:
 check('官网条目真的调用了浏览器打开',
       bool(_opened_urls) and 'GatenneaSliderWeb' in _opened_urls[-1])
 check('教程条目真的走了教程入口', bool(_tutorial_starts))
+check('截图条目真的调用了截图实现', bool(_shots))
 
 # ================================================================ 5 渲染不崩
 print("\n--- 5 帮助对话框检索态渲染 ---")

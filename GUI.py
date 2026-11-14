@@ -876,13 +876,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'metrics_panel': '调试面板',
             'records_panel': '成绩面板',
             'command_palette': '命令面板',
+            'screenshot': '截图',
         }
 
         # 快捷键动作分组（用于设置对话框显示）
         # 重新分组：原「游戏操作」10 项混了移动/三角移动/面板，拆成「移动方块」
         # 与「显示面板」；原两个单元素分组「求解器」「宏操作」合并为「求解与宏」。
         self.keybinding_groups = [
-            ('文件', ['save', 'load']),
+            ('文件', ['save', 'load', 'screenshot']),
             ('编辑', ['undo', 'redo', 'shuffle', 'reset']),
             ('求解与宏', ['auto_solve', 'macro_record']),
             ('移动方块', ['move_up', 'move_down', 'move_left', 'move_right',

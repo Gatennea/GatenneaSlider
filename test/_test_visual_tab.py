@@ -42,8 +42,12 @@ gui = SliderGUI(m=4, n=4, step=2, cmd_queue=queue.Queue())
 gui.tut_show_prompt = False
 gui.tutorial_active = False
 
-# 设置框几何（renderer.draw_settings_dialog 内同构）
-DIALOG_H = 480
+# 设置框几何：**从 renderer 源码取对话框高度**，不再写死数字。
+# 2026-11-14 对话框 480→540（求解器页装得下日志开关），这里若还写 480，
+# 内容区可见高会被算小，滚动上限与可达性判据全跟着假红。
+import re  # noqa: E402
+_rnd_src = open(os.path.join('gui', 'renderer.py'), encoding='utf-8').read()
+DIALOG_H = int(re.search(r'dialog_height = (\d+)', _rnd_src).group(1))
 dialog_y = (gui.screen_height - DIALOG_H) // 2
 CONTENT_Y = dialog_y + 58 + 30 + 10          # tab_y + tab_height + 10
 CONTENT_H = DIALOG_H - (CONTENT_Y - dialog_y) - 64
@@ -122,7 +126,7 @@ check('V1d 右下角 compact 标签同步为「复原标记」',
       "_sw_btn('board_marks_enabled', '复原标记'" in _rnd)
 # 「悬停连锁提示」的解释必须在代码里（用户：若发现解释存在 → 是可见性 Bug）
 check('V1e 悬停连锁提示有解释文案',
-      '悬停滑块时，边界盒内同组位置（含空格）提亮提示' in _rnd)
+      '鼠标停在滑块上时，把同组能去的位置（含空格）提亮' in _rnd)
 
 print("\n--- 视觉页：内容高度 vs 实际绘制（防裁切回归）---")
 drawn_h = getattr(gui, '_settings_anim_height', 0)
@@ -354,11 +358,17 @@ check('S1d 旧搜索三项沉底（且注明低效备查）',
       and '备查' in gui._solver_description('greedy'))
 
 open_settings('solver')
+# 页面上只画「还列在列表里」的算法：旧三项（IDA*/快速/贪心）已沉底且不再显示
+# （S1d 仍锁注册表里的顺序与「备查」说明），故这里只断言可见的那六项。
+expect_drawn = ['hybrid', 'gather_gradient', 'gap_macro', 'gather',
+                'pick_fill', 'table']
 check('S2a 求解器页按同一顺序绘制',
-      list(gui._settings_solver_rects) == expect_order,
+      list(gui._settings_solver_rects) == expect_drawn,
       str(list(gui._settings_solver_rects)))
 check('S2b 单次聚拢说明已更新',
-      '单次聚拢（方形' in gui._solver_description('gather'))
+      '只跑一轮' in gui._solver_description('gather')
+      and '不保证还原' in gui._solver_description('gather'),
+      gui._solver_description('gather'))
 
 # S3 求解器日志开关（2026-11-14 用户要求）：说明区下方一行，滚到底可点
 gui.draw_settings_dialog()
