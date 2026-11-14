@@ -3486,6 +3486,9 @@ class RendererMixin:
 
         # 内容区域裁剪
         content_rect = pygame.Rect(dialog_x + 5, content_y, dialog_width - 20, content_height)
+        # 记下真实裁剪区，供护栏断言「控件是否画进可见区」——测试别再自己
+        # 按 480 硬编码推算（对话框 2026-11-14 已加高到 540，硬编码会假红）。
+        self._settings_content_rect = content_rect
         self.screen.set_clip(content_rect)
         try:
             if self.settings_active_tab == 'keybindings':
