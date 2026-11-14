@@ -3905,10 +3905,14 @@ class RendererMixin:
                     (occ if (r, c) in occupied else empty).add((r, c))
         return occ, empty, (hr, hc)
 
-    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28, on_text='ON', off_text='OFF'):
+    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28, on_text='ON', off_text='OFF',
+                         max_w=0):
         """统一排版的开关行：左栏标签(x+15) + 右栏开关(x+220) + 可选说明。
         返回 (开关rect, 下一行y)。所有设置页开关共用，保证对齐。
-        on_text/off_text 允许自定义开关文字（如界面模式的 增强/朴素）。"""
+
+        max_w > 0 时说明按该宽度自动换行（行高随行数增长）；传 0 保持旧的
+        单行行为。以前说明是单行直出，超过对话框宽就被右边缘硬切，玩家
+        看到的是半句话（2026-11-14 用户截图实测）。"""
         label_s = self.dialog_font.render(label, True, self.colors['dialog_text'])
         self.screen.blit(label_s, (x + 15, y + 6))
 
@@ -3923,28 +3927,39 @@ class RendererMixin:
 
         row_h = 60
         if hint:
-            hs = self.status_font.render(hint, True, (150, 150, 150))
-            self.screen.blit(hs, (x + 15, y + 38))
-            row_h = 60
+            if max_w > 0:
+                # 换行模式：单行时与其它页一样保持 60 的行距（太紧会跟下一行
+                # 的标签挤在一起），多行才按行数长高。
+                lines = self._wrap_text(hint, self.status_font, max_w)
+                for _i, _ln in enumerate(lines):
+                    self.screen.blit(
+                        self.status_font.render(_ln, True, (150, 150, 150)),
+                        (x + 15, y + 36 + _i * 18))
+                row_h = 36 + len(lines) * 18 + 6
+            else:
+                hs = self.status_font.render(hint, True, (150, 150, 150))
+                self.screen.blit(hs, (x + 15, y + 38))
         return rect, y + row_h
 
     def _draw_settings_animation(self, x, y, width, height):
         """绘制动画速度设置内容（统一排版：标签左栏 x+15、控件右栏 x+220）"""
         # 界面模式总开关（朴素 / 增强）—— S0-0 新增
+        # 说明一律传 max_w：本页说明普遍比对话框宽，旧的单行直出会被右边缘切掉。
+        _mw = width - 20
         self._settings_ui_mode_rect, ny = self._draw_switch_row(
             x, y, "界面模式：", self.ui_mode == 'enhanced',
-            "增强=新版动效与视觉优化；朴素=旧版界面（等同未启用本计划）",
-            on_text='增强', off_text='朴素')
+            "增强：新版动效与视觉；朴素：旧版界面",
+            on_text='增强', off_text='朴素', max_w=_mw)
 
         # 滑动动画开关
         self._settings_anim_toggle_rect, ny = self._draw_switch_row(
             x, ny, "滑动动画：", self.animation_enabled,
-            "滑块移动时的补间动画过渡")
+            "滑块移动时有个滑过去的过程；关掉就是瞬间到位", max_w=_mw)
 
         # 选中动画开关（撤销/重做、求解播放时高亮缝隙与滑块组）
         self._settings_sel_anim_toggle_rect, ny = self._draw_switch_row(
             x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
-            "撤销/重做、求解播放时高亮选中的缝隙与滑块组")
+            "撤销、重做和求解播放时，高亮这次动的缝和滑块", max_w=_mw)
 
         # 动画时长滑动条（轨道与开关同一右栏对齐）
         speed_y = ny
@@ -4017,18 +4032,18 @@ class RendererMixin:
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
-            "按移动不变量分组着色（同组颜色的滑块才可能互换位置）")
+            "同一种颜色代表同一组；只有同组的滑块才可能换位置", max_w=_mw)
 
         # 悬停连锁提示开关（独立于着色器）
         self._settings_chain_toggle_rect, ny = self._draw_switch_row(
             x, ny, "悬停连锁提示：", getattr(self, 'chain_hint_enabled', False),
-            "悬停滑块时，边界盒内同组位置（含空格）提亮提示，帮助找缺口")
+            "鼠标停在滑块上时，把同组能去的位置（含空格）提亮", max_w=_mw)
 
         # 悬停缝隙闪烁开关（2026-11-14 用户要求）：悬停在点得动的缝上时，
         # 慢速灰闪先亮出来，点击前就知道这条缝能动。纯视觉，不影响判定。
         self._settings_gap_hover_toggle_rect, ny = self._draw_switch_row(
             x, ny, "悬停缝隙闪烁：", getattr(self, 'gap_hover_flash_enabled', True),
-            "鼠标停在能滑动的缝隙上时，用慢速灰闪先亮出这条缝；关闭后不再提示（纯视觉，不影响点击判定）")
+            "鼠标停在能动的缝上时先闪一下，提醒这条缝可以点", max_w=_mw)
 
         # 复原提示标记：调试面板画在棋盘上的那些记号（目标框 / 洞位等）。
         # 它们是视觉强化而非调试数据，故与面板本体拆成两个开关：可以只关
@@ -4037,23 +4052,23 @@ class RendererMixin:
         # 「往哪走能复原」，不是泛泛的棋盘装饰。
         self._settings_marks_toggle_rect, ny = self._draw_switch_row(
             x, ny, "复原提示标记：", getattr(self, 'board_marks_enabled', False),
-            "棋盘上提示复原方向的记号（目标框 / 洞位），可脱离调试面板单独开（F2 亦可开关）")
+            "在棋盘上画出目标框和洞位，告诉你往哪走能复原", max_w=_mw)
 
         # 调试面板本体：让 F2 的功能也有纯鼠标入口（面板自身的关闭按钮
         # 只能关、不能开）
         self._settings_metrics_toggle_rect, ny = self._draw_switch_row(
             x, ny, "调试面板：", getattr(self, 'show_metrics_panel', False),
-            "右下角的数据面板（聚拢度 / 剖面缺陷等），F2 亦可开关")
+            "右下角的数据面板：聚拢度、还差多少等数字", max_w=_mw)
 
         # 开机动画开关（启动时标题动画，可跳过）
         self._settings_boot_toggle_rect, ny = self._draw_switch_row(
             x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
-            "启动时播放标题动画，点击或按任意键可跳过")
+            "启动时播放标题动画，点一下可以跳过", max_w=_mw)
 
         # 防意外打乱/重置开关（打乱/重置都会清空历史；历史非空时先弹确认，可先存档）
         self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
             x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
-            "打乱与重置都会清空当前历史、无法再撤回；开启时历史非空先弹确认（可先存档），关闭则直接执行")
+            "打乱和重置都会清空历史、撤不回来；开启后先弹确认，防止误触", max_w=_mw)
 
         # 绘制网格开关：控制四种原版谜题（矩形/数字/三角/米字）铺在背景、会横穿
         # 空位与洞口的整片网格——三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘
@@ -4064,19 +4079,23 @@ class RendererMixin:
         # 那会把没有滑块的地方整片染灰，缝一宽整盘发灰（2026-11-06 犯过一次）。
         self._settings_grid_toggle_rect, ny = self._draw_switch_row(
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
-            "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝线——线宽与原版相同，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
+            "关掉后只画滑块之间的缝，不再铺满整盘的网格线；空位和洞口留白，"
+            "四种原版盘都生效，选中缝的高亮不受影响", max_w=_mw)
 
         # 防偏移演示开关（求解器动画 / 存档回放期间逐帧连续地把整盘质心锁在
         # 起点，纯视觉优化，不改变解法与盘面；仅方形盘生效）。
         # 见 solver/anti_drift.py。
         self._settings_anti_drift_toggle_rect, ny = self._draw_switch_row(
             x, ny, "防偏移演示：", getattr(self, 'anti_drift_enabled', True),
-            "求解器演示与存档回放时，随滑动逐帧平滑地把整盘质心锁在起点、不再整体漂走（纯视觉，不改变解法与盘面，步数不变）；仅方形盘生效")
+            "播放求解和回放时，让整盘不再慢慢滑走（纯视觉，不改解法、不改步数）；"
+            "目前只对方形盘生效", max_w=_mw)
 
         # 求解器「思考」演示开关（段间等待期随机游走 + 连续撤回；纯视觉）
         self._settings_thinking_toggle_rect, ny = self._draw_switch_row(
             x, ny, "思考演示：", getattr(self, 'thinking_enabled', True),
-            "流式求解播完一段、下一段还没算出来时，让滑块随机试着推几步，算出下一段的瞬间连续撤回到段末状态再播放（纯视觉，不改盘面/历史/解法/步数；撤回会多花一点点时间）")
+            "两段解法之间，让滑块先随机试着推几步，看起来像在思考；"
+            "算出下一段会马上撤回（纯视觉，不改盘面与步数，会多花一点点时间）",
+            max_w=_mw)
 
         # 音效 / 背景音乐与两条音量滑条已挪到「音频」页（2026-11-07）：
         # 视觉页十几行，音效挤在末尾要滚很久才看得见；音频页要放「音效一览」，
