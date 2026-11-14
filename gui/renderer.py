@@ -3418,7 +3418,10 @@ class RendererMixin:
 
         # 对话框尺寸
         dialog_width = 660
-        dialog_height = 480
+        # 480 → 540（2026-11-14）：内容区原来只有 ~318px，「聚拢参数」五行的
+        # 说明几乎顶到边框；求解器页的日志开关更是被画到裁剪区外又滚不到。
+        # 加高之后各页多出两行余量，不改任何一页的内容结构。
+        dialog_height = 540
         dialog_x = (self.screen_width - dialog_width) // 2
         dialog_y = (self.screen_height - dialog_height) // 2
 
@@ -4410,22 +4413,19 @@ class RendererMixin:
                 pygame.draw.line(self.screen, (255, 255, 255),
                                  (box.x + 6 + cw + 2, box.y + 4),
                                  (box.x + 6 + cw + 2, box.bottom - 4), 1)
-            # 名称 + 说明（说明截断防重叠）
+            # 名称 + 说明（说明自动换行；以前是超宽硬裁，玩家看到半句话）
             name = self.dialog_font.render(_label, True, self.colors['dialog_text'])
             self.screen.blit(name, (x + 234, row_y))
-            desc_surf = self.status_font.render(desc, True, (150, 150, 150))
             max_w = width - 234
-            if desc_surf.get_width() > max_w:
-                clip_r = pygame.Rect(x + 234, row_y + 18, max_w, 16)
-                self.screen.set_clip(clip_r)
-                self.screen.blit(desc_surf, (x + 234, row_y + 18))
-                self.screen.set_clip(None)
-            else:
-                self.screen.blit(desc_surf, (x + 234, row_y + 18))
+            desc_lines = self._wrap_text(desc, self.status_font, max_w) or ['']
+            for _i, _ln in enumerate(desc_lines):
+                self.screen.blit(self.status_font.render(_ln, True, (150, 150, 150)),
+                                 (x + 234, row_y + 18 + _i * 16))
+            extra_h = max(0, len(desc_lines) - 1) * 16
             self._settings_gather_rects[key] = {'toggle': toggle, 'box': box, 'dec': dec, 'inc': inc,
                                                 'enabled': enabled, 'vmin': vmin, 'vmax': vmax,
                                                 'vstep': vstep, 'vdef': vdef}
-            row_y += 52
+            row_y += 52 + extra_h
 
     def _fmt_gather_value(self, key: str, val) -> str:
         """聚拢参数值显示：整数原样、时长加 's'、浮点保留两位"""
@@ -4442,13 +4442,13 @@ class RendererMixin:
         from solver import SOLVER_ALGORITHMS, GUI_HIDDEN_SOLVER_ALGORITHMS
 
         row_y = y + 20
-        row_height = 36
+        row_height = 32
         option_x = x + 40  # 选项缩进
 
         # 标题
         title = self.dialog_font.render("选择求解算法：", True, (100, 200, 255))
         self.screen.blit(title, (x + 15, row_y))
-        row_y += row_height + 10
+        row_y += row_height + 8
 
         from solver import solver_supports
 
@@ -4483,28 +4483,31 @@ class RendererMixin:
             name_surface = self.dialog_font.render(algo_name, True, name_color)
             self.screen.blit(name_surface, (option_x, row_y + row_height // 2 - name_surface.get_height() // 2))
             if not supported:
+                # 右对齐到行尾：跟着名字宽度跑的话，长名字（如「混合求解（自动
+                # 规划）」）会把提示顶出可视区，或与名字挤在一起。
                 tip = self.status_font.render("（当前谜题不支持）", True,
                                               (110, 110, 115))
-                self.screen.blit(tip, (option_x + name_surface.get_width() + 8,
+                tip_x = x + width - 24 - tip.get_width()
+                self.screen.blit(tip, (tip_x,
                                        row_y + row_height // 2 - tip.get_height() // 2))
 
             row_y += row_height
 
         # 说明文字（紧跟选项之下，自动换行，不遮挡选项）
         desc = self._solver_description(self.solver_algorithm)
-        desc_y = row_y + 12
+        desc_y = row_y + 8
         max_w = width - 20
         wrapped = self._wrap_text(desc, self.status_font, max_w)
         for i, line in enumerate(wrapped):
             line_surf = self.status_font.render(line, True, (160, 160, 160))
-            self.screen.blit(line_surf, (x + 15, desc_y + i * 18))
+            self.screen.blit(line_surf, (x + 15, desc_y + i * 17))
 
         # 求解器日志开关（2026-11-14 用户要求）：说明区下面一行，
         # 打开后每次求解落一份详细过程，供 HTTP /solver/log 查询。
-        log_y = desc_y + len(wrapped) * 18 + 14
+        log_y = desc_y + len(wrapped) * 17 + 8
         self._settings_solver_log_toggle_rect, _ny = self._draw_switch_row(
             x, log_y, "求解器日志：", getattr(self, 'solver_log_enabled', False),
-            "每次求解记一份过程明细（算法/参数/各段耗时与指标/停机原因）到 config/solver_log.jsonl；HTTP GET /solver/log 可查")
+            "每次求解记一份过程明细，排查「为什么停下」时用；平时可以关着")
 
     def _solver_description(self, algo_key: str) -> str:
         """当前求解算法的说明文字"""
@@ -4642,8 +4645,14 @@ class RendererMixin:
             return getattr(self, '_settings_audio_height',
                            30 + 120 + 48 + 200 + 26 + 144 + 10)
         elif self.settings_active_tab == 'gather':
-            # 警告行 + 适用范围行 + 每个参数一行(52) + 余量
-            return 26 + 22 + len(self._gather_param_specs) * 52 + 10
+            # 警告行 + 适用范围行 + 每个参数一行（52 + 说明换行多出的 16/行）
+            # 必须与 _draw_settings_gather 的逐行累加一致，否则滚动条量不对。
+            _desc_w = 660 - 30 - 234
+            total = 26 + 22 + 10
+            for _key, (_label, _vdef, _vmin, _vmax, _vstep, _desc) in self._gather_param_specs:
+                _lines = self._wrap_text(_desc, self.status_font, _desc_w) or ['']
+                total += 52 + max(0, len(_lines) - 1) * 16
+            return total
         elif self.settings_active_tab == 'file':
             return 420  # 存档只读 + 防止覆盖 + 操作日志 + 压缩存档 + 当前存档路径说明
         elif self.settings_active_tab == 'control':
@@ -4656,17 +4665,19 @@ class RendererMixin:
             return 34 + 7 * 60 + 8 + 60 + 22 + 32 + 10 \
                 + 18 * self._ext_feedback_lines(660 - 30)
         else:
-            # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
+            # solver tab：标题 + 选项 + 说明文字 + 日志开关。四段必须与
+            # _draw_settings_solver 的累加逐项一致，否则滚动条以为放得下、
+            # 日志开关被裁在可视区外，玩家滚也滚不到（2026-11-14 实测）。
             from solver import SOLVER_ALGORITHMS, GUI_HIDDEN_SOLVER_ALGORITHMS
-            title_h = 20 + 36 + 10
+            title_h = 20 + 32 + 8
             # 高度按 GUI 实际显示的项算（旧搜索三项已隐藏，否则底部会多出空档）
             options_h = len([k for k in SOLVER_ALGORITHMS
-                             if k not in GUI_HIDDEN_SOLVER_ALGORITHMS]) * 36
+                             if k not in GUI_HIDDEN_SOLVER_ALGORITHMS]) * 32
             desc = self._solver_description(getattr(self, 'solver_algorithm', 'hybrid'))
             desc_w = 500 - 30 - 20  # 内容宽 470 再减边距
-            desc_h = len(self._wrap_text(desc, self.status_font, desc_w)) * 18 + 12
-            # + 求解器日志开关一行（60），2026-11-14 新增
-            return title_h + options_h + desc_h + 60
+            desc_h = 8 + len(self._wrap_text(desc, self.status_font, desc_w)) * 17
+            # 说明后 8px + 开关行本身 60（_draw_switch_row 固定行高）
+            return title_h + options_h + desc_h + 8 + 60
 
     def _wrap_text(self, text: str, font, max_width: int) -> list[str]:
         """自动换行：按给定宽度将文本拆分为多行"""
