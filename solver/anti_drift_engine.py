@@ -153,11 +153,11 @@ def rewrite_gather_actions(game, actions, step, start_coords=None):
             return {'actions': list(actions), 'applied': False, 'flips': 0,
                     'note': 'anti_drift: 改写序列在经典盘上回放失败，放弃'}
         d_old, d_new = verdict
-        if d_new > d_old:
-            # 换侧不是越多越好：原本漂移已经很小（canonicalize 修好之后常见），
-            # 硬换侧反而把整盘推远。宁可不动。
+        if d_new > d_old + 1e-9:
+            # 换侧不是越多越好：原路本来就不漂（canonicalize 修好之后常见），
+            # 硬换侧反而会把过程推远。宁可不动。
             return {'actions': list(actions), 'applied': False, 'flips': 0,
-                    'note': f'anti_drift: 改写后漂移 {d_old:.2f}→{d_new:.2f} '
+                    'note': f'anti_drift: 改写后过程峰值漂移 {d_old:.2f}→{d_new:.2f} '
                             f'格反而变大，放弃'}
         note = ''
     else:
@@ -182,15 +182,23 @@ def _game_is_at(game, form, start_coords):
     return set(map(tuple, cur)) == set(map(tuple, start_coords))
 
 
-def _drift_of(c0, c1):
-    """边界盒最小角的 L∞ 位移（与引擎 drift_offsets 的锚点口径一致）。"""
-    mr0, mc0 = min(c[0] for c in c0), min(c[1] for c in c0)
-    mr1, mc1 = min(c[0] for c in c1), min(c[1] for c in c1)
-    return max(abs(mr1 - mr0), abs(mc1 - mc0))
+def _centroid(coords):
+    return (sum(c[0] for c in coords) / len(coords),
+            sum(c[1] for c in coords) / len(coords))
+
+
+def _peak_drift(frames):
+    """整段路上质心离起点的最大 L∞ 位移（看「过程」，不是终点）。"""
+    c0 = _centroid(frames[0])
+    peak = 0.0
+    for f in frames:
+        c = _centroid(f)
+        peak = max(peak, abs(c[0] - c0[0]), abs(c[1] - c0[1]))
+    return peak
 
 
 def _verify(game, old_actions, new_actions, step, form):
-    """真盘重放终裁：返回 (原序列漂移, 新序列漂移)；任一条不能回放则 None。
+    """真盘重放终裁：返回 (原序列峰值漂移, 新序列峰值漂移)；不能回放则 None。
 
     比较用平移归一（两条路径本就允许差一个整体平移），并顺带校验改写
     序列每一步在经典盘上真的可执行、块数不变。
@@ -205,21 +213,22 @@ def _verify(game, old_actions, new_actions, step, form):
     else:
         return None
     n0 = len(coords_fn(game))
-    start = coords_fn(game)
 
     def run(actions):
         g = copy.deepcopy(game)
+        frames = [coords_fn(g)]
         for a in actions:
             if not ad.apply_action(g, a, step):
-                return None
+                return None, None
             if len(coords_fn(g)) != n0:
-                return None
-        return coords_fn(g)
+                return None, None
+            frames.append(coords_fn(g))
+        return frames[-1], _peak_drift(frames)
 
-    old_end = run(old_actions)
-    new_end = run(new_actions)
+    old_end, old_peak = run(old_actions)
+    new_end, new_peak = run(new_actions)
     if old_end is None or new_end is None:
         return None
     if canon(old_end) != canon(new_end):
         return None
-    return _drift_of(start, old_end), _drift_of(start, new_end)
+    return old_peak, new_peak
