@@ -135,6 +135,44 @@ check('suggest「三角求解」含 auto_solve', 'auto_solve' in sugg_ids)
 # suggest：垃圾串（无任何模糊重叠）返回空
 check('suggest 垃圾串返回空', fi.suggest('zzzz不存在的东西') == [])
 
+# ================================================================ 2d 覆盖补齐（2026-11-14）
+# 玩家反馈「有些已有功能搜不到」。体检发现两类：整条功能没登记（设置子页、
+# 删除预设、搭积木编辑器…），以及排序规则把「名称/别名命中」压在「可用」
+# 之后，导致带形态词的查询被不相干条目抢位。下面这组锁住补过的洞。
+print("\n--- 2d 覆盖补齐：设置子页 / 玩法入口 / 别名 ---")
+_CASES_2D = (
+    ('聚拢参数', 'gather_params'),
+    ('参数', 'gather_params'),
+    ('压缩存档', 'save_compress'),
+    ('存档压缩', 'save_compress'),
+    ('只读', 'readonly_save'),
+    ('防止覆盖', 'prevent_overwrite'),
+    ('外部控制', 'external_control'),
+    ('令牌', 'external_control'),
+    ('http', 'external_control'),
+    ('删除预设', 'delete_preset'),
+    ('搭积木', 'model_editor'),
+    ('模型', 'model_editor'),
+    ('音量', 'sfx_slots'),
+    ('漂移', 'anti_drift'),
+    ('洞位', 'board_marks_enabled'),
+    ('查表', 'algo_others'),
+    ('混合', 'algo_others'),
+    ('导入', 'load'),
+    ('导出', 'save_as'),
+    ('三角形', 'preset_exotic'),
+    ('难度', 'concept_step'),
+)
+for query, want in _CASES_2D:
+    hits = [e['id'] for _s, e, _a in fi.search(query)]
+    check(f'2D「{query}」→ {want}', want in hits)
+
+# 带形态词的查询，指定形态的预设档要排第一（排序：强命中 > 可用）
+for q in ('三角', '米字', '三角形'):
+    hits = fi.search(q, form='square', mode='practice')
+    check(f'2D「{q}」首位 = preset_exotic（矩形盘下也算）',
+          bool(hits) and hits[0][1]['id'] == 'preset_exotic')
+
 # ================================================================ 3 上下文
 print("\n--- 3 上下文（当前形态决定可用性） ---")
 hits = fi.search('选块填空', form='triangle', mode='practice')

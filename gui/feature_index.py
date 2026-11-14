@@ -84,7 +84,7 @@ def place_text(place):
 # 形态缩写：矩形 / 数字 / 三角 / 米字
 FEATURES = (
     # ---------------- 文件 ----------------
-    dict(id='load', name='打开存档', aliases=('打开', '载入', '读取存档', 'load'),
+    dict(id='load', name='打开存档', aliases=('打开', '载入', '读取存档', '导入', 'load'),
          kind='action', place=('menu_item', '文件', '打开'),
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='顶栏「文件」→「打开」，选一个 .json 存档。',
@@ -99,6 +99,24 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='顶栏「文件」→「另存为...」，换文件名存一份新档。',
          confusion=''),
+    dict(id='save_compress', name='压缩存档',
+         aliases=('压缩', '压缩存档', '存档压缩', '压缩保存', '重放压缩', '存档变小'),
+         kind='setting', place=('settings', 'file'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 文件页「压缩存档」。打开后，矩形/数字谜题存档只记初始局面加一串操作，读档时按操作重放还原，文件小很多。',
+         confusion='三角、米字和模型盘不受影响，仍存普通格式；压缩存档要有一路走过的完整操作，没有历史的一局存不了。'),
+    dict(id='readonly_save', name='存档只读',
+         aliases=('只读', '存档只读', '只读标记', '锁住存档', '只读档'),
+         kind='setting', place=('settings', 'file'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 文件页「存档只读」。打开后保存的存档都会带只读标记；打开只读存档只能撤销/重做。',
+         confusion='只读是存档文件自带的标记，不是这个窗口的临时状态：想真正改盘面，先另存为一份普通档。'),
+    dict(id='prevent_overwrite', name='防止覆盖',
+         aliases=('防止覆盖', '防覆盖', '覆盖', '不覆盖旧档', '强制另存'),
+         kind='setting', place=('settings', 'file'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 文件页「防止覆盖」。打开后按 Ctrl+S 一律进「另存为」，不会盖掉旧存档。',
+         confusion='它只改 Ctrl+S 的去向，不改存档格式；频繁另存会留下一堆副本，整理时按日期删。'),
     dict(id='restart', name='重启游戏', aliases=('重启', '重新启动', '重开', '自动重开', 'restart'),
          kind='action', place=('menu_item', '文件', '重启（自动重开）'),
          forms=ALL_FORMS, modes=ALL_MODES,
@@ -156,12 +174,13 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='设置 → 求解器页，选「单次聚拢」，按确定后 Ctrl+A 开跑。',
          confusion='**唯一支持三角形 / 米字格的算法**；其余算法在异形下会明确拒绝。它只跑一轮聚拢，多轮自动放宽参数请用「梯度聚拢」。'),
-    dict(id='algo_others', name='方形专用求解算法',
-         aliases=('IDA*', '快速', '贪心', '查表', '填洞补缺', '混合求解'),
+    dict(id='algo_others', name='求解算法（查表 / 梯度聚拢 / 填洞补缺 / 混合）',
+         aliases=('查表', '梯度聚拢', '填洞补缺', '混合', '混合求解', '自动规划',
+                  'table', 'hybrid', 'gap macro', 'IDA*', '快速', '贪心'),
          kind='setting', place=('settings', 'solver'),
          forms=_RECT_AND_NUM, modes=ALL_MODES,
-         howto='设置 → 求解器页里选；界面会把当前形态不支持的项置灰。',
-         confusion='数字形态本质是矩形+编号，按矩形判定，所以这些算法在数字下可用。'),
+         howto='设置 → 求解器页的算法列表里选：查表（题库有答案就直接给）、梯度聚拢（一轮不够再来一轮）、填洞补缺（对着缺口逐个补）、混合（有答案先查表，没有就聚拢→补缺→搜索）。界面会把当前形态不支持的项置灰。',
+         confusion='数字形态本质是矩形+编号，按矩形判定，所以这些算法在数字下可用；三角、米字只认单次聚拢与梯度聚拢。'),
     dict(id='pick_fill', name='选块填空', aliases=('选块填空', '填空', '单段求解', '指定空位'),
          kind='setting', place=('settings', 'solver'),
          forms=('square',), modes=('practice',),
@@ -173,6 +192,12 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='设置 → 求解器页「求解器日志」。打开后每次求解会记一份过程明细（用了哪个算法、各段花多久、为什么停下），排查「求解为什么停下」时用；文件在游戏的 config 目录里，按大小只留最近若干条。',
          confusion='它只是记录，不影响求解结果与步数；成绩记录只记「多少步/多久」，这里记的是「为什么」。文件会按大小自动只留最近若干条。'),
+    dict(id='gather_params', name='聚拢参数（进阶）',
+         aliases=('聚拢参数', '参数', '聚拢调参', '调参', '停滞容忍', '激进程度', '最大步数'),
+         kind='setting', place=('settings', 'gather'),
+         forms=_EXOTIC, modes=ALL_MODES,
+         howto='设置 → 聚拢参数页：停滞容忍步数、无进展停机秒数、激进程度、目标聚拢度、最大步数五项，只在三角/米字聚拢时起作用。',
+         confusion='这一页只影响「聚拢」这一步，不影响填洞、查表。默认值是实测调过的，改激进程度最容易看出差别（也最容易让步数暴涨）。'),
 
     # ---------------- 面板 ----------------
     dict(id='virtual_keyboard', name='虚拟键盘', aliases=('虚拟键盘', '键盘', '屏幕键盘', '方向键'),
@@ -211,7 +236,7 @@ FEATURES = (
          howto='设置 → 视觉页「悬停缝隙闪烁」。鼠标停在点得动的那条缝上时，用慢速灰闪先亮出来，点击前就知道这条缝能动。',
          confusion='这是纯视觉开关：关掉只是不再闪，缝隙的点击判定、选中红线和求解逻辑都不变；灰闪不等于「已选中」，选中是红线。'),
     dict(id='board_marks_enabled', name='复原提示标记',
-         aliases=('标记', '复原标记', '记号', '目标框', '洞标记', '凸起标记'),
+         aliases=('标记', '复原标记', '记号', '目标框', '洞标记', '凸起标记', '洞位'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='设置 → 视觉页「复原提示标记」；或右下角「复原标记」开关；F2 会连带切换它。',
@@ -223,11 +248,11 @@ FEATURES = (
          howto='设置 → 视觉页「绘制网格」。关掉后只画滑块之间的缝，不再铺满整盘的网格线，空位和洞口留白；四种盘（矩形/数字/三角/米字）都生效，选中缝的高亮不受影响。',
          confusion='关闭后不是「网格全消失」：滑块与滑块相接的地方仍然有缝线（否则拼图看不出分块），消失的只是横穿空位/洞口的那部分。四种原版盘（矩形/数字/三角/米字）都会变，选中缝高亮不受影响；模型盘本就没有这层网格，不受开关影响。'),
     dict(id='anti_drift', name='防偏移演示',
-         aliases=('防偏移', '防止偏移', '质心锁定', '不漂走', '居中演示'),
+         aliases=('防偏移', '防止偏移', '质心锁定', '不漂走', '居中演示', '漂移', '漂走', '别漂'),
          kind='setting', place=('settings', 'animation'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 视觉页「防偏移演示」。求解器演示与存档回放期间，用相机偏移把整盘质心锁在起点，盘不再整体漂走（纯视觉，不改变解法与盘面）。仅方形盘生效。',
-         confusion='这是纯视觉优化：解法步数、盘面逻辑、存档内容完全不变，只是演示时整盘不再随风往屏幕一侧漂。关掉后演示恢复原样（盘会随解法整体平移）。仅方形盘有此效果，三角/米字盘几何不同、暂不接入。'),
+         howto='设置 → 视觉页「防偏移演示」。自动求解演示与存档回放期间，让整盘别慢慢往一边滑走（纯视觉，不动解法与盘面）。目前只对矩形盘生效。',
+         confusion='纯视觉：步数、盘面、存档内容都不变，只是演示时画面不再漂；关掉即恢复原样。三角、米字还没接上这块，所以那两种盘仍会跟着解法平移。'),
     dict(id='thinking', name='思考演示',
          aliases=('思考演示', '假装在尝试', '假装尝试', '随机游走演示', '像人在想'),
          kind='setting', place=('settings', 'animation'),
@@ -280,7 +305,7 @@ FEATURES = (
          confusion='这是上级闸门：逐项开关开着、总开关关着，一样没声。素材在 assets/audio/sound/，缺文件不报错、只是那项不响。'),
     dict(id='sfx_slots', name='音效一览（逐项开关 / 试听）',
          aliases=('音效一览', '音效列表', '逐项音效', '滑动音效', '点击音效',
-                  '键盘音效', '失败音效', '复原音效', '试听'),
+                  '键盘音效', '失败音效', '复原音效', '试听', '音量', '声音大小'),
          kind='setting', place=('settings', 'audio'),
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='设置 → 音频页「音效一览」：滑动声 / 滑动被拒 / 复原 / 鼠标点击 / 键盘按键 各一行，独立开关，右侧「试听」可直接听。',
@@ -317,6 +342,12 @@ FEATURES = (
          forms=('square', 'numbered', 'triangle'), modes=ALL_MODES,
          howto='设置 → 控制页「鼠标键盘」；方形/数字用 WASD，三角用 W/E/A/D/Z/X 六向。',
          confusion='**米字格不绑物理键盘**，定向请用虚拟键盘或拖动。'),
+    dict(id='external_control', name='外部控制（HTTP / 命令行）',
+         aliases=('外部控制', '远程控制', '接口', 'api', 'http', '脚本控制', '令牌', 'token'),
+         kind='setting', place=('settings', 'control'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='设置 → 控制页最下面的「外部控制」区：看连接话术、复制令牌、下载控制教程。开着游戏时也能从外部下指令（滑动、打乱、求解、读盘面）。',
+         confusion='令牌只在本机有效，发给别人等于把控制权交出去；不玩自动化就整块不用管，它不影响正常操作。'),
 
     # ---------------- 建局 ----------------
     dict(id='preset_quick', name='快速开始', aliases=('快速开始', '快速', '推荐档'),
@@ -326,12 +357,12 @@ FEATURES = (
          confusion=''),
     dict(id='preset_rect', name='矩形谜题预设档', aliases=('矩形', '矩形谜题', '方形谜题', '尺寸'),
          kind='puzzle', place=('menu_sub', '谜题', '矩形谜题 ▸', '各尺寸'),
-         forms=_RECT_AND_NUM, modes=ALL_MODES,
+         forms=ALL_FORMS, modes=ALL_MODES,
          howto='顶栏「谜题」→「矩形谜题 ▸」，按等级分组（1 入门 / 2 经典 / 3 复杂）。',
          confusion=''),
     dict(id='preset_exotic', name='异形谜题预设档', aliases=('异形', '异形谜题', '三角', '米字', '数字'),
          kind='puzzle', place=('menu_sub', '谜题', '异形谜题 ▸', '各形态'),
-         forms=_EXOTIC + ('numbered',), modes=ALL_MODES,
+         forms=ALL_FORMS, modes=ALL_MODES,
          howto='顶栏「谜题」→「异形谜题 ▸」，含三角形、米字格、数字三组。',
          confusion=''),
     dict(id='custom_puzzle', name='自定义谜题', aliases=('自定义', '自定义尺寸', '改尺寸', '改等级'),
@@ -339,6 +370,18 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='顶栏「谜题」→「自定义...」，先选形态再填尺寸与等级。',
          confusion='三角形要求「边长 − 等级 ≥ 2」，否则一步都动不了，会自动拒绝。'),
+    dict(id='delete_preset', name='删除预设',
+         aliases=('删除预设', '删预设', '删除谜题', '删档位', '删掉这一档', '移除预设'),
+         kind='action', place=('menu_item', '谜题', '删除预设...'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='顶栏「谜题」→「删除预设...」，选中哪一档就删哪一档；删完菜单里立刻消失。',
+         confusion='只删你自己造的自定义档与导入的模型档；游戏自带的矩形/三角/米字档删不掉，也不会被误删。'),
+    dict(id='model_editor', name='搭积木编辑器（造模型盘）',
+         aliases=('模型', '模型文件', '模型编辑器', '搭积木', '造题', '自制谜题', '设计谜题'),
+         kind='puzzle', place=('tutorial',),
+         forms=ALL_FORMS, modes=('create',),
+         howto='右下角模式切到「创造」→ 顶栏下方工具条的「还原态设计」→「搭积木（自由板型）」，从空盘摆块造新板型，存成模型文件后在「谜题」菜单里出现。',
+         confusion='搭积木出的是「模型盘」，与自带四种盘型不是一套几何；编辑器只认模型盘，自带盘型进不去搭积木。创造模式下才出现这条工具条。'),
 
     # ---------------- 模式 ----------------
     dict(id='mode_practice', name='练习模式', aliases=('练习', '练习模式', '随便玩'),
@@ -453,6 +496,9 @@ _ACTIONS = {
     'load': {'type': 'menu', 'name': '文件'},
     'save': {'type': 'menu', 'name': '文件'},
     'save_as': {'type': 'menu', 'name': '文件'},
+    'save_compress': {'type': 'settings', 'tab': 'file'},
+    'readonly_save': {'type': 'settings', 'tab': 'file'},
+    'prevent_overwrite': {'type': 'settings', 'tab': 'file'},
     'restart': {'type': 'menu', 'name': '文件'},
     # 编辑
     'undo': {'type': 'menu', 'name': '编辑'},
@@ -466,6 +512,7 @@ _ACTIONS = {
     'algo_others': {'type': 'settings', 'tab': 'solver'},
     'pick_fill': {'type': 'settings', 'tab': 'solver'},
     'solver_log_enabled': {'type': 'settings', 'tab': 'solver'},
+    'gather_params': {'type': 'settings', 'tab': 'gather'},
     # 面板 / 开关（直接切换，等价右下角快捷开关）
     'virtual_keyboard': {'type': 'toggle', 'key': 'show_virtual_keyboard'},
     'metrics_panel': {'type': 'toggle', 'key': 'show_metrics_panel'},
@@ -492,6 +539,7 @@ _ACTIONS = {
     'control_single_touch': {'type': 'settings', 'tab': 'control'},
     'control_two_touch': {'type': 'settings', 'tab': 'control'},
     'control_mouse_kb': {'type': 'settings', 'tab': 'control'},
+    'external_control': {'type': 'settings', 'tab': 'control'},
     # 宏
     'macro_record': {'type': 'menu', 'name': '宏定义'},
     'macro_execute': {'type': 'menu', 'name': '宏定义'},
@@ -503,6 +551,8 @@ _ACTIONS = {
     'preset_rect': {'type': 'menu', 'name': '谜题'},
     'preset_exotic': {'type': 'menu', 'name': '谜题'},
     'custom_puzzle': {'type': 'custom_dialog'},
+    'delete_preset': {'type': 'menu', 'name': '谜题'},
+    'model_editor': {'type': 'none'},
     # 模式
     'mode_practice': {'type': 'mode', 'mode': 'practice'},
     'mode_create': {'type': 'mode', 'mode': 'create'},
@@ -605,6 +655,11 @@ def _score(term, entry, hay):
             return 90
         if term in alias:
             return 60
+        # 玩家把别名写长了也算命中：『三角形』里含别名『三角』、『音量』里含
+        # 别名『音量』。只单向比的话，写长的词会掉到「说明里提到过」的 30 分，
+        # 被判给不相干的条目。
+        if alias in term:
+            return 60
     if term in hay:
         return 30
     return 0
@@ -616,17 +671,27 @@ def _fuzzy_score(needle, tokens):
     取与任一名称/别名的最长公共子序列，重叠 ≥2 字才给分，上限 50（低于别名
     包含 60，精确/包含仍优先）。只在「名称+别名」token 上算，避免对 howto/
     confusion 长文本产生垃圾误中（保证 search('zzzz不存在的东西') 仍返回 []）。
+
+    **前缀加成**：某个名称/别名正好是查询的开头（『三角求解』以别名『三角』
+    开头）时再加 15。没有这一条，『三角求解』里『三角』和『求解』各命中一次、
+    分数并列，先登记的条目会把真正想找的预设档挤出前几名（§二十五 那条红）。
     """
     if len(needle) < 2:
         return 0
     best = 0
+    prefix_hit = False
     for tok in tokens:
+        if tok and needle.startswith(tok):
+            prefix_hit = True
         ov = _lcs_len(needle, tok)
         if ov > best:
             best = ov
     if best < 2:
         return 0
-    return min(50, 25 + (best - 2) * 10)
+    score = min(50, 25 + (best - 2) * 10)
+    if prefix_hit:
+        score = min(60, score + 15)
+    return score
 
 
 def search(query, form=None, mode=None, limit=30):
@@ -645,7 +710,7 @@ def search(query, form=None, mode=None, limit=30):
         mode:  当前模式键（'practice'/'create'/'timed'），同上。
 
     返回：
-        [(score, entry, available), ...] 按 (可用, 综合分, 强命中数) 降序；
+        [(score, entry, available), ...] 按 (强命中数, 可用, 综合分) 降序；
         available 为当前上下文是否可用。返回形状保持稳定，UI 无需改动。
     """
     q = _strip_question(query)
@@ -681,8 +746,12 @@ def search(query, form=None, mode=None, limit=30):
             available = supports(entry, form, mode)
             out.append((fs, 0, entry, available))
 
-    # 排序：(可用, 综合分, 强命中数) 降序；同分不再靠清单插入序
-    out.sort(key=lambda r: (r[3], r[0], r[1]), reverse=True)
+    # 排序：(强命中数, 可用, 综合分) 降序——**名称/别名命中优先于可用性**。
+    # 以前可用性排第一，导致「三角」在矩形盘里被排在「单次聚拢」后面
+    # （预设档被判成当前形态不支持），玩家会以为搜不到；预设档本身能切形态，
+    # 已按 ALL_FORMS 登记，但保留这条规则更稳：确切的词先出来，灰着的也比
+    # 不相干的强命中靠前。
+    out.sort(key=lambda r: (r[1], r[3], r[0]), reverse=True)
     return [(total, entry, available) for total, _strong, entry, available in out][:limit]
 
 
