@@ -2314,6 +2314,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 处理终端指令
                 self.process_commands()
 
+                # 背景音乐轮播：这一首放完就自动随机换下一首（gui/audio.py）
+                if getattr(self, 'audio', None) is not None:
+                    self.audio.update_bgm()
+
                 # 更新动画
                 self.update_animation()
 

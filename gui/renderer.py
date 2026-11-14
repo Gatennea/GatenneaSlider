@@ -4163,8 +4163,9 @@ class RendererMixin:
                     for k in SLOT_KEYS]
             bgm_detail = '音频模块未启用'
 
-        hint = ('素材放 assets/audio/sound/（音效）与 assets/audio/music/（背景乐）；'
-                '缺素材的项标「缺素材」，补上文件重启即生效')
+        hint = ('素材放 assets/audio/sound/（音效）与 assets/audio/music/'
+                '（背景乐，目录里所有音频随机轮播）；缺素材的项标「缺素材」，'
+                '补上文件重启即生效，背景乐不用重启、下一首就换了')
         _hint_lines = self._wrap_text(hint, self.status_font, width - 40)
         for _i, _line in enumerate(_hint_lines):
             self.screen.blit(self.status_font.render(_line, True, (150, 150, 150)),

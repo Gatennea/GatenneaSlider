@@ -319,7 +319,7 @@ FEATURES = (
          aliases=('背景音乐', 'bgm', '音乐', '背景乐', '循环音乐'),
          kind='setting', place=('settings', 'audio'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 音频页「背景音乐」开关，音量用下面的「音乐音量」滑条。素材放 assets/audio/music/（目录里第一个音讯档即当作 bgm）。',
+         howto='设置 → 音频页「背景音乐」开关，音量用下面的「音乐音量」滑条。素材放 assets/audio/music/，目录里所有音频随机轮播，随时增减都行，下一首就按新目录抽。',
          confusion='与音效共用同一个开关区但互不影响：关音效不会停背景音乐，反之亦然。'),
     dict(id='sound_muted', name='全部静音',
          aliases=('全部静音', '总静音', '一键静音', '静音', 'mute', '声音总开关'),
