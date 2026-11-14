@@ -118,9 +118,18 @@ class BulkStaticRewriter:
         self.m, self.n = m, n
         self.off = (0, 0)
         self.c0 = centroid_offset(coords0)
+        self._peak = 0.0        # 过程峰值漂移（跨段连续，束搜索用）
         self.flips = 0
         self.flip_idx = []      # 发生过换侧的步号（全局，供护栏/调试用）
         self.n_seen = 0
+
+    # 束宽：换侧决策不能只看眼前一步。
+    #
+    # 旧实现是纯贪心（换完的当步质心更近就换），单步最优但整条路可能「先走远
+    # 再拉回」：同一份 60 步解，贪心峰值 3.62 格，等效解里其实存在 1.76 格的
+    # 走法（束宽 12 实测，60 步总耗时 ~0.4s）。路径形状与末态不变，只是换侧
+    # 的先后顺序不同，故对正确性没有任何影响。
+    _BEAM = 12
 
     # -- 内部 ---------------------------------------------------------
     def _dist(self, coords):
@@ -134,44 +143,87 @@ class BulkStaticRewriter:
         """改写一段动作（世界绝对坐标，长度为 len(acts5) 不变）。
 
         返回 (new_acts5, coords_end)。影子盘面按本段终态前进。
-        """
-        out = []
-        for raw in acts5:
-            act = tuple(raw[:4])
-            idx = self.n_seen
-            self.n_seen += 1
-            rep = raw[4] if len(raw) > 4 and raw[4] is not None else None
-            a_cur = _shift_act(act + ((rep,) if rep else ()), self.off)
-            pre = _coords_of(self.g)
-            a_flip = _flip_act(pre, a_cur, self.step)
 
-            okN, _ = _capture_apply(self.g, a_cur, self.step)
-            if not okN:
-                # 平移是规则对称，理论不会走到这里；保守起见原样保留，
-                # 影子盘面不前进（避免把后续步算到错的盘上）。
-                out.append(a_cur)
-                continue
-            cN = _coords_of(self.g)
-            chosen_act = a_cur
-            if a_flip is not None:
+        用束搜索挑换侧顺序：状态 =（当前坐标、累计整体平移 off、过程峰值、
+        当前质心距离、已选动作）。每步对每个状态尝试「原动作 / 换侧动作」
+        两个分支，按（峰值, 当前距离）保留前 ``_BEAM`` 个，段末取最优路径
+        提交。峰值跨段连续（``self._peak``），所以流式逐段喂也不会「每段
+        重新从 0 算起」把已漂远的段当没事。
+        """
+        base = self.n_seen
+        coords0 = _coords_of(self.g)
+        states = [{
+            'coords': coords0,
+            'off': self.off,
+            'peak': self._peak,
+            'd': self._dist(coords0),
+            'acts': [],
+            'flip_idx': [],
+            'flips': 0,
+        }]
+        for i, raw in enumerate(acts5):
+            idx = base + i
+            act = tuple(raw[:4])
+            rep = raw[4] if len(raw) > 4 and raw[4] is not None else None
+            nxt = []
+            for st in states:
+                a_cur = _shift_act(act + ((rep,) if rep else ()), st['off'])
+                pre = st['coords']
+                gN = build_game(pre, self.m, self.n)
+                okN, _ = _capture_apply(gN, a_cur, self.step)
+                if not okN:
+                    # 平移是规则对称，理论不会走到这里；保守起见原样保留，
+                    # 影子盘面不前进（避免把后续步算到错的盘上）。
+                    nxt.append({
+                        'coords': st['coords'], 'off': st['off'],
+                        'peak': st['peak'], 'd': st['d'],
+                        'acts': st['acts'] + [a_cur],
+                        'flip_idx': st['flip_idx'], 'flips': st['flips'],
+                    })
+                    continue
+                cN = _coords_of(gN)
+                dN = self._dist(cN)
+                nxt.append({
+                    'coords': cN, 'off': st['off'],
+                    'peak': max(st['peak'], dN), 'd': dN,
+                    'acts': st['acts'] + [a_cur],
+                    'flip_idx': st['flip_idx'], 'flips': st['flips'],
+                })
+                a_flip = _flip_act(pre, a_cur, self.step)
+                if a_flip is None:
+                    continue
                 gF = build_game(pre, self.m, self.n)
                 okF, _ = _capture_apply(gF, a_flip, self.step)
-                if okF and _shape_of(_coords_of(gF)) == _shape_of(cN):
-                    cF = _coords_of(gF)
-                    if self._dist(cF) + 1e-9 < self._dist(cN):
-                        # 记录两次落点之间的整体平移，供后续步吸收
-                        mrN = min(r for r, _c in cN)
-                        mcN = min(c for _r, c in cN)
-                        mrF = min(r for r, _c in cF)
-                        mcF = min(c for _r, c in cF)
-                        self.off = (self.off[0] + (mrF - mrN),
-                                    self.off[1] + (mcF - mcN))
-                        self.g = gF
-                        chosen_act = a_flip
-                        self.flips += 1
-                        self.flip_idx.append(idx)
-            out.append(chosen_act)
-        return out, _coords_of(self.g)
+                if not okF or _shape_of(_coords_of(gF)) != _shape_of(cN):
+                    continue
+                cF = _coords_of(gF)
+                dF = self._dist(cF)
+                # 记录两次落点之间的整体平移，供后续步吸收
+                mrN = min(r for r, _c in cN)
+                mcN = min(c for _r, c in cN)
+                mrF = min(r for r, _c in cF)
+                mcF = min(c for _r, c in cF)
+                nxt.append({
+                    'coords': cF,
+                    'off': (st['off'][0] + (mrF - mrN),
+                            st['off'][1] + (mcF - mcN)),
+                    'peak': max(st['peak'], dF), 'd': dF,
+                    'acts': st['acts'] + [a_flip],
+                    'flip_idx': st['flip_idx'] + [idx],
+                    'flips': st['flips'] + 1,
+                })
+            if not nxt:
+                break
+            nxt.sort(key=lambda s: (s['peak'], s['d']))
+            states = nxt[:self._BEAM]
+        best = min(states, key=lambda s: (s['peak'], s['d']))
+        self.g = build_game(best['coords'], self.m, self.n)
+        self.off = best['off']
+        self._peak = best['peak']
+        self.flips += best['flips']
+        self.flip_idx.extend(best['flip_idx'])
+        self.n_seen = base + len(acts5)
+        return best['acts'], best['coords']
 
 
 def rewrite_bulk_static(coords0, m, n, step, acts5):
