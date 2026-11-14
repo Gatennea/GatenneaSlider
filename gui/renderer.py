@@ -3418,7 +3418,10 @@ class RendererMixin:
 
         # 对话框尺寸
         dialog_width = 660
-        dialog_height = 480
+        # 480 → 540（2026-11-14）：内容区原来只有 ~318px，「聚拢参数」五行的
+        # 说明几乎顶到边框；求解器页的日志开关更是被画到裁剪区外又滚不到。
+        # 加高之后各页多出两行余量，不改任何一页的内容结构。
+        dialog_height = 540
         dialog_x = (self.screen_width - dialog_width) // 2
         dialog_y = (self.screen_height - dialog_height) // 2
 
@@ -3902,10 +3905,14 @@ class RendererMixin:
                     (occ if (r, c) in occupied else empty).add((r, c))
         return occ, empty, (hr, hc)
 
-    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28, on_text='ON', off_text='OFF'):
+    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28, on_text='ON', off_text='OFF',
+                         max_w=0):
         """统一排版的开关行：左栏标签(x+15) + 右栏开关(x+220) + 可选说明。
         返回 (开关rect, 下一行y)。所有设置页开关共用，保证对齐。
-        on_text/off_text 允许自定义开关文字（如界面模式的 增强/朴素）。"""
+
+        max_w > 0 时说明按该宽度自动换行（行高随行数增长）；传 0 保持旧的
+        单行行为。以前说明是单行直出，超过对话框宽就被右边缘硬切，玩家
+        看到的是半句话（2026-11-14 用户截图实测）。"""
         label_s = self.dialog_font.render(label, True, self.colors['dialog_text'])
         self.screen.blit(label_s, (x + 15, y + 6))
 
@@ -3920,28 +3927,39 @@ class RendererMixin:
 
         row_h = 60
         if hint:
-            hs = self.status_font.render(hint, True, (150, 150, 150))
-            self.screen.blit(hs, (x + 15, y + 38))
-            row_h = 60
+            if max_w > 0:
+                # 换行模式：单行时与其它页一样保持 60 的行距（太紧会跟下一行
+                # 的标签挤在一起），多行才按行数长高。
+                lines = self._wrap_text(hint, self.status_font, max_w)
+                for _i, _ln in enumerate(lines):
+                    self.screen.blit(
+                        self.status_font.render(_ln, True, (150, 150, 150)),
+                        (x + 15, y + 36 + _i * 18))
+                row_h = 36 + len(lines) * 18 + 6
+            else:
+                hs = self.status_font.render(hint, True, (150, 150, 150))
+                self.screen.blit(hs, (x + 15, y + 38))
         return rect, y + row_h
 
     def _draw_settings_animation(self, x, y, width, height):
         """绘制动画速度设置内容（统一排版：标签左栏 x+15、控件右栏 x+220）"""
         # 界面模式总开关（朴素 / 增强）—— S0-0 新增
+        # 说明一律传 max_w：本页说明普遍比对话框宽，旧的单行直出会被右边缘切掉。
+        _mw = width - 20
         self._settings_ui_mode_rect, ny = self._draw_switch_row(
             x, y, "界面模式：", self.ui_mode == 'enhanced',
-            "增强=新版动效与视觉优化；朴素=旧版界面（等同未启用本计划）",
-            on_text='增强', off_text='朴素')
+            "增强：新版动效与视觉；朴素：旧版界面",
+            on_text='增强', off_text='朴素', max_w=_mw)
 
         # 滑动动画开关
         self._settings_anim_toggle_rect, ny = self._draw_switch_row(
             x, ny, "滑动动画：", self.animation_enabled,
-            "滑块移动时的补间动画过渡")
+            "滑块移动时有个滑过去的过程；关掉就是瞬间到位", max_w=_mw)
 
         # 选中动画开关（撤销/重做、求解播放时高亮缝隙与滑块组）
         self._settings_sel_anim_toggle_rect, ny = self._draw_switch_row(
             x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
-            "撤销/重做、求解播放时高亮选中的缝隙与滑块组")
+            "撤销、重做和求解播放时，高亮这次动的缝和滑块", max_w=_mw)
 
         # 动画时长滑动条（轨道与开关同一右栏对齐）
         speed_y = ny
@@ -4014,18 +4032,18 @@ class RendererMixin:
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
-            "按移动不变量分组着色（同组颜色的滑块才可能互换位置）")
+            "同一种颜色代表同一组；只有同组的滑块才可能换位置", max_w=_mw)
 
         # 悬停连锁提示开关（独立于着色器）
         self._settings_chain_toggle_rect, ny = self._draw_switch_row(
             x, ny, "悬停连锁提示：", getattr(self, 'chain_hint_enabled', False),
-            "悬停滑块时，边界盒内同组位置（含空格）提亮提示，帮助找缺口")
+            "鼠标停在滑块上时，把同组能去的位置（含空格）提亮", max_w=_mw)
 
         # 悬停缝隙闪烁开关（2026-11-14 用户要求）：悬停在点得动的缝上时，
         # 慢速灰闪先亮出来，点击前就知道这条缝能动。纯视觉，不影响判定。
         self._settings_gap_hover_toggle_rect, ny = self._draw_switch_row(
             x, ny, "悬停缝隙闪烁：", getattr(self, 'gap_hover_flash_enabled', True),
-            "鼠标停在能滑动的缝隙上时，用慢速灰闪先亮出这条缝；关闭后不再提示（纯视觉，不影响点击判定）")
+            "鼠标停在能动的缝上时先闪一下，提醒这条缝可以点", max_w=_mw)
 
         # 复原提示标记：调试面板画在棋盘上的那些记号（目标框 / 洞位等）。
         # 它们是视觉强化而非调试数据，故与面板本体拆成两个开关：可以只关
@@ -4034,23 +4052,23 @@ class RendererMixin:
         # 「往哪走能复原」，不是泛泛的棋盘装饰。
         self._settings_marks_toggle_rect, ny = self._draw_switch_row(
             x, ny, "复原提示标记：", getattr(self, 'board_marks_enabled', False),
-            "棋盘上提示复原方向的记号（目标框 / 洞位），可脱离调试面板单独开（F2 亦可开关）")
+            "在棋盘上画出目标框和洞位，告诉你往哪走能复原", max_w=_mw)
 
         # 调试面板本体：让 F2 的功能也有纯鼠标入口（面板自身的关闭按钮
         # 只能关、不能开）
         self._settings_metrics_toggle_rect, ny = self._draw_switch_row(
             x, ny, "调试面板：", getattr(self, 'show_metrics_panel', False),
-            "右下角的数据面板（聚拢度 / 剖面缺陷等），F2 亦可开关")
+            "右下角的数据面板：聚拢度、还差多少等数字", max_w=_mw)
 
         # 开机动画开关（启动时标题动画，可跳过）
         self._settings_boot_toggle_rect, ny = self._draw_switch_row(
             x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
-            "启动时播放标题动画，点击或按任意键可跳过")
+            "启动时播放标题动画，点一下可以跳过", max_w=_mw)
 
         # 防意外打乱/重置开关（打乱/重置都会清空历史；历史非空时先弹确认，可先存档）
         self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
             x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
-            "打乱与重置都会清空当前历史、无法再撤回；开启时历史非空先弹确认（可先存档），关闭则直接执行")
+            "打乱和重置都会清空历史、撤不回来；开启后先弹确认，防止误触", max_w=_mw)
 
         # 绘制网格开关：控制四种原版谜题（矩形/数字/三角/米字）铺在背景、会横穿
         # 空位与洞口的整片网格——三角盘沿凸包拉通的整条缝线（洞裡也留直線）、米字盘
@@ -4061,19 +4079,23 @@ class RendererMixin:
         # 那会把没有滑块的地方整片染灰，缝一宽整盘发灰（2026-11-06 犯过一次）。
         self._settings_grid_toggle_rect, ny = self._draw_switch_row(
             x, ny, "绘制网格：", getattr(self, 'draw_grid', True),
-            "关闭后不再铺横穿空位/洞口的整片网格（三角沿凸包拉通的整条缝线、米字 grid_segments、方形/数字整条灰缝带），改为只画相邻滑块相接处的缝线——线宽与原版相同，空位与洞口保持纯背景；四种原版盘（矩形/数字/三角/米字）都生效，选中缝高亮不受影响")
+            "关掉后只画滑块之间的缝，不再铺满整盘的网格线；空位和洞口留白，"
+            "四种原版盘都生效，选中缝的高亮不受影响", max_w=_mw)
 
         # 防偏移演示开关（求解器动画 / 存档回放期间逐帧连续地把整盘质心锁在
         # 起点，纯视觉优化，不改变解法与盘面；仅方形盘生效）。
         # 见 solver/anti_drift.py。
         self._settings_anti_drift_toggle_rect, ny = self._draw_switch_row(
             x, ny, "防偏移演示：", getattr(self, 'anti_drift_enabled', True),
-            "求解器演示与存档回放时，随滑动逐帧平滑地把整盘质心锁在起点、不再整体漂走（纯视觉，不改变解法与盘面，步数不变）；仅方形盘生效")
+            "播放求解和回放时，让整盘不再慢慢滑走（纯视觉，不改解法、不改步数）；"
+            "目前只对方形盘生效", max_w=_mw)
 
         # 求解器「思考」演示开关（段间等待期随机游走 + 连续撤回；纯视觉）
         self._settings_thinking_toggle_rect, ny = self._draw_switch_row(
             x, ny, "思考演示：", getattr(self, 'thinking_enabled', True),
-            "流式求解播完一段、下一段还没算出来时，让滑块随机试着推几步，算出下一段的瞬间连续撤回到段末状态再播放（纯视觉，不改盘面/历史/解法/步数；撤回会多花一点点时间）")
+            "两段解法之间，让滑块先随机试着推几步，看起来像在思考；"
+            "算出下一段会马上撤回（纯视觉，不改盘面与步数，会多花一点点时间）",
+            max_w=_mw)
 
         # 音效 / 背景音乐与两条音量滑条已挪到「音频」页（2026-11-07）：
         # 视觉页十几行，音效挤在末尾要滚很久才看得见；音频页要放「音效一览」，
@@ -4141,8 +4163,9 @@ class RendererMixin:
                     for k in SLOT_KEYS]
             bgm_detail = '音频模块未启用'
 
-        hint = ('素材放 assets/audio/sound/（音效）与 assets/audio/music/（背景乐）；'
-                '缺素材的项标「缺素材」，补上文件重启即生效')
+        hint = ('素材放 assets/audio/sound/（音效）与 assets/audio/music/'
+                '（背景乐，目录里所有音频随机轮播）；缺素材的项标「缺素材」，'
+                '补上文件重启即生效，背景乐不用重启、下一首就换了')
         _hint_lines = self._wrap_text(hint, self.status_font, width - 40)
         for _i, _line in enumerate(_hint_lines):
             self.screen.blit(self.status_font.render(_line, True, (150, 150, 150)),
@@ -4410,22 +4433,19 @@ class RendererMixin:
                 pygame.draw.line(self.screen, (255, 255, 255),
                                  (box.x + 6 + cw + 2, box.y + 4),
                                  (box.x + 6 + cw + 2, box.bottom - 4), 1)
-            # 名称 + 说明（说明截断防重叠）
+            # 名称 + 说明（说明自动换行；以前是超宽硬裁，玩家看到半句话）
             name = self.dialog_font.render(_label, True, self.colors['dialog_text'])
             self.screen.blit(name, (x + 234, row_y))
-            desc_surf = self.status_font.render(desc, True, (150, 150, 150))
             max_w = width - 234
-            if desc_surf.get_width() > max_w:
-                clip_r = pygame.Rect(x + 234, row_y + 18, max_w, 16)
-                self.screen.set_clip(clip_r)
-                self.screen.blit(desc_surf, (x + 234, row_y + 18))
-                self.screen.set_clip(None)
-            else:
-                self.screen.blit(desc_surf, (x + 234, row_y + 18))
+            desc_lines = self._wrap_text(desc, self.status_font, max_w) or ['']
+            for _i, _ln in enumerate(desc_lines):
+                self.screen.blit(self.status_font.render(_ln, True, (150, 150, 150)),
+                                 (x + 234, row_y + 18 + _i * 16))
+            extra_h = max(0, len(desc_lines) - 1) * 16
             self._settings_gather_rects[key] = {'toggle': toggle, 'box': box, 'dec': dec, 'inc': inc,
                                                 'enabled': enabled, 'vmin': vmin, 'vmax': vmax,
                                                 'vstep': vstep, 'vdef': vdef}
-            row_y += 52
+            row_y += 52 + extra_h
 
     def _fmt_gather_value(self, key: str, val) -> str:
         """聚拢参数值显示：整数原样、时长加 's'、浮点保留两位"""
@@ -4442,13 +4462,13 @@ class RendererMixin:
         from solver import SOLVER_ALGORITHMS, GUI_HIDDEN_SOLVER_ALGORITHMS
 
         row_y = y + 20
-        row_height = 36
+        row_height = 32
         option_x = x + 40  # 选项缩进
 
         # 标题
         title = self.dialog_font.render("选择求解算法：", True, (100, 200, 255))
         self.screen.blit(title, (x + 15, row_y))
-        row_y += row_height + 10
+        row_y += row_height + 8
 
         from solver import solver_supports
 
@@ -4483,49 +4503,44 @@ class RendererMixin:
             name_surface = self.dialog_font.render(algo_name, True, name_color)
             self.screen.blit(name_surface, (option_x, row_y + row_height // 2 - name_surface.get_height() // 2))
             if not supported:
+                # 右对齐到行尾：跟着名字宽度跑的话，长名字（如「混合求解（自动
+                # 规划）」）会把提示顶出可视区，或与名字挤在一起。
                 tip = self.status_font.render("（当前谜题不支持）", True,
                                               (110, 110, 115))
-                self.screen.blit(tip, (option_x + name_surface.get_width() + 8,
+                tip_x = x + width - 24 - tip.get_width()
+                self.screen.blit(tip, (tip_x,
                                        row_y + row_height // 2 - tip.get_height() // 2))
 
             row_y += row_height
 
         # 说明文字（紧跟选项之下，自动换行，不遮挡选项）
         desc = self._solver_description(self.solver_algorithm)
-        desc_y = row_y + 12
+        desc_y = row_y + 8
         max_w = width - 20
         wrapped = self._wrap_text(desc, self.status_font, max_w)
         for i, line in enumerate(wrapped):
             line_surf = self.status_font.render(line, True, (160, 160, 160))
-            self.screen.blit(line_surf, (x + 15, desc_y + i * 18))
+            self.screen.blit(line_surf, (x + 15, desc_y + i * 17))
 
         # 求解器日志开关（2026-11-14 用户要求）：说明区下面一行，
         # 打开后每次求解落一份详细过程，供 HTTP /solver/log 查询。
-        log_y = desc_y + len(wrapped) * 18 + 14
+        log_y = desc_y + len(wrapped) * 17 + 8
         self._settings_solver_log_toggle_rect, _ny = self._draw_switch_row(
             x, log_y, "求解器日志：", getattr(self, 'solver_log_enabled', False),
-            "每次求解记一份过程明细（算法/参数/各段耗时与指标/停机原因）到 config/solver_log.jsonl；HTTP GET /solver/log 可查")
+            "每次求解记一份过程明细，排查「为什么停下」时用；平时可以关着")
 
     def _solver_description(self, algo_key: str) -> str:
         """当前求解算法的说明文字"""
         descriptions = {
-            'ida_star': '使用 IDA* 迭代加深搜索，尽量找到最少步数解。速度非常慢。※ 旧搜索类算法，相对现有宏级流水线已低效，沉底仅备查。',
-            'fast': 'IDA* 优化模式：加大搜索步进，放宽节点/时间限制，优先聚拢，速度中等。不能保证求解成功。※ 旧搜索类算法，沉底仅备查。',
-            'greedy': '贪心爬山法：每步选当前最佳动作，速度中等但不保证最优。不能保证求解成功。※ 旧搜索类算法，沉底仅备查。',
-            'table':'根据数据库的数据快速找到最优算法（一般1s内），只对已有数据库的谜题有效。',
-            #'intelligence': 'AI求解：基于预训练评分模型，每步自动选最佳动作。需先用 solver.ml.train_ranker 训练模型。',
-            #'emd': 'EMD求解：用 EMD 距离贪心搜索，速度快但不保证成功。',
-            #'strategy': '策略求解：EMD 贪心 + 循环检测 + 随机扰动，成功率高于纯 EMD。',
-            #'distance': '距离求解：用神经网络预测剩余步数做贪心搜索，需先用 solver.ml.train_distance 训练模型。',
-            'gather': '单次聚拢（方形 / 三角形 / 米字格通用入口）：只跑一轮聚拢，提升聚拢度，不保证还原，实时显示进展。',
-            'gather_gradient': '梯度聚拢：参数自动决定，分阶段放宽参数多轮聚拢，每阶段播放动画后再续。理论上比单次聚拢更高效。',
-            # ➜ 填洞宏已并入本项（2026-10-12）：单独跑填洞遇到边缘缺口会全线
-            #   失败，而它本来就是这一支遇到多空位时会转去跑的那条路。
-            'gap_macro': '填洞补缺：多空位宏级机构（带移让位 + 粘上接走链）。单边缺口走「封壳 + 内部共轭 + 拆壳」；遇到多个空位或封闭孔洞则转去逐个 couple 填洞；最后一律带兜底救援。',
-            # 选块填空要先收集玩家点选，所以它多一步交互 —— 说明写在这里，
-            # 设置里就能看懂为什么它需要你先点两下。
-            'pick_fill': '选块填空：你点一个方块和一个空位（顺序不限），它只把这一块送进那个坑。按一次进入选取态，点齐后按 Ctrl+A 开始，没点齐时再按一次退出。只保证这个空位被填上，不保证整盘还原。',
-            'hybrid': '混合求解（自动规划）：有表先查表（最优且亚秒级）；无表按空位数路由——空位≤2 先混合流水线（聚拢+填洞+搜索），空位≥3 先补缺宏（couple→贴边setup→带移让位链）；一路落败另一路接力，补缺宏的部分成果可被混合续算；全败返回聚拢度提升最大的断点。',
+            'ida_star': '旧搜索算法，列表里已不再显示，仅留备查。',
+            'fast': '旧搜索算法，列表里已不再显示，仅留备查。',
+            'greedy': '旧搜索算法，列表里已不再显示，仅留备查。',
+            'table': '查表：题库里有现成答案就直接给出，一般一秒内。没收录的谜题用不了。',
+            'gather': '只跑一轮，把散开的块尽量聚到一起。不保证还原，三角和米字只有这一类。',
+            'gather_gradient': '一轮不够就放宽条件再来一轮，每轮之间有动画，比单次聚拢更耐跑。',
+            'gap_macro': '对着缺口逐个补：先把缺口围起来，再从内部把块换进去；缺口多了就一个一个填。',
+            'pick_fill': '你点一个方块、再点一个空位（顺序不限），它只把这一块送进那个坑。只保证这个空位被填上。',
+            'hybrid': '自动规划：有现成答案先查表；没有就先聚拢、再补缺口、最后搜索，一条路走不通就换另一条。矩形最推荐。',
         }
         return descriptions.get(algo_key, '')
 
@@ -4650,8 +4665,14 @@ class RendererMixin:
             return getattr(self, '_settings_audio_height',
                            30 + 120 + 48 + 200 + 26 + 144 + 10)
         elif self.settings_active_tab == 'gather':
-            # 警告行 + 适用范围行 + 每个参数一行(52) + 余量
-            return 26 + 22 + len(self._gather_param_specs) * 52 + 10
+            # 警告行 + 适用范围行 + 每个参数一行（52 + 说明换行多出的 16/行）
+            # 必须与 _draw_settings_gather 的逐行累加一致，否则滚动条量不对。
+            _desc_w = 660 - 30 - 234
+            total = 26 + 22 + 10
+            for _key, (_label, _vdef, _vmin, _vmax, _vstep, _desc) in self._gather_param_specs:
+                _lines = self._wrap_text(_desc, self.status_font, _desc_w) or ['']
+                total += 52 + max(0, len(_lines) - 1) * 16
+            return total
         elif self.settings_active_tab == 'file':
             return 420  # 存档只读 + 防止覆盖 + 操作日志 + 压缩存档 + 当前存档路径说明
         elif self.settings_active_tab == 'control':
@@ -4664,17 +4685,19 @@ class RendererMixin:
             return 34 + 7 * 60 + 8 + 60 + 22 + 32 + 10 \
                 + 18 * self._ext_feedback_lines(660 - 30)
         else:
-            # solver tab：标题 + 选项 + 说明文字（动态计算，超出时出现滚动条）
+            # solver tab：标题 + 选项 + 说明文字 + 日志开关。四段必须与
+            # _draw_settings_solver 的累加逐项一致，否则滚动条以为放得下、
+            # 日志开关被裁在可视区外，玩家滚也滚不到（2026-11-14 实测）。
             from solver import SOLVER_ALGORITHMS, GUI_HIDDEN_SOLVER_ALGORITHMS
-            title_h = 20 + 36 + 10
+            title_h = 20 + 32 + 8
             # 高度按 GUI 实际显示的项算（旧搜索三项已隐藏，否则底部会多出空档）
             options_h = len([k for k in SOLVER_ALGORITHMS
-                             if k not in GUI_HIDDEN_SOLVER_ALGORITHMS]) * 36
+                             if k not in GUI_HIDDEN_SOLVER_ALGORITHMS]) * 32
             desc = self._solver_description(getattr(self, 'solver_algorithm', 'hybrid'))
             desc_w = 500 - 30 - 20  # 内容宽 470 再减边距
-            desc_h = len(self._wrap_text(desc, self.status_font, desc_w)) * 18 + 12
-            # + 求解器日志开关一行（60），2026-11-14 新增
-            return title_h + options_h + desc_h + 60
+            desc_h = 8 + len(self._wrap_text(desc, self.status_font, desc_w)) * 17
+            # 说明后 8px + 开关行本身 60（_draw_switch_row 固定行高）
+            return title_h + options_h + desc_h + 8 + 60
 
     def _wrap_text(self, text: str, font, max_width: int) -> list[str]:
         """自动换行：按给定宽度将文本拆分为多行"""

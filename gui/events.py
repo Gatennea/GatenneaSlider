@@ -547,7 +547,8 @@ class EventsMixin:
                        not self._is_action_triggered(event, 'auto_solve') and \
                        not (event.key == pygame.K_SPACE and
                             (self._continuous_undo or self._continuous_redo)) and \
-                       not (_inf_active and self._is_action_triggered(event, 'shuffle')):
+                       not (_inf_active and self._is_action_triggered(event, 'shuffle')) and \
+                       not self._is_action_triggered(event, 'screenshot'):
                         continue
 
                 # 求解器运行期间阻止用户改動滑塊（只能停止求解）
@@ -580,6 +581,9 @@ class EventsMixin:
                             status = '开' if self.show_records_panel else '关'
                             self.macro_notify_msg = f"成绩面板：{status}"
                             self.macro_notify_timer = 90
+                        # 求解中也要能截：把算完的盘面存下来是最常见的用法
+                        elif self._is_action_triggered(event, 'screenshot'):
+                            self._screenshot_gui()
                         continue
                     elif event.type == pygame.MOUSEBUTTONDOWN:
                         # 允许菜单栏、下拉菜单和右侧面板操作
@@ -854,6 +858,9 @@ class EventsMixin:
                                         from gui import restart as _restart_mod
                                         _restart_mod.request_restart()
                                         self.running = False
+                                    elif i == 5:
+                                        # 截图：把当前画面存成 PNG（与 F12 同一实现）
+                                        self._screenshot_gui()
                                     file_clicked = True
                                     break
                             self.close_all_menus()
@@ -1401,6 +1408,11 @@ class EventsMixin:
                     
                     elif self._is_action_triggered(event, 'load'):
                         self.load_from_file()
+
+                    elif self._is_action_triggered(event, 'screenshot'):
+                        # 截图：F12。GUI 侧此前没有入口，只有外部控制能截
+                        # （HTTP / stdin），玩家在游戏里无法触发。
+                        self._screenshot_gui()
                     
                     elif self._is_action_triggered(event, 'undo') and not self._tut_board_locked():
                         self.undo()
@@ -2010,6 +2022,19 @@ class EventsMixin:
             return True, f"已保存截图 {data['path']}", data
         except Exception as e:
             return False, f"截图失败: {e}", None
+
+    def _screenshot_gui(self):
+        """GUI 入口的截图（F12 / 文件菜单 / 命令面板共用）。
+
+        与 `_do_screenshot` 的区别只有提示文字：外部控制那边要完整路径
+        （调用方拿去做后续处理），状态栏一行放不下全路径，这里只给文件名。
+        """
+        ok, msg, data = self._do_screenshot()
+        if ok and data:
+            msg = '截图已保存：' + os.path.basename(data['path'])
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = 90
+        return ok
 
     def _do_load_map(self, map_str, step=None):
         """从地图字符串导入局面（无对话框）。返回 (ok, message)。"""
@@ -4258,6 +4283,14 @@ class EventsMixin:
 
         if kind == 'updater_now':
             self._start_update_now()
+            return
+
+        if kind == 'screenshot':
+            # 截图：与 F12 / 文件菜单同一份实现（GUI 入口此前缺失，只有
+            # 外部控制那套 HTTP/stdin 通道能截）
+            self.close_all_menus()
+            self.show_help = False
+            self._screenshot_gui()
             return
 
         # 'none'：概念条目，没有可跳的界面，只弹一条说明提示

@@ -332,7 +332,10 @@ def b_group():
             if not (lo and ln):
                 bad2.append((name, seed, lo, ln))
     mo, mn = statistics.mean(s_off), statistics.mean(s_on)
-    check('B5 统一入口缺省即受益（平均聚拢度 > 显式关闭）', mn > mo + 1e-9,
+    # 2026-11-14：适配器接上 canonicalize 后，这些盘不再出现「整盘平移」的卡死，
+    # 踢步没有要救的停滯，收益为 0。判据从「必须更好」改为「不得更差」——
+    # 守的是回归，不再强求收益；踢步本身是否有效由 B1 单独验证。
+    check('B5 统一入口缺省不比显式关闭差', mn >= mo - 1e-9,
           f'关 {mo:.4f} → 缺省 {mn:.4f}  差 {mn - mo:+.4f}')
     check('B5b 统一入口两臂解法都合法', not bad2,
           f'非法 {len(bad2)} 例 {bad2[:3]}')

@@ -155,13 +155,28 @@ def _compact_json_dumps(data, indent=2, max_line_width=200):
 # 快捷键默认表，也是唯一底表：加载时按它补全缺失动作、文件损坏时按它回退，
 # GUI 启动时的初值同样用它（GUI.py 不再另抄一份）。加新动作必须同时改这里，
 # 否则已有配置文件的用户在加载时会被静默丢掉新键位（三角形 E/Z/X 就这么丢过）。
-DEFAULT_KEYBINDINGS = {
-    'undo': {'key': 'z', 'modifiers': ['ctrl']},
+def _key_text(key):
+    """配置里的键名 → 菜单上显示的写法。
+
+    单字母大写（z → Z）；功能键也大写（f12 → F12，别在菜单里显示小写 f12）；
+    其余多字母键名（pageup 等）原样给，交给调用方的映射表处理。
+    """
+    key = str(key or '')
+    if len(key) == 1:
+        return key.upper()
+    if key.startswith('f') and key[1:].isdigit():
+        return key.upper()
+    return key
+
+
+DEFAULT_KEYBINDINGS = {    'undo': {'key': 'z', 'modifiers': ['ctrl']},
     'redo': {'key': 'x', 'modifiers': ['ctrl']},
     'shuffle': {'key': 's', 'modifiers': ['alt']},
     'reset': {'key': 'r', 'modifiers': ['ctrl']},
     'save': {'key': 's', 'modifiers': ['ctrl']},
     'load': {'key': 'o', 'modifiers': ['ctrl']},
+    # 截图：画面存成 PNG（F12 是窗口截图类工具的行规键位）
+    'screenshot': {'key': 'f12', 'modifiers': []},
     'move_up': {'key': 'w', 'modifiers': []},
     'move_down': {'key': 's', 'modifiers': []},
     'move_left': {'key': 'a', 'modifiers': []},
@@ -339,7 +354,10 @@ class FileOpsMixin:
             '存档转换...',
             # 间接自举重启：点下去会 spawn 看门进程等本进程退出后自动重拉起，
             # 见 gui/restart.py。游戏自己不能重启自己，故走独立进程。
-            '重启（自动重开）'
+            '重启（自动重开）',
+            # 截图：把当前画面存成 PNG（screenshots/ 下自动命名）。此前只有
+            # 外部控制（HTTP/stdin）能截，玩家在游戏里没法触发。
+            f"截图 {self._format_menu_shortcut('screenshot')}",
         ]
         self.edit_menu_items = [
             f"撤销 {self._format_menu_shortcut('undo')}",
@@ -372,7 +390,7 @@ class FileOpsMixin:
             'space': 'Space', 'up': '↑', 'down': '↓', 'left': '←', 'right': '→',
             'return': 'Enter', 'escape': 'Esc', 'tab': 'Tab', 'backspace': 'Bksp',
         }
-        parts.append(key_display.get(key, key.upper() if len(key) == 1 else key))
+        parts.append(key_display.get(key, _key_text(key)))
         return '+'.join(parts)
 
     def load_last_state(self):

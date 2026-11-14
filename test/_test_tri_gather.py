@@ -15,9 +15,8 @@ r"""三角聚拢求解器回归（M1）。
 运行：
     D:\python\python.exe -u test\_test_tri_gather.py
 
-已知失败：C3c k=5 走脚本内 KNOWN_FAILS 白名单（打印 [KNOWN-FAIL] + 实际数值，
-不计入 FAIL），因此 CI **不再排除本文件**，其余 20 条 check 全部真跑。
-详见下方 KNOWN_FAILS 的三条铁律与待办清单 §十五。
+已知失败：无。C3c k=5 已于 2026-11-14 转绿（改走适配器入口后 7/8），白名单已
+清空；机制保留，后续再有失败照旧记账，不调低门槛。
 """
 
 import os
@@ -54,10 +53,8 @@ _R = []   # 白名单项转绿（需要销账）
 #      同步 docs/agent/待办清单.md §十五 + 去掉 CI 的 --ignore），
 #      否则白名单会永久残留、护栏名存实亡。
 KNOWN_FAILS = {
-    'C3c k=5 有复原能力（基线 > 0）':
-        '待办清单 §十五：k=5 大三角贪心卡住的既有边界（2026-10-03 基线 1/8 → 现 0/8，'
-        '末 score 0.825、均时 1.3s，远未触 25s 墙钟）。三分支差分实验证实与任何近期'
-        '合并无关，非回归；用户 2026-10-22 拍板保持现状，待求解器改进后再看能否回 ≥ 1/8',
+    # 2026-11-14 清空：C3c k=5 已转绿（走生产入口后 7/8），条目按铁律 ③ 销账。
+    # 表保留供后续记账，机制不拆。
 }
 
 
@@ -273,7 +270,9 @@ def c3_batch_report():
     # 成功局均步 1.0」是虚的：局面本来就有 12/16 聚拢，一步就能补完。
     # 实测把初始 score 压到 0.7 上下才反映真实难度（对照：方形 shuffle(15)
     # 初始 score 就是 0.50~0.75，本来就比三角低）。
-    sg = _solver()
+    # 走**生产入口**（适配器带 canonicalize / merit / 去环）。以前这里直接构造
+    # 裸骨架，裸骨架没有平移归一，整盘滑一格就算新状态，测出来 2/10 与产品
+    # 实际行为不符（2026-11-14 定位：同一批种子走适配器是 10/10）。
     for k, step, n, shuf in ((4, 2, 10, 120), (5, 2, 8, 200)):
         spec = TA.TriSpec(k, step)
         got = 0
@@ -284,8 +283,8 @@ def c3_batch_report():
             g = TriangleSliderMatrix(k)
             g.shuffle(shuf, step)
             init.append(TA.shape_score(TA.tri_coords(g), spec))
-            res = sg.solve(g, spec, step, max_steps=400, patience=150,
-                           max_wait_time=25)
+            res = TA.tri_gather_solve(g, step=step, max_steps=400,
+                                      patience=150, max_wait_time=25)
             got += bool(res['solved'])
             steps.append(res['steps'])
             secs.append(res['elapsed'])

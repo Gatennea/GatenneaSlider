@@ -341,7 +341,8 @@ def c3_batch_report():
     print('\n--- C3 批量报告（時間 > 步數；計劃 §8 M3 验收 ①）---')
     # 打乱强度：mi 一局是 4mn 块（4×4 = 64 块，是方形 4×4 的四倍），
     # 打乱步数要按块数放大，否则初始聚拢度太高、测出来的是虚的。
-    sg = _solver()
+    # 走**生产入口**（适配器带 canonicalize / merit / 去环）。裸骨架没有平移
+    # 归一，测到的是「不是产品的那条路」（2026-11-14 定位）。
     for m, n, step, n_puz, shuf in ((3, 3, 1, 6, 60), (3, 3, 2, 6, 80),
                                     (4, 4, 2, 5, 150)):
         spec = MA.MiSpec(m, n, step)
@@ -353,8 +354,8 @@ def c3_batch_report():
             g = MiSliderMatrix(m, n)
             g.shuffle(shuf, step)
             init.append(MA.shape_score(MA.mi_coords(g), spec))
-            res = sg.solve(g, spec, step, max_steps=300, patience=150,
-                           max_wait_time=25)
+            res = MA.mi_gather_solve(g, step=step, max_steps=300,
+                                     patience=150, max_wait_time=25)
             got += bool(res['solved'])
             steps.append(res['steps'])
             secs.append(res['elapsed'])
@@ -453,16 +454,16 @@ def d2_tri_no_regression():
     print('\n--- D2 共享骨架对三角无误伤 ---')
     from game_triangle import TriangleSliderMatrix
     from solver.ml import tri_adapter as TA
-    tri = ShapeGather(TA.shape_score, TA.enumerate_actions, TA.apply_action,
-                      TA.snap, TA.restore, TA.tri_coords)
+    # 也走生产入口：裸骨架不带 canonicalize，本来就只有 2/5 复原；
+    # 拿它当「三角有没有被 mi 改动伤到」的尺子，量的是不存在的路径。
     got = 0
     secs = []
     for seed in range(5):
         random.seed(seed)
         g = TriangleSliderMatrix(4)
         g.shuffle(120, 2)
-        res = tri.solve(g, TA.TriSpec(4, 2), 2, max_steps=400, patience=150,
-                        max_wait_time=25)
+        res = TA.tri_gather_solve(g, step=2, max_steps=400, patience=150,
+                                  max_wait_time=25)
         got += bool(res['solved'])
         secs.append(res['elapsed'])
     print(f'     k=4 shuffle(120): 复原 {got}/5  均时 {statistics.mean(secs):.2f}s')

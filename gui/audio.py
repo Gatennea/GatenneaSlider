@@ -6,7 +6,10 @@
 - `assets/audio/music/`  —— 背景音樂（bgm）
 
 檔名規則（素材命名不必遷就槽位）：
-- bgm  ：`music/` 下 `bgm.*`；沒有就取該目錄第一個音訊檔。
+- bgm  ：`music/` 下**所有**音訊檔進同一個播放池，**隨機輪播**（一首放完自動
+  換下一首，且不會連兩首同一支）。目錄內容每次換曲都重掃，所以玩家隨時往
+  `music/` 丟新曲子、刪掉舊的，下一首就會生效，不用重啟。單曲時就是它一直
+  循環。舊行為（只認 `bgm.*`、否則取目錄第一個）已於 2026-11-14 改掉。
 - slide：`sound/` 下所有 `slide*.*`，載入後輪換播放（S5-2 多樣本防識破，
   例如 slide1.wav … slide4.wav）；完全沒有才退回單一 `slide.*`。
 - fail / solved：`sound/` 下 `fail.*`（**別名 `reject.*`**，2026-11-07 用戶給的
@@ -54,7 +57,10 @@ api 概要：
 - play_slide(distance=None, duration_ms=None)
                                   滑動聲：播**一次**原始 slide 樣本（單次魔方轉動聲），
                                   只按滑動速度調音量；不拉伸、不循環、不合成
-- play_bgm() / stop_bgm()        背景音樂迴圈（mixer.music 串流，不把素材常駐記憶體）
+- play_bgm() / update_bgm() / stop_bgm()
+                                  背景音樂：music/ 下所有音訊檔隨機輪播（mixer.music
+                                  串流，不把素材常駐記憶體）；update_bgm 每幀檢查
+                                  「這一首放完了嗎」，放完就抽下一首（不連同日一首）
 
 滑動聲的硬要求（使用者 2026-11-07 反覆糾正後定稿）：
 1. **素材是「單次魔方轉動聲」**（70~165ms 的一次事件音），不是持續摩擦噪聲。
@@ -80,7 +86,7 @@ _EXTS = ('.ogg', '.wav', '.mp3')
 # 外部資源根目錄：音效在 assets/audio/sound/，背景樂在 assets/audio/music/
 _AUDIO_ROOT = 'assets/audio'
 
-_BGM_BASE = 'bgm'                       # music/ 下的優先檔名（無則取第一個音訊檔）
+_BGM_BASE = 'bgm'                       # 舊的優先檔名；現在只當推薦命名用，不再有特權
 _SLIDE_PREFIX = 'slide'                 # sound/ 下所有 slide*.* 做輪換
 _ONE_SHOT_SLOTS = ('fail', 'solved', 'click', 'keyboard')    # sound/ 下精確檔名
 # 槽位名之外的常用別名：素材常按「聲音內容」命名，按順序認。
@@ -207,7 +213,9 @@ class AudioManager:
         self._last_fail_ms = -10 ** 9
         # bgm 只記路徑、不預載：播放走 mixer.music 串流（待办清单 §二十.2，
         # 67MB wav 若走 Sound 會整份解進常駐記憶體，實測 +67MB）
-        self._bgm_path = None
+        # 2026-11-14：單曲 → 隨機輪播池（music/ 下全部音訊檔）
+        self._bgm_paths = []         # 播放池（按檔名排序，重掃時整體替換）
+        self._bgm_current = None     # 正在播的那一首（避免連兩首同一支）
         # 設定（由 GUI 推送；預設開，音量調低）
         self.sfx_enabled = True
         self.music_enabled = True
@@ -247,14 +255,9 @@ class AudioManager:
     def load_all(self):
         if not self.available:
             return
-        # bgm：music/ 下 bgm.* 優先，否則該目錄第一個音訊檔。
+        # bgm：music/ 下所有音訊檔進同一個播放池，隨機輪播。
         # 只記路徑不預載——啟動零成本，play_bgm 才開檔串流讀（§二十.2）
-        bgm = _find_in(self.music_dir, _BGM_BASE)
-        if bgm is None:
-            music_files = _list_audio(self.music_dir)
-            if music_files:
-                bgm = music_files[0]
-        self._bgm_path = bgm
+        self.rescan_music()
 
         # slide：載入所有 slide*.* 做多樣本輪換；一個都沒有才退回單一 slide.*
         # 這些是「單次轉動聲」事件音，原樣播放，不做任何加工或預算。
@@ -339,9 +342,34 @@ class AudioManager:
         return out
 
     def bgm_detail(self):
-        """背景乐素材名（设置页显示用；没载入返回「缺素材」）。"""
-        p = self._bgm_path
-        return os.path.basename(p) if p else '缺素材'
+        """背景乐状态（设置页显示用）：当前曲名 + 池子大小。"""
+        if not self._bgm_paths:
+            return '缺素材'
+        cur = os.path.basename(self._bgm_current or self._bgm_paths[0])
+        if len(self._bgm_paths) > 1:
+            return f'{cur}（music/ 共 {len(self._bgm_paths)} 首，随机轮播）'
+        return cur
+
+    def rescan_music(self):
+        """重扫 music/ 目录，返回当前的播放池。
+
+        每次换曲都会调用：玩家往目录里丢新曲子（或删掉旧的）后，下一首就按
+        新目录抽，不需要重启游戏。目录不存在时返回空池，不报错。
+        """
+        self._bgm_paths = _list_audio(self.music_dir)
+        if self._bgm_current not in self._bgm_paths:
+            self._bgm_current = None
+        return list(self._bgm_paths)
+
+    def _pick_bgm_path(self):
+        """从池里随机抽一首，且不抽正在播的这一首（单曲时只能抽它）。"""
+        paths = self._bgm_paths
+        if not paths:
+            return None
+        if len(paths) == 1:
+            return paths[0]
+        pool = [p for p in paths if p != self._bgm_current] or list(paths)
+        return random.choice(pool)
 
     def set_music_enabled(self, b):
         self.music_enabled = bool(b)
@@ -377,7 +405,7 @@ class AudioManager:
             self.set_slot_flags(slot_flags)
 
     def _apply_music_volume(self):
-        if self.available and self._bgm_path is not None:
+        if self.available and (self._bgm_paths or self._bgm_current):
             vol = 0.0 if self.muted else self.music_volume
             try:
                 pygame.mixer.music.set_volume(vol)
@@ -583,22 +611,83 @@ class AudioManager:
         except Exception as e:
             print(f'[audio] 播放 slide 失敗：{e}')
 
-    def play_bgm(self, loop=True):
+    def play_bgm(self, loop=False):
+        """播放池里随机抽一首（默认放一遍就结束，由 update_bgm 接下一首）。
+
+        loop=True 保留旧语义（把当前这首无限循环），给需要「一首到底」的场合用。
+        返回是否真的开播（池子空 / 被静音 / 已在播 → False）。
+        """
         if not (self.available and self.music_enabled and not self.muted):
-            return
-        if self._bgm_path is None:
+            return False
+        # 已在播就別重開頭：設定每改一次都會 sync，重播會一直跳回開頭
+        if pygame.mixer.music.get_busy():
+            return False
+        # 先放掉上一首的文件句柄：Windows 上 mixer 不鬆手，玩家就刪不掉正在
+        # 播過的那首（而且我們要在下一行重掃目錄）
+        self._release_bgm_file()
+        # 换曲顺手重扫目录：玩家丢进来的新曲子 / 删掉的旧曲子下一次换曲即生效
+        self.rescan_music()
+        tried = 0
+        total = max(1, len(self._bgm_paths))
+        while tried < total:
+            if loop and self._bgm_current:
+                path = self._bgm_current
+            else:
+                path = self._pick_bgm_path()
+            if path is None:
+                return False
+            try:
+                # 串流播放：每次启动都 load（開檔讀檔頭，不吃整份記憶體）；
+                # 停播後重 load 也保證各 pygame 版本行為一致
+                pygame.mixer.music.load(path)
+                pygame.mixer.music.set_volume(self.music_volume)
+                pygame.mixer.music.play(-1 if loop else 0)
+                self._bgm_current = path
+                return True
+            except Exception as e:
+                # 坏档（损坏 / 编码不支持）：从本轮池里剔除，换下一首再试
+                print(f'[audio] 播放 bgm 失敗（{os.path.basename(path)}）：{e}')
+                try:
+                    self._bgm_paths.remove(path)
+                except ValueError:
+                    pass
+                if self._bgm_current == path:
+                    self._bgm_current = None
+                tried += 1
+        return False
+
+    def _release_bgm_file(self):
+        """放掉 mixer.music 当前占用的文件。
+
+        Windows 上只要还占着句柄，玩家在资源管理器里就删不掉这首曲子；
+        换曲/停播时主动 unload（pygame 2.0+），老接口没有就降级只 stop。
+        """
+        if not self.available:
             return
         try:
-            # 已在播就別重開頭：設定每改一次都會 sync，重播會一直跳回開頭
+            pygame.mixer.music.unload()
+        except Exception:
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+
+    def update_bgm(self):
+        """每帧调用：这一首放完了就自动随机换下一首（连续轮播）。
+
+        只在「音乐开着 且 没静音」时接手；被关掉或静音期间绝不偷偷重启。
+        没有 pygame.mixer / 播放池为空时静默 no-op。
+        """
+        if not (self.available and self.music_enabled and not self.muted):
+            return
+        if not self._bgm_paths:
+            return
+        try:
             if pygame.mixer.music.get_busy():
                 return
-            # 串流播放：每次啟動都 load（開檔讀檔頭，不吃整份記憶體）；
-            # 停播後重 load 也保證各 pygame 版本行為一致
-            pygame.mixer.music.load(self._bgm_path)
-            pygame.mixer.music.set_volume(self.music_volume)
-            pygame.mixer.music.play(-1 if loop else 0)
-        except Exception as e:
-            print(f'[audio] 播放 bgm 失敗：{e}')
+        except Exception:
+            return
+        self.play_bgm()
 
     def stop_bgm(self):
         if not self.available:
@@ -607,3 +696,5 @@ class AudioManager:
             pygame.mixer.music.stop()
         except Exception:
             pass
+        # 停播后立即放掉句柄，别占着文件（见 _release_bgm_file）
+        self._release_bgm_file()

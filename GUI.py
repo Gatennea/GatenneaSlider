@@ -440,7 +440,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 注：下面这一列改动时，记得同步 events.py 里按**序号**分派的那一处
         # （它是硬编码索引，加/删一项就会点错）
         self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S',
-                                '重置 Ctrl+R', '---', '自动求解 Ctrl+Alt+S']
+                                '重置 Ctrl+R', '---', '自动求解 Ctrl+A']
         self.edit_menu_rects = []
         self.edit_menu_hovered = -1
 
@@ -875,13 +875,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'virtual_keyboard': '虚拟键盘',
             'metrics_panel': '调试面板',
             'records_panel': '成绩面板',
+            'command_palette': '命令面板',
+            'screenshot': '截图',
         }
 
         # 快捷键动作分组（用于设置对话框显示）
         # 重新分组：原「游戏操作」10 项混了移动/三角移动/面板，拆成「移动方块」
         # 与「显示面板」；原两个单元素分组「求解器」「宏操作」合并为「求解与宏」。
         self.keybinding_groups = [
-            ('文件', ['save', 'load']),
+            ('文件', ['save', 'load', 'screenshot']),
             ('编辑', ['undo', 'redo', 'shuffle', 'reset']),
             ('求解与宏', ['auto_solve', 'macro_record']),
             ('移动方块', ['move_up', 'move_down', 'move_left', 'move_right',
@@ -2311,6 +2313,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 处理终端指令
                 self.process_commands()
+
+                # 背景音乐轮播：这一首放完就自动随机换下一首（gui/audio.py）
+                if getattr(self, 'audio', None) is not None:
+                    self.audio.update_bgm()
 
                 # 更新动画
                 self.update_animation()

@@ -221,7 +221,7 @@ assets/                 # 外部資源統一根（執行期資源都收在此；
                         #   + 遊戲調色板棋盤背景，
                         #   tools/gen_boot_assets.py 生成；字體只在重生成時讀系統字體，
                         #   執行期與打包版只讀 PNG（詳 打包与发版.md §3）
-  audio/                #   音效與背景樂：sound/（slide*.wav 等）、music/（bgm.ogg）
+  audio/                #   音效與背景樂：sound/（slide*.wav 等）、music/（背景樂，目錄內全部音訊隨機輪播；現有 bgm.ogg）
                         #   ⚠️ music/ 只收壓縮格式；wav 母帶不進庫也不進包（打包与发版.md §4）
   ui/arrows/            #   方向鍵箭頭貼圖（renderer._arrow_asset_path 讀）
 test/                  # 無頭測試腳本（§9），命名 _test_*.py 或 test/
