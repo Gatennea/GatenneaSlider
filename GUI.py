@@ -440,7 +440,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 注：下面这一列改动时，记得同步 events.py 里按**序号**分派的那一处
         # （它是硬编码索引，加/删一项就会点错）
         self.edit_menu_items = ['撤销 Ctrl+Z', '重做 Ctrl+X', '打乱 Alt+S',
-                                '重置 Ctrl+R', '---', '自动求解 Ctrl+Alt+S']
+                                '重置 Ctrl+R', '---', '自动求解 Ctrl+A']
         self.edit_menu_rects = []
         self.edit_menu_hovered = -1
 
@@ -875,6 +875,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             'virtual_keyboard': '虚拟键盘',
             'metrics_panel': '调试面板',
             'records_panel': '成绩面板',
+            'command_palette': '命令面板',
         }
 
         # 快捷键动作分组（用于设置对话框显示）
