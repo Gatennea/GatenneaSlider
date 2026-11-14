@@ -1816,6 +1816,92 @@ def _align_rigid(coords, m, n, step, H, P, max_steps=12, max_comp=None,
     return (acts, cur, Pcur) if _same_line(Pcur, H) else (None, None, None)
 
 
+def _equal_pair(holes, outside):
+    """当前窗的洞簇×凸簇中取第一个「同 len k>=2 全等形状」对；无 → None。
+
+    相位不作要求：B8/T1 教训——相位不齐的全等对 _rigid_fill 仍可能以
+    「别的块填洞」取胜，相位检查是 _align_rigid 自己的事。
+    """
+    hc = _adj_clusters(holes)
+    pc = [c for c in _comps_ml(outside) if len(c) >= 2]
+    for Hc in hc:
+        for Pc in pc:
+            if len(Hc) == len(Pc) and _shape_rel(Hc) == _shape_rel(Pc):
+                return frozenset(Hc), frozenset(Pc)
+    return None
+
+
+def _reshape_neutral(coords, m, n, step, max_depth=6, max_states=800,
+                     deadline=None, cancel_check=None):
+    """搬洞整形（待办 §三十四「拼大洞：洞整形」）：搜一条「聚拢度不降」的
+    短合法移动序列，把局面变出「同 len k>=2 全等形状对」，交回 ①刚体直填 /
+    ②定向对齐接住。
+
+    背景：形状不全等的对（横 2 格洞 vs 竖 2 格凸起）在 _rigid_fill /
+    _align_rigid 入口就被形状检查拒掉——刚体不能旋转，只能把洞或凸起重排
+    成等形状对。2026-11-14 对 22 局真卡住终态实测
+    （experiments/_probe_stuck4.py --stage d，数据集只读不入库）：
+    · 只允许「洞必须动」的中性交换 → 10x10 硬卡局深度 1 即穷尽（洞区被
+      内部块锁死），必须先做内部重排（= 单格原语「需双层」的同款前提）；
+    · 放宽到「聚拢度不降即可」（与 _nondrop_moves / _shaping_progress
+      同一条纪律）后 4/4 真卡局全部找到：3 局深度 1（≤13 态、0.0s），
+      10x10 深度 5（469 态、7s）；整形＋①②的整链 _replay_apply 全部合法。
+
+    边 = _moves_of（与引擎回放 C2 逐条对拍过的同一枚举，5 元组带代表格，
+    保持动态 rep 语义不压平——agents.md §23）。只读搜索，失败零副作用。
+    返回 (acts, stats)：acts=None 没找到/预算尽；stats={depth, states,
+    reason}，reason ∈ {找到, 已有全等对, 深度上限, 状态穷尽, 状态上限,
+    时间到点, 取消}。
+    """
+    start = frozenset(coords)
+    _reg, ov0, holes, outside = window_of(start, m, n, step)
+    if _equal_pair(holes, outside) is not None:
+        return [], {'depth': 0, 'states': 1, 'reason': '已有全等对'}
+    frontier = [(start, [])]
+    seen = {start}
+    states = 1
+    reason = '深度上限'
+    depth_hit = 0
+    for depth in range(1, max_depth + 1):
+        depth_hit = depth
+        if cancel_check is not None and cancel_check():
+            return None, {'depth': depth, 'states': states, 'reason': '取消'}
+        if deadline is not None and time.time() >= deadline:
+            reason = '时间到点'
+            break
+        if not frontier:
+            reason = '状态穷尽'
+            break
+        nxtf = []
+        stop = None
+        for cur, path in frontier:
+            if stop is not None:
+                break
+            for act5, _comp, _delta, nxt in _moves_of(cur, m, n, step):
+                if nxt in seen:
+                    continue
+                _reg, ov, holes, outside = window_of(nxt, m, n, step)
+                if ov < ov0:
+                    continue          # 聚拢度不降（允许窗口重定位带来的提升）
+                seen.add(nxt)
+                states += 1
+                if _equal_pair(holes, outside) is not None:
+                    return list(path) + [act5], {
+                        'depth': depth, 'states': states, 'reason': '找到'}
+                nxtf.append((nxt, list(path) + [act5]))
+                if states >= max_states:
+                    stop = '状态上限'
+                    break
+                if deadline is not None and time.time() >= deadline:
+                    stop = '时间到点'
+                    break
+        frontier = nxtf
+        if stop is not None:
+            reason = stop
+            break
+    return None, {'depth': depth_hit, 'states': states, 'reason': reason}
+
+
 def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
                 max_depth=20, max_nodes=3000, max_k=4, max_comp=None,
                 allow_appr=None, verbose=False, progress_callback=None,
@@ -1843,6 +1929,11 @@ def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
         # 契约与全函数一致：主路径一律 (动作或None, 节点数) 元组——
         # 裸 None 会让调用方 `racts, used = _rigid_fill(...)` 解包炸
         return None, 0                       # 形状不全等 → 刚体填不进
+    # ⚠️ 2026-11-14 曾试过「奇偶不可 dock → 剪 carry 组」（P 平移相位守恒，
+    # min(H)-min(P) 不整除 step 则 Pcur==H 永不可达，12×12 实测白烧 385s），
+    # 被护栏打回：B8/T1 的 4×4 胜径正是不可 dock 对、且靠 carry 中间节点
+    # 抓到「别的块填洞」终局（快验 B8/D2/T1/T2/T5 五红）——奇偶区分不了
+    # 白烧与胜机，已回滚。白烧抑制改走 time_cap 方向，见待办 §三十四。
     if max_comp is None:
         max_comp = max(8, len(coords) // 2)
 
@@ -3084,7 +3175,8 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
         return out
 
     state = {'nodes': 0, 'best': [], 'exhausted': False, 'seen': set(),
-             'convoy_left': 8000, 'paste_left': 2, 'timeout': False}
+             'convoy_left': 8000, 'paste_left': 2, 'timeout': False,
+             'reshape_neutral_left': 3}
 
     def _tb_over():
         """总时间预算检查（尽早发现就停，2026-10-02 用户拍板）。"""
@@ -3106,6 +3198,28 @@ def solve_multi_search(coords, m, n, step, couple_hook=None,
         h_clusters = _adj_clusters(holes_c)
         if h_clusters:
             p_clusters = [c for c in _comps_ml(out_c) if len(c) >= 2]
+            # ③-b 搬洞整形（2026-11-14 刀三，待办 §三十四）：同 len 对存在
+            # 但一个全等都没有 → ①② 在 _rigid_fill/_align_rigid 入口的形状
+            # 检查就被拒；搜一条聚拢度不降的短路径把洞/凸起重排出全等对，当
+            # 整形边交回回溯（下一层 _reshape_edges 的 ①② 自然接上）。有全等对时
+            # 绝不触发、每次求解最多探 reshape_neutral_left 次——不白烧预算。
+            if (p_clusters and state['reshape_neutral_left'] > 0
+                    and state['convoy_left'] > 0 and not _tb_over()
+                    and not any(len(Hc) == len(Pc)
+                                and _shape_rel(Hc) == _shape_rel(Pc)
+                                for Hc in h_clusters for Pc in p_clusters)):
+                state['reshape_neutral_left'] -= 1
+                _emit(progress_callback, '搬洞整形', state['nodes'],
+                      '同尺寸对形状全不全等，中性整形搜索')
+                racts_r, st_r = _reshape_neutral(
+                    cur, m, n, step, deadline=t0 + time_budget,
+                    cancel_check=cancel_check)
+                state['convoy_left'] -= st_r.get('states', 0)
+                if racts_r:
+                    _emit(progress_callback, '搬洞整形', state['nodes'],
+                          '整形%s步变出全等对（%s）'
+                          % (len(racts_r), st_r.get('reason', '?')))
+                    out.append(racts_r)
             for Hc in h_clusters:
                 for Pc in p_clusters:
                     if len(Hc) != len(Pc):
