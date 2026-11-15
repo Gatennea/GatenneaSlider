@@ -24,6 +24,14 @@ class AutoSolveMixin:
     THINK_WALK_MS = 80
     THINK_REWIND_MS = 50
 
+    # 「找一步」的墙钟预算（毫秒）：「思考」演示选步每帧最多花这么久，到点就
+    # 放弃、下一帧再试。只约束这段装饰性游走，不碰真实求解/宏播放；大尺寸下
+    # 它是「不再掉帧」的唯一保证（依据见 _think_find_move 的实测注释）。
+    THINK_SELECT_BUDGET_MS = 6.0      # 枚举（opt + try_move）
+    THINK_SELECT_MAX_CANDS = 24       # 枚举候选上限
+    THINK_SCORE_MAX = 3               # 参与聚拢度打分的候选个数
+    THINK_SCORE_BUDGET_MS = 5.0       # 打分（gather_metrics）预算
+
     def _start_auto_solve(self):
         """启动/停止自动求解"""
         import threading
@@ -567,64 +575,105 @@ class AutoSolveMixin:
         才把所有 ``be_opted`` 清干净返回 None。走法来自真实缝/真实连通分量，
         所以游走看起来确实在推块，而不是凭空抖动。
 
-        启发式（待办 §三十四 第 4 条优化）：仍是随机抽步，但**优先选「做完之后
-        聚拢度几乎不变」的步**——避免游走把盘面越推越散，看起来像认真试推而非
-        乱晃。聚拢度取与 GUI 聚拢播放同一口径（``gather_metrics``，平移不变）。
-        gather 取不到（异形 / 引擎不支持 / 抛错）时退化回纯随机，绝不卡死。
+        启发式（待办 §三十四 第 4 条优化）：只抽**缝线两侧邻块**试推，并**优先
+        选「做完之后聚拢度几乎不变」的步**——避免游走把盘面越推越散，看起来像
+        认真试推而非乱晃。聚拢度取与 GUI 聚拢播放同一口径（``gather_metrics``，
+        平移不变）。gather 取不到（异形 / 引擎不支持 / 抛错）时退化回纯随机，
+        绝不卡死；整次选步受墙钟预算约束（待办 §四十三，见下方注释）。
         """
         import random
+        import time as _time
+
         game = self.game
         blocks = game.blocks
+        step = self.current_step
         try:
             gaps = list(self._ann_all_valid_gaps())
         except Exception:
             return None
 
-        # 枚举合法候选（不提交），记下每步选中块与终态。
-        #
-        # ⚠️ 只**抽样**枚举，不穷举：6×6 上「全部缝 × 全部块 × 全部方向」是
-        # 上千次引擎调用（实测 ~400ms/步），这才是「隔一下走一步」的真凶——
-        # 状态机节奏再快也追不上选步。游走本来就是半随机的装饰性试推，随机
-        # 抽一部分完全够看，且每步能压到十几毫秒（用户 2026-11-13 明确同意）。
-        # 抽样规模是「一帧预算」定的：3×6×2 ≈ 36 次 try_move，约 10ms，
-        # 60fps 下不至于让主循环掉帧（抽太多会在走步那一帧卡出「一顿」）。
-        max_blocks = 3
+        # ---- 选步预算（待办 §四十三，2026-11-16 无头实测）-----------------
+        # 旧实现是「随机抽 3 块 × 6 缝」，全不合法时**退回全量枚举**。12×12
+        # step=2 实测：
+        #   · 抽样路径 38~70ms/步（游走每步都掉帧，整段演示帧间隔均值 53ms、
+        #     最大 194ms ≈ 19fps）；
+        #   · 全量枚举兜底单次 **13.7s**（整个窗口无响应）。
+        # 根因两条：
+        #   1) 随机在全盘抽块时，大尺寸上几乎全落在同一大片里 → opt 判「整盘
+        #      平移」被拒 → 抽样命中率极低 → 频繁触发全量枚举；
+        #   2) 枚举量 = 块数 × 缝数 × 方向，随面积平方增长。
+        # 现在：只抽**缝线两侧的邻块**（它们才是缝切出来的连通片），并给整个
+        # 选步设墙钟预算；预算内找不到就返回 None（状态机下一帧再试）——
+        # 任何尺寸都不会越过一帧的余量。
+        deadline = _time.perf_counter() + self.THINK_SELECT_BUDGET_MS / 1000.0
+        max_cands = self.THINK_SELECT_MAX_CANDS
         max_gaps = 6
-        sample_blocks = (blocks if len(blocks) <= max_blocks
-                         else random.sample(blocks, max_blocks))
+        max_blocks = 3
         sample_gaps = (gaps if len(gaps) <= max_gaps
                        else random.sample(gaps, max_gaps))
 
-        def _enum(block_pool, gap_pool):
-            out = []  # (gt, line, d, fin, sel_blocks)
-            for gt, line in gap_pool:
-                dirs = list(self._ann_dirs_for_gap(gt))
-                for blk in block_pool:
-                    for b in blocks:
-                        b.be_opted = False
-                    try:
-                        game.opt(gt, line, blk)
-                    except Exception:
-                        continue
-                    sel = [b for b in blocks if b.be_opted]
-                    # 全员选中 = 整盘纯平移，引擎层本就拒绝，跳过
-                    if not sel or len(sel) == len(blocks):
-                        continue
-                    for d in dirs:
-                        try:
-                            fin = game.try_move(d, self.current_step)
-                        except Exception:
-                            fin = []
-                        if not fin:
-                            continue
-                        out.append((gt, line, d, list(fin), list(sel)))
-            return out
+        cands = []          # (gt, line, d, fin, sel_blocks)
 
-        cands = _enum(sample_blocks, sample_gaps)
+        def _near_gap_blocks(gt, line):
+            """缝 line 两侧的块（方形：切在 line 与 line+1 之间）。
+
+            异形（三角/米字/通用板型）的缝用字母族、不是行列索引，退回随机块。
+            """
+            if gt not in ('h', 'v'):
+                return (blocks if len(blocks) <= max_blocks
+                        else random.sample(blocks, max_blocks))
+            axis = 0 if gt == 'h' else 1          # h 缝按行、v 缝按列
+            above = line - step + 1               # 块跨 [r, r+step-1]，上邻块起点
+            below = line + 1                      # 下邻块起点
+            out = [b for b in blocks if b.location[axis] in (above, below)]
+            return (out if len(out) <= max_blocks
+                    else random.sample(out, max_blocks))
+
+        def _scan(gt, line, blk_pool):
+            """试 (缝, 块, 方向) 组合；到预算 / 候选上限就收手。"""
+            dirs = list(self._ann_dirs_for_gap(gt))
+            for blk in blk_pool:
+                if _time.perf_counter() >= deadline or len(cands) >= max_cands:
+                    return
+                for b in blocks:
+                    b.be_opted = False
+                try:
+                    game.opt(gt, line, blk)
+                except Exception:
+                    continue
+                sel = [b for b in blocks if b.be_opted]
+                # 全员选中 = 整盘纯平移，引擎层本就拒绝，跳过
+                if not sel or len(sel) == len(blocks):
+                    continue
+                for d in dirs:
+                    if len(cands) >= max_cands:
+                        return
+                    try:
+                        fin = game.try_move(d, step)
+                    except Exception:
+                        fin = []
+                    if not fin:
+                        continue
+                    cands.append((gt, line, d, list(fin), list(sel)))
+
+        for gt, line in sample_gaps:
+            if _time.perf_counter() >= deadline or len(cands) >= max_cands:
+                break
+            _scan(gt, line, _near_gap_blocks(gt, line))
+
         if not cands:
-            # 抽样恰好全不合法（小盘面 / 假引擎很常见）：退回全量枚举。
-            # 宁可这一步慢一次，也不能让游走卡死在「找不到步」。
-            cands = _enum(blocks, gaps)
+            # 有界兜底：异形缝族（字母族缝）/ 不规则盘面 / 假引擎下，「缝线邻块」
+            # 可能是空的（例如缝切在块内部，两侧都没有块起点）。这时再随机抽一批
+            # 块过一遍——**仍受同一墙钟预算与候选上限约束**，找不到就返回 None
+            # （状态机下一帧换一批再来）。绝不退回旧的「块×缝×方向」全量枚举：
+            # 12×12 实测那一支单次 13.7s，是整窗无响应的直接原因。
+            # 小盘直接全扫：块数少到一帧内扫得完，且能保证「有合法走法就找得到」。
+            for gt, line in sample_gaps:
+                if _time.perf_counter() >= deadline or len(cands) >= max_cands:
+                    break
+                pool = (blocks if len(blocks) <= 12
+                        else random.sample(blocks, max_blocks))
+                _scan(gt, line, pool)
 
         if not cands:
             # 找不到任何合法走法：清掉枚举残留的选中态，返回 None
@@ -633,6 +682,10 @@ class AutoSolveMixin:
             return None
 
         # —— 聚拢度稳定优先：按 |Δ聚拢度| 分档，档内随机；避开上一步反向 ——
+        # 打分（gather_metrics）按整盘规模走：12×12 单次实测 1.26ms，旧代码对
+        # 全部候选打分（24 个 ≈ 30ms）比选步预算还大，是掉帧的另一半。只对
+        # 随机抽出的 THINK_SCORE_MAX 个候选打分——游走是装饰，「少量候选里挑
+        # 最接近原聚拢度的那步」观感已足够，且成本与盘面尺寸无关。
         m = getattr(game, 'm', 0)
         n = getattr(game, 'n', 0)
         if m > 0 and n > 0:
@@ -641,8 +694,16 @@ class AutoSolveMixin:
                 pre = frozenset((b.location[0], b.location[1]) for b in blocks)
                 pre_score = gather_metrics(pre, m, n)['score']
                 unit = 1.0 / (m * n)  # 得分量化单元：每多/少一格重叠
+                pool = cands
+                if len(pool) > self.THINK_SCORE_MAX:
+                    pool = random.sample(pool, self.THINK_SCORE_MAX)
                 scored = []
-                for (gt, line, d, fin, sel) in cands:
+                score_deadline = (_time.perf_counter()
+                                  + self.THINK_SCORE_BUDGET_MS / 1000.0)
+                for i, (gt, line, d, fin, sel) in enumerate(pool):
+                    # 第一个无条件打分（保证 scored 非空），之后到预算就停
+                    if i and _time.perf_counter() >= score_deadline:
+                        break
                     # 用「选中块移到 final」推演终态坐标，不真正提交盘面
                     moved = {id(b): fin[i] for i, b in enumerate(sel)}
                     post = frozenset(

@@ -245,13 +245,17 @@ class ThinkWalkSelectionTest(unittest.TestCase):
                              '抽样没生效：opt 调了 %d 次' % host.game.opted)
 
     def test_sampling_fallback_never_starves(self):
-        """抽样恰好全不合法时必须退回全量枚举，不能「找不到步」卡死。
+        """抽样恰好全不合法时必须走**有界兜底**，不能「找不到步」卡死。
 
         _Host 的假盘只有 blocks[0] 能走；抽样 3 块有 1/4 概率漏掉它。
+        2026-11-16（待办 §四十三）：兜底从「全量枚举」改成「小盘全扫 / 大盘
+        再抽一批，且受同一墙钟预算约束」——12×12 上旧全量分支单次 13.7s，
+        正是「特大尺寸求解无响应」的直接原因。本用例锁的是「小盘仍保证有步」，
+        预算上限见 test/_test_think_select_budget.py。
         """
         host = _Host(selection_enabled=True)
         misses = [i for i in range(16) if _run(host, {PRE_SET, A_POST}) is None]
-        self.assertEqual(misses, [], '抽样抽空后没走全量兜底，游走会卡死')
+        self.assertEqual(misses, [], '有界兜底也没兜住，游走会卡死')
 
 
 if __name__ == '__main__':
