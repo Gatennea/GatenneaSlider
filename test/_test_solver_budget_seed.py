@@ -120,13 +120,16 @@ def _spy_vac(*a, **kw):
     return _orig_vac(*a, **kw)
 
 
-_c66 = make_coords(6, 6, 3)
+# 2026-11-16 §四十八 根因修复：B1 原用 stage_budget=3（墙钟预算），预算
+# 绑死后两次求解在预算内完成的搜索量随负载漂移 → 切点不同 → 逐位比较
+# 天然不稳（全套负载下红、隔离绿；差分负载探针 r1 慢一倍即 44 vs 61 步）。
+# 改用 shuffle seed=8 的快速局面 + 默认预算（gap 30s / hybrid 90s，该局面
+# 完整解 ~8.6s、≥3.5 倍余量不会绑死），B1 只验证种子确定性这一件事。
+_c66 = make_coords(6, 6, 8)
 gs.solve_multi_vacancy = _spy_vac
 try:
-    _r1 = auto_solve(build_game(_c66, 6, 6), 2,
-                     stage_budget=3, rng_seed=42)
-    _r2 = auto_solve(build_game(_c66, 6, 6), 2,
-                     stage_budget=3, rng_seed=42)
+    _r1 = auto_solve(build_game(_c66, 6, 6), 2, rng_seed=42)
+    _r2 = auto_solve(build_game(_c66, 6, 6), 2, rng_seed=42)
 finally:
     gs.solve_multi_vacancy = _orig_vac
 check('B1 rng_seed=42 同局面两次解链逐位一致（6×6）',
