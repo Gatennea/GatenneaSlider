@@ -107,9 +107,23 @@ class Scrollbar:
     def on_mouse_up(self):
         self._dragging = False
 
-    def on_wheel(self, dy, step=30):
+    def on_wheel(self, dy, step=None):
+        """滚轮滚动。step=None = 自适应步长（2026-11-17 §四十四.4）。
+
+        旧口径固定 30px/格：设置各页内容短（多数页 max_scroll ≤ ~750px），
+        30px 相当于一格滚 2~6% 内容，观感利落；帮助全文内容长达数千 px，同样
+        30px 只有 ~0.6%，滚一整条轨道要上百格 —— 用户 2026-11-17 报
+        「帮助的滑动条灵敏度太低，似乎和设置用的不是同一个」。
+        两处其实共用同一组件、同一参数，差异全在「步长占总内容的比例」。
+        改为按总内容 4% 取步长、下限仍 30px：短内容（设置多数页/命令面板）
+        max_scroll×4% ≤ 30 时完全退化为旧行为（这些页作为用户认定的基准
+        零变化），长内容（帮助全文/快捷键全表）步长随长度放大，两处相对
+        灵敏度就此一致。显式传 step 仍走固定步长语义（现无调用方）。
+        """
         if not self.knob_rect:
             return
+        if step is None:
+            step = max(30, int(self._max_scroll() * 0.04))
         self.set_scroll(self.scroll - dy * step)
 
     def on_key(self, key, step=30, page=200):
