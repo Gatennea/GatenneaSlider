@@ -24,6 +24,31 @@ class AutoSolveMixin:
     THINK_WALK_MS = 80
     THINK_REWIND_MS = 50
 
+    # ── 段间「思考演示」选步的一帧预算（待办 §四十三，2026-11-15）──────────
+    # 选步是**主线程同步**函数，每 walk_frames 帧跑一次；它多花 1ms，主循环
+    # 就少 1ms。实测（真实引擎 + 公式生成盘面 + 离屏真 GUI 60fps 逐帧采样）：
+    #   · 抽样命中路径 18 次 opt：6×6 5ms → 12×12 22ms → 14×14 27~43ms，
+    #     单次 opt 成本随盘面积线性涨，14×14 已超一帧 16.7ms；
+    #   · 抽样落空退回「全量枚举」时无上限：blocks × gaps 次 opt，
+    #     6×6 0.15s → 12×12 6.5s → 14×14 5096 次 / 10.5s。⚠️ 口径：
+    #     这组是**强制抽样落空**量到的路径上界，真实连通打乱盘面实测
+    #     0/100 触发；它是「一旦触发就是秒级」的兜底风险，不是高频路径。
+    #     真正随尺寸稳定恶化的是抽样命中路径本身（上一条）。
+    #   · 真 GUI 段间等待 300 帧（叠加后台求解 GIL）：14×14 有 92 帧
+    #     >50ms、19 帧 >100ms、最大 156ms；关掉思考演示后降到 28 帧
+    #     >50ms、最大 103ms ⇒ 选步是主要放大器，剩余 28 帧是 GIL 主干
+    #     （线程模型硬限制，治本要独立进程，不在本次最小改动里）。
+    #     10×10 最大 93ms / 12×12 最大 146ms，尺寸越大越明显。
+    # 修法＝一次选步（抽样 + 兜底 + 打分）共用同一个墙钟预算与 opt 次数
+    # 上限，到点立即用已收集候选收尾；游走是装饰性试推，宁可这一帧不走，
+    # 也绝不为了「找最优一步」拖住主线程。不按尺寸硬切（§四十三 复盘：
+    # 按尺寸猜路由在 8×8 近复原盘实测回归 10~100 倍），预算随成本自适应。
+    # 前两闸给 None / 0 即关闭该闸（仅供实验与护栏反向验证用）；
+    # THINK_MAX_SCORED 必须 ≥ 1（它是候选数上限，0 会一个都不打分）。
+    THINK_STEP_BUDGET_S = 0.012      # 一次选步的墙钟预算（秒），约一帧的 3/4
+    THINK_MAX_OPT_CALLS = 48         # 一次选步 opt 调用总上限（抽样+兜底共享）
+    THINK_MAX_SCORED = 16            # 参与 Δ聚拢度打分的候选数上限
+
     def _start_auto_solve(self):
         """启动/停止自动求解"""
         import threading
@@ -583,11 +608,23 @@ class AutoSolveMixin:
         # 枚举合法候选（不提交），记下每步选中块与终态。
         #
         # ⚠️ 只**抽样**枚举，不穷举：6×6 上「全部缝 × 全部块 × 全部方向」是
-        # 上千次引擎调用（实测 ~400ms/步），这才是「隔一下走一步」的真凶——
-        # 状态机节奏再快也追不上选步。游走本来就是半随机的装饰性试推，随机
-        # 抽一部分完全够看，且每步能压到十几毫秒（用户 2026-11-13 明确同意）。
-        # 抽样规模是「一帧预算」定的：3×6×2 ≈ 36 次 try_move，约 10ms，
-        # 60fps 下不至于让主循环掉帧（抽太多会在走步那一帧卡出「一顿」）。
+        # 上千次引擎调用（实测 ~400ms/步），这是「隔一下走一步」的老真凶。
+        # 2026-11-15 补：抽样本身仍会随盘面积变贵（单次 opt 成本 ∝ 面积），
+        # 且旧版「抽样落空→全量枚举」**没有上限**，特大尺寸一旦触发就是秒级
+        # 卡死（见类常量 THINK_STEP_BUDGET_S 的实测）。故一次选步全程受
+        # 「墙钟预算 + opt 次数」双闸约束，抽样与兜底共用同一份剩余预算。
+        # 到点就用已收集到的候选收尾；游走是装饰性试推，宁可这一帧不走，
+        # 也不为「找最优一步」拖住主线程。下一帧状态机会再试，不会卡死。
+        budget_s = getattr(self, 'THINK_STEP_BUDGET_S', 0.012)
+        max_calls = getattr(self, 'THINK_MAX_OPT_CALLS', 48)
+        max_scored = getattr(self, 'THINK_MAX_SCORED', 16)
+        deadline = (time.perf_counter() + budget_s) if budget_s else None
+        calls_left = [max_calls] if max_calls else [10 ** 9]  # 列表：闭包内可变
+
+        def _past_budget():
+            return ((deadline is not None and time.perf_counter() >= deadline)
+                    or calls_left[0] <= 0)
+
         max_blocks = 3
         max_gaps = 6
         sample_blocks = (blocks if len(blocks) <= max_blocks
@@ -600,6 +637,9 @@ class AutoSolveMixin:
             for gt, line in gap_pool:
                 dirs = list(self._ann_dirs_for_gap(gt))
                 for blk in block_pool:
+                    if _past_budget():
+                        return out
+                    calls_left[0] -= 1
                     for b in blocks:
                         b.be_opted = False
                     try:
@@ -621,9 +661,10 @@ class AutoSolveMixin:
             return out
 
         cands = _enum(sample_blocks, sample_gaps)
-        if not cands:
-            # 抽样恰好全不合法（小盘面 / 假引擎很常见）：退回全量枚举。
-            # 宁可这一步慢一次，也不能让游走卡死在「找不到步」。
+        if not cands and not _past_budget():
+            # 抽样恰好全不合法（小盘面 / 假引擎很常见）：在**剩余预算内**
+            # 补试全量，不再无上限穷举。预算到点就接受「这一帧不走」，
+            # 状态机下一帧会再试（tick 的 walk 节奏不受影响）。
             cands = _enum(blocks, gaps)
 
         if not cands:
@@ -642,7 +683,10 @@ class AutoSolveMixin:
                 pre_score = gather_metrics(pre, m, n)['score']
                 unit = 1.0 / (m * n)  # 得分量化单元：每多/少一格重叠
                 scored = []
-                for (gt, line, d, fin, sel) in cands:
+                # 每个候选都要构造全盘 frozenset + gather_metrics，成本同样
+                # 随面积涨；与枚举共用同一份一帧预算，到点就用已打分的候选
+                # 收尾（scored 至少有一项，因为第一个候选无条件算）。
+                for (gt, line, d, fin, sel) in cands[:max_scored]:
                     # 用「选中块移到 final」推演终态坐标，不真正提交盘面
                     moved = {id(b): fin[i] for i, b in enumerate(sel)}
                     post = frozenset(
@@ -653,6 +697,8 @@ class AutoSolveMixin:
                     post_score = gather_metrics(post, m, n)['score']
                     scored.append((abs(post_score - pre_score),
                                    (gt, line, d, fin, sel)))
+                    if len(scored) >= max_scored or _past_budget():
+                        break
                 scored.sort(key=lambda x: x[0])
                 best_d = scored[0][0]
                 # 得分是 unit 的整数倍，同 Δ 的算同一档（容浮点误差）

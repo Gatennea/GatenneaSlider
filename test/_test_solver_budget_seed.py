@@ -17,6 +17,12 @@ A2 随之改盯新接线，「不许退回 stage_budget（每候选各一份）�
 顺带钉住 test/conftest.py 的清理只能用 os.replace（安全删除钩子按本轮
 累计删除计数，第 50 次起会在 finally 抛异常，全套级联 105 条假红）。
 
+⚠️ 2026-11-16 B1 口径修正：墙钟预算下不能断言同种子解链逐位一致。
+同一 6×6 盘 + stage_budget=3 连跑两次都撞预算，前 44 步逐位相同，
+第二次只因截止晚到多走 25 步（44 / 69 段）；不限时两次都是 136 步全解
+且逐位一致。差异来自截止时机而非 rng 链，故 B1 改到不限时下断言全解链
+一致 + 终态复原（判据更强，且不再随机器负载抖动）。数据见当日工作日誌。
+
 执行：D:/python/python.exe -u test/_test_solver_budget_seed.py
 """
 import inspect
@@ -121,18 +127,33 @@ def _spy_vac(*a, **kw):
 
 
 _c66 = make_coords(6, 6, 3)
+
+
+def _full_chain_ok(result, coords, m, n):
+    """全解链逐段重放并确认终态复原，比只比 fp 多一层语义。"""
+    if not isinstance(result, tuple):
+        return False
+    g = build_game(coords, m, n)
+    if not _replay_apply(g, a5_of(result[0], result[1]), m, n, 2):
+        return False
+    return is_solved_by_profile(
+        frozenset(tuple(b.location) for b in g.blocks), m, n)
+
+
 gs.solve_multi_vacancy = _spy_vac
 try:
+    # 预算会按墙钟截断：挂在这里的「逐位一致」会随截止时机翻红，
+    # 可复现性判据必须在不限时下做（根因与实测见文件头）。
     _r1 = auto_solve(build_game(_c66, 6, 6), 2,
-                     stage_budget=3, rng_seed=42)
+                     stage_budget=0, rng_seed=42)
     _r2 = auto_solve(build_game(_c66, 6, 6), 2,
-                     stage_budget=3, rng_seed=42)
+                     stage_budget=0, rng_seed=42)
 finally:
     gs.solve_multi_vacancy = _orig_vac
-check('B1 rng_seed=42 同局面两次解链逐位一致（6×6）',
-      fp(_r1) == fp(_r2), '%s / %s' % (type(_r1).__name__,
-                                       len((_r1[0] if isinstance(_r1, tuple)
-                                            else _r1.get('actions') or []))))
+check('B1 rng_seed=42 同局面两次全解链逐位一致且终态复原（6×6，不限时）',
+      fp(_r1) == fp(_r2) and _full_chain_ok(_r1, _c66, 6, 6),
+      '%s / %s' % (type(_r1).__name__,
+                   len(_r1[0]) if isinstance(_r1, tuple) else -1))
 check('B2 rng 确实注入到多空位驱动（不是被 **kwargs 吞掉的摆设）',
       len(_captured) >= 2
       and all(isinstance(r, random.Random) for r in _captured[:2]),

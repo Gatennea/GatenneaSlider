@@ -18,6 +18,14 @@ import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 
+class _BadRequestBody(ValueError):
+    """请求体畸形：Content-Length 非法 / JSON 非法 / 顶层不是对象。
+
+    do_POST 必须在通用 except 之前单独捕获它回 400；否则会被当成
+    服务器内部错误 500，或干脆在 try 外冒泡导致连接重置。
+    """
+
+
 # 外部控制 API 索引（GET /help 与游戏内「下载外部控制教程」同源生成）。
 # ⚠️ 新增/改动端点时必须同步更新本表——test/_test_external_control.py
 # 会逐条断言表内每个 (path, method) 都能在下方分派代码中找到，
@@ -680,15 +688,30 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             return {"ok": False, "message": "命令处理超时"}
 
     def _read_body(self):
-        """读取请求 body 并解析为 JSON"""
-        length = int(self.headers.get('Content-Length', 0))
+        """读取请求 body 并解析为 JSON 对象；非法输入抛 _BadRequestBody。
+
+        空 body（Content-Length 缺省或 0）仍按 {} 处理，供 /undo 等无参端点用。
+        """
+        raw_length = self.headers.get('Content-Length', '0')
+        try:
+            length = int(raw_length)
+        except (TypeError, ValueError):
+            raise _BadRequestBody('Content-Length 必须是整数') from None
+        if length < 0:
+            # 负数会让 rfile.read(-1) 一直读到 EOF，挂住请求线程。
+            raise _BadRequestBody('Content-Length 不能为负数')
         if length == 0:
             return {}
         raw = self.rfile.read(length)
         try:
-            return json.loads(raw.decode('utf-8'))
+            body = json.loads(raw.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return {}
+            raise _BadRequestBody('请求体不是合法 JSON') from None
+        if not isinstance(body, dict):
+            # 多数端点直接 body.get(...)，非 dict 会抛 AttributeError 变 500；
+            # 与 /settings、/solver/params 已有的 400 口径统一在这里。
+            raise _BadRequestBody('请求体必须是 JSON 对象')
+        return body
 
     def do_OPTIONS(self):
         self._send_cors()
@@ -846,11 +869,18 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         from urllib.parse import urlparse
         path = urlparse(self.path).path.rstrip('/')
-        body = self._read_body()
         try:
             if not self._check_auth():
                 return
+            body = self._read_body()
             self._dispatch_post(path, body)
+        except _BadRequestBody as e:
+            # 请求本身畸形：明确回 400，别让连接重置或冒充服务器内部错误。
+            # 必须排在通用 except 之前，也不能让业务 ValueError 都变成 400。
+            try:
+                self._send_json({"ok": False, "message": str(e)}, 400)
+            except Exception:
+                pass
         except Exception:
             # 非致命：控制台输出完整堆栈，HTTP 返回错误
             traceback.print_exc()
