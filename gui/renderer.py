@@ -69,14 +69,40 @@ class RendererMixin:
         若按 float 走（如 zoom=1.9 时格宽 114、缝 7.6、步进 121.6），
         `pygame.Rect` 对 float 坐标是截断，相邻两块的截断误差不相等，
         于是同一块棋盘上出现「这条缝 13px、那条 14px」——观感就是缝不齐。
-        先把格宽/缝隙各自四舍五入成整数，步进 = 格宽 + 缝隙 也就恒为整数，
-        任何两列（行）之间的缝都严格等于同一个 `缝隙` 值。
+        先把步进取整成整数，格宽/缝隙由步进拆分（缝隙 ≥1），任何两列（行）
+        之间的缝都严格等于同一个值。
+
+        **为什么先取步进再拆（2026-11-17，修 §四十四.1 缩放抖动）**：
+        旧口径是 `格宽=round(格宽设计×zoom)`、`缝隙=round(缝隙设计×zoom)`、
+        `步进=两者相加`——两次独立取整的合计误差 ε∈[-1,1] 会随 zoom 连续
+        变化而翻转，第 lc 列的屏幕位置相对浮点真值偏差 ≈ lc×ε，翻转瞬间
+        整列回跳（6×6 实测滑条缩放全程 1782 次逆向跳变、最大 8px）。
+        改为 `步进=round(步进设计×zoom)`（单次取整，误差 ≤0.5）后，位置
+        只由步进决定；格宽/缝隙只负责把步进拆成「块多宽、缝多宽」，均匀
+        缝不受害。配合 `_snap_zoom` 把连续缩放的 zoom 吸附到整步长格点
+        （(cell+gap)×zoom 恒为整数），缩放过程误差恒为 0 → 无抖动，
+        实测逆向跳变 0 次（experiments/_probe_zoom_jitter.py）。
 
         与 SVG / canvas 版对齐的口径：那边坐标本身就是整数像素，故从来没这个毛病。
         """
-        cell = max(1, int(round(self.cell_size * self.zoom)))
-        gap = max(1, int(round(self.gap_width * self.zoom)))
-        return cell, gap, cell + gap
+        step = max(2, int(round((self.cell_size + self.gap_width) * self.zoom)))
+        gap = max(1, min(step - 1, int(round(self.gap_width * self.zoom))))
+        return step - gap, gap, step
+
+    def _snap_zoom(self, z):
+        """把 zoom 吸附到「整步长」格点：(cell+gap)×zoom 为整数。
+
+        连续缩放（右侧面板滑条 / 设置-视觉页滑条 / Ctrl+滚轮）期间 zoom 只
+        取这些格点时，`_board_px` 的步进 = 设计步进×zoom 精确无误差，
+        全盘位置随 zoom 连续跟走（量化步长 = 1/(cell+gap) ≈ 0.0156，
+        滑条与滚轮的手感无感知），缩放过程画面不再抖（§四十四.1）。
+        静态均匀缝与整数像素两条既有铁律都不破。
+        """
+        S = self.cell_size + self.gap_width
+        if S <= 0:
+            return z
+        z = round(z * S) / S
+        return max(self.min_zoom, min(self.max_zoom, z))
 
     def _slider_corner_radius(self):
         """圓角半徑的**兜底上限**（像素），僅在板型沒定義圓角時使用。
@@ -1841,14 +1867,24 @@ class RendererMixin:
                 ry = int(round(board_y + lr * step_px)) + cam_y
                 # 右鄰：豎縫段，只覆蓋這一行的高度
                 if (lr, lc + 1) in occupied and self.selected_gap != ('v', c):
+                    # 兩端各延伸一個縫寬（2026-11-17 修 §四十四.2）：
+                    # 舊段只到塊邊為止，橫豎縫的十字交叉角（gap×gap 的小方塊）
+                    # 沒有任何一段蓋到 → 關網格後交叉處露背景（「交叉處有空白」）。
+                    # 延伸段落在行縫區（上/下塊之間），不侵入任何塊，開網格態
+                    # 同一位置本來就有整條縫帶鋪滿，畫風與開態對齊。
                     pygame.draw.rect(self.screen, self.colors['gap'],
-                                     pygame.Rect(rx + scaled_cell, ry,
-                                                 scaled_gap, scaled_cell))
+                                     pygame.Rect(rx + scaled_cell,
+                                                 ry - scaled_gap,
+                                                 scaled_gap,
+                                                 scaled_cell + 2 * scaled_gap))
                 # 下鄰：橫縫段，只覆蓋這一列的寬度
                 if (lr + 1, lc) in occupied and self.selected_gap != ('h', r):
+                    # 同上：左右各延伸一個縫寬補齊交叉角
                     pygame.draw.rect(self.screen, self.colors['gap'],
-                                     pygame.Rect(rx, ry + scaled_cell,
-                                                 scaled_cell, scaled_gap))
+                                     pygame.Rect(rx - scaled_gap,
+                                                 ry + scaled_cell,
+                                                 scaled_cell + 2 * scaled_gap,
+                                                 scaled_gap))
 
         # 动画 / 拖拽的渲染位置映射已在函数开头由 _frame_render_positions()
         # 统一构建（pos_map）——相机偏移和下面的滑块循环共用同一份，避免
@@ -3401,6 +3437,58 @@ class RendererMixin:
         # 中间：当前谜题信息。样式局就用样式标题占这个位置——它不是一个
         # 官方档位，写「谜题：1~3*3」会让这局看起来是预设谜题；样式名本身
         # 已经是「在玩什么」最准确的答案，所以不再另起一截「目标：样式…」。
+        #
+        # ---- 段间避让（2026-11-17 §四十四.6 防重合）----
+        # 背景：宏状态段（录制红 / 执行宏蓝）原本从缩放段向左**无界**延伸，
+        # 谜题段硬居中**不避让**——宏名一长就跨过中线与谜题段叠字（用户报
+        # 「求解器运行时宏指令的蓝色字提示有时会和底栏其他字重合」）。
+        # 方案：左组右界当墙；宏段先定位（超宽按省略号截断）；谜题段在
+        # [左组右界, 宏段左界] 的夹缝内居中，放不下也截断。顺序 = 缩放 →
+        # 宏段算位 → 谜题段夹缝居中 → 宏段最后画（关键动态信息压最上层）。
+        _left_right = engine_x + engine_surface.get_width()
+
+        # 右侧：缩放比例（右锚固定，宏段的右界依赖它）
+        zoom_text = f"缩放：{int(self.zoom * 100)}%"
+        zoom_surface = self._status_text_surface(zoom_text, self.colors['status_text'])
+        zoom_x = self.screen_width - zoom_surface.get_width() - self.right_panel_width - 10
+        self.screen.blit(zoom_surface, (zoom_x, text_y))
+        self._status_zoom_rect = zoom_surface.get_rect(topleft=(zoom_x, text_y))
+
+        # 宏状态指示：先算文本/宽度（超宽截断），暂不画
+        _seg_text, _seg_color = None, None
+        if self.macro_recording:
+            _seg_text = f"🔴 录制中 ({len(self.macro_recording_steps)}步)"
+            _seg_color = (255, 80, 80)
+        elif self.macro_executing:
+            _seg_text = (f"执行宏: {self.macro_exec_name} "
+                         f"({self.macro_exec_index}/{len(self.macro_exec_ops)})")
+            _seg_color = (100, 200, 255)
+        _macro_surface = None
+        if _seg_text:
+            _macro_surface = self.status_font.render(_seg_text, True, _seg_color)
+            # 先给常显的谜题段留出它的理想宽度，宏段（临时信息）只用剩余
+            # 并超宽截尾——宏名截断无所谓，谜题是常驻信息不能被挤掉
+            # （2026-11-17 首版让宏贪心占满、谜题被挤到让位，实测改此规则）。
+            _avail = (zoom_x - 20) - (_left_right + 20)
+            _pw0 = self.status_font.size(
+                (f'样式：{getattr(self, "_ann_style_goal", None)}'
+                 if getattr(self, '_ann_style_goal', None) else
+                 f"谜题：{self._current_puzzle_key()}"))[0]
+            _macro_avail = _avail - _pw0 - 20   # 20 = 谜题段与宏段的间隙
+            if _macro_avail < 80:
+                _macro_avail = 80               # 宏段至少留个可读下限
+            if _macro_surface.get_width() > _macro_avail:
+                _t = _seg_text
+                while _t and self.status_font.size(_t + '…')[0] > _macro_avail:
+                    _t = _t[:-1]
+                if _t and _t != _seg_text:
+                    _seg_text = _t + '…'
+                    _macro_surface = self.status_font.render(
+                        _seg_text, True, _seg_color)
+        macro_x = (zoom_x - _macro_surface.get_width() - 20
+                   if _macro_surface is not None else zoom_x)
+
+        # 谜题段：在 [左组右界, 宏段左界] 夹缝内居中；夹缝不够宽则截断
         style_goal = getattr(self, '_ann_style_goal', None)
         if style_goal:
             puzzle_text = f'样式：{style_goal}'
@@ -3410,28 +3498,37 @@ class RendererMixin:
             puzzle_text = f"谜题：{self._current_puzzle_key()}"
             puzzle_color = self.colors['status_text']
         puzzle_surface = self._status_text_surface(puzzle_text, puzzle_color)
-        puzzle_x = (self.screen_width - puzzle_surface.get_width()) // 2
-        self.screen.blit(puzzle_surface, (puzzle_x, text_y))
+        _slot_l = _left_right + 20
+        _slot_r = (macro_x - 20) if _macro_surface is not None \
+            else (self.screen_width - self.right_panel_width - 20)
+        _slot_w = _slot_r - _slot_l
+        if _slot_w > 0 and puzzle_surface.get_width() > _slot_w:
+            _t = puzzle_text
+            while _t and self.status_font.size(_t + '…')[0] > _slot_w:
+                _t = _t[:-1]
+            if _t and _t != puzzle_text:
+                puzzle_text = _t + '…'
+                puzzle_surface = self._status_text_surface(
+                    puzzle_text, puzzle_color)
+        # 夹缝彻底放不下（极窄窗口 + 长宏名）：谜题段让位不画——优先级
+        # 左组 > 宏段 > 谜题 > 缩放，宁可缺一段也不叠字（§四十四.6）。
+        if _slot_w >= puzzle_surface.get_width():
+            puzzle_x = _slot_l + (_slot_w - puzzle_surface.get_width()) // 2
+            self.screen.blit(puzzle_surface, (puzzle_x, text_y))
+            self._status_puzzle_rect = puzzle_surface.get_rect(
+                topleft=(puzzle_x, text_y))
+        else:
+            self._status_puzzle_rect = None
+        self._status_puzzle_text = puzzle_text
+        self._status_left_right = _left_right
 
-        # 右侧：缩放比例
-        zoom_text = f"缩放：{int(self.zoom * 100)}%"
-        zoom_surface = self._status_text_surface(zoom_text, self.colors['status_text'])
-        zoom_x = self.screen_width - zoom_surface.get_width() - self.right_panel_width - 10
-        self.screen.blit(zoom_surface, (zoom_x, text_y))
-
-        # 宏状态指示
-        if self.macro_recording:
-            macro_text = f"🔴 录制中 ({len(self.macro_recording_steps)}步)"
-            macro_color = (255, 80, 80)
-            macro_surface = self.status_font.render(macro_text, True, macro_color)
-            macro_x = zoom_x - macro_surface.get_width() - 20
-            self.screen.blit(macro_surface, (macro_x, text_y))
-        elif self.macro_executing:
-            macro_text = f"执行宏: {self.macro_exec_name} ({self.macro_exec_index}/{len(self.macro_exec_ops)})"
-            macro_color = (100, 200, 255)
-            macro_surface = self.status_font.render(macro_text, True, macro_color)
-            macro_x = zoom_x - macro_surface.get_width() - 20
-            self.screen.blit(macro_surface, (macro_x, text_y))
+        # 宏状态段最后画：求解/录制中的关键动态信息压在最上层
+        if _macro_surface is not None:
+            self.screen.blit(_macro_surface, (macro_x, text_y))
+            self._status_macro_rect = _macro_surface.get_rect(
+                topleft=(macro_x, text_y))
+        else:
+            self._status_macro_rect = None
 
     def draw_settings_dialog(self):
         """绘制设置对话框"""
@@ -3932,7 +4029,7 @@ class RendererMixin:
                     (occ if (r, c) in occupied else empty).add((r, c))
         return occ, empty, (hr, hc)
 
-    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28, on_text='ON', off_text='OFF',
+    def _draw_switch_row(self, x, y, label, on, hint=None, btn_w=64, btn_h=28, on_text='开', off_text='关',
                          max_w=0):
         """统一排版的开关行：左栏标签(x+15) + 右栏开关(x+220) + 可选说明。
         返回 (开关rect, 下一行y)。所有设置页开关共用，保证对齐。
@@ -4087,6 +4184,14 @@ class RendererMixin:
             x, ny, "调试面板：", getattr(self, 'show_metrics_panel', False),
             "右下角的数据面板：聚拢度、还差多少等数字", max_w=_mw)
 
+        # 成绩面板开关（2026-11-17 §四十四.5：右下角的开关必须全部在设置中
+        # 出现）：右下角『成绩』与 F3 的镜像入口，同一状态字段
+        # show_records_panel（已在 _SETTINGS_BOOL_KEYS 白名单）。
+        self._settings_records_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "成绩面板：", getattr(self, 'show_records_panel', False),
+            "按当前谜题分组显示成绩列表与统计（同右下角『成绩』开关 / F3）",
+            max_w=_mw)
+
         # 开机动画开关（启动时标题动画，可跳过）
         self._settings_boot_toggle_rect, ny = self._draw_switch_row(
             x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
@@ -4205,7 +4310,7 @@ class RendererMixin:
         _rect_sfx = pygame.Rect(x + 80, ny + 2, 64, 28)
         _bg = self.colors['button_bg'] if getattr(self, 'sfx_enabled', True) else self.colors['input_bg']
         pygame.draw.rect(self.screen, _bg, _rect_sfx, border_radius=4)
-        _s = self.status_font.render('ON' if getattr(self, 'sfx_enabled', True) else 'OFF',
+        _s = self.status_font.render('开' if getattr(self, 'sfx_enabled', True) else '关',
                                      True, (255, 255, 255) if getattr(self, 'sfx_enabled', True)
                                      else (150, 150, 150))
         self.screen.blit(_s, _s.get_rect(center=_rect_sfx.center))
@@ -4217,7 +4322,7 @@ class RendererMixin:
         _music_on = getattr(self, 'music_enabled', True)
         _bg = self.colors['button_bg'] if _music_on else self.colors['input_bg']
         pygame.draw.rect(self.screen, _bg, _rect_music, border_radius=4)
-        _s = self.status_font.render('ON' if _music_on else 'OFF', True,
+        _s = self.status_font.render('开' if _music_on else '关', True,
                                      (255, 255, 255) if _music_on else (150, 150, 150))
         self.screen.blit(_s, _s.get_rect(center=_rect_music.center))
         self._settings_music_toggle_rect = _rect_music
@@ -4234,7 +4339,7 @@ class RendererMixin:
         _muted = bool(getattr(self, 'sound_muted', False))
         _bg = self.colors['button_bg'] if _muted else self.colors['input_bg']
         pygame.draw.rect(self.screen, _bg, _rect_mute, border_radius=4)
-        _s = self.status_font.render('ON' if _muted else 'OFF', True,
+        _s = self.status_font.render('开' if _muted else '关', True,
                                      (255, 255, 255) if _muted else (150, 150, 150))
         self.screen.blit(_s, _s.get_rect(center=_rect_mute.center))
         self._settings_mute_toggle_rect = _rect_mute
@@ -4281,7 +4386,7 @@ class RendererMixin:
             rect = pygame.Rect(x + 220, ny + 2, 64, 28)
             bg = self.colors['button_bg'] if on else self.colors['input_bg']
             pygame.draw.rect(self.screen, bg, rect, border_radius=4)
-            ts = self.status_font.render('ON' if on else 'OFF', True,
+            ts = self.status_font.render('开' if on else '关', True,
                                          (255, 255, 255) if on else (150, 150, 150))
             self.screen.blit(ts, ts.get_rect(center=rect.center))
             self._settings_slot_toggle_rects[slot] = rect
@@ -4356,6 +4461,33 @@ class RendererMixin:
         self._settings_infinite_shuffle_toggle_rect, ny = self._draw_switch_row(
             x, ny, "无限打乱：", getattr(self, 'infinite_shuffle', False),
             "开启后调用「打乱」会一直随机游走，再次调用「打乱」即停止")
+
+        # 游戏模式（2026-11-17 §四十四.5：右下角的开关必须全部在设置中出现）：
+        # 右下角『模式』按钮的镜像。三态循环 练习→竞速→创造，与右下角同一
+        # toggle_game_mode 语义与配色；_draw_switch_row 只有二态，故本行自绘
+        # （标签 + 模式按钮 + 说明，行高仍 60 与开关行对齐）。
+        _gm_y = ny
+        _gm_label = self.dialog_font.render("游戏模式：", True,
+                                            self.colors['dialog_text'])
+        self.screen.blit(_gm_label, (x + 15, _gm_y + 6))
+        self._settings_game_mode_rect = pygame.Rect(x + 220, _gm_y + 2, 120, 28)
+        _gm_mode = getattr(self, 'game_mode', 'practice')
+        if _gm_mode == 'create':
+            _gm_bg, _gm_text, _gm_tc = self.colors['block_selected'], '模式:创造', (255, 255, 255)
+        elif _gm_mode == 'timed':
+            _gm_bg, _gm_text, _gm_tc = self.colors['button_bg'], '模式:竞速', (255, 255, 255)
+        else:
+            _gm_bg, _gm_text, _gm_tc = self.colors['input_bg'], '模式:练习', (150, 150, 150)
+        pygame.draw.rect(self.screen, _gm_bg, self._settings_game_mode_rect,
+                         border_radius=4)
+        _gm_ts = self.status_font.render(_gm_text, True, _gm_tc)
+        self.screen.blit(_gm_ts,
+                         _gm_ts.get_rect(center=self._settings_game_mode_rect.center))
+        _gm_hint = self.status_font.render(
+            "点击循环切换：练习自由探索 / 竞速打乱计时 / 创造自己造题"
+            "（与右下角『模式』按钮同步）", True, (150, 150, 150))
+        self.screen.blit(_gm_hint, (x + 15, _gm_y + 38))
+        ny = _gm_y + 60
 
         # —— 外部控制（本机 HTTP API）——
         # 与五种操作方式分区：那是「人怎么玩」，这是「外部程序怎么接」。
@@ -4584,7 +4716,7 @@ class RendererMixin:
         self._settings_readonly_toggle_rect = pygame.Rect(toggle_x, toggle_y, btn_w, btn_h)
         flag = getattr(self, 'save_readonly_flag', False)
         btn_color = self.colors['button_bg'] if flag else self.colors['input_bg']
-        btn_text = "ON" if flag else "OFF"
+        btn_text = "开" if flag else "关"
         text_color = (255, 255, 255) if flag else (150, 150, 150)
         pygame.draw.rect(self.screen, btn_color, self._settings_readonly_toggle_rect, border_radius=4)
         ts = self.status_font.render(btn_text, True, text_color)
@@ -4604,7 +4736,7 @@ class RendererMixin:
         self._settings_prevent_overwrite_rect = pygame.Rect(toggle_x, po_y, btn_w, btn_h)
         flag2 = getattr(self, 'prevent_overwrite_flag', False)
         btn_color = self.colors['button_bg'] if flag2 else self.colors['input_bg']
-        btn_text = "ON" if flag2 else "OFF"
+        btn_text = "开" if flag2 else "关"
         text_color = (255, 255, 255) if flag2 else (150, 150, 150)
         pygame.draw.rect(self.screen, btn_color, self._settings_prevent_overwrite_rect, border_radius=4)
         ts = self.status_font.render(btn_text, True, text_color)
@@ -4620,7 +4752,7 @@ class RendererMixin:
         self._settings_oplog_toggle_rect = pygame.Rect(toggle_x, og_y, btn_w, btn_h)
         flag3 = getattr(self, 'op_log_enabled', False)
         btn_color = self.colors['button_bg'] if flag3 else self.colors['input_bg']
-        btn_text = "ON" if flag3 else "OFF"
+        btn_text = "开" if flag3 else "关"
         text_color = (255, 255, 255) if flag3 else (150, 150, 150)
         pygame.draw.rect(self.screen, btn_color, self._settings_oplog_toggle_rect, border_radius=4)
         ts3 = self.status_font.render(btn_text, True, text_color)
@@ -4639,7 +4771,7 @@ class RendererMixin:
         self._settings_compressed_toggle_rect = pygame.Rect(toggle_x, cy, btn_w, btn_h)
         flag4 = getattr(self, 'use_compressed_save', False)
         btn_color = self.colors['button_bg'] if flag4 else self.colors['input_bg']
-        btn_text = "ON" if flag4 else "OFF"
+        btn_text = "开" if flag4 else "关"
         text_color = (255, 255, 255) if flag4 else (150, 150, 150)
         pygame.draw.rect(self.screen, btn_color, self._settings_compressed_toggle_rect, border_radius=4)
         ts4 = self.status_font.render(btn_text, True, text_color)
@@ -4708,8 +4840,8 @@ class RendererMixin:
             # 反馈行数必须**当场按当前消息**算：等下一帧回填会把新行落在裁剪
             # 区外（内容长高但滚动量没跟上），玩家仍看不到反馈。
             # 宽度与 _draw_settings_control 收到的实参一致（对话框定宽 660-30）
-            # 7 个操作开关（含无限打乱，2026-11-11 从视觉页移入）
-            return 34 + 7 * 60 + 8 + 60 + 22 + 32 + 10 \
+            # 8 行（7 个操作开关 + 游戏模式镜像行，2026-11-17 §四十四.5）
+            return 34 + 8 * 60 + 8 + 60 + 22 + 32 + 10 \
                 + 18 * self._ext_feedback_lines(660 - 30)
         else:
             # solver tab：标题 + 选项 + 说明文字 + 日志开关。四段必须与

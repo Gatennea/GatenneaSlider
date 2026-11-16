@@ -1380,8 +1380,8 @@ class EventsMixin:
                 elif event.type == pygame.MOUSEWHEEL:
                     if pygame.key.get_mods() & pygame.KMOD_CTRL:
                         zoom_factor = 1.1 if event.y > 0 else 0.9
-                        new_zoom = self.zoom * zoom_factor
-                        new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
+                        # 夹紧 + 整步长吸附（§四十四.1 防缩放抖动）
+                        new_zoom = self._snap_zoom(self.zoom * zoom_factor)
                         
                         mouse_x, mouse_y = pygame.mouse.get_pos()
                         # 记录缩放前鼠标指向的世界坐标
@@ -3242,7 +3242,7 @@ class EventsMixin:
         入口设进去，画面会跳到不同地方。（Ctrl+滚轮是另一套：以鼠标所在
         位置为锚点，见滚轮事件分支。）
         """
-        new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
+        new_zoom = self._snap_zoom(new_zoom)   # 夹紧 + 整步长吸附（§四十四.1 防缩放抖动）
         cx = self.screen_width // 2
         cy = self.menu_bar_height + (self.screen_height - self.menu_bar_height - self.status_bar_height) // 2
         wx = (cx - self.camera_x) / self.zoom
@@ -3660,6 +3660,13 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 视觉 Tab：成绩面板开关（右下角『成绩』/ F3 的镜像，§四十四.5）——
+            # 复用右下角同一处理，通知文案与清删除确认态都同源
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_records_toggle_rect'):
+                if self._settings_records_toggle_rect.collidepoint(mx, my):
+                    self._handle_right_panel_switch('show_records_panel')
+                    return
+
             # 开机动画开关
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_boot_toggle_rect'):
                 if self._settings_boot_toggle_rect.collidepoint(mx, my):
@@ -3857,6 +3864,11 @@ class EventsMixin:
                     status = '开' if self.infinite_shuffle else '关'
                     self.macro_notify_msg = f"无限打乱：{status}"
                     self.macro_notify_timer = 90
+                    return
+                # 游戏模式（右下角『模式』的镜像，§四十四.5）：点击循环三态，
+                # toggle_game_mode 自带提示文案（与右下角按钮同一处理）
+                if hasattr(self, '_settings_game_mode_rect') and self._settings_game_mode_rect.collidepoint(mx, my):
+                    self.toggle_game_mode()
                     return
                 # —— 外部控制（HTTP API）——
                 if hasattr(self, '_settings_ext_toggle_rect') and self._settings_ext_toggle_rect.collidepoint(mx, my):
