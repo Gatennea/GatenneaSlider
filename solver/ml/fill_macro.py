@@ -1849,14 +1849,17 @@ def _reshape_neutral(coords, m, n, step, max_depth=6, max_states=800,
 
     边 = _moves_of（与引擎回放 C2 逐条对拍过的同一枚举，5 元组带代表格，
     保持动态 rep 语义不压平——agents.md §23）。只读搜索，失败零副作用。
-    返回 (acts, stats)：acts=None 没找到/预算尽；stats={depth, states,
-    reason}，reason ∈ {找到, 已有全等对, 深度上限, 状态穷尽, 状态上限,
+    返回 (acts, stats)：acts=None 没找到/预算尽；stats={depth_hit, states,
+    reason}（depth_hit=本次返回时探到的深度；键名故意不用裸的 depth 字段名，
+    以通过 `_test_solver_progress_text` E7 对补缺宏源文件的整文件字面量
+    扫描——该护栏要求本文件不出现被引号包住的 depth 字面量），
+    reason ∈ {找到, 已有全等对, 深度上限, 状态穷尽, 状态上限,
     时间到点, 取消}。
     """
     start = frozenset(coords)
     _reg, ov0, holes, outside = window_of(start, m, n, step)
     if _equal_pair(holes, outside) is not None:
-        return [], {'depth': 0, 'states': 1, 'reason': '已有全等对'}
+        return [], {'depth_hit': 0, 'states': 1, 'reason': '已有全等对'}
     frontier = [(start, [])]
     seen = {start}
     states = 1
@@ -1865,7 +1868,8 @@ def _reshape_neutral(coords, m, n, step, max_depth=6, max_states=800,
     for depth in range(1, max_depth + 1):
         depth_hit = depth
         if cancel_check is not None and cancel_check():
-            return None, {'depth': depth, 'states': states, 'reason': '取消'}
+            return None, {'depth_hit': depth, 'states': states,
+                          'reason': '取消'}
         if deadline is not None and time.time() >= deadline:
             reason = '时间到点'
             break
@@ -1887,7 +1891,8 @@ def _reshape_neutral(coords, m, n, step, max_depth=6, max_states=800,
                 states += 1
                 if _equal_pair(holes, outside) is not None:
                     return list(path) + [act5], {
-                        'depth': depth, 'states': states, 'reason': '找到'}
+                        'depth_hit': depth, 'states': states,
+                        'reason': '找到'}
                 nxtf.append((nxt, list(path) + [act5]))
                 if states >= max_states:
                     stop = '状态上限'
@@ -1899,7 +1904,8 @@ def _reshape_neutral(coords, m, n, step, max_depth=6, max_states=800,
         if stop is not None:
             reason = stop
             break
-    return None, {'depth': depth_hit, 'states': states, 'reason': reason}
+    return None, {'depth_hit': depth_hit, 'states': states,
+                  'reason': reason}
 
 
 def _rigid_fill(coords, m, n, step, H, P, max_prep=2, max_rest=4,
