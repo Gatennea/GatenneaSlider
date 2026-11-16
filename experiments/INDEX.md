@@ -65,14 +65,8 @@
   - 被 3 处引用：`experiments/script_exp11_fast_pipeline.py`、`experiments/script_exp12_guided_test.py`、`experiments/script_exp9_5x5_conj.py`
   - 有 `__main__`，可直接 `python experiments/reuse_exp_conj_search.py`
 
-## 独立脚本（不被任何脚本 import）—— 前缀 script_（164）
+## 独立脚本（不被任何脚本 import）—— 前缀 script_（160）
 
-- `experiments/_tmp_probe_cost.py`
-  - 无引用（独立脚本）
-- `experiments/_tmp_probe_runloop.py`
-  - 无引用（独立脚本）
-- `experiments/_tmp_probe_runloop2.py`
-  - 无引用（独立脚本）
 - `experiments/mi_marks_fixed/script_render_fixed_marks.py`
   - 无引用（独立脚本）
 - `experiments/script__auto_planner_bench.py`
