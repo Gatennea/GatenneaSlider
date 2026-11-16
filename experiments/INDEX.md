@@ -14,7 +14,7 @@
 > 注：判「是否被 import」只用 AST，**不看 `__main__`** —— 大量一次性探针
 > 顶层直接写执行代码、没有守卫，照样能 `python x.py` 跑。
 
-合计 173 个 .py —— 库 5 / reuse 11 / 独立脚本 157
+合计 180 个 .py —— 库 5 / reuse 11 / 独立脚本 164
 
 ## 库（被 import、不能独立跑）—— 保持无前缀（5）
 
@@ -65,8 +65,14 @@
   - 被 3 处引用：`experiments/script_exp11_fast_pipeline.py`、`experiments/script_exp12_guided_test.py`、`experiments/script_exp9_5x5_conj.py`
   - 有 `__main__`，可直接 `python experiments/reuse_exp_conj_search.py`
 
-## 独立脚本（不被任何脚本 import）—— 前缀 script_（157）
+## 独立脚本（不被任何脚本 import）—— 前缀 script_（164）
 
+- `experiments/_tmp_probe_cost.py`
+  - 无引用（独立脚本）
+- `experiments/_tmp_probe_runloop.py`
+  - 无引用（独立脚本）
+- `experiments/_tmp_probe_runloop2.py`
+  - 无引用（独立脚本）
 - `experiments/mi_marks_fixed/script_render_fixed_marks.py`
   - 无引用（独立脚本）
 - `experiments/script__auto_planner_bench.py`
@@ -227,6 +233,9 @@
   - 有 `__main__`，可直接 `python experiments/script__phi_cost.py`
 - `experiments/script__probe_adv.py`
   - 无引用（独立脚本）
+- `experiments/script__probe_big_stall.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script__probe_big_stall.py`
 - `experiments/script__probe_editor_frame.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script__probe_editor_frame.py`
@@ -309,6 +318,12 @@
 - `experiments/script_bench.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_bench.py`
+- `experiments/script_bench_blindspot_params.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench_blindspot_params.py`
+- `experiments/script_bench_dfs_parallel.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench_dfs_parallel.py`
 - `experiments/script_bench_disks.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_bench_disks.py`
@@ -327,6 +342,9 @@
 - `experiments/script_bench_pdb_scorer.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_bench_pdb_scorer.py`
+- `experiments/script_bench_progress_scorer.py`
+  - 无引用（独立脚本）
+  - 有 `__main__`，可直接 `python experiments/script_bench_progress_scorer.py`
 - `experiments/script_bench_total_budget.py`
   - 无引用（独立脚本）
   - 有 `__main__`，可直接 `python experiments/script_bench_total_budget.py`

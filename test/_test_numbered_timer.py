@@ -58,10 +58,15 @@ assert gui.macro_notify_msg != '带序号模式暂不支援自动求解', gui.ma
 _t0 = _time.time()
 while (_time.time() - _t0 < 10
        and (getattr(gui, '_auto_solve_running', False)
-            or getattr(gui, '_auto_solve_done', False))):
+            or getattr(gui, '_auto_solve_done', False)
+            or getattr(gui, '_auto_stage_active', False))):
+    # 混合求解是流式的：收尾在 _pump_auto_stages（真实帧循环每帧调），
+    # 只调 _check_auto_solve_result 会永远等不到 _finalize_auto_streamed。
     gui._check_auto_solve_result()
+    gui._pump_auto_stages()
     _time.sleep(0.01)
 gui._check_auto_solve_result()
+gui._pump_auto_stages()
 assert '复原' in (gui.macro_notify_msg or ''), gui.macro_notify_msg
 print('PASS: 序号模式自动求解已放行（形状复原为准，数字后调）')
 

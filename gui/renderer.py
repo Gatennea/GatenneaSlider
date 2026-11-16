@@ -3319,6 +3319,30 @@ class RendererMixin:
         extra = int(getattr(self, '_think_display_steps', 0))
         return f"步数：{self.step_count + extra}"
 
+    STATUS_TEXT_CACHE_MAX = 96
+
+    def _status_text_surface(self, text, color):
+        """状态栏文字缓存（待办 §四十三，2026-11-16 无头实测）。
+
+        ``status_font`` 是中文 TrueType，单次 ``render`` 约 1.5~2.5ms；状态栏
+        每帧要画 5~7 段，12×12 求解中实测整条状态栏 14.5ms/帧（比一帧预算
+        还高，是「短暂无响应」的放大器之一）。其中状态/引擎/谜题/缩放四段
+        基本恒定，按 (字体对象, 文字, 颜色) 缓存即可，只让真正在变的步数 /
+        计时 / 宏进度重新渲染。键带字体对象 id：窗口缩放换字号会换对象，
+        旧键自然失效；缓存满了整批清掉，不做淘汰策略。
+        """
+        key = (id(self.status_font), text, color)
+        cache = getattr(self, '_status_text_cache', None)
+        if cache is None:
+            cache = self._status_text_cache = {}
+        surf = cache.get(key)
+        if surf is None:
+            surf = self.status_font.render(text, True, color)
+            if len(cache) >= self.STATUS_TEXT_CACHE_MAX:
+                cache.clear()
+            cache[key] = surf
+        return surf
+
     def draw_status_bar(self):
         """绘制底部状态栏"""
         status_y = self.screen_height - self.status_bar_height
@@ -3334,12 +3358,12 @@ class RendererMixin:
         solved = self.is_solved()
         status_text = "状态：复原" if solved else "状态：未复原"
         status_color = self.colors['solved'] if solved else self.colors['unsolved']
-        status_surface = self.status_font.render(status_text, True, status_color)
+        status_surface = self._status_text_surface(status_text, status_color)
         self.screen.blit(status_surface, (10, text_y))
 
         # 左侧：步数（含「思考演示」的游走步：只影响显示，step_count 不动）
         step_text = self._status_step_text()
-        step_surface = self.status_font.render(step_text, True, self.colors['status_text'])
+        step_surface = self._status_text_surface(step_text, self.colors['status_text'])
         step_x = 10 + status_surface.get_width() + 30
         self.screen.blit(step_surface, (step_x, text_y))
 
@@ -3349,7 +3373,7 @@ class RendererMixin:
             timer_color = (255, 200, 80)  # 竞速计时中：醒目黄色
         else:
             timer_color = self.colors['status_text']
-        timer_surface = self.status_font.render(timer_text, True, timer_color)
+        timer_surface = self._status_text_surface(timer_text, timer_color)
         timer_x = step_x + step_surface.get_width() + 30
         self.screen.blit(timer_surface, (timer_x, text_y))
 
@@ -3358,7 +3382,7 @@ class RendererMixin:
         engine_text = f"引擎：{self.engine_label()}"
         engine_on = (self.engine_label() == '几何')
         engine_color = (120, 220, 200) if engine_on else self.colors['status_text']
-        engine_surface = self.status_font.render(engine_text, True, engine_color)
+        engine_surface = self._status_text_surface(engine_text, engine_color)
         engine_x = timer_x + timer_surface.get_width() + 30
         self.screen.blit(engine_surface, (engine_x, text_y))
 
@@ -3385,13 +3409,13 @@ class RendererMixin:
             # 带形态后缀：带序号 #num / 三角形 tri{k} / 米字格 mi{m}*{n}
             puzzle_text = f"谜题：{self._current_puzzle_key()}"
             puzzle_color = self.colors['status_text']
-        puzzle_surface = self.status_font.render(puzzle_text, True, puzzle_color)
+        puzzle_surface = self._status_text_surface(puzzle_text, puzzle_color)
         puzzle_x = (self.screen_width - puzzle_surface.get_width()) // 2
         self.screen.blit(puzzle_surface, (puzzle_x, text_y))
 
         # 右侧：缩放比例
         zoom_text = f"缩放：{int(self.zoom * 100)}%"
-        zoom_surface = self.status_font.render(zoom_text, True, self.colors['status_text'])
+        zoom_surface = self._status_text_surface(zoom_text, self.colors['status_text'])
         zoom_x = self.screen_width - zoom_surface.get_width() - self.right_panel_width - 10
         self.screen.blit(zoom_surface, (zoom_x, text_y))
 
@@ -3486,6 +3510,9 @@ class RendererMixin:
 
         # 内容区域裁剪
         content_rect = pygame.Rect(dialog_x + 5, content_y, dialog_width - 20, content_height)
+        # 记下真实裁剪区，供护栏断言「控件是否画进可见区」——测试别再自己
+        # 按 480 硬编码推算（对话框 2026-11-14 已加高到 540，硬编码会假红）。
+        self._settings_content_rect = content_rect
         self.screen.set_clip(content_rect)
         try:
             if self.settings_active_tab == 'keybindings':

@@ -198,10 +198,11 @@ gui.external_enabled() and gui.set_external_control(True)
 gui.settings_scrollbar.set_scroll(10**6)  # 滚到底——按钮在内容区可见位置
 gui.draw_settings_dialog()
 # AC-14a2 按钮必须落在内容裁剪区内（曾因不滚动就画在对话框外而「看不见」）
-_sw, _sh = gui.screen.get_size()
-_dlg_y = (_sh - 480) // 2
-_content_top = _dlg_y + 58 + 30 + 10
-_content_bottom = _dlg_y + 480 - 64
+# 裁剪区直接读渲染器当帧记下的真实矩形：对话框高度改过（480→540），
+# 测试不再自己按旧常量推算，否则会对着「不存在的区域」喊裁剪。
+_content_rect = gui._settings_content_rect
+_content_top = _content_rect.top
+_content_bottom = _content_rect.bottom
 for _name in ('_settings_ext_toggle_rect', '_settings_ext_copy_rect', '_settings_ext_guide_rect'):
     _r = getattr(gui, _name)
     check(f'AC-14a2 {_name} 在内容可见区内',
@@ -284,7 +285,7 @@ gui._set_ext_feedback(
     False, '复制失败（剪贴板不可用：x）。请手动抄送：令牌 TESTTOKEN123456，端口 5050',
     timer=600)
 gui.draw_settings_dialog()  # pin 底 + 按当前消息重算内容高度
-_clip_bottom = (_sh - 480) // 2 + 480 - 64
+_clip_bottom = gui._settings_content_rect.bottom
 _fb_bottom = gui._settings_ext_copy_rect.bottom + 6 + 18 * gui._settings_ext_msg_lines
 check('AC-19a 反馈出现后自动滚到底',
       gui.settings_scrollbar.scroll == gui.settings_scrollbar._max_scroll(),
