@@ -1693,6 +1693,9 @@ class EventsMixin:
     #: 双击判定：pygame 没有原生双击事件，自己做时间窗 + 位置容差（可调）
     CUBIC_DOUBLE_CLICK_MS = 300
     CUBIC_DOUBLE_CLICK_PX = 8
+    #: 单击改切面的「缝线半径」（像素）：点在缝线这么多像素以内才算选缝，
+    #: 否则不动现有切面（否则双击的第一下会把缝挪走，用户 2026-11-17 实测）
+    CUBIC_SEAM_CLICK_PX = 6
 
     def _cubic_pick(self, x, y):
         """屏幕点 → 命中面（用渲染层刚存下的那份 scene，命中与画面必然一致）。"""
@@ -1731,22 +1734,48 @@ class EventsMixin:
                      and abs(x - last_p[0]) <= self.CUBIC_DOUBLE_CLICK_PX
                      and abs(y - last_p[1]) <= self.CUBIC_DOUBLE_CLICK_PX)
 
-        self.selected_gap = seam
-        self._cubic_last_click_t = None if is_double else now
-        self._cubic_last_click_p = None if is_double else (x, y)
-
         if is_double:
+            # 双击：不管点在哪，都选这块所属的连通组
+            self.selected_gap = seam
             block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
             if block is not None:
                 self.game.opt(seam[0], seam[1], block)
                 self.selected_block = block
+                self._cubic_last_click_t = None
+                self._cubic_last_click_p = None
                 n = len([b for b in self.game.blocks if b.be_opted])
                 self.macro_notify_msg = f"选中滑块组 共{n}个（切面 {seam[0]}·{seam[1]}）"
                 self.macro_notify_timer = 120
                 return True
+
+        # 单击：只有点在**缝线上**才改切面。之前是点面内任何位置都改缝，
+        # 双击的第一下就会把缝挪走、第二下选中另一侧——用户 2026-11-17 实测。
+        # 注意：时间戳无论改不改缝都要记，否则「面内两连点」永远拼不出双击。
+        dist = cubic_pick.seam_edge_distance(self._cubic_scene_faces(), hit, (x, y))
+        if dist > self.CUBIC_SEAM_CLICK_PX:
+            self._cubic_last_click_t = now
+            self._cubic_last_click_p = (x, y)
+            self.macro_notify_msg = ("点在缝线上才改切面；双击面选中一侧"
+                                     f"（距最近缝线 {dist:.0f}px）" if dist != float('inf')
+                                     else "这一面旁边没有可点的缝线；双击面选中一侧")
+            self.macro_notify_timer = 120
+            return False
+
+        self.selected_gap = seam
+        self._cubic_last_click_t = now
+        self._cubic_last_click_p = (x, y)
         self.macro_notify_msg = f"切面预览：{seam[0]}·{seam[1]}（双击选中一侧）"
         self.macro_notify_timer = 120
         return True
+
+    def _cubic_scene_faces(self):
+        """本帧场景的可见面（渲染时缓存的；没有就现算一份）。"""
+        faces = getattr(self, '_cubic_scene', None)
+        if isinstance(faces, dict):
+            return faces.get('faces') or []
+        if isinstance(faces, (list, tuple)):
+            return list(faces)
+        return []
 
     def _cubic_clear_selection(self):
         """右键 / 点空白 / 开始旋转：取消选中与切面预览。"""

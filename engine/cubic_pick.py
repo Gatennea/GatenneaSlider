@@ -44,6 +44,61 @@ def hit_face(faces, point):
     return None
 
 
+def _point_seg_distance(point, a, b) -> float:
+    """点到线段的距离（屏幕像素）。"""
+    px, py = point
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 <= 1e-12:
+        return ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+    t = ((px - ax) * dx + (py - ay) * dy) / seg2
+    t = max(0.0, min(1.0, t))
+    qx, qy = ax + t * dx, ay + t * dy
+    return ((px - qx) ** 2 + (py - qy) ** 2) ** 0.5
+
+
+def _shared_vertex(a, b, tol: float = 1.0) -> bool:
+    return abs(a[0] - b[0]) <= tol and abs(a[1] - b[1]) <= tol
+
+
+def _point_quad_distance(point, quad) -> float:
+    """点到凸四边形的距离（在内部为 0）。"""
+    if point_in_quad(point, quad):
+        return 0.0
+    best = float('inf')
+    for i in range(len(quad)):
+        best = min(best, _point_seg_distance(point, quad[i], quad[(i + 1) % len(quad)]))
+    return best
+
+
+def seam_edge_distance(faces, hit_face, point, band: float = 28.0) -> float:
+    """点到「这条面旁边的缝线」的距离（像素）；没有缝线时返回 inf。
+
+    注意块之间**有拆分缝隙**（gap>0 时两块的面并不共边，中间隔着一条缝带），
+    所以不能按「共享顶点」认缝。这里反过来认：面的某条边的中点若贴着另一块
+    **同轴同符号**的面（距离 ≈ 缝宽像素）就算缝边——那条边就是缝在画面上的
+    位置。用户 2026-11-17 实测：双击选块时第一次点击被当成「选缝」，缝跟着跳；
+    现在只有点在这条边附近才算，点面内其它位置不动缝。
+    """
+    pts = hit_face.get('pts') or []
+    loc = hit_face.get('loc')
+    axis, sign = hit_face.get('axis'), hit_face.get('sign')
+    others = [f for f in (faces or ())
+              if f is not hit_face and f.get('loc') != loc
+              and f.get('axis') == axis and f.get('sign') == sign]
+    best = float('inf')
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        for other in others:
+            if _point_quad_distance(mid, other.get('pts') or ()) <= band:
+                best = min(best, _point_seg_distance(point, a, b))
+                break
+    return best
+
+
 def face_is_internal(face, locations) -> bool:
     """该面另一侧是否还有块（= 内部面 = 一条可以选的缝）。"""
     loc, axis, sign = face['loc'], face['axis'], face['sign']

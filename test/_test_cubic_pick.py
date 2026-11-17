@@ -155,10 +155,38 @@ check(gui._cubic_scene is not None and len(gui._cubic_scene['faces']) == 81,
 
 hist0 = len(getattr(gui.game_history, 'undo_stack', []) or [])
 step0 = gui.step_count
-# 找一个一定命中可见面的屏幕点：取最靠前那片面的面心
+
+
+def _seam_point(scene, face, offset=3.0):
+    """取一个贴着缝线的屏幕点：沿面边采样、往面心一侧缩 offset 像素，
+    用 seam_edge_distance 反查「这条边是不是缝边」。"""
+    pts = face['pts']
+    cen = (sum(p[0] for p in pts) / 4.0, sum(p[1] for p in pts) / 4.0)
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        for t in (0.5, 0.3, 0.7, 0.2, 0.8):
+            mx, my = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+            nx, ny = cen[0] - mx, cen[1] - my
+            n = (nx * nx + ny * ny) ** 0.5 or 1.0
+            p = (int(round(mx + nx / n * offset)), int(round(my + ny / n * offset)))
+            if cp.seam_edge_distance(scene['faces'], face, p) <= 5.0:
+                return p
+    return None
+
+
+# 面心不再算「选缝」（2026-11-17 用户要求），必须点在缝线上；
+# 所以先找最靠前那片面的面心，再找它旁边的缝线取点。
 target = gui._cubic_scene['faces'][-1]
-pt = (int(round(sum(p[0] for p in target['pts']) / 4.0)),
-      int(round(sum(p[1] for p in target['pts']) / 4.0)))
+pt = _seam_point(gui._cubic_scene, target)
+if pt is None:
+    for f in reversed(gui._cubic_scene['faces']):
+        pt = _seam_point(gui._cubic_scene, f)
+        if pt is not None:
+            target = f
+            break
+check(pt is not None, '场景里能找到一个贴着缝线的屏幕点')
+center_pt = (int(round(sum(p[0] for p in target['pts']) / 4.0)),
+             int(round(sum(p[1] for p in target['pts']) / 4.0)))
 
 
 def click(pos):
@@ -167,8 +195,11 @@ def click(pos):
     gui.handle_events()
 
 
+click(center_pt)
+check(gui.selected_gap is None, '点面心不改切面（2026-11-17 修：缝选中范围太大）')
+
 click(pt)
-check(gui.selected_gap is not None, f'单击 → 出现切面预览（{gui.selected_gap}）')
+check(gui.selected_gap is not None, f'点缝线上 → 出现切面预览（{gui.selected_gap}）')
 check(gui.selected_gap and gui.game.is_valid_gap(*gui.selected_gap),
       '预览的切面是引擎判有效的缝')
 check(gui.step_count == step0 and len(getattr(gui.game_history, 'undo_stack', []) or []) == hist0,

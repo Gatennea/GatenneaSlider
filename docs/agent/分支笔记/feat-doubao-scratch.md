@@ -382,3 +382,22 @@ pCubes 是闭源 exe（E:\pC 只有 pCubes.exe + 数据），HyperSpeedcube 装�
 ⚠️ 已知口径分歧：arcball 允许画面「滚转」，转到某些姿态后立方体的边不再贴
 屏幕横竖。魔方软件里两种流派都有（自由球 / 固定水平）。如果用户嫌「歪」，下一步
 加设置项：自由球 vs 保持水平（后者 = 绕世界竖轴 yaw + pitch 夹紧，无滚转）。
+
+## 修：缝选中范围太大 → 只有点在缝线上才改切面
+
+用户 2026-11-17 实测：双击选块时，第一下被当成「选缝」，缝当场跳走、第二下
+就成了选到别的一侧。根因不是「缝的判定本身」，而是**当时点面内任何位置都算
+选缝**（single click 命中面 → 无条件 `seam_of_face` → `selected_gap`）。
+
+- `engine/cubic_pick.py` 新增 `_point_seg_distance`、`_point_quad_distance`、
+  `seam_edge_distance(faces, hit_face, point, band=28)`：一条面边若「中点贴着
+  另一块同轴同符号的面（距离 ≈ 缝宽像素）」，这条边就是缝线；返回点到它的
+  像素距离。注意块之间有 gap，两块的面**并不共边**，所以不能按共享顶点认缝。
+- `gui/events.py`：新增类常量 `CUBIC_SEAM_CLICK_PX = 6`；`_cubic_click` 重排
+  成「先判双击 → 双击无条件选块；否则算点到缝线的距离，>6px 不动缝、只提示
+  距离，≤6px 才改切面预览」。时间戳无论改不改缝都记，否则面内两连点拼不出双击。
+- 实测：面心点击 selected_gap 保持 None（提示「距最近缝线 44px」）；点缝线
+  上 → r·1；随后面心两连点 → 9 块整片变绿。截图 `seamfix_1/2/3_*.png`。
+- 测试：`_test_cubic_pick.py` 新增「点面心不改缝」「点缝线上才出预览」两断言，
+  缝线上取点改用新判定反查（共 206 项）；全回归 view 41 / nav 83 / pick 206 /
+  play 32 / framing 15 / gap 18 / split 25 / save_guard 7 / entry 31 / arcball 5 全绿。
