@@ -1402,8 +1402,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_kind = 'cubic'
         # 默认相机：斜视（三面可见）。六视角 / 自由旋转 / 存档分组是第 2 步的事。
         from engine.cubic_camera import CubicCamera
+        from engine.cubic_view import DEFAULT_GAP
         self.cubic_camera = CubicCamera.oblique_default()
         self.cubic_zoom = 1.0
+        # 拆分（相邻块之间空出的距离）：0 = 贴死成一整块、看不出前后；
+        # 滑条留到「渲染选项」那一步，这里先给默认值。
+        self.cubic_gap = DEFAULT_GAP
 
         # 重置状态（相机/缩放沿用二维字段；三维相机组是第 2 步的事）
         self.zoom = 1.0
@@ -1423,7 +1427,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         self.macro_notify_msg = (
             f"切换谜题：三维 {m}×{n}×{d} 等级{step}"
-            "（当前是整块未拆分；按 Alt+S 打乱才看得出前后遮挡）")
+            f"（斜视预览，拆分 {self.cubic_gap:.2f}；六视角/交互在第 2–4 步）")
         self.macro_notify_timer = 180
         return True
 

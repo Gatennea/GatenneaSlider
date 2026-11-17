@@ -206,11 +206,24 @@ class FileOpsMixin:
         ``type: '__editor__'`` 的存档——它没有模型文件，下次启动必然
         「存档需要模型 '__editor__'，但它没有安装」。temp_history 保留进入
         编辑器之前的那个真实局面（退出/崩溃都不丢东西），配置照写。
+
+        ⚠️ **三维局（cubic_mode）同理不写历史**（2026-11-17，§54 第 0 步落地
+        后暴露）：存档还没扩到 (r,c,d) 与 ``type: cubic``（方案第 5 步），
+        写下去就是一条读不回来的档，下次启动报「存档需要模型 'cubic'」。
+        这条规则同时是**自愈**：已经被写脏的 temp_history，下次正常退出即被
+        上一份真实二维局面覆盖（编辑器先例的自愈机制，见 docs/spec/模型文件）。
         """
         os.makedirs(self.config_dir, exist_ok=True)
 
         # 保存历史记录到 temp_history.json（编辑器预览局跳过，见 docstring）
-        if not getattr(self, '_med_active', False):
+        # 三维同理（§54）：存档格式还没扩到 (r,c,d) + type:cubic（方案第 5 步），
+        # 现在把 kind='cubic' 写进去，下次启动必然「存档需要模型 'cubic'，
+        # 但它没有安装」——一条自造的坏档。跳过写 → temp_history 保留上一个
+        # 真实二维局面，退出/崩溃都不丢东西；旧版本已写脏的那份也会在下次
+        # 正常退出时被这条规则自动治好（与编辑器先例同口径）。
+        skip_temp = (getattr(self, '_med_active', False)
+                     or getattr(self, 'cubic_mode', False))
+        if not skip_temp:
             save_data = self._build_save_data()
             try:
                 with open(self.temp_history_path, 'w', encoding='utf-8') as f:

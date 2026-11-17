@@ -972,9 +972,15 @@ class RendererMixin:
         camera = getattr(self, 'cubic_camera', None) or \
             CubicCamera.oblique_default()
         self.cubic_camera = camera
+        # 拆分（相邻块之间空出多少格）：0 = 块贴死成一整块，看不出前后；
+        # 默认给一点缝（cubic_view.DEFAULT_GAP），滑条留到渲染选项那一步。
+        gap = getattr(self, 'cubic_gap', None)
+        if gap is None:
+            gap = cubic_view.DEFAULT_GAP
+            self.cubic_gap = gap
         scene = cubic_view.build_scene(
             blocks, camera, self.screen_width, self.screen_height,
-            margin=64, zoom=getattr(self, 'cubic_zoom', 1.0))
+            margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap)
 
         base = self.colors['block']
         chosen = self.colors['block_selected']
@@ -990,20 +996,14 @@ class RendererMixin:
             pygame.draw.polygon(self.screen, fill, pts)
             pygame.draw.polygon(self.screen, border, pts, 1)
 
-        # 左上角一行状态：三維尺度 / 等级 / **是否已拆分** / 视角口径。
-        # 「拆分」= 相邻块之间让出了空位。未拆分时所有块贴死成一个整块长方体，
-        # 投影上只有一层外轮廓——前后遮挡根本看不出来（2026-11-17 用户指出），
-        # 所以这行必须如实报，别让人以为渲染错了。
+        # 左上角一行状态：三維尺度 / 等级 / **拆分距离** / 视角口径。
+        # 「拆分」= 相邻两块表面之间空出的距离（穷 0 = 未拆分，块贴死成一整块）。
         # 放**顶部**：底部整条被 draw_status_bar 覆盖（画在下面等于没画）。
         m = getattr(game, 'm', 0) or 0
         n = getattr(game, 'n', 0) or 0
         d = getattr(game, 'depth', 0) or 0
-        try:
-            split_state = '已拆分' if not game.is_solved() else '未拆分（整块，看不出前后）'
-        except Exception:
-            split_state = ''
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
-                f'　{split_state}　斜视（六视角与旋转在第 2 步）')
+                f'　拆分 {gap:.2f}（0 = 贴死）　斜视（六视角与旋转在第 2 步）')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))

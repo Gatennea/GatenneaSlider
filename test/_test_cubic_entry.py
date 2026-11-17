@@ -20,6 +20,7 @@
 """
 import os
 import sys
+import tempfile
 
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
@@ -88,6 +89,11 @@ gui = SliderGUI(m=4, n=4, step=1)
 gui.animation_enabled = False
 gui.tut_show_prompt = False
 gui.tutorial_active = False
+# 隔离配置目录：测试不许碰仓库里那份 config/temp_history.json（会污染开局形态）
+gui.config_dir = tempfile.mkdtemp(prefix='gs_cubic_entry_')
+gui.temp_history_path = os.path.join(gui.config_dir, 'temp_history.json')
+gui._readonly = False
+gui.save_readonly_flag = False
 pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 
