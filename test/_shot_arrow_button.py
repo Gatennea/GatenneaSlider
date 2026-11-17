@@ -33,7 +33,6 @@ def shot(gui, name, note):
 
 gui = SliderGUI(m=6, n=6, step=1)
 gui.animation_enabled = False
-gui.ui_mode = 'enhanced'
 # 画布必须按 GUI 自己的 screen_width/height 建：按键的「出屏收缩」是按
 # 这两个值算的，窗口小了会把按键推到可视区外（几何没错，只是截不到）
 pygame.display.set_mode((gui.screen_width, gui.screen_height))

@@ -985,6 +985,7 @@ class EventsMixin:
                                             puzzle_keep_open = True
                                         elif len(preset) == 1 and preset[0] == '自定义...':
                                             self.show_custom_dialog = True
+                                            self._dialog_fade_reset('custom')
                                             kind = self._current_kind()
                                             self.custom_kind = ('triangle' if kind == 'triangle'
                                                                 else 'mi' if kind == 'mi'
@@ -1052,6 +1053,7 @@ class EventsMixin:
                                     if self.menu_items[i] == '帮助':
                                         self.close_all_menus()
                                         self.show_help = True
+                                        self._dialog_fade_reset('help')
                                         self.help_scrollbar.set_scroll(0)
                                     elif self.menu_items[i] == '文件':
                                         self.show_edit_menu = False
@@ -1085,6 +1087,7 @@ class EventsMixin:
                                     elif self.menu_items[i] == '设置':
                                         self.close_all_menus()
                                         self.show_settings_dialog = True
+                                        self._dialog_fade_reset('settings')
                                         self.settings_active_tab = 'keybindings'
                                         self.settings_editing_action = None
                                         self.settings_scrollbar.set_scroll(0)
@@ -3605,15 +3608,6 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
-            # 动画 Tab：界面模式总开关（朴素 / 增强）
-            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_ui_mode_rect'):
-                if self._settings_ui_mode_rect.collidepoint(mx, my):
-                    self.ui_mode = 'plain' if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 'enhanced'
-                    status = '增强' if self.ui_mode == 'enhanced' else '朴素'
-                    self.macro_notify_msg = f"界面模式：{status}"
-                    self.macro_notify_timer = 90
-                    return
-
             # 动画 Tab：分组着色器开关
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_coloring_toggle_rect'):
                 if self._settings_coloring_toggle_rect.collidepoint(mx, my):
@@ -3841,14 +3835,11 @@ class EventsMixin:
                     self.macro_notify_msg = f"虚拟键盘：{status}"
                     self.macro_notify_timer = 90
                     return
-                # 箭头按键（原先只跟界面模式走，这里给独立开关）
+                # 箭头按键（独立开关，不再受界面模式牵连）
                 if hasattr(self, '_settings_ctrl_arrow_rect') and self._settings_ctrl_arrow_rect.collidepoint(mx, my):
                     self.arrows_enabled = not getattr(self, 'arrows_enabled', True)
                     status = '开' if self.arrows_enabled else '关'
-                    if self.arrows_enabled and getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
-                        self.macro_notify_msg = "箭头按键：开（但朴素界面下不显示）"
-                    else:
-                        self.macro_notify_msg = f"箭头按键：{status}"
+                    self.macro_notify_msg = f"箭头按键：{status}"
                     self.macro_notify_timer = 90
                     return
                 # 逆序播放宏（从右下角常用区撤回设置）
@@ -4202,6 +4193,7 @@ class EventsMixin:
         self.close_all_menus()
         self.show_help = False
         self.show_settings_dialog = True
+        self._dialog_fade_reset('settings')
         self.settings_active_tab = tab
         self.settings_editing_action = None
         self.settings_scrollbar.set_scroll(0)
@@ -5136,12 +5128,16 @@ class EventsMixin:
         self.move_selected_blocks(direction)
 
     def _update_cursor(self):
-        """S1-5：鼠标指针形态——增强模式按状态切换光标，朴素模式一律箭头。
+        """S1-5：鼠标指针形态——按交互状态切换光标。
 
         - 拖拽中：可走→ SIZEALL（握住「移动」光标）；越界→ NO（禁止符）
         - 悬停箭头按键：HAND（与虚拟键盘按钮同一手感：可点）
         - 悬停棋盘且已选中切片：HAND（张开的手，表「可拖」）
         - 其它：ARROW
+
+        2026-11-17：去掉 ui_mode 分流（界面模式已删）。注意玩家实测「基本一直是
+        默认箭头」——因为 HAND 只在「已选中缝 + 鼠标在棋盘」时成立，只选中块、
+        或悬停未选中的可动缝都是 ARROW；是否放宽见待办 §五十三 的遗留讨论。
         """
         # 能力检测（必须）：set_cursor 依赖 pygame.cursors 子模块，打包时若被
         # spec 的 excludes 排掉，这里就 AttributeError。而本函数跑在**每帧
@@ -5150,9 +5146,6 @@ class EventsMixin:
         # 都看不到（2026-10-06 打包版白屏事故）。指针是锦上添花，绝不能有
         # 拖垮渲染的权力：缺了就永久静默降级，一次都不重试。
         if not hasattr(pygame.mouse, 'set_cursor'):
-            return
-        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
-            pygame.mouse.set_cursor(pygame.SYSTEM_CURSOR_ARROW)
             return
         if getattr(self, 'drag_following', False):
             cur = (pygame.SYSTEM_CURSOR_NO if getattr(self, 'drag_follow_invalid', False)

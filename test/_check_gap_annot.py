@@ -35,7 +35,6 @@ def probe(gui, tag):
 
 gui = SliderGUI(m=5, n=5, step=1)
 gui.animation_enabled = False
-gui.ui_mode = 'enhanced'
 
 # ------------------------------------------------------------------ 方形
 gui.new_puzzle(5, 5, 1)
@@ -109,12 +108,8 @@ print('\n===== S1-2 边框配色 =====')
 gui.new_puzzle(5, 5, 1)
 gui._sel_anim_timer = 30
 gui._sel_anim_is_undo = True
-gui.ui_mode = 'enhanced'
-print(f'   增强 + 撤销 : {gui._sel_anim_border()}')
+print(f'   撤销 : {gui._sel_anim_border()}')
 gui._sel_anim_is_undo = False
-print(f'   增强 + 重做 : {gui._sel_anim_border()}')
+print(f'   重做 : {gui._sel_anim_border()}')
 gui._sel_anim_timer = 0
 print(f'   高亮窗口结束: {gui._sel_anim_border()}')
-gui.ui_mode = 'plain'
-gui._sel_anim_timer = 30
-print(f'   朴素模式    : {gui._sel_anim_border()}')

@@ -186,7 +186,7 @@ def preview_onboard():
     from GUI import SliderGUI
     gui = SliderGUI(m=6, n=6, step=1)
     gui.animation_enabled = False
-    gui.ui_mode = 'plain'          # 关掉旧 draw 版标注，改叠贴图
+    gui.arrows_enabled = False      # 关掉板上的旧标注，只叠贴图预览
     mid = gui.game.blocks[len(gui.game.blocks) // 2]
     gui.game.opt('h', 2, mid)
     gui.selected_gap = ('h', 2)

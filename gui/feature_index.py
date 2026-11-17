@@ -282,12 +282,6 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='设置 → 控制页「箭头按键」。',
          confusion='开启后，选中的滑块组两端会出现可点的箭头按键用于定向。'),
-    dict(id='ui_mode', name='界面模式（增强 / 朴素）',
-         aliases=('界面模式', '增强模式', '朴素模式', '特效', 'ui'),
-         kind='setting', place=('settings', 'animation'),
-         forms=ALL_FORMS, modes=ALL_MODES,
-         howto='设置 → 视觉页「界面模式」。',
-         confusion='朴素模式下不播放增强动效，其余功能完全一致。'),
     dict(id='animation_duration', name='动画时长',
          aliases=('动画时长', '速度', '动画速度', '毫秒'),
          kind='setting', place=('settings', 'animation'),
@@ -534,7 +528,6 @@ _ACTIONS = {
     'selection_animation_enabled': {'type': 'toggle', 'key': 'selection_animation_enabled'},
     # 设置页（跳页签）
     'arrows_enabled': {'type': 'settings', 'tab': 'control'},
-    'ui_mode': {'type': 'settings', 'tab': 'animation'},
     'animation_duration': {'type': 'settings', 'tab': 'animation'},
     'zoom': {'type': 'settings', 'tab': 'animation'},
     # 音频（设置页单独一页，见 gui/audio.py）

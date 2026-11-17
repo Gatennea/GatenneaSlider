@@ -1919,7 +1919,7 @@ class RendererMixin:
             if screen_y < -scaled_cell or screen_y > self.screen_height + scaled_cell:
                 continue
 
-            # S1-3：越界回弹——本块属于被选中切片时整体抖动偏移（闪烁朴素也给）
+            # S1-3：越界回弹——本块属于被选中切片时整体抖动偏移
             if getattr(self, '_shake_t', 0) > 0 and id(block) in getattr(self, '_shake_blocks', set()):
                 _sox, _soy = self._shake_offset()
                 screen_x += _sox
@@ -2249,8 +2249,6 @@ class RendererMixin:
         """
         if not self._selection_visuals_enabled():
             return None
-        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
-            return None
         if getattr(self, '_sel_anim_timer', 0) <= 0:
             return None
         if getattr(self, '_sel_anim_is_think', False):
@@ -2283,8 +2281,6 @@ class RendererMixin:
         总开关走同一判据——玩家关掉它后，求解播放不该还有一层白边在闪。
         """
         if not self._selection_visuals_enabled():
-            return None
-        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
             return None
         if not getattr(self, 'animating', False):
             return None
@@ -2629,10 +2625,8 @@ class RendererMixin:
         副作用：把命中矩形写进 self._arrow_buttons，供点击检测复用同一套几何。
         """
         self._arrow_buttons = []
-        if getattr(self, 'ui_mode', 'enhanced') != 'enhanced':
-            return None
         # 箭头按键是宣传中的五种操作方式之一，有自己的开关（默认开）：
-        # 不想看见箭头时不必为此把整个界面退回朴素模式。
+        # 2026-11-17 界面模式删掉后，这里只剩这一个闸。
         if not getattr(self, 'arrows_enabled', True):
             return None
         gap = getattr(self, 'selected_gap', None)
@@ -4067,13 +4061,10 @@ class RendererMixin:
 
     def _draw_settings_animation(self, x, y, width, height):
         """绘制动画速度设置内容（统一排版：标签左栏 x+15、控件右栏 x+220）"""
-        # 界面模式总开关（朴素 / 增强）—— S0-0 新增
+        # 2026-11-17（待办 §五十三）：界面模式总开关已删，本页从「滑动动画」起。
         # 说明一律传 max_w：本页说明普遍比对话框宽，旧的单行直出会被右边缘切掉。
         _mw = width - 20
-        self._settings_ui_mode_rect, ny = self._draw_switch_row(
-            x, y, "界面模式：", self.ui_mode == 'enhanced',
-            "增强：新版动效与视觉；朴素：旧版界面",
-            on_text='增强', off_text='朴素', max_w=_mw)
+        ny = y
 
         # 滑动动画开关
         self._settings_anim_toggle_rect, ny = self._draw_switch_row(
@@ -4448,10 +4439,11 @@ class RendererMixin:
         self._settings_ctrl_vk_rect, ny = self._draw_switch_row(
             x, ny, "虚拟键盘：", getattr(self, 'show_virtual_keyboard', False),
             "屏幕上的方向键盘（F1 亦可开关）；米字格靠它定方向，默认开着")
-        # 箭头按键：选中缝隙后两端的可点方向箭头，原先只跟界面模式走
+        # 箭头按键：选中缝隙后两端的可点方向箭头（独立开关，2026-11-17 起
+        # 不再受界面模式牵连）
         self._settings_ctrl_arrow_rect, ny = self._draw_switch_row(
             x, ny, "箭头按键：", getattr(self, 'arrows_enabled', True),
-            "选中缝隙后在切片两端显示可点的方向箭头（需增强界面）")
+            "选中缝隙后在切片两端显示可点的方向箭头")
         # 逆序播放宏：不常用，故从右下角常用区撤回设置（右下角留给常用开关）
         self._settings_ctrl_revmacro_rect, ny = self._draw_switch_row(
             x, ny, "逆序播放宏：", getattr(self, 'macro_reverse_mode', False),
@@ -4814,9 +4806,9 @@ class RendererMixin:
             # 视觉页：真实绘制高度由 _draw_settings_animation 每帧记录
             # （self._settings_anim_height）——曾因写死 340 把底下好几行
             # 裁死在可见区外。首帧尚未绘制时用同一结构估算兜底：
-            # 界面模式/滑动/选中 3 行开关(60) + 速度滑条(72) + 缩放滑条(72)
+            # 滑动/选中 2 行开关(60) + 速度滑条(72) + 缩放滑条(72)
             # + 着色/连锁/标记/面板 4 行开关(60) + 余量。
-            return getattr(self, '_settings_anim_height', 3 * 60 + 72 + 72 + 4 * 60 + 10)
+            return getattr(self, '_settings_anim_height', 2 * 60 + 72 + 72 + 4 * 60 + 10)
         elif self.settings_active_tab == 'audio':
             # 音频页：真实绘制高度由 _draw_settings_audio 每帧记录。
             # 下面只是首帧的保守估算（提示行 + 三行总开关 + 分隔/标题 +
@@ -5251,11 +5243,11 @@ class RendererMixin:
         cy = self.screen_height // 2
 
         # 弹入动画：前若干帧缩放回弹，随后轻微呼吸
-        # S0-1：增强模式放大幅度（弹入更久更明显、呼吸更明显），朴素模式保持原设计口径
-        _enh = getattr(self, 'ui_mode', 'enhanced') == 'enhanced'
-        _in_frames = 18 if _enh else 12   # 增强≈300ms，朴素≈200ms
-        _in_start = 0.85 if _enh else 0.70
-        _breathe = 0.03 if _enh else 0.012
+        # S0-1：固定取增强口径（弹入约 300ms、起始 0.85、呼吸 ±3%）——
+        # 2026-11-17 界面模式已删，旧的「朴素 12 帧 / 0.70 / ±1.2%」不再保留。
+        _in_frames = 18
+        _in_start = 0.85
+        _breathe = 0.03
         p = min(1.0, t / _in_frames)
         ease = 1 - (1 - p) ** 3
         if p < 1:
@@ -5296,9 +5288,9 @@ class RendererMixin:
 
         # 外圈呼吸光晕（对话框边框同色，微弱）
         ring = pygame.Surface((w + 14, h + 14), pygame.SRCALPHA)
-        # 增强模式光晕更明显（朴素模式保持原 0.25±0.10）
-        _glow_base = 0.45 if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 0.25
-        _glow_amp = 0.18 if getattr(self, 'ui_mode', 'enhanced') == 'enhanced' else 0.10
+        # 光晕固定取 0.45±0.18（界面模式已删，旧的朴素 0.25±0.10 不再保留）
+        _glow_base = 0.45
+        _glow_amp = 0.18
         glow_alpha = int(alpha * (_glow_base + _glow_amp * math.sin(t / 7.0)))
         pygame.draw.rect(ring, (130, 130, 140, max(0, glow_alpha)), ring.get_rect(), 2, border_radius=15)
         self.screen.blit(ring, (x - 7, y - 7))

@@ -50,7 +50,6 @@ def disarm(gui):
 
 gui = SliderGUI(m=5, n=5, step=1)
 gui.animation_enabled = False
-gui.ui_mode = 'enhanced'
 pygame.display.set_mode((1463, 843))
 gui.screen = pygame.display.get_surface()
 
@@ -99,11 +98,11 @@ gui.animating = True
 gui.anim_blocks = []
 check(gui._play_head_border() is None, '无动画块时无光边')
 
-# 朴素模式
-gui.ui_mode = 'plain'
+# 关闭「选中动画」时不画（2026-11-17：界面模式已删，这里改测共用判据）
+gui.selection_animation_enabled = False
 arm(gui, grp)
-check(gui._play_head_border() is None, '朴素模式不画光边')
-gui.ui_mode = 'enhanced'
+check(gui._play_head_border() is None, '选中动画关闭时不画光边')
+gui.selection_animation_enabled = True
 
 # 画一遍不报错，且光边确实落在动画组上（方形用 block.location 比对）
 arm(gui, grp)

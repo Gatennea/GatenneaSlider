@@ -202,12 +202,11 @@ class SessionMixin:
             notify_msg += "；本次随机打乱未达难度门槛，可再打乱一次"
         notify = (notify_msg, 120)
 
-        # 打乱过程演示：enhanced 模式 + 滑动动画开着 + 确实有可演的步骤。
+        # 打乱过程演示：滑动动画开着 + 确实有可演的步骤。
         # 演示从打乱前状态逐步重放，步数过多只演前几步，再淡出切入终态；
         # 期间棋盘输入被 animating 守卫挡着，结束/中断都会对齐到终态
         demo = (records and self.animation_enabled
-                and self.animation_duration > 0
-                and getattr(self, 'ui_mode', 'enhanced') == 'enhanced')
+                and self.animation_duration > 0)
         if demo:
             # 通知延后到演示结束再补发：那会儿玩家才能真正操作
             self._start_shuffle_demo(records, pre_positions,

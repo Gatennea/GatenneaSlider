@@ -414,16 +414,14 @@ class DragMixin:
             step -= step_size
 
         # S1-3：越界松手 → 撞墙回弹。2026-11-13 用戶定：拒絕反饋屬基礎可用性，
-        # 樸素模式也給（去增強門檻）；但位移抖動仍只在 enhanced，
-        # plain 只閃邊框、不位移，不破壞 plain「無動效」的定位。
+        # 一律給（去增強門檻）；2026-11-17 界面模式刪除後，位移抖動不再分流。
         # 注意：此刻 drag_follow_invalid 仍为 True（clear_drag_follow 会清掉），be_opted 切片仍在。
         if not moved and self.drag_follow_invalid:
             chosen = [b for b in self.game.blocks if b.be_opted]
             if chosen:
-                enhanced = getattr(self, 'ui_mode', 'enhanced') == 'enhanced'
                 self._shake_blocks = set(id(b) for b in chosen)
-                self._shake_dr = (1 if dr > 0 else (-1 if dr < 0 else 0)) if enhanced else 0
-                self._shake_dc = (1 if dc > 0 else (-1 if dc < 0 else 0)) if enhanced else 0
+                self._shake_dr = (1 if dr > 0 else (-1 if dr < 0 else 0))
+                self._shake_dc = (1 if dc > 0 else (-1 if dc < 0 else 0))
                 self._shake_t = 12  # 约 200ms（帧）
 
         # 清除跟随状态（含 single-touch auto-deselect）

@@ -48,7 +48,6 @@ def shot(gui, name, draw, note):
 
 gui = SliderGUI(m=6, n=6, step=1)
 gui.animation_enabled = False
-gui.ui_mode = 'enhanced'
 pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 

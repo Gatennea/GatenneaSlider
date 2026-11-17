@@ -41,7 +41,6 @@ def main():
     gui.tut_show_prompt = False
     gui.tutorial_active = False
     gui.animation_enabled = False
-    gui.ui_mode = 'enhanced'
     gui.arrows_enabled = True
     pygame.display.set_mode((gui.screen_width, gui.screen_height))
     gui.screen = pygame.display.get_surface()
