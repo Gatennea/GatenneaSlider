@@ -1,6 +1,6 @@
 """音效与背景音乐管理（AudioManager）。
 
-照 docs/ui/前端動效優化計劃.md §S5 實作。素材由用戶提供，統一放在專案根目錄
+照 docs/archive/前端動效優化計劃_2026-11-17.md §S5 實作。素材由用戶提供，統一放在專案根目錄
 `assets/audio/` 下，再分兩個子目錄：
 - `assets/audio/sound/`  —— 一次性音效（slide / fail / solved / click / keyboard）
 - `assets/audio/music/`  —— 背景音樂（bgm）
