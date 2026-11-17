@@ -141,6 +141,8 @@ class HistoryMixin:
             return
         self.selected_gap = None
         self.selected_block = None
+        # 撤销/重做换的是局面，别让上一推的收尾位移挂在新局面上
+        self.cubic_anim = None
         clear = getattr(self, '_cubic_clear_selection', None)
         if callable(clear):
             clear()

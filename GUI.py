@@ -1417,6 +1417,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._cubic_scene = None
         self._cubic_last_click_t = None
         self._cubic_last_click_p = None
+        # 三维推一步的滑动（第 6 步）：只动渲染层，见 gui/events._cubic_start_anim
+        self.cubic_anim = None
         # 拆分（相邻块之间空出的距离）：0 = 贴死成一整块、看不出前后；
         # 滑条留到「渲染选项」那一步，这里先给默认值。
         self.cubic_gap = DEFAULT_GAP

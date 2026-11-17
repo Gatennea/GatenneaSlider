@@ -173,7 +173,7 @@ def locations_of(blocks) -> set:
 
 
 def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
-                  gap: float = 0.0) -> list:
+                  gap: float = 0.0, offsets=None) -> list:
     """算出**当前可见**的面（背面剔除 + 内部面剔除 + 画家排序）。
 
     gap = 拆分距离（见 block_min_corner）。**gap>0 时不再剔除内部面**：块与块
@@ -198,6 +198,13 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
             if sum(n * v for n, v in zip(normal, view_z)) <= 1e-9:
                 continue                       # 背面：法向朝里，看不见
             quad = _face_quad(loc, axis, sign, gap)
+            if offsets:
+                # 三维动画（§54 第 6 步）：逻辑已提交，渲染层给「刚动过的块」
+                # 一个还在收尾的位移，画面上就是滑过去的一段。
+                off = offsets.get(loc)
+                if off is not None:
+                    quad = tuple((w[0] + off[0], w[1] + off[1], w[2] + off[2])
+                                 for w in quad)
             pts = []
             depth = 0.0
             for w in quad:
@@ -218,12 +225,19 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
     return out
 
 
-def block_boxes(blocks, gap: float = 0.0) -> list:
-    """每个块的世界 AABB（(x0, y0, z0, x1, y1, z1)），含拆分内收。"""
+def block_boxes(blocks, gap: float = 0.0, offsets=None) -> list:
+    """每个块的世界 AABB（(x0, y0, z0, x1, y1, z1)），含拆分内收。
+
+    offsets 给了就给该块的盒子整体平移（动画渲染期用；判定/拾取仍用原位）。
+    """
     out = []
     edge = 1.0 - gap
     for loc in locations_of(blocks):
         x0, y0, z0 = block_min_corner(loc, gap)
+        if offsets:
+            off = offsets.get(loc)
+            if off is not None:
+                x0, y0, z0 = x0 + off[0], y0 + off[1], z0 + off[2]
         out.append((x0, y0, z0, x0 + edge, y0 + edge, z0 + edge))
     return out
 
@@ -394,7 +408,8 @@ def point_visible(point, boxes, view_dir, eps: float = 1e-6) -> bool:
 
 def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
                 margin: int = 40, zoom: float = 1.0,
-                origin_offset=(0.0, 0.0), gap: float = 0.0) -> dict:
+                origin_offset=(0.0, 0.0), gap: float = 0.0,
+                offsets=None) -> dict:
     """一步到位：装画面 + 算可见面。渲染层只要拿 'faces' 去画。
 
     ⚠️ 装画面用 `stable_frame`（包围球定比例），不是 `fit_view`（按当前朝向的
@@ -404,12 +419,14 @@ def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
     scale, origin = stable_frame(blocks, camera, width, height,
                                  margin=margin, zoom=zoom, gap=gap)
     origin = (origin[0] + origin_offset[0], origin[1] + origin_offset[1])
-    faces = collect_faces(blocks, camera, scale=scale, origin=origin, gap=gap)
+    faces = collect_faces(blocks, camera, scale=scale, origin=origin, gap=gap,
+                          offsets=offsets)
     return {
         'faces': faces,
         'scale': scale,
         'origin': origin,
         'camera': camera,
         'gap': gap,
+        'offsets': offsets,
         'block_count': len(locations_of(blocks)),
     }

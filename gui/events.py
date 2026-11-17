@@ -1920,11 +1920,57 @@ class EventsMixin:
             self.macro_notify_msg = f"先在切面一侧双击选中滑块，再用 {hint} 推"
             self.macro_notify_timer = 120
             return False
+        before = [tuple(int(v) for v in b.location[:3])
+                  for b in self.game.blocks if getattr(b, 'be_opted', False)]
         moved = self.move_selected_blocks(letter)
         if not moved:
             self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
             self.macro_notify_timer = 120
+            return False
+        if getattr(self, 'animation_enabled', True) and before:
+            self._cubic_start_anim(letter, before)
         return moved
+
+    #: 三维推一步的滑动时长（毫秒）。二维走 animation_duration，三维单独一档：
+    #: 一步是整组 9 块沿一个轴滑，太快看不出「整组在动」。
+    CUBIC_ANIM_MS = 140
+
+    def _cubic_start_anim(self, letter, before_locs):
+        """记下「这一推从哪滑到哪」，交给渲染层做收尾位移（逻辑已提交）。
+
+        只动渲染：真实位置早已就位，这里给刚动过的那组一个逐渐归零的反向位移，
+        画面上就是滑过去的一段。拾取 / 判定 / 选中始终用真实位置。
+        """
+        from engine.compat import CUBIC_DIRECTIONS
+        vec = CUBIC_DIRECTIONS.get(letter)
+        if vec is None:
+            return
+        dr, dc, dd = vec
+        # 逻辑坐标 (r,c,d) → 世界 (X=c, Y=d, Z=r)，与 cubic_view 同一口径
+        delta = (dc, dd, dr)
+        after = {(r + dr, c + dc, d + dd) for (r, c, d) in before_locs}
+        self.cubic_anim = {
+            't0': pygame.time.get_ticks(),
+            'ms': int(self.CUBIC_ANIM_MS),
+            'delta': tuple(float(v) for v in delta),
+            'group': frozenset(after),
+        }
+
+    def _cubic_anim_offsets(self):
+        """当前帧的动画位移 {位置: (dx,dy,dz)}；没动画时 None。"""
+        anim = getattr(self, 'cubic_anim', None)
+        if not anim:
+            return None
+        elapsed = pygame.time.get_ticks() - anim['t0']
+        ms = max(1, anim['ms'])
+        if elapsed >= ms:
+            self.cubic_anim = None
+            return None
+        p = elapsed / float(ms)
+        k = (1.0 - p) ** 3            # ease-out：起手就动、落点定住
+        dx, dy, dz = anim['delta']
+        off = (-dx * k, -dy * k, -dz * k)
+        return {loc: off for loc in anim['group']}
 
     def _cubic_vk_six(self, letter):
         """虚拟键盘六键：有选中就推，没选中就平移盘面（方案 §1「操作入口」）。"""

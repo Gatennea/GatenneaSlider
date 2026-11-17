@@ -699,6 +699,7 @@ class FileOpsMixin:
         self._cubic_scene = None
         self._cubic_last_click_t = None
         self._cubic_last_click_p = None
+        self.cubic_anim = None
         self.show_virtual_keyboard = True
         self.zoom = 1.0
 

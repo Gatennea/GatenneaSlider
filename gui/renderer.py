@@ -981,6 +981,10 @@ class RendererMixin:
         scene = cubic_view.build_scene(
             blocks, camera, self.screen_width, self.screen_height,
             margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap,
+            # 三维动画（§54 第 6 步）：刚推过的那组给一个逐渐归零的位移，
+            # 画面上就是「滑过去」；逻辑位置早就提交好了，这里只动渲染。
+            offsets=(self._cubic_anim_offsets()
+                     if hasattr(self, '_cubic_anim_offsets') else None),
             # 平移盘面（没选中时点六键）：屏幕像素偏移，不碰逻辑坐标，
             # 也不参与缩放/装画面（scale 仍只由 zoom 决定）。
             origin_offset=tuple(getattr(self, 'cubic_pan', (0.0, 0.0))))
@@ -997,14 +1001,18 @@ class RendererMixin:
         # （用户原话「切面看起来和滑块不在一个图层」）。做法是把面按格切成
         # 小四边形，各自带深度塞进同一张绘制序里。
         seam = getattr(self, 'selected_gap', None)
+        # 推一步的滑动期间（第 6 步）不画切面：那张面停在原处，块会从它中间
+        # 穿过去，深度序上必然出现「红面盖住正在滑的块」——动画一结束就恢复。
+        # ⚠️ 只停「切面」，箭头照画（seam 本身还要给箭头定位）。
+        seam_draw = None if getattr(self, 'cubic_anim', None) else seam
         seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
         seam_items = []
-        if seam and seam[0] in ('r', 'c', 'd'):
+        if seam_draw and seam_draw[0] in ('r', 'c', 'd'):
             from engine import cubic_pick
             # 按**格**取切面：每格 1 格大小，各自带自己的深度插进画家序，
             # 前后关系由块与格谁更近决定（见 seam_plane_cells 的说明）。
             for quad, center in cubic_pick.seam_plane_cells(
-                    seam[0], seam[1], blocks, gap=gap):
+                    seam_draw[0], seam_draw[1], blocks, gap=gap):
                 pts = [cubic_view.project_point(w, camera, scene['scale'],
                                                 scene['origin'])[:2] for w in quad]
                 # 切面近乎侧对视线时，一格在屏幕上退化成一条线（面积≈0）。

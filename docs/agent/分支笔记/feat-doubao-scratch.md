@@ -615,3 +615,20 @@ A 段换成坐标轴断言 + A2 段 65 姿态扫描，F 段换成新箭头断言
 
 下一步：第 6 步动画（`gui/animation.py` 渲染层偏移）+ §2.4 渲染选项 GUI
 （右侧栏拆分/透明度滑条、设置页「三维」专页）。
+
+## 2026-11-18 第 6 步：推一步的滑动（动画）
+
+- `engine/cubic_view`：`collect_faces` / `block_boxes` / `build_scene` 增加 `offsets`
+  （{位置: 世界位移}）；只平移该块的面片，形状/遮挡/拾取口径不变。
+- `gui/events`：`_cubic_start_anim(letter, 前位置)` 记下「这一推从哪到哪」，
+  `_cubic_anim_offsets()` 按 `CUBIC_ANIM_MS=140` 的 ease-out 给逐渐归零的反向位移；
+  `_cubic_push_letter` 推成功后起动画。逻辑位置仍在推的瞬间提交（可继续推/撤销）。
+- `gui/renderer`：`build_scene(offsets=...)`；滑动期间**只隐藏切面红面**（面停在
+  原处会被正在滑的块穿过，深度序必然错），箭头照画。
+- `gui/history` 撤销/重做清掉 `cubic_anim`；`GUI.new_cubic_puzzle` / 读档补初始化。
+- 测试：新增 `test/_test_cubic_animation.py`（16 项：逻辑先到位/位移收敛清空/只在
+  动过那组/投影确实位移/关动画无尾巴/动画中仍可再推与撤销）。
+
+至此方案六步（0 脚手架 → 1 画出来 → 2 六视角/旋转 → 3 选中 → 4 真的能玩 →
+5 历史 → 6 动画）全部落地。剩余 §2.4「渲染选项 GUI」：右侧栏拆分/透明度滑条、
+设置页「三维」专页、声明式配置表——尚未开工。
