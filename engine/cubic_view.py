@@ -218,6 +218,66 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
     return out
 
 
+def block_boxes(blocks, gap: float = 0.0) -> list:
+    """每个块的世界 AABB（(x0, y0, z0, x1, y1, z1)），含拆分内收。"""
+    out = []
+    edge = 1.0 - gap
+    for loc in locations_of(blocks):
+        x0, y0, z0 = block_min_corner(loc, gap)
+        out.append((x0, y0, z0, x0 + edge, y0 + edge, z0 + edge))
+    return out
+
+
+def _ray_hits_box(origin, direction, box, eps: float = 1e-6) -> bool:
+    """射线（从 origin 沿 direction 朝相机）是否穿过轴对齐盒子。"""
+    t_enter, t_exit = -1e18, 1e18
+    for i in range(3):
+        d = direction[i]
+        if abs(d) < 1e-12:
+            if origin[i] < box[i] or origin[i] > box[i + 3]:
+                return False
+            continue
+        t1 = (box[i] - origin[i]) / d
+        t2 = (box[i + 3] - origin[i]) / d
+        if t1 > t2:
+            t1, t2 = t2, t1
+        if t1 > t_enter:
+            t_enter = t1
+        if t2 < t_exit:
+            t_exit = t2
+        if t_enter > t_exit:
+            return False
+    return t_exit > eps and t_enter > -1e18
+
+
+def point_visible(point, boxes, view_dir, eps: float = 1e-6) -> bool:
+    """世界点沿视线朝相机走，是否被某个块挡住（被挡住 = 不该画出来）。
+
+    为什么不用画家序一条排序了事：切面在块与块的缝隙里，一张面按 1/3 块宽
+    粗切时，一格会同时压住「该被挡」和「该露出来」两个区域，只能按格心深度
+    一刀切 → 出现红边爬过前面块（用户 2026-11-18「边界线被遮住还画出来」）。
+    这里对每个采样点精确求交，所见即真实。
+
+    剪枝：只测「比该点更靠近相机」的块（更远的块挡不住它）。缝隙里的采样点
+    本来只有一半方块在它前方，先把名单砍掉一半再逐个求交。
+    """
+    base = sum(point[i] * view_dir[i] for i in range(3))
+    for box in boxes:
+        # 盒子沿视线方向的投影区间 [lo, hi]；hi < base - eps 表示整块在该点后面
+        proj = [0.0] * 8
+        idx = 0
+        for xi in (box[0], box[3]):
+            for yi in (box[1], box[4]):
+                for zi in (box[2], box[5]):
+                    proj[idx] = xi * view_dir[0] + yi * view_dir[1] + zi * view_dir[2]
+                    idx += 1
+        if max(proj) < base - eps:
+            continue
+        if _ray_hits_box(point, view_dir, box, eps):
+            return False
+    return True
+
+
 def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
                 margin: int = 40, zoom: float = 1.0,
                 origin_offset=(0.0, 0.0), gap: float = 0.0) -> dict:

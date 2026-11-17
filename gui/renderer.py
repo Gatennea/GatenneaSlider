@@ -994,71 +994,101 @@ class RendererMixin:
         # （用户原话「切面看起来和滑块不在一个图层」）。做法是把面按格切成
         # 小四边形，各自带深度塞进同一张绘制序里。
         seam = getattr(self, 'selected_gap', None)
-        seam_cells = []
+        seam_quads = []
         if seam and seam[0] in ('r', 'c', 'd'):
             from engine import cubic_pick
             poly = cubic_pick.seam_plane_polygon(seam[0], seam[1], blocks,
-                                                 pad=self.CUBIC_SEAM_PAD)
+                                                 pad=self.CUBIC_SEAM_PAD,
+                                                 gap=gap)
             if poly:
-                n = 3
-                for i in range(n):
-                    for j in range(n):
-                        u0, u1 = i / float(n), (i + 1) / float(n)
-                        v0, v1 = j / float(n), (j + 1) / float(n)
-                        quad = []
-                        for (u, v) in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
-                            quad.append(tuple(
-                                (1 - u) * (1 - v) * poly[0][k]
-                                + u * (1 - v) * poly[1][k]
-                                + u * v * poly[2][k]
-                                + (1 - u) * v * poly[3][k]
-                                for k in range(3)))
-                        pts, depth = [], 0.0
-                        for w in quad:
-                            sx, sy, sz = cubic_view.project_point(
-                                w, camera, scene['scale'], scene['origin'])
-                            pts.append((sx, sy))
-                            depth += sz
-                        seam_cells.append({'pts': pts, 'depth': depth / 4.0})
+                # 遮挡判定不靠画家序（切面在缝里，粗切一格会横跨「该挡」和「该
+                # 露」两块区域，按格心深度一刀切就一定出错）。改成**逐点射线**
+                # 判定：每个小格的中心沿视线朝相机走，撞到任何块就算被遮住、不画。
+                # 所见即真实，不存在「被挡住还画出来」的边线。
+                # 采样点 24×24 个、每个要测几十个盒子，一次算完按
+                # 「缝 + 姿态 + 拆分 + 块位 + 装画面」缓存；拖动 / 平移时 key 变。
+                boxes = cubic_view.block_boxes(blocks, gap)
+                view_dir = camera.view_axis()
+                key = (seam, round(float(gap), 6),
+                       tuple(round(float(v), 6) for row in camera.rows() for v in row),
+                       tuple(sorted(tuple(int(v) for v in b.location[:3])
+                                    for b in blocks)),
+                       round(float(scene['scale']), 4),
+                       round(float(scene['origin'][0]), 3),
+                       round(float(scene['origin'][1]), 3))
+                cached = getattr(self, '_cubic_seam_cache', None)
+                if cached is not None and cached[0] == key:
+                    seam_quads = cached[1]
+                else:
+                    seam_quads = []
+                    n = 24                      # 每轴 24 份 → 每格约 1/8 块宽
+                    for i in range(n):
+                        for j in range(n):
+                            u0, u1 = i / float(n), (i + 1) / float(n)
+                            v0, v1 = j / float(n), (j + 1) / float(n)
+                            quad = []
+                            for (u, v) in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
+                                quad.append(tuple(
+                                    (1 - u) * (1 - v) * poly[0][k]
+                                    + u * (1 - v) * poly[1][k]
+                                    + u * v * poly[2][k]
+                                    + (1 - u) * v * poly[3][k]
+                                    for k in range(3)))
+                            center = tuple(sum(w[k] for w in quad) / 4.0
+                                           for k in range(3))
+                            if not cubic_view.point_visible(center, boxes, view_dir):
+                                continue
+                            pts = []
+                            for w in quad:
+                                sx, sy, _sz = cubic_view.project_point(
+                                    w, camera, scene['scale'], scene['origin'])
+                                pts.append((int(round(sx)), int(round(sy))))
+                            seam_quads.append(pts)
+                    self._cubic_seam_cache = (key, seam_quads)
+
+        # 缝两侧的墙面（真几何）一起染色：切面本身埋在实心块里，正视下物理上
+        # 就该看不见（只剩缝口那几像素），只靠它不够读。这两面墙是缝里真实存在
+        # 的面、已经在可见面表里、走正常的画家序，所以染红它们既不造假图层，
+        # 又能让人一眼看出「刀切在哪」——pCubes 一类魔方软件也是这么标的。
+        seam_rgb0 = tuple(self.colors.get('line', (230, 60, 60)))[:3]
+        seam_axis = None
+        seam_plane = None
+        if seam and seam[0] in ('r', 'c', 'd'):
+            seam_axis = {'r': 2, 'c': 0, 'd': 1}[seam[0]]
+            seam_plane = seam[1] + 1
+
+        def _is_cut_wall(face):
+            if seam_axis is None or face['axis'] != seam_axis:
+                return False
+            loc_index = {0: 1, 1: 2, 2: 0}[face['axis']]
+            coord = face['loc'][loc_index] + (1 if face['sign'] > 0 else 0)
+            return coord == seam_plane and face['loc'] not in opted
 
         items = [(f['depth'], 0, f) for f in scene['faces']]
-        items += [(c['depth'], 1, c) for c in seam_cells]
         items.sort(key=lambda t: t[0])
-        lens = None
-        seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
-        for _depth, kind, obj in items:
-            if kind == 0:
-                face = obj
-                color = chosen if face['loc'] in opted else base
-                shade = face['shade']
-                fill = (int(color[0] * shade), int(color[1] * shade),
-                        int(color[2] * shade))
-                pts = [(int(round(p[0])), int(round(p[1]))) for p in face['pts']]
-                pygame.draw.polygon(self.screen, fill, pts)
-                pygame.draw.polygon(self.screen, border, pts, 1)
-            else:
-                pts = [(int(round(p[0])), int(round(p[1]))) for p in obj['pts']]
-                if lens is None:
-                    lens = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-                lens.fill((0, 0, 0, 0))
-                pygame.draw.polygon(lens, seam_rgb + (self.CUBIC_SEAM_ALPHA,), pts)
-                self.screen.blit(lens, (0, 0))
-                pygame.draw.polygon(self.screen, seam_rgb, pts, 1)
+        for _depth, _kind, face in items:
+            color = chosen if face['loc'] in opted else base
+            if _is_cut_wall(face):
+                color = tuple(int(0.45 * color[i] + 0.55 * seam_rgb0[i])
+                              for i in range(3))
+            shade = face['shade']
+            fill = (int(color[0] * shade), int(color[1] * shade),
+                    int(color[2] * shade))
+            pts = [(int(round(p[0])), int(round(p[1]))) for p in face['pts']]
+            pygame.draw.polygon(self.screen, fill, pts)
+            pygame.draw.polygon(self.screen, border, pts, 1)
 
-        # 切面的轮廓另画一遍、压在块上（与二维同口径：二维的选中缝是压在块
-        # 上的一条红线，玩家总能看到「刀在哪」）。方案 §2.3 本来也写了要画
-        # 「整个切面的轮廓」。只靠半透明面的话，切面若整片埋在块里面就什么都
-        # 看不见（前面视图下的 r 切面就是这样）。
-        if seam and seam[0] in ('r', 'c', 'd'):
-            from engine import cubic_pick as _cp
-            poly = _cp.seam_plane_polygon(seam[0], seam[1], blocks,
-                                          pad=self.CUBIC_SEAM_PAD)
-            if poly:
-                ring = [(int(round(p[0])), int(round(p[1]))) for p in
-                        (cubic_view.project_point(w, camera, scene['scale'],
-                                                  scene['origin'])[:2]
-                         for w in poly)]
-                pygame.draw.polygon(self.screen, seam_rgb, ring, 2)
+        # 切面：先把所有「没被挡住」的小格画成一张实色蒙版，再整张按 alpha 贴一次。
+        # 逐格直接混色会在格子接缝处叠出深色线（同一张面上不该有线），蒙版只画一次
+        # 就没有这个副作用，也不会被格边割裂成「线框」。
+        if seam_quads:
+            seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
+            lens = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            lens.fill((0, 0, 0, 0))
+            for pts in seam_quads:
+                pygame.draw.polygon(lens, seam_rgb, pts)
+            lens.set_alpha(self.CUBIC_SEAM_ALPHA)
+            self.screen.blit(lens, (0, 0))
 
         # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
         # 必然同源，不存在「看得见点不中」的漂移）。

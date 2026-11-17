@@ -230,12 +230,14 @@ def seam_of_internal_face(face, is_valid_gap, locations=None):
     return (family, line)
 
 
-def seam_plane_polygon(family, line, blocks, pad: float = 0.0):
+def seam_plane_polygon(family, line, blocks, pad: float = 0.0, gap: float = 0.0):
     """切面预览的四角（世界坐标）。
 
     切面是「坐标 = line+1」那张格点平面（与引擎 ``t = line + 1`` 同一口径），
-    另外两轴按当前块的包围盒取（pad 默认 0：白线正好压在棋盘轮廓上，不外扩成
-    一圈「浮在空中的框」）。
+    另外两轴按当前块的包围盒取。``gap`` 必须与渲染用的拆分一致：拆分时每块
+    内收 gap/2，块的**实际**外表面比逻辑包围盒小 gap/2，不把它算进去，切面就
+    会伸出盘子的外轮廓一截（用户 2026-11-18 看到的「被遮住还画出来的边线」就是
+    这一截红边）。``pad`` 默认 0：正好压在盘子外表面，不外扩成浮在空中的框。
     """
     locs = [(int(b.location[0]), int(b.location[1]), int(b.location[2]))
             if hasattr(b, 'location') else tuple(int(v) for v in b)
@@ -245,8 +247,9 @@ def seam_plane_polygon(family, line, blocks, pad: float = 0.0):
     axis = FAMILY_TO_WORLD_AXIS[family]
     # 逻辑坐标 (r, c, d) → 世界坐标 (X, Y, Z) = (c, d, r)：cubic_view 的映射
     world = [(p[1], p[2], p[0]) for p in locs]
-    lo = [min(p[i] for p in world) for i in range(3)]
-    hi = [max(p[i] for p in world) + 1 for i in range(3)]
+    half = float(gap) / 2.0
+    lo = [min(p[i] for p in world) + half for i in range(3)]
+    hi = [max(p[i] for p in world) + 1 - half for i in range(3)]
     fixed = float(line + 1)
     a, b = [i for i in range(3) if i != axis]
     lo_a, hi_a = lo[a] - pad, hi[a] + pad
