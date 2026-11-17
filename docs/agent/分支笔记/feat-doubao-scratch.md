@@ -359,3 +359,26 @@ OrbitControls、pCubes 轨道相机同一套：轴永远垂直于屏幕、永远
   （与撤销/重做在第 4 步明确拒绝同口径）。
 - 新增 `test/_test_cubic_save_guard.py`（7 项）：坏档静默回落 + 被覆盖成当前局
   + 三维保存被拒且文件不落地 + 切回二维后不再拦。
+
+## 改：拖动改成真 arcball（用户第二次说「还是奇怪」）
+
+pCubes 是闭源 exe（E:\pC 只有 pCubes.exe + 数据），HyperSpeedcube 装的也是
+二进制（D:\leuzhubi\hyperspeedcube_win64 只有 exe+yaml）；但魔方模拟器的拖动
+惯例是公开的：**Shoemake 的 arcball**——把屏幕点投到虚拟球面，按下点、当前点
+两个球面方向取夹角，绕 `cross(a,b)` 转。与「像素线性 × 固定轴」相比，它天然
+「抓哪儿转哪儿」，球心和球缘的灵敏度也不同。
+
+- `engine/cubic_camera.py` 新增 `arcball_sphere_point` / `arcball_axis_angle`
+  （球半径 = 画面短边一半，球外压到球缘）。
+- `gui/events.py` 的 `_cubic_drag_update` 改走 arcball；`CUBIC_DRAG_DEG_PER_PX`
+  （0.45°/px 线性）退役，换成 `CUBIC_DRAG_SENSITIVITY = 1.0`（倍率，将来进设置页）。
+- 数值：同 100px，抓球心 19.5°、抓球缘 11.5°（arcball 该有的差异）；18 组姿态×
+  方向全部朝拖动方向（cos=1.00）；半灵敏度精确转一半。
+- `test/_test_cubic_view_nav.py` 的拖动断言改按 arcball 算；新增
+  `test/_test_cubic_arcball.py`（5 项）。
+- 回归：view 41 / nav 83 / pick 204 / play 32 / framing 15 / gap 18 / split 25 /
+  save_guard 7 / entry 31 / arcball 5 全绿。
+
+⚠️ 已知口径分歧：arcball 允许画面「滚转」，转到某些姿态后立方体的边不再贴
+屏幕横竖。魔方软件里两种流派都有（自由球 / 固定水平）。如果用户嫌「歪」，下一步
+加设置项：自由球 vs 保持水平（后者 = 绕世界竖轴 yaw + pitch 夹紧，无滚转）。

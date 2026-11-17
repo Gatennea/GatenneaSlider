@@ -1608,8 +1608,8 @@ class EventsMixin:
     CUBIC_PITCH_LIMIT = 89.0
     #: 缩放区间：太小看不到缝、太大只剩一两块。
     CUBIC_ZOOM_RANGE = (0.5, 3.0)
-    #: 拖动灵敏度（度/像素）：一圈 360° 约 800px，符合常见 3D 查看器手感。
-    CUBIC_DRAG_DEG_PER_PX = 0.45
+    #: 拖动灵敏度：arcball 角度（球面夹角）再乘这个倍率。1.0 = 抓哪儿转哪儿。
+    CUBIC_DRAG_SENSITIVITY = 1.0
 
     def _cubic_camera_apply(self, cam, label=None, index=None):
         """把姿态写进 GUI（姿态本身是唯一真源，不再另存 yaw/pitch）。"""
@@ -1677,14 +1677,15 @@ class EventsMixin:
             return                       # 还在点击容差内：先别动相机（避免点一下画面就歪）
         if dx == 0 and dy == 0:
             return
-        k = self.CUBIC_DRAG_DEG_PER_PX
-        right = base.right_axis()
-        up = base.up_axis()
-        # 轴取「屏幕竖轴 × dx + 屏幕横轴 × dy」，再取负角：
-        # 横拖绕 up 转 → 内容左右走；竖拖绕 right 转 → 内容上下走。
-        # 符号由相机基的右手性（up×view = right、right×view = −up）定，实测校过。
-        axis = tuple(up[i] * dx + right[i] * dy for i in range(3))
-        self._cubic_camera_apply(base.spin(axis, -k * math.hypot(dx, dy)))
+        from engine.cubic_camera import arcball_axis_angle
+        axis_cam, ang = arcball_axis_angle(
+            (sx, sy), pos, self.screen_width, self.screen_height)
+        if axis_cam is None:
+            return
+        right, up, view = base.right_axis(), base.up_axis(), base.view_axis()
+        axis = tuple(axis_cam[0] * right[i] + axis_cam[1] * up[i]
+                     + axis_cam[2] * view[i] for i in range(3))
+        self._cubic_camera_apply(base.spin(axis, -ang * self.CUBIC_DRAG_SENSITIVITY))
 
     # ------------------------------------------------------------------
     # 三维选中（§54 第 3 步）：单击出白线切面、双击选中连通组

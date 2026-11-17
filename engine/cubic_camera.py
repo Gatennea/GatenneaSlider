@@ -71,6 +71,41 @@ def face_view_rotation(index: int, tilt_deg: float = DEFAULT_VIEW_RESIDUE):
     return CubicCamera.from_basis(_turn(right0), _turn(up0), _turn(toward0))
 
 
+def arcball_sphere_point(x, y, width, height):
+    """屏幕像素 → 虚拟球面单位向量（相机坐标：x 右、y 上、z 朝观察者）。
+
+    球半径取画面短边一半，球外点压到球缘（Shoemake 的简化处理）。魔方模拟器
+    （pCubes / HyperSpeedcube 这一类）的拖动都是这套「把球抓住转」的手感。
+    """
+    r = max(1e-6, 0.5 * min(width, height))
+    vx = (x - width / 2.0) / r
+    vy = (height / 2.0 - y) / r
+    d2 = vx * vx + vy * vy
+    if d2 > 1.0:
+        d = math.sqrt(d2)
+        return (vx / d, vy / d, 0.0)
+    return (vx, vy, math.sqrt(1.0 - d2))
+
+
+def arcball_axis_angle(p0, p1, width, height):
+    """从按下点 p0 拖到 p1：返回 (世界轴, 角度[度])。轴为 None 表示几乎没动。
+
+    角度取两点在球面上的**夹角**（不是像素线性比例），所以「抓哪儿转哪儿」：
+    抓边角拖同样的像素，转得比抓中心少，这正是魔方软件那种贴手感的来源。
+    """
+    a = arcball_sphere_point(p0[0], p0[1], width, height)
+    b = arcball_sphere_point(p1[0], p1[1], width, height)
+    cx = a[1] * b[2] - a[2] * b[1]
+    cy = a[2] * b[0] - a[0] * b[2]
+    cz = a[0] * b[1] - a[1] * b[0]
+    n = math.sqrt(cx * cx + cy * cy + cz * cz)
+    dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    if n < 1e-9:
+        return None, 0.0
+    angle = math.degrees(math.atan2(n, max(-1.0, min(1.0, dot))))
+    return (cx / n, cy / n, cz / n), angle
+
+
 def _rodrigues(vec, axis, angle_deg: float):
     """罗德里格斯公式：把 vec 绕单位轴 axis 转 angle_deg 度。"""
     vx, vy, vz = vec
