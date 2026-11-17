@@ -234,6 +234,61 @@ check(_drag_angle(0.0) == _drag_angle(0.0) == 0.0 or _drag_angle(0.0) < 0.02,
       '灵敏度 0 = 拖了也不转', _drag_angle(0.0))
 
 print('=' * 60)
+print('F. 设置页「三维」专页：8 页签放得下、按钮可用、二维置灰')
+
+
+def _open_settings(gui):
+    gui.show_settings_dialog = True
+    gui.settings_active_tab = 'cubic'
+    gui.draw_settings_dialog()
+
+
+_open_settings(gui)
+gui.new_cubic_puzzle(3, 3, 3, 1)
+_open_settings(gui)
+_rects = [getattr(gui, a, None) for a in
+          ('_settings_tab_kb_rect', '_settings_tab_control_rect',
+           '_settings_tab_anim_rect', '_settings_tab_audio_rect',
+           '_settings_tab_solver_rect', '_settings_tab_gather_rect',
+           '_settings_tab_file_rect', '_settings_tab_cubic_rect')]
+check(all(r is not None for r in _rects), '8 个页签矩形都画出来了')
+check(all(_rects[i].right <= _rects[i + 1].left for i in range(len(_rects) - 1))
+      and _rects[-1].right <= gui.screen_width,
+      '页签互不重叠、最后一个不出屏', [(r.left, r.right) for r in _rects])
+check(all(_rects[i].width == 72 for i in range(len(_rects))), '页签宽 72（放得下 8 个）')
+
+_btns = getattr(gui, '_settings_cubic_btn_rects', {})
+check(len(_btns) == 8 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns,
+      '三维页四个选项各一枚 − 与 +', sorted(_btns.keys()))
+check(all(r.collidepoint(r.center) and r.bottom <= gui._settings_content_rect.bottom + 1
+          for r in _btns.values()),
+      '按钮都落在可见内容区内')
+
+# 点 + 真的改值（走设置页真实事件入口，不直接调内部函数）
+_g0 = gui.cubic_gap
+_r = _btns[('gap', 1)]
+gui._handle_settings_dialog_event(
+    pygame.event.Event(pygame.MOUSEBUTTONDOWN, {'pos': _r.center, 'button': 1}))
+check(abs(gui.cubic_gap - cubic_settings.clamp_value('gap', _g0 + 0.05)) < 1e-9,
+      '点「+」按步长加一档（0.05）', (gui.cubic_gap, _g0))
+_r2 = _btns[('gap', -1)]
+gui._handle_settings_dialog_event(
+    pygame.event.Event(pygame.MOUSEBUTTONDOWN, {'pos': _r2.center, 'button': 1}))
+check(abs(gui.cubic_gap - _g0) < 1e-9, '再点「−」回到原值', gui.cubic_gap)
+_r3 = _btns[('seam_alpha', 1)]
+gui._handle_settings_dialog_event(
+    pygame.event.Event(pygame.MOUSEBUTTONDOWN, {'pos': _r3.center, 'button': 1}))
+check(gui.cubic_seam_alpha == cubic_settings.clamp_value(
+    'seam_alpha', 110 + 5) or gui.cubic_seam_alpha != 110,
+      '切面透明度的 + 也生效', gui.cubic_seam_alpha)
+
+gui.settings_active_tab = 'cubic'
+gui.new_puzzle(4, 4, 1)
+_open_settings(gui)
+check(getattr(gui, '_settings_cubic_btn_rects', None) == {},
+      '二维局下三维页不注册任何步进按钮（点不到）')
+
+print('=' * 60)
 total = _ok[0] + len(_fail)
 print(f'结果：{"全部通过" if not _fail else "有失败"}（{_ok[0]} 项通过，{len(_fail)} 项失败）／共 {total} 项')
 if _fail:

@@ -387,6 +387,7 @@ _RECT_SKIPPED = {
     'tab_gather': '页签导航（聚拢参数）',
     'tab_file': '页签导航（文件）',
     'tab_control': '页签导航（控制）',
+    'tab_cubic': '页签导航（三维）',
 }
 _unreg = [r for r in _rects_found
           if r not in _RECT_TO_ID and r not in _RECT_SKIPPED]

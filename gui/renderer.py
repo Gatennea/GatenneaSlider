@@ -3842,7 +3842,9 @@ class RendererMixin:
         # 挤在末尾要滚很久才看得见。
         tab_y = dialog_y + 58
         tab_height = 30
-        tab_width = 84
+        # 8 个页签按 84 宽放不下（8*84+7*4=700 > 612）：收到 72（8*72+7*4=604）。
+        # 中文页名最多四个字，72 宽在 status_font 下仍有余量。
+        tab_width = 72
         tab_gap = 4
         tab_defs = (
             ('keybindings', '快捷键', '_settings_tab_kb_rect'),
@@ -3852,6 +3854,8 @@ class RendererMixin:
             ('solver', '求解器', '_settings_tab_solver_rect'),
             ('gather', '聚拢参数', '_settings_tab_gather_rect'),
             ('file', '文件', '_settings_tab_file_rect'),
+            # 三维专页（方案 §2.4）：只放「设一次很少动」的项；二维局整页置灰
+            ('cubic', '三维', '_settings_tab_cubic_rect'),
         )
         for _i, (_tid, _tlabel, _tattr) in enumerate(tab_defs):
             _rect = pygame.Rect(dialog_x + 15 + (tab_width + tab_gap) * _i,
@@ -3899,6 +3903,8 @@ class RendererMixin:
                 self._draw_settings_file(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             elif self.settings_active_tab == 'control':
                 self._draw_settings_control(dialog_x, content_y - scroll, dialog_width - 30, content_height)
+            elif self.settings_active_tab == 'cubic':
+                self._draw_settings_cubic(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             else:
                 self._draw_settings_solver(dialog_x, content_y - scroll, dialog_width - 30, content_height)
         finally:
@@ -5072,6 +5078,82 @@ class RendererMixin:
         rts = self.status_font.render(ro_text, True, ro_color)
         self.screen.blit(rts, (x + 15, ro_y))
 
+    # ==================================================================
+    # 设置页「三维」专页（方案 §2.4）
+    # ==================================================================
+    #: 每项的步长（按一下就改这么多；细调靠连点，不必再拖一条滑条进来）
+    CUBIC_STEP = {'gap': 0.05, 'seam_alpha': 5, 'dblclick_ms': 20,
+                  'rot_sensitivity': 0.1}
+
+    def _fmt_cubic_value(self, spec, val):
+        if spec['type'] == 'int':
+            return f"{int(val)}" + (' ms' if spec['key'] == 'dblclick_ms' else '')
+        return f"{val:.2f}" + (' 倍' if spec['key'] == 'rot_sensitivity' else '')
+
+    def _draw_settings_cubic(self, x, y, width, height):
+        """三维专页：只放「设一次、很少动」的项（拆分/透明度在右侧栏边拖边看）。
+
+        二维谜题下整页置灰 + 一句说明（沿用求解器页「不隐藏入口、只解释为什么
+        不可用」的先例），不装作这里什么都没有。
+        """
+        from gui import cubic_settings
+        self._settings_cubic_btn_rects = {}
+        self._settings_cubic_height = 0
+        ny = y
+        cubic = bool(getattr(self, 'cubic_mode', False))
+        hint_w = width - 20
+
+        title = ('三维谜题专用。这里的项「设一次、很少动」；拆分与切面透明度'
+                 '在右侧栏，边拖边看更直观。')
+        for _i, _ln in enumerate(self._wrap_text(title, self.status_font, hint_w)):
+            self.screen.blit(self.status_font.render(_ln, True,
+                                                     self.colors['dialog_text']),
+                             (x + 15, ny + 4 + _i * 20))
+        ny += 26 + 20 * max(0, len(self._wrap_text(title, self.status_font, hint_w)) - 1)
+
+        if not cubic:
+            note = '当前是二维谜题，这一页的选项对二维没有作用，切到三维谜题后再来。'
+            for _i, _ln in enumerate(self._wrap_text(note, self.status_font, hint_w)):
+                self.screen.blit(self.status_font.render(_ln, True, (160, 160, 160)),
+                                 (x + 15, ny + 8 + _i * 20))
+            ny += 28 + 20 * max(0, len(self._wrap_text(note, self.status_font, hint_w)) - 1)
+            self._settings_cubic_height = ny - y
+            return
+
+        for spec in cubic_settings.items('control') + cubic_settings.items('view'):
+            val = getattr(self, spec['attr'], spec['default'])
+            self.screen.blit(self.dialog_font.render(f"{spec['label']}：", True,
+                                                     self.colors['dialog_text']),
+                             (x + 15, ny + 6))
+            value_s = self.input_font.render(self._fmt_cubic_value(spec, val), True,
+                                             self.colors['input_text'])
+            self.screen.blit(value_s, (x + 200, ny + 6))
+
+            _bw, _bh = 30, 26
+            minus = pygame.Rect(x + 330, ny + 2, _bw, _bh)
+            plus = pygame.Rect(x + 366, ny + 2, _bw, _bh)
+            # 用 ASCII 的 '-'：状态栏字体里没有 U+2212，会画成空心方框
+            for _rect, _txt in ((minus, '-'), (plus, '+')):
+                pygame.draw.rect(self.screen, self.colors['button_bg'], _rect,
+                                 border_radius=4)
+                _t = self.status_font.render(_txt, True, (255, 255, 255))
+                self.screen.blit(_t, _t.get_rect(center=_rect.center))
+            self._settings_cubic_btn_rects[(spec['key'], -1)] = minus
+            self._settings_cubic_btn_rects[(spec['key'], 1)] = plus
+
+            # 说明另起一行（右栏只放数值和按钮，说明按整行宽度换行，避免被
+            # 对话框右边缘硬切——本页第一版就是这么切掉半句话的）
+            ny += 32
+            _lines = self._wrap_text(spec['help'], self.status_font, hint_w)
+            for _i, _ln in enumerate(_lines):
+                self.screen.blit(self.status_font.render(_ln, True, (150, 150, 150)),
+                                 (x + 15, ny + _i * 18))
+            ny += 18 * len(_lines) + 8
+            # 行间细分隔线，免得四行糊成一片
+            pygame.draw.line(self.screen, self.colors['dialog_border'],
+                             (x + 15, ny - 6), (x + width - 15, ny - 6))
+        self._settings_cubic_height = ny - y + 10
+
     def _calc_settings_content_height(self, visible_height: int) -> int:
         """计算设置内容的总高度（当前tab）"""
         if self.settings_active_tab == 'keybindings':
@@ -5090,6 +5172,10 @@ class RendererMixin:
             # 滑动/选中 2 行开关(60) + 速度滑条(72) + 缩放滑条(72)
             # + 着色/连锁/标记/面板 4 行开关(60) + 余量。
             return getattr(self, '_settings_anim_height', 2 * 60 + 72 + 72 + 4 * 60 + 10)
+        elif self.settings_active_tab == 'cubic':
+            # 三维页：真实高度由 _draw_settings_cubic 每帧记录；首帧兜底按
+            # 提示两行 + 四个数值行（50 行距）+ 间隔估算。
+            return getattr(self, '_settings_cubic_height', 2 * 20 + 4 * 50 + 10)
         elif self.settings_active_tab == 'audio':
             # 音频页：真实绘制高度由 _draw_settings_audio 每帧记录。
             # 下面只是首帧的保守估算（提示行 + 三行总开关 + 分隔/标题 +

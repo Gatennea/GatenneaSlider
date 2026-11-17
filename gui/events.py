@@ -3875,6 +3875,11 @@ class EventsMixin:
         if reset_btn is not None and reset_btn.collidepoint(mx, my):
             from gui.file_ops import DEFAULT_KEYBINDINGS
             self.keybindings = dict(DEFAULT_KEYBINDINGS)
+            # 三维选项也一起回默认（表里声明的默认值，含拆分/切面透明）
+            from gui import cubic_settings
+            cubic_settings.reset(self)
+            self._cubic_arrow_sig = None
+            self._cubic_sil_cache = None
             self.settings_editing_action = None
             self.settings_editing_value = None
             self._update_menu_shortcut_texts()
@@ -4038,6 +4043,31 @@ class EventsMixin:
                 self.settings_editing_value = None
                 self.settings_scrollbar.set_scroll(0)
                 return
+            if hasattr(self, '_settings_tab_cubic_rect') and self._settings_tab_cubic_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'cubic'
+                self.settings_editing_action = None
+                self.settings_editing_value = None
+                self.settings_scrollbar.set_scroll(0)
+                return
+
+            # 三维 Tab：四行数值的 − / + 步进按钮（方案 §2.4）
+            if self.settings_active_tab == 'cubic':
+                from gui import cubic_settings
+                for (_key, _sign), _rect in getattr(
+                        self, '_settings_cubic_btn_rects', {}).items():
+                    if not _rect.collidepoint(mx, my):
+                        continue
+                    spec = cubic_settings.by_key(_key)
+                    step = self.CUBIC_STEP.get(_key, 1)
+                    cur = getattr(self, spec['attr'], spec['default'])
+                    val = cubic_settings.clamp_value(_key, cur + _sign * step)
+                    setattr(self, spec['attr'], val)
+                    self._cubic_arrow_sig = None
+                    self._cubic_sil_cache = None
+                    self.macro_notify_msg = (
+                        f"{spec['label']}：{self._fmt_cubic_value(spec, val)}")
+                    self.macro_notify_timer = 90
+                    return
 
             # 文件 Tab：存档只读开关
             if self.settings_active_tab == 'file' and hasattr(self, '_settings_readonly_toggle_rect'):
