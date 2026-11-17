@@ -1409,6 +1409,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.cubic_view_index = None
         self.cubic_zoom = 1.0
         self.cubic_dragging = False
+        # 第 3 步的点击态：drag 起手记起点、松手看有没有移动（移动 = 旋转，
+        # 没移动 = 单击/双击选缝选块）；双击自己算时间窗，pygame 无原生双击。
+        self.cubic_drag_moved = False
+        self.cubic_drag_start = None
+        self.cubic_drag_from = None
+        self._cubic_scene = None
+        self._cubic_last_click_t = None
+        self._cubic_last_click_p = None
         # 拆分（相邻块之间空出的距离）：0 = 贴死成一整块、看不出前后；
         # 滑条留到「渲染选项」那一步，这里先给默认值。
         self.cubic_gap = DEFAULT_GAP

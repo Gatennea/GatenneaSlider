@@ -1181,12 +1181,15 @@ class EventsMixin:
                         # 教程解法播放中：锁定棋盘操作（点选缝隙/滑块、拖拽滑动）
                         op_locked = self._tut_board_locked()
 
-                        # 三維（§54 第 2 步）：这一盘还没有拾取，点击只起「旋转」
-                        # ——旋转态下点什么都不该选中（验收判据之一）。第 3 步
-                        # 接上射线求交后再在这里分派「点缝 / 点块 / 点空白」。
+                        # 三維（§54 第 2/3 步）：左键可能是拖（旋转）也可能是点
+                        # （选缝 / 选块），松手时按有没有移动来区分；右键清选中。
+                        # 旋转态下点什么都不该选中（验收判据之一）。
                         if getattr(self, 'cubic_mode', False) and not op_locked:
                             if event.button == 1:
                                 self._cubic_drag_begin(x, y)
+                            elif event.button == 3:
+                                op_log.log('cubic_clear', sx=x, sy=y)
+                                self._cubic_clear_selection()
                             continue
 
                         # S1-4 箭头按键：**命中优先于选缝与起拖**。按键画在菜单
@@ -1401,7 +1404,13 @@ class EventsMixin:
                         self.is_dragging = False
                         self.slider_dragging = False
                         self.zoom_slider_dragging = False
-                        self.cubic_dragging = False
+                        if getattr(self, 'cubic_dragging', False):
+                            # 三维：拖过 = 旋转收尾；没拖过 = 一次点击（选缝/选块）
+                            if (event.button == 1
+                                    and not getattr(self, 'cubic_drag_moved', False)):
+                                start = getattr(self, 'cubic_drag_start', event.pos)
+                                self._cubic_click(*start)
+                            self.cubic_dragging = False
 
                 # 鼠标滚轮
                 elif event.type == pygame.MOUSEWHEEL:
@@ -1626,9 +1635,14 @@ class EventsMixin:
         self.macro_notify_timer = 90
 
     def _cubic_drag_begin(self, x, y):
-        """棋盘上按下左键 = 开始旋转（旋转期间不选中任何东西，见点击分派）。"""
+        """棋盘上按下左键 = 可能是拖（旋转），也可能是点（选缝/选块）。
+
+        两者靠「松手时有没有真的移动」区分（见 MOUSEBUTTONUP）：移动过 = 旋转，
+        没移动 = 单击 / 双击。旋转期间不选中任何东西（方案 §2.2 互斥口径）。
+        """
         self.cubic_dragging = True
         self.cubic_drag_start = (x, y)
+        self.cubic_drag_moved = False
         self.cubic_drag_from = getattr(self, 'cubic_camera', None)
 
     def _cubic_drag_update(self, pos):
@@ -1643,14 +1657,90 @@ class EventsMixin:
         if base is None:
             return
         sx, sy = getattr(self, 'cubic_drag_start', pos)
+        dx, dy = pos[0] - sx, pos[1] - sy
+        if abs(dx) >= 4 or abs(dy) >= 4:
+            self.cubic_drag_moved = True
+        if not self.cubic_drag_moved:
+            return                       # 还在点击容差内：先别动相机（避免点一下画面就歪）
         k = self.CUBIC_DRAG_DEG_PER_PX
-        cam = base.spin((0.0, 1.0, 0.0), -(pos[0] - sx) * k)
-        tilt = cam.spin(cam.right_axis(), (pos[1] - sy) * k)
+        cam = base.spin((0.0, 1.0, 0.0), -dx * k)
+        tilt = cam.spin(cam.right_axis(), dy * k)
         # 极点保护：相机 z 轴离竖直轴不足 1° 就停在上一帧（再往下会翻跟头）
         pole = math.cos(math.radians(90.0 - self.CUBIC_PITCH_LIMIT))
         if abs(tilt.view_axis()[1]) <= pole + 1e-12:
             cam = tilt
         self._cubic_camera_apply(cam)
+
+    # ------------------------------------------------------------------
+    # 三维选中（§54 第 3 步）：单击出白线切面、双击选中连通组
+    # ------------------------------------------------------------------
+    #: 双击判定：pygame 没有原生双击事件，自己做时间窗 + 位置容差（可调）
+    CUBIC_DOUBLE_CLICK_MS = 300
+    CUBIC_DOUBLE_CLICK_PX = 8
+
+    def _cubic_pick(self, x, y):
+        """屏幕点 → 命中面（用渲染层刚存下的那份 scene，命中与画面必然一致）。"""
+        from engine import cubic_pick
+        scene = getattr(self, '_cubic_scene', None)
+        if not scene:
+            return None
+        return cubic_pick.hit_face(scene['faces'], (x, y))
+
+    def _cubic_click(self, x, y):
+        """左键点了一下（没有拖动）：选缝；连点两下：选中该切面一侧的连通组。
+
+        顺序 = 先认缝，再认块：面挨着的切面有效就选缝，并且只有在双击时才把
+        缝一侧的连通组标记成选中（be_opted）。旋转态（不在六朝向之一）不选——
+        斜视角下缝面又细又斜，选不准（方案 §2.2「必须正向化才能选」）。
+        """
+        from engine import cubic_pick
+        if getattr(self, 'cubic_view_index', None) is None:
+            self.macro_notify_msg = "旋转态只看不选：按 1–6 回到一个朝向再选"
+            self.macro_notify_timer = 120
+            return False
+        hit = self._cubic_pick(x, y)
+        if hit is None:
+            return False
+        seam = cubic_pick.seam_of_face(hit, self.game.is_valid_gap)
+        if seam is None:
+            self.macro_notify_msg = "这一面没挨着可切的缝（换个面点）"
+            self.macro_notify_timer = 120
+            return False
+
+        now = pygame.time.get_ticks()
+        last_t = getattr(self, '_cubic_last_click_t', None)
+        last_p = getattr(self, '_cubic_last_click_p', None)
+        is_double = (last_t is not None and last_p is not None
+                     and now - last_t <= self.CUBIC_DOUBLE_CLICK_MS
+                     and abs(x - last_p[0]) <= self.CUBIC_DOUBLE_CLICK_PX
+                     and abs(y - last_p[1]) <= self.CUBIC_DOUBLE_CLICK_PX)
+
+        self.selected_gap = seam
+        self._cubic_last_click_t = None if is_double else now
+        self._cubic_last_click_p = None if is_double else (x, y)
+
+        if is_double:
+            block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
+            if block is not None:
+                self.game.opt(seam[0], seam[1], block)
+                self.selected_block = block
+                n = len([b for b in self.game.blocks if b.be_opted])
+                self.macro_notify_msg = f"选中滑块组 共{n}个（切面 {seam[0]}·{seam[1]}）"
+                self.macro_notify_timer = 120
+                return True
+        self.macro_notify_msg = f"切面预览：{seam[0]}·{seam[1]}（双击选中一侧）"
+        self.macro_notify_timer = 120
+        return True
+
+    def _cubic_clear_selection(self):
+        """右键 / 点空白：取消选中与切面预览。"""
+        self.selected_gap = None
+        self.selected_block = None
+        self._cubic_last_click_t = None
+        self._cubic_last_click_p = None
+        if getattr(self, 'game', None) is not None:
+            for b in self.game.blocks:
+                b.be_opted = False
 
     def _cubic_zoom_by(self, factor):
         """Ctrl+滚轮缩放三维画面（与二维 zoom 分开存，互不影响）。"""

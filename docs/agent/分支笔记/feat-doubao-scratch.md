@@ -214,3 +214,53 @@
 
 
 
+
+## 第 3 步：能正确选中（单击切面 / 双击选中一侧）
+
+- 新增 `engine/cubic_pick.py`（纯计算，不 import pygame）：`point_in_quad` /
+  `hit_face` / `face_is_internal` / `seam_of_face` / `seam_plane_polygon` /
+  `block_at_location`，外加两张映射表（`AXIS_TO_LOC_INDEX`、`AXIS_TO_FAMILY`）。
+- **正中投影 → 不用解射线方程**：`cubic_view.project_point` 是正交投影，屏幕点与
+  可见面是一一映射，所以「射线求交」退化成「对画家序倒着做点在凸四边形内测试」。
+  好处是命中与画面**同源**：渲染层把这一帧的 scene 存进 `self._cubic_scene`，
+  点击直接测那一份面，不存在「看得见点不中」的漂移。
+- 面 → 缝的口径：面两侧是块 v 与 v+sign，缝线号取序号小的一侧（v / v−1），
+  再用 `game.is_valid_gap(family, line)` 验；不成立就退回另一条相邻线，仍不成立
+  返回 None（外沿面点上去就不硬选）。世界轴 → 逻辑坐标的映射沿用
+  `cubic_view` 的 X=c / Y=d / Z=r：axis0→c(idx1)、axis1→d(idx2)、axis2→r(idx0)。
+- `seam_plane_polygon` 固定坐标 = `line + 1`（与引擎 `_line_to_t` 同一口径），
+  另外两轴取块的包围盒。pad 默认 **0**：一开始给 0.5，白线成了悬在棋盘外的一圈
+  框（截图里明显「浮着」），改成 0 后白线正好压在棋盘轮廓上。
+- 交互分派：**左键按下先当成可能的拖动，松手时看有没有真移动**（阈值 4px，
+  `cubic_drag_moved`）。移动过 = 旋转收尾；没移动 = 一次点击。单击只设
+  `selected_gap`（预览、不入历史、不产生步数）；双击（300ms + 8px 容差，pygame
+  没有原生双击）才 `game.opt(family, line, block)`，选中该切面一侧的连通组。
+  右键清空预览与选中。
+- **正向化闸门**：`cubic_view_index is None`（斜视 / 自由旋转）时点击只提示
+  「旋转态只看不选：按 1–6 回到一个朝向再选」，不选任何东西——方案 §2.2 的
+  互斥口径。六朝向本身带 14° 偏角，闸门按「是不是某个朝向」判，不按「是否轴对齐」判。
+- 渲染：`draw_cubic_board` 画完面之后存 scene，再画一层白线切面（`selected_gap`
+  属于 r/c/d 才画）；状态行第二行补「单击选切面 · 双击选中一侧 · 右键取消」。
+- `GUI.new_cubic_puzzle` 补 `cubic_drag_moved / cubic_drag_start / cubic_drag_from /
+  _cubic_scene / _cubic_last_click_*` 初值，避免上一局的三维点击态漏到下一局。
+- 新增 `test/_test_cubic_pick.py`（204 项）：四边形命中/边界/越界；3×3×3 拆分态
+  81 片、面心命中最近那片；前后两块重叠区命中前块；每一片可见面都给出有效缝且
+  落在六条有效线上；外表面退回相邻线、无有效线返回 None；预览平面固定坐标 =
+  line+1 且是矩形；GUI 全路径——单击出预览（步数/历史不动）、双击选中的 9 块与
+  引擎 `opt` 独立算出的组逐一同、拖动松手不选、旋转态点击不选、右键清空。
+- 回归：`_test_cubic_pick` 204、`_test_cubic_view` 41、`_test_cubic_view_nav` 83、
+  `_test_cubic_gap` 18、`_test_cubic_entry` 31、`_test_cubic_split` 25、
+  `_test_menu_redesign` 56、`_test_external_control`、`_test_engine_gui` 全过；
+  改动文件无新增 lint（pyflakes 报的都是既有历史项）。
+- 肉眼验收截图（未入库）：`cubic_shots/pick_single_plane.png`（白线切面）、
+  `cubic_shots/pick_double_selected.png`（一侧 9 块整片变绿）。
+
+留给下一步的口径：
+
+- 单击现在只出**一张**切面平面；「选中后能滑动、虚拟键盘六键、箭头重画、判胜」
+  是第 4 步（真能玩的起步）。
+- 双击时间窗与旋转灵敏度目前是类常量（`CUBIC_DOUBLE_CLICK_MS` 等），方案 §2.4
+  要求它们将来进设置页「三维」专页的声明式配置表；这一步先不拆表。
+- 尚未接：拆分滑条进右侧栏、透明度、明暗/透视（§2.4，属渲染选项阶段）。
+- `_test_cubic_pick.py` 的 GUI 段依赖 `draw_cubic_board` 先跑一次（拾取用渲染
+  存的 scene）；若将来渲染改为按需缓存，测试与事件都要跟着改成显式 build。

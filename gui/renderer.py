@@ -996,6 +996,23 @@ class RendererMixin:
             pygame.draw.polygon(self.screen, fill, pts)
             pygame.draw.polygon(self.screen, border, pts, 1)
 
+        # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
+        # 必然同源，不存在「看得见点不中」的漂移）。
+        self._cubic_scene = scene
+
+        # 白线切面预览（§54 第 3 步验收第 1 条）：选中的缝画成贯穿整盘的一张
+        # 平面轮廓。三维里缝不画填充（与二维不同），只用白线表达「刀在哪」。
+        seam = getattr(self, 'selected_gap', None)
+        if seam and seam[0] in ('r', 'c', 'd'):
+            from engine import cubic_pick
+            poly = cubic_pick.seam_plane_polygon(seam[0], seam[1], blocks)
+            if poly:
+                pts = [(int(round(p[0])), int(round(p[1]))) for p in
+                       (cubic_view.project_point(w, camera, scene['scale'],
+                                                 scene['origin'])[:2]
+                        for w in poly)]
+                pygame.draw.polygon(self.screen, (245, 245, 245), pts, 2)
+
         # 左上角两行：三維尺度 / 等级 / 视角 / 拆分距离（第 1 行），操作提示（第 2 行）。
         # 「拆分」= 相邻两块表面之间空出的距离（0 = 未拆分，块贴死成一整块）。
         # 放**顶部**：底部整条被 draw_status_bar 覆盖（画在下面等于没画）。
@@ -1007,7 +1024,8 @@ class RendererMixin:
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
                 f'　视角 {view_label}　缩放 {zoom * 100:.0f}%'
                 f'　拆分 {gap:.2f}（0 = 贴死）')
-        hint2 = '拖动旋转 · 1–6 切朝向（各带偏角，不正对）· 0 回斜视 · Ctrl+滚轮缩放'
+        hint2 = ('拖动旋转 · 1–6 切朝向（各带偏角，不正对）· 0 回斜视 · Ctrl+滚轮缩放'
+                 ' · 单击选切面 · 双击选中一侧 · 右键取消')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))
