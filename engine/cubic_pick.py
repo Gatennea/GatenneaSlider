@@ -264,6 +264,69 @@ def seam_plane_polygon(family, line, blocks, pad: float = 0.0, gap: float = 0.0)
     return corners
 
 
+def seam_plane_cells(family, line, blocks, gap: float = 0.0):
+    """切面按**格**切成的四边形列表（世界坐标），用来插进画家序里画。
+
+    为什么要按格切，而不是整张面 + 影子多边形：整张面是一块大凸多边形，它的
+    「面心深度」只有一个值，压在块堆里时前后关系只能整体判一次——从斜角看，同
+    一张面上有的部分该被前面的块挡住、有的部分该露出来，一个深度值做不到，于是
+    「看起来像切在另一层」（2026-11-18 用户反复报）。切成 1 格大小之后，每一格
+    与每个块的前后关系都是明确的（块边长 1 格），各自按深度插进同一张绘制序，
+    遮挡关系由画家算法自然给出，误差只可能落在格与格的交界上。
+
+    只取「缝口有块」的格：切面两侧都没块的格根本不存在可看的东西，画出来就是
+    凭空悬在空中的红面。
+
+    返回 [(四个世界点, 该格中心的世界坐标)]。
+    """
+    locs = [(int(b.location[0]), int(b.location[1]), int(b.location[2]))
+            if hasattr(b, 'location') else tuple(int(v) for v in b)
+            for b in blocks]
+    if not locs:
+        return []
+    axis = FAMILY_TO_WORLD_AXIS[family]
+    fixed = float(line + 1)
+    # 逻辑 (r,c,d) → 世界 (X,Y,Z) = (c,d,r)，与 cubic_view 同一映射
+    world = [(p[1], p[2], p[0]) for p in locs]
+    lo = [min(p[i] for p in world) for i in range(3)]
+    hi = [max(p[i] for p in world) + 1 for i in range(3)]
+    a, b = [i for i in range(3) if i != axis]
+    n_a = int(round(hi[a] - lo[a]))
+    n_b = int(round(hi[b] - lo[b]))
+    if n_a <= 0 or n_b <= 0:
+        return []
+    half = float(gap) / 2.0
+    # 缝口有块 = 这一格在切面轴上紧挨着块（line 或 line+1 那一层）
+    side = set()
+    for p in world:
+        coord = p[axis]
+        if int(round(coord)) in (int(line), int(line) + 1):
+            side.add((p[a], p[b]))
+    cells = []
+    for i in range(n_a):
+        for j in range(n_b):
+            key = (lo[a] + i, lo[b] + j)
+            if key not in side:
+                continue
+            u0 = lo[a] + i + (half if i == 0 else 0.0)
+            u1 = lo[a] + i + 1 - (half if i == n_a - 1 else 0.0)
+            v0 = lo[b] + j + (half if j == 0 else 0.0)
+            v1 = lo[b] + j + 1 - (half if j == n_b - 1 else 0.0)
+            corners = []
+            for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
+                point = [0.0, 0.0, 0.0]
+                point[axis] = fixed
+                point[a] = u
+                point[b] = v
+                corners.append(tuple(point))
+            center = [0.0, 0.0, 0.0]
+            center[axis] = fixed
+            center[a] = (u0 + u1) / 2.0
+            center[b] = (v0 + v1) / 2.0
+            cells.append((corners, tuple(center)))
+    return cells
+
+
 def block_at_location(blocks, loc):
     """按 (r,c,d) 找出块对象（选中态要写 be_opted）。"""
     for b in blocks:

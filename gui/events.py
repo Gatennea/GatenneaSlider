@@ -1936,9 +1936,29 @@ class EventsMixin:
 
     def _cubic_vk_dirs(self):
         """六键箭头：{字母: (屏幕 dx, dy)}，按当前相机现算（旋转后要重画）。"""
+        return {letter: (dx, dy)
+                for letter, (dx, dy, _p) in self._cubic_vk_axes().items()}
+
+    def _cubic_vk_axes(self):
+        """{字母: (屏幕单位 dx, dy, 投影长度)}。
+
+        投影长度是给「坐标轴」键盘用的：真实的三维坐标轴画在平面上时，正对
+       镜头的那条轴会被压短甚至压成一个点。按投影长度缩短端点距离，屏幕上就
+        能直接读出「这条轴转到了什么姿态」，而不是六键永远一样长。
+        """
         from engine.compat import CUBIC_DIRECTIONS
-        return {letter: self._cubic_screen_dir(self._cubic_lattice_to_world(vec))
-                for letter, vec in CUBIC_DIRECTIONS.items()}
+        cam = getattr(self, 'cubic_camera', None)
+        out = {}
+        for letter, vec in CUBIC_DIRECTIONS.items():
+            world = self._cubic_lattice_to_world(vec)
+            if cam is None:
+                out[letter] = (0.0, 0.0, 0.0)
+                continue
+            vx, vy, _vz = cam.to_camera(world)
+            plen = math.hypot(vx, vy)
+            unit = (vx / plen, -vy / plen) if plen > 1e-9 else (0.0, 0.0)
+            out[letter] = (unit[0], unit[1], plen)
+        return out
 
     def _cmd_reply(self, resp_q, ok, message, data=None):
         """统一回复：有 resp_q 则通过队列回复（HTTP），否则打印到终端"""

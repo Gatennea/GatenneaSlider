@@ -63,7 +63,7 @@ gui._cubic_view(0)
 gui.draw_cubic_board()
 
 print('=' * 60)
-print('A. 布局：三行六键')
+print('A. 布局：坐标轴样式，六个端点都能点')
 # 二维存档里这张面板可能是关着的；进三维必须自动打开，否则鼠标端没入口
 gui.show_virtual_keyboard = False
 gui._cubic_camera_prefs = {}
@@ -73,18 +73,14 @@ check(gui.show_virtual_keyboard is True,
 gui.show_virtual_keyboard = True
 rects = gui._vk_build_layout()
 cubic_keys = sorted(k for k in rects if k.startswith('cubic_'))
-check(cubic_keys == ['cubic_C', 'cubic_R', 'cubic_c', 'cubic_d', 'cubic_r',
-                     'cubic_D'] or len(cubic_keys) == 6,
-      f'六键齐备（{cubic_keys}）')
+check(len(cubic_keys) == 6, f'六键齐备（{cubic_keys}）')
 check(all(k in rects for k in ('cubic_c', 'cubic_C', 'cubic_d', 'cubic_D',
                                'cubic_r', 'cubic_R')), '三个轴的正负两键都在')
 check('move_up' not in rects and 'move_left' not in rects,
       '三维态不再出现二维四向键')
-row_ys = sorted({rects['cubic_' + c].y for c in 'cdr'})
-check(len(row_ys) == 3, f'三个轴各占一行（y={row_ys}）')
 check(all(gui.vk_panel_rect.contains(rects[k]) for k in cubic_keys),
       '六键都在面板矩形之内')
-# 互不重叠
+# 互不重叠（含各种姿态：某条轴正对镜头时两端会挤在一起）
 pairs = 0
 overlaps = 0
 for i, a in enumerate(cubic_keys):
@@ -93,6 +89,27 @@ for i, a in enumerate(cubic_keys):
         if rects[a].colliderect(rects[b]):
             overlaps += 1
 check(pairs == 15 and overlaps == 0, f'六键两两不重叠（{overlaps} 处重叠）')
+# 坐标轴不是「三行两列」：端点分布在原点四周，不是按行对齐的表格
+xs = sorted(rects['cubic_' + c].centerx for c in 'cCdDrR')
+ys = sorted(rects['cubic_' + c].centery for c in 'cCdDrR')
+check(len(set(xs)) >= 4 and len(set(ys)) >= 4,
+      f'端点散在原点四周（x 有 {len(set(xs))} 档、y 有 {len(set(ys))} 档，不是两三行表格）')
+check(gui._vk_direction_rows() == 3, '方向区仍按三维的行数算（面板高度随之变高）')
+
+print('A2. 姿态扫描：任何朝向下六键都互不重叠、都点得中')
+from engine.cubic_camera import CubicCamera  # noqa: E402
+bad_pose = []
+for yaw in range(-180, 181, 30):
+    for pitch in (-40, -20, 0, 20, 40):
+        gui.cubic_camera = CubicCamera.from_yaw_pitch(yaw, pitch)
+        rr = gui._vk_build_layout()
+        ks = [k for k in rr if k.startswith('cubic_')]
+        for i, a in enumerate(ks):
+            for b in ks[i + 1:]:
+                if rr[a].colliderect(rr[b]):
+                    bad_pose.append((yaw, pitch, a, b))
+check(not bad_pose, f'65 种相机姿态下六键都不重叠（{len(bad_pose)} 处冲突）', bad_pose[:3])
+gui._cubic_view(0)
 check(gui._vk_direction_rows() == 3, '方向区按三行算（面板高度随之变高）')
 
 print('B. 箭头按相机现算（不是静态图标）')
@@ -224,15 +241,23 @@ gui.draw_cubic_board()
 buttons = list(getattr(gui, '_cubic_arrow_buttons', []))
 fam = gui.selected_gap[0]
 families_of_letter = {'r': 'r', 'R': 'r', 'c': 'c', 'C': 'c', 'd': 'd', 'D': 'd'}
-allowed = sorted(l for l in families_of_letter if families_of_letter[l] != fam)
-check(sorted(l for l, _r in buttons) == allowed,
-      f'只画能走的两条轴四个箭头（{sorted(l for l, _r in buttons)}，应 {allowed}）')
+legal = set(l for l in families_of_letter if families_of_letter[l] != fam)
+allowed = dict(getattr(gui, '_cubic_arrow_allowed', {}))
+check(bool(buttons) and all(l in legal for l, _r in buttons),
+      f'只画「能走的那两条轴」上的箭头（{sorted(l for l, _r in buttons)} ⊂ {sorted(legal)}）')
+check(all(allowed.get(l) for l, _r in buttons),
+      '画出来的每一枚都通过了「干跑可推」判定')
+check(not any(allowed.get(l) for l in legal
+              if l not in [x for x, _r in buttons]),
+      '推得动的方向一个不少')
 rects2f = [r for _l, r in buttons]
-check(all(r.w == 2 * gui.CUBIC_ARROW_R for r in rects2f), '箭头按键是固定大小命中盒')
-check(all(gui.screen.get_rect().contains(r) for r in rects2f), '四个箭头都在窗口内')
+expect = max(18, int(round(gui._ARROW_BASE_PX * gui.zoom))) - 6
+check(all(abs(r.w - expect) <= 2 for r in rects2f),
+      f'箭头命中盒就是二维那套贴图尺寸（{rects2f[0].w if rects2f else None} ≈ {expect}）')
+check(all(gui.screen.get_rect().contains(r) for r in rects2f), '箭头都在窗口内')
 overlap = sum(1 for i, a in enumerate(rects2f) for b in rects2f[i + 1:] if a.colliderect(b))
-check(overlap == 0, f'四个箭头互不重叠（{overlap} 处重叠）')
-# 旋转后箭头位置必须变（重画箭头）
+check(overlap == 0, f'箭头互不重叠（{overlap} 处重叠）')
+# 箭头走的是世界坐标：换朝向后屏幕位置必须跟着变（不是绕着屏幕画圈）
 centers_before = {l: r.center for l, r in buttons}
 gui._cubic_view(4)
 gui.draw_cubic_board()

@@ -335,6 +335,35 @@ def seam_shadow_polygons(quad, boxes, view_dir, eps: float = 1e-6):
     return shadows, axis
 
 
+def screen_hull_of_box(box, camera: CubicCamera, scale: float, origin) -> list:
+    """一个轴对齐盒子在屏幕上的凸包（用于判断「这个屏幕位置有没有块」）。
+
+    用途：三维方向箭头要贴在切面缝口上，而缝口在斜视下会投影到**别的块**的
+    脸上。光判「锚点沿视线没被挡住」不够——锚点可能恰好在块前面，画上去却像
+    贴纸糊在人家脸上。所以再判一次：锚点的屏幕位置是否落在「更靠近相机的块」
+    的投影轮廓里；在里面就不画。
+    """
+    pts = []
+    for xi in (box[0], box[3]):
+        for yi in (box[1], box[4]):
+            for zi in (box[2], box[5]):
+                sx, sy, _sz = project_point((xi, yi, zi), camera, scale, origin)
+                pts.append((sx, sy))
+    return _convex_hull([(round(p[0], 6), round(p[1], 6)) for p in pts])
+
+
+def point_in_hull(x, y, hull) -> bool:
+    """点是否在凸多边形内（顶点逆时针）。"""
+    if len(hull) < 3:
+        return False
+    for i in range(len(hull)):
+        ax, ay = hull[i]
+        bx, by = hull[(i + 1) % len(hull)]
+        if (bx - ax) * (y - ay) - (by - ay) * (x - ax) < 0:
+            return False
+    return True
+
+
 def point_visible(point, boxes, view_dir, eps: float = 1e-6) -> bool:
     """世界点沿视线朝相机走，是否被某个块挡住（被挡住 = 不该画出来）。
 

@@ -1440,7 +1440,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 except ValueError as exc:      # 空四元数这类坏档：回声 + 保持默认
                     print(f"三维相机存档无效，已用默认视角: {exc}")
             gap = prefs.get('gap')
-            if gap is not None and 0.0 <= gap < 1.0:
+            # gap=0 是「贴死成一整块」，是测试用/临时状态，不该被存档永久继承：
+            # 一旦某次存进 0，之后每次开局都是贴死，看起来就是「拆分又没了」
+            # （2026-11-18 用户报「之前做的拆分怎麼又不拆了」）。0 一律回落默认。
+            if gap is not None and 1e-6 < gap < 1.0:
                 self.cubic_gap = gap
             zoom = prefs.get('zoom')
             if zoom is not None:
