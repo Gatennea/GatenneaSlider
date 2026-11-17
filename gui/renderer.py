@@ -1000,17 +1000,24 @@ class RendererMixin:
         # 必然同源，不存在「看得见点不中」的漂移）。
         self._cubic_scene = scene
 
-        # 白线切面预览（§54 第 3 步验收第 1 条）：选中的缝画成贯穿整盘的一张
-        # 平面轮廓。三维里缝不画填充（与二维不同），只用白线表达「刀在哪」。
+        # 切面预览（§54 第 3 步验收第 1 条；2026-11-17 用户口径「要有平面的
+        # 感觉」）：半透明填充 + 高亮描边。只画轮廓像个框，看不出「刀」切在
+        # 哪一层；填一层半透明的面，才读得出它贯穿整盘、把棋分成了两半。
         seam = getattr(self, 'selected_gap', None)
         if seam and seam[0] in ('r', 'c', 'd'):
             from engine import cubic_pick
-            poly = cubic_pick.seam_plane_polygon(seam[0], seam[1], blocks)
+            poly = cubic_pick.seam_plane_polygon(seam[0], seam[1], blocks,
+                                                 pad=self.CUBIC_SEAM_PAD)
             if poly:
                 pts = [(int(round(p[0])), int(round(p[1]))) for p in
                        (cubic_view.project_point(w, camera, scene['scale'],
                                                  scene['origin'])[:2]
                         for w in poly)]
+                # 半透明面：单独一张 SRCALPHA 表面，blit 上去不影响底色
+                if len(pts) >= 3:
+                    lens = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+                    pygame.draw.polygon(lens, self.CUBIC_SEAM_FILL, pts)
+                    self.screen.blit(lens, (0, 0))
                 pygame.draw.polygon(self.screen, (245, 245, 245), pts, 2)
 
         # 左上角两行：三維尺度 / 等级 / 视角 / 拆分距离（第 1 行），操作提示（第 2 行）。

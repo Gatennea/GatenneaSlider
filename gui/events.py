@@ -1696,6 +1696,10 @@ class EventsMixin:
     #: 单击改切面的「缝线半径」（像素）：点在缝线这么多像素以内才算选缝，
     #: 否则不动现有切面（否则双击的第一下会把缝挪走，用户 2026-11-17 实测）
     CUBIC_SEAM_CLICK_PX = 6
+    #: 切面预览的半透明填充色（RGBA）与外扩量（世界坐标）；2026-11-17 用户
+    #: 要求「要有平面的感觉」，从只描白框改成填一层半透明的面
+    CUBIC_SEAM_FILL = (150, 220, 255, 72)
+    CUBIC_SEAM_PAD = 0.0
 
     def _cubic_pick(self, x, y):
         """屏幕点 → 命中面（用渲染层刚存下的那份 scene，命中与画面必然一致）。"""
@@ -1706,11 +1710,12 @@ class EventsMixin:
         return cubic_pick.hit_face(scene['faces'], (x, y))
 
     def _cubic_click(self, x, y):
-        """左键点了一下（没有拖动）：选缝；连点两下：选中该切面一侧的连通组。
+        """左键点一下：点在**缝里的墙**上就选这条缝；连点两下：选中一侧连通组。
 
-        顺序 = 先认缝，再认块：面挨着的切面有效就选缝，并且只有在双击时才把
-        缝一侧的连通组标记成选中（be_opted）。旋转态（不在六朝向之一）不选——
-        斜视角下缝面又细又斜，选不准（方案 §2.2「必须正向化才能选」）。
+        2026-11-17 用户口径（改判定基准）：拆分之后缝里的那两面墙本来就在画
+        面上（gap>0 时内部面不再剔除），它们就是「看得见的缝」——直接拿它们
+        当判定基准。外表面（贴包围盒的平面）一律不算缝。这样点「贴着屏幕的
+        那条缝」就选那条缝，不点缝就只提示，不动现有切面。
         """
         from engine import cubic_pick
         if getattr(self, 'cubic_view_index', None) is None:
@@ -1720,11 +1725,9 @@ class EventsMixin:
         hit = self._cubic_pick(x, y)
         if hit is None:
             return False
-        seam = cubic_pick.seam_of_face(hit, self.game.is_valid_gap)
-        if seam is None:
-            self.macro_notify_msg = "这一面没挨着可切的缝（换个面点）"
-            self.macro_notify_timer = 120
-            return False
+        locations = {tuple(int(v) for v in b.location[:3]) for b in self.game.blocks}
+        seam = cubic_pick.seam_of_internal_face(hit, self.game.is_valid_gap,
+                                                locations)
 
         now = pygame.time.get_ticks()
         last_t = getattr(self, '_cubic_last_click_t', None)
@@ -1735,35 +1738,45 @@ class EventsMixin:
                      and abs(y - last_p[1]) <= self.CUBIC_DOUBLE_CLICK_PX)
 
         if is_double:
-            # 双击：不管点在哪，都选这块所属的连通组
-            self.selected_gap = seam
+            # 双击：点在缝里就用这条缝；点在块的外表面上，退化成「离点最近的
+            # 那条有效缝」当切面（拆分的块之间有缝，边离得近的那条最像用户
+            # 想切的地方）。
+            seam_use = seam
+            if seam_use is None:
+                scene = getattr(self, '_cubic_scene', None)
+                pick = cubic_pick.seam_at_point(scene, hit, (x, y),
+                                                self.game.is_valid_gap) if scene else None
+                if pick is not None:
+                    seam_use = (pick[1], pick[2])
+            if seam_use is None:
+                self._cubic_last_click_t = None
+                self._cubic_last_click_p = None
+                self.macro_notify_msg = "这一块旁边没有可切的缝（换个位置）"
+                self.macro_notify_timer = 120
+                return False
+            self.selected_gap = seam_use
             block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
             if block is not None:
-                self.game.opt(seam[0], seam[1], block)
+                self.game.opt(seam_use[0], seam_use[1], block)
                 self.selected_block = block
                 self._cubic_last_click_t = None
                 self._cubic_last_click_p = None
                 n = len([b for b in self.game.blocks if b.be_opted])
-                self.macro_notify_msg = f"选中滑块组 共{n}个（切面 {seam[0]}·{seam[1]}）"
+                self.macro_notify_msg = (f"选中滑块组 共{n}个"
+                                         f"（切面 {seam_use[0]}·{seam_use[1]}）")
                 self.macro_notify_timer = 120
                 return True
 
-        # 单击：只有点在**缝线上**才改切面。之前是点面内任何位置都改缝，
-        # 双击的第一下就会把缝挪走、第二下选中另一侧——用户 2026-11-17 实测。
-        # 注意：时间戳无论改不改缝都要记，否则「面内两连点」永远拼不出双击。
-        dist = cubic_pick.seam_edge_distance(self._cubic_scene_faces(), hit, (x, y))
-        if dist > self.CUBIC_SEAM_CLICK_PX:
-            self._cubic_last_click_t = now
-            self._cubic_last_click_p = (x, y)
-            self.macro_notify_msg = ("点在缝线上才改切面；双击面选中一侧"
-                                     f"（距最近缝线 {dist:.0f}px）" if dist != float('inf')
-                                     else "这一面旁边没有可点的缝线；双击面选中一侧")
+        # 单击：点到缝里才改切面；点在块的外表面上不动缝（否则双击的第一下
+        # 就会把缝挪走）。时间戳无论改不改缝都记，否则拼不出双击。
+        self._cubic_last_click_t = now
+        self._cubic_last_click_p = (x, y)
+        if seam is None:
+            self.macro_notify_msg = "点到两块之间的缝（缝里的墙）才改切面；双击块选中一侧"
             self.macro_notify_timer = 120
             return False
 
         self.selected_gap = seam
-        self._cubic_last_click_t = now
-        self._cubic_last_click_p = (x, y)
         self.macro_notify_msg = f"切面预览：{seam[0]}·{seam[1]}（双击选中一侧）"
         self.macro_notify_timer = 120
         return True

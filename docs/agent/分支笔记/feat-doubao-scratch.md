@@ -401,3 +401,29 @@ pCubes 是闭源 exe（E:\pC 只有 pCubes.exe + 数据），HyperSpeedcube 装�
 - 测试：`_test_cubic_pick.py` 新增「点面心不改缝」「点缝线上才出预览」两断言，
   缝线上取点改用新判定反查（共 206 项）；全回归 view 41 / nav 83 / pick 206 /
   play 32 / framing 15 / gap 18 / split 25 / save_guard 7 / entry 31 / arcball 5 全绿。
+
+## 改：选缝判定改用「缝里的墙」（内部面）+ 切面预览填半透明面
+
+用户 2026-11-17（截图指认）：点「贴着屏幕的那条缝」选出来的却是别的缝。
+根因：旧 `seam_of_face` 按面的**法向**取缝族，点前面 = 选这块背后那张平行切面
+（画面上根本看不见）。用户给的替代口径：拆分之后缝里的两面墙本来就画出来了
+（gap>0 不剔除内部面），拿它们当判定基准；包围盒的平面不许选。
+
+- `engine/cubic_pick.py` 新增 `seam_of_internal_face(face, is_valid_gap, locations)`：
+  面在 v、法向 sign → sign>0 时缝线号 v，sign<0 时 v-1；传 locations 时先过
+  `face_is_internal`，**外表面/包围盒面一律 None**（引擎其实允许「最外层整体
+  滑出去」，那是包围盒平面，不该被点出来）。
+- `gui/events.py::_cubic_click` 重写：命中内壁 → 直接选那条缝；命中外表面 →
+  单击只提示不动缝；双击时内壁优先、外表面退化成 `seam_at_point` 最近缝。
+- 渲染：切面预览从「白框」改成**半透明填充 + 描边**
+  （`CUBIC_SEAM_FILL=(150,220,255,72)`、`CUBIC_SEAM_PAD=0`），单独 SRCALPHA 面
+  blit，不破坏底色。
+- 实测：点缝里的墙 (469,486) → 缝 c·0；双击同一处 → 选中 9 块；d·1 的切面
+  在半透明渲染下是一张横贯整盘的玻璃面。图 `seamfill_1..4_*.png`。
+- 测试：`_test_cubic_pick.py` 新增 B2 组 4 项（内壁 → 缝、两面墙同缝、包围盒
+  面 None、外沿 line −1 None），并把「贴缝点」改成按内壁反查；共 211 项。
+  全回归 view 41 / nav 83 / pick 211 / play 32 / framing 15 / gap 18 / split 25 /
+  save_guard 7 / entry 31 / arcball 5 全绿。
+
+⚠️ 已知：切面预览是「最后画的覆盖层」，不做逐块深度排序（半透明能看出后面
+的块，但不会真的被前面的块挡住）。要更真实就按列切分加进画家序，属渲染细化。

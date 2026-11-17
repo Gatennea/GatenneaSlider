@@ -115,6 +115,20 @@ check(cp.seam_of_face({'loc': (0, 0, 0), 'axis': 2, 'sign': 1},
                       lambda f, l: False) is None,
       '没有任何有效线时返回 None（不硬选）')
 
+print('B2. 缝里的墙（内部面）直接给缝；外表面不给（2026-11-17 新判定基准）')
+check(cp.seam_of_internal_face({'loc': (0, 0, 0), 'axis': 0, 'sign': 1},
+                               game.is_valid_gap) == ('c', 0),
+      'c=0 的 +X 内壁 → 缝 c·0')
+check(cp.seam_of_internal_face({'loc': (0, 1, 0), 'axis': 0, 'sign': -1},
+                               game.is_valid_gap) == ('c', 0),
+      'c=1 的 −X 内壁 → 同一条缝 c·0（两面墙指同一条缝）')
+check(cp.seam_of_internal_face({'loc': (0, 2, 0), 'axis': 0, 'sign': 1},
+                               game.is_valid_gap, locs) is None,
+      '最外层的 +X 面（包围盒面）不算缝')
+check(cp.seam_of_internal_face({'loc': (0, 0, 0), 'axis': 2, 'sign': -1},
+                               game.is_valid_gap) is None,
+      'r=0 的 −Z 面 → line −1，无有效缝')
+
 print('C. 切面预览多边形')
 for family, line in (('r', 1), ('c', 0), ('d', 1)):
     poly = cp.seam_plane_polygon(family, line, game.blocks)
@@ -157,34 +171,38 @@ hist0 = len(getattr(gui.game_history, 'undo_stack', []) or [])
 step0 = gui.step_count
 
 
-def _seam_point(scene, face, offset=3.0):
-    """取一个贴着缝线的屏幕点：沿面边采样、往面心一侧缩 offset 像素，
-    用 seam_edge_distance 反查「这条边是不是缝边」。"""
-    pts = face['pts']
-    cen = (sum(p[0] for p in pts) / 4.0, sum(p[1] for p in pts) / 4.0)
-    for i in range(len(pts)):
-        a, b = pts[i], pts[(i + 1) % len(pts)]
-        for t in (0.5, 0.3, 0.7, 0.2, 0.8):
-            mx, my = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
-            nx, ny = cen[0] - mx, cen[1] - my
-            n = (nx * nx + ny * ny) ** 0.5 or 1.0
-            p = (int(round(mx + nx / n * offset)), int(round(my + ny / n * offset)))
-            if cp.seam_edge_distance(scene['faces'], face, p) <= 5.0:
-                return p
-    return None
+def _seam_point(scene, face=None, samples=17):
+    """找「点下去直接命中缝里的墙（内部面）」的屏幕点，返回 (点, 缝, 面)。
+
+    2026-11-17 用户口径：拆分后缝里的墙就是看得见的缝，判定直接以它们为准。
+    """
+    locs = {tuple(int(v) for v in b.location[:3]) for b in gui.game.blocks}
+    cand = [face] if face is not None and cp.face_is_internal(face, locs) else []
+    if face is None:
+        cand = [f for f in scene['faces'] if cp.face_is_internal(f, locs)]
+    for f in list(cand) + [f for f in scene['faces'] if cp.face_is_internal(f, locs)]:
+        seam = cp.seam_of_internal_face(f, gui.game.is_valid_gap)
+        if seam is None:
+            continue
+        pts = f['pts']
+        for i in range(1, samples):
+            for j in range(1, samples):
+                u, v = i / samples, j / samples
+                x = ((1 - u) * (1 - v) * pts[0][0] + u * (1 - v) * pts[1][0]
+                     + u * v * pts[2][0] + (1 - u) * v * pts[3][0])
+                y = ((1 - u) * (1 - v) * pts[0][1] + u * (1 - v) * pts[1][1]
+                     + u * v * pts[2][1] + (1 - u) * v * pts[3][1])
+                p = (int(round(x)), int(round(y)))
+                if cp.hit_face(scene['faces'], p) is f:
+                    return p, seam, f
+    return None, None, None
 
 
-# 面心不再算「选缝」（2026-11-17 用户要求），必须点在缝线上；
-# 所以先找最靠前那片面的面心，再找它旁边的缝线取点。
+# 面心不再算「选缝」（2026-11-17 用户要求），要点在缝里的墙；
+# 外表面留给双击选块。
 target = gui._cubic_scene['faces'][-1]
-pt = _seam_point(gui._cubic_scene, target)
-if pt is None:
-    for f in reversed(gui._cubic_scene['faces']):
-        pt = _seam_point(gui._cubic_scene, f)
-        if pt is not None:
-            target = f
-            break
-check(pt is not None, '场景里能找到一个贴着缝线的屏幕点')
+pt, pt_seam, target = _seam_point(gui._cubic_scene)
+check(pt is not None, '场景里能找到一个「缝里的墙」的屏幕点')
 center_pt = (int(round(sum(p[0] for p in target['pts']) / 4.0)),
              int(round(sum(p[1] for p in target['pts']) / 4.0)))
 
@@ -200,6 +218,8 @@ check(gui.selected_gap is None, '点面心不改切面（2026-11-17 修：缝选
 
 click(pt)
 check(gui.selected_gap is not None, f'点缝线上 → 出现切面预览（{gui.selected_gap}）')
+check(gui.selected_gap == pt_seam,
+      f'选中的就是点到的**那条**缝（期望 {pt_seam}，实得 {gui.selected_gap}）')
 check(gui.selected_gap and gui.game.is_valid_gap(*gui.selected_gap),
       '预览的切面是引擎判有效的缝')
 check(gui.step_count == step0 and len(getattr(gui.game_history, 'undo_stack', []) or []) == hist0,

@@ -107,6 +107,95 @@ def face_is_internal(face, locations) -> bool:
     return tuple(other) in locations
 
 
+#: 世界轴 → 缝族名（X=c / Y=d / Z=r）
+WORLD_AXIS_TO_FAMILY = {0: 'c', 1: 'd', 2: 'r'}
+
+
+def _screen_axis_dir(scene, world_axis) -> tuple:
+    """世界轴在屏幕上的方向（含缩放；y 向下）。"""
+    cam = scene['camera']
+    scale = float(scene['scale'])
+    v = [0.0, 0.0, 0.0]
+    v[world_axis] = 1.0
+    c = cam.to_camera(tuple(v))
+    dx, dy = scale * c[0], -scale * c[1]
+    n = (dx * dx + dy * dy) ** 0.5 or 1.0
+    return (dx / n, dy / n)
+
+
+def seam_at_point(scene, face, point, is_valid_gap):
+    """点 → 画面上**那条**缝（族, 线号）+ 点到它的距离。
+
+    旧实现 `seam_of_face` 按面的法向取缝族：点前面就相当于选中这块**背后**那
+    张平行切面——那是一条在画面上根本看不见的缝（用户 2026-11-17 实测：点
+    「贴着屏幕的那条缝」选出来的却是别的）。这里改成**按离点击最近的那条面
+    边认缝**：一条面边沿着某个世界轴走，跨过它换的是另一个世界轴，缝族就是
+    后者；块在这条边的一侧决定缝线号（下界 k → line=k-1，上界 k+1 → line=k）。
+
+    返回 ``(dist, family, line)``；附近没有有效缝返回 ``None``。
+    """
+    pts = face.get('pts') or []
+    if len(pts) < 4:
+        return None
+    cen = (sum(p[0] for p in pts) / float(len(pts)),
+           sum(p[1] for p in pts) / float(len(pts)))
+    axis = face['axis']
+    inplane = [w for w in (0, 1, 2) if w != axis]
+    best = None
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        ex, ey = b[0] - a[0], b[1] - a[1]
+        en = (ex * ex + ey * ey) ** 0.5
+        if en <= 1e-6:
+            continue
+        ex, ey = ex / en, ey / en
+        along = None
+        for w in inplane:
+            sd = _screen_axis_dir(scene, w)
+            if abs(ex * sd[0] + ey * sd[1]) > 0.85:      # 这条边跟这根世界轴走
+                along = w
+                break
+        if along is None:
+            continue
+        across = [w for w in inplane if w != along][0]
+        sd = _screen_axis_dir(scene, across)
+        outward = ((mid[0] - cen[0]) * sd[0] + (mid[1] - cen[1]) * sd[1]) > 0
+        fam = WORLD_AXIS_TO_FAMILY[across]
+        idx = AXIS_TO_LOC_INDEX[across]
+        k = int(face['loc'][idx])
+        line = k if outward else k - 1
+        if not is_valid_gap(fam, line):
+            continue
+        dist = _point_seg_distance(point, a, b)
+        if best is None or dist < best[0]:
+            best = (dist, fam, line)
+    return best
+
+
+def seam_of_internal_face(face, is_valid_gap, locations=None):
+    """「块与块之间的那块墙」→ (缝族, 缝线号)；不是内壁就返回 None。
+
+    2026-11-17 用户口径：拆分渲染之后，缝里的那两面墙本来就画出来了（gap>0
+    时不再剔除内部面），它们就是**看得见的缝**——直接拿它们当判定基准，比
+    「按面边猜一条线」直观得多。外表面（贴棋盘边界、背后没有块）一律不算，
+    否则会把包围盒的平面也当成缝（引擎其实允许「最外一层整体滑出去」，那是
+    包围盒的平面，不该被点出来）。
+
+    面在坐标 ``v``，法向 ``sign``：sign>0 时这块在缝的**低**侧，墙立在 v+1 上
+    → 缝线号 v；sign<0 时在高侧，墙立在 v 上 → 缝线号 v-1。
+    """
+    if locations is not None and not face_is_internal(face, locations):
+        return None
+    family = AXIS_TO_FAMILY[face['axis']]
+    idx = AXIS_TO_LOC_INDEX[face['axis']]
+    v = int(face['loc'][idx])
+    line = v if face['sign'] > 0 else v - 1
+    if not is_valid_gap(family, line):
+        return None
+    return (family, line)
+
+
 def seam_of_face(face, is_valid_gap):
     """面 → (缝族, 缝线号)。
 
