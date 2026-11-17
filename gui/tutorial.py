@@ -822,6 +822,7 @@ class TutorialMixin:
                     self._tut_skip()
                 elif action == 'help':
                     self.show_help = True
+                    self._dialog_fade_reset('help')
                     self.help_scrollbar.set_scroll(0)
                 elif action == 'reset':
                     self._tut_reset_level()

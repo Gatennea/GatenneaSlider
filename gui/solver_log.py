@@ -130,7 +130,6 @@ def _params(gui):
         'max_wait_time': getattr(gui, 'max_wait_time', None),
         'thinking_enabled': bool(getattr(gui, 'thinking_enabled', False)),
         'animation_enabled': bool(getattr(gui, 'animation_enabled', True)),
-        'ui_mode': getattr(gui, 'ui_mode', ''),
     }
 
 

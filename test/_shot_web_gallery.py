@@ -117,7 +117,6 @@ def setup(gui, shape, spec, shuffle):
 
 gui = SliderGUI(m=6, n=6, step=2)
 gui.animation_enabled = False
-gui.ui_mode = 'enhanced'
 pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 print('画布 %dx%d -> %s' % (gui.screen_width, gui.screen_height, OUT))

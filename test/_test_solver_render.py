@@ -55,7 +55,6 @@ class _BorderHost(RendererMixin):
 
     def __init__(self, think, undo):
         self.selection_animation_enabled = True
-        self.ui_mode = 'enhanced'
         self._sel_anim_timer = 100
         self._sel_anim_is_think = think
         self._sel_anim_is_undo = undo

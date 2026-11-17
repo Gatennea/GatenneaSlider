@@ -255,7 +255,6 @@ class FileOpsMixin:
             'sfx_solved_enabled': getattr(self, 'sfx_solved_enabled', True),
             'sfx_click_enabled': getattr(self, 'sfx_click_enabled', True),
             'sfx_keyboard_enabled': getattr(self, 'sfx_keyboard_enabled', True),
-            'ui_mode': getattr(self, 'ui_mode', 'enhanced'),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
             # 教程进度（闯关模式）
@@ -406,8 +405,7 @@ class FileOpsMixin:
 
                 if 'animation_speed' in config:
                     self.animation_duration = config['animation_speed']
-                if 'ui_mode' in config and config['ui_mode'] in ('plain', 'enhanced'):
-                    self.ui_mode = config['ui_mode']
+                # 旧档里的 'ui_mode' 键直接忽略（2026-11-17 界面模式已删）
                 if 'zoom' in config:
                     self.zoom = config['zoom']
 

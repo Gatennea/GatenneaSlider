@@ -165,7 +165,6 @@ def run(label, fn):
 # ---------------------------------------------------------------- 初始化
 gui = SliderGUI(m=4, n=4, step=1)
 gui.animation_enabled = True        # 这次要动画（静态图脚本里是关掉的）
-gui.ui_mode = 'enhanced'
 gui.screen_width, gui.screen_height = W, H
 pygame.display.set_mode((W, H))
 gui.screen = pygame.display.get_surface()

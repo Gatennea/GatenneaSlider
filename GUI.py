@@ -586,8 +586,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 免得一进游戏就满屏记号。F2 会连带把它打开（见 events 的 F2 分支）。
         self.board_marks_enabled = False
         # 箭头按键：选中缝隙后在切片两端画出的可点方向箭头。
-        # 原本只跟着界面模式（enhanced）走、没有自己的开关，这里解耦出来，
-        # 作为宣传中的五种操作方式之一独立可控。
+        # 宣传中的五种操作方式之一，独立开关（不再跟界面模式绑定）。
         self.arrows_enabled = True
         # 开机动画开关（启动时标题动画，可点击/任意键跳过；缺省开）
         self.show_boot_animation = True
@@ -733,10 +732,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.animation_duration = 300  # 毫秒
         self.animation_enabled = True          # 滑动动画（滑块移动/撤销重做滑动）
         self.selection_animation_enabled = True  # 选中动画（撤销/重做、求解/宏播放时的缝隙与滑块组高亮；判据见 renderer._selection_visuals_enabled）
-        # GUI 模式总开关：plain=旧版朴素界面（等同未启用本计划的动效优化）；
-        # enhanced=新版动效与视觉优化。各增强效果在 S1–S7 中按此开关分流。
-        # 默认 enhanced（若用户想默认朴素，改此处的 'enhanced' 即可）。
-        self.ui_mode = 'enhanced'
+        # 2026-11-17（待办 §五十三）：界面模式总开关 ui_mode 已移除——实测它只闸住
+        # 七八个细节、关掉也回不到旧界面，遂整套删掉，动效一律走增强口径。
         # 拖拽接续：本次动画的起点偏移（跟随位移，格）与被缩短前的时长基准
         self._drag_anim_origin = None
         self._anim_duration_base = None
@@ -2494,24 +2491,26 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.draw_update_banner()
 
                 # 模态对话框（后画，真正最上层；盖住上述所有浮层）
+                # 除文件浏览器外，全部走 160ms 淡入（S4-3）——文件浏览器自持
+                # screen 引用，离屏淡入对它不生效，见 gui/dialogs.py 的说明。
                 if self.show_help:
-                    self.draw_help_dialog()
+                    self._draw_dialog_faded('help', self.draw_help_dialog)
                 if self.show_custom_dialog:
-                    self.draw_custom_puzzle_dialog()
+                    self._draw_dialog_faded('custom', self.draw_custom_puzzle_dialog)
                 if self.file_dialog.active:
                     self.file_dialog.draw()
                 if self.show_settings_dialog:
-                    self.draw_settings_dialog()
+                    self._draw_dialog_faded('settings', self.draw_settings_dialog)
                 if getattr(self, 'show_macro_manager_dialog', False):
-                    self.draw_macro_manager_dialog()
+                    self._draw_dialog_faded('macro_manager', self.draw_macro_manager_dialog)
                 if getattr(self, 'show_macro_name_dialog', False):
-                    self.draw_macro_name_dialog()
+                    self._draw_dialog_faded('macro_name', self.draw_macro_name_dialog)
                 # 确认弹窗（删除预设）：盖在这些对话框之上——它是模态中的模态
                 if getattr(self, 'show_confirm_dialog', False):
-                    self.draw_confirm_dialog()
+                    self._draw_dialog_faded('confirm', self.draw_confirm_dialog)
                 # 命令面板：画在所有模态之上（事件分发里同样最先消费，两者必须一致）
                 if getattr(self, 'palette_active', False):
-                    self.draw_command_palette()
+                    self._draw_dialog_faded('palette', self.draw_command_palette)
                 self.draw_update_progress()
 
                 '''# 虚拟键盘（浮动面板）

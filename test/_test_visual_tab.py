@@ -77,6 +77,23 @@ def scroll_to_bottom():
     gui.draw_settings_dialog()
 
 
+def bring_into_view(attr):
+    """把指定行滚进内容裁剪区并返回它当前的 rect。
+
+    2026-11-17：视觉页删掉「界面模式」行后整体上移 60px，原来靠 scroll=0
+    时「标记行恰好在可见区」的取巧失效（点击会落到对话框底部的确定/取消
+    按钮条上，把框关掉）。改为真的滚到该行可见再点。
+    """
+    for _ in range(80):
+        gui.draw_settings_dialog()
+        r = getattr(gui, attr)
+        cr = gui._settings_content_rect
+        if r.top >= cr.top + 2 and r.bottom <= cr.bottom - 2:
+            return r
+        gui.settings_scrollbar.set_scroll(gui.settings_scrollbar.scroll + 40)
+    return getattr(gui, attr)
+
+
 # ================================================================ 视觉页
 print("\n--- 视觉页：tab 改名与控件齐全 ---")
 _rnd = open(os.path.join('gui', 'renderer.py'), encoding='utf-8').read()
@@ -89,7 +106,6 @@ check('V0b 顶栏「设置」点击直达设置对话框', '设置' in gui.menu_
 
 open_settings('animation')
 _tab_row_attrs = {
-    '界面模式': '_settings_ui_mode_rect',
     '滑动动画': '_settings_anim_toggle_rect',
     '选中动画': '_settings_sel_anim_toggle_rect',
     '动画时长': '_settings_slider_track_rect',
@@ -234,22 +250,23 @@ gui.zoom = 1.0
 
 print("\n--- 视觉页：复原提示标记开关点击 ---")
 open_settings('animation')
-# 音效四行搬去音频页后本页变短：复原提示标记在 scroll=0 时就落在可见区内，
-# 别再滚到底（滚到底反而把它顶出裁剪区，点到的是别的行）。
-gui.settings_scrollbar.set_scroll(0)
-gui.draw_settings_dialog()
-click_at(gui._settings_marks_toggle_rect.center)
+# 2026-11-17：本页删掉「界面模式」行后整体上移 60px，原「scroll=0 就在可见区」
+# 的取巧失效（点下去会落在底部按钮条上把框关掉）。改为逐行滚进可见区再点。
+_r = bring_into_view('_settings_marks_toggle_rect')
+click_at(_r.center)
 check('V5a 点标记行 → 通知用新名字',
       '复原提示标记' in (gui.macro_notify_msg or ''),
       repr(gui.macro_notify_msg))
-# 悬停缝隙闪烁开关（2026-11-14 用户新增）：行在标记行之上，scroll=0 可见
+# 悬停缝隙闪烁开关（2026-11-14 用户新增）：行在标记行之上
 _gap_before = gui.gap_hover_flash_enabled
-click_at(gui._settings_gap_hover_toggle_rect.center)
+_r = bring_into_view('_settings_gap_hover_toggle_rect')
+click_at(_r.center)
 check('V5b 点悬停缝隙闪烁行 → 开关翻转并提示',
       gui.gap_hover_flash_enabled != _gap_before
       and '悬停缝隙闪烁' in (gui.macro_notify_msg or ''),
       f"{gui.gap_hover_flash_enabled} msg={gui.macro_notify_msg!r}")
-click_at(gui._settings_gap_hover_toggle_rect.center)     # 还原
+_r = bring_into_view('_settings_gap_hover_toggle_rect')
+click_at(_r.center)     # 还原
 
 # ================================================================ 音频页（S5）
 print("\n--- 音频页：总开关 + 音效一览 + 音量滑条 ---")

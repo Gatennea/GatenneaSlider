@@ -336,7 +336,6 @@ _RECT_TO_ID = {
     'oplog_toggle': 'op_log_enabled',
     'compressed_toggle': 'save_compress',
     # 视觉页
-    'ui_mode': 'ui_mode',
     'anim_toggle': 'animation_enabled',
     'sel_anim_toggle': 'selection_animation_enabled',
     'coloring_toggle': 'coloring_enabled',

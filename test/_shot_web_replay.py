@@ -217,7 +217,6 @@ def main():
     d = json.load(open(args.save, encoding='utf-8'))
     gui = SliderGUI(m=4, n=4, step=1)
     gui.animation_enabled = True
-    gui.ui_mode = 'enhanced'
     # 高亮「这一步选了哪一片」：思路参考动图要开，纯装饰背景关掉更干净
     gui.selection_animation_enabled = not args.no_highlight
     gui.screen_width, gui.screen_height = W, H

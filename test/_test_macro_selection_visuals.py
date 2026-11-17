@@ -68,7 +68,6 @@ def boot(sel_on, *, anim=False, kind='sq'):
     g.animation_enabled = anim
     if anim:
         g.animation_duration = 2000
-    g.ui_mode = 'enhanced'
     pygame.display.set_mode((g.screen_width, g.screen_height))
     g.screen = pygame.display.get_surface()
     return g

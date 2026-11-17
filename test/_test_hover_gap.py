@@ -110,7 +110,6 @@ def probe_switch(gui, tag):
 def main():
     gui = SliderGUI(m=5, n=5, step=1)
     gui.animation_enabled = False
-    gui.ui_mode = 'enhanced'
 
     gui.new_puzzle(5, 5, 1)
     probe(gui, '方形')

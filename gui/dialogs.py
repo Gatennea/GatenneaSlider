@@ -528,6 +528,48 @@ class PygameFileDialog:
 class DialogsMixin:
     """对话框相关方法 Mixin"""
 
+    # ---- 对话框淡入（S4-3，2026-11-17） -----------------------------------
+    # 目标：设置 / 帮助 / 自定义谜题这些模态框不再「啪」地整块出现。
+    # 做法：打开后约 160ms 内，把整块对话框（含半透明遮罩）先画到一张全屏
+    # SRCALPHA 面上，再按 alpha 渐显贴回。**不做缩放**——缩放会挪动坐标，
+    # 而事件层复用的是绘制时登记的命中矩形，160ms 内点击会错位；只改透明度
+    # 则几何完全不变，命中区安全。
+    _DIALOG_FADE_MS = 160
+
+    def _dialog_fade_reset(self, key):
+        """对话框刚打开时调用：登记淡入起点（毫秒）。"""
+        st = getattr(self, '_dialog_fade_state', None)
+        if st is None:
+            st = {}
+            self._dialog_fade_state = st
+        st[key] = pygame.time.get_ticks()
+
+    def _dialog_fade_alpha(self, key):
+        """当前淡入 alpha（0~255）；没登记过起点就当作已完成（255）。"""
+        start = getattr(self, '_dialog_fade_state', {}).get(key)
+        if start is None:
+            return 255
+        elapsed = pygame.time.get_ticks() - start
+        return int(255 * min(1.0, elapsed / float(self._DIALOG_FADE_MS)))
+
+    def _draw_dialog_faded(self, key, draw_fn):
+        """按淡入 alpha 画对话框；淡入结束后直接画，零额外开销。"""
+        alpha = self._dialog_fade_alpha(key)
+        if alpha >= 255:
+            draw_fn()
+            return
+        surf = pygame.Surface((self.screen_width, self.screen_height),
+                              pygame.SRCALPHA)
+        real_screen = self.screen
+        self.screen = surf
+        try:
+            draw_fn()
+        finally:
+            self.screen = real_screen
+        surf.set_alpha(max(0, alpha))
+        real_screen.blit(surf, (0, 0))
+
+
     def _load_help_lines(self):
         """从 docs/player/操作说明.md 加载帮助文本，解析为 (文本, 是否高亮) 列表"""
         if getattr(sys, 'frozen', False):

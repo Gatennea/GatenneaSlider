@@ -52,7 +52,6 @@ def select(gui, gap_type, line, block):
 gui = SliderGUI(m=5, n=5, step=1)
 gui.animation_enabled = False
 gui.save_readonly_flag = False
-gui.ui_mode = 'enhanced'
 
 # ------------------------------------------------------------------ 方形
 gui.new_puzzle(5, 5, 1)

@@ -93,6 +93,10 @@ check('T1 無 record 調用返回 None（向後兼容）', r is None)
 def make_gui(m=4, n=4, step=2):
     gui = SliderGUI(m=m, n=n, step=step)
     gui.save_readonly_flag = False
+    # 与 save_readonly_flag 同理：这两个开关会从玩家 config 恢复，
+    # 若本机 config 里 confirm_before_shuffle=true，打乱只弹确认框就返回，
+    # 台账里的演示断言会集体假红（2026-11-17 实测踩到）。
+    gui.confirm_before_shuffle = False
     return gui
 
 
@@ -260,18 +264,11 @@ check('T6 換盤後不碰新棋盤', positions(gui4.game) == new_positions)
 # ================================================================ T7 門控
 print()
 print("=" * 60)
-print("T7 門控：plain 模式 / 動畫關閉")
+print("T7 門控：動畫關閉")
 print("=" * 60)
 
-gui5 = make_gui()
-gui5.ui_mode = 'plain'
-random.seed(3)
-gui5.shuffle_puzzle()
-check('T7 plain 模式不演示', not gui5._shuffle_demo_active)
-check('T7 plain 模式棋盤即終態（=快照）',
-      gui5.game_history.history[0]['matrix'] == board_matrix(gui5.game))
-check('T7 plain 模式通知立即發', gui5.macro_notify_timer > 0)
-
+# 2026-11-17：界面模式（plain/enhanced）已删，原「plain 不演示」一節随之移除；
+# 剩下的門控只有「滑动动画关着」与「动画时长为 0」。
 gui6 = make_gui()
 gui6.animation_enabled = False
 random.seed(5)

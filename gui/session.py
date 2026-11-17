@@ -202,12 +202,11 @@ class SessionMixin:
             notify_msg += "；本次随机打乱未达难度门槛，可再打乱一次"
         notify = (notify_msg, 120)
 
-        # 打乱过程演示：enhanced 模式 + 滑动动画开着 + 确实有可演的步骤。
+        # 打乱过程演示：滑动动画开着 + 确实有可演的步骤。
         # 演示从打乱前状态逐步重放，步数过多只演前几步，再淡出切入终态；
         # 期间棋盘输入被 animating 守卫挡着，结束/中断都会对齐到终态
         demo = (records and self.animation_enabled
-                and self.animation_duration > 0
-                and getattr(self, 'ui_mode', 'enhanced') == 'enhanced')
+                and self.animation_duration > 0)
         if demo:
             # 通知延后到演示结束再补发：那会儿玩家才能真正操作
             self._start_shuffle_demo(records, pre_positions,
@@ -383,6 +382,7 @@ class SessionMixin:
     def _request_shuffle_confirm(self):
         """弹出「打乱前确认」：明确会清空历史，提供 确定打乱 / 存档 / 取消。"""
         self.show_confirm_dialog = True
+        self._dialog_fade_reset('confirm')
         self.confirm_title = '打乱前确认'
         self.confirm_lines = [
             '打乱会清空当前的历史记录，之后将无法撤销回打乱前的局面。',
@@ -416,6 +416,7 @@ class SessionMixin:
     def _request_reset_confirm(self):
         """弹出「重置前确认」：明确会丢掉当前进度并清空历史，提供 确定重置 / 存档 / 取消。"""
         self.show_confirm_dialog = True
+        self._dialog_fade_reset('confirm')
         self.confirm_title = '重置前确认'
         self.confirm_lines = [
             '重置会丢掉当前的进度并清空历史，之后将无法撤销回当前的局面。',

@@ -31,7 +31,6 @@ def centres(gui):
 
 gui = SliderGUI(m=5, n=5, step=1)
 gui.animation_enabled = False
-gui.ui_mode = 'enhanced'
 pygame.display.set_mode((1200, 800))
 gui.screen = pygame.display.get_surface()
 
@@ -265,11 +264,11 @@ for form, setup in (('方形', setup_square), ('三角', setup_tri), ('米字', 
                 setup(gui)
                 gui.current_step = step
 
-# ---- 朴素模式不画
-print('\n===== 朴素模式 =====')
-gui.ui_mode = 'plain'
-check(gui._arrow_button_hit(0, 0) is None, 'plain 模式不生成按键')
-gui.ui_mode = 'enhanced'
+# ---- 独立开关关闭时不画（2026-11-17：界面模式已删，改测 arrows_enabled）
+print('\n===== 箭头按键开关关闭 =====')
+gui.arrows_enabled = False
+check(gui._arrow_button_hit(0, 0) is None, 'arrows_enabled=False 不生成按键')
+gui.arrows_enabled = True
 
 print('\n===== 结论 =====')
 print('全部通过' if not FAILS else f'{len(FAILS)} 项失败：')

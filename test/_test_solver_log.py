@@ -50,7 +50,6 @@ class _Gui:
     max_wait_time = 8
     thinking_enabled = True
     animation_enabled = True
-    ui_mode = 'enhanced'
 
     def __init__(self):
         self.game = _Game()
