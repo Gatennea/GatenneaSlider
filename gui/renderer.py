@@ -980,7 +980,10 @@ class RendererMixin:
             self.cubic_gap = gap
         scene = cubic_view.build_scene(
             blocks, camera, self.screen_width, self.screen_height,
-            margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap)
+            margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap,
+            # 平移盘面（没选中时点六键）：屏幕像素偏移，不碰逻辑坐标，
+            # 也不参与缩放/装画面（scale 仍只由 zoom 决定）。
+            origin_offset=tuple(getattr(self, 'cubic_pan', (0.0, 0.0))))
 
         base = self.colors['block']
         chosen = self.colors['block_selected']

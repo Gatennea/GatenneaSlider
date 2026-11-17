@@ -1834,15 +1834,80 @@ class EventsMixin:
         if base is None:
             return False
         letter = base.upper() if (event.mod & pygame.KMOD_SHIFT) else base
-        if not any(getattr(b, 'be_opted', False) for b in self.game.blocks):
-            self.macro_notify_msg = "先在切面一侧双击选中滑块，再用 r/R c/C d/D 推"
+        self._cubic_push_letter(letter, hint='r/R c/C d/D')
+        return True
+
+    # ---- 三轴六键：虚拟键盘按钮（§54 第 4 步下半） ----
+
+    CUBIC_PAN_STEP = 30.0      # 平移盘面一次 = 30 屏幕像素
+
+    def _cubic_screen_dir(self, world_vec):
+        """世界方向 → 屏幕单位向量（屏幕 y 向下，所以取负 vy）。
+
+        六键的箭头不能写死成上下左右：三条轴在世界里固定，但转到哪个屏幕方向
+        由当前相机决定。同一个函数也给「没选中时六键 = 平移盘面」定方向。
+        轴正对镜头时投影长度趋零（屏幕上是一个点），返回零向量，由调用方决定
+        「不画箭头 / 不按这个方向平移」。
+        """
+        cam = getattr(self, 'cubic_camera', None)
+        if cam is None:
+            return (0.0, 0.0)
+        vx, vy, _vz = cam.to_camera(world_vec)
+        norm = math.hypot(vx, vy)
+        if norm < 1e-9:
+            return (0.0, 0.0)
+        return (vx / norm, -vy / norm)
+
+    def _cubic_pan_by(self, letter, notify=True):
+        """按世界方向平移盘面一格（屏幕偏移，不碰逻辑坐标）。"""
+        from engine.compat import CUBIC_DIRECTIONS
+        vec = CUBIC_DIRECTIONS.get(letter)
+        if vec is None:
+            return False
+        dir2 = self._cubic_screen_dir(vec)
+        if dir2 == (0.0, 0.0):
+            # 这条轴正对/背对镜头：屏幕上没有可平移的方向，提示而不是瞎挪
+            self.macro_notify_msg = f"{letter} 轴正对镜头，屏幕上没有可平移的方向"
             self.macro_notify_timer = 120
-            return True
+            return False
+        if getattr(self, 'cubic_pan', None) is None:
+            self.cubic_pan = [0.0, 0.0]
+        self.cubic_pan[0] += dir2[0] * self.CUBIC_PAN_STEP
+        self.cubic_pan[1] += dir2[1] * self.CUBIC_PAN_STEP
+        # 夹住偏移：最多推到半屏，别让盘整个飘出可视区再也找不回来
+        lim = 0.55 * max(self.screen_width, self.screen_height)
+        self.cubic_pan[0] = max(-lim, min(lim, self.cubic_pan[0]))
+        self.cubic_pan[1] = max(-lim, min(lim, self.cubic_pan[1]))
+        if notify:
+            self.macro_notify_msg = f'平移盘面 {letter}（未选中时六键即平移）'
+            self.macro_notify_timer = 90
+        return True
+
+    def _cubic_push_letter(self, letter, hint='r/R c/C d/D'):
+        """推一步。字母键与虚拟键盘六键走同一口径（同一个 move_selected_blocks）。"""
+        if not any(getattr(b, 'be_opted', False) for b in self.game.blocks):
+            self.macro_notify_msg = f"先在切面一侧双击选中滑块，再用 {hint} 推"
+            self.macro_notify_timer = 120
+            return False
         moved = self.move_selected_blocks(letter)
         if not moved:
             self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
             self.macro_notify_timer = 120
-        return True
+        return moved
+
+    def _cubic_vk_six(self, letter):
+        """虚拟键盘六键：有选中就推，没选中就平移盘面（方案 §1「操作入口」）。"""
+        if self._tut_board_locked():
+            return False
+        if any(getattr(b, 'be_opted', False) for b in self.game.blocks):
+            return self._cubic_push_letter(letter, hint='六键')
+        return self._cubic_pan_by(letter)
+
+    def _cubic_vk_dirs(self):
+        """六键箭头：{字母: (屏幕 dx, dy)}，按当前相机现算（旋转后要重画）。"""
+        from engine.compat import CUBIC_DIRECTIONS
+        return {letter: self._cubic_screen_dir(vec)
+                for letter, vec in CUBIC_DIRECTIONS.items()}
 
     def _cmd_reply(self, resp_q, ok, message, data=None):
         """统一回复：有 resp_q 则通过队列回复（HTTP），否则打印到终端"""

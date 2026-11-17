@@ -1420,6 +1420,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 拆分（相邻块之间空出的距离）：0 = 贴死成一整块、看不出前后；
         # 滑条留到「渲染选项」那一步，这里先给默认值。
         self.cubic_gap = DEFAULT_GAP
+        # 平移盘面（没选中时点三轴六键 = 平移）：换局清零，别把上局的偏移带过来
+        self.cubic_pan = [0.0, 0.0]
 
         # 上次的三维相机组（config.json 的 cubic_camera）：有就套用，缺字段
         # 保持上面的默认；数值越界交给夹紧逻辑兜住（不静默写坏姿势）。
