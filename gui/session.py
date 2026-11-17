@@ -502,6 +502,12 @@ class SessionMixin:
             self.new_triangle_puzzle(self.triangle_side, self.current_step)
         elif getattr(self, 'mi_mode', False):
             self.new_mi_puzzle(self.current_m, self.current_n, self.current_step)
+        elif kind == 'cubic':
+            # 三维（§54）：重建必须带层数，否则 Ctrl+R 会把 m×n×d 静默换成
+            # 「模型不可用」或一张少一层的假局。
+            self.new_cubic_puzzle(self.current_m, self.current_n,
+                                  getattr(self, 'current_depth', 0),
+                                  self.current_step)
         elif kind not in ('square', 'triangle', 'mi', 'numbered'):
             # 模型文件板型（碎三角及任何 models/<name>.json）：固定块数，
             # 只有等级可重建。漏了这条 Ctrl+R 会把 48 块碎三角静默换成
@@ -554,12 +560,15 @@ class SessionMixin:
         return self._current_kind() not in ('square', 'numbered', 'triangle', 'mi')
 
     def _current_puzzle_key(self) -> str:
-        """当前谜题完整标识：方形 2~4*4 / 带序号 2~4*4#num / 三角 2~tri6。"""
+        """当前谜题完整标识：方形 2~4*4 / 带序号 2~4*4#num / 三角 2~tri6 /
+        三维 2~cubic3*3*3。"""
         tri = getattr(self, 'triangle_mode', False)
         return puzzle_key(
             self.current_step, self.current_m, self.current_n,
             kind=self._current_kind(),
-            triangle_side=self.game.k if tri else None)
+            triangle_side=self.game.k if tri else None,
+            # 三维的分榜键必须带层数（二维形态 current_depth 恒为 0 → None）
+            depth=getattr(self, 'current_depth', 0) or None)
 
     def _preset_puzzle_key(self, preset) -> str:
         """谜题菜单预设项对应的分榜键（与 _current_puzzle_key 同格式，用于比对当前项）。
@@ -572,7 +581,9 @@ class SessionMixin:
         _, pm, pn, ps = preset[:4]
         kind = preset[4] if len(preset) > 4 else 'square'
         return puzzle_key(ps, pm, pn, kind=kind,
-                          triangle_side=pm if kind == 'triangle' else None)
+                          triangle_side=pm if kind == 'triangle' else None,
+                          # 三维条目第 6 位是层数 d（见 GUI.py 的 cubic 子菜单）
+                          depth=preset[5] if len(preset) > 5 else None)
 
     def _preset_is_current(self, preset, current_key=None) -> bool:
         """菜单项是否标记为「当前所在」（✓ 与高亮共用）。
@@ -607,6 +618,12 @@ class SessionMixin:
             return f'三角形 边长{k} 等级{self.current_step}'
         if getattr(self, 'mi_mode', False):
             return f'米字格 {self.current_m}×{self.current_n} 等级{self.current_step}'
+        if getattr(self, 'cubic_mode', False):
+            # 三维（§54）：三个维度都要报；落到下面的模型分支会显示成
+            # 「cubic 等级1」这种板型名，玩家看不懂
+            return (f'三维 {self.current_m}×{self.current_n}×'
+                    f'{getattr(self, "current_depth", 0)}'
+                    f' 等级{self.current_step}')
         _kind = self._current_kind()
         if _kind not in ('square', 'numbered', 'triangle', 'mi'):
             # 模型文件板型：固定块数、无尺寸维度，标签只报等级（名字取文件里的 title）

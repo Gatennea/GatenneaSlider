@@ -29,7 +29,8 @@ class SpeedrunMixin:
         self.timer_puzzle_key = puzzle_key(
             self.current_step, self.current_m, self.current_n,
             kind=self._current_kind(),
-            triangle_side=self.game.k if tri else None)
+            triangle_side=self.game.k if tri else None,
+            depth=getattr(self, 'current_depth', 0) or None)
         self.timer_initial_matrix = self._timer_initial_map()
 
     def _timer_initial_map(self) -> str:

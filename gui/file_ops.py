@@ -206,11 +206,24 @@ class FileOpsMixin:
         ``type: '__editor__'`` 的存档——它没有模型文件，下次启动必然
         「存档需要模型 '__editor__'，但它没有安装」。temp_history 保留进入
         编辑器之前的那个真实局面（退出/崩溃都不丢东西），配置照写。
+
+        ⚠️ **三维局（cubic_mode）同理不写历史**（2026-11-17，§54 第 0 步落地
+        后暴露）：存档还没扩到 (r,c,d) 与 ``type: cubic``（方案第 5 步），
+        写下去就是一条读不回来的档，下次启动报「存档需要模型 'cubic'」。
+        这条规则同时是**自愈**：已经被写脏的 temp_history，下次正常退出即被
+        上一份真实二维局面覆盖（编辑器先例的自愈机制，见 docs/spec/模型文件）。
         """
         os.makedirs(self.config_dir, exist_ok=True)
 
         # 保存历史记录到 temp_history.json（编辑器预览局跳过，见 docstring）
-        if not getattr(self, '_med_active', False):
+        # 三维同理（§54）：存档格式还没扩到 (r,c,d) + type:cubic（方案第 5 步），
+        # 现在把 kind='cubic' 写进去，下次启动必然「存档需要模型 'cubic'，
+        # 但它没有安装」——一条自造的坏档。跳过写 → temp_history 保留上一个
+        # 真实二维局面，退出/崩溃都不丢东西；旧版本已写脏的那份也会在下次
+        # 正常退出时被这条规则自动治好（与编辑器先例同口径）。
+        skip_temp = (getattr(self, '_med_active', False)
+                     or getattr(self, 'cubic_mode', False))
+        if not skip_temp:
             save_data = self._build_save_data()
             try:
                 with open(self.temp_history_path, 'w', encoding='utf-8') as f:
@@ -220,12 +233,24 @@ class FileOpsMixin:
 
         # 始终以 temp_history_path 作为 last_file_path
         # 这样重启时必定加载退出瞬间的最新状态
+        # 三维相机姿态：四元数就是姿态本身（不另存 yaw/pitch，免得两处口径打架）
+        _cam = getattr(self, 'cubic_camera', None)
+        _quat = tuple(getattr(_cam, 'q', (1.0, 0.0, 0.0, 0.0)))
+
         config = {
             'animation_speed': self.animation_duration,
             'zoom': self.zoom,
             'last_file_path': self.temp_history_path,
             'camera_x': self.camera_x,
             'camera_y': self.camera_y,
+            # 三维相机组（§54 第 2 步）：姿态 + 缩放 + 拆分单独一组，
+            # 与二维 camera_x/y、zoom 互不覆盖（按形态分组，方案 §2.2 口径）
+            'cubic_camera': {
+                'quat': [round(float(v), 6) for v in _quat],
+                'zoom': round(float(getattr(self, 'cubic_zoom', 1.0)), 3),
+                'gap': round(float(getattr(self, 'cubic_gap', 0.0)), 3),
+                'view': getattr(self, 'cubic_view_index', None),
+            },
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
@@ -408,6 +433,25 @@ class FileOpsMixin:
                 # 旧档里的 'ui_mode' 键直接忽略（2026-11-17 界面模式已删）
                 if 'zoom' in config:
                     self.zoom = config['zoom']
+
+                # 三維相机组（§54 第 2 步）：只记下数值，建三维局时才套用
+                # （二维局不该被三维姿态影响；这里不新建三维对象）
+                cc = config.get('cubic_camera')
+                if isinstance(cc, dict):
+                    prefs = {}
+                    quat = cc.get('quat')
+                    if (isinstance(quat, (list, tuple)) and len(quat) == 4
+                            and all(isinstance(v, (int, float))
+                                    and not isinstance(v, bool) for v in quat)):
+                        prefs['quat'] = [float(v) for v in quat]
+                    for key in ('zoom', 'gap'):
+                        val = cc.get(key)
+                        if isinstance(val, (int, float)) and not isinstance(val, bool):
+                            prefs[key] = float(val)
+                    view = cc.get('view')
+                    if isinstance(view, int) and 0 <= view < 6:
+                        prefs['view'] = view
+                    self._cubic_camera_prefs = prefs
 
                 # 恢复浮动面板状态（位置 / 开关）
                 panels = config.get('panels', {})

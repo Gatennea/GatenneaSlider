@@ -67,7 +67,8 @@ class RecordsPanelMixin:
     def _rp_current_key(self):
         return puzzle_key(self.current_step, self.current_m, self.current_n,
                           kind=self._current_kind(),
-                          triangle_side=self.game.k if getattr(self, 'triangle_mode', False) else None)
+                          triangle_side=self.game.k if getattr(self, 'triangle_mode', False) else None,
+                          depth=getattr(self, 'current_depth', 0) or None)
 
     @staticmethod
     def _rp_is_triangle(rec) -> bool:

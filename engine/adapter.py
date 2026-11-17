@@ -82,7 +82,8 @@ class EngineGame:
     (m, n, k) 与形态 kind——仅供 GUI 显示与 key 生成用，逻辑不依赖。
     """
 
-    def __init__(self, board: Board, *, m=None, n=None, k=None, kind='square'):
+    def __init__(self, board: Board, *, m=None, n=None, k=None, kind='square',
+                 depth=None):
         if not isinstance(board, Board):
             raise TypeError(f"EngineGame 须包 engine.Board，收到 {type(board)}")
         self._board = board
@@ -101,6 +102,17 @@ class EngineGame:
             self.n = n if n is not None else (m if m is not None else 0)
         if kind == 'mi':
             self.Q_ORDER = MI_Q_ORDER
+        if kind == 'cubic':
+            # 三維層數 d（「三维 ▸ m×n×d」的第 3 个维度）：只供显示 / 菜单 /
+            # puzzle key 用，逻辑与维度无关。
+            # ⚠️ **不挂 k**：history.restore_snapshot 用 hasattr(game, 'k')
+            #    分流三角 2-bit 矩阵，立方挂上会被误判成三角、撤销出来的块全错。
+            # ⚠️ 缺 depth 直接报错（见 create_adapter_puzzle）：不允许退化成
+            #    二维或单层——那会造出一张「看着像三维、其实是平面」的假局。
+            if depth is None:
+                raise TypeError(
+                    "立方板型必须给 depth（三维层数 d），不接受缺省")
+            self.depth = depth
         # numbered 由 kind 派生：puzzle_types.create_puzzle 的引擎分支
         # **提前 return**，走不到旧路径的 ``g.numbered = (kind=='numbered')``
         # （曾致编号谜题矩阵值全变 1，存档/面板静默错）。
@@ -701,6 +713,10 @@ class EngineGame:
         if self.kind == 'mi':
             return {(r, c, q) for r in range(self.m) for c in range(self.n)
                     for q in MI_Q_ORDER}
+        if self.kind == 'cubic':
+            # 三維還原態 = m×n×d 實心長方體（位置是 (r, c, d) 三元組）
+            return {(r, c, dep) for r in range(self.m) for c in range(self.n)
+                    for dep in range(self.depth)}
         return {(r, c) for r in range(self.m) for c in range(self.n)}
 
     def set_goal_pattern(self, cells) -> bool:
@@ -1401,11 +1417,14 @@ def _translate_normalized(keys):
 # 工厂：形态 → 引擎板型 → EngineGame（开关打开时由 puzzle_types 调用）
 # ----------------------------------------------------------------------
 def create_adapter_puzzle(kind: str, m: int, n: int, step: int = 2,
-                          *, triangle_side: int | None = None) -> 'EngineGame':
+                          *, triangle_side: int | None = None,
+                          depth: int | None = None) -> 'EngineGame':
     """按形态造 EngineGame（与 puzzle_types.create_puzzle 同入参）。
 
-    kind: square / numbered / triangle / mi。numbered 退化为 square 的
-    引擎板型（编号是显示层的事，逻辑上仍是实心矩形还原态）。
+    kind: square / numbered / triangle / mi / cubic / 模型文件板型。numbered
+    退化为 square 的引擎板型（编号是显示层的事，逻辑上仍是实心矩形还原态）。
+    cubic（三维）额外要 depth = 层数 d；**缺 depth 即 TypeError**，不退化成
+    二维或单层（AGENTS.md §2 不静默兜底）。
     """
     if kind == 'triangle':
         from .registry import tri_board
@@ -1416,6 +1435,17 @@ def create_adapter_puzzle(kind: str, m: int, n: int, step: int = 2,
         from .registry import mi_board
         board = mi_board(m, n)
         return EngineGame(board, m=m, n=n, kind='mi')
+    if kind == 'cubic':
+        # 三維立方板型：m×n×d。cubic_spec 要三个参数，而下方「注册表新板型」
+        # 分支走的是无参 make_board(kind) —— 这正是 2026-11-17 之前
+        # create_adapter_puzzle('cubic',3,3,1) 抛 TypeError 的断点。
+        if depth is None:
+            raise TypeError(
+                "cubic 板型需要 depth（三维层数 d）；建局入口必须显式传 "
+                "depth，禁止退化成二维 / 单层兜底")
+        from .registry import cubic_board
+        board = cubic_board(m, n, depth)
+        return EngineGame(board, m=m, n=n, kind='cubic', depth=depth)
     # 注册表里的新板型（形状已写成数据的那一类，如碎三角）：无需 GUI 侧
     # 新增形态分支——这是「几何引擎＝解释器」的入口侧落点。
     if kind not in ('square', 'numbered'):
