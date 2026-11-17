@@ -173,6 +173,40 @@ def seam_at_point(scene, face, point, is_valid_gap):
     return best
 
 
+def _is_internal_cut(family, line, locations) -> bool:
+    """这条缝线是不是「块与块之间」的切面（两侧都真有块）。
+
+    包围盒那层平面（最外侧）一侧永远没有块，不算——用户 2026-11-17：
+    「外表面（只要不是包围盒的表面）也要可以选中」。
+    """
+    if not locations:
+        return False
+    idx = FAMILY_TO_LOC_INDEX[family]
+    ks = [int(loc[idx]) for loc in locations]
+    return any(k <= line for k in ks) and any(k >= line + 1 for k in ks)
+
+
+def seam_of_face(face, is_valid_gap, locations=None):
+    """点中一块的某个面 → 它所属的**内部切面**（不是包围盒平面）。
+
+    2026-11-17 用户口径（扩大可选范围）：可点的面不止缝里的墙，**块的任意外
+    表面**都算——但推出来的平面不能是包围盒那层。做法：先试「面外侧那条线」
+    （sign>0 → v，sign<0 → v-1）是内部切面就用（缝里的墙走这条，天然命中）；
+    否则退回「块的另一条边界」。所以点最前面那块的前脸，得到的是它与后面
+    那层之间的切面（画面里与屏幕平行），不是包围盒那层，也不是斜的缝。
+
+    外表面若两侧缺块（1×1×n 这类退化情形）→ 返回 None，不硬选。
+    """
+    family = AXIS_TO_FAMILY[face['axis']]
+    idx = AXIS_TO_LOC_INDEX[face['axis']]
+    v = int(face['loc'][idx])
+    candidates = (v, v - 1) if face['sign'] > 0 else (v - 1, v)
+    for line in candidates:
+        if _is_internal_cut(family, line, locations) and is_valid_gap(family, line):
+            return (family, line)
+    return None
+
+
 def seam_of_internal_face(face, is_valid_gap, locations=None):
     """「块与块之间的那块墙」→ (缝族, 缝线号)；不是内壁就返回 None。
 
@@ -194,24 +228,6 @@ def seam_of_internal_face(face, is_valid_gap, locations=None):
     if not is_valid_gap(family, line):
         return None
     return (family, line)
-
-
-def seam_of_face(face, is_valid_gap):
-    """面 → (缝族, 缝线号)。
-
-    面的两侧是块 v 与 v+sign；缝线号 = 这两块之间的边界（序号小的一侧）。
-    若那条线两侧不同时非空（贴外沿的面），退回另一条相邻线再试；都不行返回
-    None（= 这一面没挨着任何可选的切面）。
-    """
-    family = AXIS_TO_FAMILY[face['axis']]
-    idx = AXIS_TO_LOC_INDEX[face['axis']]
-    v = int(face['loc'][idx])
-    primary = v if face['sign'] > 0 else v - 1
-    fallback = v - 1 if face['sign'] > 0 else v
-    for line in (primary, fallback):
-        if is_valid_gap(family, line):
-            return (family, line)
-    return None
 
 
 def seam_plane_polygon(family, line, blocks, pad: float = 0.0):

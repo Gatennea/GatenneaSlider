@@ -1696,9 +1696,9 @@ class EventsMixin:
     #: 单击改切面的「缝线半径」（像素）：点在缝线这么多像素以内才算选缝，
     #: 否则不动现有切面（否则双击的第一下会把缝挪走，用户 2026-11-17 实测）
     CUBIC_SEAM_CLICK_PX = 6
-    #: 切面预览的半透明填充色（RGBA）与外扩量（世界坐标）；2026-11-17 用户
-    #: 要求「要有平面的感觉」，从只描白框改成填一层半透明的面
-    CUBIC_SEAM_FILL = (150, 220, 255, 72)
+    #: 切面预览（2026-11-17 用户口径：与二维同一套视觉语言 = **红色**；并且要
+    #: 「有平面的感觉」= 半透明填充，不是只描框）。alpha 单独放，色取 colors['line']。
+    CUBIC_SEAM_ALPHA = 110
     CUBIC_SEAM_PAD = 0.0
 
     def _cubic_pick(self, x, y):
@@ -1726,8 +1726,7 @@ class EventsMixin:
         if hit is None:
             return False
         locations = {tuple(int(v) for v in b.location[:3]) for b in self.game.blocks}
-        seam = cubic_pick.seam_of_internal_face(hit, self.game.is_valid_gap,
-                                                locations)
+        seam = cubic_pick.seam_of_face(hit, self.game.is_valid_gap, locations)
 
         now = pygame.time.get_ticks()
         last_t = getattr(self, '_cubic_last_click_t', None)
@@ -5501,3 +5500,4 @@ def _side_of_any(game, gap_type, line, key) -> int:
     else:
         raise ValueError(f'no side_of for {mod}')
     return side_of(gap_type, line, key)
+

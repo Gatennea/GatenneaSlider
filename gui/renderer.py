@@ -987,38 +987,82 @@ class RendererMixin:
         border = self.colors['border']
         opted = {tuple(int(v) for v in b.location[:3])
                  for b in blocks if getattr(b, 'be_opted', False)}
-        for face in scene['faces']:
-            color = chosen if face['loc'] in opted else base
-            shade = face['shade']
-            fill = (int(color[0] * shade), int(color[1] * shade),
-                    int(color[2] * shade))
-            pts = [(int(round(p[0])), int(round(p[1]))) for p in face['pts']]
-            pygame.draw.polygon(self.screen, fill, pts)
-            pygame.draw.polygon(self.screen, border, pts, 1)
 
-        # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
-        # 必然同源，不存在「看得见点不中」的漂移）。
-        self._cubic_scene = scene
-
-        # 切面预览（§54 第 3 步验收第 1 条；2026-11-17 用户口径「要有平面的
-        # 感觉」）：半透明填充 + 高亮描边。只画轮廓像个框，看不出「刀」切在
-        # 哪一层；填一层半透明的面，才读得出它贯穿整盘、把棋分成了两半。
+        # 切面预览：和二维同一套视觉语言——**红色**（colors['line']），但三维里
+        # 它是贯穿整盘的一张面，不是一条线（用户 2026-11-17 指认：这个改成红色）。
+        # ⚠️ 必须进画家序：不然预览面永远压在最上面，和滑块的遮挡关系不对
+        # （用户原话「切面看起来和滑块不在一个图层」）。做法是把面按格切成
+        # 小四边形，各自带深度塞进同一张绘制序里。
         seam = getattr(self, 'selected_gap', None)
+        seam_cells = []
         if seam and seam[0] in ('r', 'c', 'd'):
             from engine import cubic_pick
             poly = cubic_pick.seam_plane_polygon(seam[0], seam[1], blocks,
                                                  pad=self.CUBIC_SEAM_PAD)
             if poly:
-                pts = [(int(round(p[0])), int(round(p[1]))) for p in
-                       (cubic_view.project_point(w, camera, scene['scale'],
-                                                 scene['origin'])[:2]
-                        for w in poly)]
-                # 半透明面：单独一张 SRCALPHA 表面，blit 上去不影响底色
-                if len(pts) >= 3:
+                n = 3
+                for i in range(n):
+                    for j in range(n):
+                        u0, u1 = i / float(n), (i + 1) / float(n)
+                        v0, v1 = j / float(n), (j + 1) / float(n)
+                        quad = []
+                        for (u, v) in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
+                            quad.append(tuple(
+                                (1 - u) * (1 - v) * poly[0][k]
+                                + u * (1 - v) * poly[1][k]
+                                + u * v * poly[2][k]
+                                + (1 - u) * v * poly[3][k]
+                                for k in range(3)))
+                        pts, depth = [], 0.0
+                        for w in quad:
+                            sx, sy, sz = cubic_view.project_point(
+                                w, camera, scene['scale'], scene['origin'])
+                            pts.append((sx, sy))
+                            depth += sz
+                        seam_cells.append({'pts': pts, 'depth': depth / 4.0})
+
+        items = [(f['depth'], 0, f) for f in scene['faces']]
+        items += [(c['depth'], 1, c) for c in seam_cells]
+        items.sort(key=lambda t: t[0])
+        lens = None
+        seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
+        for _depth, kind, obj in items:
+            if kind == 0:
+                face = obj
+                color = chosen if face['loc'] in opted else base
+                shade = face['shade']
+                fill = (int(color[0] * shade), int(color[1] * shade),
+                        int(color[2] * shade))
+                pts = [(int(round(p[0])), int(round(p[1]))) for p in face['pts']]
+                pygame.draw.polygon(self.screen, fill, pts)
+                pygame.draw.polygon(self.screen, border, pts, 1)
+            else:
+                pts = [(int(round(p[0])), int(round(p[1]))) for p in obj['pts']]
+                if lens is None:
                     lens = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-                    pygame.draw.polygon(lens, self.CUBIC_SEAM_FILL, pts)
-                    self.screen.blit(lens, (0, 0))
-                pygame.draw.polygon(self.screen, (245, 245, 245), pts, 2)
+                lens.fill((0, 0, 0, 0))
+                pygame.draw.polygon(lens, seam_rgb + (self.CUBIC_SEAM_ALPHA,), pts)
+                self.screen.blit(lens, (0, 0))
+                pygame.draw.polygon(self.screen, seam_rgb, pts, 1)
+
+        # 切面的轮廓另画一遍、压在块上（与二维同口径：二维的选中缝是压在块
+        # 上的一条红线，玩家总能看到「刀在哪」）。方案 §2.3 本来也写了要画
+        # 「整个切面的轮廓」。只靠半透明面的话，切面若整片埋在块里面就什么都
+        # 看不见（前面视图下的 r 切面就是这样）。
+        if seam and seam[0] in ('r', 'c', 'd'):
+            from engine import cubic_pick as _cp
+            poly = _cp.seam_plane_polygon(seam[0], seam[1], blocks,
+                                          pad=self.CUBIC_SEAM_PAD)
+            if poly:
+                ring = [(int(round(p[0])), int(round(p[1]))) for p in
+                        (cubic_view.project_point(w, camera, scene['scale'],
+                                                  scene['origin'])[:2]
+                         for w in poly)]
+                pygame.draw.polygon(self.screen, seam_rgb, ring, 2)
+
+        # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
+        # 必然同源，不存在「看得见点不中」的漂移）。
+        self._cubic_scene = scene
 
         # 左上角两行：三維尺度 / 等级 / 视角 / 拆分距离（第 1 行），操作提示（第 2 行）。
         # 「拆分」= 相邻两块表面之间空出的距离（0 = 未拆分，块贴死成一整块）。

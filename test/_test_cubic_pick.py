@@ -96,7 +96,7 @@ check(not cp.face_is_internal({'loc': (1, 2, 1), 'axis': 0, 'sign': 1}, locs),
 
 seams = {}
 for face in faces:
-    seam = cp.seam_of_face(face, game.is_valid_gap)
+    seam = cp.seam_of_face(face, game.is_valid_gap, locs)
     check(seam is not None and face['loc'] not in (None,),
           '每一片可见面都能给出有效切面' if face is faces[0] else
           f'面 {face["loc"]} 轴{face["axis"]}{face["sign"]:+d} → 切面 {seam}',
@@ -105,29 +105,34 @@ for face in faces:
         seams[seam] = seams.get(seam, 0) + 1
         check(game.is_valid_gap(seam[0], seam[1]),
               f'切面 {seam} 引擎判为有效', extra=str(seam))
+        check(cp._is_internal_cut(seam[0], seam[1], locs),
+              f'切面 {seam} 是块与块之间的内部切面（不是包围盒平面）', extra=str(seam))
 check(set(seams) <= {('r', 0), ('r', 1), ('c', 0), ('c', 1), ('d', 0), ('d', 1)},
       f'所有切面都落在 3×3×3 的六条有效缝上（实得 {sorted(seams)}）')
 
 outer = {'loc': (0, 0, 0), 'axis': 0, 'sign': -1}     # c=0 外侧，line −1 无效
-seam_out = cp.seam_of_face(outer, game.is_valid_gap)
+seam_out = cp.seam_of_face(outer, game.is_valid_gap, locs)
 check(seam_out == ('c', 0), f'外侧面的退回相邻线（实得 {seam_out}）')
 check(cp.seam_of_face({'loc': (0, 0, 0), 'axis': 2, 'sign': 1},
-                      lambda f, l: False) is None,
+                      lambda f, l: False, locs) is None,
       '没有任何有效线时返回 None（不硬选）')
 
-print('B2. 缝里的墙（内部面）直接给缝；外表面不给（2026-11-17 新判定基准）')
-check(cp.seam_of_internal_face({'loc': (0, 0, 0), 'axis': 0, 'sign': 1},
-                               game.is_valid_gap) == ('c', 0),
+print('B2. 任意外表面都能点：推出来的必须是内部切面，包围盒平面一律不选')
+check(cp.seam_of_face({'loc': (0, 0, 0), 'axis': 0, 'sign': 1},
+                      game.is_valid_gap, locs) == ('c', 0),
       'c=0 的 +X 内壁 → 缝 c·0')
-check(cp.seam_of_internal_face({'loc': (0, 1, 0), 'axis': 0, 'sign': -1},
-                               game.is_valid_gap) == ('c', 0),
+check(cp.seam_of_face({'loc': (0, 1, 0), 'axis': 0, 'sign': -1},
+                      game.is_valid_gap, locs) == ('c', 0),
       'c=1 的 −X 内壁 → 同一条缝 c·0（两面墙指同一条缝）')
-check(cp.seam_of_internal_face({'loc': (0, 2, 0), 'axis': 0, 'sign': 1},
-                               game.is_valid_gap, locs) is None,
-      '最外层的 +X 面（包围盒面）不算缝')
-check(cp.seam_of_internal_face({'loc': (0, 0, 0), 'axis': 2, 'sign': -1},
-                               game.is_valid_gap) is None,
-      'r=0 的 −Z 面 → line −1，无有效缝')
+check(cp.seam_of_face({'loc': (0, 2, 0), 'axis': 0, 'sign': 1},
+                      game.is_valid_gap, locs) == ('c', 1),
+      '最外层 +X 面（包围盒面）→ 退回内部切面 c·1，不是包围盒那层')
+check(cp.seam_of_face({'loc': (2, 2, 2), 'axis': 2, 'sign': 1},
+                      game.is_valid_gap, locs) == ('r', 1),
+      '最前面块的前脸 → 与后面那层之间的切面 r·1（画面里和屏幕平行）')
+check(cp.seam_of_face({'loc': (1, 1, 1), 'axis': 0, 'sign': 1},
+                      lambda f, l: False, locs) is None,
+      '引擎说没有有效线时返回 None（不硬选）')
 
 print('C. 切面预览多边形')
 for family, line in (('r', 1), ('c', 0), ('d', 1)):
@@ -198,13 +203,14 @@ def _seam_point(scene, face=None, samples=17):
     return None, None, None
 
 
-# 面心不再算「选缝」（2026-11-17 用户要求），要点在缝里的墙；
-# 外表面留给双击选块。
+# 2026-11-17 用户改口径：可点范围从「缝里的墙」扩到**块的任意外表面**，
+# 但推出来的必须是内部切面（包围盒那层平面不许选）。
 target = gui._cubic_scene['faces'][-1]
 pt, pt_seam, target = _seam_point(gui._cubic_scene)
 check(pt is not None, '场景里能找到一个「缝里的墙」的屏幕点')
 center_pt = (int(round(sum(p[0] for p in target['pts']) / 4.0)),
              int(round(sum(p[1] for p in target['pts']) / 4.0)))
+locs_set = {tuple(int(v) for v in b.location[:3]) for b in gui.game.blocks}
 
 
 def click(pos):
@@ -214,12 +220,14 @@ def click(pos):
 
 
 click(center_pt)
-check(gui.selected_gap is None, '点面心不改切面（2026-11-17 修：缝选中范围太大）')
+check(gui.selected_gap is not None,
+      f'点块的外表面也选缝（新口径，{gui.selected_gap}）')
+check(cp._is_internal_cut(gui.selected_gap[0], gui.selected_gap[1], locs_set),
+      '推出来的切面是内部切面，不是包围盒平面')
 
 click(pt)
-check(gui.selected_gap is not None, f'点缝线上 → 出现切面预览（{gui.selected_gap}）')
 check(gui.selected_gap == pt_seam,
-      f'选中的就是点到的**那条**缝（期望 {pt_seam}，实得 {gui.selected_gap}）')
+      f'点缝里的墙 → 选到那条缝（期望 {pt_seam}，实得 {gui.selected_gap}）')
 check(gui.selected_gap and gui.game.is_valid_gap(*gui.selected_gap),
       '预览的切面是引擎判有效的缝')
 check(gui.step_count == step0 and len(getattr(gui.game_history, 'undo_stack', []) or []) == hist0,
