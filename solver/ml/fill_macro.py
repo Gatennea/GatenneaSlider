@@ -495,6 +495,92 @@ def _shaping_progress(coords, m, n, step, rng, ov0, max_shaping=2,
     return None
 
 
+def _split_stuck_outside(coords, m, n, step, max_depth=5, max_nodes=6000,
+                         cancel_check=None):
+    """粘连双凸起拆分整形（2026-11-17 用户存档 2-6-6-20261117 stuck@76）。
+
+    卡点形态：目标窗口外**恰好两个凸起且曼哈顿相邻**（粘连）。粘着的那个
+    挡住每个 couple 的 setup/推进——76 局面里贴边 setup、粘上接走
+    （band_shift 最多枚举 1123 组）四条路全线失败，贪心与 ≤2 步整形预演
+    之后停机（fill_fail 15.6s）。用户实测三步「借位-挪块-归位」把两凸起
+    拆开（窗内聚拢度 34→26→34 **先降后升**）后，两轮 5+12 步直接解。
+
+    现有整形层搜不到这三步：`_shaping_progress` 只展开聚拢度不降的移动
+    （_nondrop_moves），而借位路径必须先降后升。本原语的 BFS 终点判据 =
+    **两标记块曼哈顿距 ≥2 且聚拢度复原（≥起始 ov0）**（按位置跟踪两块
+    身份），路径**中间**允许聚拢度临时降到 `ov0-(m+n)`（一整带让位幅度，
+    覆盖 34→26 这类借位），深度/节点双上限、确定性展开，与
+    _shaping_progress 同属预演而非求解搜索。终点要求复原是首版教训：
+    只拆开不归位的激进挪动会挪乱窗口、另造新洞（outside 随之 >2，二次
+    触发也被边界挡住），实测只推进 4 步 partial。
+
+    触发边界刻意收窄到「outside 恰 2 块且相邻」：凸起多于 2 属其它形态
+    （片状外围拆对无意义），不在本原语职责，避免停机局白烧预算。
+    挂载点 = solve_multi_void 的 couple+整形预演全败、停机之前；不满足
+    触发条件秒返 None，既有成功局完全不经过本函数，行为零变化。
+
+    返回动作列表（5 元组）或 None（确定性、有节点上限）。
+    """
+    from collections import deque
+    from solver.actions import enumerate_valid_actions
+
+    root = frozenset(coords)
+    _reg, ov0, _holes, out = window_of(root, m, n, step)
+    out = list(out)
+    if len(out) != 2:
+        return None
+    p0, q0 = sorted(out)
+    if abs(p0[0] - q0[0]) + abs(p0[1] - q0[1]) != 1:
+        return None                       # 不粘连不触发
+    ov_floor = max(0, ov0 - (m + n))      # 借位最多让一整带
+
+    frontier = deque([(root, p0, q0, [])])
+    seen = {(root, p0, q0)}
+    nodes = 0
+    for _depth in range(max_depth):
+        _chk(cancel_check)
+        nxt = deque()
+        while frontier:
+            s, mp, mq, prefix = frontier.popleft()
+            _chk(cancel_check)
+            g0 = build_game(s, m, n)
+            for act in enumerate_valid_actions(g0, step):
+                g2 = build_game(s, m, n)
+                bp = next((b for b in g2.blocks
+                           if tuple(b.location) == mp), None)
+                bq = next((b for b in g2.blocks
+                           if tuple(b.location) == mq), None)
+                if bp is None or bq is None:
+                    continue
+                ok, act5 = _capture_apply(g2, act, step)
+                if not ok:
+                    continue
+                s2 = frozenset(gcoords(g2))
+                ovs = window_of(s2, m, n, step)[1]
+                if ovs < ov_floor:
+                    continue              # 借位不许打散超过一整带
+                np_ = tuple(bp.location)
+                nq_ = tuple(bq.location)
+                # 终点判据 = 拆开**且聚拢复原**（≥起始值）：用户三步的本质
+                # 是「借位-挪块-归位」（34→26→34），只拆开不归位的激进挪动
+                # 会把窗口挪乱、制造更多洞（首版实测只推进 4 步 partial）。
+                if (abs(np_[0] - nq_[0]) + abs(np_[1] - nq_[1]) >= 2
+                        and ovs >= ov0):
+                    return prefix + [act5]   # 拆开且盘面复原
+                key = (s2, np_, nq_)
+                if key in seen:
+                    continue
+                seen.add(key)
+                nodes += 1
+                if nodes > max_nodes:
+                    return None
+                nxt.append((s2, np_, nq_, prefix + [act5]))
+        frontier = nxt
+        if not frontier:
+            return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 并行 couple 探测（2026-10-01 用户「并行轮询」思想落地）
 # ---------------------------------------------------------------------------
@@ -865,6 +951,28 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                         pass
                 if verbose:
                     print('   round%d 中性整形预演(%d步) → 收下'
+                          % (rounds, len(plan)))
+        if not progressed:
+            # 粘连双凸起拆分整形（2026-11-17 stuck@76，见 _split_stuck_outside
+            # docstring）：couple+整形预演全败的最后机会——outside 恰两凸起
+            # 粘连时借位拆开（允许聚拢度先降后升），拆开后回主循环重扫。
+            plan = _split_stuck_outside(cur, m, n, step,
+                                        cancel_check=cancel_check)
+            if plan is not None:
+                if not _replay_apply(g, plan, m, n, step):
+                    return _stop({'reason': '多洞停机：粘连凸起拆分整形推进活盘失败',
+                                  'rounds': rounds, 'steps': len(total)})
+                total.extend(plan)
+                progressed = True
+                if segment_cb is not None:
+                    try:
+                        segment_cb('round%d 粘连凸起拆分整形' % rounds,
+                                   list(plan))
+                        streamed[0] += len(plan)
+                    except Exception:
+                        pass   # 流式回调失败不拖垮求解
+                if verbose:
+                    print('   round%d 粘连凸起拆分整形(%d步) → 收下'
                           % (rounds, len(plan)))
         if not progressed:
             # 完美洞诊断（用户框架）：8 邻有缺口=不完美洞，标准切割必败
