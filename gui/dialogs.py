@@ -613,31 +613,64 @@ class DialogsMixin:
                              (cx, search_rect.y + 6),
                              (cx, search_rect.y + search_h - 6), 1)
 
-        help_lines = self._load_help_lines()
-
-        # 内容绘制区域（检索框下方到关闭提示上方）
+        # ---- 内容离屏缓存（2026-11-17 修「帮助滚动卡顿（之前也是）」）----
+        # 旧实现每帧对**全文**做两遍 _wrap_text 逐词测宽（一遍算总高、一遍
+        # 绘制，84 行实测 269ms/遍），滚动帧均 660ms ≈ 1.5fps → 肉眼卡顿。
+        # 改为仅在键变时把全文一次性 wrap+渲染成一张离屏 Surface，滚动每帧
+        # 只 blit 可见带（亚毫秒）。缓存键含检索词/形态/模式/对话框几何：
+        # 任一变化整张重渲（一次性 ~50ms），其后恒定命中；检索态的点击
+        # 矩形也在重渲那一次登记（几何没变就不需要重算）。
         content_top = dialog_y + 98
         content_bottom = dialog_y + dialog_height - 40
         content_height = content_bottom - content_top
         text_max_width = dialog_width - 65
-
-        # 有检索词 → 渲染检索结果；无 → 渲染操作说明全文（与旧行为一致）。
-        # 检索态滚动归零：结果条数与文档长度不同，沿用旧偏移会看到空白。
         query = str(getattr(self, 'help_query', '') or '').strip()
-        if query:
-            content_lines = self._help_search_result_lines(
-                query, dialog_x, content_top, dialog_width, text_max_width)
-        else:
-            content_lines = help_lines
 
-        # 计算内容总高度（考虑自动换行）
-        total_content_height = 0
-        for line, is_header in content_lines:
-            if not line:
-                total_content_height += 8
+        cache_key = (query, self._feature_form(),
+                     getattr(self, 'game_mode', 'practice'),
+                     dialog_x, dialog_width, content_top, text_max_width)
+        cached = getattr(self, '_help_content_cache', None)
+        if cached is None or cached['key'] != cache_key:
+            help_lines = self._load_help_lines()
+            # 有检索词 → 渲染检索结果；无 → 渲染操作说明全文（与旧行为一致）。
+            # 检索态滚动归零由事件层负责（结果条数与文档长度不同）。
+            if query:
+                content_lines = self._help_search_result_lines(
+                    query, dialog_x, content_top, dialog_width, text_max_width)
             else:
-                wrapped = self._wrap_text(line, self.dialog_font, text_max_width)
-                total_content_height += 26 * len(wrapped)
+                content_lines = help_lines
+            # 一次性 wrap 全文、算总高、渲染整张内容面
+            laid = []           # None = 空行；(color, [折行…]) = 文本行
+            total_content_height = 0
+            for line, is_header in content_lines:
+                if not line:
+                    laid.append(None)
+                    total_content_height += 8
+                else:
+                    color = (100, 200, 255) if is_header \
+                        else self.colors['dialog_text']
+                    wrapped = self._wrap_text(line, self.dialog_font,
+                                              text_max_width)
+                    laid.append((color, wrapped))
+                    total_content_height += 26 * len(wrapped)
+            content_surf = pygame.Surface(
+                (dialog_width - 30, max(1, total_content_height)),
+                pygame.SRCALPHA)
+            y = 0
+            for item in laid:
+                if item is None:
+                    y += 8
+                    continue
+                color, wrapped = item
+                for wline in wrapped:
+                    content_surf.blit(
+                        self.dialog_font.render(wline, True, color), (15, y))
+                    y += 26
+            cached = {'key': cache_key, 'surf': content_surf,
+                      'height': total_content_height}
+            self._help_content_cache = cached
+        else:
+            total_content_height = cached['height']
 
         # 滚动条（与设置框共用 Scrollbar）：每帧依内容高度重算，
         # 检索态/全文态切换时几何仍正确。
@@ -646,25 +679,16 @@ class DialogsMixin:
                   total_content_height, content_height)
         scroll_offset = sb.scroll
 
-        # 绘制内容（带裁剪）
+        # 绘制内容（带裁剪）：只 blit 可见带，不再逐行 wrap/render
         clip_rect = pygame.Rect(dialog_x + 10, content_top, dialog_width - 30, content_height)
         self.screen.set_clip(clip_rect)
-
-        y_offset = content_top - scroll_offset
-        for line, is_header in content_lines:
-            if not line:
-                y_offset += 8
-                continue
-            # 自动换行
-            color = (100, 200, 255) if is_header else self.colors['dialog_text']
-            wrapped_lines = self._wrap_text(line, self.dialog_font, text_max_width)
-            for wline in wrapped_lines:
-                # 只绘制可见区域的内容
-                if y_offset + 26 > content_top - 10 and y_offset < content_bottom + 10:
-                    text_surface = self.dialog_font.render(wline, True, color)
-                    self.screen.blit(text_surface, (dialog_x + 25, y_offset))
-                y_offset += 26
-
+        src_top = max(0, min(int(scroll_offset),
+                             max(0, total_content_height - 1)))
+        src_h = min(total_content_height - src_top, content_height + 10)
+        if src_h > 0:
+            self.screen.blit(cached['surf'],
+                             (dialog_x + 10, content_top - src_top),
+                             (0, src_top, dialog_width - 30, int(src_h)))
         self.screen.set_clip(None)
 
         # 绘制滚动条（仅当内容超出可见区域）
