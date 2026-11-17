@@ -102,6 +102,9 @@
     "KB|docs/math/论文中文草稿_2026-10-16.md|experiments/math_repro/oeis_dist.py",
     "KB|docs/math/论文中文草稿_2026-10-16.md|experiments/math_repro/sweep_results.csv",
     "KB|docs/spec/GUI解释器化接入计划_2026-10-23.md|config/engine.json",
+    "KB|docs/spec/三维扩展方案_正方体单元_2026-11-17.md|engine/cubic_camera.py",
+    "KB|docs/spec/三维扩展方案_正方体单元_2026-11-17.md|engine/cubic_view.py",
+    "KB|docs/spec/三维扩展方案_正方体单元_2026-11-17.md|gui/cubic_pick.py",
     "KB|docs/spec/設計訪談總結.md|宣傳片劇本.md",
     "KB|experiments/math_repro/full_A/README.md|../sweep_results.md",
     "KB|experiments/math_repro/full_A/README.md|read_full_A.py"
