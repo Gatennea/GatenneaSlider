@@ -382,6 +382,7 @@ class SessionMixin:
     def _request_shuffle_confirm(self):
         """弹出「打乱前确认」：明确会清空历史，提供 确定打乱 / 存档 / 取消。"""
         self.show_confirm_dialog = True
+        self._dialog_fade_reset('confirm')
         self.confirm_title = '打乱前确认'
         self.confirm_lines = [
             '打乱会清空当前的历史记录，之后将无法撤销回打乱前的局面。',
@@ -415,6 +416,7 @@ class SessionMixin:
     def _request_reset_confirm(self):
         """弹出「重置前确认」：明确会丢掉当前进度并清空历史，提供 确定重置 / 存档 / 取消。"""
         self.show_confirm_dialog = True
+        self._dialog_fade_reset('confirm')
         self.confirm_title = '重置前确认'
         self.confirm_lines = [
             '重置会丢掉当前的进度并清空历史，之后将无法撤销回当前的局面。',

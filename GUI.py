@@ -2491,7 +2491,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.draw_update_banner()
 
                 # 模态对话框（后画，真正最上层；盖住上述所有浮层）
-                # 设置 / 帮助 / 自定义谜题走 160ms 淡入（S4-3）；其余弹窗不变。
+                # 除文件浏览器外，全部走 160ms 淡入（S4-3）——文件浏览器自持
+                # screen 引用，离屏淡入对它不生效，见 gui/dialogs.py 的说明。
                 if self.show_help:
                     self._draw_dialog_faded('help', self.draw_help_dialog)
                 if self.show_custom_dialog:
@@ -2501,15 +2502,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 if self.show_settings_dialog:
                     self._draw_dialog_faded('settings', self.draw_settings_dialog)
                 if getattr(self, 'show_macro_manager_dialog', False):
-                    self.draw_macro_manager_dialog()
+                    self._draw_dialog_faded('macro_manager', self.draw_macro_manager_dialog)
                 if getattr(self, 'show_macro_name_dialog', False):
-                    self.draw_macro_name_dialog()
+                    self._draw_dialog_faded('macro_name', self.draw_macro_name_dialog)
                 # 确认弹窗（删除预设）：盖在这些对话框之上——它是模态中的模态
                 if getattr(self, 'show_confirm_dialog', False):
-                    self.draw_confirm_dialog()
+                    self._draw_dialog_faded('confirm', self.draw_confirm_dialog)
                 # 命令面板：画在所有模态之上（事件分发里同样最先消费，两者必须一致）
                 if getattr(self, 'palette_active', False):
-                    self.draw_command_palette()
+                    self._draw_dialog_faded('palette', self.draw_command_palette)
                 self.draw_update_progress()
 
                 '''# 虚拟键盘（浮动面板）

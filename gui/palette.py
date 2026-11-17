@@ -67,6 +67,7 @@ class PaletteMixin:
         """打开面板：清空上一轮查询与选择，避免上次的残留串味。"""
         self.close_all_menus()
         self.palette_active = True
+        self._dialog_fade_reset('palette')   # S4-3：搜索面板也走淡入
         self.palette_input.set_text('')
         self.palette_input.active = True
         self.palette_sel = 0

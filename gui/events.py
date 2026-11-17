@@ -4327,6 +4327,7 @@ class EventsMixin:
         if index == 0:
             # 管理宏 — 打开管理对话框
             self.show_macro_manager_dialog = True
+            self._dialog_fade_reset('macro_manager')
         elif index == 1:
             # 录制 / 停止录制
             if self.macro_recording:
@@ -4377,6 +4378,7 @@ class EventsMixin:
             return
         # 弹出宏命名对话框
         self.show_macro_name_dialog = True
+        self._dialog_fade_reset('macro_name')
         self.macro_name_text_input = TextInput(f'宏_{len(self.macro_manager.list_names()) + 1}')
         self.macro_name_active = True
 
@@ -4940,6 +4942,7 @@ class EventsMixin:
             self.macro_renaming_index = macro_names[index]
             self.macro_name_text_input = TextInput(macro_names[index])
             self.show_macro_name_dialog = True
+            self._dialog_fade_reset('macro_name')
             self.macro_name_active = True
 
     def _delete_macro(self, index: int):
@@ -5082,6 +5085,7 @@ class EventsMixin:
             return False
         self.close_all_menus()
         self.show_confirm_dialog = True
+        self._dialog_fade_reset('confirm')
         self.confirm_title = '删除预设'
         self.confirm_lines = menu_delete.describe(tgt)
         self.confirm_ok_text = '删除'
