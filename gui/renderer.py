@@ -990,13 +990,20 @@ class RendererMixin:
             pygame.draw.polygon(self.screen, fill, pts)
             pygame.draw.polygon(self.screen, border, pts, 1)
 
-        # 左上角一行状态：三維尺度 / 等级 / 当前视角口径。
+        # 左上角一行状态：三維尺度 / 等级 / **是否已拆分** / 视角口径。
+        # 「拆分」= 相邻块之间让出了空位。未拆分时所有块贴死成一个整块长方体，
+        # 投影上只有一层外轮廓——前后遮挡根本看不出来（2026-11-17 用户指出），
+        # 所以这行必须如实报，别让人以为渲染错了。
         # 放**顶部**：底部整条被 draw_status_bar 覆盖（画在下面等于没画）。
         m = getattr(game, 'm', 0) or 0
         n = getattr(game, 'n', 0) or 0
         d = getattr(game, 'depth', 0) or 0
+        try:
+            split_state = '已拆分' if not game.is_solved() else '未拆分（整块，看不出前后）'
+        except Exception:
+            split_state = ''
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
-                f'　斜视预览（六视角与旋转在第 2 步）')
+                f'　{split_state}　斜视（六视角与旋转在第 2 步）')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))

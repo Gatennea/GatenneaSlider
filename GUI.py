@@ -1423,7 +1423,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         self.macro_notify_msg = (
             f"切换谜题：三维 {m}×{n}×{d} 等级{step}"
-            "（视图尚未接入：投影渲染在第 1 步）")
+            "（当前是整块未拆分；按 Alt+S 打乱才看得出前后遮挡）")
         self.macro_notify_timer = 180
         return True
 
