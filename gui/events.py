@@ -731,8 +731,12 @@ class EventsMixin:
                                 self.macro_menu_hovered = i
                                 break
 
-                    # 滑动条拖拽（缩放/速度）
-                    if getattr(self, 'zoom_slider_dragging', False):
+                    # 滑动条拖拽（缩放/速度/三维选项）
+                    if getattr(self, '_cubic_gap_dragging', False):
+                        self._update_cubic_opt_from_mouse('gap', event.pos[0])
+                    elif getattr(self, '_cubic_alpha_dragging', False):
+                        self._update_cubic_opt_from_mouse('seam_alpha', event.pos[0])
+                    elif getattr(self, 'zoom_slider_dragging', False):
                         self._update_zoom_slider_from_mouse(my)
                     elif self.slider_dragging:
                         self._update_slider_from_mouse(my)
@@ -1136,6 +1140,14 @@ class EventsMixin:
                                     break
                             if sw_clicked:
                                 self._handle_right_panel_switch(sw_clicked)
+                            elif (getattr(self, 'cubic_gap_slider_rect', None)
+                                  and self.cubic_gap_slider_rect.collidepoint(x, y)):
+                                self._cubic_gap_dragging = True
+                                self._update_cubic_opt_from_mouse('gap', x)
+                            elif (getattr(self, 'cubic_alpha_slider_rect', None)
+                                  and self.cubic_alpha_slider_rect.collidepoint(x, y)):
+                                self._cubic_alpha_dragging = True
+                                self._update_cubic_opt_from_mouse('seam_alpha', x)
                             elif getattr(self, 'zoom_slider_rect', None) and self.zoom_slider_rect.collidepoint(x, y):
                                 self.zoom_slider_dragging = True
                                 self._update_zoom_slider_from_mouse(y)
@@ -1403,6 +1415,9 @@ class EventsMixin:
                                 self._commit_drag_move()
                         self.is_dragging = False
                         self.slider_dragging = False
+                        # 三维选项滑条（拆分 / 切面透明）：松手结束拖拽
+                        self._cubic_gap_dragging = False
+                        self._cubic_alpha_dragging = False
                         self.zoom_slider_dragging = False
                         if getattr(self, 'cubic_dragging', False):
                             # 三维：拖过 = 旋转收尾；没拖过 = 一次点击（选缝/选块）
@@ -1684,7 +1699,9 @@ class EventsMixin:
         right, up, view = base.right_axis(), base.up_axis(), base.view_axis()
         axis = tuple(axis_cam[0] * right[i] + axis_cam[1] * up[i]
                      + axis_cam[2] * view[i] for i in range(3))
-        self._cubic_camera_apply(base.spin(axis, -ang * self.CUBIC_DRAG_SENSITIVITY))
+        sens = float(getattr(self, 'cubic_rot_sensitivity',
+                             self.CUBIC_DRAG_SENSITIVITY))
+        self._cubic_camera_apply(base.spin(axis, -ang * sens))
 
     # ------------------------------------------------------------------
     # 三维选中（§54 第 3 步）：单击出白线切面、双击选中连通组
@@ -1741,7 +1758,8 @@ class EventsMixin:
         last_t = getattr(self, '_cubic_last_click_t', None)
         last_p = getattr(self, '_cubic_last_click_p', None)
         is_double = (last_t is not None and last_p is not None
-                     and now - last_t <= self.CUBIC_DOUBLE_CLICK_MS
+                     and now - last_t <= int(getattr(self, 'cubic_dblclick_ms',
+                                                     self.CUBIC_DOUBLE_CLICK_MS))
                      and abs(x - last_p[0]) <= self.CUBIC_DOUBLE_CLICK_PX
                      and abs(y - last_p[1]) <= self.CUBIC_DOUBLE_CLICK_PX)
 
@@ -1888,6 +1906,30 @@ class EventsMixin:
         if vec is None:
             return (0.0, 0.0)
         return self._cubic_screen_dir(self._cubic_lattice_to_world(vec))
+
+    def _update_cubic_opt_from_mouse(self, key, mx):
+        """右侧栏三维滑条：按鼠标横坐标把值写到表里声明的属性上（越界夹紧）。
+
+        写值后立刻作废两处缓存：箭头「可推性」签名里带 gap，切面格也按 gap
+        切——拆一拆就得重算，否则滑条动、画面却还是旧判定。
+        """
+        from gui import cubic_settings
+        spec = cubic_settings.by_key(key)
+        rect = (getattr(self, 'cubic_gap_slider_rect', None) if key == 'gap'
+                else getattr(self, 'cubic_alpha_slider_rect', None))
+        if rect is None or rect.width <= 0:
+            return
+        norm = (mx - rect.left) / float(rect.width)
+        norm = max(0.0, min(1.0, norm))
+        val = spec['min'] + norm * (spec['max'] - spec['min'])
+        val = cubic_settings.clamp_value(key, val)
+        if getattr(self, spec['attr'], None) == val:
+            return
+        setattr(self, spec['attr'], val)
+        self._cubic_arrow_sig = None      # gap 变了：可推性缓存作废
+        self._cubic_sil_cache = None      # 贴纸判定用的轮廓缓存也作废
+        # 只改显示参数，不是棋盘变更：不动 _board_version（否则标题栏平白多个
+        # 星号）；配置在退出/定期 save_config 时自然落盘。
 
     def _cubic_pan_by(self, letter, notify=True):
         """按世界方向平移盘面一格（屏幕偏移，不碰逻辑坐标）。"""

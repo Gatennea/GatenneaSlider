@@ -18,6 +18,7 @@ from puzzle_types import create_puzzle
 from gui.compressed_save import (is_compressed, load_compressed_into_gui,
                                  compress_from_game, convert_save_file)
 from history import (validate_snapshot, groups_to_json, groups_from_json)
+from gui import cubic_settings
 
 
 def _compute_checksum(data: dict) -> str:
@@ -248,12 +249,16 @@ class FileOpsMixin:
             'camera_y': self.camera_y,
             # 三维相机组（§54 第 2 步）：姿态 + 缩放 + 拆分单独一组，
             # 与二维 camera_x/y、zoom 互不覆盖（按形态分组，方案 §2.2 口径）
-            'cubic_camera': {
-                'quat': [round(float(v), 6) for v in _quat],
-                'zoom': round(float(getattr(self, 'cubic_zoom', 1.0)), 3),
-                'gap': round(float(getattr(self, 'cubic_gap', 0.0)), 3),
-                'view': getattr(self, 'cubic_view_index', None),
-            },
+            'cubic_camera': dict(
+                {
+                    'quat': [round(float(v), 6) for v in _quat],
+                    'zoom': round(float(getattr(self, 'cubic_zoom', 1.0)), 3),
+                    'view': getattr(self, 'cubic_view_index', None),
+                },
+                # 拆分 / 切面透明度 / 双击时间窗 / 旋转灵敏度：全部由声明式表导出，
+                # 加选项不用再回来改这里（方案 §2.4「登记机制」）。
+                **cubic_settings.serialize(self),
+            ),
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
@@ -691,6 +696,15 @@ class FileOpsMixin:
             self.cubic_zoom = max(lo, min(hi, zoom))
         gap = prefs.get('gap')
         self.cubic_gap = gap if (gap is not None and 1e-6 < gap < 1.0) else DEFAULT_GAP
+        # 其余三维选项走声明式表（越界夹紧、缺项保默认）
+        from gui import cubic_settings
+        for _meta in cubic_settings.CUBIC_SETTINGS:
+            if _meta['key'] == 'gap':
+                continue
+            if _meta['key'] in prefs:
+                setattr(self, _meta['attr'],
+                        cubic_settings.clamp_value(_meta['key'],
+                                                   prefs[_meta['key']]))
         self.cubic_pan = [0.0, 0.0]
         self.cubic_dragging = False
         self.cubic_drag_moved = False

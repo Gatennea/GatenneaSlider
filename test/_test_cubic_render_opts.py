@@ -1,0 +1,242 @@
+# -*- coding: utf-8 -*-
+"""回归：方案 §2.4「三维特有的渲染选项 GUI」。
+
+钉住四件事：
+  A. 声明式表：默认值 / 越界夹紧 / 坏类型回默认 / 未知键报错（表是唯一真源）。
+  B. 右侧栏：三维态多出「拆分」「切面透明」两条横向滑条、只留 5 个开关
+     （连锁 / 复原标记这两个三维用不上的让位）；二维态原样 7 个、无三维滑条。
+  C. 拖动：按横坐标写值、夹在表范围内、gap 改了要作废箭头/贴纸缓存并标脏。
+  D. 落盘/读盘：`_build_save_data()['cubic_camera']` 带全部表内键且是夹紧后的值；
+     `_cubic_load_defaults()` 能读回；越界/垃圾值不会写进渲染属性。
+  E. 真的生效：切面 alpha 越小红色越淡（像素统计），旋转灵敏度改的是转角倍率。
+
+跑法：D:/python/python.exe test/_test_cubic_render_opts.py
+"""
+import os
+import sys
+import tempfile
+
+os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
+
+_PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJ not in sys.path:
+    sys.path.insert(0, _PROJ)
+os.chdir(_PROJ)
+
+import pygame  # noqa: E402
+
+from GUI import SliderGUI  # noqa: E402
+from gui import cubic_settings  # noqa: E402
+
+_ok = [0]
+_fail = []
+
+
+def check(cond, msg, extra=''):
+    if cond:
+        _ok[0] += 1
+        print(f'  ok: {msg}')
+    else:
+        _fail.append(msg)
+        print(f'  FAIL: {msg} {extra}')
+    return bool(cond)
+
+
+print('=' * 60)
+print('A. 声明式表：默认 / 夹紧 / 坏类型 / 未知键')
+
+
+class _Holder:
+    pass
+
+
+h = _Holder()
+cubic_settings.reset(h)
+d = cubic_settings.defaults()
+check(set(d) == {'gap', 'seam_alpha', 'dblclick_ms', 'rot_sensitivity'},
+      '表里有四条（gap/seam_alpha/dblclick_ms/rot_sensitivity）', sorted(d))
+check(h.cubic_gap == 0.12 and h.cubic_seam_alpha == 110,
+      'reset 把默认值写到属性上',
+      (h.cubic_gap, h.cubic_seam_alpha))
+check(cubic_settings.clamp_value('gap', 9.9) == 0.6, 'gap 超上界夹到 0.6',
+      cubic_settings.clamp_value('gap', 9.9))
+check(cubic_settings.clamp_value('gap', -1) == 0.0, 'gap 负值夹到 0.0')
+check(cubic_settings.clamp_value('seam_alpha', 'abc') == 110,
+      '非数字回默认（不写坏渲染参数）')
+check(cubic_settings.clamp_value('seam_alpha', 12) == 30, 'int 项夹到 30')
+check(isinstance(cubic_settings.clamp_value('seam_alpha', 77.6), int)
+      and cubic_settings.clamp_value('seam_alpha', 77.6) == 78,
+      'int 项四舍五入到 78')
+try:
+    cubic_settings.clamp_value('nope', 1)
+    check(False, '未登记的键应 KeyError')
+except KeyError:
+    check(True, '未登记的键 → KeyError')
+check(len(cubic_settings.items('view')) == 2, 'view 组两条')
+
+print('=' * 60)
+print('B. 右侧栏：三维 5 开关 + 两条滑条；二维 7 开关无滑条')
+pygame.init()
+gui = SliderGUI(m=4, n=4, step=1)
+gui.animation_enabled = False
+gui.tut_show_prompt = False
+gui.tutorial_active = False
+gui.config_dir = tempfile.mkdtemp(prefix='gs_cubic_opts_')
+gui.temp_history_path = os.path.join(gui.config_dir, 'temp_history.json')
+# config_path 必须一起改：save_config() 写的是 self.config_path，漏了就会把
+# 测试值写进仓库里用户真正在用的 config/config.json（本轮实际踩过）
+gui.config_path = os.path.join(gui.config_dir, 'config.json')
+gui._readonly = False
+pygame.display.set_mode((gui.screen_width, gui.screen_height))
+gui.screen = pygame.display.get_surface()
+gui._cubic_camera_prefs = {}
+gui.new_cubic_puzzle(3, 3, 3, 1)
+
+gui.draw_right_panel()
+sw = getattr(gui, 'right_panel_switch_rects', {})
+check(len(sw) == 5, '三维态开关剩 5 个', sorted(sw))
+check('chain_hint_enabled' not in sw and 'board_marks_enabled' not in sw,
+      '连锁 / 复原标记让位（三维不做视觉强化）', sorted(sw))
+check({'animation_enabled', 'selection_animation_enabled', 'coloring_enabled',
+       'game_mode', 'show_records_panel'} == set(sw), '留下的正是常用那五个')
+gr = getattr(gui, 'cubic_gap_slider_rect', None)
+ar = getattr(gui, 'cubic_alpha_slider_rect', None)
+check(gr is not None and ar is not None, '三维态有拆分/切面透明两条滑条', (gr, ar))
+check(gr.width == gui.right_panel_width - 12, '滑条铺满右侧栏宽度（132-12=120）', gr.width)
+# 不许叠在开关或竖滑条上
+all_sw = list(sw.values())
+check(all(not gr.colliderect(r) for r in all_sw)
+      and all(not ar.colliderect(r) for r in all_sw),
+      '两条滑条不与任何开关矩形重叠')
+check(not gr.colliderect(ar), '两条滑条彼此不重叠')
+check(not gui.zoom_slider_rect.colliderect(gr)
+      and not gui.slider_rect.colliderect(gr),
+      '竖滑条（缩放/速度）不与新滑条重叠')
+
+gui.new_puzzle(4, 4, 1)
+gui.draw_right_panel()
+check(len(getattr(gui, 'right_panel_switch_rects', {})) == 7, '二维态仍是 7 个开关')
+check(getattr(gui, 'cubic_gap_slider_rect', None) is None
+      and getattr(gui, 'cubic_alpha_slider_rect', None) is None,
+      '二维态不画三维滑条')
+
+print('=' * 60)
+print('C. 拖动：按横坐标写值 + 夹紧 + 缓存作废')
+gui._cubic_camera_prefs = {}
+gui.new_cubic_puzzle(3, 3, 3, 1)
+gui.draw_right_panel()
+gr = gui.cubic_gap_slider_rect
+gui._cubic_arrow_sig = ('sentinel',)
+gui._cubic_sil_cache = {'sentinel': 1}
+ver0 = gui._board_version
+gui._update_cubic_opt_from_mouse('gap', gr.left)
+check(abs(gui.cubic_gap - 0.0) < 1e-9, '拖到最左 = gap 0（贴死）', gui.cubic_gap)
+check(cubic_settings.clamp_value('gap', gui.cubic_gap) == gui.cubic_gap,
+      '写进去的值本身就在表范围内')
+gui._update_cubic_opt_from_mouse('gap', gr.right + 50)
+check(abs(gui.cubic_gap - 0.6) < 1e-9, '拖出右界夹到 0.6', gui.cubic_gap)
+check(getattr(gui, '_cubic_arrow_sig', None) is None
+      and getattr(gui, '_cubic_sil_cache', None) is None,
+      'gap 变了 → 箭头可推性 / 贴纸轮廓缓存立刻作废')
+check(gui._board_version == ver0,
+      '只改显示参数不动棋盘版号（标题栏不该平白出现星号）',
+      (ver0, gui._board_version))
+ar = gui.cubic_alpha_slider_rect
+gui._update_cubic_opt_from_mouse('seam_alpha', ar.left + ar.width // 2)
+check(30 <= gui.cubic_seam_alpha <= 220, '切面透明度落在 30..220', gui.cubic_seam_alpha)
+check(gui.cubic_seam_alpha == 125, '正中 = 125（30 + 0.5*(220-30)）',
+      gui.cubic_seam_alpha)
+prev = gui.cubic_seam_alpha
+gui._update_cubic_opt_from_mouse('seam_alpha', ar.left + ar.width // 2)
+check(gui.cubic_seam_alpha == prev, '同一点再拖不重复写（幂等）')
+
+print('=' * 60)
+print('D. 落盘 / 读盘：config.json 的 cubic_camera 带齐表内键，坏值不落')
+import json
+gui.cubic_gap = 0.33
+gui.cubic_seam_alpha = 180
+gui.cubic_dblclick_ms = 420
+gui.cubic_rot_sensitivity = 1.4
+gui.save_config()
+with open(gui.config_path, encoding='utf-8') as f:
+    cfg = json.load(f)
+cc = cfg.get('cubic_camera') or {}
+check(set(d) <= set(cc), 'cubic_camera 里带齐表内四个键', sorted(cc))
+check(abs(cc['gap'] - 0.33) < 1e-6 and cc['seam_alpha'] == 180
+      and cc['dblclick_ms'] == 420 and abs(cc['rot_sensitivity'] - 1.4) < 1e-6,
+      '导出值 = 当前值（不是默认值）', cc)
+
+gui._cubic_camera_prefs = {'gap': 0.25, 'seam_alpha': 9999,
+                          'dblclick_ms': 'x', 'rot_sensitivity': -3}
+cubic_settings.reset(gui)
+gui._cubic_load_defaults()
+check(abs(gui.cubic_gap - 0.25) < 1e-6, 'gap 读回 0.25', gui.cubic_gap)
+check(gui.cubic_seam_alpha == 220, 'seam_alpha 越界夹到 220（不是照抄 9999）',
+      gui.cubic_seam_alpha)
+check(gui.cubic_dblclick_ms == 300, 'dblclick_ms 坏值回默认 300', gui.cubic_dblclick_ms)
+check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
+      gui.cubic_rot_sensitivity)
+
+print('=' * 60)
+print('E. 真的生效：alpha 影响红色浓淡；灵敏度改转角')
+
+
+def _redness(alpha):
+    gui.cubic_gap = 0.30
+    gui.cubic_seam_alpha = alpha
+    gui._cubic_clear_selection()
+    from engine import cubic_pick
+    seam = ('r', 1)
+    gui.selected_gap = seam
+    gui.draw_cubic_board()
+    surf = gui.screen
+    n = 0
+    for x in range(0, surf.get_width(), 3):
+        for y in range(0, surf.get_height(), 3):
+            r, g, b = surf.get_at((x, y))[:3]
+            if r > 30 and r > g + 12 and r > b + 12:
+                n += 1
+    return n
+
+
+_lo = _redness(30)
+_hi = _redness(220)
+check(_hi > _lo, '切面 alpha 越大红色像素越多（透明真的生效）', (_lo, _hi))
+check(_lo > 0, 'alpha=30 时切面仍然可见（不是完全消失）', _lo)
+
+gui.cubic_gap = 0.12
+gui.cubic_seam_alpha = 110
+
+
+def _drag_angle(sens):
+    """同一段拖动（120px 横拖）在不同灵敏度下，相机**相对原姿态**转过的角度。"""
+    cam0 = gui.cubic_camera
+    q0 = cam0.q
+    gui.cubic_rot_sensitivity = sens
+    gui.cubic_dragging = True
+    gui.cubic_drag_moved = True
+    gui.cubic_drag_start = (300, 300)
+    gui.cubic_drag_from = cam0
+    gui._cubic_drag_update((420, 300))
+    q = gui.cubic_camera.q
+    gui.cubic_camera = cam0
+    dot = abs(sum(a * b for a, b in zip(q, q0)))
+    return 2 * math.acos(min(1.0, dot))
+
+
+import math
+_a_lo = _drag_angle(0.3)
+_a_hi = _drag_angle(1.6)
+check(_a_hi > _a_lo > 0, '灵敏度越大同一段拖动转得越多（灵敏度真的被读）',
+      (_a_lo, _a_hi))
+check(_drag_angle(0.0) == _drag_angle(0.0) == 0.0 or _drag_angle(0.0) < 0.02,
+      '灵敏度 0 = 拖了也不转', _drag_angle(0.0))
+
+print('=' * 60)
+total = _ok[0] + len(_fail)
+print(f'结果：{"全部通过" if not _fail else "有失败"}（{_ok[0]} 项通过，{len(_fail)} 项失败）／共 {total} 项')
+if _fail:
+    for f in _fail:
+        print('  -', f)
+sys.exit(1 if _fail else 0)

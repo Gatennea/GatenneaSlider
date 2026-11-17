@@ -1419,9 +1419,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._cubic_last_click_p = None
         # 三维推一步的滑动（第 6 步）：只动渲染层，见 gui/events._cubic_start_anim
         self.cubic_anim = None
-        # 拆分（相邻块之间空出的距离）：0 = 贴死成一整块、看不出前后；
-        # 滑条留到「渲染选项」那一步，这里先给默认值。
-        self.cubic_gap = DEFAULT_GAP
+        # 三维选项（方案 §2.4「登记机制」）：默认值来自声明式表，别在这里手写一份
+        # ——加选项只改 gui/cubic_settings.CUBIC_SETTINGS，渲染/事件/读盘自动跟上。
+        from gui import cubic_settings
+        cubic_settings.reset(self)
         # 平移盘面（没选中时点三轴六键 = 平移）：换局清零，别把上局的偏移带过来
         self.cubic_pan = [0.0, 0.0]
         # 三维只留虚拟键盘当鼠标操作入口（方案 §1「操作入口」）。二维里这张面板
@@ -1451,6 +1452,15 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             if zoom is not None:
                 lo, hi = self.CUBIC_ZOOM_RANGE
                 self.cubic_zoom = max(lo, min(hi, zoom))
+            # 其余三维选项（切面透明度/双击时间窗/旋转灵敏度）：走同一张声明式表，
+            # 越界夹紧、缺项保默认（别在这里再写一份分支）。
+            for _meta in cubic_settings.CUBIC_SETTINGS:
+                if _meta['key'] == 'gap':
+                    continue
+                if _meta['key'] in prefs:
+                    setattr(self, _meta['attr'],
+                            cubic_settings.clamp_value(_meta['key'],
+                                                       prefs[_meta['key']]))
             view = prefs.get('view')
             if view is not None:
                 self.cubic_view_index = view

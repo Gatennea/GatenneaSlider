@@ -1071,7 +1071,8 @@ class RendererMixin:
                 cell = pygame.Surface((w, h), pygame.SRCALPHA)
                 cell.fill((0, 0, 0, 0))
                 pygame.draw.polygon(
-                    cell, seam_rgb + (self.CUBIC_SEAM_ALPHA,),
+                    cell, seam_rgb + (int(getattr(self, 'cubic_seam_alpha',
+                                                  self.CUBIC_SEAM_ALPHA)),),
                     [(p[0] - x0, p[1] - y0) for p in pts])
                 hi.blit(cell, (x0, y0))
                 continue
@@ -5614,15 +5615,19 @@ class RendererMixin:
     def draw_right_panel(self):
         """绘制右侧面板：垂直速度滑条 + 6 个快捷开关（滑动动画/选中动画/着色/连锁/模式/逆序）"""
         panel_x = self.screen_width - self.right_panel_width
+        _panel_left = panel_x
         panel_rect = pygame.Rect(panel_x, 0, self.right_panel_width, self.screen_height)
         pygame.draw.rect(self.screen, self.colors['menu_bg'], panel_rect)
         pygame.draw.line(self.screen, self.colors['border'],
                         (panel_x, 0), (panel_x, self.screen_height))
 
         # ---- 底部：7 个快捷开关（垂直排列）----
+        # 三维态只留 5 个：连锁 / 复原标记在三维无对象可管（方案 §2.4 已定三维
+        # 不做视觉强化），让出的两个位置给「拆分」「切面透明」两条滑条。
+        cubic = bool(getattr(self, 'cubic_mode', False))
         sw_h = 24
         sw_gap = 4
-        sw_count = 7
+        sw_count = 5 if cubic else 7
         switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
         switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
         sw_x = panel_x + 6
@@ -5662,11 +5667,12 @@ class RendererMixin:
         _sw_btn('animation_enabled', '滑动动画', lambda: self.animation_enabled)
         _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
         _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
-        _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
-        # 复原提示标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼
-        # 不想看、后期要数格子又想看），故放常用区（设置页全名为
-        # 「复原提示标记」，2026-10-13 由「棋盘标记」改名）
-        _sw_btn('board_marks_enabled', '复原标记', lambda: self.board_marks_enabled)
+        if not cubic:
+            _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
+            # 复原提示标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼
+            # 不想看、后期要数格子又想看），故放常用区（设置页全名为
+            # 「复原提示标记」，2026-10-13 由「棋盘标记」改名）
+            _sw_btn('board_marks_enabled', '复原标记', lambda: self.board_marks_enabled)
         _sw_btn('game_mode', '模式', lambda: None)
         # 成绩面板：F3 的功能原先只有键盘能唤出，这里补一个纯鼠标入口，
         # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
@@ -5674,7 +5680,12 @@ class RendererMixin:
 
         # ---- 上方：垂直滑条（左=缩放，右=速度）----
         track_top = self.menu_bar_height + 35
-        track_bottom = switch_area_top - 10
+        # 三维态：底部开关上方要留两条横向滑条（拆分 / 切面透明），竖滑条
+        # 因此收短一点，别和它们叠在一起。
+        opt_h = 30
+        opt_n = 2 if cubic else 0
+        opt_top = switch_area_top - opt_n * opt_h - 6
+        track_bottom = (opt_top - 8) if cubic else (switch_area_top - 10)
         track_height = track_bottom - track_top
 
         speed_x = panel_x + self.right_panel_width - 18   # 右列轨道
@@ -5712,6 +5723,38 @@ class RendererMixin:
             knob_color = self.colors['button_hover'] if self.slider_dragging else self.colors['button_bg']
             self.slider_knob_rect = pygame.Rect(speed_x - 10, knob_y - 6, 20, 12)
             pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
+
+        # ---- 三维专用：拆分 / 切面透明两条横向滑条（方案 §2.4）----
+        # 挂右侧栏而不是设置框：这两项的价值全在「边拖边看」，设置框一关就
+        # 够不着。棋盘可视区本来就排除 right_panel_width，天然不遮挡。
+        self.cubic_gap_slider_rect = None
+        self.cubic_alpha_slider_rect = None
+        if cubic:
+            from gui.cubic_settings import by_key
+            _specs = (('gap', 'cubic_gap_slider_rect', '_cubic_gap_dragging'),
+                      ('seam_alpha', 'cubic_alpha_slider_rect', '_cubic_alpha_dragging'))
+            for _i, (_key, _rect_attr, _drag_attr) in enumerate(_specs):
+                _sp = by_key(_key)
+                _y = opt_top + _i * opt_h
+                _val = getattr(self, _sp['attr'], _sp['default'])
+                _fmt = (f"{_val:.2f}" if _sp['type'] == 'float' else f"{int(_val)}")
+                _lab = self.status_font.render(f"{_sp['label']} {_fmt}", True,
+                                               self.colors['status_text'])
+                self.screen.blit(_lab, (_panel_left + 6, _y + 2))
+                _track = pygame.Rect(_panel_left + 6, _y + 20,
+                                     self.right_panel_width - 12, 8)
+                pygame.draw.line(self.screen, self.colors['border'],
+                                 (_track.left, _track.centery),
+                                 (_track.right, _track.centery), 2)
+                _norm = (_val - _sp['min']) / max(1e-6, _sp['max'] - _sp['min'])
+                _norm = max(0.0, min(1.0, _norm))
+                _kx = int(_track.left + _norm * _track.width)
+                _knob = pygame.Rect(_kx - 5, _track.centery - 6, 10, 12)
+                _kc = (self.colors['button_hover']
+                       if getattr(self, _drag_attr, False)
+                       else self.colors['button_bg'])
+                pygame.draw.rect(self.screen, _kc, _knob, border_radius=3)
+                setattr(self, _rect_attr, _track)
 
     # ==================================================================
     # 单击反馈（全 GUI 生效的涟漪动效）：左键外扩环、右键内收环
