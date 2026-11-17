@@ -13,7 +13,9 @@
 断言：
   R1 帮助稳态帧 _wrap_text 调用次数 = 0（全文已缓存，只剩 blit）；
   R2 帮助稳态单帧平均 < 25ms（基线 659.8 → 修复后 8.1，阈值留足余量）；
-  R3 设置稳态单帧平均 < 25ms（本底 16-20ms）。
+  R3 设置稳态单帧平均 < 25ms（本底 16-20ms）；
+  V1 全文态在 0/中/底 三处滚动位置，内容区上·下半均有文字像素
+     （2026-11-17 用户报「下滑之后字全没了」——缓存 blit 源区对位写错）。
 
 执行：D:/python/python.exe test/_test_scroll_perf_bench.py
 """
@@ -99,6 +101,35 @@ def main():
     print('H3 _load_help_lines=%.2fms 全文wrap一遍=%.2fms (行=%d 折行=%d)'
           % (t_load, t_wrap, len(lines), tw))
 
+    # ---- V1 内容可见性（2026-11-17 用户报「下滑之后字全没了」）----
+    # 离屏缓存首版 blit 写错源区↔裁剪区对位（源区顶已带 src_top 又把 dest
+    # 再上移一次 src_top）：scroll>10px 底部露空、scroll≥内容高时整块移出
+    # 裁剪区 → 全空白。这里在 0 / 中 / 底 三处滚动位置断言内容区上、下半
+    # 各有文字像素（既抓「全空」也抓「底部半截露空」）。
+    import numpy as np
+    import pygame
+    d = gui.help_dialog_rect
+    clip = pygame.Rect(d.x + 10, d.y + 98, d.width - 30, d.height - 138)
+    bg = np.array(gui.colors['dialog_bg'], dtype=np.int16)
+
+    def lit(rect):
+        arr = pygame.surfarray.array3d(gui.screen.subsurface(rect))
+        diff = np.abs(arr.astype(np.int16) - bg).sum(axis=2)
+        return int((diff > 40).sum())
+
+    max_sc = max(0, sb.content_size - sb.viewport_size)
+    top = pygame.Rect(clip.x, clip.top, clip.width, clip.height // 2)
+    bot = pygame.Rect(clip.x, clip.top + clip.height // 2, clip.width,
+                      clip.height - clip.height // 2)
+    vis_ok = True
+    for pos in (0, max_sc // 2, max_sc):
+        sb.set_scroll(pos)
+        gui.draw_help_dialog()
+        n_top, n_bot = lit(top), lit(bot)
+        print('V0 scroll=%d/%d 上半=%d 下半=%d' % (pos, max_sc, n_top, n_bot))
+        if n_top < 500 or n_bot < 500:
+            vis_ok = False
+
     # ---- S1 设置框长内容页 ----
     gui.show_help = False
     gui.show_settings_dialog = True
@@ -113,6 +144,8 @@ def main():
           str(per_frame_wrap))
     check('R2 帮助滚动帧 avg<25ms', avg1 < 25, '%.1fms' % avg1)
     check('R3 设置滚动帧 avg<25ms', avg2 < 25, '%.1fms' % avg2)
+    check('V1 滚动三处内容区上·下半均有文字（不空白不半截）', vis_ok,
+          'max_scroll=%d' % max_sc)
     print('==== %s（%d 项失败）'
           % ('全部通过' if not _failures else '有失败', len(_failures)))
     return 1 if _failures else 0

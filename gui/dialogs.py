@@ -679,15 +679,21 @@ class DialogsMixin:
                   total_content_height, content_height)
         scroll_offset = sb.scroll
 
-        # 绘制内容（带裁剪）：只 blit 可见带，不再逐行 wrap/render
+        # 绘制内容（带裁剪）：只 blit 可见带，不再逐行 wrap/render。
+        # 源区顶 (0,src_top) 对齐裁剪区顶 (…,content_top)：源行 src_top+j
+        # → dest content_top+j，src_h=content_height 恰好鋪滿裁剪区。
+        # 旧写法 dest=(content_top-src_top) 多减了一次偏移（源区顶已带
+        # src_top），等于滚两倍量且底/整块移出 clip：src_top>10 底部露空、
+        # src_top≥content_height 时全空 → 用户报「下滑后字全没了」
+        # （_probe_help_scroll_blank 实测 scroll≥512 文字像素 0）。
         clip_rect = pygame.Rect(dialog_x + 10, content_top, dialog_width - 30, content_height)
         self.screen.set_clip(clip_rect)
         src_top = max(0, min(int(scroll_offset),
                              max(0, total_content_height - 1)))
-        src_h = min(total_content_height - src_top, content_height + 10)
+        src_h = min(total_content_height - src_top, content_height)
         if src_h > 0:
             self.screen.blit(cached['surf'],
-                             (dialog_x + 10, content_top - src_top),
+                             (dialog_x + 10, content_top),
                              (0, src_top, dialog_width - 30, int(src_h)))
         self.screen.set_clip(None)
 
