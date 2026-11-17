@@ -165,9 +165,9 @@ check(gui.selected_block is None and gui.selected_gap is None,
 pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION,
                                      pos=(board[0] + 100, board[1]), rel=(100, 0)))
 gui.handle_events()
-want = cam0.spin((0.0, 1.0, 0.0), -100 * gui.CUBIC_DRAG_DEG_PER_PX)
+want = cam0.spin(cam0.up_axis(), -100 * gui.CUBIC_DRAG_DEG_PER_PX)
 check(same_pose(gui.cubic_camera, want),
-      '右拖 100px → 绕世界竖轴 −45°（内容跟手）')
+      '右拖 100px → 绕屏幕竖轴（trackball：内容跟手）')
 check(angle_between(gui.cubic_camera.view_axis(), cam0.view_axis()) > 30,
       '视角确实转开了（不是没反应）')
 

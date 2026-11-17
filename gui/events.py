@@ -1650,10 +1650,15 @@ class EventsMixin:
         self.cubic_drag_from = getattr(self, 'cubic_camera', None)
 
     def _cubic_drag_update(self, pos):
-        """跟手旋转：右拖 → 物体跟着往右转（内容跟手，不是相机跟手）。
+        """跟手旋转（trackball）：抓住的那一面跟着鼠标走，不跟场景走。
 
-        横拖绕世界竖轴转（转台手感），竖拖绕相机自己的右轴转（抬头/低头）；
-        后者到接近极点就停住，避免画面翻个跟头。
+        为什么不是「横拖绕世界竖轴 + 竖拖绕相机右轴」：两根轴在两个不同的坐标系
+        里（世界 vs 相机），先转哪根会让结果依赖姿态——相机一旦抬头，世界竖轴在
+        屏幕上就是斜的，横拖看起来像在乱转，甚至和鼠标反向（用户实测到的）。
+        这里改成**屏幕轴**：拖动向量 d 落在相机的 right/up 平面上，绕
+        `轴 = right·dx + up·dy` 一次转 `k·|d|`（Shoemake 的 trackball 做法，
+        three.js OrbitControls / pCubes 的轨道相机同源）。轴永远垂直于屏幕、
+        永远与拖动方向共面，所以任何姿态下手感一致，也没有极点该不该停的问题。
         """
         if not getattr(self, 'cubic_dragging', False):
             return
@@ -1670,14 +1675,16 @@ class EventsMixin:
             self.cubic_drag_moved = True
         if not self.cubic_drag_moved:
             return                       # 还在点击容差内：先别动相机（避免点一下画面就歪）
+        if dx == 0 and dy == 0:
+            return
         k = self.CUBIC_DRAG_DEG_PER_PX
-        cam = base.spin((0.0, 1.0, 0.0), -dx * k)
-        tilt = cam.spin(cam.right_axis(), dy * k)
-        # 极点保护：相机 z 轴离竖直轴不足 1° 就停在上一帧（再往下会翻跟头）
-        pole = math.cos(math.radians(90.0 - self.CUBIC_PITCH_LIMIT))
-        if abs(tilt.view_axis()[1]) <= pole + 1e-12:
-            cam = tilt
-        self._cubic_camera_apply(cam)
+        right = base.right_axis()
+        up = base.up_axis()
+        # 轴取「屏幕竖轴 × dx + 屏幕横轴 × dy」，再取负角：
+        # 横拖绕 up 转 → 内容左右走；竖拖绕 right 转 → 内容上下走。
+        # 符号由相机基的右手性（up×view = right、right×view = −up）定，实测校过。
+        axis = tuple(up[i] * dx + right[i] * dy for i in range(3))
+        self._cubic_camera_apply(base.spin(axis, -k * math.hypot(dx, dy)))
 
     # ------------------------------------------------------------------
     # 三维选中（§54 第 3 步）：单击出白线切面、双击选中连通组

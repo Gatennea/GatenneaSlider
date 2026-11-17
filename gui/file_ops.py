@@ -49,6 +49,16 @@ class StaleEditorSave(ValueError):
     「Event error (non-fatal)」。
     """
 
+
+class StaleCubicSave(StaleEditorSave):
+    """上次退出时停在**三维局**：`type: cubic` 的存档，现在读不回来。
+
+    三维读回要扩到 (r,c,d) 与 `type: cubic`（方案第 5 步）。在那之前写进
+    temp_history 的 cubic 局不该报「存档需要模型 'cubic'」——那是自造的坏档
+    （2026-11-17 用户实测每次启动都弹）。按编辑器先例当「无事发生」：安静
+    回落到默认二维局，并把这条坏档用新局覆盖掉（自愈）。
+    """
+
 # 已从注册表移除的**形态专用入口** → 现行统一入口。
 # 2026-10-05 起三形态共用 `'gather'`，`tri_gather` / `mi_gather` 两个 key 已删除；
 # 但老 config.json 里仍写着这些值（用户机器上实测就是 `'mi_gather'`）。
@@ -620,8 +630,9 @@ class FileOpsMixin:
                     self._reset_file_dirty()
                     return
             except StaleEditorSave as e:
-                # 编辑器预览局不是「坏存档」：安静退回默认局，不吓人
+                # 编辑器预览局 / 三维局不是「坏存档」：安静退回默认局，不吓人
                 print(f"忽略上次状态（{e}）")
+                self._stale_autosave = True
             except Exception as e:
                 print(f"加载上次状态失败: {e}")
 
@@ -629,6 +640,17 @@ class FileOpsMixin:
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._reset_file_dirty()
+        if getattr(self, '_stale_autosave', False):
+            # 自愈：把那条读不回来的 temp_history 用当前默认局覆盖掉，
+            # 否则每次启动都要再撞一次（编辑器先例同口径）。
+            self._stale_autosave = False
+            try:
+                save_data = self._build_save_data()
+                with open(self.temp_history_path, 'w', encoding='utf-8') as f:
+                    f.write(_compact_json_dumps(save_data))
+                print('已用当前局面覆盖上次那条读不回的自动存档')
+            except Exception as e:
+                print(f'覆盖自动存档失败: {e}')
 
     def _check_saved_model_identity(self, kind, info):
         """模型局存档：认出「模型缺失」与「模型已变更」。
@@ -790,6 +812,10 @@ class FileOpsMixin:
         kind = 'square'
         if version >= 2:
             kind = puzzle.get('type', 'square')
+        if kind == 'cubic':
+            # 三维存档读回是方案第 5 步；在那之前撞上就读不回来。别让「模型
+            # cubic.json 未安装」这种假原因冒出来——那是自造坏档的噪音。
+            raise StaleCubicSave('上次退出时停在三维局（三维存档读回在方案第 5 步）')
         if kind == _preview_kind():
             # 编辑器预览局（旧版本退出时被自动存档写下的）。没有 models/
             # 文件，也不该有——按「上次退出停在编辑器里」安静略过，
@@ -960,9 +986,22 @@ class FileOpsMixin:
         self.macro_notify_timer = 200
         return True
 
+    def _cubic_save_blocked(self) -> bool:
+        """三维局（cubic_mode）暂时禁止存档：写下去的文件读不回来。
+
+        存档格式要扩到 (r,c,d) 与 `type: cubic`（方案第 5 步），现在 Ctrl+S
+        会写出一条载入端必拒的档（`StaleCubicSave`），下次点开就报错。与其
+        造坏档，不如当场说清「第 5 步才支持」。"""
+        if not getattr(self, 'cubic_mode', False):
+            return False
+        self.macro_notify_msg = '三维局暂时不能存档：存档格式在第 5 步才扩到 (r,c,d)'
+        self.macro_notify_timer = 240
+        print('三维局存档被拒（存档格式第 5 步才扩到 (r,c,d)）')
+        return True
+
     def save_as(self):
         """另存为：弹出 pygame 文件对话框（默认名自动生成）"""
-        if self._med_save_blocked():
+        if self._med_save_blocked() or self._cubic_save_blocked():
             return
         self.file_dialog.show(
             mode='save',
@@ -975,7 +1014,7 @@ class FileOpsMixin:
 
     def _save_to_path(self, path: str) -> bool:
         """将当前状态保存到指定路径。返回是否成功（供「存档后打乱」续接判断）。"""
-        if self._med_save_blocked():
+        if self._med_save_blocked() or self._cubic_save_blocked():
             return False
         # 文件名校验：Windows 非法字符（如 * ? : 等）写盘必抛异常，先拦截并明确提示
         illegal = _find_illegal_filename_chars(os.path.basename(path))
