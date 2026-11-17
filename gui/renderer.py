@@ -994,19 +994,19 @@ class RendererMixin:
         # （用户原话「切面看起来和滑块不在一个图层」）。做法是把面按格切成
         # 小四边形，各自带深度塞进同一张绘制序里。
         seam = getattr(self, 'selected_gap', None)
-        seam_quads = []
+        seam_layer = None
         if seam and seam[0] in ('r', 'c', 'd'):
             from engine import cubic_pick
             poly = cubic_pick.seam_plane_polygon(seam[0], seam[1], blocks,
                                                  pad=self.CUBIC_SEAM_PAD,
                                                  gap=gap)
             if poly:
-                # 遮挡判定不靠画家序（切面在缝里，粗切一格会横跨「该挡」和「该
-                # 露」两块区域，按格心深度一刀切就一定出错）。改成**逐点射线**
-                # 判定：每个小格的中心沿视线朝相机走，撞到任何块就算被遮住、不画。
-                # 所见即真实，不存在「被挡住还画出来」的边线。
-                # 采样点 24×24 个、每个要测几十个盒子，一次算完按
-                # 「缝 + 姿态 + 拆分 + 块位 + 装画面」缓存；拖动 / 平移时 key 变。
+                # 遮挡用**解析投影**，不用采样：每个挡在前面的块沿视线投到切面上
+                # 的凸包（一般六边形）就是它遮住的那块面积。采样法（上一版）边界
+                # 是被格子量化出来的，边缘一圈锯齿（用户 2026-11-18「遮擋畫的毛
+                # 毛糙糙」）；解析法边界是直线。
+                # 只有切面几乎侧对视线（投影成一条线）时法向分量太小、投影无定义，
+                # 才退回逐格采样兜底。
                 boxes = cubic_view.block_boxes(blocks, gap)
                 view_dir = camera.view_axis()
                 key = (seam, round(float(gap), 6),
@@ -1018,33 +1018,21 @@ class RendererMixin:
                        round(float(scene['origin'][1]), 3))
                 cached = getattr(self, '_cubic_seam_cache', None)
                 if cached is not None and cached[0] == key:
-                    seam_quads = cached[1]
+                    seam_layer = cached[1]
                 else:
-                    seam_quads = []
-                    n = 24                      # 每轴 24 份 → 每格约 1/8 块宽
-                    for i in range(n):
-                        for j in range(n):
-                            u0, u1 = i / float(n), (i + 1) / float(n)
-                            v0, v1 = j / float(n), (j + 1) / float(n)
-                            quad = []
-                            for (u, v) in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
-                                quad.append(tuple(
-                                    (1 - u) * (1 - v) * poly[0][k]
-                                    + u * (1 - v) * poly[1][k]
-                                    + u * v * poly[2][k]
-                                    + (1 - u) * v * poly[3][k]
-                                    for k in range(3)))
-                            center = tuple(sum(w[k] for w in quad) / 4.0
-                                           for k in range(3))
-                            if not cubic_view.point_visible(center, boxes, view_dir):
-                                continue
-                            pts = []
-                            for w in quad:
-                                sx, sy, _sz = cubic_view.project_point(
-                                    w, camera, scene['scale'], scene['origin'])
-                                pts.append((int(round(sx)), int(round(sy))))
-                            seam_quads.append(pts)
-                    self._cubic_seam_cache = (key, seam_quads)
+                    shadows, _axis = cubic_view.seam_shadow_polygons(
+                        poly, boxes, view_dir)
+                    quad_pts = [cubic_view.project_point(w, camera, scene['scale'],
+                                                         scene['origin'])[:2]
+                                for w in poly]
+                    shadow_pts = []
+                    for hull in (shadows or []):
+                        shadow_pts.append([
+                            cubic_view.project_point(w, camera, scene['scale'],
+                                                     scene['origin'])[:2]
+                            for w in hull])
+                    seam_layer = self._cubic_seam_layer(quad_pts, shadow_pts)
+                    self._cubic_seam_cache = (key, seam_layer)
 
         # 缝两侧的墙面（真几何）一起染色：切面本身埋在实心块里，正视下物理上
         # 就该看不见（只剩缝口那几像素），只靠它不够读。这两面墙是缝里真实存在
@@ -1066,6 +1054,29 @@ class RendererMixin:
 
         items = [(f['depth'], 0, f) for f in scene['faces']]
         items.sort(key=lambda t: t[0])
+        # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
+        # 一级级台阶，切面边上那些「毛毛糙糙」的小三角有一半是块面自己的边。
+        # 只在棋盘包围盒里开超采样，整帧仍是一次 smoothscale 缩回，成本可控。
+        _ss = 2
+        _all = [p for f in scene['faces'] for p in f['pts']]
+        if _all:
+            _bx0 = max(0, int(min(p[0] for p in _all)) - 2)
+            _by0 = max(0, int(min(p[1] for p in _all)) - 2)
+            _bx1 = min(self.screen_width, int(max(p[0] for p in _all)) + 2)
+            _by1 = min(self.screen_height, int(max(p[1] for p in _all)) + 2)
+        else:
+            _bx0 = _by0 = _bx1 = _by1 = 0
+        _bw, _bh = _bx1 - _bx0, _by1 - _by0
+        if _bw > 0 and _bh > 0:
+            hi = pygame.Surface((_bw * _ss, _bh * _ss))
+            hi.fill(self.colors['background'])
+        else:
+            hi = None
+
+        def _T(points):
+            return [(int(round((p[0] - _bx0) * _ss)),
+                     int(round((p[1] - _by0) * _ss))) for p in points]
+
         for _depth, _kind, face in items:
             color = chosen if face['loc'] in opted else base
             if _is_cut_wall(face):
@@ -1074,21 +1085,22 @@ class RendererMixin:
             shade = face['shade']
             fill = (int(color[0] * shade), int(color[1] * shade),
                     int(color[2] * shade))
-            pts = [(int(round(p[0])), int(round(p[1]))) for p in face['pts']]
-            pygame.draw.polygon(self.screen, fill, pts)
-            pygame.draw.polygon(self.screen, border, pts, 1)
+            if hi is not None:
+                pts = _T(face['pts'])
+                pygame.draw.polygon(hi, fill, pts)
+                pygame.draw.polygon(hi, border, pts, _ss)
+        if hi is not None:
+            self.screen.blit(
+                pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
 
-        # 切面：先把所有「没被挡住」的小格画成一张实色蒙版，再整张按 alpha 贴一次。
-        # 逐格直接混色会在格子接缝处叠出深色线（同一张面上不该有线），蒙版只画一次
-        # 就没有这个副作用，也不会被格边割裂成「线框」。
-        if seam_quads:
-            seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
-            lens = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-            lens.fill((0, 0, 0, 0))
-            for pts in seam_quads:
-                pygame.draw.polygon(lens, seam_rgb, pts)
-            lens.set_alpha(self.CUBIC_SEAM_ALPHA)
-            self.screen.blit(lens, (0, 0))
+        # 切面合成：先在**局部** 3 倍超采样画布上画「整张切面」，再用每个影子
+        # 多边形把它扣成透明，最后平滑缩回原尺寸贴上去。
+        # 为什么要超采样：pygame 的多边形填充没有抗锯齿，斜边在屏幕上就是一级级
+        # 1px 台阶；切面这种大面积半透明色块，台阶特别显眼（用户 2026-11-18「遮
+        # 擋畫的毛毛糙糙」）。3 倍超采样 + smoothscale 之后斜边是连续灰阶。
+        if seam_layer:
+            surf, pos = seam_layer
+            self.screen.blit(surf, pos)
 
         # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
         # 必然同源，不存在「看得见点不中」的漂移）。
@@ -1114,6 +1126,43 @@ class RendererMixin:
             self.screen.blit(surf2, (16, 36))
         except Exception:
             pass   # 文字画失败只丢这一行，不能让整帧黑掉（§4 同一条纪律）
+
+    def _cubic_seam_layer(self, quad_pts, shadow_pts):
+        """把「整张切面 - 所有影子多边形」烘成一张带 alpha 的小图，返回 (图, 位置)。
+
+        只在切面的包围盒里做，3 倍超采样后再 smoothscale：斜边得到灰阶而不是台阶。
+        遮挡关系本身由调用方（cubic_view.seam_shadow_polygons）保证正确；这里只负责
+        把多边形画得干净。没有任何可见面积时返回 None。
+        """
+        if not quad_pts:
+            return None
+        allpts = list(quad_pts) + [p for hull in shadow_pts for p in hull]
+        x0 = int(math.floor(min(p[0] for p in allpts))) - 2
+        y0 = int(math.floor(min(p[1] for p in allpts))) - 2
+        x1 = int(math.ceil(max(p[0] for p in allpts))) + 2
+        y1 = int(math.ceil(max(p[1] for p in allpts))) + 2
+        rect = pygame.Rect(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+        rect = rect.clip(self.screen.get_rect())
+        if rect.width <= 0 or rect.height <= 0:
+            return None
+        ss = 3
+        layer = pygame.Surface((rect.width * ss, rect.height * ss),
+                               pygame.SRCALPHA)
+        layer.fill((0, 0, 0, 0))
+        seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
+
+        def _shift(pts):
+            # 坐标先减去包围盒原点，再放大 ss 倍（超采样只在局部做，不铺满全屏）
+            return [(int(round((p[0] - rect.x) * ss)),
+                     int(round((p[1] - rect.y) * ss))) for p in pts]
+
+        pygame.draw.polygon(layer, seam_rgb + (255,), _shift(quad_pts))
+        for hull in shadow_pts:
+            # 直接写 (0,0,0,0)：pygame.draw 对 SRCALPHA 表面是覆盖写，等于擦除。
+            pygame.draw.polygon(layer, (0, 0, 0, 0), _shift(hull))
+        small = pygame.transform.smoothscale(layer, (rect.width, rect.height))
+        small.set_alpha(self.CUBIC_SEAM_ALPHA)
+        return (small, (rect.x, rect.y))
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。

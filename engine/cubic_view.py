@@ -250,6 +250,91 @@ def _ray_hits_box(origin, direction, box, eps: float = 1e-6) -> bool:
     return t_exit > eps and t_enter > -1e18
 
 
+def _convex_hull(points) -> list:
+    """二维凸包（Andrew monotone chain）。点按 (u, v) 传入，返回逆时针顶点。"""
+    pts = sorted(set((round(p[0], 9), round(p[1], 9)) for p in points))
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower, upper = [], []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def seam_shadow_polygons(quad, boxes, view_dir, eps: float = 1e-6):
+    """每个**挡在切面前面**的块，在切面上投下的影子多边形（精确，不是栅格）。
+
+    为什么需要：切面活在块与块的缝里，按格采样只能得到「格子级」的可见性，
+    边缘就被切成锯齿（用户 2026-11-18「遮擋畫的毛毛糙糙」）。这里是解析解：
+    沿视线把块的 AABB 投到切面上，得到的凸包（一般是六边形）就是它挡住的
+    那块面积，边界是平滑的直线。
+
+    返回 (shadows, n)：
+        shadows —— [(世界点 × N)]，都在切面平面上，按屏幕坐标可直接填充
+        n       —— 平面法向轴下标；视线与该轴近似平行（切面接近侧对）时返回
+                   (None, axis)，交给调用方走逐格采样兜底
+    """
+    axis = None
+    for i in range(3):
+        if all(abs(p[i] - quad[0][i]) < 1e-9 for p in quad):
+            axis = i
+            break
+    if axis is None:
+        return None, None
+    fixed = quad[0][axis]
+    d = view_dir[axis]
+    if abs(d) < 1e-3:
+        # 视线与切面平行：投影求交退化（分母趋零），而这种姿态下切面在屏幕上
+        # 只剩一条线、本来就没有可见面积，直接当作「没有可见部分」。
+        return [], axis
+    others = [i for i in range(3) if i != axis]
+    shadows = []
+    for box in boxes:
+        # 只有「朝相机那一侧」的块能挡住切面。相机在 +axis 一侧时看 box 上限，
+        # 在 −axis 一侧时看下限（切面可以被从上下任意一侧看，不能写死方向）。
+        if d > 0.0:
+            if box[axis + 3] <= fixed + eps:
+                continue
+        else:
+            if box[axis] >= fixed - eps:
+                continue
+        pts = []
+        for xi in (box[0], box[3]):
+            for yi in (box[1], box[4]):
+                for zi in (box[2], box[5]):
+                    corner = (xi, yi, zi)
+                    t = (corner[axis] - fixed) / d
+                    if t <= eps:
+                        continue   # 该角在切面背后，不参与投影
+                    p = [corner[k] - t * view_dir[k] for k in range(3)]
+                    p[axis] = fixed
+                    pts.append(tuple(p))
+        if len(pts) < 3:
+            continue
+        hull2d = _convex_hull([(p[others[0]], p[others[1]]) for p in pts])
+        if len(hull2d) < 3:
+            continue
+        world = []
+        for (u, v) in hull2d:
+            p = [0.0, 0.0, 0.0]
+            p[axis] = fixed
+            p[others[0]] = u
+            p[others[1]] = v
+            world.append(tuple(p))
+        shadows.append(world)
+    return shadows, axis
+
+
 def point_visible(point, boxes, view_dir, eps: float = 1e-6) -> bool:
     """世界点沿视线朝相机走，是否被某个块挡住（被挡住 = 不该画出来）。
 
