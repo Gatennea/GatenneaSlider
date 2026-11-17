@@ -5498,6 +5498,9 @@ class RendererMixin:
             pygame.draw.line(self.screen, self.colors['border'],
                             (zoom_x, track_top), (zoom_x, track_bottom), 2)
             norm_z = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+            if getattr(self, 'cubic_mode', False):
+                lo, hi = self.CUBIC_ZOOM_RANGE
+                norm_z = (getattr(self, 'cubic_zoom', 1.0) - lo) / max(1e-6, hi - lo)
             norm_z = max(0.0, min(1.0, norm_z))
             # 倒置：滑条顶部=放大(max_zoom)，底部=缩小(min_zoom)
             knob_y = int(track_top + (1.0 - norm_z) * track_height)

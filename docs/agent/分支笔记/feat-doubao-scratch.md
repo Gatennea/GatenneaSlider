@@ -296,3 +296,29 @@
   按钮可按；「没选中时点六键 = 平移盘面」也一并留到那片。
 - **重画箭头**：三维的六向箭头还没画，二维箭头在 cubic 下不出。
 - 撤销/重做要等第 5 步把快照扩到 (r,c,d)（`history.py` + `file_ops.py` + 压缩存档）。
+
+## 修：旋转时「画面忽大忽小」+ 右侧缩放滑条接三维
+
+用户 2026-11-17 实测指出（这是真机反馈，不是测试能发现的）：拖动旋转时整个立方
+**大小在跳**。根因是我第 1 步用的 `fit_view` —— 它按**当前朝向的投影包围盒**拟合
+画面，一旋转投影包围盒就变，scale 跟着变，看起来像镜头自己在推拉。
+
+- `engine/cubic_view.py` 新增 `stable_frame`：比例只由几何本身的**包围球半径**定
+  （任何朝向下都不变），中心固定为包围盒中心投影到屏幕中心。
+  `build_scene` 改用 `stable_frame`；`fit_view` 保留（斜视默认构图/测试仍在用），
+  但在 build_scene 里不再承担职责，函数头注释写清为什么换。
+- 实测：0/20/40/60/80/100° 六张 scale **完全相同**（94.621），屏幕跨度仍随朝向变
+  ——变的是投影范围，不是比例；缩放只由 zoom 决定（zoom 2 → scale ×2，zoom 3 → ×3）。
+- 右侧「缩放」滑条接线：`_update_zoom_slider_from_mouse` 在 cubic 态改 `cubic_zoom`
+  （映射到 `CUBIC_ZOOM_RANGE` 0.5–3.0），**不再**走 `_apply_zoom_centered`，
+  二维 `self.zoom` 一根毫毛不动；`draw_right_panel` 的滑钮位置也改成读 `cubic_zoom`，
+  否则滑条位置会和实际画面脱节。
+- 新增 `test/_test_cubic_framing.py`（15 项）：六朝向 scale 恒等、跨度确实随朝向变、
+  build_scene 与 stable_frame 同源、zoom 线性、滑条顶/底 = 3.0/0.5 且二维 zoom 不动、
+  滑条从顶到底 scale 294.7 → 49.1。
+- 回归：view 41 / view_nav 83 / pick 204 / play 32 / gap 18 / split 25 全过。
+- 截图：`cubic_shots/zoom_top_view0.png`（缩放 300%）。⚠️ 3.0 倍会把棋盘推出屏幕、
+  状态行被块压住；如果嫌太狠，把 `CUBIC_ZOOM_RANGE` 上限收到 2.0 即可（等用户定）。
+
+**前端还推不动是事实**：虚拟键盘三轴六键与三维箭头还没做（第 4 步剩余两片），
+现在只有键盘 r/R c/C d/D 能推。

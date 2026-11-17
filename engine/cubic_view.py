@@ -108,6 +108,31 @@ def project_point(world, camera: CubicCamera, scale: float, origin) -> tuple:
     return (origin[0] + scale * vx, origin[1] - scale * vy, vz)
 
 
+def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
+                 margin: int = 40, zoom: float = 1.0, gap: float = 0.0) -> tuple:
+    """不随朝向变形的装画面：返回 (scale, origin)。
+
+    为什么另有一套：`fit_view` 按**当前朝向的投影包围盒**拟合，一旋转投影范围
+    就变，scale 跟着变——实测就是「拖一下画面忽大忽小」。这里把比例只由几何
+    本身的**包围球半径**决定（任何朝向下都不变），中心固定为包围盒中心投影到
+    屏幕中心。于是：旋转只转不缩放，画面大小**只**由 zoom（缩放滑条 / Ctrl+滚轮）
+    说了算。
+    """
+    pts = [p for loc in locations_of(blocks) for p in block_corners(loc, gap)]
+    if not pts:
+        return 40.0 * zoom, (width / 2.0, height / 2.0)
+    lo = [min(p[i] for p in pts) for i in range(3)]
+    hi = [max(p[i] for p in pts) for i in range(3)]
+    center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
+    radius = max(1e-6, max(
+        sum((p[i] - center[i]) ** 2 for i in range(3)) ** 0.5 for p in pts))
+    avail_w = max(1.0, width - 2 * margin)
+    avail_h = max(1.0, height - 2 * margin)
+    scale = min(avail_w, avail_h) / (2.0 * radius) * max(0.05, float(zoom))
+    cvx, cvy, _ = camera.to_camera(center)
+    return scale, (width / 2.0 - scale * cvx, height / 2.0 + scale * cvy)
+
+
 def fit_view(blocks, camera: CubicCamera, width: int, height: int, *,
              margin: int = 40, zoom: float = 1.0, gap: float = 0.0) -> tuple:
     """把整盘装进画面：返回 (scale, origin)。
@@ -196,9 +221,14 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
 def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
                 margin: int = 40, zoom: float = 1.0,
                 origin_offset=(0.0, 0.0), gap: float = 0.0) -> dict:
-    """一步到位：装画面 + 算可见面。渲染层只要拿 'faces' 去画。"""
-    scale, origin = fit_view(blocks, camera, width, height,
-                             margin=margin, zoom=zoom, gap=gap)
+    """一步到位：装画面 + 算可见面。渲染层只要拿 'faces' 去画。
+
+    ⚠️ 装画面用 `stable_frame`（包围球定比例），不是 `fit_view`（按当前朝向的
+    投影包围盒拟合）。后者每帧跟着朝向变 → 拖动时画面忽大忽小；三维的「多大」
+    只该由缩放参数决定。
+    """
+    scale, origin = stable_frame(blocks, camera, width, height,
+                                 margin=margin, zoom=zoom, gap=gap)
     origin = (origin[0] + origin_offset[0], origin[1] + origin_offset[1])
     faces = collect_faces(blocks, camera, scale=scale, origin=origin, gap=gap)
     return {

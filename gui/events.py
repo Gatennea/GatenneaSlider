@@ -3501,13 +3501,21 @@ class EventsMixin:
         self.camera_y = cy - wy * self.zoom
 
     def _update_zoom_slider_from_mouse(self, mouse_y):
-        """根据鼠标Y坐标更新缩放（右侧面板垂直滑条；委托共享锚点逻辑）"""
+        """根据鼠标Y坐标更新缩放（右侧面板垂直滑条；委托共享锚点逻辑）
+
+        三维态这条滑条改的是 `cubic_zoom`（不是二维 `self.zoom`）：三维的画面
+        大小只该由它决定（旋转不再重算比例，见 `cubic_view.stable_frame`）。
+        """
         zr = getattr(self, 'zoom_slider_rect', None)
         if not zr or zr.height <= 0:
             return
         y = max(zr.top, min(zr.bottom, mouse_y))
         normalized = (y - zr.top) / zr.height
         # 倒置：越靠上(滑条顶部)=放大；越靠下=缩小
+        if getattr(self, 'cubic_mode', False):
+            lo, hi = self.CUBIC_ZOOM_RANGE
+            self.cubic_zoom = round(lo + (1.0 - normalized) * (hi - lo), 3)
+            return
         new_zoom = self.min_zoom + (1.0 - normalized) * (self.max_zoom - self.min_zoom)
         self._apply_zoom_centered(new_zoom)
 
