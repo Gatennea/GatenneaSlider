@@ -1659,6 +1659,10 @@ class EventsMixin:
         sx, sy = getattr(self, 'cubic_drag_start', pos)
         dx, dy = pos[0] - sx, pos[1] - sy
         if abs(dx) >= 4 or abs(dy) >= 4:
+            if not self.cubic_drag_moved:
+                # 一旦真的开始转，就退出选中态：旋转态只看不操作（方案 §2.2）。
+                # 否则旧的白线切面会跟着一起转，斜着看还压在块上，很像「还在选着」。
+                self._cubic_clear_selection()
             self.cubic_drag_moved = True
         if not self.cubic_drag_moved:
             return                       # 还在点击容差内：先别动相机（避免点一下画面就歪）
