@@ -1422,6 +1422,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.cubic_gap = DEFAULT_GAP
         # 平移盘面（没选中时点三轴六键 = 平移）：换局清零，别把上局的偏移带过来
         self.cubic_pan = [0.0, 0.0]
+        # 三维只留虚拟键盘当鼠标操作入口（方案 §1「操作入口」）。二维里这张面板
+        # 可以被关掉（config.panels.virtual_keyboard.visible=false），进三维必须
+        # 自己打开，否则鼠标端一个能按的都没有——2026-11-18 用户就撞在这上面
+        # （「沒看到箭頭啊，感覺還是沒辦法玩」，实际存档里面板是关着的）。
+        self.show_virtual_keyboard = True
 
         # 上次的三维相机组（config.json 的 cubic_camera）：有就套用，缺字段
         # 保持上面的默认；数值越界交给夹紧逻辑兜住（不静默写坏姿势）。

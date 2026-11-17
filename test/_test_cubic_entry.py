@@ -148,7 +148,9 @@ check('动不了' in (gui.macro_notify_msg or ''),
 
 print('=' * 60)
 print('D2. 投影渲染真的画出了东西（第 1 步接入后）')
+gui._cubic_camera_prefs = {}      # 别继承存档里的姿态：六朝向各带 14° 倾斜才见三面
 gui.new_cubic_puzzle(3, 3, 3, 1)
+gui._cubic_view(0)
 gui.draw_board()
 _w, _h = gui.screen_width, gui.screen_height
 _probe = {}

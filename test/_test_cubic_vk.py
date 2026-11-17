@@ -64,6 +64,12 @@ gui.draw_cubic_board()
 
 print('=' * 60)
 print('A. 布局：三行六键')
+# 二维存档里这张面板可能是关着的；进三维必须自动打开，否则鼠标端没入口
+gui.show_virtual_keyboard = False
+gui._cubic_camera_prefs = {}
+gui.new_cubic_puzzle(3, 3, 3, 1)
+check(gui.show_virtual_keyboard is True,
+      '进三维自动打开虚拟键盘（二维手动关掉的状态不该带进三维）')
 gui.show_virtual_keyboard = True
 rects = gui._vk_build_layout()
 cubic_keys = sorted(k for k in rects if k.startswith('cubic_'))
@@ -196,6 +202,59 @@ check(not any(k.startswith('cubic_') for k in rects2), '方形态没有 cubic_* 
 check(('move_up' in rects2) and ('move_left' in rects2) and ('move_right' in rects2)
       and ('move_down' in rects2), '方形态四向键照旧')
 check(len({rects2['move_up'].y, rects2['move_left'].y}) == 2, '方形态仍是两行')
+
+print('F. 棋盘上的方向箭头（重画 + 可点）')
+# E 段切回了方形，这里重建三维局再验箭头
+gui._cubic_camera_prefs = {}
+gui.new_cubic_puzzle(3, 3, 3, 1)
+# 选中一组后才该出现箭头；不选中时一个都没有
+gui._cubic_view(0)
+gui._cubic_clear_selection()
+gui.draw_cubic_board()
+check(not getattr(gui, '_cubic_arrow_buttons', []),
+      '没选中时棋盘上不画方向箭头（只在选中后给可点的方向）')
+gui._cubic_view(0)
+gui.draw_cubic_board()
+face2 = gui._cubic_scene['faces'][-1]
+pt = (int(sum(p[0] for p in face2['pts']) / 4.0),
+      int(sum(p[1] for p in face2['pts']) / 4.0))
+click(pt)
+click(pt)
+gui.draw_cubic_board()
+buttons = list(getattr(gui, '_cubic_arrow_buttons', []))
+fam = gui.selected_gap[0]
+families_of_letter = {'r': 'r', 'R': 'r', 'c': 'c', 'C': 'c', 'd': 'd', 'D': 'd'}
+allowed = sorted(l for l in families_of_letter if families_of_letter[l] != fam)
+check(sorted(l for l, _r in buttons) == allowed,
+      f'只画能走的两条轴四个箭头（{sorted(l for l, _r in buttons)}，应 {allowed}）')
+rects2f = [r for _l, r in buttons]
+check(all(r.w == 2 * gui.CUBIC_ARROW_R for r in rects2f), '箭头按键是固定大小命中盒')
+check(all(gui.screen.get_rect().contains(r) for r in rects2f), '四个箭头都在窗口内')
+overlap = sum(1 for i, a in enumerate(rects2f) for b in rects2f[i + 1:] if a.colliderect(b))
+check(overlap == 0, f'四个箭头互不重叠（{overlap} 处重叠）')
+# 旋转后箭头位置必须变（重画箭头）
+centers_before = {l: r.center for l, r in buttons}
+gui._cubic_view(4)
+gui.draw_cubic_board()
+centers_after = {l: r.center for l, r in gui._cubic_arrow_buttons}
+moved = sum(1 for l in centers_before
+            if l in centers_after
+            and (abs(centers_before[l][0] - centers_after[l][0]) > 3
+                 or abs(centers_before[l][1] - centers_after[l][1]) > 3))
+check(moved >= 2, f'换朝向后箭头位置跟着变（{moved} 枚移动超过 3px）')
+# 点箭头真的能推（命中优先于选缝）
+gui._cubic_view(0)
+gui.draw_cubic_board()
+buttons = list(gui._cubic_arrow_buttons)
+n_before = gui.step_count
+used_arrow = None
+for letter, rect in buttons:
+    click(rect.center)
+    if gui.step_count == n_before + 1:
+        used_arrow = letter
+        break
+check(used_arrow is not None,
+      f'点棋盘上的箭头能推一步（用 {used_arrow}，步数 {gui.step_count}，{gui.macro_notify_msg}）')
 
 print('=' * 60)
 if _fail:

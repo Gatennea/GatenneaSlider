@@ -1105,6 +1105,10 @@ class RendererMixin:
             surf, pos = seam_layer
             self.screen.blit(surf, pos)
 
+        # 三维方向箭头（方案 §4 第 4 步「重画箭头」）：选中一组后在切面外沿画可点
+        # 的方向键。画在最上层、按当前相机现算方向，旋转时跟着转。
+        self._draw_cubic_arrows(scene, seam, gap, camera, blocks)
+
         # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
         # 必然同源，不存在「看得见点不中」的漂移）。
         self._cubic_scene = scene
@@ -1166,6 +1170,67 @@ class RendererMixin:
         small = pygame.transform.smoothscale(layer, (rect.width, rect.height))
         small.set_alpha(self.CUBIC_SEAM_ALPHA)
         return (small, (rect.x, rect.y))
+
+    def _draw_cubic_arrows(self, scene, seam, gap, camera, blocks):
+        """三维方向箭头：选中一组后，在切面投影外沿画**可点**的方向键。
+
+        为什么不复用二维那套箭头贴图（方案 §1「不复用二维箭头样式」）：二维箭头是
+        四个固定角度的静态贴图；三维箭头要表达的是「世界三轴此刻落在屏幕的哪个
+        方位」，随相机变，只能现场按屏幕向量画三角形——这就是「重画箭头」。
+
+        只画能走的方向：切面法向那两个按规则推不动（引擎会拒 bad_direction），
+        画出来只会骗人去点。其余两条轴各正负一枚，共四枚。
+        """
+        self._cubic_arrow_buttons = []
+        if not seam or seam[0] not in ('r', 'c', 'd'):
+            return
+        if not any(getattr(b, 'be_opted', False) for b in blocks):
+            return
+        from engine import cubic_pick
+        from engine.compat import CUBIC_DIRECTIONS
+        poly = cubic_pick.seam_plane_polygon(seam[0], seam[1], blocks,
+                                             pad=self.CUBIC_SEAM_PAD, gap=gap)
+        if not poly:
+            return
+        from engine import cubic_view as _cv
+        pts = [_cv.project_point(w, camera, scene['scale'],
+                                 scene['origin'])[:2] for w in poly]
+        cx = sum(p[0] for p in pts) / float(len(pts))
+        cy = sum(p[1] for p in pts) / float(len(pts))
+        radius = max(math.hypot(p[0] - cx, p[1] - cy) for p in pts) \
+            + self.CUBIC_ARROW_OFF
+        r_btn = self.CUBIC_ARROW_R
+        # 字母向量的分量顺序是 (dr, dc, dd)，所以「剔掉切面法向」要按词条族的
+        # 下标比：fam r = 0 / c = 1 / d = 2（不是世界轴 0/1/2，两套是换序的）。
+        fam_index = {'r': 0, 'c': 1, 'd': 2}[seam[0]]
+        for letter, vec in CUBIC_DIRECTIONS.items():
+            axis = [i for i in range(3) if abs(vec[i]) > 0][0]
+            if axis == fam_index:
+                continue                 # 法向：规则里推不动，不画
+            dx, dy = self._cubic_letter_dir(letter)
+            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                continue                 # 这条轴正对镜头，屏幕上是点，没方向
+            px = cx + dx * radius
+            py = cy + dy * radius
+            # 出界就不画（窗口边界外点不到，画了只会留半个键）
+            if not (r_btn <= px <= self.screen_width - r_btn
+                    and r_btn <= py <= self.screen_height - r_btn):
+                continue
+            rect = pygame.Rect(int(px - r_btn), int(py - r_btn),
+                               r_btn * 2, r_btn * 2)
+            pygame.draw.circle(self.screen, (38, 38, 46), (int(px), int(py)), r_btn)
+            pygame.draw.circle(self.screen, (120, 120, 132),
+                               (int(px), int(py)), r_btn, 1)
+            tip = (px + dx * (r_btn - 5), py + dy * (r_btn - 5))
+            back = (px - dx * 8.0, py - dy * 8.0)
+            pxp, pyp = -dy, dx
+            tri = [(int(tip[0]), int(tip[1])),
+                   (int(back[0] + pxp * 7.0), int(back[1] + pyp * 7.0)),
+                   (int(back[0] - pxp * 7.0), int(back[1] - pyp * 7.0))]
+            pygame.draw.polygon(self.screen, (238, 238, 238), tri)
+            ls = self.status_font.render(letter, True, (210, 210, 210))
+            self.screen.blit(ls, ls.get_rect(center=(int(px), int(py + r_btn + 8))))
+            self._cubic_arrow_buttons.append((letter, rect))
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。

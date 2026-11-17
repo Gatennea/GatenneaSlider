@@ -1699,6 +1699,8 @@ class EventsMixin:
     #: 「有平面的感觉」= 半透明填充，不是只描框）。alpha 单独放，色取 colors['line']。
     CUBIC_SEAM_ALPHA = 110
     CUBIC_SEAM_PAD = 0.0
+    CUBIC_ARROW_R = 19          # 三维方向箭头按键半径（像素）
+    CUBIC_ARROW_OFF = 30        # 箭头离切面投影外沿的距离
 
     def _cubic_pick(self, x, y):
         """屏幕点 → 命中面（用渲染层刚存下的那份 scene，命中与画面必然一致）。"""
@@ -1707,6 +1709,13 @@ class EventsMixin:
         if not scene:
             return None
         return cubic_pick.hit_face(scene['faces'], (x, y))
+
+    def _cubic_arrow_hit(self, x, y):
+        """点在三維方向箭头上？返回方向字母，否则 None（命中优先于选缝）。"""
+        for letter, rect in getattr(self, '_cubic_arrow_buttons', ()):
+            if rect.collidepoint(x, y):
+                return letter
+        return None
 
     def _cubic_click(self, x, y):
         """左键点一下：点在块的面上就选它外沿那条内部切面；连点两下：选中一侧连通组。
@@ -1718,6 +1727,10 @@ class EventsMixin:
         本来就不依赖正向朝向；原「必须正向化」是当年怕渲染难做留的退路）。
         """
         from engine import cubic_pick
+        # 方向箭头优先：它在最上层，点它就该推，不该被当成「点面选缝」
+        arrow = self._cubic_arrow_hit(x, y)
+        if arrow is not None:
+            return self._cubic_push_letter(arrow, hint='方向箭头')
         hit = self._cubic_pick(x, y)
         if hit is None:
             return False
@@ -1858,13 +1871,31 @@ class EventsMixin:
             return (0.0, 0.0)
         return (vx / norm, -vy / norm)
 
+    @staticmethod
+    def _cubic_lattice_to_world(vec):
+        """CUBIC_DIRECTIONS 的 (dr, dc, dd) → 世界 (x=c, y=d, z=r)。
+
+        ⚠️ 这两个坐标系是**换序**的（`cubic_view` 里 X=c / Y=d / Z=r），
+        直接拿 (dr,dc,dd) 当世界向量去投影，箭头会整体错位成另一条轴
+        （2026-11-18 实测：切面 r 的两个箭头画到了左右，本该是上下/前后）。
+        """
+        return (vec[1], vec[2], vec[0])
+
+    def _cubic_letter_dir(self, letter):
+        """方向字母 → 屏幕单位向量（内部完成 lattice→world 换序）。"""
+        from engine.compat import CUBIC_DIRECTIONS
+        vec = CUBIC_DIRECTIONS.get(letter)
+        if vec is None:
+            return (0.0, 0.0)
+        return self._cubic_screen_dir(self._cubic_lattice_to_world(vec))
+
     def _cubic_pan_by(self, letter, notify=True):
         """按世界方向平移盘面一格（屏幕偏移，不碰逻辑坐标）。"""
         from engine.compat import CUBIC_DIRECTIONS
         vec = CUBIC_DIRECTIONS.get(letter)
         if vec is None:
             return False
-        dir2 = self._cubic_screen_dir(vec)
+        dir2 = self._cubic_screen_dir(self._cubic_lattice_to_world(vec))
         if dir2 == (0.0, 0.0):
             # 这条轴正对/背对镜头：屏幕上没有可平移的方向，提示而不是瞎挪
             self.macro_notify_msg = f"{letter} 轴正对镜头，屏幕上没有可平移的方向"
@@ -1906,7 +1937,7 @@ class EventsMixin:
     def _cubic_vk_dirs(self):
         """六键箭头：{字母: (屏幕 dx, dy)}，按当前相机现算（旋转后要重画）。"""
         from engine.compat import CUBIC_DIRECTIONS
-        return {letter: self._cubic_screen_dir(vec)
+        return {letter: self._cubic_screen_dir(self._cubic_lattice_to_world(vec))
                 for letter, vec in CUBIC_DIRECTIONS.items()}
 
     def _cmd_reply(self, resp_q, ok, message, data=None):
