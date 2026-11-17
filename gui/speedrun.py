@@ -57,7 +57,7 @@ class SpeedrunMixin:
         return {'timed': '竞速', 'create': '创造'}.get(mode, '练习')
 
     def _mode_name(self) -> str:
-        """当前模式的中文名（练习 / 竞速 / 创造 / 迷宫）。"""
+        """当前模式的中文名（练习 / 竞速 / 创造）。"""
         return self._mode_label(getattr(self, 'game_mode', 'practice'))
 
     def mode_allowed(self, mode: str) -> bool:
@@ -149,7 +149,7 @@ class SpeedrunMixin:
         return True
 
     def toggle_game_mode(self):
-        """循环切换 练习 → 竞速 → 创造 → 迷宫 → 练习（「模式」开关 / 谜题菜单入口）
+        """循环切换 练习 → 竞速 → 创造 → 练习（「模式」开关 / 谜题菜单入口）
 
         ⚠️ 跳过当前盘型进不去的档位（2026-10-26 用户报的真 bug）：模型文件
         板型不支持竞速，旧实现「练习 → 竞速」被拒后就原地不动，于是模式开关

@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """功能检索索引（gui/feature_index.py）回归测试。
 
-锁三件事：
+锁四件事：
   1. 清单数据完整（字段齐全、id 唯一、形态/模式键合法）—— 表与代码漂移时这里会红；
   2. 口语化查询能命中预期条目 —— 别名表是检索质量的关键，删别名会红；
   3. 每条的「一键到位」目标接得上（settings 打开对应页签 / toggle 真翻转 / 其余不抛）。
+  4. 防漏护栏（2026-11-17，待办 §五十二起因）：设置对话框的可点控件与真源条目
+     双向锁——新增开关漏登记、或条目声明了设置页却没对应控件，这里会红。
 
 执行：``D:/python/python.exe -u test/_test_feature_index.py``
 """
@@ -175,6 +177,33 @@ for q in ('三角', '米字', '三角形'):
     check(f'2D「{q}」首位 = preset_exotic（矩形盘下也算）',
           bool(hits) and hits[0][1]['id'] == 'preset_exotic')
 
+# ================================================================ 2e 漏登补齐
+# 起因（待办 §五十二）：功能真实存在但真源漏登记，玩家 Ctrl+K 搜不到。
+# 本轮补齐：谜题菜单悬停预览 + 设置页三个漏登开关 + 快捷键页 +
+# 谜题菜单漏登的模型/样式子菜单 + 标注模式（仅文档登记，无显式入口）。
+print("\n--- 2e 漏登补齐（2026-11-17） ---")
+_CASES_2E = (
+    ('预览', 'puzzle_hover_preview'),
+    ('悬停预览', 'puzzle_hover_preview'),
+    ('操作日志', 'op_log_enabled'),
+    ('开机动画', 'boot_animation'),
+    ('防意外打乱', 'confirm_before_shuffle'),
+    ('改键', 'keybindings'),
+    ('快捷键', 'keybindings'),
+    ('模型谜题', 'preset_model'),
+    ('捆绑', 'preset_styles'),
+    ('自定义还原态', 'preset_styles'),
+    ('标注', 'annotation_mode'),
+)
+for query, want in _CASES_2E:
+    hits = [e['id'] for _s, e, _a in fi.search(query)]
+    check(f'2E「{query}」→ {want}', want in hits)
+
+# 标注模式只进文档、不给显式入口：一键到位必须是 none（不跳任何界面）
+_ann = next((f for f in fi.FEATURES if f['id'] == 'annotation_mode'), None)
+check('annotation_mode 登记为 none（无显式入口）',
+      _ann is not None and _ann['action'].get('type') == 'none')
+
 # ================================================================ 3 上下文
 print("\n--- 3 上下文（当前形态决定可用性） ---")
 hits = fi.search('选块填空', form='triangle', mode='practice')
@@ -283,6 +312,104 @@ try:
     check('无检索词时仍渲染操作说明全文', True)
 except Exception as exc:
     check('无检索词时仍渲染操作说明全文', False, repr(exc))
+
+# ================================================================ 6 防漏护栏
+# 起因（待办 §五十二）：谜题菜单悬停预览真实存在却没登记真源，玩家搜不到。
+# 本节把「设置对话框可点控件」与真源条目双向锁住：
+#   正向：events.py 里出现的每个 _settings_*_rect 控件必须登记在下表（或标明非功能项）；
+#   反向：每条 place=('settings',…) 的真源条目必须能在下表里找到对应控件。
+# 新增开关漏登记 / 删控件却留条目，本节都会红。
+print("\n--- 6 防漏护栏：设置页控件 ↔ 真源条目 ---")
+import re  # noqa: E402
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(_ROOT, 'gui', 'events.py'), encoding='utf-8') as _fp:
+    _events_src = _fp.read()
+_rects_found = sorted(set(re.findall(r'self\._settings_(\w+)_rect', _events_src)))
+# 控件名（events.py 里 _settings_<名>_rect 的 <名>）→ 真源 id；
+# 值可为元组 = 该控件由多条真源条目共同覆盖。反向检查按值展开，
+# 所以正则扫不到、以字符串构造的批量控件在这里手工登记。
+_RECT_TO_ID = {
+    # 文件页
+    'readonly_toggle': 'readonly_save',
+    'prevent_overwrite': 'prevent_overwrite',
+    'oplog_toggle': 'op_log_enabled',
+    'compressed_toggle': 'save_compress',
+    # 视觉页
+    'ui_mode': 'ui_mode',
+    'anim_toggle': 'animation_enabled',
+    'sel_anim_toggle': 'selection_animation_enabled',
+    'coloring_toggle': 'coloring_enabled',
+    'chain_toggle': 'chain_hint_enabled',
+    'gap_hover_toggle': 'gap_hover_flash_enabled',
+    'marks_toggle': 'board_marks_enabled',
+    'metrics_toggle': 'metrics_panel',
+    'records_toggle': 'records_panel',
+    'boot_toggle': 'boot_animation',
+    'confirm_shuffle_toggle': 'confirm_before_shuffle',
+    'grid_toggle': 'draw_grid',
+    'anti_drift_toggle': 'anti_drift',
+    'thinking_toggle': 'thinking',
+    'zoom_knob': 'zoom',
+    'zoom_track': 'zoom',
+    'slider_knob': 'animation_duration',
+    'slider_track': 'animation_duration',
+    # 音频页
+    'sfx_toggle': 'sfx_enabled',
+    'music_toggle': 'music_enabled',
+    'mute_toggle': 'sound_muted',
+    '_settings_slot_toggle_rects': 'sfx_slots',    # 字典批量控件，手工登记
+    '_settings_slot_preview_rects': 'sfx_slots',   # 试听按钮，同属音效一览
+    # 求解器 / 聚拢参数页
+    'solver': ('algo_gather', 'algo_others', 'pick_fill'),
+    'solver_log_toggle': 'solver_log_enabled',
+    'gather': 'gather_params',
+    # 快捷键页
+    'key': 'keybindings',
+    # 控制页
+    'ctrl_single': 'control_single_touch',
+    'ctrl_two': 'control_two_touch',
+    'ctrl_kb': 'control_mouse_kb',
+    'ctrl_vk': 'virtual_keyboard',
+    'ctrl_arrow': 'arrows_enabled',
+    'ctrl_revmacro': 'macro_reverse',
+    'infinite_shuffle_toggle': 'infinite_shuffle',
+    'game_mode': 'mode_practice',
+    'ext_toggle': 'external_control',
+    'ext_copy': 'external_control',
+    'ext_guide': 'external_control',
+}
+# 非功能控件（导航/框架件），值为登记理由
+_RECT_SKIPPED = {
+    'tab_kb': '页签导航（快捷键）',
+    'tab_anim': '页签导航（视觉）',
+    'tab_audio': '页签导航（音频）',
+    'tab_solver': '页签导航（求解器）',
+    'tab_gather': '页签导航（聚拢参数）',
+    'tab_file': '页签导航（文件）',
+    'tab_control': '页签导航（控制）',
+}
+_unreg = [r for r in _rects_found
+          if r not in _RECT_TO_ID and r not in _RECT_SKIPPED]
+check('设置页控件全部登记防漏映射', not _unreg,
+      f'未登记控件: {_unreg}（先补真源条目，再登记进 _RECT_TO_ID / _RECT_SKIPPED）')
+
+_ids = {f['id'] for f in fi.FEATURES}
+_dangling = []
+for _r, _v in _RECT_TO_ID.items():
+    for _i in ((_v,) if isinstance(_v, str) else _v):
+        if _i not in _ids:
+            _dangling.append(f'{_r}→{_i}')
+check('映射的功能 id 都在真源里', not _dangling, '; '.join(_dangling))
+
+_mapped_ids = set()
+for _v in _RECT_TO_ID.values():
+    _mapped_ids.update((_v,) if isinstance(_v, str) else _v)
+_settings_place = [f['id'] for f in fi.FEATURES
+                   if isinstance(f.get('place'), tuple) and f['place']
+                   and f['place'][0] == 'settings']
+_orphan = [i for i in _settings_place if i not in _mapped_ids]
+check('声明在设置页的条目都有对应控件', not _orphan, f'孤立条目: {_orphan}')
 
 print()
 if _failures:
