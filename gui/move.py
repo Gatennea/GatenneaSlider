@@ -281,6 +281,12 @@ class MoveMixin:
             'w': '上', 's': '下', 'a': '左', 'd': '右',
             'e': '右上', 'z': '左下', 'x': '右下',
         }
+        # 三維（§54 第 4 步）：r/R c/C d/D 是軸向字母，寫成「c-」這種才读得出
+        if getattr(self, 'cubic_mode', False):
+            cubic = {'r': 'r−', 'R': 'r+', 'c': 'c−', 'C': 'c+',
+                     'd': 'd−', 'D': 'd+'}
+            if direction in cubic:
+                return cubic[direction]
         if direction in names:
             return names[direction]
         # 模型文件板型（通用通道）：字母是**从几何派生的**（compat 的

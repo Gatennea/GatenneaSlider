@@ -264,3 +264,35 @@
 - 尚未接：拆分滑条进右侧栏、透明度、明暗/透视（§2.4，属渲染选项阶段）。
 - `_test_cubic_pick.py` 的 GUI 段依赖 `draw_cubic_board` 先跑一次（拾取用渲染
   存的 scene）；若将来渲染改为按需缓存，测试与事件都要跟着改成显式 build。
+
+## 第 4 步（上半）：三轴六向能推 + 判胜 + 打乱
+
+- `engine/compat.py`：注册 `CUBIC_DIRECTIONS = {r,R,c,C,d,D}`（大写沿轴增大）。
+  不注册会派生 A~F，能滑但不直观。⚠️ 小写 r/c/d 与缝族同名——`_gap_family_of`
+  先认族名，所以 cubic 上「往 opt 里传方向字母」不成立；GUI 的 opt 只传族名，
+  字母只在 `_build_action` 查表用，这条写进注释免得以后误用。
+- `gui/events.py`：新增 `_cubic_move_key`（r/R c/C d/D），接在 KEYDOWN 的
+  `_cubic_view_key` 之后。三条闸门：带 Ctrl/Alt 不消费；旋转态不响应滑动只提示；
+  没选中只提示「先双击选中」。移动直接走现成的 `move_selected_blocks`，所以步数、
+  快照、动画开关、判胜判定全部复用，没有另起一套。
+- `gui/move.py`：`_dir_name` 补 cubic 六字母 → `r+/r−/c+/c−/d+/d−`，提示不再出现
+  「向c移动」这种半截话。
+- **撤销/重做在三维下明确拒绝**（`gui/history.py`）：实跑发现 `undo()` 会把快照里
+  的二元位置喂给 `_norm_keys` 直接抛 `ValueError: 含非法位置 (0, 0)`——历史扩到
+  (r,c,d) 是第 5 步的事。按「接口占位不写空骨架」，这一步先给一句
+  「三维撤销是第 5 步」的明示，不让它半崩。
+- 新增 `test/_test_cubic_play.py`（32 项）：字母表与 spec 六向双射、单轴单位向量；
+  双击选中 → 按 c 推一步（整组沿 c−1、块数守恒、步数 +1、提示带 c−、is_solved 转假）；
+  大写 C 推回（重新还原）；旋转态按键不推、没选中按键不推且不涨步数；undo/redo 被拒
+  且位置不变；打乱后 27 块、非还原、渲染仍有可见面、步数清零。
+- 回归：`_test_cubic_play` 32、`_test_cubic_pick` 204、`_test_cubic_view_nav` 83、
+  `_test_cubic_gap` 18、`_test_cubic_entry` 31、`_test_cubic_split` 25、
+  `_test_geometry_engine`、`_test_menu_redesign` 56 全过。
+- 截图：`cubic_shots/step4_shuffled.png`（3×3×3 打乱后的三维云团，深度可读）。
+
+本步**还没做**（下一片接着做，别当成已完成）：
+
+- **虚拟键盘三轴六键**（`gui/virtual_keyboard.py`）：现在只能键盘推，鼠标玩家还没
+  按钮可按；「没选中时点六键 = 平移盘面」也一并留到那片。
+- **重画箭头**：三维的六向箭头还没画，二维箭头在 cubic 下不出。
+- 撤销/重做要等第 5 步把快照扩到 (r,c,d)（`history.py` + `file_ops.py` + 压缩存档）。

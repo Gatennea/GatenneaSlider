@@ -15,6 +15,13 @@ class HistoryMixin:
 
     def undo(self):
         """撤销操作（Ctrl+Z）"""
+        # 三維（§54）：快照还只存 (r, c) 两个分量（第 5 步才扩到三维），
+        # 走撤销会在 restore 时把 3 元位置喂给 _norm_keys 直接抛 ValueError。
+        # 宁可明说「第 5 步才接」，也不能让它半崩（方案「接口占位不写空骨架」）。
+        if getattr(self, 'cubic_mode', False):
+            self.macro_notify_msg = "三维撤销是第 5 步（历史扩到 (r,c,d)），现在还不能撤"
+            self.macro_notify_timer = 120
+            return
         # 教程解法播放中：锁定棋盘操作
         if self._tut_board_locked():
             return
@@ -70,6 +77,11 @@ class HistoryMixin:
 
     def redo(self):
         """重做操作（Ctrl+X）"""
+        # 三維同 undo：快照还是二维口径，第 5 步接上后再放开
+        if getattr(self, 'cubic_mode', False):
+            self.macro_notify_msg = "三维重做是第 5 步（历史扩到 (r,c,d)），现在还不能做"
+            self.macro_notify_timer = 120
+            return
         # 教程解法播放中：锁定棋盘操作（回放自身的连续重做除外）
         if self._tut_board_locked() and not self._continuous_redo:
             return

@@ -1524,6 +1524,10 @@ class EventsMixin:
                         # 三維：1–6 切六朝向、0 回斜视（带偏角，不是正对）
                         continue
 
+                    elif getattr(self, 'cubic_mode', False) and self._cubic_move_key(event):
+                        # 三維：r/R c/C d/D 三軸六向推選中組（§54 第 4 步）
+                        continue
+
                     else:
                         if self._tut_board_locked():
                             continue
@@ -1737,7 +1741,7 @@ class EventsMixin:
         return True
 
     def _cubic_clear_selection(self):
-        """右键 / 点空白：取消选中与切面预览。"""
+        """右键 / 点空白 / 开始旋转：取消选中与切面预览。"""
         self.selected_gap = None
         self.selected_block = None
         self._cubic_last_click_t = None
@@ -1769,6 +1773,34 @@ class EventsMixin:
             self._cubic_view_oblique()
             return True
         return False
+
+    def _cubic_move_key(self, event):
+        """三轴六向字母推一步（§54 第 4 步）：r/R c/C d/D，大写沿轴增大。
+
+        与 `engine.compat` 的 cubic 字母表同一套字母（不注册会派生成 A~F，能用
+        但不直观）。三条闸门：带 Ctrl/Alt 不消费（留给快捷键）；旋转态（不在六
+        朝向之一）不响应滑动；没选中就只提示「先双击选中」。
+        """
+        if getattr(event, 'mod', 0) & (pygame.KMOD_CTRL | pygame.KMOD_ALT):
+            return False
+        mapping = {pygame.K_r: 'r', pygame.K_c: 'c', pygame.K_d: 'd'}
+        base = mapping.get(event.key)
+        if base is None:
+            return False
+        letter = base.upper() if (event.mod & pygame.KMOD_SHIFT) else base
+        if getattr(self, 'cubic_view_index', None) is None:
+            self.macro_notify_msg = "旋转态只看不动：按 1–6 回到一个朝向再滑"
+            self.macro_notify_timer = 120
+            return True
+        if not any(getattr(b, 'be_opted', False) for b in self.game.blocks):
+            self.macro_notify_msg = "先在切面一侧双击选中滑块，再用 r/R c/C d/D 推"
+            self.macro_notify_timer = 120
+            return True
+        moved = self.move_selected_blocks(letter)
+        if not moved:
+            self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
+            self.macro_notify_timer = 120
+        return True
 
     def _cmd_reply(self, resp_q, ok, message, data=None):
         """统一回复：有 resp_q 则通过队列回复（HTTP），否则打印到终端"""
