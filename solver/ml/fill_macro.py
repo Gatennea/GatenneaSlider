@@ -516,8 +516,11 @@ def _split_stuck_outside(coords, m, n, step, max_depth=5, max_nodes=6000,
 
     触发边界刻意收窄到「outside 恰 2 块且相邻」：凸起多于 2 属其它形态
     （片状外围拆对无意义），不在本原语职责，避免停机局白烧预算。
-    挂载点 = solve_multi_void 的 couple+整形预演全败、停机之前；不满足
-    触发条件秒返 None，既有成功局完全不经过本函数，行为零变化。
+    挂载点两处（2026-11-17 用户报「识别太慢，前面超过 20 秒都在做其他尝试」）：
+    ① 轮首签名识别——小节点预算（_SPLIT_EARLY_NODES）快速尝试，命中即
+    立刻拆（stuck@76 识别从 17.9s 提到 ~1s 内）；② 轮末全额兜底——小预算
+    没搜到且正常链全败时跑全额 BFS，与前移前的唯一挂载点逐位等价。
+    不满足签名两处都秒返 None 零成本，既有成功局完全不经过本函数。
 
     返回动作列表（5 元组）或 None（确定性、有节点上限）。
     """
@@ -579,6 +582,13 @@ def _split_stuck_outside(coords, m, n, step, max_depth=5, max_nodes=6000,
         if not frontier:
             return None
     return None
+
+
+# 轮首快速拆分的节点预算（全额 = 上面默认 6000）：stuck@76 实测 0.07s 内
+# 出解远在此预算内；7×7 签名局全额单次要 5.6s，收小后（≈800 节点 <1s）
+# 逐轮叠加不再可能烧穿 GUI 30s 预算（2026-11-17 script__regression 5.1/5.5
+# 退化教训）。确定性节点上限，不用墙钟（§四十八 切点抖动教训）。
+_SPLIT_EARLY_NODES = 800
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +739,9 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
     （回放后最佳窗口方块数提升）。
 
     流程：
+        0. 轮首粘连签名识别：outside 恰两凸起且粘连 → 小节点预算快速拆分
+           （_split_stuck_outside + _SPLIT_EARLY_NODES；不匹配秒返 None
+           零成本）；轮末正常链全败时另有全额 BFS 兜底（同前移前原实现）；
         1. 取当前窗口内一个洞 h，随机找同 mod 的窗外凸起 p → 一个 couple；
         2. 调 solve_single_void(couple, keep_partial=True) 尝试：
            · 完全失败 → 无副作用换组；
@@ -782,12 +795,41 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                           'rounds': rounds, 'attempts': attempts,
                           'holes_left': len(holes),
                           'steps': len(total)})
+        progressed = False
+        # 粘连签名**前置**识别（2026-11-17 用户报「识别太慢，前面超过 20 秒
+        # 都在做其他尝试」）：开轮先用**小节点预算**快速尝试拆分——stuck@76
+        # 实测 0.07s 内即出解，识别从「couple+setup+band_shift 全败后的 17.9s」
+        # 提到 ~1s 内。预算必须收小：原语全额（6000 节点）在 7×7 签名局
+        # （beginner 5.1/5.5，签名也匹配但正常链本可解）单次烧 5.6s，逐轮
+        # 叠加曾把 30s 预算烧穿（script__regression 两例退化）。
+        # 确定性：节点上限展开确定 → 结果跨机一致；尝试失败（返回 None）时
+        # 后续 h_list 洗牌/rng 序列与原实现逐位相同 = 行为零差异，只多花
+        # 小预算的时间。轮末仍保留全额 BFS 兜底（小预算没搜到、正常链也
+        # 全败的局，走与原实现完全相同的全額搜索）。
+        plan = _split_stuck_outside(cur, m, n, step,
+                                    max_nodes=_SPLIT_EARLY_NODES,
+                                    cancel_check=cancel_check)
+        if plan is not None:
+            if not _replay_apply(g, plan, m, n, step):
+                return _stop({'reason': '多洞停机：粘连凸起拆分整形推进活盘失败',
+                              'rounds': rounds, 'steps': len(total)})
+            total.extend(plan)
+            progressed = True
+            if segment_cb is not None:
+                try:
+                    segment_cb('round%d 粘连凸起拆分整形' % rounds, list(plan))
+                    streamed[0] += len(plan)
+                except Exception:
+                    pass   # 流式回调失败不拖垮求解
+            if verbose:
+                print('   round%d 粘连凸起拆分整形(%d步) → 收下'
+                      % (rounds, len(plan)))
+            continue
         # 遍历 couple：洞序随机，同 mod 凸起随机序（=「随机找一组」的展开）。
         # 并行轮询优先（2026-10-01 用户思想）：全部 (h,p) 同时开算，任一通过
         # 闸门立即采纳；不可解的组不再挡住几秒内可解的组。
         h_list = list(holes)
         rng.shuffle(h_list)
-        progressed = False
         tasks = [(h, p) for h in h_list for p in outside
                  if (p[0] - h[0]) % step == 0 and (p[1] - h[1]) % step == 0]
         h = p = None
@@ -953,9 +995,10 @@ def solve_multi_void(coords, m, n, step, verbose=False, max_rounds=80,
                     print('   round%d 中性整形预演(%d步) → 收下'
                           % (rounds, len(plan)))
         if not progressed:
-            # 粘连双凸起拆分整形（2026-11-17 stuck@76，见 _split_stuck_outside
-            # docstring）：couple+整形预演全败的最后机会——outside 恰两凸起
-            # 粘连时借位拆开（允许聚拢度先降后升），拆开后回主循环重扫。
+            # 粘连双凸起拆分整形·全额兜底（2026-11-17 stuck@76，见
+            # _split_stuck_outside docstring）：轮首小预算没搜到、且 couple+
+            # setup+band_shift+整形全败时，此处跑全额 BFS——state 与轮首相同
+            # （失败尝试都打在 cur 副本上），等价于原「轮末唯一挂载点」行为。
             plan = _split_stuck_outside(cur, m, n, step,
                                         cancel_check=cancel_check)
             if plan is not None:
