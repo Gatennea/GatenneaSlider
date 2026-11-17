@@ -83,10 +83,35 @@
 `_test_external_control` / `_test_feature_index` / `_test_command_palette` 全绿；
 `tools.static_lint.runner` 无新增（产品代码未用 import 仍 0、`dup_body` 14 项）。
 
-留给下一步的口径（第 1 步「画出来」）：
+### 2026-11-17 第 1 步（投影渲染）已落地
 
-- 占位渲染整段替换成 `engine/cubic_view.py`（投影 + 深度排序），
-  `draw_board` 的 cubic 分支改调它；遮挡关先肉眼验过再写拾取。
-- 三维**尚未注册方向字母表**（`compat._VOCAB` 没有 'cubic'，现派生大写 A~F）：
-  方案第 4 步才注册六向字母，别在拾取之前拿派生字母当正式键。
+- 新增 `engine/cubic_camera.py`：四元数姿态（`FACE_BASIS` 六正对视角 =
+  三轴×两侧 + 规范 roll）；`from_yaw_pitch` 给默认斜视（yaw −32° / pitch 24°，
+  三面可见）；`nearest_face_view()`（按相机 z 轴点积吸附）、`slerp`、
+  `rotated(axis, deg)` 都先备好，第 2 步直接接线。
+- 新增 `engine/cubic_view.py`：世界映射 `X=c / Y=d / Z=r`；背面剔除 +
+  相邻块内部面剔除 + 画家排序（面心深度升序，远景先画）；`fit_view` 按相机空间
+  包围盒装画面；`build_scene` 一步返回 `faces/scale/origin`。纯数学，不 import
+  pygame。
+- `gui/renderer.py::draw_cubic_board` 从佔位换成真渲染：面填「滑块基色 × 明暗」
+  + 描边，选中块整片用 `block_selected`（状态仍靠颜色，不新增填充语义）；
+  左上角一行「三维 m×n×d 等级 s　斜视预览」。行放顶部是因为底部整条被
+  `draw_status_bar` 覆盖（放下面等于没画，首版截图已中招）。
+- `GUI.new_cubic_puzzle` 建局时给 `self.cubic_camera = oblique_default()`、
+  `self.cubic_zoom = 1.0`。
+- 新增 `test/_test_cubic_view.py`（41 项）：六视角 z 轴、正对 9 面、斜视 27 面、
+  顶视 +Y、内部面/背面剔除、前块深于后块且投影完全重叠、单块正投影是正方形。
+- `test/_test_cubic_entry.py` 加 D2：3×3×3 整帧至少 3 级明暗、背景不糊、
+  正对视角不崩（现 31 项）。
+- 肉眼验（截图存 workspace `cubic_shots/`，不入库）：实心 3×3×3 三面正确；
+  前排正中抠两格深坑 → 内部地板与侧壁可见；挖掉内核从外面看不到（正确）。
+
+下一刀（第 2 步）要解决的两个已知口子：
+
+- **右面板「缩放」滑条对三维无效**：它改的是 `self.zoom`（二维相机），三维用
+  `self.cubic_zoom`。面板接线是方案第 3 步，这一步别让滑条假装能拉。
+- **正对视角天然扁平**：identity 下实心 3×3×3 与二维 3×3 长得一样（截图已验）。
+  第 2 步做六视角时要定「正视仍能看出是三维」的补偿口径（轻斜视 residue 还是
+  侧壁描边），否则用户按到正视会以为掉回了二维。
+
 

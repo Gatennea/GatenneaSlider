@@ -952,31 +952,56 @@ class RendererMixin:
         self._draw_hover_gap()
 
     def draw_cubic_board(self):
-        """三維棋盤的**明示佔位**（§54 第 0 步）。
+        """三維棋盤：投影渲染（§54 第 1 步「能畫出來」）。
 
-        這一步只做出建局與菜單入口（方案 §4 第 0 步），投影渲染在方案第 1 步。
-        這裡**不能**順著二維分支畫 m×n 的扁平盤：三維局的 location 是三元組，
-        壓成兩維畫會得到一張「看著能玩、其實少一層」的假棋盤，還把空腔全蓋住。
-        故這裡只留背景 + 一句明示，等 cubic_view 接上後整段換掉。
+        绘制顺序直接用 `engine.cubic_view` 给出的画家排序（远的先画、近的后画），
+        每个可见面填「滑块基色 × 明暗系数」+ 描边。明暗只表达「哪面朝哪」，
+        状态表达仍走颜色（选中块整片变绿，与二维同口径）。
+
+        第 1 步还没有拾取 / 六向操作 / 旋转手势：那些在第 2–4 步接。默认给一个
+        斜视姿态（三面可见），便于肉眼验「前块挡后块、凹坑看得见」。
         """
         self.screen.fill(self.colors['background'])
         game = getattr(self, 'game', None)
+        blocks = getattr(game, 'blocks', None) if game is not None else None
+        if not blocks:
+            return
+        from engine.cubic_camera import CubicCamera
+        from engine import cubic_view
+
+        camera = getattr(self, 'cubic_camera', None) or \
+            CubicCamera.oblique_default()
+        self.cubic_camera = camera
+        scene = cubic_view.build_scene(
+            blocks, camera, self.screen_width, self.screen_height,
+            margin=64, zoom=getattr(self, 'cubic_zoom', 1.0))
+
+        base = self.colors['block']
+        chosen = self.colors['block_selected']
+        border = self.colors['border']
+        opted = {tuple(int(v) for v in b.location[:3])
+                 for b in blocks if getattr(b, 'be_opted', False)}
+        for face in scene['faces']:
+            color = chosen if face['loc'] in opted else base
+            shade = face['shade']
+            fill = (int(color[0] * shade), int(color[1] * shade),
+                    int(color[2] * shade))
+            pts = [(int(round(p[0])), int(round(p[1]))) for p in face['pts']]
+            pygame.draw.polygon(self.screen, fill, pts)
+            pygame.draw.polygon(self.screen, border, pts, 1)
+
+        # 左上角一行状态：三維尺度 / 等级 / 当前视角口径。
+        # 放**顶部**：底部整条被 draw_status_bar 覆盖（画在下面等于没画）。
         m = getattr(game, 'm', 0) or 0
         n = getattr(game, 'n', 0) or 0
         d = getattr(game, 'depth', 0) or 0
-        lines = [
-            '三维视图尚未接入',
-            f'{m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
-            '（投影渲染在方案第 1 步）',
-        ]
-        surf0 = self.font.render(lines[0], True, self.colors['menu_text'])
-        surf1 = self.status_font.render(lines[1], True, self.colors['separator'])
-        x0 = (self.screen_width - surf0.get_width()) // 2
-        y0 = self.screen_height // 2 - surf0.get_height()
-        self.screen.blit(surf0, (x0, y0))
-        self.screen.blit(
-            surf1, ((self.screen_width - surf1.get_width()) // 2,
-                    y0 + surf0.get_height() + 12))
+        hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
+                f'　斜视预览（六视角与旋转在第 2 步）')
+        try:
+            surf = self.status_font.render(hint, True, self.colors['status_text'])
+            self.screen.blit(surf, (16, 12))
+        except Exception:
+            pass   # 文字画失败只丢这一行，不能让整帧黑掉（§4 同一条纪律）
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。

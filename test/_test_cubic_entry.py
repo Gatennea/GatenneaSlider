@@ -11,8 +11,8 @@
   B. 分榜键：`1~cubic3*3*3`；不同层数不共键；缺 depth 的键显式报错。
   C. GUI：`new_cubic_puzzle` 能建局、旗标与 current_depth 就位；
      **真点一遍菜单**（事件队列 → handle_events）也能建出三维局，不是静默兜底。
-  D. 占位渲染：`draw_board` 不崩，且不画成二维扁平盘。
-  E. 1×1×1 这类「一步都动不了」的档位给明确说明，不静默失败。
+  D. 1×1×1 这类「一步都动不了」的档位给明确说明，不静默失败。
+  D2. 投影渲染接入后：画面真的出现多级明暗（三面可见），背景不糊。
   F. 切回二维清旗标、二维分榜键不受 depth 影响。
   G. 求解入口对三维明确拒绝（不拿二维求解器硬算）。
 
@@ -139,6 +139,26 @@ print('D. 一步都动不了的档位：明说，不静默')
 gui.new_cubic_puzzle(1, 1, 1, 1)
 check('动不了' in (gui.macro_notify_msg or ''),
       '1×1×1 给出「动不了」说明', gui.macro_notify_msg)
+
+print('=' * 60)
+print('D2. 投影渲染真的画出了东西（第 1 步接入后）')
+gui.new_cubic_puzzle(3, 3, 3, 1)
+gui.draw_board()
+_w, _h = gui.screen_width, gui.screen_height
+_probe = {}
+for _y in range(0, _h, 5):
+    for _x in range(0, _w, 5):
+        _c = gui.screen.get_at((_x, _y))[:3]
+        _probe[_c] = _probe.get(_c, 0) + 1
+_shades = [c for c, n in _probe.items() if n > 200]
+check(len(_shades) >= 3, '画面上至少 3 级明暗（三面可见）', _shades)
+check(any(c == gui.colors['background'] for c in _probe),
+      '背景仍是主题底色（没整屏糊成一块）')
+# 正对视角也要能画（不崩、不退回二维分支）
+from engine.cubic_camera import CubicCamera  # noqa: E402
+gui.cubic_camera = CubicCamera.identity()
+gui.draw_board()
+check(True, '正对视角 draw_board 不抛异常')
 
 print('=' * 60)
 print('E. 切回二维 / 求解拦截')

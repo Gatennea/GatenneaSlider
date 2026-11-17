@@ -1400,6 +1400,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 不把算法落到任何二维语义上。
         self.game = create_puzzle(m, n, step, kind='cubic', depth=d)
         self.current_kind = 'cubic'
+        # 默认相机：斜视（三面可见）。六视角 / 自由旋转 / 存档分组是第 2 步的事。
+        from engine.cubic_camera import CubicCamera
+        self.cubic_camera = CubicCamera.oblique_default()
+        self.cubic_zoom = 1.0
 
         # 重置状态（相机/缩放沿用二维字段；三维相机组是第 2 步的事）
         self.zoom = 1.0
