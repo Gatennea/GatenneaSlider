@@ -154,14 +154,18 @@ check(set(locs()) == set(before), '没选中按键不推')
 check(gui.step_count == n_before,
       f'没选中被拒时步数不涨（之前 {n_before}，现在 {gui.step_count}）')
 
-print('D. 撤销 / 重做在三维下明确拒绝（不崩）')
-before = locs()
+print('D. 撤销 / 重做真的换局面（第 5 步历史已扩到 (r,c,d)）')
+after_cells = locs()
+idx0 = gui.game_history.history_index
+check(idx0 >= 1, f'推过之后历史里不止一条快照（idx {idx0}）')
 gui.undo()
-check(set(locs()) == set(before), '撤销被拒，位置不变')
-check('第 5 步' in (gui.macro_notify_msg or ''), f'撤销提示指路第 5 步（{gui.macro_notify_msg}）')
+check(gui.game_history.history_index == idx0 - 1,
+      f'撤销把历史指针退回（{gui.game_history.history_index}）')
+check(set(locs()) != set(after_cells), '撤销换了局面（不是原地不动）')
 gui.redo()
-check(set(locs()) == set(before), '重做被拒，位置不变')
-check('第 5 步' in (gui.macro_notify_msg or ''), '重做提示同样指路第 5 步')
+check(gui.game_history.history_index == idx0,
+      f'重做把历史指针前进（{gui.game_history.history_index}）')
+check(set(locs()) == set(after_cells), '重做回到撤销前的局面（逐格一致）')
 
 print('E. 打乱 / 判胜 / 渲染')
 gui.shuffle_puzzle(confirm=False)

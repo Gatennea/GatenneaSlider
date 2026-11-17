@@ -15,12 +15,10 @@ class HistoryMixin:
 
     def undo(self):
         """撤销操作（Ctrl+Z）"""
-        # 三維（§54）：快照还只存 (r, c) 两个分量（第 5 步才扩到三维），
-        # 走撤销会在 restore 时把 3 元位置喂给 _norm_keys 直接抛 ValueError。
-        # 宁可明说「第 5 步才接」，也不能让它半崩（方案「接口占位不写空骨架」）。
+        # 三維（§54 第 5 步）：快照走无损键表 [r,c,d,gid]，与二维矩阵无关，
+        # 所以有自己的执行段（无动画——三维动画是第 6 步）。
         if getattr(self, 'cubic_mode', False):
-            self.macro_notify_msg = "三维撤销是第 5 步（历史扩到 (r,c,d)），现在还不能撤"
-            self.macro_notify_timer = 120
+            self._cubic_undo_redo(is_undo=True)
             return
         # 教程解法播放中：锁定棋盘操作
         if self._tut_board_locked():
@@ -77,10 +75,8 @@ class HistoryMixin:
 
     def redo(self):
         """重做操作（Ctrl+X）"""
-        # 三維同 undo：快照还是二维口径，第 5 步接上后再放开
         if getattr(self, 'cubic_mode', False):
-            self.macro_notify_msg = "三维重做是第 5 步（历史扩到 (r,c,d)），现在还不能做"
-            self.macro_notify_timer = 120
+            self._cubic_undo_redo(is_undo=False)
             return
         # 教程解法播放中：锁定棋盘操作（回放自身的连续重做除外）
         if self._tut_board_locked() and not self._continuous_redo:
@@ -115,6 +111,43 @@ class HistoryMixin:
         if self._redo_step_now(move_info):
             # 连续重做（无动画路径）：继续下一轮直到边界
             self._advance_continuous_undo_redo()
+
+    def _cubic_undo_redo(self, is_undo: bool):
+        """三维撤销/重做：换局面即刻生效（动画留到第 6 步）。
+
+        与二维无动画路径同口径：清选中、步数取历史累计值、标脏、可撤/重做
+        到边界时给一句明确的提示（不是静默没反应）。
+        """
+        if self._tut_board_locked():
+            return
+        self._bump_move_session()
+        if is_undo:
+            available = self.game_history.can_undo()
+        else:
+            available = self.game_history.can_redo()
+        if not available:
+            self.macro_notify_msg = "没有可撤销的步骤" if is_undo else "没有可重做的步骤"
+            self.macro_notify_timer = 90
+            return
+        if is_undo:
+            success, _info = self.game_history.undo(self.game)
+            label = "撤销"
+        else:
+            success, _info = self.game_history.redo(self.game)
+            label = "重做"
+        if not success:
+            self.macro_notify_msg = "没有可撤销的步骤" if is_undo else "没有可重做的步骤"
+            self.macro_notify_timer = 90
+            return
+        self.selected_gap = None
+        self.selected_block = None
+        clear = getattr(self, '_cubic_clear_selection', None)
+        if callable(clear):
+            clear()
+        self.step_count = self.game_history.current_step_total()
+        self.macro_notify_msg = label
+        self.macro_notify_timer = 15
+        self._mark_file_dirty()
 
     def _redo_step_now(self, move_info):
         """无动画单步重做（redo 的执行段 / 连续重做的循环体）。返回是否成功。"""
@@ -159,7 +192,9 @@ class HistoryMixin:
         self.game_history.restore_snapshot(self.game, idx)
         # 合并快照可能覆盖多步：步数取该快照的累计值
         self.step_count = self.game_history.step_total_at(idx)
-        self.ensure_blocks_visible()
+        if not getattr(self, 'cubic_mode', False):
+            # 三维没有「相机跟随包围盒」这套二维口径（相机与缩放是独立的）
+            self.ensure_blocks_visible()
         self._mark_file_dirty()
 
     # ==================== 连续撤销/重做（虚拟键盘一键连续播放） ====================

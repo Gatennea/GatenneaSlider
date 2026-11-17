@@ -590,3 +590,28 @@ A 段换成坐标轴断言 + A2 段 65 姿态扫描，F 段换成新箭头断言
 可推 / 推得动一个不少 / 命中盒 = `_ARROW_BASE_PX*zoom - 6` / 互不重叠），44 项。
 
 下一步仍然是第 5 步历史，然后第 6 步动画 + §2.4 渲染选项 GUI。
+
+## 2026-11-18 第 5 步：历史 / 撤销重做 / 存档扩到 (r,c,d)
+
+- `engine/adapter.snapshot_state`／`restore_state`：无朝向板型（立方，`spec.orientations`
+  为空元组）不再硬取 `orientations.index()`（那必抛 ValueError）。键表退化成
+  `[r,c,d,gid]`，随点分量个数自动适配二维/三维；还原时朝向取 `''`。
+- `history.GameHistory`：三维快照带 `cubic: True`，只存无损键表，`matrix` 写 `[]`、
+  `bounds` 写零盒（二维矩阵没有深度，存了必丢）；`restore_snapshot` 见 `cubic`
+  直接 `restore_state` 返回。`validate_snapshot(kind='cubic')` 只校验
+  `engine_state.keys` 每条 `[r,c,d,gid]`。
+- `gui/drag._move_merge_key`：三维返回 None（合并快照的逐步重播按方形 2-tuple 写死）。
+- `gui/history`：三维撤销/重做开闸（`_cubic_undo_redo`，无动画）；到边界给
+  「没有可撤销/可重做的步骤」；`jump_to_history_index` 在三维下跳过
+  二维的 `ensure_blocks_visible`。
+- `gui/move`：三维一律走「即时提交」，不套二维动画层（三维动画是第 6 步）。
+- `gui/file_ops`：存档 `type: cubic` + `depth`，快照只写 `engine_state`；
+  读回按 depth 重建三维局并补 `_cubic_load_defaults`（相机/缩放/拆分/平移/键盘）；
+  `save_config` 不再跳过三维（退出即丢进度是旧口径）；`_cubic_save_blocked`
+  只在逻辑对象缺 depth 时挡。旧的无 depth 三维档走 `StaleCubicSave` 安静回落。
+- 测试：新增 `test/_test_cubic_history.py`（45 项：快照无损/撤销逐格回退/边界提示/
+  跳步/存读回/坏档拒绝/二维不受影响）；`_test_cubic_play` 的「撤销被拒」改成
+  「真的换局面」；`_test_cubic_save_guard` 的「三维不许存档」改成「能存能读」。
+
+下一步：第 6 步动画（`gui/animation.py` 渲染层偏移）+ §2.4 渲染选项 GUI
+（右侧栏拆分/透明度滑条、设置页「三维」专页）。

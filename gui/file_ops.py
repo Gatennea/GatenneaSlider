@@ -217,22 +217,15 @@ class FileOpsMixin:
         「存档需要模型 '__editor__'，但它没有安装」。temp_history 保留进入
         编辑器之前的那个真实局面（退出/崩溃都不丢东西），配置照写。
 
-        ⚠️ **三维局（cubic_mode）同理不写历史**（2026-11-17，§54 第 0 步落地
-        后暴露）：存档还没扩到 (r,c,d) 与 ``type: cubic``（方案第 5 步），
-        写下去就是一条读不回来的档，下次启动报「存档需要模型 'cubic'」。
-        这条规则同时是**自愈**：已经被写脏的 temp_history，下次正常退出即被
-        上一份真实二维局面覆盖（编辑器先例的自愈机制，见 docs/spec/模型文件）。
+        ⚠️ **三维局（cubic_mode）现在可以正常存**（2026-11-18，§54 第 5 步）：存档
+        带 ``type: cubic`` + ``depth``，快照走无损键表 ``engine_state``
+        （``[r,c,d,gid]``），读回重建三维局。这条规则之前是「跳过不写」，现在
+        撤掉了——再跳过就等于退出即丢三维进度。
         """
         os.makedirs(self.config_dir, exist_ok=True)
 
         # 保存历史记录到 temp_history.json（编辑器预览局跳过，见 docstring）
-        # 三维同理（§54）：存档格式还没扩到 (r,c,d) + type:cubic（方案第 5 步），
-        # 现在把 kind='cubic' 写进去，下次启动必然「存档需要模型 'cubic'，
-        # 但它没有安装」——一条自造的坏档。跳过写 → temp_history 保留上一个
-        # 真实二维局面，退出/崩溃都不丢东西；旧版本已写脏的那份也会在下次
-        # 正常退出时被这条规则自动治好（与编辑器先例同口径）。
-        skip_temp = (getattr(self, '_med_active', False)
-                     or getattr(self, 'cubic_mode', False))
+        skip_temp = getattr(self, '_med_active', False)
         if not skip_temp:
             save_data = self._build_save_data()
             try:
@@ -674,6 +667,41 @@ class FileOpsMixin:
                 f'模型 {kind} 与存档时不一致（内容已改动），旧档的朝向可能有偏移')
             self.macro_notify_timer = 240
 
+    def _cubic_load_defaults(self, load: bool = False):
+        """载入三维存档后把三维专属的 GUI 状态补齐（相机/缩放/拆分/平移/键盘）。"""
+        from engine.cubic_camera import CubicCamera
+        from engine.cubic_view import DEFAULT_GAP
+        prefs = getattr(self, '_cubic_camera_prefs', None) or {}
+        cam = CubicCamera.oblique_default()
+        label = '斜视'
+        quat = prefs.get('quat')
+        if isinstance(quat, (list, tuple)) and len(quat) == 4:
+            try:
+                cam = CubicCamera(tuple(quat))
+                label = '上次视角'
+            except ValueError:
+                pass
+        self.cubic_camera = cam
+        self.cubic_view_label = label
+        self.cubic_view_index = prefs.get('view')
+        self.cubic_zoom = 1.0
+        zoom = prefs.get('zoom')
+        if zoom is not None:
+            lo, hi = self.CUBIC_ZOOM_RANGE
+            self.cubic_zoom = max(lo, min(hi, zoom))
+        gap = prefs.get('gap')
+        self.cubic_gap = gap if (gap is not None and 1e-6 < gap < 1.0) else DEFAULT_GAP
+        self.cubic_pan = [0.0, 0.0]
+        self.cubic_dragging = False
+        self.cubic_drag_moved = False
+        self.cubic_drag_start = None
+        self.cubic_drag_from = None
+        self._cubic_scene = None
+        self._cubic_last_click_t = None
+        self._cubic_last_click_p = None
+        self.show_virtual_keyboard = True
+        self.zoom = 1.0
+
     def _build_save_data(self) -> dict:
         """构建当前游戏状态的保存数据"""
         self.game.update_matrix()
@@ -682,13 +710,15 @@ class FileOpsMixin:
         # 判据是「形态名不在旧四种里」，不是硬编码 'shatter'——否则换一个
         # models/<name>.json 就会被静默当成方形存下去。
         kind_now = self._current_kind()
-        is_model = kind_now not in ('square', 'numbered', 'triangle', 'mi')
+        is_cubic = kind_now == 'cubic'
+        is_model = (kind_now not in ('square', 'numbered', 'triangle', 'mi')
+                    and not is_cubic)
         shatter = is_model
         # 矩形谜题 + 开启压缩：直接生成 replay 压缩格式
         # （初始+末态+步骤原语+哈希校验点），异形不受此开关影响
         if getattr(self, 'use_compressed_save', False) and not (
                 getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False)
-                or shatter):
+                or shatter or is_cubic):
             try:
                 return compress_from_game(self)
             except Exception as e:
@@ -699,10 +729,15 @@ class FileOpsMixin:
             'snapshots': []
         }
         for snap in self.game_history.history:
-            snap_data = {
-                'matrix': snap['matrix'],
-                'bounds': snap['bounds']
-            }
+            if snap.get('cubic'):
+                # 三维：矩阵是二维口径（没有深度），局面只存无损键表
+                snap_data = {'engine_state': snap.get('engine_state'),
+                             'cubic': True}
+            else:
+                snap_data = {
+                    'matrix': snap['matrix'],
+                    'bounds': snap['bounds']
+                }
             # 无损键表（引擎板型专属）：模型板（shield 等）同 2D 格可叠多块
             # （不同朝向），矩阵编码会把同格多块压成一格、还原时永久丢块 →
             # 还原态永不等于目标、判定「未复原」（2026-10-26 用户实测报的 bug）。
@@ -732,7 +767,7 @@ class FileOpsMixin:
         data = {
             # 带序号/三角形/米字格/碎三角谜题写 v2（puzzle.type 标明形态）；
             # 普通方形保持 v1 不变
-            'version': 2 if (numbered or triangle or mi or shatter) else 1,
+            'version': 2 if (numbered or triangle or mi or shatter or is_cubic) else 1,
             'puzzle': {
                 'm': self.current_m,
                 'n': self.current_n,
@@ -748,6 +783,11 @@ class FileOpsMixin:
             data['puzzle']['triangle_side'] = self.game.k
         if mi:
             data['puzzle']['type'] = 'mi'
+        if is_cubic:
+            # 三维（§54 第 5 步）：type + 层数。读回时靠这两个字段重新建局，
+            # 局面从每条快照的 engine_state 无损还原（[r,c,d,gid] 列表）。
+            data['puzzle']['type'] = 'cubic'
+            data['puzzle']['depth'] = int(getattr(self.game, 'depth', 0))
         if shatter:
             # 不写 type 的模型局存档会被 v1 口径读成「方形 4×4」——载入即
             # 静默换形态（48 块变 16 块）。type = 模型名，载入时据此
@@ -812,10 +852,18 @@ class FileOpsMixin:
         kind = 'square'
         if version >= 2:
             kind = puzzle.get('type', 'square')
+        cubic_depth = puzzle.get('depth')
         if kind == 'cubic':
-            # 三维存档读回是方案第 5 步；在那之前撞上就读不回来。别让「模型
-            # cubic.json 未安装」这种假原因冒出来——那是自造坏档的噪音。
-            raise StaleCubicSave('上次退出时停在三维局（三维存档读回在方案第 5 步）')
+            # 三维存档（§54 第 5 步）：m×n×depth，step 必须小于最大维度
+            if not isinstance(cubic_depth, int) or isinstance(cubic_depth, bool) \
+                    or cubic_depth < 1:
+                # 旧版本可能写下的无 depth 三维档（第 5 步之前根本读不回来）：
+                # 按「上次停在三维局」安静回落，别冒充「模型缺失」或数据损坏。
+                raise StaleCubicSave('三维存档缺少 depth（旧档，无法还原）')
+            if cubic_depth > 32 or m * n * cubic_depth > 250000:
+                raise ValueError('三维存档尺寸过大')
+            if step >= max(m, n, cubic_depth):
+                raise ValueError('三维存档参数超出合法范围')
         if kind == _preview_kind():
             # 编辑器预览局（旧版本退出时被自动存档写下的）。没有 models/
             # 文件，也不该有——按「上次退出停在编辑器里」安静略过，
@@ -855,6 +903,8 @@ class FileOpsMixin:
         # 米字格：mode 标记；切回别的形态时必须一起清掉，否则旧旗标会让
         # 渲染/命中继续走米字格分支
         self.mi_mode = kind == 'mi'
+        # 三维（§54 第 5 步）：形态旗标同理，切回二维必须清掉
+        self.cubic_mode = kind == 'cubic'
         triangle_side = puzzle.get('triangle_side', m)
 
         self.current_m = m
@@ -868,6 +918,22 @@ class FileOpsMixin:
             if moves is None:
                 # 旧存档：每快照一步
                 moves = [move_info] if move_info else []
+            if snap.get('cubic'):
+                # 三维：没有 matrix/bounds（矩阵是二维口径），局面在 engine_state
+                entry = {
+                    'matrix': [],
+                    'bounds': {'min_row': 0, 'max_row': 0, 'min_col': 0, 'max_col': 0},
+                    'move_info': move_info,
+                    'moves': moves,
+                    'steps': snap.get('steps', 1 if move_info else 0),
+                    'step_total': snap.get('step_total', i),
+                    'session_key': None,
+                    'groups': groups_from_json(snap.get('groups')),
+                    'engine_state': snap.get('engine_state'),
+                    'cubic': True,
+                }
+                self.game_history.history.append(entry)
+                continue
             entry = {
                 'matrix': snap['matrix'],
                 'bounds': snap['bounds'],
@@ -903,9 +969,14 @@ class FileOpsMixin:
         # 从快照重建游戏状态（依版本/形態分派）。
         # create_puzzle 对模型板型直接走 EngineGame 适配器（puzzle_types 的
         # 模型分支，不依赖全局引擎开关）——没有「落回方形」的回退。
-        if kind not in ('square', 'numbered', 'triangle', 'mi'):
+        if kind not in ('square', 'numbered', 'triangle', 'mi', 'cubic'):
             self._check_saved_model_identity(kind, puzzle.get('model') or {})
-        self.game = create_puzzle(m, n, step, kind=kind, triangle_side=triangle_side)
+        if kind == 'cubic':
+            self.game = create_puzzle(m, n, step, kind='cubic',
+                                      depth=cubic_depth)
+        else:
+            self.game = create_puzzle(m, n, step, kind=kind,
+                                      triangle_side=triangle_side)
         # 形态标记同步到逻辑对象：编号谜题的整数矩阵靠 numbered 还原编号；
         # 三角/米字为独立矩阵编码，其逻辑类 __slots__ 不含 numbered，跳过
         if kind in ('square', 'numbered'):
@@ -924,6 +995,9 @@ class FileOpsMixin:
             # 米字格同理：包围盒走 mi_view（世界坐标无 gap 间距）
             self.zoom = self._fit_mi_zoom()
             self.center_map()
+        elif kind == 'cubic':
+            self._cubic_load_defaults(load=True)
+            self.current_m, self.current_n = m, n
         self.game_history.restore_snapshot(self.game, self.game_history.history_index)
 
         # 自定义预设局：按存档记录的预设名恢复还原目标（D4）；无预设名则清空，
@@ -987,16 +1061,20 @@ class FileOpsMixin:
         return True
 
     def _cubic_save_blocked(self) -> bool:
-        """三维局（cubic_mode）暂时禁止存档：写下去的文件读不回来。
+        """三维局现在允许存档（§54 第 5 步：format 已扩到 (r,c,d) + type: cubic）。
 
-        存档格式要扩到 (r,c,d) 与 `type: cubic`（方案第 5 步），现在 Ctrl+S
-        会写出一条载入端必拒的档（`StaleCubicSave`），下次点开就报错。与其
-        造坏档，不如当场说清「第 5 步才支持」。"""
+        这里保留这个门（调用点还是 ``_med_save_blocked() or _cubic_save_blocked()``），
+        但只在「三维局连层数都不认识」这种自造坏局时才挡——正常三维局一律放行，
+        否则退出即丢进度。
+        """
         if not getattr(self, 'cubic_mode', False):
             return False
-        self.macro_notify_msg = '三维局暂时不能存档：存档格式在第 5 步才扩到 (r,c,d)'
+        depth = getattr(getattr(self, 'game', None), 'depth', None)
+        if isinstance(depth, int) and depth >= 1:
+            return False
+        self.macro_notify_msg = '三维局缺层数（depth），存档会读不回来，先重建局面'
         self.macro_notify_timer = 240
-        print('三维局存档被拒（存档格式第 5 步才扩到 (r,c,d)）')
+        print('三维局存档被拒：逻辑对象缺 depth')
         return True
 
     def save_as(self):

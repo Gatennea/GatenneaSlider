@@ -128,6 +128,18 @@ def validate_snapshot(snap, kind='square'):
         raise ValueError('快照不是对象')
     matrix = snap.get('matrix')
     bounds = snap.get('bounds')
+    if kind == 'cubic':
+        # 三维快照不带 matrix（矩阵是二维口径，存下来必然丢深度），
+        # 局面全在无损键表 engine_state 里：校验它即可。
+        st = snap.get('engine_state')
+        if not isinstance(st, dict) or not isinstance(st.get('keys'), (list, tuple)):
+            raise ValueError('三维快照缺少 engine_state.keys')
+        for item in st['keys']:
+            if (not isinstance(item, (list, tuple)) or len(item) != 4
+                    or not all(isinstance(v, int) and not isinstance(v, bool)
+                               for v in item)):
+                raise ValueError('三维快照 engine_state.keys 条目应为 [r,c,d,gid]')
+        return
     if matrix is None or bounds is None:
         raise ValueError('快照缺少 matrix 或 bounds')
     if not isinstance(matrix, list) or len(matrix) == 0:
@@ -372,6 +384,10 @@ class GameHistory:
         # 更新矩阵
         game.update_matrix()
 
+        # 三维（立方）：matrix 是二维口径，存下来丢深度。局面靠无损键表
+        # （EngineGame.snapshot_state 的 [r,c,d,gid] 列表），还原走 restore_state。
+        _is_cubic = getattr(game, 'kind', None) == 'cubic'
+
         # 引擎板型（通用带朝向模型）携带无损键表快照：矩阵编码会把同格多块
         # 压成一格，撤销时丢块。restore_snapshot 优先用它还原。其他形态忽略。
         # ⚠️ 只在「會走通用分支」时计算：三角(self.k→2-bit 专属分支)、米字
@@ -387,7 +403,7 @@ class GameHistory:
             and not hasattr(game, 'Q_ORDER')
         )
         engine_state = (game.snapshot_state()
-                        if (_engine_generic
+                        if ((_engine_generic or _is_cubic)
                             and hasattr(game, 'snapshot_state')) else None)
 
         # 如果当前不在历史末尾，截断后续记录
@@ -398,8 +414,11 @@ class GameHistory:
         if (session_key is not None and move_info is not None and self.history
                 and self.history[-1].get('session_key') == session_key):
             snap = self.history[-1]
-            snap['matrix'] = [row[:] for row in game.matrix]
-            snap['bounds'] = dict(game.matrix_bounds)
+            if _is_cubic:
+                snap['engine_state'] = engine_state
+            else:
+                snap['matrix'] = [row[:] for row in game.matrix]
+                snap['bounds'] = dict(game.matrix_bounds)
             snap['moves'].append(move_info)
             snap['steps'] += 1
             snap['step_total'] += 1
@@ -414,8 +433,9 @@ class GameHistory:
         prev_total = self.history[-1].get('step_total', 0) if self.history else 0
         steps = 1 if move_info else 0
         snapshot = {
-            'matrix': [row[:] for row in game.matrix],
-            'bounds': dict(game.matrix_bounds),
+            'matrix': [] if _is_cubic else [row[:] for row in game.matrix],
+            'bounds': ({'min_row': 0, 'max_row': 0, 'min_col': 0, 'max_col': 0}
+                       if _is_cubic else dict(game.matrix_bounds)),
             'move_info': move_info,
             'moves': [move_info] if move_info else [],
             'steps': steps,
@@ -426,6 +446,8 @@ class GameHistory:
                        if hasattr(game, 'groups_as_positions') else None),
             # 引擎板型无损键表（矩阵编码丢同格多块；还原优先用它）
             'engine_state': engine_state,
+            # 三维标记：restore / 存档 / 校验据此走无损键表分支，不碰 matrix
+            'cubic': True if _is_cubic else None,
         }
         # 编号直接存在 matrix（整数矩阵，值即编号），无需并行 numbers 字段
 
@@ -456,6 +478,12 @@ class GameHistory:
             return
         
         snapshot = self.history[index]
+        if snapshot.get('cubic'):
+            # 三维：局面只在无损键表里（matrix 是二维口径，没有深度）
+            st = snapshot.get('engine_state')
+            if st and hasattr(game, 'restore_state'):
+                game.restore_state(st)
+            return
         matrix = snapshot['matrix']
         bounds = snapshot['bounds']
         

@@ -86,16 +86,29 @@ check(healed['puzzle'].get('type') in (None, 'square'),
 check(healed['puzzle'].get('m') == gui.current_m,
       f'覆盖内容就是当前局（{healed["puzzle"].get("m")}×{healed["puzzle"].get("n")}）')
 
-print('B. 三维局不许存档')
+print('B. 三维局现在能存档（第 5 步）：type+depth，且读得回来')
 gui2 = make_gui()
 gui2.new_cubic_puzzle(3, 3, 3, 1)
-target = os.path.join(gui2.config_dir, 'should_not_exist.json')
+target = os.path.join(gui2.config_dir, 'cubic_ok.json')
 result = gui2._save_to_path(target)
-check(result is False, f'_save_to_path 返回 False（{result}）')
-check(not os.path.exists(target), '文件确实没被写出来')
-check('第 5 步' in (gui2.macro_notify_msg or ''), f'提示说清原因（{gui2.macro_notify_msg}）')
-gui2.cubic_mode = False
-check(gui2._cubic_save_blocked() is False, '切回二维后不再拦')
+check(result is True, f'_save_to_path 返回 True（{result}）')
+check(os.path.exists(target), '文件确实写出来了')
+with open(target, encoding='utf-8') as f:
+    saved = json.load(f)
+check(saved['puzzle'].get('type') == 'cubic', f'type=cubic（{saved["puzzle"].get("type")}）')
+check(saved['puzzle'].get('depth') == 3, f'depth=3（{saved["puzzle"].get("depth")}）')
+check(all('matrix' not in s for s in saved['history']['snapshots']),
+      '三维快照不写二维矩阵')
+check(all(len((s.get('engine_state') or {}).get('keys') or []) == 27
+          for s in saved['history']['snapshots']),
+      '每条快照都带 27 块的无损键表')
+
+gui3 = make_gui()
+gui3._cubic_camera_prefs = {}
+with open(target, encoding='utf-8') as f:
+    gui3._load_save_data(json.load(f))
+check(gui3.cubic_mode is True, '读回后仍是三维局')
+check(len(gui3.game.blocks) == 27, f'读回 27 块（{len(gui3.game.blocks)}）')
 
 print('=' * 60)
 if _fail:
