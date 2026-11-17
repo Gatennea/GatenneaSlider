@@ -33,6 +33,58 @@ FACE_BASIS = (
     ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)),    # 底面（-Y）
 )
 
+#: 六个「朝向」的名称。基准姿态取自 FACE_BASIS（相机 z 轴正对该面方向），
+#: 再绕**相机自己的右轴**倾斜一个 residue（见 face_view_rotation）。
+FACE_VIEW_LABELS = ('前 +Z', '后 −Z', '右 +X', '左 −X', '上 +Y', '下 −Y')
+
+#: 六朝向的默认倾斜（度）：(绕相机上轴, 绕相机右轴)。用户口径（2026-11-17）：
+#: 六个朝向都**不该正对**——正对时实心 3×3×3 在屏幕上与二维 3×3 一模一样，
+#: 深度全靠猜。两轴都给一点，才同时露出另外两个邻面（各一条细边）；只给一条
+#: 轴的话第三个面正好侧过去（面积为零），看着就像只画了两面。
+DEFAULT_VIEW_RESIDUE = (14.0, 14.0)
+
+#: 默认斜视（第 1 步就在用的那一档）。
+OBLIQUE_ANGLES = (-32.0, 24.0, 0.0)
+
+
+def face_view_rotation(index: int, tilt_deg: float = DEFAULT_VIEW_RESIDUE):
+    """第 index 个朝向的姿态：正对该面 + 绕相机右轴的统一倾斜。
+
+    倾斜只转 `up`/`toward`、**不动 right**，所以主面的某一边永远贴着屏幕横/
+    竖（六张图各自规整、朝向一致），另一条边也仍在屏幕竖向上（只是透视缩短），
+    同时露出相邻一面的细边——深度与遮挡就读得出来。用户口径（2026-11-17）：
+    六个朝向都不该正对（正对时实心 3×3×3 与二维 3×3 长得一模一样）。
+    """
+    if not 0 <= index < len(FACE_BASIS):
+        raise ValueError(f'视角序号越界: {index}')
+    # 两轴偏角都绕**原始**的 up / right 轴，且三根基矢量走同一个复合旋转
+    # R = Rx(tilt)·Ry(yaw)：主面的两条世界边随后在相机空间里仍各自落在一条
+    # 屏幕轴上（横/竖），六张图才规整、朝向一致；两个邻面同时斜进来一点（各
+    # 一条细边），三个面都可见 → 深度读得出来。
+    right0, up0, toward0 = FACE_BASIS[index]
+    yaw_off, tilt_off = (tilt_deg if isinstance(tilt_deg, tuple)
+                         else (tilt_deg * 0.7, tilt_deg))
+
+    def _turn(v):
+        return _rodrigues(_rodrigues(v, up0, yaw_off), right0, tilt_off)
+
+    return CubicCamera.from_basis(_turn(right0), _turn(up0), _turn(toward0))
+
+
+def _rodrigues(vec, axis, angle_deg: float):
+    """罗德里格斯公式：把 vec 绕单位轴 axis 转 angle_deg 度。"""
+    vx, vy, vz = vec
+    kx, ky, kz = axis
+    cos_a = math.cos(math.radians(angle_deg))
+    sin_a = math.sin(math.radians(angle_deg))
+    dot = vx * kx + vy * ky + vz * kz
+    cross = (ky * vz - kz * vy,
+             kz * vx - kx * vz,
+             kx * vy - ky * vx)
+    return (vx * cos_a + cross[0] * sin_a + kx * dot * (1 - cos_a),
+            vy * cos_a + cross[1] * sin_a + ky * dot * (1 - cos_a),
+            vz * cos_a + cross[2] * sin_a + kz * dot * (1 - cos_a))
+
 
 class CubicCamera:
     """相机姿态：只存一个单位四元数 (w, x, y, z)。"""
@@ -76,7 +128,12 @@ class CubicCamera:
     @classmethod
     def oblique_default(cls):
         """第 1 步的默认视角（斜视，三面可见）。"""
-        return cls.from_yaw_pitch(-32.0, 24.0)
+        return cls.from_yaw_pitch(*OBLIQUE_ANGLES)
+
+    @classmethod
+    def from_view_angles(cls, index: int, tilt_deg=DEFAULT_VIEW_RESIDUE):
+        """六朝向之一（带倾斜偏角）的姿态。"""
+        return face_view_rotation(index, tilt_deg)
 
     @classmethod
     def face_views(cls):
@@ -153,6 +210,40 @@ class CubicCamera:
         """绕**世界轴**再转一个角度（拖动旋转用；方向按世界轴给，手感一致）。"""
         dq = _axis_angle(axis, math.radians(angle_deg))
         return CubicCamera(_qmul(dq, self.q))
+
+    def spin(self, axis, angle_deg: float):
+        """绕**世界轴**转，但直接转三根基矢量（不依赖四元数乘序的约定）。
+
+        拖动手势与六朝向倾斜都走这里：三根轴一起转，得到的仍是一组正交基，
+        与 `from_basis` 同源，符号不会因为乘序（q·dq 还是 dq·q）翻掉。
+        """
+        axis = tuple(float(v) for v in axis)
+        n = math.sqrt(sum(v * v for v in axis))
+        if n < 1e-12:
+            raise ValueError('旋转轴长度为零')
+        axis = tuple(v / n for v in axis)
+        base = self.rows()
+        rows = [_rodrigues(v, axis, angle_deg) for v in base]
+        return CubicCamera(_quat_from_rows(rows))
+
+    def decompose(self):
+        """当前姿态 → (yaw, pitch, roll)，与 ``from_yaw_pitch`` 互逆。
+
+        相机 z 轴在本模块约定下是 z = (−cos p·sin y, sin p, cos p·cos y)，先由它
+        解出 yaw/pitch；剩下的「面内旋转」用实际 up 轴在参考姿态的 (right, up)
+        平面里量相位得到 roll。拖动旋转只用 yaw/pitch，六朝向切过来必须能把
+        同一姿态还原成这三个角，否则一切视角画面就会跳。
+        """
+        z = self.view_axis()
+        pitch = math.degrees(math.asin(max(-1.0, min(1.0, z[1]))))
+        yaw = math.degrees(math.atan2(-z[0], z[2]))
+        ref = CubicCamera.from_yaw_pitch(yaw, pitch)
+        up = self.up_axis()
+        rx, ry = ref.right_axis(), ref.up_axis()
+        roll = math.degrees(math.atan2(
+            sum(a * b for a, b in zip(up, rx)),
+            sum(a * b for a, b in zip(up, ry))))
+        return (yaw, pitch, roll)
 
     def as_tuple(self):
         return self.q

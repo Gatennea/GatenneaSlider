@@ -114,6 +114,9 @@ gui.save_readonly_flag = False
 pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 
+# 上次的三维相机存档（config.json 的 cubic_camera）会覆盖默认拆分；
+# 这里要验「默认值」，先清掉那组偏好再建局。
+gui._cubic_camera_prefs = {}
 gui.new_cubic_puzzle(3, 3, 3, 1)
 check(0.0 < gui.cubic_gap < 1.0, '三维建局默认带非零拆分', gui.cubic_gap)
 check(abs(gui.cubic_gap - cv.DEFAULT_GAP) < 1e-12, '默认值取自 cubic_view.DEFAULT_GAP')

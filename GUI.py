@@ -1400,14 +1400,40 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 不把算法落到任何二维语义上。
         self.game = create_puzzle(m, n, step, kind='cubic', depth=d)
         self.current_kind = 'cubic'
-        # 默认相机：斜视（三面可见）。六视角 / 自由旋转 / 存档分组是第 2 步的事。
+        # 默认相机：斜视（三面可见）。六朝向带倾斜、拖动旋转、Ctrl+滚轮缩放
+        # 都在 §54 第 2 步（gui/events.py 的 _cubic_* 一族）。
         from engine.cubic_camera import CubicCamera
         from engine.cubic_view import DEFAULT_GAP
         self.cubic_camera = CubicCamera.oblique_default()
+        self.cubic_view_label = '斜视'
+        self.cubic_view_index = None
         self.cubic_zoom = 1.0
+        self.cubic_dragging = False
         # 拆分（相邻块之间空出的距离）：0 = 贴死成一整块、看不出前后；
         # 滑条留到「渲染选项」那一步，这里先给默认值。
         self.cubic_gap = DEFAULT_GAP
+
+        # 上次的三维相机组（config.json 的 cubic_camera）：有就套用，缺字段
+        # 保持上面的默认；数值越界交给夹紧逻辑兜住（不静默写坏姿势）。
+        prefs = getattr(self, '_cubic_camera_prefs', None) or {}
+        if prefs:
+            quat = prefs.get('quat')
+            if isinstance(quat, (list, tuple)) and len(quat) == 4:
+                try:
+                    self.cubic_camera = CubicCamera(tuple(quat))
+                    self.cubic_view_label = '上次视角'
+                except ValueError as exc:      # 空四元数这类坏档：回声 + 保持默认
+                    print(f"三维相机存档无效，已用默认视角: {exc}")
+            gap = prefs.get('gap')
+            if gap is not None and 0.0 <= gap < 1.0:
+                self.cubic_gap = gap
+            zoom = prefs.get('zoom')
+            if zoom is not None:
+                lo, hi = self.CUBIC_ZOOM_RANGE
+                self.cubic_zoom = max(lo, min(hi, zoom))
+            view = prefs.get('view')
+            if view is not None:
+                self.cubic_view_index = view
 
         # 重置状态（相机/缩放沿用二维字段；三维相机组是第 2 步的事）
         self.zoom = 1.0
@@ -1427,7 +1453,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         self.macro_notify_msg = (
             f"切换谜题：三维 {m}×{n}×{d} 等级{step}"
-            f"（斜视预览，拆分 {self.cubic_gap:.2f}；六视角/交互在第 2–4 步）")
+            f"（拆分 {self.cubic_gap:.2f}；拖动旋转 · 1–6 切朝向 · Ctrl+滚轮缩放）")
         self.macro_notify_timer = 180
         return True
 

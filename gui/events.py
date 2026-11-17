@@ -634,6 +634,11 @@ class EventsMixin:
                 if event.type == pygame.MOUSEMOTION:
                     mx, my = event.pos
 
+                    # 三維拖动旋转（§54 第 2 步）：拖到哪里都不选中东西
+                    if getattr(self, 'cubic_dragging', False):
+                        self._cubic_drag_update(event.pos)
+                        continue
+
                     # 棋盘悬停格（连锁提示用；含空格，越界置空）
                     self.hover_cell = None
                     if getattr(self, 'chain_hint_enabled', False):
@@ -1176,6 +1181,14 @@ class EventsMixin:
                         # 教程解法播放中：锁定棋盘操作（点选缝隙/滑块、拖拽滑动）
                         op_locked = self._tut_board_locked()
 
+                        # 三維（§54 第 2 步）：这一盘还没有拾取，点击只起「旋转」
+                        # ——旋转态下点什么都不该选中（验收判据之一）。第 3 步
+                        # 接上射线求交后再在这里分派「点缝 / 点块 / 点空白」。
+                        if getattr(self, 'cubic_mode', False) and not op_locked:
+                            if event.button == 1:
+                                self._cubic_drag_begin(x, y)
+                            continue
+
                         # S1-4 箭头按键：**命中优先于选缝与起拖**。按键画在菜单
                         # 栏下、滑块之上的游戏区里，不先判命中的话点击会被
                         # 「点缝选中 / 点空白起拖」吃掉。效果与虚拟键盘同方向
@@ -1388,11 +1401,17 @@ class EventsMixin:
                         self.is_dragging = False
                         self.slider_dragging = False
                         self.zoom_slider_dragging = False
+                        self.cubic_dragging = False
 
                 # 鼠标滚轮
                 elif event.type == pygame.MOUSEWHEEL:
                     if pygame.key.get_mods() & pygame.KMOD_CTRL:
                         zoom_factor = 1.1 if event.y > 0 else 0.9
+                        if getattr(self, 'cubic_mode', False):
+                            # 三維缩放走自己的字段，二维 camera_x/y 不参与
+                            # （三维只转姿态不平移，§54 第 2 步口径）
+                            self._cubic_zoom_by(zoom_factor)
+                            continue
                         # 夹紧 + 整步长吸附（§四十四.1 防缩放抖动）
                         new_zoom = self._snap_zoom(self.zoom * zoom_factor)
                         
@@ -1492,8 +1511,11 @@ class EventsMixin:
                         self.macro_notify_msg = f"成绩面板：{status}"
                         self.macro_notify_timer = 90
                     
+                    elif getattr(self, 'cubic_mode', False) and self._cubic_view_key(event):
+                        # 三維：1–6 切六朝向、0 回斜视（带偏角，不是正对）
+                        continue
+
                     else:
-                        # 教程解法播放中：锁定棋盘操作（方向键移动）
                         if self._tut_board_locked():
                             continue
                         # 米字格按冻结决策不綁物理鍵盤（8 向鍵位會與撤銷/重做等
@@ -1565,6 +1587,94 @@ class EventsMixin:
                 # 事件处理异常属非致命：仅输出到控制台（带完整堆栈），不中断游戏
                 traceback.print_exc()
                 print("Event error (non-fatal)")
+
+    # ------------------------------------------------------------------
+    # 三維相機交互（§54 第 2 步）
+    # ------------------------------------------------------------------
+    #: 俯仰夹紧：相机 z 轴与竖直轴夹角的余量——贴到极点继续拖会让画面翻跟头。
+    CUBIC_PITCH_LIMIT = 89.0
+    #: 缩放区间：太小看不到缝、太大只剩一两块。
+    CUBIC_ZOOM_RANGE = (0.5, 3.0)
+    #: 拖动灵敏度（度/像素）：一圈 360° 约 800px，符合常见 3D 查看器手感。
+    CUBIC_DRAG_DEG_PER_PX = 0.45
+
+    def _cubic_camera_apply(self, cam, label=None, index=None):
+        """把姿态写进 GUI（姿态本身是唯一真源，不再另存 yaw/pitch）。"""
+        self.cubic_camera = cam
+        self.cubic_view_label = label if label is not None else '自由旋转'
+        self.cubic_view_index = index
+
+    def _cubic_view(self, index):
+        """切到第 index 个朝向（带倾斜偏角，不是正对）。"""
+        from engine.cubic_camera import (DEFAULT_VIEW_RESIDUE,
+                                         FACE_VIEW_LABELS,
+                                         face_view_rotation)
+        self._cubic_camera_apply(face_view_rotation(index),
+                                 label=FACE_VIEW_LABELS[index], index=index)
+        yaw_off, tilt_off = (DEFAULT_VIEW_RESIDUE if isinstance(DEFAULT_VIEW_RESIDUE, tuple)
+                             else (DEFAULT_VIEW_RESIDUE, DEFAULT_VIEW_RESIDUE))
+        self.macro_notify_msg = (
+            f"视角：{FACE_VIEW_LABELS[index]}（偏 {yaw_off:.0f}°/{tilt_off:.0f}°，不正对）")
+        self.macro_notify_timer = 90
+
+    def _cubic_view_oblique(self):
+        """回默认斜视（第 1 步那档）。"""
+        from engine.cubic_camera import CubicCamera
+        self._cubic_camera_apply(CubicCamera.oblique_default(),
+                                 label='斜视', index=None)
+        self.macro_notify_msg = "视角：斜视（三面可见）"
+        self.macro_notify_timer = 90
+
+    def _cubic_drag_begin(self, x, y):
+        """棋盘上按下左键 = 开始旋转（旋转期间不选中任何东西，见点击分派）。"""
+        self.cubic_dragging = True
+        self.cubic_drag_start = (x, y)
+        self.cubic_drag_from = getattr(self, 'cubic_camera', None)
+
+    def _cubic_drag_update(self, pos):
+        """跟手旋转：右拖 → 物体跟着往右转（内容跟手，不是相机跟手）。
+
+        横拖绕世界竖轴转（转台手感），竖拖绕相机自己的右轴转（抬头/低头）；
+        后者到接近极点就停住，避免画面翻个跟头。
+        """
+        if not getattr(self, 'cubic_dragging', False):
+            return
+        base = getattr(self, 'cubic_drag_from', None)
+        if base is None:
+            return
+        sx, sy = getattr(self, 'cubic_drag_start', pos)
+        k = self.CUBIC_DRAG_DEG_PER_PX
+        cam = base.spin((0.0, 1.0, 0.0), -(pos[0] - sx) * k)
+        tilt = cam.spin(cam.right_axis(), (pos[1] - sy) * k)
+        # 极点保护：相机 z 轴离竖直轴不足 1° 就停在上一帧（再往下会翻跟头）
+        pole = math.cos(math.radians(90.0 - self.CUBIC_PITCH_LIMIT))
+        if abs(tilt.view_axis()[1]) <= pole + 1e-12:
+            cam = tilt
+        self._cubic_camera_apply(cam)
+
+    def _cubic_zoom_by(self, factor):
+        """Ctrl+滚轮缩放三维画面（与二维 zoom 分开存，互不影响）。"""
+        lo, hi = self.CUBIC_ZOOM_RANGE
+        self.cubic_zoom = max(lo, min(hi, round(self.cubic_zoom * factor, 3)))
+        self.macro_notify_msg = f"三维缩放：{self.cubic_zoom * 100:.0f}%"
+        self.macro_notify_timer = 90
+
+    def _cubic_view_key(self, event):
+        """1–6 切六朝向、0 回斜视；带 Ctrl/Alt 时不算（留给缩放等快捷键）。"""
+        if getattr(event, 'mod', 0) & (pygame.KMOD_CTRL | pygame.KMOD_ALT):
+            return False
+        digits = {pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2,
+                  pygame.K_4: 3, pygame.K_5: 4, pygame.K_6: 5}
+        keypad = {pygame.K_KP1: 0, pygame.K_KP2: 1, pygame.K_KP3: 2,
+                  pygame.K_KP4: 3, pygame.K_KP5: 4, pygame.K_KP6: 5}
+        index = digits.get(event.key, keypad.get(event.key, -1))
+        if index >= 0:
+            self._cubic_view(index)
+            return True
+        if event.key in (pygame.K_0, pygame.K_KP0):
+            self._cubic_view_oblique()
+            return True
+        return False
 
     def _cmd_reply(self, resp_q, ok, message, data=None):
         """统一回复：有 resp_q 则通过队列回复（HTTP），否则打印到终端"""

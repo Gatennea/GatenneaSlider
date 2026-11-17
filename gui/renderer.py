@@ -996,17 +996,23 @@ class RendererMixin:
             pygame.draw.polygon(self.screen, fill, pts)
             pygame.draw.polygon(self.screen, border, pts, 1)
 
-        # 左上角一行状态：三維尺度 / 等级 / **拆分距离** / 视角口径。
-        # 「拆分」= 相邻两块表面之间空出的距离（穷 0 = 未拆分，块贴死成一整块）。
+        # 左上角两行：三維尺度 / 等级 / 视角 / 拆分距离（第 1 行），操作提示（第 2 行）。
+        # 「拆分」= 相邻两块表面之间空出的距离（0 = 未拆分，块贴死成一整块）。
         # 放**顶部**：底部整条被 draw_status_bar 覆盖（画在下面等于没画）。
         m = getattr(game, 'm', 0) or 0
         n = getattr(game, 'n', 0) or 0
         d = getattr(game, 'depth', 0) or 0
+        view_label = getattr(self, 'cubic_view_label', '斜视')
+        zoom = getattr(self, 'cubic_zoom', 1.0)
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
-                f'　拆分 {gap:.2f}（0 = 贴死）　斜视（六视角与旋转在第 2 步）')
+                f'　视角 {view_label}　缩放 {zoom * 100:.0f}%'
+                f'　拆分 {gap:.2f}（0 = 贴死）')
+        hint2 = '拖动旋转 · 1–6 切朝向（各带偏角，不正对）· 0 回斜视 · Ctrl+滚轮缩放'
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))
+            surf2 = self.status_font.render(hint2, True, self.colors['status_text'])
+            self.screen.blit(surf2, (16, 36))
         except Exception:
             pass   # 文字画失败只丢这一行，不能让整帧黑掉（§4 同一条纪律）
 
