@@ -254,7 +254,7 @@ check(all(tuple(int(v) for v in b.location[:3]) == tuple(int(v) for v in b.locat
       '选中后块位置未被挪动（只是标记，不是滑动）')
 check(gui.step_count == step0, '双击选中也不产生步数')
 
-print('E. 拖动只转不选 / 旋转态不选 / 右键清空')
+print('E. 拖动只转不选 / 斜视下也能选（2026-11-18 撤销正向化）/ 右键清空')
 gui._cubic_clear_selection()
 pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pt))
 gui.handle_events()
@@ -269,15 +269,23 @@ check(gui.selected_gap is None and gui.selected_block is None,
 check(not any(getattr(b, 'be_opted', False) for b in gui.game.blocks),
       '旋转后也没有块被标记选中')
 
-gui._cubic_view_oblique()        # 斜视 = 旋转态（不在六朝向之一）
+gui._cubic_view_oblique()        # 斜视：不在六朝向之一
 gui.draw_cubic_board()
 target = gui._cubic_scene['faces'][-1]
 pt = (int(round(sum(p[0] for p in target['pts']) / 4.0)),
       int(round(sum(p[1] for p in target['pts']) / 4.0)))
-check(gui.cubic_view_index is None, '斜视下视角序号为空（旋转态）')
+check(gui.cubic_view_index is None, '斜视下视角序号为空（自由旋转态）')
+locs_set = {tuple(int(v) for v in b.location[:3]) for b in gui.game.blocks}
+hit = gui._cubic_pick(*pt)
+seam_want = cp.seam_of_face(hit, gui.game.is_valid_gap, locs_set) if hit else None
 click(pt)
-check(gui.selected_gap is None, '旋转态点击不选（必须正向化才能选）')
+check(gui.selected_gap == seam_want,
+      f'斜视下照样能选缝（期望 {seam_want}，实得 {gui.selected_gap}）')
+check(gui.selected_gap is not None and
+      cp._is_internal_cut(gui.selected_gap[0], gui.selected_gap[1], locs_set),
+      '斜视下选到的仍是内部切面')
 
+gui._cubic_clear_selection()
 gui._cubic_view(1)
 gui.draw_cubic_board()
 click(pt)
@@ -286,7 +294,28 @@ pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=3, pos=pt))
 gui.handle_events()
 check(gui.selected_gap is None and gui.selected_block is None, '右键清空选中与预览')
 
+# 旋转中不再清掉已有选中（2026-11-18：任何姿态都能操作）
+gui._cubic_view(1)
+gui.draw_cubic_board()
+click(pt)
+click(pt)
+selected_before = [tuple(int(v) for v in b.location[:3])
+                   for b in gui.game.blocks if getattr(b, 'be_opted', False)]
+check(bool(selected_before), '先选中一组')
+pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1,
+                                     pos=(pt[0] - 60, pt[1] - 40)))
+gui.handle_events()
+pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION,
+                                     pos=(pt[0], pt[1]), rel=(60, 40)))
+gui.handle_events()
+pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pt))
+gui.handle_events()
+check([tuple(int(v) for v in b.location[:3])
+       for b in gui.game.blocks if getattr(b, 'be_opted', False)] == selected_before,
+      '旋转一下不清掉已有的选中（转完可以直接推）')
 # 画白线这一帧：有切面时重绘一次，确认不崩且切面仍在
+gui._cubic_clear_selection()
+gui._cubic_view(1)
 gui.draw_cubic_board()
 check(gui.selected_gap is None, '清空后重绘不再画白线')
 

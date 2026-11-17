@@ -1076,7 +1076,7 @@ class RendererMixin:
                 f'　视角 {view_label}　缩放 {zoom * 100:.0f}%'
                 f'　拆分 {gap:.2f}（0 = 贴死）')
         hint2 = ('拖动旋转 · 1–6 切朝向（各带偏角，不正对）· 0 回斜视 · Ctrl+滚轮缩放'
-                 ' · 单击选切面 · 双击选中一侧 · 右键取消')
+                 ' · 任意姿态均可单击选切面 / 双击选中 · r/R c/C d/D 推 · 右键取消')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))

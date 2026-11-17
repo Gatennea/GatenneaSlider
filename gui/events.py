@@ -1183,7 +1183,7 @@ class EventsMixin:
 
                         # 三維（§54 第 2/3 步）：左键可能是拖（旋转）也可能是点
                         # （选缝 / 选块），松手时按有没有移动来区分；右键清选中。
-                        # 旋转态下点什么都不该选中（验收判据之一）。
+                        # 2026-11-18 起任何姿态都能点选（原「旋转态不选」撤销）。
                         if getattr(self, 'cubic_mode', False) and not op_locked:
                             if event.button == 1:
                                 self._cubic_drag_begin(x, y)
@@ -1668,10 +1668,9 @@ class EventsMixin:
         sx, sy = getattr(self, 'cubic_drag_start', pos)
         dx, dy = pos[0] - sx, pos[1] - sy
         if abs(dx) >= 4 or abs(dy) >= 4:
-            if not self.cubic_drag_moved:
-                # 一旦真的开始转，就退出选中态：旋转态只看不操作（方案 §2.2）。
-                # 否则旧的白线切面会跟着一起转，斜着看还压在块上，很像「还在选着」。
-                self._cubic_clear_selection()
+            # 2026-11-18：不再「一开转就清选中」。正向化口径撤销后任何姿态都能
+            # 选/滑，转一下看看再推是正常操作，清掉反而打断；切面跟着盘一起转
+            # 也是对的——它切的就是那盘。
             self.cubic_drag_moved = True
         if not self.cubic_drag_moved:
             return                       # 还在点击容差内：先别动相机（避免点一下画面就歪）
@@ -1710,18 +1709,15 @@ class EventsMixin:
         return cubic_pick.hit_face(scene['faces'], (x, y))
 
     def _cubic_click(self, x, y):
-        """左键点一下：点在**缝里的墙**上就选这条缝；连点两下：选中一侧连通组。
+        """左键点一下：点在块的面上就选它外沿那条内部切面；连点两下：选中一侧连通组。
 
-        2026-11-17 用户口径（改判定基准）：拆分之后缝里的那两面墙本来就在画
-        面上（gap>0 时内部面不再剔除），它们就是「看得见的缝」——直接拿它们
-        当判定基准。外表面（贴包围盒的平面）一律不算缝。这样点「贴着屏幕的
-        那条缝」就选那条缝，不点缝就只提示，不动现有切面。
+        2026-11-17 用户口径（改判定基准）：拆分之缝里的那两面墙本来就在画面上
+        （gap>0 时内部面不再剔除），它们就是「看得见的缝」——直接拿它们当判定
+        基准；外表面也算（推出它外沿的内部切面），包围盒平面一律不选。
+        2026-11-18 用户改口径：**任何姿态都能选**（拾取基于本帧渲染面 + 画家序，
+        本来就不依赖正向朝向；原「必须正向化」是当年怕渲染难做留的退路）。
         """
         from engine import cubic_pick
-        if getattr(self, 'cubic_view_index', None) is None:
-            self.macro_notify_msg = "旋转态只看不选：按 1–6 回到一个朝向再选"
-            self.macro_notify_timer = 120
-            return False
         hit = self._cubic_pick(x, y)
         if hit is None:
             return False
@@ -1827,8 +1823,9 @@ class EventsMixin:
         """三轴六向字母推一步（§54 第 4 步）：r/R c/C d/D，大写沿轴增大。
 
         与 `engine.compat` 的 cubic 字母表同一套字母（不注册会派生成 A~F，能用
-        但不直观）。三条闸门：带 Ctrl/Alt 不消费（留给快捷键）；旋转态（不在六
-        朝向之一）不响应滑动；没选中就只提示「先双击选中」。
+        但不直观）。两条闸门：带 Ctrl/Alt 不消费（留给快捷键）；没选中就只提示
+        「先双击选中」。2026-11-18 起**任何姿态都能推**（三条轴是世界轴，与镜头
+        朝向无关；原「旋转态只看不动」随正向化口径一并撤销）。
         """
         if getattr(event, 'mod', 0) & (pygame.KMOD_CTRL | pygame.KMOD_ALT):
             return False
@@ -1837,10 +1834,6 @@ class EventsMixin:
         if base is None:
             return False
         letter = base.upper() if (event.mod & pygame.KMOD_SHIFT) else base
-        if getattr(self, 'cubic_view_index', None) is None:
-            self.macro_notify_msg = "旋转态只看不动：按 1–6 回到一个朝向再滑"
-            self.macro_notify_timer = 120
-            return True
         if not any(getattr(b, 'be_opted', False) for b in self.game.blocks):
             self.macro_notify_msg = "先在切面一侧双击选中滑块，再用 r/R c/C d/D 推"
             self.macro_notify_timer = 120

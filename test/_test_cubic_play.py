@@ -104,38 +104,55 @@ click(pt)
 check(any(b.be_opted for b in gui.game.blocks), '双击选中一侧连通组')
 check(gui.game.is_solved(), '建局 = 还原态，is_solved() 为真（还没推）')
 
+# 双击后选中的切面由「离点击最近的那条缝」决定（2026-11-17 改）。
+# 注意：合法推法是**沿切面滑动**——方向必须与缝族垂直（引擎 action_to_move
+# 会拒「法向推」为 bad_direction），所以从另两根轴里挑一个能走通的。
+FAMILY_KEY = {'r': pygame.K_r, 'c': pygame.K_c, 'd': pygame.K_d}
+fam = gui.selected_gap[0]
 before = locs()
 step0 = gui.step_count
-key(pygame.K_c)                          # 小写 = 沿 c 轴减小
+used = None
+for push in [f for f in ('r', 'c', 'd') if f != fam]:
+    for mod in (0, pygame.KMOD_SHIFT):
+        key(FAMILY_KEY[push], mod=mod)
+        if gui.step_count == step0 + 1:
+            used = (push, mod)
+            break
+    if used:
+        break
+check(used is not None, f'沿切面 {fam} 能推一步（步数 {gui.step_count}，{gui.macro_notify_msg}）')
 after = locs()
 check(gui.step_count == step0 + 1, f'推一步步数 +1（{gui.step_count}）')
 check(len(after) == len(before) == 27, '块数守恒 27')
 check(set(after) != set(before), '位置确实变了（不是空推）')
-moved_new = {p for p in after} - {p for p in before}
-check(all(p[1] == -1 for p in moved_new),
-      f'新增位置都在 c=-1（沿 c 轴减小）实得 {sorted(moved_new)}')
 check(not gui.game.is_solved(), '推一步后不再还原（is_solved 为假）')
-check('c−' in (gui.macro_notify_msg or ''), f'提示带方向名（{gui.macro_notify_msg}）')
+check(used[0] in (gui.macro_notify_msg or ''), f'提示带方向名（{gui.macro_notify_msg}）')
 
-key(pygame.K_c, mod=pygame.KMOD_SHIFT)   # 大写 = 沿 c 轴增大 → 推回
+key(FAMILY_KEY[used[0]], mod=(pygame.KMOD_SHIFT if used[1] == 0 else 0))
 check(set(locs()) == set(before), '反向字母推回原位')
 check(gui.game.is_solved(), '推回后重新还原')
 
-print('C. 两道闸门（旋转态 / 没选中）')
+print('C. 闸门（斜视下照样能推 / 没选中不推）')
 gui._cubic_view_oblique()
 gui.draw_cubic_board()
+# 斜视下仍然有选中（前进到上一步时选中的组没被清掉），推一步应该生效
+opted = [tuple(int(v) for v in b.location[:3])
+         for b in gui.game.blocks if getattr(b, 'be_opted', False)]
+check(bool(opted), '斜视前已有选中组')
 before = locs()
 key(pygame.K_c, mod=pygame.KMOD_SHIFT)
-check(set(locs()) == set(before), '旋转态按键不推（位置不变）')
-check('旋转态' in (gui.macro_notify_msg or ''), f'旋转态有提示（{gui.macro_notify_msg}）')
+check(set(locs()) != set(before) or '推不动' in (gui.macro_notify_msg or ''),
+      f'斜视下按键会真的尝试推进（{gui.macro_notify_msg}）')
+check('旋转态' not in (gui.macro_notify_msg or ''),
+      f'不再拦「旋转态」（{gui.macro_notify_msg}）')
 gui._cubic_view(0)
 gui._cubic_clear_selection()
+n_before = gui.step_count
 before = locs()
 key(pygame.K_c, mod=pygame.KMOD_SHIFT)
 check(set(locs()) == set(before), '没选中按键不推')
-check('双击' in (gui.macro_notify_msg or '') or '选中' in (gui.macro_notify_msg or ''),
-      f'没选中给的是「先选」提示（{gui.macro_notify_msg}）')
-check(gui.step_count == 2, f'两次拒绝不涨步数（{gui.step_count}）')
+check(gui.step_count == n_before,
+      f'没选中被拒时步数不涨（之前 {n_before}，现在 {gui.step_count}）')
 
 print('D. 撤销 / 重做在三维下明确拒绝（不崩）')
 before = locs()
