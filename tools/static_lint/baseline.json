@@ -31,6 +31,7 @@
     "UI|test/_test_engine_adapter.py|tri_spec",
     "UI|test/_test_engine_adapter.py|verify_path",
     "UI|test/_test_engine_gui.py|pygame",
+    "UI|test/_test_grid_off_seam_cross.py|pygame",
     "UI|test/_test_groups_save.py|pygame",
     "UI|test/_test_mi_animation.py|mi_key",
     "UI|test/_test_mi_build_overlap.py|MiBoardView",
