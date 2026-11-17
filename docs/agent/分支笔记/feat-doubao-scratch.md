@@ -51,4 +51,42 @@
 
 ## 未决 / 发现（开发中随手记）
 
-- （暂无）
+### 2026-11-17 第 0 步（建局与入口）已落地
+
+完成内容（分支内已提交，未推送）：
+
+- `engine/adapter.py`：`create_adapter_puzzle(..., depth=None)` 新增 `depth`；
+  `kind=='cubic'` 走 `cubic_board(m,n,d)`，**缺 depth 直接 `TypeError`**，
+  不退化成二维/单层；`EngineGame` 记 `self.depth`（**不挂 `k`**，否则
+  `history.restore_snapshot` 会把它误判成三角 2-bit 矩阵）；`goal_cells()`
+  补 `(r,c,d)` 三元组分支。
+- `puzzle_types.py`：`puzzle_key` / `create_puzzle` 加 `depth`（keyword-only），
+  三维分榜键 `f'{step}~cubic{m}*{n}*{d}'`——缺 depth 的键显式报错，避免
+  3×3×2 与 3×3×5 共榜/共存档识别。
+- `GUI.py`：`new_cubic_puzzle(m,n,d,step)`（参数校验失败给 `macro_notify_msg`，
+  不静默 False）；一级菜单「三维谜题 ▸」+ 子菜单
+  `puzzle_sub_presets['cubic']`（条目比二维多一位 depth）；
+  `cubic_mode` 旗标（二维三条建局路径都会清掉）；`_cubic_blocked()` 并接入
+  `_form_blocked()`，求解器等入口对三维明确拒绝。
+- `gui/events.py`：谜题菜单两处分派（一级 + 二级）加 `kind == 'cubic'` 分支。
+- `gui/renderer.py`：`draw_board` 加三维分支 → `draw_cubic_board()` 只画
+  「三维视图尚未接入」明示，**不顺二维分支画 m×n 扁平盘**。
+- `gui/session.py` / `records_panel.py` / `speedrun.py`：`puzzle_key` 调用补
+  `depth`；`_current_puzzle_label` 报「三维 m×n×d 等级 s」；Ctrl+R 重建加
+  cubic 分支（漏了会变「模型不可用」）。
+- `test/_test_cubic_entry.py`（新）：28 项，含「真点菜单 → 真建出 3×3×3」的
+  端到端点击，以及缺 depth 报错、分榜键、占位渲染不崩、求解拦截。
+
+验收通道：`D:\python\python.exe test\_test_cubic_entry.py`（28/28）。
+回归：`_test_engine_adapter` / `_test_engine_gui` / `_test_menu_redesign` /
+`_test_mi_gui` / `_test_model_registry` / `_test_shatter_gui` /
+`_test_external_control` / `_test_feature_index` / `_test_command_palette` 全绿；
+`tools.static_lint.runner` 无新增（产品代码未用 import 仍 0、`dup_body` 14 项）。
+
+留给下一步的口径（第 1 步「画出来」）：
+
+- 占位渲染整段替换成 `engine/cubic_view.py`（投影 + 深度排序），
+  `draw_board` 的 cubic 分支改调它；遮挡关先肉眼验过再写拾取。
+- 三维**尚未注册方向字母表**（`compat._VOCAB` 没有 'cubic'，现派生大写 A~F）：
+  方案第 4 步才注册六向字母，别在拾取之前拿派生字母当正式键。
+

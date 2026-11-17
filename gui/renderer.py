@@ -951,6 +951,33 @@ class RendererMixin:
         # 悬停缝高亮（画在最上层，与三角/通用同一处）
         self._draw_hover_gap()
 
+    def draw_cubic_board(self):
+        """三維棋盤的**明示佔位**（§54 第 0 步）。
+
+        這一步只做出建局與菜單入口（方案 §4 第 0 步），投影渲染在方案第 1 步。
+        這裡**不能**順著二維分支畫 m×n 的扁平盤：三維局的 location 是三元組，
+        壓成兩維畫會得到一張「看著能玩、其實少一層」的假棋盤，還把空腔全蓋住。
+        故這裡只留背景 + 一句明示，等 cubic_view 接上後整段換掉。
+        """
+        self.screen.fill(self.colors['background'])
+        game = getattr(self, 'game', None)
+        m = getattr(game, 'm', 0) or 0
+        n = getattr(game, 'n', 0) or 0
+        d = getattr(game, 'depth', 0) or 0
+        lines = [
+            '三维视图尚未接入',
+            f'{m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
+            '（投影渲染在方案第 1 步）',
+        ]
+        surf0 = self.font.render(lines[0], True, self.colors['menu_text'])
+        surf1 = self.status_font.render(lines[1], True, self.colors['separator'])
+        x0 = (self.screen_width - surf0.get_width()) // 2
+        y0 = self.screen_height // 2 - surf0.get_height()
+        self.screen.blit(surf0, (x0, y0))
+        self.screen.blit(
+            surf1, ((self.screen_width - surf1.get_width()) // 2,
+                    y0 + surf0.get_height() + 12))
+
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。
 
@@ -1760,6 +1787,10 @@ class RendererMixin:
             return
         if getattr(self, 'mi_mode', False):
             self.draw_mi_board()
+            return
+        # 三維：第 0 步只有明示佔位（見 draw_cubic_board 的說明）
+        if getattr(self, 'cubic_mode', False):
+            self.draw_cubic_board()
             return
 
         self.screen.fill(self.colors['background'])

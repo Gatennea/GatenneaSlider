@@ -7,7 +7,8 @@
 - create_puzzle(m, n, step, kind, ...) -> SliderMatrix | TriangleSliderMatrix
   | MiSliderMatrix
 
-    kind: square / numbered / triangle / mi / shatter（碎三角，几何引擎新板型）。
+    kind: square / numbered / triangle / mi / cubic（三维，另需 depth）/
+    shatter（碎三角，几何引擎新板型）。
 
     shatter 没有旧实现（无 game_shatter.py），也无「缺失回退方形」一说——
     引擎模块缺失时**直接抛 ImportError**：静默回退会把 48 块碎三角变成
@@ -31,6 +32,7 @@ def puzzle_key(
     *,
     numbered: bool = False,
     triangle_side: int | None = None,
+    depth: int | None = None,
 ) -> str:
     """生成 puzzle 分組鍵（用於成績、狀態、存檔識別）。
 
@@ -38,6 +40,8 @@ def puzzle_key(
     - numbered：在 square 後綴 ``#num``。
     - triangle：格式 ``f"{step}~tri{k}"``，k 為大三角形邊長（單元三角個數）。
     - mi：格式 ``f"{step}~mi{m}*{n}"``，m/n 為棋盤行列數（每格 4 個單元）。
+    - cubic（三維）：格式 ``f"{step}~cubic{m}*{n}*{d}"``——三維**必須**帶層數，
+      否则 3×3×2 与 3×3×5 会共用一个榜/一份存档识别，成绩与读档全串味。
     - shatter（碎三角）：格式 ``f"{step}~shatter"``。板型固定 48 塊、
       無尺寸維度，故鍵裡不含 m/n——也**不能**含：碎三角的 matrix 是
       21×31（質心晶格），若按方形 4×4 計鍵會與矩形 4×4 分榜相撞，
@@ -48,6 +52,12 @@ def puzzle_key(
         return f'{step}~tri{k}'
     if kind == 'mi':
         return f'{step}~mi{m}*{n}'
+    if kind == 'cubic':
+        if depth is None:
+            raise ValueError(
+                'cubic 的分組鍵需要 depth（三維層數 d）；缺省即報錯，'
+                '不許用不帶層數的鍵——那會讓不同層數的三維局共用一份榜/存檔')
+        return f'{step}~cubic{m}*{n}*{depth}'
     if kind not in _NATIVE_KINDS:
         # 模型文件板型（shatter / shatter_lattice / 以后任何 <name>.json）：
         # 固定块数、无尺寸维度，键里不能含 m/n——否则会与矩形同尺寸分榜
@@ -67,11 +77,15 @@ def create_puzzle(
     *,
     numbered: bool = False,
     triangle_side: int | None = None,
+    depth: int | None = None,
 ):
     """依參數建構謎題邏輯物件（對應 GUI 的 self.game）。
 
     Stage 0 僅回傳 SliderMatrix；triangle/mi 分派至各自模組，模組缺失時
     回退方形（呼叫方需自行處理）。
+
+    cubic（三維）**没有旧实现**，必须显式传 depth（层数 d）；缺 depth 由
+    create_adapter_puzzle 抛 TypeError，不做「二维兜底」。
 
     幾何引擎開關（engine.config.ENABLED，默認關）：打開時改走
     engine.adapter.EngineGame（方形/三角/米字一套引擎邏輯）。默認關 →
@@ -90,7 +104,8 @@ def create_puzzle(
             if _known:
                 from engine.adapter import create_adapter_puzzle
                 return create_adapter_puzzle(kind, m, n, step,
-                                            triangle_side=triangle_side)
+                                            triangle_side=triangle_side,
+                                            depth=depth)
             # 未登记的形态：维持既有回退行为（不在此处改变既有语义）
     except ImportError:
         # 引擎模組缺失（未安裝 / 裁剪版）→ 安靜回退舊 game*.py，不破壞既有行為。
@@ -120,7 +135,8 @@ def create_puzzle(
                 f'（详见 engine.model_registry.errors()）')
         from engine.adapter import create_adapter_puzzle
         return create_adapter_puzzle(kind, m, n, step,
-                                     triangle_side=triangle_side)
+                                     triangle_side=triangle_side,
+                                     depth=depth)
     if kind == 'mi':
         try:
             from game_mi import MiSliderMatrix  # type: ignore

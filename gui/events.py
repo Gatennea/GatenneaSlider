@@ -939,7 +939,12 @@ class EventsMixin:
                                         elif len(preset) >= 4:
                                             _, pm, pn, ps = preset[:4]
                                             kind = preset[4] if len(preset) > 4 else 'square'
-                                            if kind == 'triangle':
+                                            if kind == 'cubic':
+                                                # 三维条目比二维多一位：第 6 个元素是层数 d
+                                                # （GUI.py 的 puzzle_sub_presets['cubic']）。
+                                                pd = preset[5] if len(preset) > 5 else None
+                                                self.new_cubic_puzzle(pm, pn, pd, ps)
+                                            elif kind == 'triangle':
                                                 self.new_triangle_puzzle(pm, ps)
                                             elif kind == 'mi':
                                                 self.new_mi_puzzle(pm, pn, ps)
@@ -1006,7 +1011,12 @@ class EventsMixin:
                                         elif len(preset) >= 4:
                                             _, pm, pn, ps = preset[:4]
                                             kind = preset[4] if len(preset) > 4 else 'square'
-                                            if kind == 'triangle':
+                                            if kind == 'cubic':
+                                                # 三维条目比二维多一位：第 6 个元素是层数 d
+                                                # （GUI.py 的 puzzle_sub_presets['cubic']）。
+                                                pd = preset[5] if len(preset) > 5 else None
+                                                self.new_cubic_puzzle(pm, pn, pd, ps)
+                                            elif kind == 'triangle':
                                                 self.new_triangle_puzzle(pm, ps)
                                             elif kind == 'mi':
                                                 self.new_mi_puzzle(pm, pn, ps)

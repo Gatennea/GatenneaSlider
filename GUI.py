@@ -255,6 +255,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_m = m
         self.current_n = n
         self.current_step = step
+        # 三维层数 d（§54 立方体板型；二维形态恒为 0）
+        self.current_depth = 0
         self.current_kind = kind
 
         # 游戏逻辑对象（带 kind；命令行走位若参数非法，会在下方显式报错而非静默方形）
@@ -499,6 +501,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 ('6×6 等级2', 6, 6, 2, 'numbered'),
                 ('8×8 等级2', 8, 8, 2, 'numbered'),
             ],
+            # 三维立方体板型（§54）：条目在刷新时填（条目比二维多一位 depth），
+            # 同样先给空壳，免得菜单渲染先于刷新报 KeyError。
+            'cubic': [],
             # 模型文件板型：条目由 models/*.json 决定（_refresh_puzzle_presets
             # 每次重建菜单时填充），这里给个空壳，免得菜单渲染先于刷新报 KeyError。
             'models': [],
@@ -690,6 +695,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 方向不再由「两下落点差」猜，而是由第二下按住拖动时的位移向量
         # 在选中缝隙切向上的投影给出，故无需记录第一下落点作锚点
         self.mi_mode = False
+
+        # 三维立方体模式（§54）：self.game 为 kind='cubic' 的 EngineGame 时 True。
+        # 第 0 步只有建局与菜单入口；渲染 / 拾取 / 六向操作按方案第 1–4 步推进。
+        self.cubic_mode = False
 
         # 历史记录
         self.game_history = GameHistory()
@@ -953,8 +962,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         官方预设（矩形/三角/米字/数字）由 (m,n,step[,kind]) 元组标识，不带
         __custom__ 标记，载入存档时据此区分。
 
-        一级菜单的长度是**恒定**的：快速开始 + 至多五个目录（矩形 / 异形 /
-        模型 / 捆绑谜题 / 自定义还原态，后两个没内容就不出现）+ 分隔线 +
+        一级菜单的长度是**恒定**的：快速开始 + 至多六个目录（矩形 / 异形 /
+        三维 / 模型 / 捆绑谜题 / 自定义还原态，后两个没内容就不出现）+ 分隔线 +
         自定义... + 当前行。条目再多也只长在子菜单里，不会把一级菜单撑出
         屏幕（这也是 2026-10-27 把样式从平铺改成子菜单的直接动机）。
         """
@@ -967,7 +976,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             ('快速开始：矩形 6×6 等级2', 6, 6, 2),
             ('矩形谜题 ▸', '__sub__', 'rect'),
             ('异形谜题 ▸', '__sub__', 'exotic'),
+            ('三维谜题 ▸', '__sub__', 'cubic'),
             ('模型谜题 ▸', '__sub__', 'models'),
+        ]
+        # 三维（立方体单元，方案 §4 第 0 步）：条目格式比二维多一位 depth
+        # ——(名称, m, n, step, 'cubic', d)。等级 1~2 各一档，纯作验证入口；
+        # 1×1×1 一步都动不了（等级须 < 最大维度），留着只为「入口先于功能」，
+        # 点它会得到一句明确的不可建局说明，而不是静默无反应。
+        self.puzzle_sub_presets['cubic'] = [
+            ('__group__', '立方体（三维，正方体单元）'),
+            ('三维 1×1×1 等级1', 1, 1, 1, 'cubic', 1),
+            ('三维 2×2×2 等级1', 2, 2, 1, 'cubic', 2),
+            ('三维 3×3×3 等级1', 3, 3, 1, 'cubic', 3),
+            ('三维 3×3×3 等级2', 3, 3, 2, 'cubic', 3),
         ]
         # 模型文件板型：条目完全由注册表决定——丢一个 models/<name>.json
         # 进目录，菜单里就多一项，这里一行都不用改。
@@ -1041,7 +1062,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         摊平会把「同一档在两处出现」的旧问题带回来。
         """
         out = list(self.puzzle_presets)
-        for subkey in ('rect', 'exotic', 'models', 'bundled', 'custom'):
+        for subkey in ('rect', 'exotic', 'cubic', 'models', 'bundled',
+                       'custom'):
             out.extend((getattr(self, 'puzzle_sub_presets', None) or {}).get(
                 subkey) or [])
         return out
@@ -1085,9 +1107,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_m = m
         self.current_n = n
         self.current_step = step
-        # 切回方形：清除三角形/米字格模式标记（存档/热键路径都走这里）
+        # 切回方形：清除三角形/米字格/三维模式标记（存档/热键路径都走这里）
         self.triangle_mode = False
         self.mi_mode = False
+        self.cubic_mode = False
 
         # 创建新的游戏对象
         kind = 'numbered' if numbered else 'square'
@@ -1178,6 +1201,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 渲染、命中、HTTP 的状态字段继续走米字格分支（ symptom：/status 的
         # puzzle 仍是 n~mi*m 而三族缝隙只剩 'h' 选得中）
         self.mi_mode = False
+        self.cubic_mode = False
         self.numbered = False
         # 换形态 = 换谜题：自定义样式目标（方形专属的 goal_pattern）必须作废，
         # 否则底部栏会继续显示「样式：X」、存档还会把方形样式名写进三角存档
@@ -1236,6 +1260,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         （MiSliderMatrix 没有 is_valid_h_line）要么给出无意义的窗口，因此在
         入口处一并挡下。两个单形态助手各自带自己的措辞。
         """
+        if self._cubic_blocked(action):
+            return True
         if self._triangle_blocked(action):
             return True
         return self._mi_blocked(action, '后续阶段开发中')
@@ -1276,6 +1302,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.current_step = step
         self.mi_mode = True
         self.triangle_mode = False
+        self.cubic_mode = False
         self.numbered = False
         # 换形态 = 换谜题：方形专属的自定义样式目标必须作废（同三角开局）
         self._ann_style_goal = None
@@ -1314,6 +1341,86 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             f"切换谜题：米字格 {m}×{n} 等级{step}"
             "（两次触控：先点缝隙，再点滑块）")
         self.macro_notify_timer = 150
+        return True
+
+    def new_cubic_puzzle(self, m: int, n: int, d: int,
+                         step: int = 1) -> bool:
+        """创建三维立方体谜题（正方体单元，方案 §4 第 0 步脚手架）。
+
+        参数：
+            m / n / d: 三个维度的块数（还原态 = m×n×d 实心长方体）
+            step: 移动步数（等级），须小于 max(m, n, d)
+
+        现状**只有建局与入口**：投影渲染、命中拾取、六向操作都在方案第 1–4
+        步。因此画面只给一句「三维视图尚未接入」的明示，**不退回二维渲染**
+        ——把 m×n×d 压成 m×n 的扁平盘会让人误以为能玩（也违反「不退化成
+        二维」的纪律）。求解器同样明确不支持，不拿二维求解器硬算。
+        """
+        if self._tut_board_locked():
+            return False
+        # 切换谜题会重置棋盘 → 终止梯度流水线 / 连续撤销重做
+        self._stop_gradient_pipeline()
+        self._gap_anchor_world = None
+        self._stop_continuous_undo_redo()
+        self._last_timed_result = None
+        self._ann_cancel_session('切换谜题')
+
+        # 参数校验：三个维度都要 ≥1；step 必须真能挪动（step < max(m,n,d)）。
+        # 三维单块（1×1×1）一步都动不了，但仍作为入口脚手架保留（方案 §6），
+        # 所以这里**给一句明确的说明**而不是静默返回 False。
+        if m < 1 or n < 1 or d < 1:
+            self.macro_notify_msg = f"三维谜题：{m}×{n}×{d} 不是有效的立方体尺寸"
+            self.macro_notify_timer = 180
+            return False
+        if step < 1 or step >= max(m, n, d):
+            self.macro_notify_msg = (
+                f"三维谜题：{m}×{n}×{d} 等级{step} 一步都动不了"
+                f"（等级须小于最大维度 {max(m, n, d)}）")
+            self.macro_notify_timer = 180
+            return False
+        if self.timer_state == 'running':
+            self.macro_notify_msg = "计时中无法切换谜题"
+            self.macro_notify_timer = 90
+            return False
+        self._timer_cancel()
+        detached = self._detach_readonly_save()
+
+        self.current_m = m
+        self.current_n = n
+        self.current_depth = d
+        self.current_step = step
+        self.cubic_mode = True
+        self.mi_mode = False
+        self.triangle_mode = False
+        self.numbered = False
+        self._ann_style_goal = None
+        self._pick_fill = None
+
+        # 三维求解器未接（方案第 6 阶段）：求解入口由 _cubic_blocked 明确拒绝，
+        # 不把算法落到任何二维语义上。
+        self.game = create_puzzle(m, n, step, kind='cubic', depth=d)
+        self.current_kind = 'cubic'
+
+        # 重置状态（相机/缩放沿用二维字段；三维相机组是第 2 步的事）
+        self.zoom = 1.0
+        self.selected_gap = None
+        self.selected_block = None
+        self.step_count = 0
+        self.animating = False
+        self.anim_blocks = []
+        for block in self.game.blocks:
+            block.number = None
+
+        self.game_history.reset()
+        self._mp_reset_target_region()
+        self.center_map()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+
+        self.macro_notify_msg = (
+            f"切换谜题：三维 {m}×{n}×{d} 等级{step}"
+            "（视图尚未接入：投影渲染在第 1 步）")
+        self.macro_notify_timer = 180
         return True
 
     def new_shatter_puzzle(self, step: int = 1) -> bool:
@@ -1373,6 +1480,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 走了会画错）。形状交给通用通道，故两个旗标都关。
         self.mi_mode = False
         self.triangle_mode = False
+        self.cubic_mode = False
         self.numbered = False
         self.current_m = 4
         self.current_n = 4
@@ -1437,6 +1545,22 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             msg += f"（{hint}）"
         self.macro_notify_msg = msg
         self.macro_notify_timer = 120
+        return True
+
+    def _cubic_blocked(self, action: str, hint: str = '') -> bool:
+        """三维模式（§54 第 0 步）尚不可用的操作：给出一致提示并拦截。
+
+        第 0 步只有建局与入口：渲染、拾取、六向操作、求解器都还没接。求解器
+        尤其不能放行——查表 / 宏 / 启发式全是二维语义，拿它硬算三维局会给出
+        一份看似有效的错解法（方案 §4 API 安全点同一条纪律）。
+        """
+        if not getattr(self, 'cubic_mode', False):
+            return False
+        msg = f"三维谜题：{action}尚未接入"
+        if hint:
+            msg += f"（{hint}）"
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = 150
         return True
 
     def _model_blocked(self, action: str, hint: str = '') -> bool:
