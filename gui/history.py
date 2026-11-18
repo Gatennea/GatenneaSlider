@@ -152,6 +152,11 @@ class HistoryMixin:
             'delta': anim_delta,
             'group': frozenset(group),
         }
+        # 撤销/重做也是整组沿缝滑回去：与二维同口径，动画启动后出声。
+        # 时长必须取 cubic_anim_ms，否则声音速度会按二维 animation_duration
+        # 换算，三维里调「速度」滑条就听不出差别。
+        self._play_slide_sound(max(1, int(move_info.get('step', 1))),
+                               duration_ms=ms)
 
     def _cubic_undo_redo(self, is_undo: bool):
         """三维撤销/重做：换局面即刻生效，渲染层补滑动位移。
