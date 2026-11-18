@@ -1062,6 +1062,7 @@ class RendererMixin:
 
         faces_all = scene['faces']
         back_faces, front_faces = faces_all, []
+        front_plain, front_sel = [], []
         if seam_quad:
             # 画家序（2026-11-18 二次返工）：
             #   · 未选中块**按深度**分前后：挡在切面前面的块要盖住切面（否则
@@ -1072,18 +1073,22 @@ class RendererMixin:
             opted = {(int(b.location[0]), int(b.location[1]), int(b.location[2]))
                      for b in blocks if getattr(b, 'be_opted', False)}
             back_faces, front_faces = [], []
+            front_plain, front_sel = [], []
             for f in faces_all:
                 loc = f['loc']
                 key = (int(loc[0]), int(loc[1]), int(loc[2]))
                 # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
                 center = (loc[1] + 0.5, loc[2] + 0.5, loc[0] + 0.5)[seam_axis]
                 near = (center - seam_fixed) * seam_sign > 0
-                if key in opted or near:
-                    front_faces.append(f)
+                if key in opted:
+                    front_sel.append(f)
+                elif near:
+                    front_plain.append(f)
                 else:
                     back_faces.append(f)
 
         items = [(f['depth'], 0, f) for f in back_faces]
+        ghost = None
         if seam_quad:
             pts = [cubic_view.project_point(w, camera, scene['scale'],
                                             scene['origin'])[:2] for w in seam_quad]
@@ -1095,7 +1100,18 @@ class RendererMixin:
                 area += p0[0] * p1[1] - p1[0] * p0[1]
             if abs(area) / 2.0 >= 1.5:
                 items.append((0.0, 1, pts))
-        items += [(f['depth'], 0, f) for f in front_faces]
+                # 第二遍「弱覆盖」：同一张矩形再用约 1/3 的透明度铺一层，画在
+                # 挡在切面前面的未选中块之上、选中组之下。这样：
+                #   · 被块挡住的地方仍然淡红可见 → 矩形是**完整**的（用户两次
+                #     说形状被啃掉）；
+                #   · 块本身仍清晰、没被糊死 → 前后关系还在（用户说遮挡不对）；
+                #   · 选中组最后画，绿色一点红都不沾。
+                ghost = (pts, max(16, int(getattr(self, 'cubic_seam_alpha',
+                                                    self.CUBIC_SEAM_ALPHA)) // 6))
+        items += [(f['depth'], 0, f) for f in front_plain]
+        if ghost is not None:
+            items.append((0.0, 2, ghost))
+        items += [(f['depth'], 0, f) for f in front_sel]
         # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
         # 一级级台阶，切面边上那些「毛毛糙糙」的小三角有一半是块面自己的边。
         # 只在棋盘包围盒里开超采样，整帧仍是一次 smoothscale 缩回，成本可控。
@@ -1122,12 +1138,18 @@ class RendererMixin:
         for _depth, _kind, item in items:
             if hi is None:
                 continue
-            if _kind == 1:
+            if _kind in (1, 2):
                 # 切面的一格：半透明红。必须在超采样画布上**按 alpha 叠加**（
                 # pygame.draw 往普通 Surface 上画会忽略 alpha），所以在小图上画
                 # 好再 blit 上来——这样它和块面共用同一张 2× 画布、同一套深度序，
                 # 缩回原尺寸时也是同一轮平滑，边不会比块面更毛。
-                pts = _T(item)
+                if _kind == 2:                      # (pts, alpha)
+                    pts_src, alpha = item
+                else:
+                    pts_src = item
+                    alpha = int(getattr(self, 'cubic_seam_alpha',
+                                        self.CUBIC_SEAM_ALPHA))
+                pts = _T(pts_src)
                 x0 = min(p[0] for p in pts)
                 y0 = min(p[1] for p in pts)
                 w = max(1, max(p[0] for p in pts) - x0 + 1)
@@ -1135,9 +1157,15 @@ class RendererMixin:
                 cell = pygame.Surface((w, h), pygame.SRCALPHA)
                 cell.fill((0, 0, 0, 0))
                 pygame.draw.polygon(
-                    cell, seam_rgb + (int(getattr(self, 'cubic_seam_alpha',
-                                                  self.CUBIC_SEAM_ALPHA)),),
+                    cell, seam_rgb + (alpha,),
                     [(p[0] - x0, p[1] - y0) for p in pts])
+                if _kind == 2:
+                    # 弱覆盖层再补一圈实边：矩形轮廓即使被前层块挡住也能读出来
+                    # （用户两次说「不是完整矩形」），内部仍只给淡红，块不被糊死。
+                    pygame.draw.lines(
+                        cell, seam_rgb + (210,), True,
+                        [(p[0] - x0, p[1] - y0) for p in pts],
+                        max(2, 2 * _ss))
                 hi.blit(cell, (x0, y0))
                 continue
             face = item
