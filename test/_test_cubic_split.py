@@ -145,6 +145,9 @@ gui.save_readonly_flag = False
 pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 gui.animation_enabled = True
+# 玩家配置可能把「无限打乱」常开；本段验的是有限打乱后进入拆分态，
+# 显式关掉，避免读到仓库 config 的真实开关（2026-11-18）。
+gui.infinite_shuffle = False
 # 固定相机与拆分，避免读到仓库 config 里上次留下的正对视角：正对时只看得见
 # 一种朝向的面，下面「≥3 级明暗」会假失败（不是渲染退化）。
 gui._cubic_camera_prefs = {}

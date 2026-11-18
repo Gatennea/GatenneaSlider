@@ -74,6 +74,8 @@ gui.config_path = os.path.join(gui.config_dir, 'config.json')
 gui._readonly = False
 gui.save_readonly_flag = False
 gui.animation_enabled = False
+# 玩家 config 可能把无限打乱常开；本文件验有限打乱后步数清零，显式关掉。
+gui.infinite_shuffle = False
 pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 gui._cubic_camera_prefs = {}

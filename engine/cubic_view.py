@@ -226,7 +226,9 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
     gap = 拆分距离（见 block_min_corner）。**gap>0 时不再剔除内部面**：块与块
     之间空出了一条缝，站在斜视角度正好能看见缝里的那一面——这时候还按「邻块
     存在就当内部面」去删，画面会出现「该有的面不见了」的漏块感。
-    gap=0（未拆分）才按邻块剔除内部面。anchor 默认取当前块堆的包围盒中心。
+    gap=0（未拆分）才按邻块剔除内部面。**三维动画有 offsets 时**，移动块及其
+    相邻块不剔除：动画把贴死的块拉开，旧判据会把刚露出的面当内部面删掉，
+    背景就从缺口里透出来（黑块）。anchor 默认取当前块堆的包围盒中心。
 
     返回列表，每项：
         {'pts': [(sx, sy) × 4], 'depth': 相机深度（大 = 近）,
@@ -239,11 +241,19 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
         anchor = layout_anchor(blocks)
     view_z = camera.view_axis()
     solid = gap < 1e-9
+    # 三维动画期间，移动块（及其相邻块）之间原本贴死的内部面会被拉开。
+    # 未拆分（gap=0）时仍按「邻块存在」剔除这些面，就会在滑开的一瞬露出
+    # 背景黑块（用户 2026-11-18「无限打乱 + 关选中动画 + 开滑动动画，偶尔
+    # 某些地方变黑」）。这里只在**两边都不在移动集合**时才剔除内部面：
+    # 静止区仍走零成本剔除，移动带上的面全部画出来。
+    moving = frozenset(offsets.keys()) if offsets else frozenset()
     out = []
     for loc in locations:
         for axis, sign, normal in FACE_DEFS:
-            if solid and tuple(neighbor_location(loc, axis, sign)) in locations:
-                continue                       # 未拆分：内部面画出来只会漏底
+            neighbor = tuple(neighbor_location(loc, axis, sign))
+            if solid and loc not in moving and neighbor not in moving \
+                    and neighbor in locations:
+                continue                       # 两边都静止：内部面画出来只会漏底
             if sum(n * v for n, v in zip(normal, view_z)) <= 1e-9:
                 continue                       # 背面：法向朝里，看不见
             quad = _face_quad(loc, axis, sign, gap, anchor)
