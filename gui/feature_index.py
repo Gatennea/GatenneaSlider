@@ -584,6 +584,8 @@ _CUBIC_IDS = frozenset({
     'confirm_before_shuffle', 'concept_step', 'concept_hole',
     # 2026-11-18：三维竞速与三维成绩表接通
     'mode_practice', 'mode_timed', 'records_panel',
+    # 2026-11-18：自定义谜题框支持「三维」形态（m×n×d + 等级）
+    'custom_puzzle',
 })
 
 

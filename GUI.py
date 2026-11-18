@@ -667,10 +667,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 自定义谜题对话框状态
         self.show_custom_dialog = False
-        self.custom_fields = {'m': '6', 'n': '6', 'step': '1'}
-        self.custom_active_field = None  # 'm', 'n', 'step'
+        self.custom_fields = {'m': '6', 'n': '6', 'd': '3', 'step': '1'}
+        self.custom_active_field = None  # 'm', 'n', 'd', 'step'
         self.custom_error = ''
-        self.custom_kind = 'rect'       # 'rect' 矩形 / 'triangle' 三角 / 'mi' 米字 / 'numbered' 数字
+        self.custom_kind = 'rect'       # 'rect' 矩形 / 'triangle' 三角 / 'mi' 米字 /
+                                        # 'numbered' 数字 / 'cubic' 三维
 
         # 通用确认弹窗（破坏性操作；目前只有谜题菜单的「删除预设」）
         # 见 gui/dialogs.py draw_confirm_dialog / handle_confirm_dialog_events
@@ -989,15 +990,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             ('模型谜题 ▸', '__sub__', 'models'),
         ]
         # 三维（立方体单元，方案 §4 第 0 步）：条目格式比二维多一位 depth
-        # ——(名称, m, n, step, 'cubic', d)。等级 1~2 各一档，纯作验证入口；
-        # 1×1×1 一步都动不了（等级须 < 最大维度），留着只为「入口先于功能」，
-        # 点它会得到一句明确的不可建局说明，而不是静默无反应。
+        # ——(名称, m, n, step, 'cubic', d)。1×1×1 那种「一步都动不了」的档位
+        # 不再放进菜单（new_cubic_puzzle 仍会给明确拒绝说明，供代码路径兜底）。
         self.puzzle_sub_presets['cubic'] = [
             ('__group__', '立方体（三维，正方体单元）'),
-            ('三维 1×1×1 等级1', 1, 1, 1, 'cubic', 1),
             ('三维 2×2×2 等级1', 2, 2, 1, 'cubic', 2),
+            ('三维 3×3×2 等级1', 3, 3, 1, 'cubic', 2),
             ('三维 3×3×3 等级1', 3, 3, 1, 'cubic', 3),
             ('三维 3×3×3 等级2', 3, 3, 2, 'cubic', 3),
+            ('三维 4×3×2 等级1', 4, 3, 1, 'cubic', 2),
+            ('三维 4×4×4 等级1', 4, 4, 1, 'cubic', 4),
+            ('三维 4×4×4 等级2', 4, 4, 2, 'cubic', 4),
+            ('三维 4×4×4 等级3', 4, 4, 3, 'cubic', 4),
+            ('三维 5×5×5 等级1', 5, 5, 1, 'cubic', 5),
         ]
         # 模型文件板型：条目完全由注册表决定——丢一个 models/<name>.json
         # 进目录，菜单里就多一项，这里一行都不用改。

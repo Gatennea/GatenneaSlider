@@ -1027,10 +1027,12 @@ class EventsMixin:
                                             self.custom_kind = ('triangle' if kind == 'triangle'
                                                                 else 'mi' if kind == 'mi'
                                                                 else 'numbered' if kind == 'numbered'
+                                                                else 'cubic' if kind == 'cubic'
                                                                 else 'rect')
                                             self.custom_fields = {
                                                 'm': str(self.current_m),
                                                 'n': str(self.current_n),
+                                                'd': str(getattr(self, 'current_depth', 0) or 1),
                                                 'step': str(self.current_step)
                                             }
                                             self.custom_active_field = 'm'
@@ -4867,6 +4869,29 @@ class EventsMixin:
 
         if kind == 'palette':
             self.open_command_palette()
+            return
+
+        if kind == 'custom_dialog':
+            # 命令面板/帮助检索里的「自定义谜题」：按当前形态预选页签与尺寸，
+            # 三维局会直接落在「三维」并带 d。
+            self.close_all_menus()
+            self.show_help = False
+            self.show_custom_dialog = True
+            self._dialog_fade_reset('custom')
+            _kind = self._current_kind()
+            self.custom_kind = ('triangle' if _kind == 'triangle'
+                                else 'mi' if _kind == 'mi'
+                                else 'numbered' if _kind == 'numbered'
+                                else 'cubic' if _kind == 'cubic'
+                                else 'rect')
+            self.custom_fields = {
+                'm': str(self.current_m),
+                'n': str(self.current_n),
+                'd': str(getattr(self, 'current_depth', 0) or 1),
+                'step': str(self.current_step),
+            }
+            self.custom_active_field = 'm'
+            self.custom_error = ''
             return
 
         if kind == 'toggle':

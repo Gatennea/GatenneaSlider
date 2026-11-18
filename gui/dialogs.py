@@ -836,12 +836,14 @@ class DialogsMixin:
         overlay.fill((0, 0, 0, 150))
         self.screen.blit(overlay, (0, 0))
 
-        dialog_width = 320
-        dialog_height = 320
+        # 五个形态按钮要一行放下：二维 360 宽够用，三维多了层数一行用 400。
+        dialog_width = 400 if getattr(self, 'custom_kind', 'rect') == 'cubic' else 360
+        dialog_height = 370 if getattr(self, 'custom_kind', 'rect') == 'cubic' else 320
         dialog_x = (self.screen_width - dialog_width) // 2
         dialog_y = (self.screen_height - dialog_height) // 2
 
         dialog_rect = pygame.Rect(dialog_x, dialog_y, dialog_width, dialog_height)
+        self._custom_dialog_rect = dialog_rect
         pygame.draw.rect(self.screen, self.colors['dialog_bg'], dialog_rect, border_radius=8)
         pygame.draw.rect(self.screen, self.colors['dialog_border'], dialog_rect, 2, border_radius=8)
 
@@ -862,12 +864,13 @@ class DialogsMixin:
         self.screen.blit(kind_label, (label_x, kind_y + 6))
 
         self.custom_kind_rects = {}
-        # 形态四选一：矩形 / 三角 / 米字 / 数字（分段按钮，选中项高亮）
-        # 加第四项后按钮收窄，四个并排仍在一行内
-        btn_w, btn_h = 52, 26
+        # 形态五选一：矩形 / 三角 / 米字 / 数字 / 三维
+        # 五个按钮并排，三维时对话框加宽到 400，仍在一行内
+        btn_w, btn_h = 46, 26
         kind_x = dialog_x + 85
         for kid, kname in (('rect', '矩形'), ('triangle', '三角'),
-                           ('mi', '米字'), ('numbered', '数字')):
+                           ('mi', '米字'), ('numbered', '数字'),
+                           ('cubic', '三维')):
             btn = pygame.Rect(kind_x, kind_y, btn_w, btn_h)
             self.custom_kind_rects[kid] = btn
             active = (kind == kid)
@@ -885,6 +888,13 @@ class DialogsMixin:
             fields = [
                 ('m', '边长:', self.custom_fields['m']),
                 ('step', '等级:', self.custom_fields['step']),
+            ]
+        elif kind == 'cubic':
+            fields = [
+                ('m', '行数:', self.custom_fields.get('m', '6')),
+                ('n', '列数:', self.custom_fields.get('n', '6')),
+                ('d', '层数:', self.custom_fields.get('d', '3')),
+                ('step', '等级:', self.custom_fields.get('step', '1')),
             ]
         else:
             fields = [
@@ -929,30 +939,34 @@ class DialogsMixin:
             self.screen.blit(error_surface, (label_x, y_offset))
             y_offset += 25
 
-        # 三个按钮一行：[高级选项…] [确定] [取消]
+        # 二维一行三个按钮：[高级选项…] [确定] [取消]；三维只有 [确定] [取消]
         # 「高级选项…」= 按上面的形态/尺寸/等级开一局，然后直接进设计画布
         # （用户 2026-10-26 要的入口；实现只有 _ann_btn_design 这一个，
         # 这里只是转发，避免与创造模式的入口变成两套账）。
         btn_height = 32
-        btn_y = dialog_y + 272
+        btn_y = dialog_y + dialog_height - 48
         adv_w, ok_w = 112, 80
         gap = 8
-        row_w = adv_w + ok_w * 2 + gap * 2
+        # 三维不画「高级选项…」：那条路进的是二维设计画布，三维创造还没接。
+        show_adv = kind != 'cubic'
+        row_w = (adv_w + gap if show_adv else 0) + ok_w * 2 + gap
         row_x = dialog_x + (dialog_width - row_w) // 2
-
-        self.custom_adv_btn = pygame.Rect(row_x, btn_y, adv_w, btn_height)
         mouse_pos = pygame.mouse.get_pos()
-        btn_color = (self.colors['button_hover']
-                     if self.custom_adv_btn.collidepoint(mouse_pos)
-                     else self.colors['button_bg'])
-        pygame.draw.rect(self.screen, btn_color, self.custom_adv_btn, border_radius=4)
-        adv_text = self.input_font.render("高级选项…", True, (255, 255, 255))
-        self.screen.blit(adv_text, adv_text.get_rect(center=self.custom_adv_btn.center))
 
-        btn_x = row_x + adv_w + gap
-        # 按钮位置固定：字段数随形态变（三角少一个列数），按钮不跟着上下跳
+        if show_adv:
+            self.custom_adv_btn = pygame.Rect(row_x, btn_y, adv_w, btn_height)
+            btn_color = (self.colors['button_hover']
+                         if self.custom_adv_btn.collidepoint(mouse_pos)
+                         else self.colors['button_bg'])
+            pygame.draw.rect(self.screen, btn_color, self.custom_adv_btn, border_radius=4)
+            adv_text = self.input_font.render("高级选项…", True, (255, 255, 255))
+            self.screen.blit(adv_text, adv_text.get_rect(center=self.custom_adv_btn.center))
+            btn_x = row_x + adv_w + gap
+        else:
+            self.custom_adv_btn = pygame.Rect(0, 0, 0, 0)
+            btn_x = row_x
+
         self.custom_ok_btn = pygame.Rect(btn_x, btn_y, ok_w, btn_height)
-
         btn_color = self.colors['button_hover'] if self.custom_ok_btn.collidepoint(mouse_pos) else self.colors['button_bg']
         pygame.draw.rect(self.screen, btn_color, self.custom_ok_btn, border_radius=4)
         ok_text = self.input_font.render("确定", True, (255, 255, 255))
@@ -1142,6 +1156,33 @@ class DialogsMixin:
             self.custom_error = "等级必须 >= 1"
             return False
 
+        if getattr(self, 'custom_kind', 'rect') == 'cubic':
+            try:
+                n = int(self.custom_fields['n'])
+                d = int(self.custom_fields['d'])
+            except (KeyError, ValueError):
+                self.custom_error = "请输入有效的整数"
+                return False
+            if m < 1 or n < 1 or d < 1:
+                self.custom_error = "行数 / 列数 / 层数都必须 >= 1"
+                return False
+            mx = max(m, n, d)
+            if mx < 2:
+                self.custom_error = "三维至少一个维度要 >= 2，否则一步都动不了"
+                return False
+            if step >= mx:
+                self.custom_error = f"等级必须 < {mx}（最大维度）"
+                return False
+            ok = self.new_cubic_puzzle(m, n, d, step)
+            if not ok:
+                # new_cubic_puzzle 已经把具体原因写进状态栏；这里同步到对话框，
+                # 避免对话框看起来「点了没反应」。
+                self.custom_error = getattr(self, 'macro_notify_msg', '') or '无法建立三维局'
+                return False
+            self.show_custom_dialog = False
+            self.custom_error = ''
+            return True
+
         if getattr(self, 'custom_kind', 'rect') == 'triangle':
             if m < 3:
                 self.custom_error = "三角形边长必须 >= 3"
@@ -1179,9 +1220,12 @@ class DialogsMixin:
         return True
 
     def _custom_field_order(self) -> list:
-        """自定义对话框当前可见的输入字段（三角形态没有列数）。"""
-        if getattr(self, 'custom_kind', 'rect') == 'triangle':
+        """自定义对话框当前可见的输入字段（三角无列数，三维多一个层数）。"""
+        kind = getattr(self, 'custom_kind', 'rect')
+        if kind == 'triangle':
             return ['m', 'step']
+        if kind == 'cubic':
+            return ['m', 'n', 'd', 'step']
         return ['m', 'n', 'step']
 
     def handle_custom_dialog_events(self, event) -> bool:
@@ -1234,11 +1278,10 @@ class DialogsMixin:
                 self.custom_error = ''
                 return True
 
-            dialog_rect = pygame.Rect(
-                (self.screen_width - 320) // 2,
+            dialog_rect = getattr(self, '_custom_dialog_rect', pygame.Rect(
+                (self.screen_width - 360) // 2,
                 (self.screen_height - 320) // 2,
-                320, 320
-            )
+                360, 320))
             if not dialog_rect.collidepoint(x, y):
                 self.show_custom_dialog = False
                 self.custom_error = ''

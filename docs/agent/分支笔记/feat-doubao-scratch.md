@@ -968,3 +968,22 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 - 新增 `_test_cubic_speedrun.py`（26 项）：竞速放行、初始键表 27 块、
   成绩详情渲染、成绩载回练习逐块一致、计时开始→解开→写库、右侧栏开关。
   16 套 cubic + records/statusbar 全绿。
+
+## 2026-11-18 第 5 阶段：三维自定义尺寸 + 预设扩充
+
+- 谜题菜单「三维谜题 ▸」从 4 档扩到 9 档：2×2×2 L1、3×3×2 L1、3×3×3 L1/L2、
+  4×3×2 L1、4×4×4 L1/L2/L3、5×5×5 L1。1×1×1 不再出现在菜单（代码路径仍明确
+  拒绝「一步都动不了」），菜单高度 10 行 × 26 = 260px，618 高窗口内完整可点。
+- `draw_custom_puzzle_dialog` 支持 `custom_kind='cubic'`：五个形态按钮一行（矩形/三角/
+  米字/数字/三维），三维多「层数」一行；二维框 360×320，三维框 400×370；三维不画
+  「高级选项…」（二维设计画布入口），确定/取消居中。
+- `_custom_field_order`：三维 m→n→d→step；`_custom_apply_fields` 校验三维三项 ≥1、
+  `max(m,n,d) >= 2`、`step < max`，失败原因回写 `custom_error`；成功走
+  `new_cubic_puzzle(m,n,d,step)`。
+- 「自定义...」与命令面板/帮助检索的 `custom_dialog` 动作都按当前形态预选页签，
+  三维局直接落在「三维」并带回当前 d。`feature_index._CUBIC_IDS` 加 `custom_puzzle`。
+- 预设菜单里 5×5×5 实测建局 3ms、首帧 13–18ms；4×4×4 L3 建局 1ms、首帧 14–16ms。
+- 新增 `_test_cubic_custom.py`（33 项）：对话框渲染/五形态/四字段/按钮不越界、
+  回车导航、真点「三维」+ 确定建局、非法值拒绝、预设档合法性、命令面板预选、自定义尺寸存档往返。
+  `_test_cubic_entry.py` 的菜单查找补 `p[5]==3` 以区分 3×3×2 与 3×3×3。
+  17 套 cubic 全绿（pick 303、view_nav 83、history 51 等），dialog/feature/rp 回归绿。
