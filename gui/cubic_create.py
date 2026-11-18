@@ -640,12 +640,16 @@ class CubicCreateMixin:
             txt = self.status_font.render(
                 name or '输入样式名…', True,
                 (230, 230, 240) if name else (150, 150, 165))
+            # 名字最多 24 字符，长中文会伸出 224px 输入框；按框裁剪，不压按钮。
+            _clip = self.screen.get_clip()
+            self.screen.set_clip(nr)
             self.screen.blit(txt, (nr.x + 8, nr.y + 5))
             if self._ann_design_name_active:
                 caret_x = nr.x + 8 + self.status_font.size(name)[0] + 1
                 pygame.draw.line(self.screen, (220, 220, 230),
                                  (caret_x, nr.y + 5),
                                  (caret_x, nr.bottom - 6))
+            self.screen.set_clip(_clip)
 
         status = (f'范围 {self._cubic_draft.m}×{self._cubic_draft.n}×'
                   f'{self._cubic_draft.d}（自动扩展） · '
