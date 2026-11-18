@@ -900,3 +900,16 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 
 测试：`_test_cubic_play` F 段（法向推必拒、`_shake_t=12`、闪烁集合=选中组、带红边帧不崩、
 前提没满足不闪）；全套 16 个 cubic 套件绿。
+
+## 2026-11-18 第 3 阶段收尾（音效/存档核对）
+
+- 三维右键入口补 `_play_click_sound('right')`：右键选缝 / 空白取消与二维同一音槽
+  （音量更低），之前走新入口 `continue` 掉了二维的右键音。
+- 滑动音本来就走 `move.py` 公共路径（`_play_slide_sound`），三维推一步自动有声；
+  左键点块走通用点击音，无需另接。
+- 存档核对：`_test_cubic_history` 新增 E2 段——真走 `_save_to_path` → 磁盘文件 →
+  `_do_load_from_path`，验证 `type:cubic` + `depth`、校验和、局面逐格、步数、
+  提示语；连同原有 E 段（内存 `_build_save_data`/`_load_save_data`）、F 段坏档、
+  重启恢复（`_test_cubic_config_state`）一起覆盖。结论：三维存/读正常，二维存档不受影响。
+- 竞速：三维仍被 `mode_allowed` 明确拒绝（初始局面不是字符矩阵，成绩表存不了
+  同一题）。要支持需扩 records schema（三维初始键表 + 回放缩略图），留到第 5 阶段。

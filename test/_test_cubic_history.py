@@ -164,6 +164,22 @@ def main():
     g2.redo()
     check(cells(g2) == saved_cells, '读回后重做回到存档局面')
 
+    print('E2. 真走一遍文件：_save_to_path → _do_load_from_path（Ctrl+S / 打开）')
+    real_path = os.path.join(cfg, 'cubic_roundtrip.json')
+    ok_save = g._save_to_path(real_path)
+    check(ok_save and os.path.exists(real_path),
+          f'存档真的写到盘上（{os.path.basename(real_path)}）')
+    raw = json.load(open(real_path, encoding='utf-8'))
+    check(raw.get('checksum') is not None, '写盘文件带校验和')
+    g3 = make_gui(cfg, tag='3')
+    g3._cubic_camera_prefs = {}
+    g3._do_load_from_path(real_path)
+    check(g3.cubic_mode is True and g3.game.depth == 3, '真实文件读回仍是三维 3 层')
+    check(cells(g3) == saved_cells, '真实文件读回局面逐格一致')
+    check(g3.step_count == saved_steps, f'真实文件读回步数 {saved_steps}（{g3.step_count}）')
+    check('已打开' in (g3.macro_notify_msg or ''),
+          f'打开有可见提示（{g3.macro_notify_msg}）')
+
     print('F. 坏档拒绝：键表缺项/维度不对都判失败')
     bad = {'cubic': True, 'engine_state': {'keys': [[0, 0, 0]]}}
     try:

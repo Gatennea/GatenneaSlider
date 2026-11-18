@@ -534,6 +534,8 @@ class EventsMixin:
                             and not self._dropdown_blocks_click(event.pos)):
                         if not self._tut_board_locked():
                             self._cubic_seam_click(mx, my)
+                            # 右键选缝/取消与二维同一个音槽（音量更低）
+                            self._play_click_sound('right')
                         continue
 
                 # 图层约定：菜单栏/下拉菜单盖住浮动面板 → 点击落在菜单层
