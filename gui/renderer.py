@@ -986,9 +986,9 @@ class RendererMixin:
         if _follow:
             _locs = [tuple(int(v) for v in b.location[:3]) for b in blocks]
             if _locs:
-                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)：块心必须按当前拆分
-                # 间距算（拆分只拉大中心距，块大小不变），否则跟随质心会偏。
-                _centers = [cubic_view.block_center(p, gap) for p in _locs]
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)。这里用**未拆分**的块心
+                # （gap=0）：拆分只把块在画面上拉开，不该带动相机平移/跟随中心。
+                _centers = [cubic_view.block_center(p, 0.0) for p in _locs]
                 _target = tuple(
                     sum(c[i] for c in _centers) / len(_centers)
                     for i in range(3))

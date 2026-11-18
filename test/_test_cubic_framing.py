@@ -71,6 +71,21 @@ for z, expect in ((0.5, 0.5), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)):
     s = cv.build_scene(CUBE3, cam, 1000, 600, margin=64, zoom=z, gap=0.12)['scale']
     check(abs(s / frame[0] - expect) < 1e-9, f'zoom {z} → scale ×{expect}', extra=f'{s}')
 
+print('C2. 拆分不碰相机：scale / origin / 单块屏幕边长都不变')
+gap_scales, gap_origins, gap_edges = [], [], []
+for g in (0.0, 0.12, 0.35, 0.6):
+    sc = cv.build_scene(CUBE3, cam, 1000, 600, margin=64, zoom=1.0, gap=g)
+    gap_scales.append(round(sc['scale'], 9))
+    gap_origins.append((round(sc['origin'][0], 9), round(sc['origin'][1], 9)))
+    # 取 (0,0,0) 块的一条世界边，投影到屏幕量长度
+    c = cv.block_corners((0, 0, 0), g)
+    p0 = cv.project_point(c[0], cam, sc['scale'], sc['origin'])
+    p1 = cv.project_point(c[1], cam, sc['scale'], sc['origin'])
+    gap_edges.append(round(((p1[0] - p0[0]) ** 2 + (p1[1] - p0[1]) ** 2) ** 0.5, 9))
+check(len(set(gap_scales)) == 1, f'拆分 0→0.6 缩放比例不变（{gap_scales}）')
+check(len(set(gap_origins)) == 1, f'拆分 0→0.6 相机原点不变（{gap_origins}）')
+check(len(set(gap_edges)) == 1, f'拆分 0→0.6 单块屏幕边长不变（{gap_edges}）')
+
 print('D. 右侧缩放滑条改的是三维缩放')
 from GUI import SliderGUI  # noqa: E402
 

@@ -119,19 +119,20 @@ def project_point(world, camera: CubicCamera, scale: float, origin) -> tuple:
 def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
                  margin: int = 40, zoom: float = 1.0, gap: float = 0.0,
                  center=None) -> tuple:
-    """不随朝向变形的装画面：返回 (scale, origin)。
+    """不随朝向、也不随拆分变形的装画面：返回 (scale, origin)。
 
     为什么另有一套：`fit_view` 按**当前朝向的投影包围盒**拟合，一旋转投影范围
-    就变，scale 跟着变——实测就是「拖一下画面忽大忽小」。这里把比例只由几何
-    本身的**包围球半径**决定（任何朝向下都不变），中心固定为包围盒中心投影到
-    屏幕中心。于是：旋转只转不缩放，画面大小**只**由 zoom（缩放滑条 / Ctrl+滚轮）
-    说了算。
+    就变，scale 跟着变——实测就是「拖一下画面忽大忽小」。这里把比例只由
+    **未拆分的逻辑块身**（每块 1 格、gap 恒按 0 算）的包围球半径决定，于是：
+    旋转只转不缩放；拆分只把块往外拉开，既不缩块也不动相机；每个块在屏幕上
+    显示多大**只**由 zoom（缩放滑条 / Ctrl+滚轮）决定。
 
     center：装画面的参考点（方案 §2.2「居中 = 质心落在屏幕中心」）。给了就用它
     ——「跟随质心」把滑块组的质心锁在屏幕中心，整盘滑动时不会慢慢漂走；
     不给仍用包围盒中心（换局/读档时的过场口径）。
     """
-    pts = [p for loc in locations_of(blocks) for p in block_corners(loc, gap)]
+    # 拆分不参与装画面：半径用 gap=0 的块身算，块的位置仍按逻辑坐标。
+    pts = [p for loc in locations_of(blocks) for p in block_corners(loc, 0.0)]
     if not pts:
         return 40.0 * zoom, (width / 2.0, height / 2.0)
     lo = [min(p[i] for p in pts) for i in range(3)]
@@ -159,9 +160,10 @@ def fit_view(blocks, camera: CubicCamera, width: int, height: int, *,
 
     scale = 每个立方体边长多少像素；origin 让相机空间包围盒的中心落在屏幕中心
     （方案 §2.2「居中 = 质心落在屏幕中心」，这里先用几何包围盒中心，跟随质心
-    是第 3 步的事）。缩放的基准按「块边长 + 拆分空隙」算，拆分拉大时画面不跳。
+    是第 3 步的事）。拆分不参与装画面：比例按未拆分的逻辑块身算，改拆分不会
+    改变缩放（与 `stable_frame` 同口径）。
     """
-    pts = [p for loc in locations_of(blocks) for p in block_corners(loc, gap)]
+    pts = [p for loc in locations_of(blocks) for p in block_corners(loc, 0.0)]
     if not pts:
         return 40.0 * zoom, (width / 2.0, height / 2.0)
     cam_pts = [camera.to_camera(p) for p in pts]
