@@ -1063,15 +1063,19 @@ class RendererMixin:
         faces_all = scene['faces']
         back_faces, front_faces = faces_all, []
         if seam_quad:
+            # 画家序按「选中 / 未选中」分，而不是按相机深度：
+            #   · 切面必须是一张**完整矩形**（用户 2026-11-18）：它画在所有未选中
+            #     块之后，不再被块的边啃出缺口；
+            #   · 选中的那一片永远画在切面之上（用户：选中滑块不能和缝隙相交），
+            #     绿色块保持不透明，不会被红面糊上一层。
+            # 同一组内部仍按 depth 从远到近。
+            opted = {(int(b.location[0]), int(b.location[1]), int(b.location[2]))
+                     for b in blocks if getattr(b, 'be_opted', False)}
             back_faces, front_faces = [], []
             for f in faces_all:
                 loc = f['loc']
-                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
-                center = (loc[1] + 0.5, loc[2] + 0.5, loc[0] + 0.5)[seam_axis]
-                if (center - seam_fixed) * seam_sign > 0:
-                    front_faces.append(f)
-                else:
-                    back_faces.append(f)
+                key = (int(loc[0]), int(loc[1]), int(loc[2]))
+                (front_faces if key in opted else back_faces).append(f)
 
         items = [(f['depth'], 0, f) for f in back_faces]
         if seam_quad:

@@ -3,18 +3,18 @@
 
 为什么换掉上一版（用户 2026-11-18「縫隙遮擋關係還是不對，有時看起來像是切在
 另一層」）：上一版渲染是「整张切面减影子多边形」，验证也围着那套解析影子转，
-渲染错了验证跟着错。现在渲法改了——切面按 1 格大小切块塞进画家序，遮挡关系
-由「格 vs 块面」的深度序给出。验证也就换成一条**与渲染完全独立**的路：
+渲染错了验证跟着错。现在渲法再改（用户又要求「缝隙平面不能被切，要完整矩形」
+且「选中滑块不能和缝隙相交」）：切面画在**所有未选中块之后、选中块之前**，
+于是遮挡判定只剩一条跟选中态有关：
 
   屏幕上每一个偏红的像素 → 按正交投影反解出它在切面上的世界点 →
-  用射线/盒子求交（cubic_view.point_visible）判断这个点该不该被块挡住。
+  看这个点是否落在某个**选中块**的盒子内部。
 
 判据
-  A. 偏红像素**必须**是「沿视线没被任何块挡住」的点（0 个例外）。这一条直接对应
-     用户看到的病：被遮住的区域还画出红边/红面。
-  B. 红像素回投出来的世界点必须落在切面自身的范围内（不外扩到盘外）。
+  A. 偏红像素还必须落在切面矩形自身的范围内（不外扩到盘外）。
+  B. 选中块永远画在切面之上：红像素不许落在任何一个选中块的盒子内部。
   C. 斜视 + 拆分 0.35 时必须真有一部分红露出来（不能「全挡了」）。
-  D. 正视 + 拆分 0.12（前层挡死）时红面积占比必须很小（不能整片压出来）。
+  D. 正视 + 拆分 0.12 时切面仍是**完整矩形**（红占比有下限）。
   E. 切面格子：都落在同一张平面上、格数 = 缝口有块的格数、互不重叠。
 """
 
@@ -77,7 +77,7 @@ def main():
     gui.new_cubic_puzzle(3, 3, 3, 1)
     gui.show_virtual_keyboard = False
 
-    print('A/B. 红像素必须真的没被挡 + 落在切面范围内')
+    print('A/B. 红像素都落在切面范围内 + 不盖到选中块上')
     poses = [('正+Z', CubicCamera.from_yaw_pitch(0, 0)),
              ('斜 35/25', CubicCamera.from_yaw_pitch(35, 25)),
              ('斜 -40/30', CubicCamera.from_yaw_pitch(-40, 30)),
@@ -138,16 +138,52 @@ def main():
                         point[axis] = fixed
                         point[a] = u
                         point[b] = v
-                        if not cv.point_visible(tuple(point), boxes, view_dir):
-                            violations.append(
-                                f'{fam}{line}@{name} gap{gap} 像素({sx},{sy})→'
-                                f'({u:.2f},{v:.2f}) 其实被块挡住却画了红')
-    check(not violations, f'所有红像素都在「没被挡」的位置（{len(violations)} 个例外）',
+    check(not violations, f'红像素投影解算没退化（{len(violations)} 个例外）',
           violations[:3])
     check(not outside, f'红像素都在切面范围内（{len(outside)} 个出界）', outside[:3])
     check(total_red > 200, f'确实有红画出来（采样到 {total_red} 个红像素）')
 
+    print('G. 选中块永远压在切面之上（红像素不落进选中块内部）')
+    gui.cubic_gap = 0.35
+    gui.cubic_camera = CubicCamera.from_yaw_pitch(35, 25)
+    gui.selected_gap = ('r', 1)
+    # 用引擎选中「低侧」那一片（= 与双击同一条路 game.opt）
+    sel_block = next(b for b in gui.game.blocks
+                     if int(b.location[0]) < 2)
+    gui.game.opt('r', 1, sel_block)
+    gui.draw_cubic_board()
+    opted_boxes = []
+    for b in gui.game.blocks:
+        if not b.be_opted:
+            continue
+        bx = cv.block_min_corner(b.location, gui.cubic_gap)
+        opted_boxes.append((bx[0], bx[1], bx[2],
+                            bx[0] + 1.0 - gui.cubic_gap,
+                            bx[1] + 1.0 - gui.cubic_gap,
+                            bx[2] + 1.0 - gui.cubic_gap))
+    scene = gui._cubic_scene
+    bad_tint = []
+    for sy in range(0, gui.screen_height, 3):
+        for sx in range(0, gui.screen_width, 3):
+            if not _is_red(gui.screen.get_at((sx, sy))):
+                continue
+            uv = _plane_uv(sx, sy, gui.cubic_camera, scene['scale'],
+                           scene['origin'], 2, 2.0, 0, 1)
+            if uv is None:
+                continue
+            u, v = uv
+            pt = (u, v, 2.0)
+            if any(x0 + 0.02 <= pt[0] <= x1 - 0.02
+                   and y0 + 0.02 <= pt[1] <= y1 - 0.02
+                   and z0 + 0.02 <= pt[2] <= z1 - 0.02
+                   for x0, y0, z0, x1, y1, z1 in opted_boxes):
+                bad_tint.append((sx, sy))
+    check(not bad_tint, f'选中块没被红面糊住（{len(bad_tint)} 个红像素落在选中块里）',
+          bad_tint[:3])
+
+
     print('C. 斜视 + 拆分 0.35：必须真有一部分露出来')
+    gui.game._clear_selection()          # G 段留下的选中态会盖住切面，先清掉
     gui.cubic_gap = 0.35
     gui.cubic_camera = CubicCamera.from_yaw_pitch(35, 25)
     gui.selected_gap = ('r', 1)
@@ -159,7 +195,7 @@ def main():
                 red_obl += 1
     check(red_obl > 50, f'斜视 0.35 下切面露出来（{red_obl} 个采样红点）')
 
-    print('D. 正视 + 拆分 0.12：前层挡死，红占比必须很小')
+    print('D. 正视 + 拆分 0.12：切面必须是完整矩形（不再被前层啃掉）')
     gui.cubic_gap = 0.12
     gui.cubic_camera = CubicCamera.from_yaw_pitch(0, 0)
     gui.selected_gap = ('r', 1)
@@ -171,9 +207,9 @@ def main():
                 red_front += 1
     sampled = (gui.screen_height // 2 + 1) * (gui.screen_width // 2 + 1)
     ratio = red_front / float(sampled)
-    # 切面现在按包围盒横截面铺满，正视时块堆四周会露出一圈「红边」（gap 的半格），
-    # 比按块堆外框切的旧版多一些；中心仍被前层挡死，红占比理应仍是个位数百分比。
-    check(ratio < 0.045, f'正视下切面几乎全被挡住（红占比 {ratio * 100:.1f}%）')
+    # 切面现在画在所有未选中块之后：正视时整张矩形都该看见，红占比不再是个位数。
+    check(0.06 < ratio < 0.5,
+          f'正视下切面是完整矩形（红占比 {ratio * 100:.1f}%）')
 
     print('E. 切面格子几何')
     cells = cp.seam_plane_cells('r', 1, gui.game.blocks, gap=0.12)
