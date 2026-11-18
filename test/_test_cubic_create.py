@@ -70,8 +70,9 @@ def t2_home_buttons():
     g._ann_draw_bar()
     names = set(g._ann_btn_rects)
     check('cubic_manual_build' in names, '打乱二级有三维搭建', names)
-    check('manual_build' not in names and 'random_gen' not in names,
-          '不出现二维手动构造/随机生成', names)
+    check('random_gen' in names, '打乱二级有三维随机生成', names)
+    check('manual_build' not in names,
+          '不出现二维手动构造（三维用 cubic_manual_build）', names)
     g._ann_btn_home_restore()
     g._ann_draw_bar()
     names = set(g._ann_btn_rects)
@@ -413,9 +414,62 @@ def t12_cubic_style_roundtrip():
           g._ann_style_goal)
 
 
+def t13_cubic_random_gen():
+    print('== 13. 三维随机生成：安全打乱，终态非还原且必有解法 ==')
+    g = new_gui()
+    g.new_cubic_puzzle(3, 3, 3, 1)
+    g.set_game_mode('create')
+    g._ann_home_sub = 'shuffle'
+    g._ann_draw_bar()
+    check('random_gen' in g._ann_btn_rects, '三维打乱页有随机生成按钮',
+          sorted(g._ann_btn_rects))
+    # 走真实入口：打开 m/n/d/step 对话框 → 生成 4×4×4 等级2
+    g._ann_btn_random_gen()
+    check(g._ann_sub_dialog == 'gen' and g._ann_gen_cubic,
+          '三维随机生成打开四格对话框',
+          (g._ann_sub_dialog, g._ann_gen_cubic))
+    # 体积护栏：7×7×7 超 216，停在对话框并给错误
+    g._ann_gen_fields.update({'m': '7', 'n': '7', 'd': '7', 'step': '1'})
+    g._ann_gen_confirm()
+    check(g._ann_sub_dialog == 'gen' and '216' in g._ann_gen_error,
+          '超体积被拦在对话框内', (g._ann_sub_dialog, g._ann_gen_error))
+    g._ann_gen_fields.update({'m': '4', 'n': '4', 'd': '4', 'step': '2'})
+    g._ann_gen_confirm()
+    check((g.current_m, g.current_n, g.current_depth) == (4, 4, 4),
+          '生成新尺寸 4×4×4',
+          (g.current_m, g.current_n, g.current_depth))
+    check(len(g.game.blocks) == 64, '生成后 64 块', len(g.game.blocks))
+    check(not g.game.is_solved(), '生成后不是还原态')
+    g.current_step = 2
+    g.new_cubic_puzzle(3, 3, 3, 1)
+    g._ann_home_sub = 'shuffle'
+    steps = g._cubic_random_generate()
+    check(steps > 0, '直接调用生成走出有效步', steps)
+    check(not g.game.is_solved(), '直接生成后不是还原态')
+    check(len(g.game.blocks) == 27, '直接生成后仍 27 块', len(g.game.blocks))
+
+    check(g.game.goal_pattern is None, '默认局没有自定义还原目标',
+          g.game.goal_pattern)
+    check(len(g.game_history.history) == 1 and g.step_count == 0,
+          '生成后历史重置为终态、步数归零',
+          (len(g.game_history.history), g.step_count))
+    check('随机生成' in getattr(g, 'macro_notify_msg', ''),
+          '提示说明是随机生成', getattr(g, 'macro_notify_msg', ''))
+    check((g.current_m, g.current_n, g.current_depth) == (3, 3, 3),
+          '尺寸仍是 3×3×3',
+          (g.current_m, g.current_n, g.current_depth))
+
+    # 还原目标页不应出现随机生成（那是打乱局面的入口）
+    g._cubic_edit_cancel()
+    g._ann_home_sub = 'restore'
+    g._ann_draw_bar()
+    check('random_gen' not in g._ann_btn_rects,
+          '三维还原页不显示随机生成', sorted(g._ann_btn_rects))
+
+
 def main():
     print('=' * 62)
-    print('三维创造模式：第 1–4 步回归')
+    print('三维创造模式：第 1–5 步回归')
     print('=' * 62)
     t1_mode_entry()
     t2_home_buttons()
@@ -429,6 +483,7 @@ def main():
     t10_auto_expand_volume()
     t11_ghost_anchor()
     t12_cubic_style_roundtrip()
+    t13_cubic_random_gen()
     total = PASSED[0] + len(FAILED)
     print(f'结果：{"全部通过" if not FAILED else "有失败"}'
           f'（{PASSED[0]} 项通过，{len(FAILED)} 项失败）／共 {total} 项')

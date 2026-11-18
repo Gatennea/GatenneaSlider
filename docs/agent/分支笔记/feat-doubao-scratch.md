@@ -1041,10 +1041,16 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   `kind='cubic'` 过滤，二维库不再显示三维样式，反之亦然；`_ann_design_start_style`
   新增 cubic 分支：建 `m×n×d` 局 → `apply_pattern(cells)` → `set_goal_pattern(cells)`，
   旋转/翻面仍走 48 对称还原判定。
-- 测试：`_test_cubic_create.py` 增至 12 段 / 88 项全绿；新增命名框空名拦截、
-  `TEXTINPUT` 入名、样式落盘、样式库过滤、按样式再开局。六套 cubic 回归
-  （entry 31 / split 25 / animation 31 / infinite 30 / render_opts 72 /
-  lighting 27）全绿。二维样式库隔离与打乱用独立探针验证通过。
+- 测试：`_test_cubic_create.py` 增至 13 段 / 103 项全绿；新增命名框空名拦截、
+  `TEXTINPUT` 入名、样式落盘、样式库过滤、按样式再开局。
+- **步 5 随机生成（同日）**：三维打乱页加「随机生成」；复用 `game.shuffle`
+  的安全打乱（每步先提交再验同缝反向可精确推回，反转即解法），`bias=0`
+  （三维 `_scatter_of` 仍走二维评分，非零偏置会按 2-tuple 解包三坐标）。
+  入口是 `m/n/d/等级` 四格对话框，体积上限 216；生成后清 goal、重置历史。
+  测试 t13 覆盖按钮、对话框、4×4×4 生成、3×3×3 直调生成、非还原/块数/历史。
+- 六套 cubic 回归（entry 31 / split 25 / animation 31 / infinite 30 /
+  render_opts 72 / lighting 27）全绿；二维样式库隔离、打乱与随机生成用
+  独立探针验证通过。
 - 注意：仓库 `config/config.json` 当前 `infinite_shuffle=true`；二维设计测试
   若直接跑会把首次「打乱」解释成「停止无限打乱」而误报 D6b，需在测试进程里
   先关该开关（本次未改用户配置）。

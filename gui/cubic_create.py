@@ -224,6 +224,51 @@ class CubicCreateMixin:
         """首页「② 还原状态设计 → 三维搭建」：造自定义还原目标。"""
         self._cubic_edit_start('goal')
 
+    def _cubic_random_generate(self, m=None, n=None, d=None, step=None) -> int:
+        """从 m×n×d 实心还原态安全打乱，返回实际走成步数（0=生成失败）。
+
+        三维随机生成**复用安全打乱**：每一步都先提交、再验同缝反向能精确
+        推回，整条路径反转就是一条解法，因此终态一定有解；不接三维求解器
+        也能保证「生成后能回到还原态」。bias 必须给 0：三维的 _scatter_of
+        仍走二维评分，非零偏置会按 2-tuple 解包三坐标而崩。
+        """
+        m = int(m if m is not None else getattr(self, 'current_m', 0) or 0)
+        n = int(n if n is not None else getattr(self, 'current_n', 0) or 0)
+        d = int(d if d is not None else getattr(self, 'current_depth', 0) or 0)
+        step = int(step if step is not None
+                   else getattr(self, 'current_step', 1) or 1)
+        if not (m >= 1 and n >= 1 and d >= 1):
+            self._ann_notify('当前不是三维局，不能随机生成三维谜题')
+            return 0
+        if not self.new_cubic_puzzle(m, n, d, step):
+            self._ann_notify(f'随机生成失败：{m}×{n}×{d} 等级{step} 无法建局')
+            return 0
+        attempts = max(20, 2 * m * n * d)
+        record = []
+        try:
+            # 极小概率安全打乱的收尾把局面又带回还原态；最多重洗三次。
+            for _try in range(3):
+                self.game.shuffle(attempts, step, bias=0.0,
+                                  min_score=None, record=record)
+                if record and not self.game.is_solved():
+                    break
+        except Exception as exc:       # noqa: BLE001 —— 不让生成器打崩界面
+            self._ann_notify(f'随机生成失败：{type(exc).__name__}: {exc}')
+            return 0
+        if not record or self.game.is_solved():
+            self._ann_notify('随机生成没有走出有效步，请重试或降低等级')
+            return 0
+        self.selected_gap = None
+        self.selected_block = None
+        self.step_count = 0
+        self.center_map()
+        self.game_history.reset()
+        self.game_history.save_snapshot(self.game)
+        self._mark_file_dirty()
+        self._ann_notify(f'已随机生成三维局面：{m}×{n}×{d} 等级{step}，'
+                         f'{len(record)} 步（安全打乱，反转即解法）')
+        return len(record)
+
     def _cubic_edit_toggle_tool(self, tool):
         self._cubic_edit_tool = 'add' if tool == 'add' else 'remove'
         self._ann_notify('工具：放置（点面外放块）' if tool == 'add'
