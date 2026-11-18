@@ -95,13 +95,14 @@ gui.new_cubic_puzzle(3, 3, 3, 1)
 
 gui.draw_right_panel()
 sw = getattr(gui, 'right_panel_switch_rects', {})
-check(len(sw) == 3, '三维态开关剩 3 个（二维哑开关全撤）', sorted(sw))
+check(len(sw) == 5, '三维态开关剩 5 个（二维哑开关撤掉，模式/成绩可用）', sorted(sw))
 check('chain_hint_enabled' not in sw and 'board_marks_enabled' not in sw
       and 'selection_animation_enabled' not in sw
       and 'coloring_enabled' not in sw,
       '连锁 / 复原标记 / 选中动画 / 着色都撤掉（三维不做这些）', sorted(sw))
-check({'animation_enabled', 'show_virtual_keyboard',
-       'cubic_follow_centroid'} == set(sw), '留下的是三维真正生效的三个')
+check({'animation_enabled', 'game_mode', 'show_records_panel',
+       'show_virtual_keyboard', 'cubic_follow_centroid'} == set(sw),
+      '留下的是三维真正生效的五个', sorted(sw))
 gr = getattr(gui, 'cubic_gap_slider_rect', None)
 ar = getattr(gui, 'cubic_alpha_slider_rect', None)
 check(gr is not None and ar is not None, '三维态有拆分/切面透明两条滑条', (gr, ar))

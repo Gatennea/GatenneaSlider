@@ -582,6 +582,8 @@ _CUBIC_IDS = frozenset({
     'keybindings', 'control_mouse_kb',
     'help', 'website', 'check_update', 'update_now',
     'confirm_before_shuffle', 'concept_step', 'concept_hole',
+    # 2026-11-18：三维竞速与三维成绩表接通
+    'mode_practice', 'mode_timed', 'records_panel',
 })
 
 

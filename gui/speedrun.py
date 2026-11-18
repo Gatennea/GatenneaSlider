@@ -6,6 +6,7 @@
 （RecordsPanel 那套 storage）。模式与计时强耦合（进模式->就绪->空格开始->
 解开完成），故放同一 mixin。
 """
+import json
 import time
 
 from puzzle_types import puzzle_key
@@ -46,6 +47,16 @@ class SpeedrunMixin:
             # 米字格已随 M4 一起有 export_map（mi8 编码）；打乱被拦 →
             # 就绪态到不了这里
             return ''
+        if getattr(self, 'cubic_mode', False):
+            # 三维：没有字符矩阵，改用无损键表 engine_state（[r,c,d,gid]）。
+            # 前缀 `cubic:` 让成绩面板能识别并走三维分支，而不是当成方形
+            # 0/1 矩阵去 import_map。
+            try:
+                state = self.game.snapshot_state()
+            except Exception:      # noqa: BLE001 —— 拿不到就别写一份假成绩
+                return ''
+            return 'cubic:' + json.dumps(state, ensure_ascii=False,
+                                         sort_keys=True, separators=(',', ':'))
         return self.game.export_map().replace('#', '1').replace('_', '0')
 
     def _timer_cancel(self):
@@ -80,8 +91,11 @@ class SpeedrunMixin:
         if mode not in ('practice', 'timed', 'create'):
             return False
         if mode == 'timed':
-            if self._current_kind() not in ('square', 'numbered', 'triangle', 'mi'):
+            if self._current_kind() not in ('square', 'numbered', 'triangle', 'mi',
+                                            'cubic'):
                 return False
+            # 三维竞速（2026-11-18）：初始局面按 `engine_state` 无损键表存
+            # （见 _timer_initial_map），能还原成同一题，所以放行。
             # 带粘连（捆绑）的局同样不进竞速：竞速的初始局面只记「哪些格子
             # 有块」（export_map 是 0/1 或 #/_），不记谁和谁粘着 —— 成绩存
             # 下来还原出的是另一道题。这与模型板型被拒是同一类问题（那边丢

@@ -439,6 +439,10 @@ check('着色条目没有混进 cubic 形态',
                           if e['id'] == 'coloring_enabled')['forms'])
 check('存档在三维已登记为可用',
       'cubic' in next(e for e in fi.FEATURES if e['id'] == 'save')['forms'])
+check('竞速在三维已登记为可用',
+      'cubic' in next(e for e in fi.FEATURES if e['id'] == 'mode_timed')['forms'])
+check('成绩面板在三维已登记为可用',
+      'cubic' in next(e for e in fi.FEATURES if e['id'] == 'records_panel')['forms'])
 
 print()
 if _failures:

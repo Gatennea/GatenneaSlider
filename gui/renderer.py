@@ -5838,12 +5838,12 @@ class RendererMixin:
                         (panel_x, 0), (panel_x, self.screen_height))
 
         # ---- 底部：7 个快捷开关（垂直排列）----
-        # 三维态只留 5 个：连锁 / 复原标记在三维无对象可管（方案 §2.4 已定三维
-        # 不做视觉强化），让出的两个位置给「拆分」「切面透明」两条滑条。
+        # 三维态留 5 个：联动/复原标记在三维无对象，让位给「拆分」「切面透明」
+        # 两条滑条；模式与成绩在三维已真实可用（竞速 + 三维成绩表），保留。
         cubic = bool(getattr(self, 'cubic_mode', False))
         sw_h = 24
         sw_gap = 4
-        sw_count = 3 if cubic else 7
+        sw_count = 5 if cubic else 7
         switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
         switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
         sw_x = panel_x + 6
@@ -5880,13 +5880,14 @@ class RendererMixin:
 
         # 摆放原则（用户定）：右下角只放**游玩中需要经常切换**的开关；
         # 不常改的一律收回设置对话框。逆序宏因此从这里撤回设置。
-        # 三维态（2026-11-18 适配）：二维那六个开关在三维全是哑的——
-        # 选中动画 / 着色 / 连锁 / 复原标记按二维语义手写，模式只支持练习，
-        # 成绩面板也没有三维记录。只留三个真有用的：滑动动画、虚拟键盘、
-        # 跟随质心。
+        # 三维态（2026-11-18 适配）：去掉二维专属的选中动画 / 着色 / 连锁 /
+        # 复原标记；保留滑动动画、模式（竞速已支持）、成绩（三维成绩表可用）、
+        # 虚拟键盘、跟随质心。
         if cubic:
             _sw_btn('animation_enabled', '滑动动画',
                     lambda: self.animation_enabled)
+            _sw_btn('game_mode', '模式', lambda: None)
+            _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
             _sw_btn('show_virtual_keyboard', '虚拟键盘',
                     lambda: getattr(self, 'show_virtual_keyboard', False))
             _sw_btn('cubic_follow_centroid', '跟随质心',
