@@ -1428,12 +1428,17 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         cubic_settings.reset(self)
         # 平移盘面（没选中时点三轴六键 = 平移）：换局清零，别把上局的偏移带过来
         self.cubic_pan = [0.0, 0.0]
+        # 跟随质心（方案 §2.2）：默认开——整盘滑动时把质心锁在屏幕中心，
+        # 兼作三维「防偏移」。手动平移后暂停，按「居中」恢复。
+        self.cubic_follow_centroid = True
         # 但 config 里记着上次退出时的手工平移（用户拖过视角再退出）：套回去。
         _pan0 = getattr(self, '_cubic_pan_prefs', None)
         if isinstance(_pan0, (list, tuple)) and len(_pan0) == 2:
             _lim = 0.55 * max(self.screen_width, self.screen_height)
             self.cubic_pan = [max(-_lim, min(_lim, float(_pan0[0]))),
                               max(-_lim, min(_lim, float(_pan0[1])))]
+        if getattr(self, '_cubic_follow_prefs', None) is not None:
+            self.cubic_follow_centroid = bool(self._cubic_follow_prefs)
         # 三维只留虚拟键盘当鼠标操作入口（方案 §1「操作入口」）。二维里这张面板
         # 可以被关掉（config.panels.virtual_keyboard.visible=false），进三维必须
         # 自己打开，否则鼠标端一个能按的都没有——2026-11-18 用户就撞在这上面
@@ -1873,6 +1878,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def center_map(self):
         """将地图居中显示在游戏区域中"""
+        if getattr(self, 'cubic_mode', False):
+            # 三维：居中 = 平移归零 + 恢复「跟随质心」（方案 §2.2）。二维那套
+            # camera_x/y 与矩阵包围盒对三维没有意义，别落进来算。
+            if hasattr(self, '_cubic_pan_center'):
+                return self._cubic_pan_center()
+            self.cubic_pan = [0.0, 0.0]
+            self.cubic_follow_centroid = True
+            return
         if getattr(self, 'triangle_mode', False):
             self._center_triangle()
             return

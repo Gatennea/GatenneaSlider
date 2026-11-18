@@ -97,6 +97,7 @@ print('=' * 60)
 print('B. save_config 落盘三维局信息与平移')
 g.new_cubic_puzzle(3, 3, 3, 1)
 g.cubic_pan = [12.0, -8.0]
+g.cubic_follow_centroid = False          # 手动平移过 → 跟随已暂停，要能原样存回
 g.save_config()
 with open(g.config_path, 'r', encoding='utf-8') as f:
     cfg = json.load(f)
@@ -104,6 +105,8 @@ cpz = cfg.get('cubic_puzzle') or {}
 check(cpz.get('m') == 3 and cpz.get('n') == 3 and cpz.get('d') == 3
       and cpz.get('step') == 1, 'cubic_puzzle 写下 m/n/d/step', cpz)
 check(cfg.get('cubic_pan') == [12.0, -8.0], 'cubic_pan 写下手动平移', cfg.get('cubic_pan'))
+check(cfg.get('cubic_follow_centroid') is False, '跟随质心的暂停状态也写盘',
+      cfg.get('cubic_follow_centroid'))
 check(isinstance(cfg.get('cubic_camera'), dict), 'cubic_camera 仍在（相机组没被挤掉）')
 
 print('=' * 60)
@@ -119,24 +122,47 @@ check(int(getattr(g2, 'current_depth', 0)) == 3, '层数回来了（3）', getat
 key = g2._current_puzzle_key()
 check('cubic3*3*3' in key, f'分榜键带层数（{key}）')
 check(list(map(float, g2.cubic_pan)) == [12.0, -8.0], '平移从 config 恢复', g2.cubic_pan)
+check(g2.cubic_follow_centroid is False, '跟随暂停状态也从 config 恢复',
+      g2.cubic_follow_centroid)
 
 print('=' * 60)
-print('D. 平移手势')
+print('D. 平移与居中（方案 §2.2：六键平移，手动平移暂停跟随，居中恢复）')
 g3 = make_gui()
 g3.new_cubic_puzzle(3, 3, 3, 1)
 g3.cubic_pan = [0.0, 0.0]
-g3._cubic_pan_drag_begin(100, 100)
-g3._cubic_pan_drag_update((160, 140))
-check(g3.cubic_pan == [60.0, 40.0], '拖 60/40 像素 → 平移等量', g3.cubic_pan)
-g3._cubic_pan_drag_update((100 + 5000, 100 + 5000))
+g3.cubic_follow_centroid = True
+panned = False
+for letter in ('r', 'R', 'c', 'C', 'd', 'D'):
+    if g3._cubic_pan_by(letter, notify=False):
+        panned = True
+        break
+check(panned, '没选中时六键能平移（至少一条不与镜头正对的轴）')
+check(g3.cubic_pan != [0.0, 0.0], f'平移真的改了偏移（{g3.cubic_pan}）')
+check(g3.cubic_follow_centroid is False, '手动平移后暂停「跟随质心」')
+g3.cubic_pan = [10 ** 9, -10 ** 9]      # 越界：验证夹紧逻辑不靠外部绕过
+g3._cubic_pan_by('r', notify=False)
 lim = 0.55 * max(g3.screen_width, g3.screen_height)
-check(g3.cubic_pan[0] <= lim + 1e-6 and g3.cubic_pan[1] <= lim + 1e-6,
+check(abs(g3.cubic_pan[0]) <= lim + 1e-6 and abs(g3.cubic_pan[1]) <= lim + 1e-6,
       '平移被夹在半屏内', (g3.cubic_pan, lim))
-check(g3._cubic_pan_center() and g3.cubic_pan == [0.0, 0.0], '居中把平移归零')
-# Home 键走同一路径
-ev = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_HOME, mod=0)
-g3.cubic_pan = [30.0, 20.0]
-check(g3._cubic_view_key(ev) and g3.cubic_pan == [0.0, 0.0], 'Home 键也回正')
+g3.center_map()      # 菜单「编辑 → 居中」的入口
+check(g3.cubic_pan == [0.0, 0.0], '居中把平移归零', g3.cubic_pan)
+check(g3.cubic_follow_centroid is True, '居中恢复「跟随质心」')
+
+print('E. 跟随质心：质心确实投影到屏幕中心')
+g4 = make_gui()
+g4.new_cubic_puzzle(3, 3, 3, 1)
+from engine import cubic_view as cv            # noqa: E402
+locs = [tuple(int(v) for v in b.location[:3]) for b in g4.game.blocks]
+cen = (sum(p[1] for p in locs) / len(locs) + 0.5,
+       sum(p[2] for p in locs) / len(locs) + 0.5,
+       sum(p[0] for p in locs) / len(locs) + 0.5)
+scene = cv.build_scene(g4.game.blocks, g4.cubic_camera,
+                       g4.screen_width, g4.screen_height,
+                       margin=64, zoom=1.0, gap=g4.cubic_gap, center=cen)
+sx, sy, _ = cv.project_point(cen, g4.cubic_camera, scene['scale'], scene['origin'])
+check(abs(sx - g4.screen_width / 2.0) < 1e-6 and abs(sy - g4.screen_height / 2.0) < 1e-6,
+      f'质心落在屏幕中心（{sx:.1f},{sy:.1f}）',
+      (sx, sy, g4.screen_width / 2.0, g4.screen_height / 2.0))
 
 print('=' * 60)
 total = _ok[0] + len(_fail)

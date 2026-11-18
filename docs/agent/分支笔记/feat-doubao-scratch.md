@@ -710,3 +710,23 @@ A 段换成坐标轴断言 + A2 段 65 姿态扫描，F 段换成新箭头断言
 （一整张矩形、共面、打散不缩水）共 14 项；`_test_cubic_save_guard` 补测试隔离
 （构造期已读真实 config，清掉 prefs）。全部 cubic 套件与 feature_index/statusbar/
 generic_controls/rp_menu 回归通过。
+
+## 2026-11-18 修正：视角平移改回方案口径
+
+上一版我擅自加了「中键 / Shift+左键拖动平移 + Home 回正」，用户指出方案里不是这么写的。
+重读 `docs/spec/三维扩展方案_正方体单元_2026-11-17.md` §2.2 / §1：
+
+- 平移**只走虚拟键盘三轴六键**（没选中时点六键 = 平移盘面，**不占空白拖动**）；
+- **居中 = 质心落在屏幕中心**；默认开「跟随质心」抵消整盘滑动带来的整体偏移
+  （兼作三维防偏移口径）；**手动平移后暂停跟随，按「居中」回正并恢复**。
+
+改动：删掉中键/Shift 拖动平移与 Home 绑定；`engine.cubic_view.stable_frame/build_scene`
+新增 `center`（origin 用给定参考点，scale 一律按包围盒半径，避免跟随质心时缩放跳动）；
+`gui/renderer.draw_cubic_board` 在 `cubic_follow_centroid` 为真时传块质心；
+`events._cubic_pan_by` 手动平移时置 `cubic_follow_centroid=False`；
+`events._cubic_pan_center` 归零并恢复跟随，提示「视角已居中（恢复跟随质心）」；
+`GUI.center_map` 加 cubic 分支（编辑菜单「居中」对三维直连 `_cubic_pan_center`）；
+`new_cubic_puzzle` 初始化 `cubic_follow_centroid=True`；config 增存 `cubic_follow_centroid`
+并读回 `_cubic_follow_prefs`（`_cubic_load_defaults` 套用）。
+测试 `_test_cubic_config_state.py` 的拖动平移断言改写为「六键平移→暂停跟随 / 居中→
+归零+恢复跟随 / 质心投影落在屏幕中心」共 19 项；补 config 存回断言后 21 项全绿。

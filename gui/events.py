@@ -635,10 +635,6 @@ class EventsMixin:
                     mx, my = event.pos
 
                     # 三維拖动旋转（§54 第 2 步）：拖到哪里都不选中东西
-                    if getattr(self, '_cubic_pan_dragging', False):
-                        # 平移视角（中键 / Shift+左键拖动）：整盘跟手挪，不碰姿态
-                        self._cubic_pan_drag_update(event.pos)
-                        continue
                     if getattr(self, 'cubic_dragging', False):
                         self._cubic_drag_update(event.pos)
                         continue
@@ -1202,14 +1198,7 @@ class EventsMixin:
                         # 2026-11-18 起任何姿态都能点选（原「旋转态不选」撤销）。
                         if getattr(self, 'cubic_mode', False) and not op_locked:
                             if event.button == 1:
-                                # Shift+左键 = 平移视角（不改变姿态）；单左键仍然是
-                                # 「拖=转 / 松手未拖=点选」。中键也走平移。
-                                if pygame.key.get_mods() & pygame.KMOD_SHIFT:
-                                    self._cubic_pan_drag_begin(x, y)
-                                else:
-                                    self._cubic_drag_begin(x, y)
-                            elif event.button == 2:
-                                self._cubic_pan_drag_begin(x, y)
+                                self._cubic_drag_begin(x, y)
                             elif event.button == 3:
                                 op_log.log('cubic_clear', sx=x, sy=y)
                                 self._cubic_clear_selection()
@@ -1407,11 +1396,6 @@ class EventsMixin:
                 
                 # 鼠标释放
                 elif event.type == pygame.MOUSEBUTTONUP:
-                    if getattr(self, '_cubic_pan_dragging', False):
-                        self._cubic_pan_dragging = False
-                        self._cubic_pan_drag_anchor = None
-                        self.macro_notify_msg = '视角已平移（Home 回正）'
-                        self.macro_notify_timer = 90
                     if event.button == 1:
                         # 拖拽滑动判定：按下过滑块且位移超过阈值 → 执行一次拖拽滑动
                         if self._mouse_drag_state is not None:
@@ -1864,9 +1848,6 @@ class EventsMixin:
         if event.key in (pygame.K_0, pygame.K_KP0):
             self._cubic_view_oblique()
             return True
-        if event.key == pygame.K_HOME:
-            # Home = 视角居中（平移归零，姿态不动）：拖动平移之后要能一键找回
-            return self._cubic_pan_center()
         return False
 
     def _cubic_move_key(self, event):
@@ -1950,41 +1931,16 @@ class EventsMixin:
         # 只改显示参数，不是棋盘变更：不动 _board_version（否则标题栏平白多个
         # 星号）；配置在退出/定期 save_config 时自然落盘。
 
-    def _cubic_pan_drag_begin(self, x, y):
-        """开始拖动平移视角（中键 / Shift+左键）。
-
-        用户 2026-11-18：「现在无法移动视角，只能转视角」。之前只有「没选中时
-        点虚拟键盘六键」这一条平移路，鼠标端等于没有。这里补拖动：整盘跟手挪，
-        只动屏幕偏移（cubic_pan），不改姿态、不碰逻辑坐标。
-        """
-        self._cubic_pan_dragging = True
-        self._cubic_pan_drag_anchor = (x, y)
-        if getattr(self, 'cubic_pan', None) is None:
-            self.cubic_pan = [0.0, 0.0]
-
-    def _cubic_pan_drag_update(self, pos):
-        """拖动平移：按鼠标位移累加屏幕偏移（夹在半屏内，别让盘飘丢）。"""
-        anchor = getattr(self, '_cubic_pan_drag_anchor', None)
-        if anchor is None:
-            return
-        dx = pos[0] - anchor[0]
-        dy = pos[1] - anchor[1]
-        self._cubic_pan_drag_anchor = pos
-        if getattr(self, 'cubic_pan', None) is None:
-            self.cubic_pan = [0.0, 0.0]
-        self.cubic_pan[0] += dx
-        self.cubic_pan[1] += dy
-        lim = 0.55 * max(self.screen_width, self.screen_height)
-        self.cubic_pan[0] = max(-lim, min(lim, self.cubic_pan[0]))
-        self.cubic_pan[1] = max(-lim, min(lim, self.cubic_pan[1]))
-
     def _cubic_pan_center(self):
-        """居中：平移归零（姿态不动）。"""
+        """居中：平移归零 **并恢复「跟随质心」**（方案 §2.2 原口径）。
+
+        手动平移会暂停跟随（否则刚挪开又被拉回去）；居中把它恢复，
+        以后整盘滑动时质心继续锁在屏幕中心（兼作三维的防偏移）。
+        """
         self.cubic_pan = [0.0, 0.0]
-        self._cubic_pan_drag_anchor = None
-        self._cubic_pan_dragging = False
-        self.macro_notify_msg = '视角已居中'
-        self.macro_notify_timer = 90
+        self.cubic_follow_centroid = True
+        self.macro_notify_msg = '视角已居中（恢复跟随质心）'
+        self.macro_notify_timer = 120
         return True
 
     def _cubic_pan_by(self, letter, notify=True):
@@ -2003,6 +1959,10 @@ class EventsMixin:
             self.cubic_pan = [0.0, 0.0]
         self.cubic_pan[0] += dir2[0] * self.CUBIC_PAN_STEP
         self.cubic_pan[1] += dir2[1] * self.CUBIC_PAN_STEP
+        # 手动平移 → 暂停「跟随质心」（方案 §2.2：手动平移后暂停跟随，
+        # 按「居中」回正并恢复）。不暂停的话下一帧就被质心拽回中间，
+        # 按键看起来像没反应。
+        self.cubic_follow_centroid = False
         # 夹住偏移：最多推到半屏，别让盘整个飘出可视区再也找不回来
         lim = 0.55 * max(self.screen_width, self.screen_height)
         self.cubic_pan[0] = max(-lim, min(lim, self.cubic_pan[0]))

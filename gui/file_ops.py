@@ -277,6 +277,10 @@ class FileOpsMixin:
             # 与相机姿态分开存——姿态是「看的方向」，平移是「盘在屏幕上的位置」。
             'cubic_pan': [round(float(v), 1)
                           for v in (getattr(self, 'cubic_pan', None) or (0.0, 0.0))],
+            # 跟随质心：手动平移会暂停它，重启要还原「暂停/开启」这一状态，
+            # 否则玩家挪好的位置一启动又被拉回中心。
+            'cubic_follow_centroid': bool(
+                getattr(self, 'cubic_follow_centroid', True)),
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
@@ -498,6 +502,8 @@ class FileOpsMixin:
                         and all(isinstance(v, (int, float))
                                 and not isinstance(v, bool) for v in pan):
                     self._cubic_pan_prefs = [float(pan[0]), float(pan[1])]
+                if 'cubic_follow_centroid' in config:
+                    self._cubic_follow_prefs = bool(config['cubic_follow_centroid'])
 
                 # 恢复浮动面板状态（位置 / 开关）
                 panels = config.get('panels', {})
@@ -772,6 +778,8 @@ class FileOpsMixin:
             _lim = 0.55 * max(self.screen_width, self.screen_height)
             self.cubic_pan = [max(-_lim, min(_lim, float(_pan0[0]))),
                               max(-_lim, min(_lim, float(_pan0[1])))]
+        _fol = getattr(self, '_cubic_follow_prefs', None)
+        self.cubic_follow_centroid = True if _fol is None else bool(_fol)
         self.cubic_dragging = False
         self.cubic_drag_moved = False
         self.cubic_drag_start = None

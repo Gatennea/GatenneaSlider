@@ -978,9 +978,25 @@ class RendererMixin:
         if gap is None:
             gap = cubic_view.DEFAULT_GAP
             self.cubic_gap = gap
+        # 跟随质心（方案 §2.2「居中 = 质心落在屏幕中心」，默认开）：整盘滑动会
+        # 让重心慢慢偏，若仍按固定包围盒中心装画面，盘就一点点漂出视野。开着时
+        # 用块质心当装画面的参考点；手动平移（六键）后暂停跟随，按「居中」恢复。
+        _follow = bool(getattr(self, 'cubic_follow_centroid', True))
+        _center = None
+        if _follow:
+            _locs = [tuple(int(v) for v in b.location[:3]) for b in blocks]
+            if _locs:
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)，取块心（+0.5）的平均
+                _center = (
+                    sum(p[1] for p in _locs) / len(_locs) + 0.5,
+                    sum(p[2] for p in _locs) / len(_locs) + 0.5,
+                    sum(p[0] for p in _locs) / len(_locs) + 0.5,
+                )
         scene = cubic_view.build_scene(
             blocks, camera, self.screen_width, self.screen_height,
             margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap,
+            # 「跟随质心」的参考点（None = 包围盒中心）
+            center=_center,
             # 三维动画（§54 第 6 步）：刚推过的那组给一个逐渐归零的位移，
             # 画面上就是「滑过去」；逻辑位置早就提交好了，这里只动渲染。
             offsets=(self._cubic_anim_offsets()
@@ -1131,8 +1147,8 @@ class RendererMixin:
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
                 f'　视角 {view_label}　缩放 {zoom * 100:.0f}%'
                 f'　拆分 {gap:.2f}（0 = 贴死）')
-        hint2 = ('拖动旋转 · 1–6 切朝向（各带偏角，不正对）· 0 回斜视 · Ctrl+滚轮缩放'
-                 ' · 任意姿态均可单击选切面 / 双击选中 · r/R c/C d/D 推 · 右键取消')
+        hint2 = ('拖动旋转 · 1–6 切朝向 · 0 回斜视 · Ctrl+滚轮缩放 · 单击切面 / 双击选中'
+                 ' · r/R c/C d/D 推 · 右键取消 · 六键=平移 · 编辑→居中')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))

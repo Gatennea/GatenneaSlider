@@ -109,7 +109,8 @@ def project_point(world, camera: CubicCamera, scale: float, origin) -> tuple:
 
 
 def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
-                 margin: int = 40, zoom: float = 1.0, gap: float = 0.0) -> tuple:
+                 margin: int = 40, zoom: float = 1.0, gap: float = 0.0,
+                 center=None) -> tuple:
     """不随朝向变形的装画面：返回 (scale, origin)。
 
     为什么另有一套：`fit_view` 按**当前朝向的投影包围盒**拟合，一旋转投影范围
@@ -117,15 +118,26 @@ def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
     本身的**包围球半径**决定（任何朝向下都不变），中心固定为包围盒中心投影到
     屏幕中心。于是：旋转只转不缩放，画面大小**只**由 zoom（缩放滑条 / Ctrl+滚轮）
     说了算。
+
+    center：装画面的参考点（方案 §2.2「居中 = 质心落在屏幕中心」）。给了就用它
+    ——「跟随质心」把滑块组的质心锁在屏幕中心，整盘滑动时不会慢慢漂走；
+    不给仍用包围盒中心（换局/读档时的过场口径）。
     """
     pts = [p for loc in locations_of(blocks) for p in block_corners(loc, gap)]
     if not pts:
         return 40.0 * zoom, (width / 2.0, height / 2.0)
     lo = [min(p[i] for p in pts) for i in range(3)]
     hi = [max(p[i] for p in pts) for i in range(3)]
-    center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
+    if center is None:
+        center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
+    else:
+        center = tuple(float(v) for v in center)
+    # 比例只跟**几何外框**有关（包围盒中心到最远角），与 origin 用的参考点无关：
+    # 否则跟随质心时块一动半径就变，缩放跟着跳，「旋转/滑动画面忽大忽小」的旧病
+    # 会以另一种形式回来。
+    bbox_center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
     radius = max(1e-6, max(
-        sum((p[i] - center[i]) ** 2 for i in range(3)) ** 0.5 for p in pts))
+        sum((p[i] - bbox_center[i]) ** 2 for i in range(3)) ** 0.5 for p in pts))
     avail_w = max(1.0, width - 2 * margin)
     avail_h = max(1.0, height - 2 * margin)
     scale = min(avail_w, avail_h) / (2.0 * radius) * max(0.05, float(zoom))
@@ -409,15 +421,18 @@ def point_visible(point, boxes, view_dir, eps: float = 1e-6) -> bool:
 def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
                 margin: int = 40, zoom: float = 1.0,
                 origin_offset=(0.0, 0.0), gap: float = 0.0,
-                offsets=None) -> dict:
+                offsets=None, center=None) -> dict:
     """一步到位：装画面 + 算可见面。渲染层只要拿 'faces' 去画。
 
     ⚠️ 装画面用 `stable_frame`（包围球定比例），不是 `fit_view`（按当前朝向的
     投影包围盒拟合）。后者每帧跟着朝向变 → 拖动时画面忽大忽小；三维的「多大」
     只该由缩放参数决定。
+
+    center：装画面的参考点（「跟随质心」传块质心；None = 包围盒中心）。
     """
     scale, origin = stable_frame(blocks, camera, width, height,
-                                 margin=margin, zoom=zoom, gap=gap)
+                                 margin=margin, zoom=zoom, gap=gap,
+                                 center=center)
     origin = (origin[0] + origin_offset[0], origin[1] + origin_offset[1])
     faces = collect_faces(blocks, camera, scale=scale, origin=origin, gap=gap,
                           offsets=offsets)
