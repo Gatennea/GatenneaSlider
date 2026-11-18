@@ -281,6 +281,37 @@ for letter, rect in buttons:
 check(used_arrow is not None,
       f'点棋盘上的箭头能推一步（用 {used_arrow}，步数 {gui.step_count}，{gui.macro_notify_msg}）')
 
+print('H. 同向连推：切面与箭头跟着走（用户 2026-11-18 第 4 条）')
+gui.new_cubic_puzzle(3, 3, 3, 1)
+gui.animation_enabled = False
+gui.selected_gap = ('r', 1)
+gui.draw_cubic_board()
+group = [b for b in gui.game.blocks if tuple(int(v) for v in b.location[:3])[2] == 0]
+blk = group[0] if group else gui.game.blocks[0]
+gui.game.opt('r', 1, blk)
+check(any(b.be_opted for b in gui.game.blocks), '先选中一侧的组')
+a1 = [tuple(r.center) for _l, r in gui._cubic_arrow_buttons]
+# 直接走「推成功」分支：把真实 move 换成一个总是成功的桩，只为验证缝的跟进
+orig_move = gui.move_selected_blocks
+gui.move_selected_blocks = lambda letter, step=None: True
+ok = gui._cubic_push_letter('r')      # 低侧组沿 -r 走：缝从 r·1 退到 r·0
+gui.move_selected_blocks = orig_move
+check(ok, '桩把这一步算成功')
+check(tuple(gui.selected_gap) == ('r', 0),
+      f'推到哪，缝就退到哪（r·1 → {gui.selected_gap}）')
+# 箭头挂在哪条缝上是渲染层按 selected_gap 现算的；这里验几何：两条缝的
+# 居中位置差正好一格（箭头随缝走，方向由此确定）。
+from engine import cubic_pick as _cp      # noqa: E402
+rect1 = _cp.seam_plane_rect('r', 1, gui.game.blocks, gap=gui.cubic_gap,
+                            dims=(gui.game.m, gui.game.n, gui.game.depth))
+rect0 = _cp.seam_plane_rect('r', 0, gui.game.blocks, gap=gui.cubic_gap,
+                            dims=(gui.game.m, gui.game.n, gui.game.depth))
+axis = _cp.FAMILY_TO_WORLD_AXIS['r']
+check(rect1 and rect0, '两条缝都有整张矩形')
+check(abs(sum(p[axis] for p in rect1) / 4.0
+          - sum(p[axis] for p in rect0) / 4.0) > 0.9,
+      '新缝在推行轴上整格挪开（箭头因此换位置）')
+
 print('=' * 60)
 if _fail:
     print(f'结果：{_ok[0]} 项通过，{len(_fail)} 项失败')

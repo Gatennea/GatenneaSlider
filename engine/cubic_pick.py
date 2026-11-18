@@ -363,8 +363,10 @@ def seam_plane_rect(family, line, blocks, gap: float = 0.0, dims=None):
         return []
     half = float(gap) / 2.0
     fixed = float(line + 1)
-    u0, u1 = lo[a] + half, hi[a] - half
-    v0, v1 = lo[b] + half, hi[b] - half
+    # 切面要**和包圍盒橫截面一樣大**（用户 2026-11-18 第 2 条）：块的可见外延是
+    # 每格 [k+gap/2, k+1-gap/2]，所以整盘包围盒在平面内两轴上各往外再多半格 gap。
+    u0, u1 = lo[a] - half, hi[a] + half
+    v0, v1 = lo[b] - half, hi[b] + half
     corners = []
     for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
         point = [0.0, 0.0, 0.0]

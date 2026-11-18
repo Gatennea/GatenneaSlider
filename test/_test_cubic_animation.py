@@ -143,6 +143,47 @@ def main():
     g3.undo()
     check(g3.game_history.history_index == idx1, '撤销照旧生效')
 
+    print('F. 打乱演示在三维里也有位移（用户 2026-11-18 第 1 条）')
+    g4 = make_gui()
+    g4.new_cubic_puzzle(3, 3, 3, 1)
+    g4.animation_enabled = True
+    g4.animation_duration = 80
+    g4.shuffle_puzzle(confirm=False)
+    check(getattr(g4, '_shuffle_demo_active', False), '打乱进入演示')
+    check(getattr(g4, 'animating', False) and bool(getattr(g4, 'anim_blocks', None)),
+          '演示靠 start_animation 推进（有自己的块列表）')
+    import time as _t2
+    _t2.sleep(0.03)
+    g4.update_animation()          # 真实循环里每帧都走这一句，进度才会前进
+    offs4 = g4._cubic_anim_offsets()
+    check(offs4 is not None and any(v != (0.0, 0.0, 0.0) for v in offs4.values()),
+          '演示中有非零位移（画面真的在滑，而不是一步一跳）', offs4)
+    if offs4:
+        first = next(iter(offs4.values()))
+        check(max(abs(v) for v in first) < 1.0,
+              f'位移还在半路上（{first}），不是已经跳到落点')
+    _t2.sleep(0.10)
+    g4.update_animation()
+    check(getattr(g4, '_shuffle_demo_done', 0) >= 1, '演示确实在往前走')
+
+    print('G. 跟随质心是「滑过去」，不是滑完弹一下（第 3 条）')
+    g5 = make_gui()
+    g5.new_cubic_puzzle(3, 3, 3, 1)
+    g5.animation_enabled = False
+    g5.draw_cubic_board()
+    for b in g5.game.blocks:
+        b.location[0] += 1          # 整盘挪一格：质心世界坐标 +1（只看跟随）
+    centers = []
+    for _i in range(10):
+        g5.draw_cubic_board()
+        centers.append(tuple(g5._cubic_follow_center))
+    total = abs(centers[-1][2] - centers[0][2]) if centers else 0.0
+    firsts = abs(centers[1][2] - centers[0][2]) if len(centers) > 1 else 0.0
+    check(total > 0.5, f'参考点确实跟着走（{total:.2f} 格）')
+    check(firsts < 0.35 * total, f'首帧只走一小段，不是瞬移（{firsts:.2f}/{total:.2f}）')
+    check(all(abs(centers[i + 1][2] - centers[i][2]) <= firsts + 1e-6
+              for i in range(len(centers) - 1)), '每帧位移不增（平滑收敛）')
+
     print('=' * 60)
     if FAILED:
         print(f'结果：{len(FAILED)} 项失败（{PASSED[0]} 项通过）')

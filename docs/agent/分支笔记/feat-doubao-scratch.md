@@ -730,3 +730,32 @@ generic_controls/rp_menu 回归通过。
 并读回 `_cubic_follow_prefs`（`_cubic_load_defaults` 套用）。
 测试 `_test_cubic_config_state.py` 的拖动平移断言改写为「六键平移→暂停跟随 / 居中→
 归零+恢复跟随 / 质心投影落在屏幕中心」共 19 项；补 config 存回断言后 21 项全绿。
+
+## 2026-11-18 五条体验返工：打乱动画 / 切面铺满 / 跟随平滑 / 箭头随缝 / 双击选块
+
+用户当场列了五条，逐条落点：
+
+1. **打乱过程没有动画**。3D 打乱演示复用了 2D 的 `start_animation` 管线（逻辑位置按格
+   推进），但三维渲染不认 2D 的格子坐标 → 每步只是瞬间换位置。修：`_cubic_anim_offsets`
+   在 `cubic_mode` 且 `animating` 时，把 `anim_block → anim_end_pos` 的逻辑位移按
+   `anim_progress` 换成世界位移（`(dc*dp, dd*dp, dr*dp)`）交给 `collect_faces/block_boxes`
+   的 offsets。演示仍是「逻辑提交 + 渲染插值」，commit 后照旧推进下一条记录。
+2. **切面要铺满包围盒横截面**。`seam_plane_rect` 不再向内缩半格 gap：两轴范围改成
+   `[lo-gap/2, hi+gap/2]`，即块的可见外延。打散后也不跟着块堆缩水（dims 给整幅棋盘）。
+3. **滑完强制居中导致画面抖动**。原先跟随即时换 origin，一步走完质心跳 1/9 盘 → 画面
+   猛拽一下。改成平滑跟随：`_cubic_follow_center` 每帧朝质心 lerp 0.14（约 8 帧收敛），
+   scale 仍按包围盒半径（不因跟随而变化）。手动平移仍立刻暂停跟随；「居中」重置平滑点。
+4. **同向连推箭头不换位置**。`_cubic_push_letter` 成功后把 `selected_gap` 沿推行轴
+   平移一格（`line ± 1`，方向由字母大小写定），箭头/可推性与缝口都重新挂到新位置；
+   推不动就不动。
+5. **双击仍可能选到别处缝隙**。双击分支不再退回 `seam_at_point`（「离点最近的一条缝」），
+   改为只认**点中的那块自己挨着的**有效内部缝：优先「点中的那面外侧」，否则扫这块
+   六个边界；一块都没有就把缝恢复成双击前那条并明说没缝。单击时记录 `_cubic_gap_before_click`
+   供回滚。
+
+测试：`_test_cubic_animation` F（演示中非零位移、未到落点、确实推进）/ G（跟随首帧
+小于总位移 45%、逐帧不增）；`_test_cubic_vk` H（缝随推平移 + 新缝在推行轴挪整格）；
+`_test_cubic_pick` H（两个朝向 × 全部可见面双击，缝必须属于点中的块，0 跑偏）；
+`_test_cubic_seam_occlusion` F 改成 3.12 整幅、红像素边界按矩形、正视红占比阈值放宽到
+4.5%（多出来的是铺满后露出的半格红边）；`_test_cubic_config_state` 跨度改 3.18。
+全部 cubic 套件 + feature_index + statusbar 回绿（pick 297 / vk 49 / anim 24 / seam 14 / config 21）。

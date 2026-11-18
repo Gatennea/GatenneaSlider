@@ -319,6 +319,36 @@ gui._cubic_view(1)
 gui.draw_cubic_board()
 check(gui.selected_gap is None, '清空后重绘不再画白线')
 
+print('H. 双击只认「这块自己挨着的缝」（用户 2026-11-18 第 5 条）')
+gui.animation_enabled = False
+bad = 0
+for view in (0, 3):
+    gui._cubic_view(view)
+    gui.draw_cubic_board()
+    faces = list(gui._cubic_scene['faces'])
+    for f in faces:
+        pts = f['pts']
+        cx = int(sum(p[0] for p in pts) / 4.0)
+        cy = int(sum(p[1] for p in pts) / 4.0)
+        # 每次先清掉选中（否则上一轮画出的箭头会把点击抢去当「推」）
+        gui._cubic_clear_selection()
+        gui.draw_cubic_board()
+        gui.selected_gap = ('r', 1)      # 先把缝故意放在别处，看双击会不会被带跑
+        gui._cubic_last_click_t = None
+        gui._cubic_click(cx, cy)
+        gui._cubic_click(cx, cy)
+        hit = gui._cubic_pick(cx, cy)
+        if hit is None:
+            continue
+        if gui._cubic_seam_for_block(hit) is None:
+            continue            # 这块六面都是墙：本来就选不了，不算跑偏
+        gap = gui.selected_gap
+        if not gap or not gui._cubic_seam_touches(gap, [int(v) for v in hit['loc']]):
+            bad += 1
+            print('  BAD', view, tuple(int(v) for v in hit['loc']), gap,
+                  gui._cubic_seam_for_block(hit))
+check(bad == 0, f'双击选中的缝都属于点中的那块（{bad} 个跑偏）')
+
 print('=' * 60)
 if _fail:
     print(f'结果：{_ok[0]} 项通过，{len(_fail)} 项失败')

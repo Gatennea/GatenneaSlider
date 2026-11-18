@@ -1431,6 +1431,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 跟随质心（方案 §2.2）：默认开——整盘滑动时把质心锁在屏幕中心，
         # 兼作三维「防偏移」。手动平移后暂停，按「居中」恢复。
         self.cubic_follow_centroid = True
+        self._cubic_follow_center = None      # 平滑跟随的当前参考点（换局重来）
         # 但 config 里记着上次退出时的手工平移（用户拖过视角再退出）：套回去。
         _pan0 = getattr(self, '_cubic_pan_prefs', None)
         if isinstance(_pan0, (list, tuple)) and len(_pan0) == 2:

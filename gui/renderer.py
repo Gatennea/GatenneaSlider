@@ -987,11 +987,25 @@ class RendererMixin:
             _locs = [tuple(int(v) for v in b.location[:3]) for b in blocks]
             if _locs:
                 # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)，取块心（+0.5）的平均
-                _center = (
+                _target = (
                     sum(p[1] for p in _locs) / len(_locs) + 0.5,
                     sum(p[2] for p in _locs) / len(_locs) + 0.5,
                     sum(p[0] for p in _locs) / len(_locs) + 0.5,
                 )
+                # 平滑跟随（用户 2026-11-18 第 3 条）：一步走完质心会跳 1/9 盘，
+                # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
+                # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
+                _cur = getattr(self, '_cubic_follow_center', None)
+                if _cur is None:
+                    _cur = _target
+                else:
+                    _k = 0.14
+                    _cur = tuple(_cur[i] + (_target[i] - _cur[i]) * _k
+                                 for i in range(3))
+                self._cubic_follow_center = _cur
+                _center = _cur
+        else:
+            self._cubic_follow_center = None
         scene = cubic_view.build_scene(
             blocks, camera, self.screen_width, self.screen_height,
             margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap,

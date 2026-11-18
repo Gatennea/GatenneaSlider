@@ -100,12 +100,17 @@ def main():
                 axis = cp.FAMILY_TO_WORLD_AXIS[fam]
                 fixed = float(line + 1)
                 a, b = [i for i in range(3) if i != axis]
-                # 切面自身的范围（格子拼起来的外框）
-                cells = cp.seam_plane_cells(fam, line, gui.game.blocks, gap=gap)
-                if not cells:
+                # 切面自身的范围（渲染用的是**整张矩形**，铺满包围盒横截面：
+                # 用户 2026-11-18 第 2 条。这里按矩形取边界，别按格子外框，
+                # 否则矩形比块堆宽出的那半格 gap 会被误判成「出界」。）
+                rect = cp.seam_plane_rect(fam, line, gui.game.blocks, gap=gap,
+                                          dims=(gui.game.m, gui.game.n,
+                                                gui.game.depth))
+                if not rect:
                     continue
-                lo = [min(p[i] for quad, _c in cells for p in quad) for i in range(3)]
-                hi = [max(p[i] for quad, _c in cells for p in quad) for i in range(3)]
+                lo = [min(p[i] for p in rect) for i in range(3)]
+                hi = [max(p[i] for p in rect) for i in range(3)]
+                cells = cp.seam_plane_cells(fam, line, gui.game.blocks, gap=gap)
                 for quad, _c in cells:
                     for p in quad:
                         if abs(p[axis] - fixed) > 1e-9:
@@ -166,7 +171,9 @@ def main():
                 red_front += 1
     sampled = (gui.screen_height // 2 + 1) * (gui.screen_width // 2 + 1)
     ratio = red_front / float(sampled)
-    check(ratio < 0.02, f'正视下切面几乎全被挡住（红占比 {ratio * 100:.1f}%）')
+    # 切面现在按包围盒横截面铺满，正视时块堆四周会露出一圈「红边」（gap 的半格），
+    # 比按块堆外框切的旧版多一些；中心仍被前层挡死，红占比理应仍是个位数百分比。
+    check(ratio < 0.045, f'正视下切面几乎全被挡住（红占比 {ratio * 100:.1f}%）')
 
     print('E. 切面格子几何')
     cells = cp.seam_plane_cells('r', 1, gui.game.blocks, gap=0.12)
@@ -192,8 +199,8 @@ def main():
     centers = [c for _q, c in cells]
     check(len(set(centers)) == len(centers), '格子中心互不重合')
 
-    print('F. 切面是**一整张矩形平面**（2026-11-18 用户口径）')
-    edge = 3.0 - 0.12
+    print('F. 切面是**一整张矩形平面**，且铺满包围盒横截面（2026-11-18 用户口径）')
+    edge = 3.0 + 0.12          # 包围盒 = 每格外再多半格 gap（两侧各 0.06）
     rect = cp.seam_plane_rect('r', 1, gui.game.blocks, gap=0.12, dims=(3, 3, 3))
     a2, b2 = [i for i in range(3) if i != axis]
     span_a = max(p[a2] for p in rect) - min(p[a2] for p in rect)

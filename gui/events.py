@@ -1764,39 +1764,40 @@ class EventsMixin:
                      and abs(y - last_p[1]) <= self.CUBIC_DOUBLE_CLICK_PX)
 
         if is_double:
-            # 双击：点在缝里就用这条缝；点在块的外表面上，退化成「离点最近的
-            # 那条有效缝」当切面（拆分的块之间有缝，边离得近的那条最像用户
-            # 想切的地方）。
+            # 双击：这次是「选块」，不能再让第一下随手改的缝把人带跑（用户
+            # 2026-11-18 第 5 条：双击仍可能选中别的缝隙）。规则：
+            #   ① 只认**这个块自己挨着的**有效内部缝（它的六个邻居面，或
+            #      点击的那面外侧那条），绝不退回「离点击最近的任意一条缝」；
+            #   ② 一个都找不到就把缝恢复成双击前的那条，并明说没缝。
+            prev_gap = getattr(self, '_cubic_gap_before_click', self.selected_gap)
+            block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
             seam_use = seam
-            if seam_use is None:
-                scene = getattr(self, '_cubic_scene', None)
-                pick = cubic_pick.seam_at_point(scene, hit, (x, y),
-                                                self.game.is_valid_gap) if scene else None
-                if pick is not None:
-                    seam_use = (pick[1], pick[2])
-            if seam_use is None:
+            if block is not None and (seam_use is None
+                                      or not self._cubic_seam_touches(seam_use, hit['loc'])):
+                seam_use = self._cubic_seam_for_block(hit)
+            if block is None or seam_use is None:
                 self._cubic_last_click_t = None
                 self._cubic_last_click_p = None
+                self.selected_gap = prev_gap
                 self.macro_notify_msg = "这一块旁边没有可切的缝（换个位置）"
                 self.macro_notify_timer = 120
                 return False
             self.selected_gap = seam_use
-            block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
-            if block is not None:
-                self.game.opt(seam_use[0], seam_use[1], block)
-                self.selected_block = block
-                self._cubic_last_click_t = None
-                self._cubic_last_click_p = None
-                n = len([b for b in self.game.blocks if b.be_opted])
-                self.macro_notify_msg = (f"选中滑块组 共{n}个"
-                                         f"（切面 {seam_use[0]}·{seam_use[1]}）")
-                self.macro_notify_timer = 120
-                return True
+            self.game.opt(seam_use[0], seam_use[1], block)
+            self.selected_block = block
+            self._cubic_last_click_t = None
+            self._cubic_last_click_p = None
+            n = len([b for b in self.game.blocks if b.be_opted])
+            self.macro_notify_msg = (f"选中滑块组 共{n}个"
+                                     f"（切面 {seam_use[0]}·{seam_use[1]}）")
+            self.macro_notify_timer = 120
+            return True
 
         # 单击：点到缝里才改切面；点在块的外表面上不动缝（否则双击的第一下
         # 就会把缝挪走）。时间戳无论改不改缝都记，否则拼不出双击。
         self._cubic_last_click_t = now
         self._cubic_last_click_p = (x, y)
+        self._cubic_gap_before_click = self.selected_gap
         if seam is None:
             self.macro_notify_msg = "点到两块之间的缝（缝里的墙）才改切面；双击块选中一侧"
             self.macro_notify_timer = 120
@@ -1806,6 +1807,38 @@ class EventsMixin:
         self.macro_notify_msg = f"切面预览：{seam[0]}·{seam[1]}（双击选中一侧）"
         self.macro_notify_timer = 120
         return True
+
+    def _cubic_seam_touches(self, seam, loc):
+        """这条缝是否**紧挨着**这块（它的某一个邻居面就是这条切面）。"""
+        from engine import cubic_pick
+        fam, line = seam
+        idx = cubic_pick.FAMILY_TO_LOC_INDEX[fam]
+        k = int(loc[idx])
+        return line in (k - 1, k)
+
+    def _cubic_seam_for_block(self, hit):
+        """双击时的缝：只在这块自己的边界里找，优先「点中的那面外侧」。
+
+        绝不退回 `seam_at_point`（那是「离点击最近的一条缝」，斜姿态下很容易
+        落到别的块、别的层上——用户说的「选中其他地方的缝隙」就出在这里）。
+        """
+        from engine import cubic_pick
+        loc = tuple(int(v) for v in hit['loc'])
+        fam_hint = cubic_pick.WORLD_AXIS_TO_FAMILY.get(hit.get('axis'))
+        sign = hit.get('sign', 0)
+        if fam_hint:
+            idx = cubic_pick.FAMILY_TO_LOC_INDEX[fam_hint]
+            k = int(loc[idx])
+            line = k if sign > 0 else k - 1
+            if self.game.is_valid_gap(fam_hint, line):
+                return (fam_hint, line)
+        for fam in ('r', 'c', 'd'):
+            idx = cubic_pick.FAMILY_TO_LOC_INDEX[fam]
+            k = int(loc[idx])
+            for line in (k - 1, k):
+                if self.game.is_valid_gap(fam, line):
+                    return (fam, line)
+        return None
 
     def _cubic_scene_faces(self):
         """本帧场景的可见面（渲染时缓存的；没有就现算一份）。"""
@@ -1822,6 +1855,7 @@ class EventsMixin:
         self.selected_block = None
         self._cubic_last_click_t = None
         self._cubic_last_click_p = None
+        self._cubic_gap_before_click = None
         if getattr(self, 'game', None) is not None:
             for b in self.game.blocks:
                 b.be_opted = False
@@ -1939,6 +1973,7 @@ class EventsMixin:
         """
         self.cubic_pan = [0.0, 0.0]
         self.cubic_follow_centroid = True
+        self._cubic_follow_center = None      # 居中即从质心重新起算
         self.macro_notify_msg = '视角已居中（恢复跟随质心）'
         self.macro_notify_timer = 120
         return True
@@ -1985,6 +2020,16 @@ class EventsMixin:
             self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
             self.macro_notify_timer = 120
             return False
+        # 同向连续推（用户 2026-11-18 第 4 条：「箭头不能改变位置」）：选中组一走，
+        # 它和没动那部分之间的切面也跟着走一格。把 selected_gap 跟着挪到新位置，
+        # 箭头 / 可推方向就重新挂在新缝口上——不用再动鼠标去点。
+        fam = letter.lower() if letter.lower() in ('r', 'c', 'd') else None
+        step = 1 if letter.isupper() else -1
+        gap = getattr(self, 'selected_gap', None)
+        if fam and gap and gap[0] == fam:
+            new_line = int(gap[1]) + step
+            if self.game.is_valid_gap(fam, new_line):
+                self.selected_gap = (fam, new_line)
         if getattr(self, 'animation_enabled', True) and before:
             self._cubic_start_anim(letter, before)
         return moved
@@ -2016,6 +2061,26 @@ class EventsMixin:
 
     def _cubic_anim_offsets(self):
         """当前帧的动画位移 {位置: (dx,dy,dz)}；没动画时 None。"""
+        # 打乱演示 / 任何走 2D start_animation 管線的动画，在三维里没有渲染插值
+        # （二维是按格子算屏幕坐标的，三维走投影）。用户 2026-11-18 第 1 条：
+        # 「打乱过程没有动画」。这里把 start→end 的逻辑位移按 progress 摊到
+        # 世界坐标上，交给渲染层当 offsets——逻辑位置仍是起点，commit 才写终点。
+        if getattr(self, 'cubic_mode', False) and getattr(self, 'animating', False):
+            blocks = getattr(self, 'anim_blocks', None)
+            ends = getattr(self, 'anim_end_pos', None)
+            if blocks and ends:
+                p = max(0.0, min(1.0, float(getattr(self, 'anim_progress', 0.0))))
+                out = {}
+                for b, end in zip(blocks, ends):
+                    loc = tuple(int(v) for v in b.location[:3])
+                    dr, dc, dd = (int(end[0]) - loc[0], int(end[1]) - loc[1],
+                                  int(end[2]) - loc[2])
+                    if (dr, dc, dd) == (0, 0, 0):
+                        continue
+                    # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
+                    out[loc] = (dc * p, dd * p, dr * p)
+                if out:
+                    return out
         anim = getattr(self, 'cubic_anim', None)
         if not anim:
             return None
