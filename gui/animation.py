@@ -121,6 +121,11 @@ class AnimationMixin:
             if self._shake_t == 0:
                 self._shake_blocks = set()
                 self._reject_reason = None
+        # 三维粘滞连续撤销/重做：`cubic_anim` 是纯渲染计时，不经过
+        # `animating`/动画队列，二维 commit 后的推进链在三维里等不到，
+        # 所以每帧在这里按到期时间接下一步。返回 True 时本帧只需重绘。
+        if self._tick_cubic_continuous():
+            return
         if not self.animating:
             return
         elapsed = pygame.time.get_ticks() - self.anim_start_time
