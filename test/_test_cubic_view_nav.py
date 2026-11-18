@@ -240,7 +240,7 @@ check(same_pose(gui.cubic_camera, CubicCamera.oblique_default()),
       '斜视姿态回到第 1 步那一档')
 
 print('=' * 60)
-print('F. 相机组进 config，重建三维局能套回来')
+print('F. 自由旋转不成为默认视角；1–6 选过的朝向才恢复')
 gui.cubic_gap = 0.18
 gui.cubic_camera = CubicCamera.oblique_default().spin((1.0, 0.0, 0.0), 12.0)
 gui.cubic_view_label = '自由旋转'
@@ -253,15 +253,28 @@ check(set(('quat', 'zoom', 'gap')) <= set(cc), 'config 里有三维相机组', c
 check(abs(cc.get('gap', -1) - 0.18) < 1e-9, '拆分值一起存')
 check('zoom' in cfg and abs(cfg['zoom'] - 1.0) < 1e-9, '二维 zoom 仍按二维口径存')
 
-want_cam = gui.cubic_camera
 gui.cubic_camera = CubicCamera.oblique_default()
 gui.cubic_zoom = 1.0
 gui.cubic_gap = 0.12
 gui.load_last_state()
 gui.new_cubic_puzzle(3, 3, 3, 1)
-check(same_pose(gui.cubic_camera, want_cam, tol=1e-6),
-      '重建三维局套回上次姿态', gui.cubic_camera)
-check(abs(gui.cubic_gap - 0.18) < 1e-9, '拆分也套回', gui.cubic_gap)
+check(same_pose(gui.cubic_camera, CubicCamera.oblique_default(), tol=1e-6),
+      '自由旋转不恢复，默认回到斜视参考姿态', gui.cubic_camera)
+check(gui.cubic_view_label == '斜视', '标签也回到斜视', gui.cubic_view_label)
+check(gui.cubic_view_index is None, '没有假装恢复某个朝向', gui.cubic_view_index)
+check(abs(gui.cubic_gap - 0.18) < 1e-9, '拆分仍套回', gui.cubic_gap)
+
+print('=' * 60)
+print('F2. 明确选过朝向（1–6）才按朝向恢复')
+gui.cubic_view_index = 2
+gui.cubic_camera = face_view_rotation(2)
+gui.cubic_view_label = FACE_VIEW_LABELS[2]
+gui.save_config()
+gui.load_last_state()
+gui.new_cubic_puzzle(3, 3, 3, 1)
+check(same_pose(gui.cubic_camera, face_view_rotation(2), tol=1e-6),
+      '恢复选过的「右 +X」朝向', gui.cubic_camera)
+check(gui.cubic_view_index == 2, '视角序号恢复', gui.cubic_view_index)
 
 print('=' * 60)
 print('G. 整帧：六朝向都画得出来')
