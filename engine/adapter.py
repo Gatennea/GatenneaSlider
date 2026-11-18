@@ -696,8 +696,10 @@ class EngineGame:
             return cur.is_solved()
         if len(cur.keys) != len(self._goal_keys):
             return False
-        if self.spec.lattice.symmetry == 'hyperoctahedral':
-            # 方形：D4 八变换任一命中即算还原（旋转/翻面都算）
+        if self.spec.lattice.symmetry == 'hyperoctahedral' or self.kind == 'cubic':
+            # 方形 / 立方：D4 八变换或三维 48 对称任一命中即算还原（旋转/翻面
+            # 都算）。三维 2026-11-18 补：自订 goal_pattern 以前走下面的平移
+            # 归一，只认「不转」的同一摆放，与总方案「认所有朝向」不符。
             goal_board = Board.from_keys(self.spec, self._goal_keys)
             return cur.canonical_key() == goal_board.canonical_key()
         return _translate_normalized(cur.keys) == \
