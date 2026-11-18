@@ -66,6 +66,11 @@ check(CubicCamera.identity().view_axis() == (0.0, 0.0, 1.0),
 
 obl = CubicCamera.oblique_default()
 check(not obl.is_axis_aligned(), '默认斜视不是正对姿态')
+# 2026-11-18 参考图校准：默认斜视 = yaw -37° / pitch 22°。
+# 这里钉住姿态本身，防止以后改投影参数时把默认视角又拨回「偏正对」。
+_ref_obl = CubicCamera.from_yaw_pitch(-37.0, 22.0)
+check(abs(sum(a * b for a, b in zip(obl.q, _ref_obl.q))) > 0.999999,
+      '默认斜视 = yaw -37° / pitch 22°')
 snap = obl.nearest_face_view()
 check(snap.is_axis_aligned() and snap.view_axis()[2] > 0.9,
       '斜视吸附回「正面」', snap.view_axis())
