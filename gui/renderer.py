@@ -4492,44 +4492,17 @@ class RendererMixin:
             x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
             "撤销、重做时高亮这次动的缝和滑块（蓝=撤销，橙=重做）", max_w=_mw)
 
-        # 三维局：视觉页只留「开关」，不再画缩放 / 动画时长滑条。
-        # 右栏四条滑条的数值统一收进「三维」专页；尤其三维缩放以前在这条
-        # 滑条上写的是二维 self.zoom（没接 cubic_zoom），是条假控件。
-        # 着色 / 连锁 / 缝隙闪烁 / 复原标记 / 调试面板 / 成绩面板 / 绘制网格 /
-        # 防偏移演示 / 思考演示全部是二维语义，方案 §2.4 与 §5 明确不做三维，
-        # 因此**不画**（而不是画成灰开关）；对应矩形清零，避免旧帧命中区残留。
+        # 动画时长滑动条（轨道与开关同一右栏对齐）
+        # 三维态写 cubic_anim_ms（60..400），与右侧栏「速度」滑条同源；
+        # 二维仍写 animation_duration（100..1000）。
         _cubic_anim = getattr(self, 'cubic_mode', False)
         if _cubic_anim:
-            for _attr in ('_settings_slider_track_rect',
-                          '_settings_slider_knob_rect',
-                          '_settings_zoom_track_rect',
-                          '_settings_zoom_knob_rect',
-                          '_settings_coloring_toggle_rect',
-                          '_settings_chain_toggle_rect',
-                          '_settings_gap_hover_toggle_rect',
-                          '_settings_marks_toggle_rect',
-                          '_settings_metrics_toggle_rect',
-                          '_settings_records_toggle_rect',
-                          '_settings_grid_toggle_rect',
-                          '_settings_anti_drift_toggle_rect',
-                          '_settings_thinking_toggle_rect'):
-                setattr(self, _attr, pygame.Rect(0, 0, 0, 0))
-
-            # 开机动画（启动时全局，三维同样生效）
-            self._settings_boot_toggle_rect, ny = self._draw_switch_row(
-                x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
-                "启动时播放标题动画，点一下可以跳过", max_w=_mw)
-            # 防意外打乱/重置（三维打乱同样清历史，提示同样有用）
-            self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
-                x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
-                "打乱和重置都会清空历史、撤不回来；开启后先弹确认，防止误触",
-                max_w=_mw)
-            self._settings_anim_height = ny - y + 10
-            return
-
-        # 二维：动画时长滑动条（轨道与开关同一右栏对齐；100..1000ms）
-        _anim_lo, _anim_hi = 100, 1000
-        _anim_val = self.animation_duration
+            _anim_lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
+            _anim_hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            _anim_val = getattr(self, 'cubic_anim_ms', 140)
+        else:
+            _anim_lo, _anim_hi = 100, 1000
+            _anim_val = self.animation_duration
         speed_y = ny
         speed_label = self.dialog_font.render("动画时长：", True, self.colors['dialog_text'])
         self.screen.blit(speed_label, (x + 15, speed_y + 6))
@@ -4562,16 +4535,22 @@ class RendererMixin:
         self.screen.blit(max_label, (track_x + track_width - max_label.get_width(), track_y + 12))
         ny = speed_y + 72
 
-        # 缩放滑动条（与右侧面板的垂直缩放滑条同源：两者读写同一个
-        # self.zoom，改任意一个另一个下一帧就跟着动）。排版与上面的动画
-        # 时长一致：左栏标签、右栏轨道，左端=最小缩放、右端=最大缩放。
+        # 缩放滑动条：三维态读 cubic_zoom / CUBIC_ZOOM_RANGE，二维态读
+        # self.zoom / min_zoom..max_zoom。两态都由同一条滑条显示，事件层
+        # 按 cubic_mode 分派写回；不再把三维缩放错写到二维 self.zoom。
+        if _cubic_anim:
+            _zlo, _zhi = self.CUBIC_ZOOM_RANGE
+            _zval = float(getattr(self, 'cubic_zoom', 1.0))
+        else:
+            _zlo, _zhi = self.min_zoom, self.max_zoom
+            _zval = self.zoom
         zoom_y = ny
         zoom_label = self.dialog_font.render("缩放：", True, self.colors['dialog_text'])
         self.screen.blit(zoom_label, (x + 15, zoom_y + 6))
 
         ztrack_x = x + 220
         ztrack_width = 190
-        zoom_pct = f"{int(round(self.zoom * 100))}%"
+        zoom_pct = f"{int(round(_zval * 100))}%"
         zvalue_surface = self.input_font.render(zoom_pct, True, self.colors['input_text'])
         self.screen.blit(zvalue_surface,
                          (ztrack_x + ztrack_width - zvalue_surface.get_width(), zoom_y + 6))
@@ -4581,8 +4560,8 @@ class RendererMixin:
         self._settings_zoom_track_rect = pygame.Rect(ztrack_x, ztrack_y, ztrack_width, 4)
         pygame.draw.rect(self.screen, self.colors['dialog_border'], self._settings_zoom_track_rect)
 
-        # 滑动条位置（线性：min_zoom→0，max_zoom→1）
-        znorm = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+        # 滑动条位置（线性：下界→0，上界→1）
+        znorm = (_zval - _zlo) / max(1e-6, _zhi - _zlo)
         znorm = max(0.0, min(1.0, znorm))
         zknob_x = int(ztrack_x + znorm * ztrack_width)
         self._settings_zoom_knob_rect = pygame.Rect(zknob_x - 8, ztrack_y - 6, 16, 16)
@@ -4591,13 +4570,39 @@ class RendererMixin:
         pygame.draw.rect(self.screen, zknob_color, self._settings_zoom_knob_rect, border_radius=8)
 
         # 刻度标签（两端对齐轨道）
-        zmin_label = self.status_font.render(f"{int(round(self.min_zoom * 100))}%", True, (150, 150, 150))
-        zmax_label = self.status_font.render(f"{int(round(self.max_zoom * 100))}%", True, (150, 150, 150))
+        zmin_label = self.status_font.render(f"{int(round(_zlo * 100))}%", True, (150, 150, 150))
+        zmax_label = self.status_font.render(f"{int(round(_zhi * 100))}%", True, (150, 150, 150))
         self.screen.blit(zmin_label, (ztrack_x, ztrack_y + 12))
         self.screen.blit(zmax_label, (ztrack_x + ztrack_width - zmax_label.get_width(), ztrack_y + 12))
         ny = zoom_y + 72
 
-        # 二维局：继续画二维专属的视觉项（三维在上面已经提前返回）。
+        # 三维局：视觉页保留下来的开关项；2D 专属开关不画并清空命中矩形，
+        # 避免旧帧残留（方案 §2.4 与 §5 明确不做三维的那些）。
+        if _cubic_anim:
+            for _attr in ('_settings_coloring_toggle_rect',
+                          '_settings_chain_toggle_rect',
+                          '_settings_gap_hover_toggle_rect',
+                          '_settings_marks_toggle_rect',
+                          '_settings_metrics_toggle_rect',
+                          '_settings_records_toggle_rect',
+                          '_settings_grid_toggle_rect',
+                          '_settings_anti_drift_toggle_rect',
+                          '_settings_thinking_toggle_rect'):
+                setattr(self, _attr, pygame.Rect(0, 0, 0, 0))
+
+            # 开机动画（启动时全局，三维同样生效）
+            self._settings_boot_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
+                "启动时播放标题动画，点一下可以跳过", max_w=_mw)
+            # 防意外打乱/重置（三维打乱同样清历史，提示同样有用）
+            self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
+                "打乱和重置都会清空历史、撤不回来；开启后先弹确认，防止误触",
+                max_w=_mw)
+            self._settings_anim_height = ny - y + 10
+            return
+
+        # 二维局：继续画二维专属的视觉项。
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
@@ -5249,94 +5254,89 @@ class RendererMixin:
     # 设置页「三维」专页（方案 §2.4）
     # ==================================================================
     #: 每项的步长（按一下就改这么多；细调靠连点，不必再拖一条滑条进来）
-    CUBIC_STEP = {'gap': 0.05, 'seam_alpha': 5, 'rot_sensitivity': 0.1,
-                  # 缩放是倍数，0.05 一档（5%），从 0.5 到 3.0 共 50 档
-                  'zoom': 0.05}
+    CUBIC_STEP = {'gap': 0.05, 'seam_alpha': 5, 'rot_sensitivity': 0.1}
 
     def _fmt_cubic_value(self, spec, val):
-        if spec.get('display') == 'percent':
-            return f"{int(round(float(val) * 100))}%"
         if spec['type'] == 'int':
             return f"{int(val)}"
         return f"{val:.2f}" + (' 倍' if spec['key'] == 'rot_sensitivity' else '')
 
     def _draw_settings_cubic(self, x, y, width, height):
-        """三维专页：只放「设一次、很少动」的项（拆分/透明度在右侧栏边拖边看）。
+        """三维专页：版式对齐「聚拢参数」页，只放三维独有、视觉页没有的项。
 
-        二维谜题下整页置灰 + 一句说明（沿用求解器页「不隐藏入口、只解释为什么
+        右栏四条滑条只显示名称；其中缩放 / 动画时长属于视觉项，数值入口
+        留在「视觉」页（三维态读 cubic_zoom / cubic_anim_ms），这里不再
+        重复列一遍。三维页只保留拆分 / 切面透明 / 旋转灵敏度。
+
+        二维谜题下整页给一句说明（沿用求解器页「不隐藏入口、只解释为什么
         不可用」的先例），不装作这里什么都没有。
         """
         from gui import cubic_settings
         self._settings_cubic_btn_rects = {}
         self._settings_cubic_height = 0
-        ny = y
         cubic = bool(getattr(self, 'cubic_mode', False))
-        hint_w = width - 20
 
-        title = ('三维谜题专用。右侧栏四条滑条只显示名称，数值统一在这里：'
-                 '缩放 / 拆分 / 切面透明 / 动画时长；拆分与切面也可以边拖边看。')
-        for _i, _ln in enumerate(self._wrap_text(title, self.status_font, hint_w)):
-            self.screen.blit(self.status_font.render(_ln, True,
-                                                     self.colors['dialog_text']),
-                             (x + 15, ny + 4 + _i * 20))
-        ny += 26 + 20 * max(0, len(self._wrap_text(title, self.status_font, hint_w)) - 1)
+        # 与「聚拢参数」同款页头：黄色提醒 + 绿色适用范围。
+        warn = self.status_font.render(
+            "※ 三维专用参数，按一下改一档；改完立即生效", True, (220, 200, 80))
+        self.screen.blit(warn, (x + 15, y + 8))
+        scope = self.status_font.render(
+            "缩放 / 动画时长在「视觉」页；这里只放拆分 / 切面 / 旋转灵敏度",
+            True, (150, 200, 150))
+        self.screen.blit(scope, (x + 15, y + 26))
 
         if not cubic:
             note = '当前是二维谜题，这一页的选项对二维没有作用，切到三维谜题后再来。'
-            for _i, _ln in enumerate(self._wrap_text(note, self.status_font, hint_w)):
+            _lines = self._wrap_text(note, self.status_font, width - 20)
+            for _i, _ln in enumerate(_lines):
                 self.screen.blit(self.status_font.render(_ln, True, (160, 160, 160)),
-                                 (x + 15, ny + 8 + _i * 20))
-            ny += 28 + 20 * max(0, len(self._wrap_text(note, self.status_font, hint_w)) - 1)
-            self._settings_cubic_height = ny - y
+                                 (x + 15, y + 48 + _i * 18))
+            self._settings_cubic_height = y + 48 + 18 * len(_lines) + 8 - y
             return
 
-        # 右栏四条滑条的值必须都能在这一页看到。缩放 / 拆分 / 切面 / 动画时长
-        # 是右栏四项；旋转灵敏度是三维独有的相机手感项，排在最后。
-        # 缩放不登记进 cubic_settings（它属于相机存档 cubic_camera，不是
-        # CUBIC_SETTINGS 的配置键），这里给一条同形的临时 spec，事件层按
-        # key='zoom' 单独夹到 CUBIC_ZOOM_RANGE。
-        _zlo, _zhi = self.CUBIC_ZOOM_RANGE
-        _zoom_spec = {
-            'key': 'zoom', 'label': '缩放', 'attr': 'cubic_zoom',
-            'type': 'float', 'min': float(_zlo), 'max': float(_zhi),
-            'default': 1.0, 'group': 'view', 'display': 'percent',
-            'help': '三维画面缩放倍数（与右侧栏「缩放」滑条同源）',
-        }
-        _rows = ([_zoom_spec] + cubic_settings.items('view')
+        # 只列三维独有项：拆分、切面透明、旋转灵敏度。
+        # 动画时长虽然也在 CUBIC_SETTINGS 里，但它的数值入口是视觉页的
+        # 「动画时长」滑条，所以这里按 key 过滤掉，避免两页各一份。
+        _rows = ([s for s in cubic_settings.items('view')
+                  if s['key'] != 'cubic_anim_ms']
                  + cubic_settings.items('control'))
+        row_y = y + 48
         for spec in _rows:
             val = getattr(self, spec['attr'], spec['default'])
-            self.screen.blit(self.dialog_font.render(f"{spec['label']}：", True,
-                                                     self.colors['dialog_text']),
-                             (x + 15, ny + 6))
-            value_s = self.input_font.render(self._fmt_cubic_value(spec, val), True,
-                                             self.colors['input_text'])
-            self.screen.blit(value_s, (x + 200, ny + 6))
-
-            _bw, _bh = 30, 26
-            minus = pygame.Rect(x + 330, ny + 2, _bw, _bh)
-            plus = pygame.Rect(x + 366, ny + 2, _bw, _bh)
-            # 用 ASCII 的 '-'：状态栏字体里没有 U+2212，会画成空心方框
+            _bh = 26
+            # 左侧步进控件（与聚拢参数的 − / 数值框 / + 同一套样式）。
+            # 用 ASCII 的 '-'：状态栏字体里没有 U+2212，会画成空心方框。
+            minus = pygame.Rect(x + 15, row_y, 28, _bh)
+            box = pygame.Rect(x + 47, row_y, 80, _bh)
+            plus = pygame.Rect(x + 131, row_y, 28, _bh)
             for _rect, _txt in ((minus, '-'), (plus, '+')):
                 pygame.draw.rect(self.screen, self.colors['button_bg'], _rect,
                                  border_radius=4)
                 _t = self.status_font.render(_txt, True, (255, 255, 255))
                 self.screen.blit(_t, _t.get_rect(center=_rect.center))
+            # 数值框：与聚拢参数一样的 input_bg + 细边框
+            pygame.draw.rect(self.screen, self.colors['input_bg'], box,
+                             border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], box, 1,
+                             border_radius=4)
+            value_s = self.input_font.render(self._fmt_cubic_value(spec, val),
+                                             True, self.colors['input_text'])
+            self.screen.blit(value_s, (box.x + 6,
+                                       box.centery - value_s.get_height() // 2))
             self._settings_cubic_btn_rects[(spec['key'], -1)] = minus
             self._settings_cubic_btn_rects[(spec['key'], 1)] = plus
 
-            # 说明另起一行（右栏只放数值和按钮，说明按整行宽度换行，避免被
-            # 对话框右边缘硬切——本页第一版就是这么切掉半句话的）
-            ny += 32
-            _lines = self._wrap_text(spec['help'], self.status_font, hint_w)
-            for _i, _ln in enumerate(_lines):
+            # 名称 + 说明放在右列（x+234），与聚拢参数的标签列对齐。
+            name = self.dialog_font.render(spec['label'], True,
+                                           self.colors['dialog_text'])
+            self.screen.blit(name, (x + 234, row_y))
+            _desc_lines = self._wrap_text(spec['help'], self.status_font,
+                                          width - 234) or ['']
+            for _i, _ln in enumerate(_desc_lines):
                 self.screen.blit(self.status_font.render(_ln, True, (150, 150, 150)),
-                                 (x + 15, ny + _i * 18))
-            ny += 18 * len(_lines) + 8
-            # 行间细分隔线，免得四行糊成一片
-            pygame.draw.line(self.screen, self.colors['dialog_border'],
-                             (x + 15, ny - 6), (x + width - 15, ny - 6))
-        self._settings_cubic_height = ny - y + 10
+                                 (x + 234, row_y + 18 + _i * 16))
+            row_y += 52 + max(0, len(_desc_lines) - 1) * 16
+        self._settings_cubic_height = row_y - y + 10
 
     def _calc_settings_content_height(self, visible_height: int) -> int:
         """计算设置内容的总高度（当前tab）"""
@@ -5358,8 +5358,8 @@ class RendererMixin:
             return getattr(self, '_settings_anim_height', 2 * 60 + 72 + 72 + 4 * 60 + 10)
         elif self.settings_active_tab == 'cubic':
             # 三维页：真实高度由 _draw_settings_cubic 每帧记录；首帧兜底按
-            # 提示两行 + 四个数值行（50 行距）+ 间隔估算。
-            return getattr(self, '_settings_cubic_height', 2 * 20 + 4 * 50 + 10)
+            # 黄色提醒 + 绿色范围两行(48) + 三个数值行(52 × 3) + 余量估算。
+            return getattr(self, '_settings_cubic_height', 48 + 3 * 52 + 10)
         elif self.settings_active_tab == 'audio':
             # 音频页：真实绘制高度由 _draw_settings_audio 每帧记录。
             # 下面只是首帧的保守估算（提示行 + 三行总开关 + 分隔/标题 +

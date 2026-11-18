@@ -4212,15 +4212,19 @@ class EventsMixin:
     def _update_settings_zoom_slider(self, mx):
         """设置-视觉页缩放滑条（水平）：左端=最小缩放，右端=最大缩放。
 
-        与动画时长滑条同一套拖拽逻辑；写人与右侧面板滑条相同的
-        self.zoom（经 _apply_zoom_centered 夹紧+锚点），因此两个滑条
-        天然联动——改任何一个，另一个下一帧就指到同一位置。
+        二维写 self.zoom（经 _apply_zoom_centered 夹紧+锚点），与右侧面板
+        的垂直缩放滑条同源；三维写 cubic_zoom，区间用 CUBIC_ZOOM_RANGE。
+        以前三维态这里也写 self.zoom，导致视觉页的缩放滑条在三维里是假控件。
         """
         track = getattr(self, '_settings_zoom_track_rect', None)
         if not track or track.width <= 0:
             return
         x = max(track.x, min(track.x + track.width, mx))
         normalized = (x - track.x) / track.width
+        if getattr(self, 'cubic_mode', False):
+            lo, hi = self.CUBIC_ZOOM_RANGE
+            self.cubic_zoom = round(lo + normalized * (hi - lo), 3)
+            return
         new_zoom = self.min_zoom + normalized * (self.max_zoom - self.min_zoom)
         self._apply_zoom_centered(new_zoom)
 
@@ -4501,22 +4505,10 @@ class EventsMixin:
                         self, '_settings_cubic_btn_rects', {}).items():
                     if not _rect.collidepoint(mx, my):
                         continue
-                    if _key == 'zoom':
-                        # 缩放不在 CUBIC_SETTINGS 表里（它归相机存档管），
-                        # 用与 Ctrl+滚轮 / 右栏滑条同一区间夹紧。
-                        spec = {'key': 'zoom', 'label': '缩放',
-                                'attr': 'cubic_zoom', 'type': 'float',
-                                'default': 1.0, 'display': 'percent'}
-                        step = self.CUBIC_STEP.get('zoom', 0.05)
-                        cur = float(getattr(self, 'cubic_zoom', 1.0))
-                        lo, hi = self.CUBIC_ZOOM_RANGE
-                        val = max(lo, min(hi, round(cur + _sign * step, 3)))
-                    else:
-                        spec = cubic_settings.by_key(_key)
-                        step = self.CUBIC_STEP.get(_key, 1)
-                        cur = getattr(self, spec['attr'], spec['default'])
-                        val = cubic_settings.clamp_value(
-                            _key, cur + _sign * step)
+                    spec = cubic_settings.by_key(_key)
+                    step = self.CUBIC_STEP.get(_key, 1)
+                    cur = getattr(self, spec['attr'], spec['default'])
+                    val = cubic_settings.clamp_value(_key, cur + _sign * step)
                     setattr(self, spec['attr'], val)
                     self._cubic_arrow_sig = None
                     self._cubic_sil_cache = None
