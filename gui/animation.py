@@ -660,6 +660,10 @@ class AnimationMixin:
         # 放回打乱前状态（records[0] 的 moved 正是从该状态出发的）
         for b, p in zip(self.game.blocks, pre_positions):
             b.location = list(p)
+        # 三维：在第一步移动之前定死取景中心，整场打乱相机不再追质心
+        # （二维锚点打乱本身就是相机不动，不需要这一步）。
+        if getattr(self, 'cubic_mode', False):
+            self._cubic_capture_shuffle_center()
         self._clear_selection_all()
         self._shuffle_demo_game = self.game  # 身份锚：换盘（新局/载入/回放）
         #                                    → 演示视为失效，只清状态不写盘

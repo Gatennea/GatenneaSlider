@@ -32,8 +32,8 @@ FACE_DEFS = (
     (2, -1, (0.0, 0.0, -1.0)),
 )
 
-#: 法向 → 明暗系数（光从上、左、前打来）。只影响「哪面亮」，不参与任何状态
-#: 表达——状态色（选中变绿）由渲染层另行处理（UI 铁律 §1 同一条精神）。
+#: 法向 → 明暗系数（旧版固定光，保留给外部/旧调用；真实渲染走 face_shade）。
+#: 只影响「哪面亮」，不参与任何状态表达——状态色（选中变绿）由渲染层另行处理。
 SHADE = {
     (1.0, 0.0, 0.0): 0.84,
     (-1.0, 0.0, 0.0): 0.62,
@@ -42,6 +42,34 @@ SHADE = {
     (0.0, 0.0, 1.0): 0.74,
     (0.0, 0.0, -1.0): 0.56,
 }
+
+#: 棚拍式打光：环境光把每个可见面托到 0.68 以上，主光只负责「哪面更亮」，
+#: 再叠一点朝向相机的补光。旧 SHADE 的背光面只有 0.5，乘在本来就偏深的
+#: 蓝色块上会直接糊成黑块——用户 2026-11-19 报「一半亮、一半纯暗」。
+_SHADE_AMBIENT = 0.68
+_SHADE_KEY = 0.28
+_SHADE_FILL = 0.10
+
+
+def face_shade(normal, camera) -> float:
+    """单面明暗系数：环境光 + 相机相对主光 + 相机补光。
+
+    主光不固定在世界里，而是跟着相机取「屏幕左上」方向：
+    ``L = normalize(-0.55·right + 0.75·up + 0.35·view)``。
+    这样无论转到哪一面，三个可见面都保持同一种「上亮、侧暗」的层次；
+    环境光 0.68 保证背光面仍有颜色，不会出现「一半纯黑」。
+    """
+    right = camera.right_axis()
+    up = camera.up_axis()
+    view = camera.view_axis()
+    light = tuple(-0.55 * right[i] + 0.75 * up[i] + 0.35 * view[i]
+                  for i in range(3))
+    length = sum(v * v for v in light) ** 0.5
+    if length > 1e-12:
+        light = tuple(v / length for v in light)
+    key = max(0.0, sum(float(n) * l for n, l in zip(normal, light)))
+    fill = max(0.0, sum(float(n) * v for n, v in zip(normal, view)))
+    return min(1.0, _SHADE_AMBIENT + _SHADE_KEY * key + _SHADE_FILL * fill)
 
 #: 默认拆分（相邻两块表面之间空多少「格」）。0 = 未拆分，块贴死成一整块，
 #: 投影上只有一层外轮廓、前後遮挡无从判读；给一点缝，缝里的面和前后关系才
@@ -143,7 +171,7 @@ def project_point(world, camera: CubicCamera, scale: float, origin) -> tuple:
 
 def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
                  margin: int = 40, zoom: float = 1.0, gap: float = 0.0,
-                 center=None) -> tuple:
+                 center=None, frame_scale=None) -> tuple:
     """不随朝向、也不随拆分变形的装画面：返回 (scale, origin)。
 
     为什么另有一套：`fit_view` 按**当前朝向的投影包围盒**拟合，一旋转投影范围
@@ -155,6 +183,10 @@ def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
     center：装画面的参考点（方案 §2.2「居中 = 质心落在屏幕中心」）。给了就用它
     ——「跟随质心」把滑块组的质心锁在屏幕中心，整盘滑动时不会慢慢漂走；
     不给仍用包围盒中心（换局/读档时的过场口径）。
+
+    frame_scale：外部冻结的**未缩放**比例（不含 zoom）。三维打乱期间边界会
+    临时胀大，若每帧照包围球重算，块会跟着一起忽大忽小；调用方传一次冻结值，
+    这里只乘当前 zoom，缩放滑条仍然有效。
     """
     # 拆分不参与装画面：半径用 gap=0 的块身算，块的位置仍按逻辑坐标。
     pts = [p for loc in locations_of(blocks) for p in block_corners(loc, 0.0)]
@@ -166,15 +198,18 @@ def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
         center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
     else:
         center = tuple(float(v) for v in center)
-    # 比例只跟**几何外框**有关（包围盒中心到最远角），与 origin 用的参考点无关：
-    # 否则跟随质心时块一动半径就变，缩放跟着跳，「旋转/滑动画面忽大忽小」的旧病
-    # 会以另一种形式回来。
-    bbox_center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
-    radius = max(1e-6, max(
-        sum((p[i] - bbox_center[i]) ** 2 for i in range(3)) ** 0.5 for p in pts))
-    avail_w = max(1.0, width - 2 * margin)
-    avail_h = max(1.0, height - 2 * margin)
-    scale = min(avail_w, avail_h) / (2.0 * radius) * max(0.05, float(zoom))
+    if frame_scale is not None:
+        scale = max(0.05, float(frame_scale)) * max(0.05, float(zoom))
+    else:
+        # 比例只跟**几何外框**有关（包围盒中心到最远角），与 origin 用的参考点无关：
+        # 否则跟随质心时块一动半径就变，缩放跟着跳，「旋转/滑动画面忽大忽小」的旧病
+        # 会以另一种形式回来。
+        bbox_center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
+        radius = max(1e-6, max(
+            sum((p[i] - bbox_center[i]) ** 2 for i in range(3)) ** 0.5 for p in pts))
+        avail_w = max(1.0, width - 2 * margin)
+        avail_h = max(1.0, height - 2 * margin)
+        scale = min(avail_w, avail_h) / (2.0 * radius) * max(0.05, float(zoom))
     cvx, cvy, _ = camera.to_camera(center)
     return scale, (width / 2.0 - scale * cvx, height / 2.0 + scale * cvy)
 
@@ -274,7 +309,7 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
             out.append({
                 'pts': pts,
                 'depth': depth,
-                'shade': SHADE[normal],
+                'shade': face_shade(normal, camera),
                 'normal': normal,
                 'loc': loc,
                 'axis': axis,
@@ -472,7 +507,7 @@ def point_visible(point, boxes, view_dir, eps: float = 1e-6) -> bool:
 def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
                 margin: int = 40, zoom: float = 1.0,
                 origin_offset=(0.0, 0.0), gap: float = 0.0,
-                offsets=None, center=None) -> dict:
+                offsets=None, center=None, frame_scale=None) -> dict:
     """一步到位：装画面 + 算可见面。渲染层只要拿 'faces' 去画。
 
     ⚠️ 装画面用 `stable_frame`（包围球定比例），不是 `fit_view`（按当前朝向的
@@ -483,7 +518,7 @@ def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
     """
     scale, origin = stable_frame(blocks, camera, width, height,
                                  margin=margin, zoom=zoom, gap=gap,
-                                 center=center)
+                                 center=center, frame_scale=frame_scale)
     origin = (origin[0] + origin_offset[0], origin[1] + origin_offset[1])
     # 幽灵预览必须和真盘共用同一个拆分锚点：只拿目标单块调 collect_faces
     # 时，默认 anchor 会变成那块自己的中心，gap>0 下投影整体偏一格。

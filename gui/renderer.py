@@ -951,6 +951,45 @@ class RendererMixin:
         # 悬停缝高亮（画在最上层，与三角/通用同一处）
         self._draw_hover_gap()
 
+    def _cubic_capture_shuffle_center(self):
+        """在打乱开始前把「这一场打乱的取景中心 + 基础比例」定死。
+
+        必须在块被移动到第一步终点之前调用（有限演示在放回打乱前位置之后、
+        无限打乱在第一次 _infinite_shuffle_step 之前）。之后整场打乱相机都
+        不再追质心；二维锚点打乱也是这个口径：相机不动，只让小片滑。
+        比例也一起冻结：打乱中途块堆边界会临时胀大，若每帧按包围球重算，
+        块会跟着忽大忽小；冻结基础 scale 后仍乘当前 zoom，缩放滑条照常生效。
+        """
+        blocks = getattr(self.game, 'blocks', ())
+        if not blocks:
+            self._cubic_shuffle_center = None
+            self._cubic_shuffle_scale = None
+            return None
+        from engine import cubic_view
+        if getattr(self, 'cubic_follow_centroid', True):
+            # 跟随开着时，玩家当前看到的就是 _cubic_follow_center；没有就
+            # 用未拆分的块质心，和 draw_cubic_board 的装画面参考点同口径。
+            _cur = getattr(self, '_cubic_follow_center', None)
+            if _cur is None:
+                _locs = [tuple(int(v) for v in b.location[:3]) for b in blocks]
+                _centers = [cubic_view.block_center(p, 0.0) for p in _locs]
+                _cur = tuple(sum(c[i] for c in _centers) / len(_centers)
+                             for i in range(3))
+        else:
+            # 跟随关着时，正常取景用当前包围盒中心；同样冻结它。
+            _cur = cubic_view.layout_anchor(blocks)
+        self._cubic_shuffle_center = _cur
+        # 只冻「未乘 zoom」的比例，绘制时再乘玩家当前 zoom。
+        _cam = getattr(self, 'cubic_camera', None)
+        if _cam is None:
+            from engine.cubic_camera import CubicCamera
+            _cam = CubicCamera.oblique_default()
+        _base_scale, _ = cubic_view.stable_frame(
+            blocks, _cam, self.screen_width, self.screen_height,
+            margin=64, zoom=1.0, center=_cur)
+        self._cubic_shuffle_scale = _base_scale
+        return _cur
+
     def draw_cubic_board(self):
         """三維棋盤：投影渲染（§54 第 1 步「能畫出來」）。
 
@@ -984,35 +1023,72 @@ class RendererMixin:
         # 让重心慢慢偏，若仍按固定包围盒中心装画面，盘就一点点漂出视野。开着时
         # 用块质心当装画面的参考点；手动平移（六键）后暂停跟随，按「居中」恢复。
         _follow = bool(getattr(self, 'cubic_follow_centroid', True))
+        # 三维打乱（有限演示 / 无限游走）：整个会话冻结取景中心。打乱本身已经
+        # 用 AnchorPlanner 把重心钉在锚点附近（硬上限 1 格），若相机还逐帧追
+        # 质心，就会把这点残余放大成持续抖动——用户 2026-11-19 实测「打亂時
+        # 因為一直在自動居中而顯得抖動」。这里与二维锚点打乱同一口径：相机
+        # 不动，静止的大片真静止，只有被选中的小片在滑。
+        _shuffling = bool(getattr(self, '_shuffle_demo_active', False)
+                          or getattr(self, '_infinite_shuffle_active', False))
+        _zoom = float(getattr(self, 'cubic_zoom', 1.0))
+        _frame_scale = None
         _center = None
-        if _follow:
-            _locs = [tuple(int(v) for v in b.location[:3]) for b in blocks]
-            if _locs:
-                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)。这里用**未拆分**的块心
-                # （gap=0）：拆分只把块在画面上拉开，不该带动相机平移/跟随中心。
-                _centers = [cubic_view.block_center(p, 0.0) for p in _locs]
-                _target = tuple(
-                    sum(c[i] for c in _centers) / len(_centers)
-                    for i in range(3))
-                # 平滑跟随（用户 2026-11-18 第 3 条）：一步走完质心会跳 1/9 盘，
-                # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
-                # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
-                _cur = getattr(self, '_cubic_follow_center', None)
-                if _cur is None:
-                    _cur = _target
-                else:
-                    _k = 0.14
-                    _cur = tuple(_cur[i] + (_target[i] - _cur[i]) * _k
-                                 for i in range(3))
-                self._cubic_follow_center = _cur
-                _center = _cur
+        _locs = ([tuple(int(v) for v in b.location[:3])
+                  for b in blocks] if blocks else [])
+        _target = None
+        if _locs:
+            # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)。拆分只把块在画面上拉开，
+            # 不该带动相机平移/跟随中心，所以这里用未拆分的块心（gap=0）。
+            _centers = [cubic_view.block_center(p, 0.0) for p in _locs]
+            _target = tuple(sum(c[i] for c in _centers) / len(_centers)
+                            for i in range(3))
+        if _shuffling:
+            _frozen = getattr(self, '_cubic_shuffle_center', None)
+            if _frozen is None:
+                # 兜底：没经过 _cubic_capture_shuffle_center 的入口，用当前
+                # 取景中心起算一次；之后整场不再更新。
+                if _follow:
+                    _frozen = getattr(self, '_cubic_follow_center', None)
+                if _frozen is None:
+                    _frozen = (cubic_view.layout_anchor(blocks)
+                               if not _follow else _target)
+                self._cubic_shuffle_center = _frozen
+            _center = _frozen
+            # 打乱期间 **不推进** _cubic_follow_center：相机完全冻结。
+            # 比例也冻结：只乘玩家当前 zoom，块堆边界胀大不再忽大忽小。
+            _base_scale = getattr(self, '_cubic_shuffle_scale', None)
+            if _base_scale is None:
+                _base_scale, _ = cubic_view.stable_frame(
+                    blocks, camera, self.screen_width, self.screen_height,
+                    margin=64, zoom=1.0, center=_center)
+                self._cubic_shuffle_scale = _base_scale
+            _frame_scale = _base_scale
+        elif _follow and _target is not None:
+            self._cubic_shuffle_center = None
+            self._cubic_shuffle_scale = None
+            # 平滑跟随（用户 2026-11-18 第 3 条）：一步走完质心会跳 1/9 盘，
+            # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
+            # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
+            _cur = getattr(self, '_cubic_follow_center', None)
+            if _cur is None:
+                _cur = _target
+            else:
+                _k = 0.14
+                _cur = tuple(_cur[i] + (_target[i] - _cur[i]) * _k
+                             for i in range(3))
+            self._cubic_follow_center = _cur
+            _center = _cur
         else:
+            self._cubic_shuffle_center = None
+            self._cubic_shuffle_scale = None
             self._cubic_follow_center = None
         scene = cubic_view.build_scene(
             blocks, camera, self.screen_width, self.screen_height,
-            margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap,
+            margin=64, zoom=_zoom, gap=gap,
             # 「跟随质心」的参考点（None = 包围盒中心）
             center=_center,
+            # 三维打乱期间冻结基础比例（未乘 zoom），块大小只由缩放滑条决定
+            frame_scale=_frame_scale,
             # 三维动画（§54 第 6 步）：刚推过的那组给一个逐渐归零的位移，
             # 画面上就是「滑过去」；逻辑位置早就提交好了，这里只动渲染。
             offsets=(self._cubic_anim_offsets()
@@ -1254,6 +1330,22 @@ class RendererMixin:
                 pygame.draw.polygon(hi, _sel_anim[0], pts, _lw)
             else:
                 pygame.draw.polygon(hi, border, pts, _ss)
+            # 面内顶部高光：平涂色块只靠整面明暗，4×4 时相邻面差异很小，
+            # 看起来仍像贴纸。沿屏幕最上一条边内侧压一条亮线，给每个小方块
+            # 一点「受光棱边」，深度不用靠加深背光面来换。
+            _edge = min(range(4), key=lambda i: pts[i][1] + pts[(i + 1) % 4][1])
+            _p1 = pts[_edge]
+            _p2 = pts[(_edge + 1) % 4]
+            _cx = sum(p[0] for p in pts) / 4.0
+            _cy = sum(p[1] for p in pts) / 4.0
+            _inset = 0.26
+            _hi1 = (_p1[0] + (_cx - _p1[0]) * _inset,
+                    _p1[1] + (_cy - _p1[1]) * _inset)
+            _hi2 = (_p2[0] + (_cx - _p2[0]) * _inset,
+                    _p2[1] + (_cy - _p2[1]) * _inset)
+            _hi_col = (min(255, fill[0] + 34), min(255, fill[1] + 34),
+                       min(255, fill[2] + 34))
+            pygame.draw.polygon(hi, _hi_col, (_p1, _p2, _hi2, _hi1))
         if hi is not None:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
@@ -1360,12 +1452,7 @@ class RendererMixin:
                 scr.append((sx, sy))
                 depth += sz
             depth /= max(1, len(pts3))
-            key = tuple(int(round(c)) for c in face_normal)
-            shade = _cv.SHADE.get(key)
-            if shade is None:
-                dot = max(0.0, sum(face_normal[i] * view_dir[i]
-                                   for i in range(3)))
-                shade = 0.50 + 0.50 * dot      # 斜边法向：用视线点积估明暗
+            shade = _cv.face_shade(face_normal, camera)
             fill = (int(base_rgb[0] * shade),
                     int(base_rgb[1] * shade),
                     int(base_rgb[2] * shade))
