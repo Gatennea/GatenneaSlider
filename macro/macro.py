@@ -18,14 +18,23 @@ from typing import Optional
 
 @dataclass
 class MacroStep:
-    """宏的单个步骤，记录相对于基准坐标的操作"""
-    gap_type: str         # 缝隙类型: 'h' (横向) 或 'v' (纵向)
-    gap_line_rel: int     # 缝隙行/列相对于基准的偏移
-    side: str             # 选中缝隙哪一侧: 'above'/'below' (h) 或 'left'/'right' (v)
-    direction: str        # 滑动方向: 'w'/'a'/'s'/'d'
+    """宏的单个步骤，记录相对于基准坐标的操作
+
+    2D 与三维共用这一张步骤表：
+      - 方形/三角/米字：gap_type 是各自缝隙族，direction 是该形态方向字母；
+      - 三维：kind='cubic'，gap_type 是 r/c/d，direction 是 r/R/c/C/d/D，
+        rep_cell_rel 是三元素相对坐标 [dr, dc, dd]；
+      - side 统一用 above/below（above = 坐标小的一侧），与引擎
+        side_has_blocks 的 0/1 口径对齐。
+    """
+    gap_type: str         # 缝隙类型: 'h'/'v'（二维）或 'r'/'c'/'d'（三维）
+    gap_line_rel: int     # 缝隙行/列/层相对于基准的偏移
+    side: str             # 选中缝隙哪一侧: 'above'/'below' (二维 h/v 的原词也沿用)
+    direction: str        # 滑动方向: 2D 字母，或三维 r/R/c/C/d/D
     step: int             # 录制时的步长
-    rep_cell_rel: Optional[list] = None  # 该步移动分量的代表格相对基准 [dr, dc]
-                                         # （缝侧含多分量时用于精确定位；None=侧首块）
+    rep_cell_rel: Optional[list] = None  # 该步移动分量的代表格相对基准
+                                         # 2D=[dr,dc]，3D=[dr,dc,dd]；None=侧首块
+    kind: str = 'square'  # square/numbered/triangle/mi/cubic；老档缺省 square
 
     def to_dict(self) -> dict:
         d = {
@@ -37,10 +46,16 @@ class MacroStep:
         }
         if self.rep_cell_rel is not None:
             d['rep_cell_rel'] = self.rep_cell_rel
+        if self.kind != 'square':
+            d['kind'] = self.kind
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> 'MacroStep':
+        # 老宏没有 kind：按 gap_type 反推三维（r/c/d 只可能是 cubic），
+        # 其余一律 square，保持旧文件原样可读。
+        kind = d.get('kind') or ('cubic' if d.get('gap_type') in ('r', 'c', 'd')
+                                else 'square')
         return cls(
             gap_type=d['gap_type'],
             gap_line_rel=d['gap_line_rel'],
@@ -48,6 +63,7 @@ class MacroStep:
             direction=d['direction'],
             step=d['step'],
             rep_cell_rel=d.get('rep_cell_rel'),
+            kind=kind,
         )
 
 
@@ -57,8 +73,9 @@ class Macro:
     name: str
     description: str = ''
     recorded_step: int = 2
-    base_point: list = field(default_factory=lambda: [0, 0])  # [row, col]
+    base_point: list = field(default_factory=lambda: [0, 0])  # 2D [row,col]；3D [r,c,d]
     steps: list = field(default_factory=list)  # list[MacroStep]
+    kind: str = 'square'  # 录制时的形态；老档缺省 square
 
     def to_dict(self) -> dict:
         return {
@@ -66,17 +83,23 @@ class Macro:
             'description': self.description,
             'recorded_step': self.recorded_step,
             'base_point': self.base_point,
+            'kind': self.kind,
             'steps': [s.to_dict() for s in self.steps],
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> 'Macro':
+        steps = [MacroStep.from_dict(s) for s in d.get('steps', [])]
+        kind = d.get('kind')
+        if not kind:
+            kind = next((s.kind for s in steps if s.kind == 'cubic'), 'square')
         return cls(
             name=d['name'],
             description=d.get('description', ''),
             recorded_step=d.get('recorded_step', 2),
             base_point=d.get('base_point', [0, 0]),
-            steps=[MacroStep.from_dict(s) for s in d.get('steps', [])],
+            steps=steps,
+            kind=kind,
         )
 
     @property
@@ -98,6 +121,23 @@ class Macro:
             return (True, self.recorded_step // current_step, '')
         return (False, 0,
                 f'宏的步长({self.recorded_step})与当前步长({current_step})不兼容')
+
+    def check_kind_compatibility(self, current_kind: str) -> tuple:
+        """宏录制形态与当前局面是否同族；跨形态一律拒绝（不假装能通用）。
+
+        方形/有编号/三角/米字的老宏按二维缝隙语义录制，它们的 gap_type 与
+        direction 都不是三维的 r/c/d 六向，硬放到 cubic 上只会一步都走不对；
+        三维宏拿到二维同样没有对应缝隙。因此只做同族执行。
+        """
+        if self.kind == current_kind:
+            return (True, '')
+        if current_kind == 'cubic':
+            return (False, f'这是{self.kind}宏，不能在三维谜题中执行')
+        if self.kind == 'cubic':
+            return (False, '这是三维宏，不能在二维谜题中执行')
+        # 二维内部（square/numbered/triangle/mi）沿用旧行为：原有闸门
+        # _model_blocked/_mi_blocked 已负责拦截，这里不额外收紧。
+        return (True, '')
 
 
 class MacroManager:
@@ -227,29 +267,43 @@ class MacroManager:
 
     @staticmethod
     def convert_to_absolute(step: MacroStep, base_row: int, base_col: int,
-                            current_step: int, factor: int = 1) -> list[dict]:
+                            current_step: int, factor: int = 1,
+                            base_depth: int = 0) -> list[dict]:
         """
         将一个相对步骤转换为绝对操作列表
-        
+
         参数:
             step: 宏步骤
-            base_row: 新基准行
-            base_col: 新基准列
+            base_row: 新基准行（三维为 r）
+            base_col: 新基准列（三维为 c）
             current_step: 当前谜题步长
             factor: 拆分因子（每步拆分为 factor 次小步）
-        
+            base_depth: 三维基准层 d；二维忽略
+
         返回:
-            操作列表 [{gap_type, gap_line, side, direction, step}, ...]
+            操作列表 [{gap_type, gap_line, side, direction, step, ...}, ...]
         """
-        if step.gap_type == 'h':
+        base = [base_row, base_col, base_depth]
+        if step.kind == 'cubic' or step.gap_type in ('r', 'c', 'd'):
+            axis = {'r': 0, 'c': 1, 'd': 2}.get(step.gap_type)
+            if axis is None:
+                return []
+            abs_gap_line = base[axis] + step.gap_line_rel
+        elif step.gap_type == 'h':
             abs_gap_line = base_row + step.gap_line_rel
         else:
             abs_gap_line = base_col + step.gap_line_rel
 
         rep_cell = None
         if step.rep_cell_rel is not None:
-            rep_cell = [base_row + step.rep_cell_rel[0],
-                        base_col + step.rep_cell_rel[1]]
+            if step.kind == 'cubic' or len(step.rep_cell_rel) > 2:
+                # 三维相对代表格：三轴各自加基准，少给的分量按 0 补
+                rep_cell = [base[i] + int(step.rep_cell_rel[i])
+                            if i < len(step.rep_cell_rel) else base[i]
+                            for i in range(3)]
+            else:
+                rep_cell = [base_row + step.rep_cell_rel[0],
+                            base_col + step.rep_cell_rel[1]]
 
         ops = []
         for _ in range(factor):
@@ -260,6 +314,8 @@ class MacroManager:
                 'direction': step.direction,
                 'step': current_step,
             }
+            if step.kind != 'square':
+                op['kind'] = step.kind
             if rep_cell is not None:
                 op['rep_cell'] = rep_cell
             ops.append(op)

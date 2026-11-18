@@ -340,9 +340,11 @@ HELP_DETAILS = {
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" $BASE/macro/record/start',
     },
     '/macro/record/set_base': {
-        'desc': '设置宏的基准块（宏回放时以哪个方块为锚）。坐标从 1 数。',
+        'desc': '设置宏的基准块（宏回放时以哪个方块为锚）。坐标从 1 数；'
+                '三维谜题需额外传 depth（层号，从 1 数）。',
         'params': [('row', 'int', True, '行（从 1 数）'),
-                   ('col', 'int', True, '列（从 1 数）')],
+                   ('col', 'int', True, '列（从 1 数）'),
+                   ('depth', 'int', False, '三维层号（从 1 数），二维省略')],
         'returns': 'JSON：{ok, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
                    '-H "Content-Type: application/json" '
@@ -358,10 +360,11 @@ HELP_DETAILS = {
     },
     '/macro/execute': {
         'desc': '播放指定宏。base_row/base_col 是回放时对应的基准块坐标；'
-                'reverse 可选（默认 false，倒放）。',
+                '三维谜题需加 base_depth（层号）；reverse 可选（默认 false，倒放）。',
         'params': [('name', 'string', True, '宏名称'),
                    ('base_row', 'int', True, '基准块行（从 1 数）'),
                    ('base_col', 'int', True, '基准块列（从 1 数）'),
+                   ('base_depth', 'int', False, '三维基准块层号（从 1 数）'),
                    ('reverse', 'bool', False, '倒放，默认 false')],
         'returns': 'JSON：{ok, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
@@ -1049,10 +1052,14 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/macro/record/set_base':
             row = body.get('row')
             col = body.get('col')
+            depth = body.get('depth')
             if row is None or col is None:
                 self._send_json({"ok": False, "message": "需要 row 和 col"}, 400)
                 return
-            result = self._post_command(f'macro_set_base {row} {col}')
+            cmd = f'macro_set_base {row} {col}'
+            if depth is not None:
+                cmd += f' {depth}'
+            result = self._post_command(cmd)
             self._send_json(result)
 
         elif path == '/macro/record/stop':

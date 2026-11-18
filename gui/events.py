@@ -2574,12 +2574,15 @@ class EventsMixin:
         self._start_auto_solve()  # 运行中调用 = 取消
         return True, "已请求停止求解"
 
-    def _do_macro_execute(self, name, base_row, base_col, reverse=False):
+    def _do_macro_execute(self, name, base_row, base_col, reverse=False,
+                          base_depth=None):
         """执行宏（可逆序）。返回 (ok, message)。"""
         if not name:
             return False, "需要宏名称"
         if base_row is None or base_col is None:
             return False, "需要 base_row 和 base_col"
+        if getattr(self, 'cubic_mode', False) and base_depth is None:
+            return False, "三维宏需要 base_depth"
         if getattr(self, 'macro_recording', False):
             return False, "正在录制中，无法执行宏"
         if getattr(self, 'macro_executing', False):
@@ -2592,9 +2595,11 @@ class EventsMixin:
             return False, self.macro_notify_msg
         self._start_macro_execute(name, reverse=bool(reverse))
         if getattr(self, 'macro_executing', False) and getattr(self, 'macro_selecting_base', False):
-            self._confirm_macro_execute(base_row, base_col)
+            self._confirm_macro_execute(base_row, base_col, base_depth)
             label = '（逆序）' if reverse else ''
-            return True, f"开始执行宏 '{name}'{label}，基准 ({base_row}, {base_col})"
+            _where = (f"({base_row}, {base_col})" if base_depth is None
+                      else f"({base_row}, {base_col}, {base_depth})")
+            return True, f"开始执行宏 '{name}'{label}，基准 {_where}"
         return False, getattr(self, 'macro_error_msg', '') or f"无法执行宏 '{name}'"
 
     def _do_save_file(self, path):
@@ -2784,7 +2789,8 @@ class EventsMixin:
             elif action == 'macro_execute':
                 ok, msg = self._do_macro_execute(
                     payload.get('name', ''), payload.get('base_row'),
-                    payload.get('base_col'), bool(payload.get('reverse', False)))
+                    payload.get('base_col'), bool(payload.get('reverse', False)),
+                    base_depth=payload.get('base_depth'))
                 self._cmd_reply(resp_q, ok, msg)
             else:
                 self._cmd_reply(resp_q, False, f"不支持 JSON body 的指令: {action}")
@@ -3821,34 +3827,45 @@ class EventsMixin:
                                 self.macro_notify_msg or "无法开始录制")
 
                 elif action == 'macro_set_base':
+                    # 用法: macro_set_base row col [depth]（三维必须带 depth）
                     if len(parts) < 3:
-                        self._cmd_reply(resp_q, False, "用法: macro_set_base row col")
+                        self._cmd_reply(resp_q, False, "用法: macro_set_base row col [depth]")
                         continue
                     try:
                         br = int(parts[1])
                         bc = int(parts[2])
+                        bd = int(parts[3]) if len(parts) >= 4 else None
                     except ValueError:
-                        self._cmd_reply(resp_q, False, "row/col 必须是整数")
+                        self._cmd_reply(resp_q, False, "row/col/depth 必须是整数")
                         continue
                     if not getattr(self, 'macro_recording', False) and not getattr(self, 'macro_selecting_base', False):
                         self._cmd_reply(resp_q, False, "当前不在录制/执行基准选择模式")
                         continue
-                    # 检查基准位置是否有方块
+                    # 检查基准位置是否有方块（三维比较三轴；二维只比前两轴）
                     block = None
                     for b in self.game.blocks:
-                        if b.location == [br, bc]:
+                        loc = b.location
+                        if bd is None:
+                            if loc[0] == br and loc[1] == bc:
+                                block = b
+                                break
+                        elif (loc[0] == br and loc[1] == bc
+                              and len(loc) >= 3 and loc[2] == bd):
                             block = b
                             break
                     if block is None:
-                        self._cmd_reply(resp_q, False, f"位置 ({br}, {bc}) 没有滑块")
+                        where = f"({br}, {bc})" if bd is None else f"({br}, {bc}, {bd})"
+                        self._cmd_reply(resp_q, False, f"位置 {where} 没有滑块")
                         continue
                     if self.macro_selecting_base:
                         # 执行模式：确认基准
-                        self._confirm_macro_execute(br, bc)
+                        self._confirm_macro_execute(br, bc, bd)
                     else:
                         # 录制模式：设置基准
-                        self.macro_record_base_point = [br, bc]
-                    self._cmd_reply(resp_q, True, f"基准坐标设为 ({br}, {bc})")
+                        self.macro_record_base_point = ([br, bc] if bd is None
+                                                        else [br, bc, bd])
+                    where = f"({br}, {bc})" if bd is None else f"({br}, {bc}, {bd})"
+                    self._cmd_reply(resp_q, True, f"基准坐标设为 {where}")
 
                 elif action == 'macro_record_stop':
                     if not getattr(self, 'macro_recording', False):
@@ -3867,21 +3884,37 @@ class EventsMixin:
                             self._cmd_reply(resp_q, True, f"宏 '{name}' 已保存 ({len(self.macro_recording_steps)} 步)")
 
                 elif action == 'macro_execute':
-                    # 用法: macro_execute <名称> <base_row> <base_col> [reverse]
+                    # 用法: macro_execute <名称> <base_row> <base_col> [depth] [reverse]
+                    # 名称可含空格；depth 仅三维需要，二维省略。
                     if len(parts) < 4:
-                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col> [reverse]")
+                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col> [depth] [reverse]")
                         continue
                     reverse = (parts[-1].lower() == 'reverse')
-                    coord_tokens = parts[-3:-1] if reverse else parts[-2:]
-                    name_tokens = parts[1:-3] if reverse else parts[1:-2]
+                    end = len(parts) - (1 if reverse else 0)
+                    base_depth = None
+                    coord_count = 2
+                    if end - 3 >= 1:
+                        try:
+                            int(parts[end - 3])
+                            int(parts[end - 2])
+                            int(parts[end - 1])
+                        except ValueError:
+                            pass
+                        else:
+                            coord_count = 3
+                    coord_tokens = parts[end - coord_count:end]
+                    name_tokens = parts[1:end - coord_count]
                     try:
                         base_row = int(coord_tokens[0])
                         base_col = int(coord_tokens[1])
+                        if coord_count == 3:
+                            base_depth = int(coord_tokens[2])
                         name = ' '.join(name_tokens)
                     except (ValueError, IndexError):
-                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col> [reverse]")
+                        self._cmd_reply(resp_q, False, "用法: macro_execute <名称> <base_row> <base_col> [depth] [reverse]")
                         continue
-                    ok, msg = self._do_macro_execute(name, base_row, base_col, reverse)
+                    ok, msg = self._do_macro_execute(
+                        name, base_row, base_col, reverse, base_depth=base_depth)
                     self._cmd_reply(resp_q, ok, msg)
 
                 elif action == 'macro_status':
@@ -5373,6 +5406,7 @@ class EventsMixin:
             recorded_step=self.current_step,
             base_point=list(self.macro_record_base_point),
             steps=self.macro_recording_steps,
+            kind='cubic' if getattr(self, 'cubic_mode', False) else 'square',
         )
         self.macro_manager.save_macro(macro)
         self.macro_recording_steps = []
@@ -5381,24 +5415,31 @@ class EventsMixin:
     def _record_macro_step(self, gap_type: str, gap_line: int, side: str,
                            direction: str, rep_cell: list = None):
         """
-        在录制模式下记录一个操作步骤
-        
+        在录制模式下记录一个操作步骤（二维 h/v 与三维 r/c/d 共用）
+
         参数:
-            gap_type: 'h' 或 'v'
-            gap_line: 缝隙绝对行/列号
-            side: 选中缝隙哪一侧
-            direction: 滑动方向
-            rep_cell: 该步移动分量的代表格绝对坐标 [row, col]（可为 None）
+            gap_type: 二维 'h'/'v'，三维 'r'/'c'/'d'
+            gap_line: 缝隙绝对行/列/层号
+            side: 选中缝隙哪一侧（above/below，above=坐标小的一侧）
+            direction: 滑动方向（三维为 r/R/c/C/d/D）
+            rep_cell: 该步移动分量的代表格绝对坐标 [row, col] 或 [r, c, d]
         """
         from macro.macro import MacroStep
-        base_r, base_c = self.macro_record_base_point
-        if gap_type == 'h':
-            rel = gap_line - base_r
-        else:
-            rel = gap_line - base_c
+        base = list(self.macro_record_base_point)
+        is_cubic = gap_type in ('r', 'c', 'd')
+        axis = {'r': 0, 'c': 1, 'd': 2}.get(gap_type) if is_cubic else (
+            0 if gap_type == 'h' else 1)
+        if base is None or len(base) <= axis:
+            return
+        rel = int(gap_line) - int(base[axis])
         rep_rel = None
         if rep_cell is not None:
-            rep_rel = [rep_cell[0] - base_r, rep_cell[1] - base_c]
+            if is_cubic:
+                rep_rel = [int(rep_cell[i]) - int(base[i])
+                           for i in range(min(3, len(base), len(rep_cell)))]
+            else:
+                rep_rel = [int(rep_cell[0]) - int(base[0]),
+                           int(rep_cell[1]) - int(base[1])]
         step = MacroStep(
             gap_type=gap_type,
             gap_line_rel=rel,
@@ -5406,23 +5447,33 @@ class EventsMixin:
             direction=direction,
             step=self.current_step,
             rep_cell_rel=rep_rel,
+            kind='cubic' if is_cubic else 'square',
         )
         self.macro_recording_steps.append(step)
 
     def _get_selected_side(self) -> str:
         """
         获取当前选中方块组相对于缝隙的方位
-        
-        返回: 'above'/'below' (h型缝隙) 或 'left'/'right' (v型缝隙)
+
+        返回: 'above'/'below'（统一口径，above = 坐标小的一侧）
+        方形 h 原本就是 above/below；方形 v 的 left/right 也归一成 above/below，
+        因为引擎 side_has_blocks 只认 above/below/0/1，三维 r/c/d 同样按轴 rank 判。
         """
         if not self.selected_gap or not self.selected_block:
             return ''
         gap_type, gap_line = self.selected_gap
-        br, bc = self.selected_block.location
+        loc = self.selected_block.location
+        if gap_type == 'r':
+            return 'above' if loc[0] <= gap_line else 'below'
+        if gap_type == 'c':
+            return 'above' if loc[1] <= gap_line else 'below'
+        if gap_type == 'd':
+            return 'above' if loc[2] <= gap_line else 'below'
         if gap_type == 'h':
-            return 'above' if br <= gap_line else 'below'
-        else:
-            return 'left' if bc <= gap_line else 'right'
+            return 'above' if loc[0] <= gap_line else 'below'
+        if gap_type == 'v':
+            return 'above' if loc[1] <= gap_line else 'below'
+        return ''
 
     def _start_macro_execute(self, macro_name: str, reverse: bool = False):
         """开始执行宏 — 等待玩家选择基准方块"""
@@ -5442,6 +5493,14 @@ class EventsMixin:
         macro = self.macro_manager.get_macro(macro_name)
         if macro is None:
             return
+        # 形态闸门：三维宏/二维宏互不通用（r/c/d 六向与 h/v w/a/s/d 语义不同）
+        kind_ok, kind_reason = macro.check_kind_compatibility(
+            'cubic' if getattr(self, 'cubic_mode', False)
+            else getattr(self, 'current_kind', 'square'))
+        if not kind_ok:
+            self.macro_error_msg = kind_reason
+            self.macro_error_timer = 60 * 3
+            return
         # 检查步长兼容性
         compatible, factor, reason = macro.check_step_compatibility(self.current_step)
         if not compatible:
@@ -5460,30 +5519,35 @@ class EventsMixin:
         self.macro_notify_timer = 180
         self.macro_notify_persistent = True
 
-    def _confirm_macro_execute(self, base_row: int, base_col: int):
-        """玩家选好基准后，开始逐步执行宏"""
-        from macro.macro import MacroManager
+    def _confirm_macro_execute(self, base_row: int, base_col: int,
+                               base_depth: int = None):
+        """玩家选好基准后，开始逐步执行宏（三维基准带 base_depth）。"""
+        from macro.macro import MacroManager, MacroStep
         macro = self.macro_manager.get_macro(self.macro_exec_name)
         if macro is None:
             self.macro_executing = False
             self.macro_selecting_base = False
             self.macro_notify_persistent = False
             return
+        if base_depth is None:
+            base_depth = 0
         # 将所有相对步骤转换为绝对操作队列
         # 逆序播放：顺序反转 + 每步方向取反（同切割位置 + 同侧，操作级逆）
-        DIR_INVERSE = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
+        DIR_INVERSE = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a',
+                       'r': 'R', 'R': 'r', 'c': 'C', 'C': 'c',
+                       'd': 'D', 'D': 'd'}
         ops = []
         steps = reversed(macro.steps) if self.macro_exec_reverse else macro.steps
         for step in steps:
             if self.macro_exec_reverse:
-                from macro.macro import MacroStep
                 step = MacroStep(
                     step.gap_type, step.gap_line_rel, step.side,
                     DIR_INVERSE[step.direction], step.step,
-                    rep_cell_rel=step.rep_cell_rel,
+                    rep_cell_rel=step.rep_cell_rel, kind=step.kind,
                 )
             ops.extend(MacroManager.convert_to_absolute(
-                step, base_row, base_col, self.current_step, self.macro_exec_factor
+                step, base_row, base_col, self.current_step,
+                self.macro_exec_factor, base_depth=base_depth,
             ))
         self.macro_exec_ops = ops
         self.macro_exec_index = 0
@@ -5509,6 +5573,94 @@ class EventsMixin:
         self.selected_gap = None
         for b in getattr(self.game, 'blocks', ()):
             b.be_opted = False
+
+    def _execute_cubic_macro_op(self, op: dict) -> bool:
+        """执行一个三维宏操作；成功返回 True，失败置中断态并返回 False。
+
+        三维动作是整组沿轴滑：先把目标组 opt 出来，再直接走
+        `move_selected_blocks`（cubic 分支即时提交、不排 2D 动画），
+        避免 `_cubic_push_letter` 的 cubic_anim 只做视觉、不推进宏队列。
+        """
+        gap_type = op['gap_type']
+        gap_line = int(op['gap_line'])
+        side = op.get('side')
+        direction = op['direction']
+        step = int(op.get('step') or self.current_step)
+
+        if side is None and op.get('rep_cell') is not None:
+            rep = op['rep_cell']
+            axis = {'r': 0, 'c': 1, 'd': 2}.get(gap_type, 0)
+            side = 'above' if int(rep[axis]) <= gap_line else 'below'
+
+        if (gap_type not in ('r', 'c', 'd')
+                or not self.game.is_valid_gap(gap_type, gap_line)
+                or not self.game.side_has_blocks(gap_type, gap_line, side)):
+            self.macro_error_msg = (
+                f'宏在第 {self.macro_exec_index + 1} 步失败: '
+                f'三维缝隙 {gap_type}{gap_line} 的第 {side} 侧无效或无方块')
+            self.macro_error_timer = 60 * 3
+            self._set_macro_interrupted_notify()
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            self._clear_macro_selection_if_disabled()
+            return False
+
+        self.selected_gap = (gap_type, gap_line)
+        for b in self.game.blocks:
+            b.be_opted = False
+        self.selected_block = None
+
+        target_block = None
+        rep = op.get('rep_cell')
+        if rep is not None and len(rep) >= 3:
+            target_block = self._find_block_by_cell(
+                int(rep[0]), int(rep[1]), int(rep[2]))
+        if target_block is None:
+            target_block = self._find_block_on_side(gap_type, gap_line, side)
+        if target_block is None:
+            self.macro_error_msg = (
+                f'宏在第 {self.macro_exec_index + 1} 步失败: '
+                f'三维缝隙 {gap_type}{gap_line} 找不到可移动的块')
+            self.macro_error_timer = 60 * 3
+            self._set_macro_interrupted_notify()
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            self._clear_macro_selection_if_disabled()
+            return False
+
+        self.selected_block = target_block
+        self.game.opt(gap_type, gap_line, target_block)
+        if not any(getattr(b, 'be_opted', False) for b in self.game.blocks):
+            self.macro_error_msg = (
+                f'宏在第 {self.macro_exec_index + 1} 步失败: '
+                f'三维缝隙 {gap_type}{gap_line} 无法选中目标组')
+            self.macro_error_timer = 60 * 3
+            self._set_macro_interrupted_notify()
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            self._clear_macro_selection_if_disabled()
+            return False
+
+        if not self.move_selected_blocks(direction, step):
+            self.macro_error_msg = (
+                f'宏在第 {self.macro_exec_index + 1} 步失败: '
+                f'三维移动 {direction} 被挡住或会断开')
+            self.macro_error_timer = 60 * 3
+            self._set_macro_interrupted_notify()
+            self.macro_executing = False
+            self.macro_exec_ops = []
+            self._clear_macro_selection_if_disabled()
+            return False
+
+        # 即时提交路径：没有动画收尾会推进 index，这里自己推进。
+        self.macro_exec_index += 1
+        self._pending_move_info = None
+        if self.game.is_solved() and not getattr(self, '_solved_popup_shown', False):
+            try:
+                self._maybe_show_solved_popup()
+            except Exception:
+                pass
+        return True
 
     def _execute_next_macro_step(self):
         """执行宏队列中的下一个操作（无动画时用循环迭代，避免长解法递归爆栈）"""
@@ -5579,6 +5731,13 @@ class EventsMixin:
             side = op['side']
             direction = op['direction']
             step = op['step']
+
+            # 三维宏：r/c/d 三族 + 六向，走独立分支。二维的 h/v 校验、
+            # 侧别和 _find_block_on_side 都不认层号，混在一起会静默走错轴。
+            if op.get('kind') == 'cubic' or gap_type in ('r', 'c', 'd'):
+                if not self._execute_cubic_macro_op(op):
+                    return
+                continue
 
             # 某些求解器原语（整线/整带动作）给 side=None：不指定缝隙侧、只靠
             # rep_cell 定位目标块。播放器若直接拿 None 查 side_has_blocks 会判
@@ -5803,17 +5962,33 @@ class EventsMixin:
                     if b is not None:
                         return b
             return None
+        # 三维：按缝隙族选轴 rank 比较；side 与引擎统一用 above/below
+        if gap_type in ('r', 'c', 'd'):
+            axis = {'r': 0, 'c': 1, 'd': 2}[gap_type]
+            for block in self.game.blocks:
+                rank = block.location[axis]
+                if side in ('above', 'low', 0) and rank <= gap_line:
+                    return block
+                if side in ('below', 'high', 1) and rank > gap_line:
+                    return block
+            return None
         for block in self.game.blocks:
             r, c = block.location[0], block.location[1]
             if gap_type == 'h':
-                if side == 'above' and r <= gap_line:
+                if side in ('above', 'low', 0) and r <= gap_line:
                     return block
-                if side == 'below' and r > gap_line:
+                if side in ('below', 'high', 1) and r > gap_line:
+                    return block
+            elif gap_type == 'v':
+                # 新录的 v 侧别已归一成 above/below；老宏仍有 left/right
+                if side in ('left', 'above', 'low', 0) and c <= gap_line:
+                    return block
+                if side in ('right', 'below', 'high', 1) and c > gap_line:
                     return block
             else:
-                if side == 'left' and c <= gap_line:
+                if side in ('left', 'above', 'low', 0) and c <= gap_line:
                     return block
-                if side == 'right' and c > gap_line:
+                if side in ('right', 'below', 'high', 1) and c > gap_line:
                     return block
         return None
 
@@ -5834,25 +6009,39 @@ class EventsMixin:
             return block
         return None
 
+    def _macro_base_from_click(self, x: int, y: int):
+        """把一次点击换算成宏基准坐标：二维 [row,col]，三维 [r,c,d]。"""
+        if getattr(self, 'cubic_mode', False):
+            hit = self._cubic_pick(x, y)
+            if isinstance(hit, dict) and hit.get('loc'):
+                loc = hit['loc']
+                return [int(loc[0]), int(loc[1]), int(loc[2])]
+            return None
+        cell = self.get_cell_at_pos(x, y)
+        if cell:
+            return [int(cell[0]), int(cell[1])]
+        return None
+
     def handle_macro_base_selection_click(self, x: int, y: int) -> bool:
         """
         处理宏基准选择时的点击事件
         
         返回: True 如果事件被处理
         """
+        base = self._macro_base_from_click(x, y)
         if self.macro_selecting_base:
-            cell = self.get_cell_at_pos(x, y)
-            if cell:
-                r, c = cell
-                self._confirm_macro_execute(r, c)
+            if base:
+                if len(base) >= 3:
+                    self._confirm_macro_execute(base[0], base[1], base[2])
+                else:
+                    self._confirm_macro_execute(base[0], base[1])
             return True
         if self.macro_recording and self.macro_record_base_point is None:
-            cell = self.get_cell_at_pos(x, y)
-            if cell:
-                r, c = cell
-                self.macro_record_base_point = [r, c]
+            if base:
+                self.macro_record_base_point = base
                 # 清除基准选择提示
-                self.macro_notify_msg = f"基准坐标 ({r}, {c}) 已选定，开始录制"
+                _coord = ', '.join(str(v) for v in base)
+                self.macro_notify_msg = f"基准坐标 ({_coord}) 已选定，开始录制"
                 self.macro_notify_timer = 120
                 self.macro_notify_persistent = False
             return True
