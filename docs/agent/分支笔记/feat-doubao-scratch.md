@@ -690,19 +690,3 @@ A 段换成坐标轴断言 + A2 段 65 姿态扫描，F 段换成新箭头断言
 未做：feature_index 检索条目从表自动生成（目前只登记了页签，四个选项还没进
 检索真源）；方案里写的「明暗 / 透视 / 分组着色」渲染支持本身尚未实现，故未放
 进页面（不放假开关）。
-
-## 2026-11-18 审查补洞：三维「打乱」其实没生效
-
-自查发现：三维局按「打乱」**盘面纹丝不动**（changed=0、is_solved=True），提示
-还停在上一步换局那句。裸调 `EngineGame.shuffle(60,1)` 是通的（26 块移位、
-record 39 条），所以问题在 GUI 包装层：记录交给了「打乱演示」——演示按
-(行,列) 两坐标重放，三维记录是 (r,c,d) 三步位移，重放对不上就把盘面先退回
-**打乱前**的还原态，看起来像没打乱。动画一关就正常（changed=27、已打乱 31 步）。
-
-修法：`gui/session.shuffle_puzzle` 的 `demo` 判据加 `not cubic_mode`——三维直接
-落终态，等以后按三维位移单独写演示。二维演示路径不动。
-
-测试：新增 `test/_test_cubic_shuffle.py` 12 项（关/开动画都真的打乱且停在未复原
-态、历史重置成一条、步数归零、提示文案、打乱后仍能选中并推一步）。回归
-`_test_shuffle_demo`、`_test_shuffle_guard`（358s）、`_test_safe_shuffle`、
-`_test_anchor_shuffle`、`_test_shuffle_demo_speed`、`_test_shatter_shuffle` 全绿。
