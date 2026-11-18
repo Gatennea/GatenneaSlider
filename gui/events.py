@@ -515,6 +515,27 @@ class EventsMixin:
                     self._handle_settings_dialog_event(event)
                     continue
 
+                # 三维右键 = 选缝（2026-11-18 操作方式）。必须放在通用鼠标分支
+                # 之前：那条分支只给左键走「游戏区点击」，右键会直接落到
+                # 旧二维的「右键取消选中」上，导致三维右键永远选不了缝
+                # （用户实测：右键滑块仍然只是取消选中）。
+                if (getattr(self, 'cubic_mode', False)
+                        and event.type == pygame.MOUSEBUTTONDOWN
+                        and event.button == 3):
+                    mx, my = event.pos
+                    over_panel = any(
+                        hasattr(rr, 'collidepoint') and rr.collidepoint(mx, my)
+                        for rr in (getattr(self, 'vk_panel_rect', None),
+                                   getattr(self, 'mp_panel_rect', None),
+                                   getattr(self, 'rp_panel_rect', None)))
+                    if (my >= self.menu_bar_height
+                            and mx < self.screen_width - self.right_panel_width
+                            and not over_panel
+                            and not self._dropdown_blocks_click(event.pos)):
+                        if not self._tut_board_locked():
+                            self._cubic_seam_click(mx, my)
+                        continue
+
                 # 图层约定：菜单栏/下拉菜单盖住浮动面板 → 点击落在菜单层
                 # （顶栏或已打开的下拉矩形）时，面板事件让位给菜单分支；
                 # 同时补上与「点面板外」同款的清理副作用（失焦/取消确认）
@@ -1737,12 +1758,12 @@ class EventsMixin:
         return None
 
     def _cubic_click(self, x, y):
-        """左键：选滑块（点中那块所在的连通组）。左键不再改缝。
+        """左键：选滑块（必须在**已有切面**的前提下，和原版谜题同序）。
 
-        2026-11-18 用户改操作方式（双击会先把缝挪走，无法选中想选的块）：
-          · 左键 = 选块组 → 自动挂上这块旁边一条有效内部缝（好让箭头立刻可用）；
+        2026-11-18 用户口径：先选缝、再选块；**没有选中缝时禁止选块**。
+          · 左键 = 在已选切面里选「点中那块所在的同侧连通组」；
           · 右键 = 选缝（`_cubic_seam_click`），空白右键 = 取消选中；
-          · 单击不再需要「连点两下」，双击判定整套删掉。
+          · 选缝只定切面，不替用户选块——块必须由左键再点一次。
         """
         from engine import cubic_pick
         arrow = self._cubic_arrow_hit(x, y)
@@ -1751,33 +1772,27 @@ class EventsMixin:
         hit = self._cubic_pick(x, y)
         if hit is None:
             return False
+        seam = getattr(self, 'selected_gap', None)
+        if seam is None:
+            self.macro_notify_msg = "先右键选一条缝，再左键选要滑的滑块"
+            self.macro_notify_timer = 130
+            return False
         block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
         if block is None:
             return False
-        seam_use = self._cubic_seam_for_block(hit)
-        if seam_use is None:
-            # 这块旁边没有可切的内部缝（1×1×n 之类退化局面）：只选组不给缝。
-            self.selected_gap = None
-            self.selected_block = block
-            for b in self.game.blocks:
-                b.be_opted = False
-            self.macro_notify_msg = "这一块旁边没有可切的缝（换个位置）"
-            self.macro_notify_timer = 120
-            return False
-        self.selected_gap = seam_use
-        self.game.opt(seam_use[0], seam_use[1], block)
+        # 选的组必须是这条缝**某一侧**的连通组（引擎 opt 自己按 rank 切侧）
+        self.game.opt(seam[0], seam[1], block)
         self.selected_block = block
         n = len([b for b in self.game.blocks if b.be_opted])
-        self.macro_notify_msg = (f"选中滑块组 共{n}个"
-                                 f"（切面 {seam_use[0]}·{seam_use[1]}）")
+        self.macro_notify_msg = f"选中滑块组 共{n}个（切面 {seam[0]}·{seam[1]}）"
         self.macro_notify_timer = 120
         return True
 
     def _cubic_seam_click(self, x, y):
         """右键：选切面。点中块的某个面 → 这条面外沿的内部缝；空白 → 取消选中。
 
-        与左键分工（用户 2026-11-18）：左键选块、右键选缝。选缝同时把**点中那块
-        所在一侧**的连通组选上，这样右键选完缝就能直接推（不用再左键补一下）。
+        只定切面，**不代替左键选块**（用户 2026-11-18：没有缝时禁止选块 →
+        反过来选缝也不该顺手把块选了；选完缝再左键点块）。
         """
         from engine import cubic_pick
         hit = self._cubic_pick(x, y)
@@ -1789,16 +1804,15 @@ class EventsMixin:
             hit, self.game.is_valid_gap, locations)
         if seam is None:
             seam = cubic_pick.seam_of_face(hit, self.game.is_valid_gap, locations)
-        block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
-        if seam is None or block is None:
+        if seam is None:
             self.macro_notify_msg = "这个面旁边没有可切的内部缝"
             self.macro_notify_timer = 110
             return False
         self.selected_gap = seam
-        self.game.opt(seam[0], seam[1], block)
-        self.selected_block = block
-        n = len([b for b in self.game.blocks if b.be_opted])
-        self.macro_notify_msg = f"切面 {seam[0]}·{seam[1]}（同侧 {n} 块）"
+        self.selected_block = None
+        for b in self.game.blocks:
+            b.be_opted = False
+        self.macro_notify_msg = f"切面 {seam[0]}·{seam[1]}（左键选要滑的块）"
         self.macro_notify_timer = 120
         return True
 

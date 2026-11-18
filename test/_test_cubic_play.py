@@ -99,9 +99,9 @@ def key(k, mod=0):
 face = gui._cubic_scene['faces'][-1]
 pt = (int(sum(p[0] for p in face['pts']) / 4.0),
       int(sum(p[1] for p in face['pts']) / 4.0))
-click(pt)
-click(pt)
-check(any(b.be_opted for b in gui.game.blocks), '双击选中一侧连通组')
+gui._cubic_seam_click(*pt)       # 右键选缝
+click(pt)                        # 左键选块（新操作方式：先缝后块）
+check(any(b.be_opted for b in gui.game.blocks), '右键选缝 + 左键选块 → 选中一侧连通组')
 check(gui.game.is_solved(), '建局 = 还原态，is_solved() 为真（还没推）')
 
 # 双击后选中的切面由「离点击最近的那条缝」决定（2026-11-17 改）。

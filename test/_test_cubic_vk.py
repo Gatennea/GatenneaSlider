@@ -187,9 +187,9 @@ def click(pos):
 face = gui._cubic_scene['faces'][-1]
 pt = (int(sum(p[0] for p in face['pts']) / 4.0),
       int(sum(p[1] for p in face['pts']) / 4.0))
-click(pt)
-click(pt)
-check(any(b.be_opted for b in gui.game.blocks), '双击选出一组（为推做准备）')
+gui._cubic_seam_click(*pt)      # 右键选缝
+click(pt)                       # 左键选块
+check(any(b.be_opted for b in gui.game.blocks), '右键选缝 + 左键选块 → 一组为推做准备')
 fam = gui.selected_gap[0]
 n1 = gui.step_count
 locs1 = sorted(tuple(int(v) for v in b.location[:3]) for b in gui.game.blocks)
@@ -235,8 +235,8 @@ gui.draw_cubic_board()
 face2 = gui._cubic_scene['faces'][-1]
 pt = (int(sum(p[0] for p in face2['pts']) / 4.0),
       int(sum(p[1] for p in face2['pts']) / 4.0))
-click(pt)
-click(pt)
+gui._cubic_seam_click(*pt)      # 右键选缝
+click(pt)                       # 左键选块
 gui.draw_cubic_board()
 buttons = list(getattr(gui, '_cubic_arrow_buttons', []))
 fam = gui.selected_gap[0]

@@ -57,15 +57,15 @@ def cells(g):
 
 
 def select_front(g):
-    """双击最前面那张脸：选出一组 9 块（为推做准备）。"""
+    """右键选最前面那张脸 → 左键点块，选出一组（为推做准备）。"""
     g._cubic_view(0)
     g.draw_cubic_board()
     f = g._cubic_scene['faces'][-1]
     pt = (int(sum(p[0] for p in f['pts']) / 4.0),
           int(sum(p[1] for p in f['pts']) / 4.0))
-    click(g, pt)
-    click(g, pt)
-    return bool(g.selected_gap)
+    g._cubic_seam_click(*pt)       # 右键选缝
+    click(g, pt)                   # 左键选块
+    return bool(g.selected_gap) and any(b.be_opted for b in g.game.blocks)
 
 
 def main():

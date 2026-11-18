@@ -60,8 +60,8 @@ def select_front(g):
     f = g._cubic_scene['faces'][-1]
     pt = (int(sum(p[0] for p in f['pts']) / 4.0),
           int(sum(p[1] for p in f['pts']) / 4.0))
-    click(g, pt)
-    click(g, pt)
+    g._cubic_seam_click(*pt)      # 右键选缝
+    click(g, pt)                  # 左键选块
 
 
 def main():
