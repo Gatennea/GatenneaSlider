@@ -1084,6 +1084,7 @@ class RendererMixin:
                     back_faces.append(f)
 
         items = [(f['depth'], 0, f) for f in back_faces]
+        seam_pts_screen = []
         if seam_quad:
             pts = [cubic_view.project_point(w, camera, scene['scale'],
                                             scene['origin'])[:2] for w in seam_quad]
@@ -1095,20 +1096,27 @@ class RendererMixin:
                 area += p0[0] * p1[1] - p1[0] * p0[1]
             if abs(area) / 2.0 >= 1.5:
                 items.append((0.0, 1, pts))
+                # 切面比块堆的包围盒更宽（拆分 gap 会撑到块外半格），四角会落到
+                # 块面边界之外；超采样画布若只按块面算边界，就会把这几角裁掉——
+                # 用户 2026-11-18：「完整的边角经常被相机范围裁掉」。这里把切面
+                # 的投影点也纳入边界，矩形永远整张画得下。
+                seam_pts_screen = pts
         items += [(f['depth'], 0, f) for f in front_faces]
         # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
         # 一级级台阶，切面边上那些「毛毛糙糙」的小三角有一半是块面自己的边。
         # 只在棋盘包围盒里开超采样，整帧仍是一次 smoothscale 缩回，成本可控。
         _ss = 2
-        _all = [p for f in scene['faces'] for p in f['pts']]
+        _all = [p for f in scene['faces'] for p in f['pts']] + list(seam_pts_screen)
         if _all:
-            _bx0 = max(0, int(min(p[0] for p in _all)) - 2)
-            _by0 = max(0, int(min(p[1] for p in _all)) - 2)
-            _bx1 = min(self.screen_width, int(max(p[0] for p in _all)) + 2)
-            _by1 = min(self.screen_height, int(max(p[1] for p in _all)) + 2)
+            _bx0 = max(0, int(min(p[0] for p in _all)) - 4)
+            _by0 = max(0, int(min(p[1] for p in _all)) - 4)
+            _bx1 = min(self.screen_width, int(max(p[0] for p in _all)) + 4)
+            _by1 = min(self.screen_height, int(max(p[1] for p in _all)) + 4)
         else:
             _bx0 = _by0 = _bx1 = _by1 = 0
         _bw, _bh = _bx1 - _bx0, _by1 - _by0
+        # 供测试核对：切面投影四角必须落在超采样画布内（否则角被裁掉）。
+        self._cubic_hi_rect = (_bx0, _by0, _bx1, _by1)
         if _bw > 0 and _bh > 0:
             hi = pygame.Surface((_bw * _ss, _bh * _ss))
             hi.fill(self.colors['background'])

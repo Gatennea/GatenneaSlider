@@ -253,6 +253,30 @@ def main():
     check(abs((max(p[a2] for p in lone) - min(p[a2] for p in lone)) - lone_edge) < 1e-9,
           f'只剩一块时切面跟着缩到 1.12（不是原始 3×3）')
 
+    print('H. 切面四角不被超采样画布裁掉（用户 2026-11-18：完整 = 边角不被裁）')
+    tol_clip = 0
+    for gy in (0.12, 0.40):
+        gui.cubic_gap = gy
+        for yaw, pitch in ((0, 0), (35, 25), (70, 40), (-50, 20)):
+            gui.cubic_camera = CubicCamera.from_yaw_pitch(yaw, pitch)
+            gui.selected_gap = ('r', 1)
+            gui.draw_cubic_board()
+            sc = gui._cubic_scene
+            cam = gui.cubic_camera
+            quad = cp.seam_plane_rect('r', 1, gui.game.blocks, gap=gy,
+                                      dims=(gui.game.m, gui.game.n, gui.game.depth))
+            hx0, hy0, hx1, hy1 = gui._cubic_hi_rect
+            for w in quad:
+                sx, sy = cv.project_point(w, cam, sc['scale'], sc['origin'])[:2]
+                # 只在「本来就落在窗口内」的角上要求：落到窗口外的由屏幕自然裁
+                if not (0 <= sx < gui.screen_width and 0 <= sy < gui.screen_height):
+                    continue
+                if not (hx0 <= sx <= hx1 and hy0 <= sy <= hy1):
+                    tol_clip += 1
+                    print('  BAD', gy, yaw, pitch, round(sx, 1), round(sy, 1),
+                          'hi', (hx0, hy0, hx1, hy1))
+    check(tol_clip == 0, f'切面四角都在超采样画布内（{tol_clip} 个角被裁）')
+
     print('=' * 60)
     if _fail:
         print(f'结果：{_ok[0]} 项通过，{len(_fail)} 项失败')
