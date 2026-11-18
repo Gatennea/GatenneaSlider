@@ -127,10 +127,9 @@ def main():
                             violations.append(f'{fam}{line}@{name} 有红但投影退化')
                             continue
                         u, v = uv
-                        # 容差 = 抗锯齿 + 矩形描边：切面按 2× 超采样再缩回，
-                        # 边上 1–2px 的过渡色会落在格线外；外框还额外描了 2px
-                        # 实边（2026-11-18 弱覆盖层，保证矩形完整可见）。
-                        tol = 0.12
+                        # 容差 = 抗锯齿渗出的几个像素：切面按 2× 超采样再缩回，
+                        # 边上 1–2px 的过渡色会落在格线外一点点（约 0.02 格）。
+                        tol = 0.05
                         if not (lo[a] - tol <= u <= hi[a] + tol
                                 and lo[b] - tol <= v <= hi[b] + tol):
                             outside.append(f'{fam}{line}@{name} 红点({u:.2f},{v:.2f}) 出界')
