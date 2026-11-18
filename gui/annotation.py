@@ -2975,6 +2975,14 @@ class AnnotationMixin:
 
     def _ann_dirs_for_gap(self, gap_type: str) -> tuple:
         """该缝族允许的移动方向（平行于缝）。"""
+        # 三维：cubic spec 没有 cell_polygon，走不了 _generic_spec 那条门；
+        # 但缝族/方向表仍由同一个 spec 给出。无限打乱在三维里取方向必须走
+        # 这里，否则会落到下面方形的 h/v 表，c/d 族拿到空元组后整盘误判
+        # 「无可逆走法」并自动停机（用户 2026-11-18「无限打乱也接入三维」）。
+        if getattr(self, 'cubic_mode', False):
+            spec = getattr(getattr(self, 'game', None), 'spec', None)
+            if spec is not None and getattr(spec, 'seam_families', None):
+                return self._spec_gap_letters(spec).get(gap_type, ())
         if self._generic_spec() is not None:
             # 通用通道：字母表由板型數據反查（引擎 parallel → compat 表），
             # 與渲染器/虛擬鍵盤同一源
