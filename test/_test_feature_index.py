@@ -424,6 +424,11 @@ _preset = [e for (_s, e, _a) in _hits3 if e['id'] == 'cubic_preset']
 check('预设条目能一键建三维局',
       bool(_preset) and _preset[0]['action']['type'] == 'puzzle'
       and _preset[0]['action'].get('kind') == 'cubic')
+if _preset:
+    gui_c._activate_feature(_preset[0])
+    check('命令面板动作真的建出三维局',
+          gui_c.cubic_mode and gui_c.current_depth == 3,
+          (gui_c.cubic_mode, gui_c.current_depth))
 _gap = fi.search('拆分', form='cubic', mode='practice')
 check('搜「拆分」在三维局可用',
       any(e['id'] == 'cubic_gap' and a for (_s, e, a) in _gap))
