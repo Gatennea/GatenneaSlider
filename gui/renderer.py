@@ -1324,25 +1324,59 @@ class RendererMixin:
             dx, dy = self._cubic_letter_dir(letter)
             if abs(dx) < 1e-6 and abs(dy) < 1e-6:
                 continue                      # 这条轴正对镜头，屏幕上是点
+            fallback = False
             if not _cv.point_visible(tuple(anchor), boxes, view_dir):
-                continue                      # 被块挡住：不画（也不给点）
-            sx, sy, _sz = _cv.project_point(tuple(anchor), camera, scene['scale'],
-                                            scene['origin'])
-            # 再判一次「屏幕位置上有没有更近的块」：锚点恰好站在某块前面时，
-            # 画上去就像贴纸糊在人家脸上（用户说的「箭頭也要三維、有遮擋」）。
-            decal = False
-            for far_depth, hull in silhouettes:
-                if far_depth <= _sz:
-                    continue                       # 更远或同深度：挡不住
-                if _cv.point_in_hull(sx, sy, hull):
-                    decal = True
-                    break
-            if decal:
-                continue
+                # 3D 锚点被块挡住（典型：俯视时 r 方向落在立方体底边后面）。
+                # 不能直接不画——那会把一个**合法方向**吞掉。改走屏幕空间
+                # 回退：贴着选中片在屏幕上的外沿放，保证四向都能点。
+                fallback = True
+            sx = sy = 0.0
+            if not fallback:
+                sx, sy, _sz = _cv.project_point(
+                    tuple(anchor), camera, scene['scale'], scene['origin'])
+                # 再判一次「屏幕位置上有没有更近的块」：锚点恰好站在某块前面时，
+                # 画上去就像贴纸糊在人家脸上（用户说的「箭頭也要三維、有遮擋」）。
+                decal = False
+                for far_depth, hull in silhouettes:
+                    if far_depth <= _sz:
+                        continue                   # 更远或同深度：挡不住
+                    if _cv.point_in_hull(sx, sy, hull):
+                        decal = True
+                        break
+                if decal:
+                    fallback = True
+                # 还要判「投影点落在任何一块的屏幕轮廓里」：朝相机/背相机
+                # 的那条轴，世界锚点虽然没被挡住，投影却会缩到方块中间
+                # （用户看到的箭头贴在选中片上）。这时也改用屏幕外沿。
+                if not fallback and any(
+                        _cv.point_in_hull(sx, sy, hull)
+                        for _d, hull in silhouettes):
+                    fallback = True
+            if fallback:
+                # 选中片的屏幕轮廓（boxes 与 blocks 同序，silhouettes 也同序）
+                pts = []
+                for _i, _b in enumerate(blocks):
+                    if getattr(_b, 'be_opted', False):
+                        pts.extend(silhouettes[_i][1])
+                if not pts:
+                    continue
+                _cx = sum(p[0] for p in pts) / len(pts)
+                _cy = sum(p[1] for p in pts) / len(pts)
+                _n = math.hypot(dx, dy) or 1.0
+                _ux, _uy = dx / _n, dy / _n
+                _reach = max((p[0] - _cx) * _ux + (p[1] - _cy) * _uy
+                             for p in pts)
+                sx = _cx + _ux * (_reach + size * 0.85)
+                sy = _cy + _uy * (_reach + size * 0.85)
             half = size / 2.0
-            if not (half <= sx <= self.screen_width - half
-                    and half <= sy <= self.screen_height - half):
-                continue                      # 出界：点了也看不见
+            # 箭头锚点在世界里已经探到切面外沿，但大立方体贴满视口时，
+            # 顶/底那两枚的屏幕中心仍可能越过边距。旧逻辑直接 continue，
+            # 于是「能推的方向」被吞掉（用户 2026-11-18：四向只看见两枚）。
+            # 这里夹回视口边距：宁可贴边一点，也不能少一个可点的方向。
+            # 顶部多留 60px：左上角第二行操作提示画到 y≈54，箭头不能压字。
+            sx = min(max(sx, half), self.screen_width - half)
+            top_safe = max(half, 60 + half)
+            sy = min(max(sy, top_safe), self.screen_height - half)
             ang = math.degrees(math.atan2(-dy, dx))
             spr = self._arrow_sprite(ang)
             if spr is None:
