@@ -32,6 +32,7 @@
   C4/C5 撤销 / 重做：也是整组沿缝滑动 → 一样出声
   C6    宏播放路径静态引用 _play_slide_sound（防未来漏接）
   C7    三维撤销/重做的 cubic_anim 也要出声，时长取 cubic_anim_ms
+  C8    三维任何动画路线的滑动声时长都必须取 cubic_anim_ms（与画面同源）
   D1    打乱演示回放每一步都出声
   D2    无限打乱每一步都出声（无静音拦截）
   D1b/D2b 两条播放路径静态接线检查（防漏接）
@@ -553,6 +554,18 @@ check('C7 三维撤销动画也出声，时长取 cubic_anim_ms',
       bool(calls6) and g6.cubic_anim is not None
       and abs(calls6[-1][1] - 140) <= 1,
       f'calls={calls6} cubic_anim={getattr(g6, "cubic_anim", None)}')
+
+# ---- C8 三维动画滑动声与画面同源 ----
+g7 = SliderGUI(m=3, n=3, step=1, cmd_queue=queue.Queue())
+g7.cubic_mode = True
+g7.cubic_anim_ms = 202
+g7.animation_duration = 300
+_cubic_ms = g7._slide_sound_duration()
+g7.cubic_mode = False
+_2d_ms = g7._slide_sound_duration()
+check('C8 三维动画滑动声取 cubic_anim_ms，二维仍取 animation_duration',
+      _cubic_ms == 202 and _2d_ms == 300,
+      f'cubic={_cubic_ms} 2d={_2d_ms}')
 
 # ---- D1 打乱演示每一步都出声 ----
 g4 = boot()

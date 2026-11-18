@@ -29,6 +29,18 @@ class AnimationMixin:
         """缓出插值函数"""
         return 1.0 - (1.0 - t) ** 2
 
+    def _slide_sound_duration(self):
+        """滑动声的「本次动画时长」口径。
+
+        二维用 animation_duration；三维一步动画读的是 cubic_anim_ms。
+        两者必须同源，否则三维把速度拖到 202ms 时，画面在滑、声音却仍按
+        120ms 瞬时口径算音量（用户 2026-11-18 报「动画没音效/不同步」）。
+        """
+        if getattr(self, 'cubic_mode', False):
+            return max(1, int(getattr(self, 'cubic_anim_ms',
+                                       getattr(self, 'CUBIC_ANIM_MS', 140))))
+        return getattr(self, 'animation_duration', 0) or self.SLIDE_INSTANT_MS
+
     def _play_slide_sound(self, steps=1, duration_ms=None):
         """滑動聲：必須在 start_animation() **之後**呼叫。
 
@@ -49,7 +61,7 @@ class AnimationMixin:
         if audio is None:
             return
         if duration_ms is None:
-            duration_ms = getattr(self, 'animation_duration', 0) or self.SLIDE_INSTANT_MS
+            duration_ms = self._slide_sound_duration()
         audio.play_slide(steps, duration_ms=duration_ms)
 
     def start_animation(self, selected, target_positions):
