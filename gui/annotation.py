@@ -507,6 +507,11 @@ class AnnotationMixin:
         if self._ann_modal_conflict():
             return False
 
+        # 三维创造编辑会话（方案第 1–2 步）：模态独占棋盘/键盘/滚轮，
+        # 顶栏用放行让用户还能开文件/设置（见 gui/cubic_create.py）
+        if getattr(self, '_cubic_edit_active', False):
+            return self._cubic_edit_event(event)
+
         # 自定义阶段名输入态：拦截键盘/鼠标（2026-10-02）
         if getattr(self, '_ann_phase_editing', False):
             if event.type == pygame.KEYDOWN:
@@ -1317,6 +1322,9 @@ class AnnotationMixin:
         self._ann_notify(msg)
 
     def _ann_leave_to_home(self):
+        # 三维编辑会话先原样退回盘面（ESC/切模式/文件操作都会走到这里）
+        if getattr(self, '_cubic_edit_active', False):
+            self._cubic_edit_leave(silent=True)
         self._ann_view = 'home'
         self._ann_sub_dialog = None
         self._ann_home_sub = None           # 回一级首页（二级展开态作废）
@@ -1975,6 +1983,9 @@ class AnnotationMixin:
             self._ann_draw_build_canvas()
         elif self._ann_view in ('target', 'recording'):
             self._ann_draw_track_markers()
+        # 三维搭建：棋盘由 draw_cubic_board 画，这里只叠放/挖的幽灵预览
+        if getattr(self, '_cubic_edit_active', False):
+            self._cubic_edit_draw_overlay()
         self._ann_draw_bar()
         if self._ann_sub_dialog == 'gen':
             self._ann_draw_gen_dialog()
@@ -2022,12 +2033,16 @@ class AnnotationMixin:
         x = bar_x  # add() 会推进 x；bar_x 恒为工具条左缘（下拉定位用）
         # 手动构造/设计视图：工具条加高，内嵌参数输入 + 操作按钮，
         # 这样主棋盘完全留给点格增删滑块（不再用居中弹窗遮挡棋盘）。
-        bar_h = 82 if self._ann_view in ('build', 'design') \
+        bar_h = 82 if self._ann_view in ('build', 'design', 'cubic_edit') \
             else self._ANN_BAR_H
         y, h = self.screen_height - self.status_bar_height - \
             bar_h - 8, bar_h
         self._ann_bar_rect = pygame.Rect(x, y, w, h)
         self._ann_btn_rects = {}
+        if getattr(self, '_cubic_edit_active', False):
+            # 三维搭建工具条：按钮/状态分行，和二维画布同一套 chrome
+            self._cubic_edit_draw_bar(self._ann_bar_rect)
+            return
 
         # 条底走共用骨架（gui/editor_chrome）：搭积木编辑器的工具条用同一函数，
         # 两个还原态编辑器切换时外观不跳。
@@ -2043,6 +2058,31 @@ class AnnotationMixin:
             x = rect.right
             chrome.btn(self, rect, text, color, font=self.menu_font)
             self._ann_btn_rects[name] = rect
+
+        if self._ann_view == 'home' and self.create_mode \
+                and getattr(self, 'cubic_mode', False):
+            # 三维创造首页（方案 2026-11-18）：只给三维自己的两条入口，
+            # 不显示二维的格子画布/搭积木/样式库（它们不认立方体）。
+            sub = getattr(self, '_ann_home_sub', None)
+            if sub is None:
+                add('home_shuffle', '① 打乱状态设计', (70, 120, 180))
+                add('home_restore', '② 还原状态设计', (60, 150, 90))
+                title_text = ('三维创造：① 造打乱局面（放/挖方块）'
+                              ' ② 造还原目标 · ESC 退出')
+            elif sub == 'shuffle':
+                add('home_back', '‹ 返回')
+                add('cubic_manual_build', '三维搭建（造局面）', (70, 120, 180))
+                title_text = ('三维打乱状态：左键点面放/挖方块，完成前过保存门'
+                              ' · ESC 返回')
+            else:       # 'restore'
+                add('home_back', '‹ 返回')
+                add('cubic_goal_build', '三维搭建（造还原目标）', (60, 150, 90))
+                title_text = ('三维还原状态：搭出目标形状，完成时过块数/mod 配额'
+                              '（只做必要条件）· ESC 返回')
+            title = self.status_font.render(title_text, True, (200, 200, 210))
+            self.screen.blit(title, (self._ann_bar_rect.x + 6,
+                                     self._ann_bar_rect.y - 18))
+            return
 
         if self._ann_view == 'home':
             if self.create_mode:

@@ -34,6 +34,7 @@ from gui.virtual_keyboard import VirtualKeyboardMixin
 from gui.metrics_panel import MetricsPanelMixin
 from gui.records_panel import RecordsPanelMixin
 from gui.annotation import AnnotationMixin
+from gui.cubic_create import CubicCreateMixin
 from gui.model_editor import ModelEditorMixin
 from gui.tutorial import TutorialMixin
 from gui.palette import PaletteMixin
@@ -95,7 +96,7 @@ def _gui_get_resource_path(relative_path):
     return os.path.join(base, relative_path)
 
 
-class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, ModelEditorMixin, TutorialMixin, PaletteMixin, UpdateMixin, HistoryMixin, SpeedrunMixin, ExternalMixin, SessionMixin, PickFillMixin, AutoSolveMixin, MoveMixin, DragMixin):
+class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, CubicCreateMixin, ModelEditorMixin, TutorialMixin, PaletteMixin, UpdateMixin, HistoryMixin, SpeedrunMixin, ExternalMixin, SessionMixin, PickFillMixin, AutoSolveMixin, MoveMixin, DragMixin):
     """
     滑块游戏图形界面类
     """
@@ -920,6 +921,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 标注模式状态
         self._ann_init_state()
+        # 三维创造编辑会话（gui/cubic_create.py）
+        self._cubic_edit_init_state()
 
         # 搭积木编辑器状态（gui/model_editor.py；会话期外全部为空）
         self._med_init_state()
