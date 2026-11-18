@@ -16,7 +16,7 @@ CUBIC_SETTINGS = (
     {'key': 'gap', 'label': '拆分', 'attr': 'cubic_gap',
      'type': 'float', 'min': 0.0, 'max': 0.6, 'default': DEFAULT_GAP,
      'group': 'view',
-     'help': '相邻滑块之间空出的距离（0 = 贴死成一整块，露不出内部）'},
+     'help': '滑块大小不变，只拉开相邻滑块之间的间距（0 = 贴死成一整块，露不出内部）'},
     {'key': 'seam_alpha', 'label': '切面透明', 'attr': 'cubic_seam_alpha',
      'type': 'int', 'min': 30, 'max': 220, 'default': 110,
      'group': 'view',

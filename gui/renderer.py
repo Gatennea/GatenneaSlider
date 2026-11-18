@@ -986,12 +986,12 @@ class RendererMixin:
         if _follow:
             _locs = [tuple(int(v) for v in b.location[:3]) for b in blocks]
             if _locs:
-                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)，取块心（+0.5）的平均
-                _target = (
-                    sum(p[1] for p in _locs) / len(_locs) + 0.5,
-                    sum(p[2] for p in _locs) / len(_locs) + 0.5,
-                    sum(p[0] for p in _locs) / len(_locs) + 0.5,
-                )
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)：块心必须按当前拆分
+                # 间距算（拆分只拉大中心距，块大小不变），否则跟随质心会偏。
+                _centers = [cubic_view.block_center(p, gap) for p in _locs]
+                _target = tuple(
+                    sum(c[i] for c in _centers) / len(_centers)
+                    for i in range(3))
                 # 平滑跟随（用户 2026-11-18 第 3 条）：一步走完质心会跳 1/9 盘，
                 # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
                 # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
@@ -1065,7 +1065,9 @@ class RendererMixin:
                 seam_draw[0], seam_draw[1], blocks, gap=gap, dims=_dims)
             if seam_quad:
                 seam_axis = cubic_pick.FAMILY_TO_WORLD_AXIS[seam_draw[0]]
-                seam_fixed = float(seam_draw[1] + 1.0)
+                # 拆分后逻辑缝线在「两块之间的空隙中心」：中心距 1+gap，
+                # 因而第 line 与 line+1 块之间的平面在 (line+1)*(1+gap)。
+                seam_fixed = float(seam_draw[1] + 1.0) * (1.0 + gap)
                 view_dir = camera.view_axis()
                 seam_sign = 1.0 if view_dir[seam_axis] >= 0 else -1.0
 
@@ -1095,8 +1097,8 @@ class RendererMixin:
             for f in faces_all:
                 loc = f['loc']
                 key = (int(loc[0]), int(loc[1]), int(loc[2]))
-                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
-                center = (loc[1] + 0.5, loc[2] + 0.5, loc[0] + 0.5)[seam_axis]
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)；块心按拆分间距算
+                center = cubic_view.block_center(loc, gap)[seam_axis]
                 near = (center - seam_fixed) * seam_sign > 0
                 if key in opted or key in _moving_front or near:
                     front_faces.append(f)

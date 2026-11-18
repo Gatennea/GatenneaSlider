@@ -70,10 +70,11 @@ rect = cp.seam_plane_rect('r', 1, g.game.blocks, gap=0.18)
 check(len(rect) == 4, '返回四角', len(rect))
 axis = cp.FAMILY_TO_WORLD_AXIS['r']
 a, b = [i for i in range(3) if i != axis]
-check(all(abs(p[axis] - 2.0) < 1e-9 for p in rect), '四角都在同一张平面上')
+check(all(abs(p[axis] - 2.0 * 1.18) < 1e-9 for p in rect),
+      '四角都在同一张平面上')
 span_a = max(p[a] for p in rect) - min(p[a] for p in rect)
 span_b = max(p[b] for p in rect) - min(p[b] for p in rect)
-expect = 3.0 + 0.18       # 铺满包围盒横截面（两侧各多半格 gap）
+expect = 3.0 * 1.18 - 0.18   # 块大小不变，中心距 1+gap：首块外表面到最后一块外表面
 check(abs(span_a - expect) < 1e-9 and abs(span_b - expect) < 1e-9,
       f'跨度覆盖整盘（{span_a:.2f}×{span_b:.2f}，应 {expect:.2f}）')
 # 面积（平面内两轴叉积）
@@ -92,8 +93,8 @@ try:
     rect_loose = cp.seam_plane_rect('r', 1, g.game.blocks, gap=0.18)
     check(rect_loose and len(rect_loose) == 4, '只剩一块时仍给出完整的矩形')
     lone_span = (max(p[a] for p in rect_loose) - min(p[a] for p in rect_loose))
-    check(abs(lone_span - (1.0 + 0.18)) < 1e-9,
-          f'范围缩到这一块的包围盒（{lone_span:.2f}，应 1.18）')
+    check(abs(lone_span - 1.0) < 1e-9,
+          f'范围缩到这一块的块身（{lone_span:.2f}，应 1.00）')
 finally:
     g.game.blocks = cp_bak
 

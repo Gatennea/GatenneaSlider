@@ -45,31 +45,39 @@ SHADE = {
 
 #: 默认拆分（相邻两块表面之间空多少「格」）。0 = 未拆分，块贴死成一整块，
 #: 投影上只有一层外轮廓、前後遮挡无从判读；给一点缝，缝里的面和前后关系才
-#: 看得出来（方案 §2.4「块按各自质心往外散」的渲染版，先不做滑条）。
+#: 看得出来（块大小不变，只把中心距从 1 格拉到 1+gap）。
 DEFAULT_GAP = 0.12
 
 
 def block_min_corner(location, gap: float = 0.0) -> tuple:
     """逻辑坐标 (r, c, d) → 该块最小角的世界坐标 (x, y, z)。
 
-    gap = **拆分**（方案 §2.4「块按各自质心往外散」）：每个块在三个轴上都向
-    自己的质心内收 gap/2，于是**两个相邻块之间正好空出 gap**。gap=0 = 完全
-    未拆分（块贴死，投影上只是一个大方块，前後遮挡无从判读）；
-    上限 <1.0（再大就把块缩没了，该当成调用方的 bug）。
+    gap = **拆分**：滑块**大小不变**（始终 1 格边长），只把相邻块的中心距
+    从 1 格拉开到 ``1 + gap``，于是两个相邻块表面之间正好空出 gap。
+    gap=0 = 完全未拆分（块贴死，投影上只是一个大方块，前後遮挡无从判读）；
+    上限 <1.0（再大块与块之间就隔出一整个块身，超出当前滑条范围）。
     """
     if not 0.0 <= gap < 1.0:
         raise ValueError(f'拆分 gap 须在 [0, 1) 内，收到 {gap!r}')
     r, c, d = location[0], location[1], location[2]
+    pitch = 1.0 + gap
     half = gap / 2.0
-    return (float(c) + half, float(d) + half, float(r) + half)
+    return (float(c) * pitch + half, float(d) * pitch + half,
+            float(r) * pitch + half)
+
+
+def block_center(location, gap: float = 0.0) -> tuple:
+    """块心世界坐标（跟随质心/切面分侧共用同一口径）。"""
+    x0, y0, z0 = block_min_corner(location, gap)
+    return (x0 + 0.5, y0 + 0.5, z0 + 0.5)
 
 
 def block_corners(location, gap: float = 0.0) -> tuple:
-    """单位立方体的 8 个世界角点（拆分后是 (1-gap) 边长的立方体）。"""
+    """单位立方体的 8 个世界角点（拆分只拉间距，边长恒为 1）。"""
     x0, y0, z0 = block_min_corner(location, gap)
-    x1 = x0 + 1.0 - gap
-    y1 = y0 + 1.0 - gap
-    z1 = z0 + 1.0 - gap
+    x1 = x0 + 1.0
+    y1 = y0 + 1.0
+    z1 = z0 + 1.0
     return (
         (x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
         (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1),
@@ -79,9 +87,9 @@ def block_corners(location, gap: float = 0.0) -> tuple:
 def _face_quad(location, axis: int, sign: int, gap: float = 0.0) -> tuple:
     """某个面的 4 个世界角点（从该面外侧看是逆时针，fill 不依赖朝向）。"""
     x0, y0, z0 = block_min_corner(location, gap)
-    x1 = x0 + 1.0 - gap
-    y1 = y0 + 1.0 - gap
-    z1 = z0 + 1.0 - gap
+    x1 = x0 + 1.0
+    y1 = y0 + 1.0
+    z1 = z0 + 1.0
     if axis == 0:
         x = x1 if sign > 0 else x0
         return ((x, y0, z0), (x, y1, z0), (x, y1, z1), (x, y0, z1))
@@ -238,12 +246,13 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
 
 
 def block_boxes(blocks, gap: float = 0.0, offsets=None) -> list:
-    """每个块的世界 AABB（(x0, y0, z0, x1, y1, z1)），含拆分内收。
+    """每个块的世界 AABB（(x0, y0, z0, x1, y1, z1)），含拆分间距。
 
-    offsets 给了就给该块的盒子整体平移（动画渲染期用；判定/拾取仍用原位）。
+    拆分只改相邻块中心距，块边长恒为 1；offsets 给了就给该块的盒子整体平移
+    （动画渲染期用；判定/拾取仍用原位）。
     """
     out = []
-    edge = 1.0 - gap
+    edge = 1.0
     for loc in locations_of(blocks):
         x0, y0, z0 = block_min_corner(loc, gap)
         if offsets:

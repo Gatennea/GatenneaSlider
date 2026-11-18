@@ -18,6 +18,15 @@ FAMILY_TO_LOC_INDEX = {'r': 0, 'c': 1, 'd': 2}
 FAMILY_TO_WORLD_AXIS = {'r': 2, 'c': 0, 'd': 1}
 
 
+def seam_plane_coord(line, gap: float = 0.0) -> float:
+    """逻辑缝线 line → 世界平面坐标。
+
+    拆分是「块大小不变、中心距拉到 1+gap」：第 line 与 line+1 块之间的空隙
+    中心就在 ``(line + 1) * (1 + gap)``；gap=0 时退化为旧的 ``line + 1``。
+    """
+    return float(line + 1) * (1.0 + float(gap))
+
+
 def point_in_quad(point, quad, tol: float = 0.0) -> bool:
     """点在凸四边形内（屏幕坐标；十字叉积同号即可，含边界）。"""
     signs = set()
@@ -233,11 +242,10 @@ def seam_of_internal_face(face, is_valid_gap, locations=None):
 def seam_plane_polygon(family, line, blocks, pad: float = 0.0, gap: float = 0.0):
     """切面预览的四角（世界坐标）。
 
-    切面是「坐标 = line+1」那张格点平面（与引擎 ``t = line + 1`` 同一口径），
-    另外两轴按当前块的包围盒取。``gap`` 必须与渲染用的拆分一致：拆分时每块
-    内收 gap/2，块的**实际**外表面比逻辑包围盒小 gap/2，不把它算进去，切面就
-    会伸出盘子的外轮廓一截（用户 2026-11-18 看到的「被遮住还画出来的边线」就是
-    这一截红边）。``pad`` 默认 0：正好压在盘子外表面，不外扩成浮在空中的框。
+    切面是「两块之间的空隙中心」那张平面（拆分后坐标为
+    ``(line + 1) * (1 + gap)``），另外两轴按当前块的实际外表面取。``gap``
+    必须与渲染用的拆分一致：块大小恒为 1，只有中心距变成 1+gap，切面要正好
+    压在块堆外轮廓上，不能把空隙算成额外外扩。``pad`` 默认 0。
     """
     locs = [(int(b.location[0]), int(b.location[1]), int(b.location[2]))
             if hasattr(b, 'location') else tuple(int(v) for v in b)
@@ -247,10 +255,11 @@ def seam_plane_polygon(family, line, blocks, pad: float = 0.0, gap: float = 0.0)
     axis = FAMILY_TO_WORLD_AXIS[family]
     # 逻辑坐标 (r, c, d) → 世界坐标 (X, Y, Z) = (c, d, r)：cubic_view 的映射
     world = [(p[1], p[2], p[0]) for p in locs]
+    pitch = 1.0 + float(gap)
     half = float(gap) / 2.0
-    lo = [min(p[i] for p in world) + half for i in range(3)]
-    hi = [max(p[i] for p in world) + 1 - half for i in range(3)]
-    fixed = float(line + 1)
+    lo = [min(p[i] for p in world) * pitch + half for i in range(3)]
+    hi = [(max(p[i] for p in world) + 1) * pitch - half for i in range(3)]
+    fixed = seam_plane_coord(line, gap)
     a, b = [i for i in range(3) if i != axis]
     lo_a, hi_a = lo[a] - pad, hi[a] + pad
     lo_b, hi_b = lo[b] - pad, hi[b] + pad
@@ -275,7 +284,8 @@ def seam_plane_cells(family, line, blocks, gap: float = 0.0):
     遮挡关系由画家算法自然给出，误差只可能落在格与格的交界上。
 
     只取「缝口有块」的格：切面两侧都没块的格根本不存在可看的东西，画出来就是
-    凭空悬在空中的红面。
+    凭空悬在空中的红面。每格就是该块的横截面（边长恒为 1），拆分拉大后格与
+    格之间的空隙本身不铺红面。
 
     返回 [(四个世界点, 该格中心的世界坐标)]。
     """
@@ -285,7 +295,7 @@ def seam_plane_cells(family, line, blocks, gap: float = 0.0):
     if not locs:
         return []
     axis = FAMILY_TO_WORLD_AXIS[family]
-    fixed = float(line + 1)
+    fixed = seam_plane_coord(line, gap)
     # 逻辑 (r,c,d) → 世界 (X,Y,Z) = (c,d,r)，与 cubic_view 同一映射
     world = [(p[1], p[2], p[0]) for p in locs]
     lo = [min(p[i] for p in world) for i in range(3)]
@@ -295,6 +305,7 @@ def seam_plane_cells(family, line, blocks, gap: float = 0.0):
     n_b = int(round(hi[b] - lo[b]))
     if n_a <= 0 or n_b <= 0:
         return []
+    pitch = 1.0 + float(gap)
     half = float(gap) / 2.0
     # 缝口有块 = 这一格在切面轴上紧挨着块（line 或 line+1 那一层）
     side = set()
@@ -305,13 +316,14 @@ def seam_plane_cells(family, line, blocks, gap: float = 0.0):
     cells = []
     for i in range(n_a):
         for j in range(n_b):
-            key = (lo[a] + i, lo[b] + j)
-            if key not in side:
+            key_logical = (lo[a] + i, lo[b] + j)
+            if key_logical not in side:
                 continue
-            u0 = lo[a] + i + (half if i == 0 else 0.0)
-            u1 = lo[a] + i + 1 - (half if i == n_a - 1 else 0.0)
-            v0 = lo[b] + j + (half if j == 0 else 0.0)
-            v1 = lo[b] + j + 1 - (half if j == n_b - 1 else 0.0)
+            # 每格就是该块在切面上的横截面：块大小恒为 1，格间空隙不连成面。
+            u0 = (lo[a] + i) * pitch + half
+            v0 = (lo[b] + j) * pitch + half
+            u1 = u0 + 1.0
+            v1 = v0 + 1.0
             corners = []
             for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
                 point = [0.0, 0.0, 0.0]
@@ -360,12 +372,13 @@ def seam_plane_rect(family, line, blocks, gap: float = 0.0, dims=None):
     a, b = [i for i in range(3) if i != axis]
     if hi[a] <= lo[a] or hi[b] <= lo[b]:
         return []
+    pitch = 1.0 + float(gap)
     half = float(gap) / 2.0
-    fixed = float(line + 1)
-    # 切面要**和包圍盒橫截面一樣大**（用户 2026-11-18 第 2 条）：块的可见外延是
-    # 每格 [k+gap/2, k+1-gap/2]，所以整盘包围盒在平面内两轴上各往外再多半格 gap。
-    u0, u1 = lo[a] - half, hi[a] + half
-    v0, v1 = lo[b] - half, hi[b] + half
+    fixed = seam_plane_coord(line, gap)
+    # 切面要**和块堆外轮廓一样大**：块大小恒为 1，中心距是 1+gap，
+    # 所以包围盒两端各是「第一块外表面」到「最后一块外表面」。
+    u0, u1 = lo[a] * pitch + half, hi[a] * pitch - half
+    v0, v1 = lo[b] * pitch + half, hi[b] * pitch - half
     corners = []
     for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
         point = [0.0, 0.0, 0.0]

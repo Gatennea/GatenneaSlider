@@ -8,8 +8,9 @@
 留到渲染选项那一步），不是打乱棋局。本测试只钉投影层这条：
 
   A. gap=0（未拆分）：块贴死 → 实心 3×3×3 只有 27 个外表面，内部面照常剔除。
-  B. gap>0（已拆分）：每个块缩成 (1-gap) 边长，相邻表面之间正好空出 gap；
-     内部面不再剔除（缝里看得见）、面数随之增加；深度升序仍成立。
+  B. gap>0（已拆分）：滑块大小不变（边长恒为 1），相邻块中心距拉到 1+gap，
+     表面之间正好空出 gap；内部面不再剔除（缝里看得见）、面数随之增加；
+     深度升序仍成立。
   C. 参数护栏：gap 必须在 [0,1)，越界显式 ValueError（不静默裁掉）。
   D. GUI：三维建局默认带一个非零拆分，整帧画得出来，拆分值进状态行。
 
@@ -68,11 +69,14 @@ print('B. gap>0：拆开，距离就是 gap')
 GAP = 0.2
 corners = cv.block_corners((0, 0, 0), GAP)
 span = corners[1][0] - corners[0][0]
-check(abs(span - (1.0 - GAP)) < 1e-12, '每块缩成 1-gap 边长', span)
+check(abs(span - 1.0) < 1e-12, '拆分开后每块边长仍为 1（不缩块）', span)
 a_max = cv.block_min_corner((0, 1, 0), GAP)[0]     # 右邻块的最小 x
-b_min = cv.block_min_corner((0, 0, 0), GAP)[0] + (1.0 - GAP)  # 本块的最大 x
+b_min = cv.block_min_corner((0, 0, 0), GAP)[0] + 1.0  # 本块的最大 x
 check(abs((a_max - b_min) - GAP) < 1e-12,
       '相邻两块表面之间的距离 = gap', a_max - b_min)
+check(abs(cv.block_center((0, 1, 0), GAP)[0]
+          - cv.block_center((0, 0, 0), GAP)[0] - (1.0 + GAP)) < 1e-12,
+      '相邻块中心距 = 1 + gap')
 
 faces_gap = cv.collect_faces(CUBE3, CAM, scale=30.0, origin=(200.0, 200.0),
                              gap=GAP)
