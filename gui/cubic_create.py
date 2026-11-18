@@ -46,6 +46,7 @@ class CubicCreateMixin:
         self._cubic_edit_hover = None         # 预览目标位置 (r, c, d)
         self._cubic_edit_hover_valid = False
         self._cubic_edit_btn_rects = {}       # 每帧重建的工具条按钮
+        self._cubic_edit_name_rect = None     # 「还原目标」的样式名输入框
 
     # ------------------------------------------------------------------
     # 进入 / 退出
@@ -136,7 +137,18 @@ class CubicCreateMixin:
         self._ann_pick = None
         self.selected_gap = None
         self.selected_block = None
-        self._ann_notify('三维搭建：左键点块挖除，切到「放置」点面外放块；拖动旋转')
+        # 还原目标要落成「三维样式」：进入即把名字输入框打开，玩家可直接
+        # 打字；完成时没有名字会被保存门拦下（不会自动覆盖同名样式）。
+        self._ann_design_style_name = ''
+        self._ann_design_name_active = purpose == 'goal'
+        if self._ann_design_name_active:
+            pygame.key.start_text_input()
+        else:
+            pygame.key.stop_text_input()
+        if purpose == 'goal':
+            self._ann_notify('三维还原目标：点面放/挖，输入样式名后点「完成」存样式')
+        else:
+            self._ann_notify('三维搭建：左键点块挖除，切到「放置」点面外放块；拖动旋转')
         return True
 
     def _cubic_edit_leave(self, silent=False, cancel=True):
@@ -160,6 +172,12 @@ class CubicCreateMixin:
         self._cubic_edit_hover = None
         self._cubic_edit_hover_valid = False
         self._cubic_edit_btn_rects = {}
+        self._cubic_edit_name_rect = None
+        self._ann_design_name_active = False
+        try:
+            pygame.key.stop_text_input()
+        except Exception:      # noqa: BLE001 —— 无头环境没有输入法状态
+            pass
         if self._cubic_edit_vk_prev is not None:
             self.show_virtual_keyboard = self._cubic_edit_vk_prev
         self._cubic_edit_vk_prev = None
@@ -257,10 +275,18 @@ class CubicCreateMixin:
         return True
 
     def _cubic_edit_commit(self):
-        """保存门 → 把草稿变成当前谜题。"""
+        """保存门 → 把草稿变成当前谜题；还原目标同时落成三维样式。"""
         if not getattr(self, '_cubic_edit_active', False):
             return False
+        name = ''
         if self._cubic_edit_purpose == 'goal':
+            # 还原目标要能被「三维样式库」再次打开，所以必须有名字；
+            # 空名字直接停在编辑器里，不静默用「未命名」覆盖别人的样式。
+            name = (getattr(self, '_ann_design_style_name', '') or '').strip()
+            if not name:
+                self._ann_design_name_active = True
+                self._ann_notify('先给还原目标起个样式名，再点「完成」')
+                return False
             # 还原目标允许是「满实心长方体」这种冻形，所以只过 restorable
             # 必要条件（块数 + mod 配额），不套 check_save 的「必须有合法步」。
             gate = self._cubic_draft.check_restorable()
@@ -272,6 +298,25 @@ class CubicCreateMixin:
             if not gate.ok:
                 self._ann_notify(f'还不能完成：{gate.message}')
                 return False
+        # 还原目标：先落样式，再改当前局；写盘失败就不提交，避免出现
+        # 「样式库里没有、当前局却已换成新目标」的半截状态。
+        if self._cubic_edit_purpose == 'goal':
+            from gui import design_styles
+            data = {
+                'version': 2,
+                'name': name,
+                'kind': 'cubic',
+                'm': self._cubic_draft.m,
+                'n': self._cubic_draft.n,
+                'd': self._cubic_draft.d,
+                'step': self._cubic_draft.step,
+                'cells': [list(p) for p in sorted(self._cubic_draft.cells)],
+                # 捆绑在三维阶段 5 才做；先留空数组，读取侧已能认。
+                'groups': [],
+            }
+            if not design_styles.save_style(self.config_dir, name, data):
+                self._ann_notify('样式保存失败（磁盘写入错误）')
+                return False
         # 草稿可能因「向外放块」自动扩容；完成时才换正式 spec / 旗标。
         volume_changed = self._cubic_edit_rebuild_volume()
         self._cubic_edit_apply()
@@ -281,7 +326,7 @@ class CubicCreateMixin:
         if self._cubic_edit_purpose == 'goal' or volume_changed \
                 or self._cubic_edit_goal_backup:
             self.game.set_goal_pattern(goal)
-        self._ann_style_goal = None
+        self._ann_style_goal = name if self._cubic_edit_purpose == 'goal' else None
         if volume_changed:
             self.current_m, self.current_n, self.current_depth = (
                 self._cubic_draft.m, self._cubic_draft.n, self._cubic_draft.d)
@@ -296,8 +341,12 @@ class CubicCreateMixin:
         self.game_history.save_snapshot(self.game)
         self._mark_file_dirty()
         self._cubic_edit_leave(silent=True, cancel=False)
-        self._ann_notify('三维谜题已设为当前局面（只过了必要条件；'
-                         '三维求解器未接，不保证可解）')
+        if self._cubic_edit_purpose == 'goal':
+            self._ann_notify(f'已保存三维样式「{name}」并设为当前还原目标'
+                             '（只过必要条件，不保证可解）')
+        else:
+            self._ann_notify('三维谜题已设为当前局面（只过了必要条件；'
+                             '三维求解器未接，不保证可解）')
         return True
 
     # ------------------------------------------------------------------
@@ -313,8 +362,32 @@ class CubicCreateMixin:
                 self._ann_notify('先点「完成」或「取消」退出搭建，再用文件/设置菜单')
             return True
 
+        if event.type == pygame.TEXTINPUT:
+            # 中文/字母统一走 SDL 的 TEXTINPUT；输入框未聚焦时不吃。
+            if self._cubic_edit_purpose == 'goal' \
+                    and getattr(self, '_ann_design_name_active', False):
+                text = ''.join(ch for ch in (event.text or '')
+                               if ch.isprintable())
+                room = 24 - len(getattr(self, '_ann_design_style_name', ''))
+                if room > 0:
+                    self._ann_design_style_name = (
+                        getattr(self, '_ann_design_style_name', '')
+                        + text[:room])
+            return True
+
         if event.type == pygame.KEYDOWN:
             key = event.key
+            # 样式名输入优先：否则玩家打「r」会触发还原态、打「1」会切工具。
+            if self._cubic_edit_purpose == 'goal' \
+                    and getattr(self, '_ann_design_name_active', False):
+                if key == pygame.K_ESCAPE:
+                    self._cubic_edit_cancel()
+                elif key == pygame.K_RETURN or key == pygame.K_KP_ENTER:
+                    self._cubic_edit_commit()
+                elif key == pygame.K_BACKSPACE:
+                    self._ann_design_style_name = \
+                        getattr(self, '_ann_design_style_name', '')[:-1]
+                return True
             if key == pygame.K_ESCAPE:
                 self._cubic_edit_cancel()
             elif key == pygame.K_RETURN or key == pygame.K_KP_ENTER:
@@ -331,6 +404,13 @@ class CubicCreateMixin:
 
         if event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:
+                # 样式名输入框优先：点框聚焦，点按钮/棋盘则收起输入法焦点。
+                _nr = getattr(self, '_cubic_edit_name_rect', None)
+                if _nr is not None and _nr.collidepoint(event.pos):
+                    self._ann_design_name_active = True
+                    pygame.key.start_text_input()
+                    return True
+                self._ann_design_name_active = False
                 # 工具条优先；否则进拖动/点击二择一
                 for name, rect in self._cubic_edit_btn_rects.items():
                     if rect.collidepoint(event.pos):
@@ -481,6 +561,7 @@ class CubicCreateMixin:
         from gui import editor_chrome as chrome
         chrome.shell(self, rect, title='三维搭建（编辑当前局面）')
         self._cubic_edit_btn_rects = {}
+        self._cubic_edit_name_rect = None
         x = rect.x
         y = rect.y + 8
         h = 26
@@ -501,6 +582,25 @@ class CubicCreateMixin:
         add('clear', '清空', (150, 100, 70))
         add('commit', '完成', (60, 150, 90))
         add('cancel', '取消', (120, 90, 90))
+
+        # 还原目标要多一个名字输入框：样式库靠这个名字再打开。
+        if self._cubic_edit_purpose == 'goal':
+            nr = pygame.Rect(rect.right - 236, y, 224, h)
+            self._cubic_edit_name_rect = nr
+            pygame.draw.rect(self.screen, (28, 30, 42), nr, border_radius=4)
+            pygame.draw.rect(self.screen,
+                             (90, 160, 220) if self._ann_design_name_active
+                             else (100, 100, 118), nr, 1, border_radius=4)
+            name = getattr(self, '_ann_design_style_name', '')
+            txt = self.status_font.render(
+                name or '输入样式名…', True,
+                (230, 230, 240) if name else (150, 150, 165))
+            self.screen.blit(txt, (nr.x + 8, nr.y + 5))
+            if self._ann_design_name_active:
+                caret_x = nr.x + 8 + self.status_font.size(name)[0] + 1
+                pygame.draw.line(self.screen, (220, 220, 230),
+                                 (caret_x, nr.y + 5),
+                                 (caret_x, nr.bottom - 6))
 
         status = (f'范围 {self._cubic_draft.m}×{self._cubic_draft.n}×'
                   f'{self._cubic_draft.d}（自动扩展） · '

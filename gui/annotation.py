@@ -2077,11 +2077,17 @@ class AnnotationMixin:
             else:       # 'restore'
                 add('home_back', '‹ 返回')
                 add('cubic_goal_build', '三维搭建（造还原目标）', (60, 150, 90))
-                title_text = ('三维还原状态：搭出目标形状，完成时过块数/mod 配额'
-                              '（只做必要条件）· ESC 返回')
+                add('style_lib', '三维样式库', (70, 120, 180))
+                title_text = ('三维还原状态：搭出目标形状并命名存样式，'
+                              '「三维样式库」可直接开局 · ESC 返回')
             title = self.status_font.render(title_text, True, (200, 200, 210))
-            self.screen.blit(title, (self._ann_bar_rect.x + 6,
-                                     self._ann_bar_rect.y - 18))
+            # 样式库下拉占左侧一块；标题右移避开，否则菜单会压掉标题开头。
+            _tx = (self._ann_bar_rect.x + 250
+                   if self._ann_design_style_menu is not None
+                   else self._ann_bar_rect.x + 6)
+            self.screen.blit(title, (_tx, self._ann_bar_rect.y - 18))
+            if self._ann_design_style_menu is not None:
+                self._ann_draw_style_menu(bar_x, y, w)
             return
 
         if self._ann_view == 'home':
@@ -2363,10 +2369,21 @@ class AnnotationMixin:
         st = self.status_font.render('格子画布  ' + msg, True, color)
         self.screen.blit(st, (x + 10, row2 + 3))
 
+    def _ann_style_is_cubic(self, name: str) -> bool:
+        """样式文件是否属于三维（kind='cubic'）；旧二维样式没有 kind。"""
+        from gui import design_styles
+        data = design_styles.load_style(self.config_dir, name) or {}
+        return str(data.get('kind') or '') == 'cubic'
+
     def _ann_draw_style_menu(self, x, y, w):
         """样式库下拉（首页用）：画在工具条上方，项矩形存菜单项列表。"""
         from gui import design_styles
         names = design_styles.list_styles(self.config_dir)
+        # 三维只列三维样式，二维只列二维样式：选错形态会在开局时被拒，
+        # 干脆不显示；两个库共用目录但 kind 分得开。
+        _cubic = bool(getattr(self, 'cubic_mode', False))
+        names = [nm for nm in names
+                 if self._ann_style_is_cubic(nm) == _cubic]
         mh = 24
         menu_h = max(len(names) * mh, 26)
         mrect = pygame.Rect(x + 10, y - menu_h - 4,
@@ -3283,6 +3300,50 @@ class AnnotationMixin:
             return
         kind = str(data.get('kind') or 'square')
         groups = design_styles.groups_from_data(data)
+        # 两个库共目录：三维只认 kind='cubic'，二维不认；选错形态直接拒。
+        if (kind == 'cubic') != bool(getattr(self, 'cubic_mode', False)):
+            self._ann_notify('这个样式属于另一种形态，不能在当前模式打开')
+            return
+
+        if kind == 'cubic':
+            # 三维样式：cells=[[r,c,d],...]，尺寸键 m/n/d，step 为等级。
+            # 还原目标就是这份格集；开局先建 m×n×d 立方体，再 apply_pattern
+            # 摆成样式形状并 set_goal_pattern，旋转/翻面仍走 48 对称判定。
+            rs = [int(p[0]) for p in cells]
+            cs = [int(p[1]) for p in cells]
+            ds = [int(p[2]) for p in cells]
+            lo = (min(rs), min(cs), min(ds))
+            cells = [(p[0] - lo[0], p[1] - lo[1], p[2] - lo[2])
+                     for p in cells]
+            m = max(1, int(data.get('m') or 0),
+                    max(rs) - lo[0] + 1)
+            n = max(1, int(data.get('n') or 0),
+                    max(cs) - lo[1] + 1)
+            d = max(1, int(data.get('d') or data.get('depth') or 0),
+                    max(ds) - lo[2] + 1)
+            step = int(data.get('step') or self.current_step)
+            step = max(1, min(step, max(m, n, d) - 1))
+            if not self.new_cubic_puzzle(m, n, d, step):
+                self._ann_notify(f'样式「{name}」无法开局（三维 {m}×{n}×{d} '
+                                 f'等级{step}）')
+                return
+            self.game.apply_pattern(cells)
+            self.game.set_goal_pattern(cells)
+            self.current_m = self.game.m
+            self.current_n = self.game.n
+            self.current_depth = self.game.depth
+            self._ann_style_goal = name
+            self.selected_gap = None
+            self.selected_block = None
+            self.step_count = 0
+            self.center_map()
+            self.game_history.reset()
+            self.game_history.save_snapshot(self.game)
+            self._mark_file_dirty()
+            self._ann_leave_to_home()
+            self._ann_notify(f'已按三维样式「{name}」开局（{len(cells)} 块；'
+                             'Alt+S 打乱后恢复成这个形状，旋转/翻面都算还原）')
+            return
 
         if kind in ('triangle', 'mi'):
             step = int(data.get('step') or self.current_step)

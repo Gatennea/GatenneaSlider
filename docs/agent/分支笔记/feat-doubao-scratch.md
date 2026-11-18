@@ -1029,3 +1029,22 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   分侧，跨面瞬间切换；2D 动画管線仍保留原「起终点都算近侧」兜底。
 - 测试：`_test_cubic_selection_anim` 补 G 段（起点近侧/终点远侧 + 切面轮廓红色
   像素计数），32 项全绿；全量 `_test_cubic*` 全绿。
+
+## 2026-11-19 三维创造第 4 步：样式命名 / 存盘 / 样式库
+
+- `gui/cubic_create.py`：还原目标（purpose='goal'）进入即打开样式名输入框，
+  `TEXTINPUT` 走 SDL 输入法（中文可入）；空名字点「完成」停在编辑器，不落盘。
+  保存门（`check_restorable`）通过后**先落样式再改当前局**，写盘失败不提交，
+  避免「样式库没有、局面已换」的半截状态。样式 JSON：`kind='cubic'`、
+  `m/n/d/step`、`cells`、`groups=[]`（捆绑留到阶段 5）。
+- `gui/annotation.py`：三维还原二级菜单加「三维样式库」；样式菜单按
+  `kind='cubic'` 过滤，二维库不再显示三维样式，反之亦然；`_ann_design_start_style`
+  新增 cubic 分支：建 `m×n×d` 局 → `apply_pattern(cells)` → `set_goal_pattern(cells)`，
+  旋转/翻面仍走 48 对称还原判定。
+- 测试：`_test_cubic_create.py` 增至 12 段 / 88 项全绿；新增命名框空名拦截、
+  `TEXTINPUT` 入名、样式落盘、样式库过滤、按样式再开局。六套 cubic 回归
+  （entry 31 / split 25 / animation 31 / infinite 30 / render_opts 72 /
+  lighting 27）全绿。二维样式库隔离与打乱用独立探针验证通过。
+- 注意：仓库 `config/config.json` 当前 `infinite_shuffle=true`；二维设计测试
+  若直接跑会把首次「打乱」解释成「停止无限打乱」而误报 D6b，需在测试进程里
+  先关该开关（本次未改用户配置）。

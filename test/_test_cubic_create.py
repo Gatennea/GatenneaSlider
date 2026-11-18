@@ -12,6 +12,7 @@ r"""三维创造模式：编辑会话 / 放挖 / 预览 / 保存门（2026-11-18
 """
 import os
 import sys
+import tempfile
 
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
@@ -160,15 +161,30 @@ def t4_cancel_and_gate():
 def t5_goal_purpose():
     print('== 5. 还原目标：允许满实心冻形 ==')
     g = new_gui()
+    g.config_dir = tempfile.mkdtemp(prefix='cubic_goal_')
     g.set_game_mode('create')
     g._ann_home_sub = 'restore'
     g._ann_btn_cubic_goal_build()
     check(g._cubic_edit_purpose == 'goal', '会话目标是还原态')
+    check(not g._cubic_edit_commit(), '空样式名被保存门拦下')
+    check(g._cubic_edit_active, '拦下后仍留在编辑器')
+    # TEXTINPUT 走真实事件入口：输入法/字母都从这里进来
+    ev = pygame.event.Event(pygame.TEXTINPUT, {'text': '满实心目标'})
+    check(g.handle_annotation_event(ev), 'TEXTINPUT 被编辑会话消费')
+    check(g._ann_design_style_name == '满实心目标', 'TEXTINPUT 写进名字框',
+          g._ann_design_style_name)
     check(g._cubic_edit_commit(), '满实心还原目标能保存',
           g.macro_notify_msg)
     check(g.game.goal_pattern is not None, 'goal_pattern 已设')
     check(len(g.game.goal_pattern) == 27, '目标 27 块',
           len(g.game.goal_pattern or ()))
+    check(g._ann_style_goal == '满实心目标', '样式名记到当前局',
+          g._ann_style_goal)
+    from gui import design_styles
+    data = design_styles.load_style(g.config_dir, '满实心目标') or {}
+    check(data.get('kind') == 'cubic', '样式落盘 kind=cubic', data.get('kind'))
+    check(len(data.get('cells') or ()) == 27, '样式 cells 27 块',
+          len(data.get('cells') or ()))
 
 
 def t6_event_dispatch():
@@ -345,9 +361,61 @@ def t11_ghost_anchor():
         check(drift > 2.0, '旧的无 anchor 路径确实会漂（回归证据）', drift)
 
 
+def t12_cubic_style_roundtrip():
+    print('== 12. 三维样式：命名存盘 / 样式库只列三维 / 再开局 ==')
+    g = new_gui()
+    g.config_dir = tempfile.mkdtemp(prefix='cubic_style_')
+    g.set_game_mode('create')
+    g._ann_home_sub = 'restore'
+    g._ann_btn_cubic_goal_build()
+    # 非满实心目标：抽掉 d=2 整层，剩 18 块 3×3×2（restorable 仍应通过）
+    for r in range(3):
+        for c in range(3):
+            g._cubic_draft.remove((r, c, 2))
+    g._cubic_edit_apply()
+    check(g._cubic_draft.check_restorable().ok, '18 块非满目标过 restorable',
+          g._cubic_draft.check_restorable().reasons)
+    g._ann_design_style_name = '三维测试目标'
+    check(g._cubic_edit_commit(), '命名后完成并存样式', g.macro_notify_msg)
+    from gui import design_styles
+    data = design_styles.load_style(g.config_dir, '三维测试目标') or {}
+    check(data.get('kind') == 'cubic' and data.get('d') == 3,
+          '样式带 kind=cubic 与 d=3', (data.get('kind'), data.get('d')))
+    check(len(data.get('cells') or ()) == 18, '样式 18 块',
+          len(data.get('cells') or ()))
+    check(len(g.game.goal_pattern or ()) == 18, '当前局还原目标 18 块',
+          len(g.game.goal_pattern or ()))
+
+    # 同目录塞一个二维样式：三维样式库不应显示它
+    design_styles.save_style(g.config_dir, '二维干扰', {
+        'version': 2, 'name': '二维干扰', 'kind': 'square',
+        'm': 3, 'n': 3, 'step': 1,
+        'cells': [[0, 0], [0, 1]], 'groups': [],
+    })
+    g._ann_home_sub = 'restore'
+    g._ann_btn_style_lib()
+    g._ann_draw_bar()
+    names = [nm for nm, _r in getattr(g, '_ann_design_menu_items', [])]
+    check('三维测试目标' in names, '三维样式库列出三维样式', names)
+    check('二维干扰' not in names, '三维样式库不列二维样式', names)
+
+    # 从样式库重新开局：盘面 = 18 块样式形状，goal_pattern = 同一格集
+    g._ann_design_start_style('三维测试目标')
+    check(g.cubic_mode, '仍是三维局')
+    check(len(g.game.blocks) == 18, '开局盘面 18 块', len(g.game.blocks))
+    check(sorted(tuple(b.location) for b in g.game.blocks)
+          == sorted(tuple(p) for p in data['cells']),
+          '盘面与样式格集一致',
+          (len(g.game.blocks), len(data['cells'])))
+    check(len(g.game.goal_pattern or ()) == 18, '开局同时设还原目标',
+          len(g.game.goal_pattern or ()))
+    check(g._ann_style_goal == '三维测试目标', '当前局记样式名',
+          g._ann_style_goal)
+
+
 def main():
     print('=' * 62)
-    print('三维创造模式：第 1–3 步回归')
+    print('三维创造模式：第 1–4 步回归')
     print('=' * 62)
     t1_mode_entry()
     t2_home_buttons()
@@ -360,6 +428,7 @@ def main():
     t9_negative_coords()
     t10_auto_expand_volume()
     t11_ghost_anchor()
+    t12_cubic_style_roundtrip()
     total = PASSED[0] + len(FAILED)
     print(f'结果：{"全部通过" if not FAILED else "有失败"}'
           f'（{PASSED[0]} 项通过，{len(FAILED)} 项失败）／共 {total} 项')
