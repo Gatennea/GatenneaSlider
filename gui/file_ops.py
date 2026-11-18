@@ -259,6 +259,24 @@ class FileOpsMixin:
                 # 加选项不用再回来改这里（方案 §2.4「登记机制」）。
                 **cubic_settings.serialize(self),
             ),
+            # 三维**局本身**也要进配置（2026-11-18 用户报「config.json 没存
+            # 三维滑块的信息」）：只存相机/选项时，配置里没有任何 m×n×d 与
+            # 等级，退出后连「上次在玩哪个三维局」都不知道，只能靠 temp_history
+            # 的存档兜；而那个存档一旦失效（旧档/被覆盖），就会退回方形局。
+            # 这里存的是「上次三维局的尺寸与等级」，启动时按存档优先、配置兜底。
+            'cubic_puzzle': (
+                {
+                    'm': int(getattr(self, 'current_m', 0)),
+                    'n': int(getattr(self, 'current_n', 0)),
+                    'd': int(getattr(self, 'current_depth', 0)),
+                    'step': int(getattr(self, 'current_step', 1)),
+                }
+                if getattr(self, 'cubic_mode', False) else None
+            ),
+            # 三维视图平移（屏幕像素偏移）：用户手拖过就记下来，重启还在原处。
+            # 与相机姿态分开存——姿态是「看的方向」，平移是「盘在屏幕上的位置」。
+            'cubic_pan': [round(float(v), 1)
+                          for v in (getattr(self, 'cubic_pan', None) or (0.0, 0.0))],
             'solver_algorithm': getattr(self, 'solver_algorithm', 'ida_star'),
             'coloring_enabled': getattr(self, 'coloring_enabled', False),
             'chain_hint_enabled': getattr(self, 'chain_hint_enabled', False),
@@ -461,6 +479,26 @@ class FileOpsMixin:
                         prefs['view'] = view
                     self._cubic_camera_prefs = prefs
 
+                # 上次在玩的三维局本身（尺寸 m×n×d 与等级）：temp_history 读不回来
+                # 时靠它兜底重建，否则一重启就退回方形局（用户 2026-11-18 报）。
+                cpz = config.get('cubic_puzzle')
+                if isinstance(cpz, dict):
+                    try:
+                        vals = [int(cpz.get(k)) for k in ('m', 'n', 'd', 'step')]
+                    except (TypeError, ValueError):
+                        vals = None
+                    if vals and all(v >= 1 for v in vals[:3]) \
+                            and 1 <= vals[3] < max(vals[:3]):
+                        self._cubic_puzzle_prefs = {
+                            'm': vals[0], 'n': vals[1],
+                            'd': vals[2], 'step': vals[3]}
+
+                pan = config.get('cubic_pan')
+                if isinstance(pan, (list, tuple)) and len(pan) == 2 \
+                        and all(isinstance(v, (int, float))
+                                and not isinstance(v, bool) for v in pan):
+                    self._cubic_pan_prefs = [float(pan[0]), float(pan[1])]
+
                 # 恢复浮动面板状态（位置 / 开关）
                 panels = config.get('panels', {})
                 if isinstance(panels, dict):
@@ -635,6 +673,29 @@ class FileOpsMixin:
                 print(f"加载上次状态失败: {e}")
 
         # 都没有，使用默认初始化
+        # 先**真的**回到启动参数那套局：构造期可能已经从上一份配置恢复成三维，
+        # 那条读不回来的旧档若直接「保留现状」，就等于把坏档当成了默认局。
+        _boot = getattr(self, '_boot_puzzle_args', None)
+        if _boot and len(_boot) == 4:
+            _m0, _n0, _s0, _k0 = _boot
+            if _k0 in ('square', 'numbered') and (
+                    self._current_kind() not in ('square', 'numbered')
+                    or (self.current_m, self.current_n, self.current_step)
+                    != (_m0, _n0, _s0)):
+                self.new_puzzle(_m0, _n0, _s0, numbered=(_k0 == 'numbered'))
+        cpz = getattr(self, '_cubic_puzzle_prefs', None)
+        if cpz and not getattr(self, 'cubic_mode', False):
+            # 上次是三维局、但那条自动存档读不回来（旧档/损坏/被覆盖）：
+            # 按 config 里记下的尺寸重建同一个三维局，别让玩家一启动就发现
+            # 「我的三维盘不见了」。重建后 history 从还原态起一条，不会串档。
+            try:
+                if self.new_cubic_puzzle(cpz['m'], cpz['n'], cpz['d'], cpz['step']):
+                    self._reset_file_dirty()
+                    print(f"三维局按配置重建：{cpz['m']}×{cpz['n']}×{cpz['d']} "
+                          f"等级{cpz['step']}")
+                    return
+            except Exception as e:      # noqa: BLE001
+                print(f'按配置重建三维局失败，回落默认局: {e}')
         self.center_map()
         self.game_history.save_snapshot(self.game)
         self._reset_file_dirty()
@@ -706,6 +767,11 @@ class FileOpsMixin:
                         cubic_settings.clamp_value(_meta['key'],
                                                    prefs[_meta['key']]))
         self.cubic_pan = [0.0, 0.0]
+        _pan0 = getattr(self, '_cubic_pan_prefs', None)
+        if isinstance(_pan0, (list, tuple)) and len(_pan0) == 2:
+            _lim = 0.55 * max(self.screen_width, self.screen_height)
+            self.cubic_pan = [max(-_lim, min(_lim, float(_pan0[0]))),
+                              max(-_lim, min(_lim, float(_pan0[1])))]
         self.cubic_dragging = False
         self.cubic_drag_moved = False
         self.cubic_drag_start = None
@@ -925,6 +991,9 @@ class FileOpsMixin:
         self.current_m = m
         self.current_n = n
         self.current_step = step
+        # 三维：层数也要跟着回到旗标上。只设 cubic_mode 不设 current_depth 时，
+        # 状态栏/成绩/存档取分榜键会直接抛「缺 depth」（2026-11-18 启动即崩）。
+        self.current_depth = int(cubic_depth) if kind == 'cubic' else 0
 
         self.game_history.reset()
         for i, snap in enumerate(snapshots):

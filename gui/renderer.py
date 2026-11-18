@@ -997,41 +997,65 @@ class RendererMixin:
 
         # 切面预览：和二维同一套视觉语言——**红色**（colors['line']），但三维里
         # 它是贯穿整盘的一张面，不是一条线（用户 2026-11-17 指认：这个改成红色）。
-        # ⚠️ 必须进画家序：不然预览面永远压在最上面，和滑块的遮挡关系不对
-        # （用户原话「切面看起来和滑块不在一个图层」）。做法是把面按格切成
-        # 小四边形，各自带深度塞进同一张绘制序里。
+        # 遮挡按「块在平面哪一侧」分两遍画解决，见下方说明。
         seam = getattr(self, 'selected_gap', None)
         # 推一步的滑动期间（第 6 步）不画切面：那张面停在原处，块会从它中间
         # 穿过去，深度序上必然出现「红面盖住正在滑的块」——动画一结束就恢复。
         # ⚠️ 只停「切面」，箭头照画（seam 本身还要给箭头定位）。
         seam_draw = None if getattr(self, 'cubic_anim', None) else seam
         seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
-        seam_items = []
+        # 切面 = **一整张矩形平面**（用户 2026-11-18：缝隙应该是一个矩形平面，
+        # 不是按格拼的方块阵）。遮挡不靠「按格切碎塞进画家序」（那会画出格线、
+        # 盘散开后还会缺格），改成按块在平面的哪一侧分两遍画：
+        #   背面那堆块 → 整张半透明红面 → 相机侧那堆块
+        # 切面是平面、每块整块只在一侧，所以这个顺序就是真实前后关系，
+        # 边界是块自身的轮廓（像素级），既没有网格缝也不会「切在另一层」。
+        seam_quad = None
+        seam_axis = None
+        seam_sign = 0.0
+        seam_fixed = 0.0
         if seam_draw and seam_draw[0] in ('r', 'c', 'd'):
             from engine import cubic_pick
-            # 按**格**取切面：每格 1 格大小，各自带自己的深度插进画家序，
-            # 前后关系由块与格谁更近决定（见 seam_plane_cells 的说明）。
-            for quad, center in cubic_pick.seam_plane_cells(
-                    seam_draw[0], seam_draw[1], blocks, gap=gap):
-                pts = [cubic_view.project_point(w, camera, scene['scale'],
-                                                scene['origin'])[:2] for w in quad]
-                # 切面近乎侧对视线时，一格在屏幕上退化成一条线（面积≈0）。
-                # 这种「一条红边」既看不出是面，又会因为它的深度最前面而压在
-                # 块上（用户 2026-11-18「邊界線被遮擋的時候還是畫出來了」），
-                # 直接不画。
-                area = 0.0
-                for i in range(len(pts)):
-                    p0, p1 = pts[i], pts[(i + 1) % len(pts)]
-                    area += p0[0] * p1[1] - p1[0] * p0[1]
-                if abs(area) / 2.0 < 1.5:
-                    continue
-                depth = cubic_view.project_point(center, camera, scene['scale'],
-                                                 scene['origin'])[2]
-                seam_items.append((depth, pts))
+            _dims = None
+            _cd = int(getattr(self, 'current_depth', 0) or 0)
+            if _cd >= 1:
+                # 按棋盘整幅取切面范围（盘面打散/边缘缺块时矩形不缩水）
+                _dims = (int(getattr(self, 'current_m', 0)),
+                         int(getattr(self, 'current_n', 0)), _cd)
+            seam_quad = cubic_pick.seam_plane_rect(
+                seam_draw[0], seam_draw[1], blocks, gap=gap, dims=_dims)
+            if seam_quad:
+                seam_axis = cubic_pick.FAMILY_TO_WORLD_AXIS[seam_draw[0]]
+                seam_fixed = float(seam_draw[1] + 1.0)
+                view_dir = camera.view_axis()
+                seam_sign = 1.0 if view_dir[seam_axis] >= 0 else -1.0
 
-        items = [(f['depth'], 0, f) for f in scene['faces']]
-        items += [(d, 1, q) for d, q in seam_items]
-        items.sort(key=lambda t: t[0])
+        faces_all = scene['faces']
+        back_faces, front_faces = faces_all, []
+        if seam_quad:
+            back_faces, front_faces = [], []
+            for f in faces_all:
+                loc = f['loc']
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
+                center = (loc[1] + 0.5, loc[2] + 0.5, loc[0] + 0.5)[seam_axis]
+                if (center - seam_fixed) * seam_sign > 0:
+                    front_faces.append(f)
+                else:
+                    back_faces.append(f)
+
+        items = [(f['depth'], 0, f) for f in back_faces]
+        if seam_quad:
+            pts = [cubic_view.project_point(w, camera, scene['scale'],
+                                            scene['origin'])[:2] for w in seam_quad]
+            # 切面近乎侧对视线时退化成一条线（面积≈0）：这种「一条红边」既看
+            # 不出是面，又会压在块上，直接不画（保留判定，只是不绘制）。
+            area = 0.0
+            for i in range(len(pts)):
+                p0, p1 = pts[i], pts[(i + 1) % len(pts)]
+                area += p0[0] * p1[1] - p1[0] * p0[1]
+            if abs(area) / 2.0 >= 1.5:
+                items.append((0.0, 1, pts))
+        items += [(f['depth'], 0, f) for f in front_faces]
         # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
         # 一级级台阶，切面边上那些「毛毛糙糙」的小三角有一半是块面自己的边。
         # 只在棋盘包围盒里开超采样，整帧仍是一次 smoothscale 缩回，成本可控。

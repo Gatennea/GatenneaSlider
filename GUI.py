@@ -258,6 +258,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 三维层数 d（§54 立方体板型；二维形态恒为 0）
         self.current_depth = 0
         self.current_kind = kind
+        # 启动参数（命令行/默认）：读档失败要「回落默认局」时用这一份，
+        # 不能用 current_*——那可能已经被存档改成了三维 3×3×3。
+        self._boot_puzzle_args = (m, n, step, kind)
 
         # 游戏逻辑对象（带 kind；命令行走位若参数非法，会在下方显式报错而非静默方形）
         self.game = create_puzzle(m, n, step, kind=kind)
@@ -1425,6 +1428,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         cubic_settings.reset(self)
         # 平移盘面（没选中时点三轴六键 = 平移）：换局清零，别把上局的偏移带过来
         self.cubic_pan = [0.0, 0.0]
+        # 但 config 里记着上次退出时的手工平移（用户拖过视角再退出）：套回去。
+        _pan0 = getattr(self, '_cubic_pan_prefs', None)
+        if isinstance(_pan0, (list, tuple)) and len(_pan0) == 2:
+            _lim = 0.55 * max(self.screen_width, self.screen_height)
+            self.cubic_pan = [max(-_lim, min(_lim, float(_pan0[0]))),
+                              max(-_lim, min(_lim, float(_pan0[1])))]
         # 三维只留虚拟键盘当鼠标操作入口（方案 §1「操作入口」）。二维里这张面板
         # 可以被关掉（config.panels.virtual_keyboard.visible=false），进三维必须
         # 自己打开，否则鼠标端一个能按的都没有——2026-11-18 用户就撞在这上面

@@ -690,3 +690,23 @@ A 段换成坐标轴断言 + A2 段 65 姿态扫描，F 段换成新箭头断言
 未做：feature_index 检索条目从表自动生成（目前只登记了页签，四个选项还没进
 检索真源）；方案里写的「明暗 / 透视 / 分组着色」渲染支持本身尚未实现，故未放
 进页面（不放假开关）。
+
+## 2026-11-18 首页三条：切面矩形 / 配置持久化 / 平移视角
+
+1. **切面恢复成一张矩形平面**。上一版为了遮挡把面按 1 格切成小四边形塞画家序，
+   结果盘面一打散就缺格、格与格交界还会加深成网格线（用户：「形状也改了」）。
+   现在 `engine.cubic_pick.seam_plane_rect(family, line, blocks, gap, dims)` 只给
+   **整幅四角**（给了 dims=(m,n,d) 就按棋盘整幅取，不随块堆缩水）；遮挡改成
+   按块相对平面的位置分两遍画：**背面块 → 整张半透明红面 → 相机侧块**。切面是
+   平面、每块整块只在一侧，这个顺序就是真实前后关系，边界是块自己的像素轮廓。
+2. **config.json 存三维局**。save_config 新增 `cubic_puzzle`（m/n/d/step）与
+   `cubic_pan`（手工平移）。temp_history 读不回（旧档/被覆盖）时按 config 重建
+   同一个三维局；读取时补 `current_depth`，修掉「状态栏取分榜键抛缺 depth、启动即崩」。
+3. **视角可平移**。中键 / Shift+左键拖动 = 跟手平移（只改屏幕偏移，不动姿态）；
+   Home = 居中归零；虚拟键盘六键那条平移路径保留。平移量进 config，重启还在原处。
+
+测试：新增 `test/_test_cubic_config_state.py` 16 项（矩形几何、落盘、只有 config 时
+重建三维局、拖动平移/夹紧/Home 居中）；`_test_cubic_seam_occlusion` 补 F 段 4 项
+（一整张矩形、共面、打散不缩水）共 14 项；`_test_cubic_save_guard` 补测试隔离
+（构造期已读真实 config，清掉 prefs）。全部 cubic 套件与 feature_index/statusbar/
+generic_controls/rp_menu 回归通过。

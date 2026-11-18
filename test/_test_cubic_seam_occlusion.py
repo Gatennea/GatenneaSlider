@@ -192,6 +192,21 @@ def main():
     centers = [c for _q, c in cells]
     check(len(set(centers)) == len(centers), '格子中心互不重合')
 
+    print('F. 切面是**一整张矩形平面**（2026-11-18 用户口径）')
+    edge = 3.0 - 0.12
+    rect = cp.seam_plane_rect('r', 1, gui.game.blocks, gap=0.12, dims=(3, 3, 3))
+    a2, b2 = [i for i in range(3) if i != axis]
+    span_a = max(p[a2] for p in rect) - min(p[a2] for p in rect)
+    span_b = max(p[b2] for p in rect) - min(p[b2] for p in rect)
+    check(len(rect) == 4, '四角', len(rect))
+    check(abs(span_a - edge) < 1e-9 and abs(span_b - edge) < 1e-9,
+          f'一张矩形覆盖整盘（{span_a:.2f}×{span_b:.2f}）')
+    check(all(abs(p[axis] - 2.0) < 1e-9 for p in rect), '四角共面')
+    # 打散后（只剩一个块）仍是整幅矩形，不跟着块堆缩水
+    lone = cp.seam_plane_rect('r', 1, gui.game.blocks[:1], gap=0.12, dims=(3, 3, 3))
+    check(abs((max(p[a2] for p in lone) - min(p[a2] for p in lone)) - edge) < 1e-9,
+          '只剩一块时切面还是整幅矩形（不会缩成一小片）')
+
     print('=' * 60)
     if _fail:
         print(f'结果：{_ok[0]} 项通过，{len(_fail)} 项失败')

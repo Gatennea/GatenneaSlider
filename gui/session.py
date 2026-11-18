@@ -563,12 +563,17 @@ class SessionMixin:
         """当前谜题完整标识：方形 2~4*4 / 带序号 2~4*4#num / 三角 2~tri6 /
         三维 2~cubic3*3*3。"""
         tri = getattr(self, 'triangle_mode', False)
+        # 三维的分榜键必须带层数（二维形态 current_depth 恒为 0 → None）。
+        # 回退顺序：旗标 → 逻辑对象自带 depth → 无（让 puzzle_key 报错）。
+        # 2026-11-18 实测：读档路径只设了 cubic_mode 没设 current_depth，
+        # 状态栏一取键就抛「缺 depth」，启动即崩。
+        depth = getattr(self, 'current_depth', 0) \
+            or int(getattr(self.game, 'depth', 0) or 0) or None
         return puzzle_key(
             self.current_step, self.current_m, self.current_n,
             kind=self._current_kind(),
             triangle_side=self.game.k if tri else None,
-            # 三维的分榜键必须带层数（二维形态 current_depth 恒为 0 → None）
-            depth=getattr(self, 'current_depth', 0) or None)
+            depth=depth)
 
     def _preset_puzzle_key(self, preset) -> str:
         """谜题菜单预设项对应的分榜键（与 _current_puzzle_key 同格式，用于比对当前项）。

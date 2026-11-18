@@ -56,6 +56,10 @@ def make_gui():
     pygame.display.set_mode((gui.screen_width, gui.screen_height))
     gui.screen = pygame.display.get_surface()
     gui._cubic_camera_prefs = {}
+    # 测试隔离：构造时已读过真实 config（可能带 cubic_puzzle），这里清掉，
+    # 否则 A 段「只有旧存档、没有三维局记录」的前提不成立。
+    gui._cubic_puzzle_prefs = None
+    gui._cubic_pan_prefs = None
     return gui
 
 

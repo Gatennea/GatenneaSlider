@@ -327,6 +327,54 @@ def seam_plane_cells(family, line, blocks, gap: float = 0.0):
     return cells
 
 
+def seam_plane_rect(family, line, blocks, gap: float = 0.0, dims=None):
+    """切面**整块矩形**（世界坐标四角，按平面内两轴顺序排）。
+
+    与 seam_plane_cells 同一套几何口径（同一圈 inset），但**不按格拆**，也不按
+    「缝口有没有块」筛选。为什么：2026-11-18 用户要的是「一张矩形平面」，按格
+    拼出来一是盘面被打散后会在没有相邻块的地方缺格子（看起来一块块浮着），
+    二是格与格的边界在半透明叠加下会加深成网格线。
+
+    遮挡改由渲染层解决：切面是一张平面，每个块整块都在它的一侧，所以
+    「先画背面块 → 画整张面 → 再画相机侧块」就得到与真实前后一致的结果。
+
+    dims=(m, n, d)（逻辑三轴块数）：给了就按**棋盘的整幅**取范围，而不是按当前
+    块堆的外接盒——盘面被打散、边缘缺块时，切面仍然是整张矩形，不会缩水。
+    """
+    if dims and len(dims) == 3 and all(int(v) >= 1 for v in dims):
+        m, n, dd = (int(v) for v in dims)
+        # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)：世界三轴的范围依次是 n、d、m
+        lo = [0.0, 0.0, 0.0]
+        hi = [float(n), float(dd), float(m)]
+    else:
+        locs = [(int(b.location[0]), int(b.location[1]), int(b.location[2]))
+                if hasattr(b, 'location') else tuple(int(v) for v in b)
+                for b in blocks]
+        if not locs:
+            return []
+        axis0 = FAMILY_TO_WORLD_AXIS[family]
+        # 逻辑 (r,c,d) → 世界 (X,Y,Z) = (c,d,r)，与 cubic_view 同一映射
+        world = [(p[1], p[2], p[0]) for p in locs]
+        lo = [min(p[i] for p in world) for i in range(3)]
+        hi = [max(p[i] for p in world) + 1 for i in range(3)]
+    axis = FAMILY_TO_WORLD_AXIS[family]
+    a, b = [i for i in range(3) if i != axis]
+    if hi[a] <= lo[a] or hi[b] <= lo[b]:
+        return []
+    half = float(gap) / 2.0
+    fixed = float(line + 1)
+    u0, u1 = lo[a] + half, hi[a] - half
+    v0, v1 = lo[b] + half, hi[b] - half
+    corners = []
+    for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
+        point = [0.0, 0.0, 0.0]
+        point[axis] = fixed
+        point[a] = u
+        point[b] = v
+        corners.append(tuple(point))
+    return corners
+
+
 def block_at_location(blocks, loc):
     """按 (r,c,d) 找出块对象（选中态要写 be_opted）。"""
     for b in blocks:
