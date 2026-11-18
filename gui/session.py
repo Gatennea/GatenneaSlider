@@ -205,8 +205,15 @@ class SessionMixin:
         # 打乱过程演示：滑动动画开着 + 确实有可演的步骤。
         # 演示从打乱前状态逐步重放，步数过多只演前几步，再淡出切入终态；
         # 期间棋盘输入被 animating 守卫挡着，结束/中断都会对齐到终态
+        #
+        # 三维**不走演示**（2026-11-18 实测）：演示重放是按 (行,列) 两坐标
+        # 与二维缝线写的，三维记录是 (r,c,d) 三步位移，重放既对不上位置又会
+        # 把盘面先退回打乱前的还原态——开着动画按「打乱」看起来像什么都没
+        # 发生（实测 changed=0、is_solved=True）。三维直接落到终态，等以后
+        # 按三维位移写一套专门的演示再开。
         demo = (records and self.animation_enabled
-                and self.animation_duration > 0)
+                and self.animation_duration > 0
+                and not getattr(self, 'cubic_mode', False))
         if demo:
             # 通知延后到演示结束再补发：那会儿玩家才能真正操作
             self._start_shuffle_demo(records, pre_positions,
