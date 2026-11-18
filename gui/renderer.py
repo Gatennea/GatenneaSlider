@@ -1026,6 +1026,15 @@ class RendererMixin:
         border = self.colors['border']
         opted = {tuple(int(v) for v in b.location[:3])
                  for b in blocks if getattr(b, 'be_opted', False)}
+        # 拒绝闪色：按块位置收窄，画进下面同一轮面片循环，让切面/前块能正常
+        # 挡住它（旧写法在全部画完后描屏幕凸包，等于永远浮在最上层）。
+        _shake_t = getattr(self, '_shake_t', 0)
+        _shake_ids = (getattr(self, '_shake_blocks', set()) or set()
+                      if _shake_t > 0 else set())
+        _shake_locs = {tuple(int(v) for v in b.location[:3])
+                       for b in blocks if id(b) in _shake_ids}
+        _reject_col, _reject_w = reject_border_style(
+            getattr(self, '_reject_reason', None), self.zoom)
         # 三维选中动画（撤销/重做）：只看不改，单独一层高亮位置与缝。
         _sel_anim = self._sel_anim_border()
         _anim_locs = (getattr(self, '_sel_anim_locs', frozenset())
@@ -1077,13 +1086,10 @@ class RendererMixin:
         back_faces, front_faces = faces_all, []
         if seam_quad:
             # 画家序（2026-11-18 二次返工）：
-            #   · 未选中块**按深度**分前后：挡在切面前面的块要盖住切面（否则
-            #     用户说「遮挡退回好几版之前」——红面糊在所有块上）；
-            #   · 选中的那一片永远画在切面之上（用户：选中滑块不能和缝隙相交），
-            #     绿色组保持不透明。
+            #   · 所有块**按实际所在侧**分前后：挡在切面前面的块要盖住切面，
+            #     切面后面的块（含选中片）要被红面盖住——选中片不再无条件
+            #     画在切面之上，否则用户看到「选中块穿透切面」。
             # 同一组内部仍按 depth 从远到近。
-            opted = {(int(b.location[0]), int(b.location[1]), int(b.location[2]))
-                     for b in blocks if getattr(b, 'be_opted', False)}
             # 三维 2D 动画管線（打乱演示 / 撤销重做）里正在移动的块：它们可能
             # 跨过切面，不能按「逻辑起点」分前后，否则中途会被红面盖住。
             # 起终点都算近侧，保证整段动画都在切面之上（用户要的「不闪烁」）。
@@ -1102,7 +1108,7 @@ class RendererMixin:
                 # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)；块心按包围盒中心散开算
                 center = cubic_view.block_center(loc, gap, _split_anchor)[seam_axis]
                 near = (center - seam_fixed) * seam_sign > 0
-                if key in opted or key in _moving_front or near:
+                if key in _moving_front or near:
                     front_faces.append(f)
                 else:
                     back_faces.append(f)
@@ -1174,13 +1180,19 @@ class RendererMixin:
                 continue
             face = item
             _is_anim = _sel_anim is not None and face['loc'] in _anim_locs
+            _is_reject = bool(_shake_locs) and face['loc'] in _shake_locs
             color = (chosen if (face['loc'] in opted or _is_anim) else base)
             shade = face['shade']
             fill = (int(color[0] * shade), int(color[1] * shade),
                     int(color[2] * shade))
             pts = _T(face['pts'])
             pygame.draw.polygon(hi, fill, pts)
-            if _is_anim:
+            if _is_reject:
+                # 拒绝边跟着面片一起画：背面的块先画，随后整张切面盖住，
+                # 正面的块后画——与真实遮挡一致，不再整圈浮在最上层。
+                pygame.draw.polygon(hi, _reject_col, pts,
+                                    max(1, int(_reject_w)) * _ss)
+            elif _is_anim:
                 # 撤销蓝 / 重做橙；线宽跟超采样一起放大，缩回后仍是 2–3px。
                 # 变量名别用 _bw/_bh：那两个是下面 smoothscale 的目标尺寸。
                 _lw = max(2, int(_sel_anim[1])) * _ss
@@ -1197,20 +1209,6 @@ class RendererMixin:
             pygame.draw.polygon(self.screen, _sel_anim[0],
                                 seam_pts_screen,
                                 max(2, min(3, int(_sel_anim[1]))))
-
-        # 拒绝反馈（方案 §5 第 3 阶段）：推不动时给这组块描 12 帧红边。
-        # 二维靠 `_flash_reject` 让块面变色，三维块是投影出来的多边形，直接描
-        # 屏幕轮廓更省事也不会被画家序吃掉。状态与二维共用 `_shake_t`。
-        if getattr(self, '_shake_t', 0) > 0:
-            shake_ids = getattr(self, '_shake_blocks', set()) or set()
-            shake_boxes = cubic_view.block_boxes(
-                [b for b in blocks if id(b) in shake_ids], gap,
-                anchor=_split_anchor)
-            for box in shake_boxes:
-                hull = cubic_view.screen_hull_of_box(
-                    box, camera, scene['scale'], scene['origin'])
-                if len(hull) >= 3:
-                    pygame.draw.polygon(self.screen, self.colors['line'], hull, 2)
 
         # 三维方向箭头（方案 §4 第 4 步「重画箭头」）：选中一组后在切面外沿画可点
         # 的方向键。画在最上层、按当前相机现算方向，旋转时跟着转。

@@ -10,9 +10,10 @@
   屏幕上每一个偏红的像素 → 按正交投影反解出它在切面上的世界点 →
   看这个点是否落在某个**选中块**的盒子内部。
 
-判据（2026-11-18 二次返工：遮挡优先 + 选中组不糊红）
+判据（2026-11-18 三次返工：遮挡优先，选中片按实际侧分前后）
   A. 偏红像素必须落在切面矩形范围内（不外扩到盘外）。
-  B. 选中块永远画在切面之上：红像素不许落在任何一个选中块的盒子内部。
+  B. **近侧**选中块画在切面之上：红像素不许落进近侧选中块的盒子内部。
+  B2. **远侧**选中块必须被红面糊住：其屏幕中心像素要偏红。
   C. 斜视 + 拆分 0.35 时必须真有一部分红露出来（不能「全挡了」）。
   D. 正视 + 拆分 0.12 时前层块把切面挡死，红占比必须很小。
   E. 切面格子：都落在同一张平面上、格数 = 缝口有块的格数、互不重叠。
@@ -145,7 +146,7 @@ def main():
     check(not outside, f'红像素都在切面范围内（{len(outside)} 个出界）', outside[:3])
     check(total_red > 200, f'确实有红画出来（采样到 {total_red} 个红像素）')
 
-    print('G. 选中块永远压在切面之上（红像素不落进选中块内部）')
+    print('G. 近侧选中块压在切面之上（红像素不落进近侧选中块内部）')
     gui.cubic_gap = 0.35
     gui.cubic_camera = CubicCamera.from_yaw_pitch(35, 25)
     gui.selected_gap = ('r', 1)
@@ -183,9 +184,31 @@ def main():
     check(not bad_tint, f'选中块没被红面糊住（{len(bad_tint)} 个红像素落在选中块里）',
           bad_tint[:3])
 
+    print('H. 远侧选中块必须被红面压暗（不再穿透切面）')
+    gui.game.apply_pattern([(0, 0, 0), (2, 1, 0)])
+    gui.cubic_gap = 0.35
+    gui.cubic_camera = CubicCamera.from_yaw_pitch(0, 0)
+    gui.selected_gap = ('r', 1)
+    for b in gui.game.blocks:
+        b.be_opted = int(b.location[0]) == 0
+    gui.selected_block = next(b for b in gui.game.blocks if b.be_opted)
+    gui.draw_cubic_board()
+    scene = gui._cubic_scene
+    sel = gui.selected_block
+    box = cv.block_boxes([sel], gui.cubic_gap)[0]
+    hull = cv.screen_hull_of_box(box, gui.cubic_camera, scene['scale'],
+                                 scene['origin'])
+    cx = int(sum(p[0] for p in hull) / len(hull))
+    cy = int(sum(p[1] for p in hull) / len(hull))
+    px = gui.screen.get_at((cx, cy))
+    check(px[0] > px[1] + 20,
+          f'远侧选中块中心被红面压暗（pixel={tuple(px)[:3]}）')
+
 
     print('C. 斜视 + 拆分 0.35：必须真有一部分露出来')
-    gui.game._clear_selection()          # G 段留下的选中态会盖住切面，先清掉
+    gui.game.apply_pattern([(r, c, dep) for r in range(3)
+                            for c in range(3) for dep in range(3)])
+    gui.game._clear_selection()          # G/H 段留下的选中态先清掉
     gui.cubic_gap = 0.35
     gui.cubic_camera = CubicCamera.from_yaw_pitch(35, 25)
     gui.selected_gap = ('r', 1)
@@ -257,7 +280,7 @@ def main():
     check(abs((max(p[a2] for p in lone) - min(p[a2] for p in lone)) - lone_edge) < 1e-9,
           f'只剩一块时切面跟着缩到 1.00（不是原始 3×3）')
 
-    print('H. 切面四角不被超采样画布裁掉（用户 2026-11-18：完整 = 边角不被裁）')
+    print('I. 切面四角不被超采样画布裁掉（用户 2026-11-18：完整 = 边角不被裁）')
     tol_clip = 0
     for gy in (0.12, 0.40):
         gui.cubic_gap = gy

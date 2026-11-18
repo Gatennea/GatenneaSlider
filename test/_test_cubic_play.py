@@ -226,8 +226,27 @@ res = gui._cubic_push_letter(fam.upper())     # 法向推：引擎必拒
 check(res is False and gui.step_count == n0, '法向推被拒、步数不变')
 check(getattr(gui, '_shake_t', 0) > 0, f'被拒后触发描边闪烁（_shake_t={gui._shake_t}）')
 check(bool(getattr(gui, '_shake_blocks', None)), '闪烁集合就是刚选的这组')
+# 三维箭头/键盘拒绝必须把底层原因带到渲染层，不能像旧路径那样被第二次
+# 无原因 _reject_move 覆盖成中性灰（用户 2026-11-18：两种拒绝要分色）。
+# 法向推本身是 bad_direction（中性）；这里只要求原因没被抹成 None。
+check(getattr(gui, '_reject_reason', None) is not None,
+      f'拒绝原因保留（{getattr(gui, "_reject_reason", None)!r}）')
 gui.draw_cubic_board()
 check(True, '带红边的一帧能画出来（不崩）')
+# 三维拒绝边必须沿用二维的两种原因色：断开=冷紫，重叠=暖珊瑚。
+from gui.renderer import (REJECT_BORDER_COLLISION,
+                          REJECT_BORDER_DISCONNECTED)   # noqa: E402
+for _reason, _color, _name in (
+        ('disconnected', REJECT_BORDER_DISCONNECTED, '断开'),
+        ('collision', REJECT_BORDER_COLLISION, '重叠')):
+    gui._reject_reason = _reason
+    gui._shake_t = 12
+    gui._shake_blocks = {id(b) for b in gui.game.blocks if b.be_opted}
+    gui.draw_cubic_board()
+    _hit = any(gui.screen.get_at((x, y))[:3] == _color
+               for y in range(0, gui.screen_height, 2)
+               for x in range(0, gui.screen_width, 2))
+    check(_hit, f'{_name}拒绝画出对应色 {_color}')
 # 前提没满足（没选块）只提示 + 出声，不闪
 gui._cubic_clear_selection()
 gui._shake_t = 0
