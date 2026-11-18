@@ -73,7 +73,17 @@ class VirtualKeyboardMixin:
             return 3
         return 2
 
-    def _vk_build_cubic_dirs(self, top_row_y, center_x) -> dict:
+    def _vk_cubic_origin(self) -> tuple:
+        """三维坐标轴的原点（屏幕坐标）。
+
+        端点布局与绘制必须共用这一处：之前布局按 ``_VK_CUBIC_AREA``（200）
+        算中心，绘制却按「三行按钮高度」算，白点就浮在轴交点上头约半格。
+        """
+        panel = self.vk_panel_rect
+        top = panel.top + self._VK_TITLE_H + self._VK_PAD
+        return (panel.centerx, top + self._vk_dir_area_height() // 2)
+
+    def _vk_build_cubic_dirs(self) -> dict:
         """三维键盘 = 一根**坐标轴图**：中心一个原点，六条端点沿三轴伸出去。
 
         为什么改成坐标轴（用户 2026-11-18「虚拟键盘設計成坐標軸那樣，六個方向
@@ -87,8 +97,7 @@ class VirtualKeyboardMixin:
         """
         btn = 40          # 三维端点键：比二维略小，六个都要挤进坐标轴区域
         area_h = self._VK_CUBIC_AREA
-        cx = center_x
-        cy = top_row_y + area_h // 2
+        cx, cy = self._vk_cubic_origin()
         axes = self._cubic_vk_axes() if hasattr(self, '_cubic_vk_axes') else {}
         rects = {}
         reach = area_h / 2.0 - btn / 2.0 - 6.0
@@ -205,7 +214,7 @@ class VirtualKeyboardMixin:
         # 方向键区（行数随形态变：方形 2 行 / 三角形 3 行 / 米字 3 行）
         top_row_y = y + self._VK_TITLE_H + self._VK_PAD
         if getattr(self, 'cubic_mode', False):
-            rects.update(self._vk_build_cubic_dirs(top_row_y, center_x))
+            rects.update(self._vk_build_cubic_dirs())
         elif getattr(self, 'mi_mode', False):
             rects.update(self._vk_build_mi_dirs(top_row_y, center_x))
         elif getattr(self, 'triangle_mode', False):
@@ -551,16 +560,15 @@ class VirtualKeyboardMixin:
 
           · 每族一条直轴，从负端穿过原点连到正端，颜色区分 r 红 / c 蓝 / d 绿；
           · 只在**正端**画箭头（r/R 的正方向），负端是轴的另一头；
-          · 两端各一个圆形端盘（写字母），整盘是命中盒——仍可六向点；
+          · 两端各一个圆形端盘（纯色，不写字母），整盘是命中盒——仍可六向点；
           · 端点位置由相机投影给出，旋转棋盘时这根三脚架跟着转；
           · 轴缩短到成一点（正对镜头）时，两端盘沿屏幕横轴拉开，仍各自可点。
         """
         axes = self._cubic_vk_axes() if hasattr(self, '_cubic_vk_axes') else {}
         axis_colors = {'r': (226, 120, 120), 'c': (98, 156, 232), 'd': (110, 200, 130)}
         panel = self.vk_panel_rect
-        area_top = panel.top + self._VK_TITLE_H + self._VK_PAD
-        area_h = self._VK_BTN * 3 + self._VK_BTN_GAP * 2
-        origin = (panel.centerx, area_top + area_h // 2)
+        area_h = self._vk_dir_area_height()
+        origin = self._vk_cubic_origin()
 
         pos = {action.split('_', 1)[1]: rect.center
                for action, rect in rects.items() if action.startswith('cubic_')}
@@ -594,10 +602,10 @@ class VirtualKeyboardMixin:
                 (int(base[0] + pxv * 6.0), int(base[1] + pyv * 6.0)),
                 (int(base[0] - pxv * 6.0), int(base[1] - pyv * 6.0)),
             ])
-            # 轴名不另写：端盘里的 r/R c/C d/D + 三根轴的颜色已经把轴标清楚了，
-            # 再挤一个小写字母只会压在线和盘上（用户嫌乱）。
 
-        # ② 端点盘：圆形，字母居中；hover 提亮
+        # ② 端点盘：纯色圆盘，hover 提亮；不再写字形/轴名
+        #    （用户 2026-11-18：去掉虚拟键盘字母标记，避免相机旋转后
+        #     字母与实际方向对不上，反而误导。）
         for action, rect in rects.items():
             if not action.startswith('cubic_'):
                 # 粘滞 / 撤销 / 重做：与二维同一套画法
@@ -623,8 +631,6 @@ class VirtualKeyboardMixin:
             fill = axis_colors[fam] if hovered else (46, 48, 56)
             pygame.draw.circle(self.screen, fill, center, radius)
             pygame.draw.circle(self.screen, axis_colors[fam], center, radius, 2)
-            surf = self.dialog_font.render(letter, True, (245, 245, 245))
-            self.screen.blit(surf, surf.get_rect(center=center))
 
         # ③ 原点
         pygame.draw.circle(self.screen, (228, 228, 238), origin, 4)

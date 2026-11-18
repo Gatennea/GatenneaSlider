@@ -402,6 +402,39 @@ s3, _ = api('GET', '/version')
 check('AC-25f 开关关闭 → 免令牌端点也 403', s3 == 403, f'(got {s3})')
 ext_state['enabled'] = True
 
+# AC-26 三维扩参（2026-11-18）：/new depth、/camera、/select_gap r/c/d、
+# /select_block depth。用 3×3×3 实心局，只验证参数被接住（move 要打乱后才有空位）。
+s, r = api('POST', '/new', body={'m': 3, 'n': 3, 'depth': 3,
+                                 'step': 1, 'type': 'cubic'}, headers=AUTH)
+check('AC-26a POST /new 建 3×3×3 三维局',
+      s == 200 and r.get('ok') and 'cubic3*3*3' in (r.get('message') or ''), f'(got {s})')
+s, r = api('GET', '/camera', headers=AUTH)
+check('AC-26b GET /camera 返回四元数/缩放/平移',
+      s == 200 and r.get('ok') and len(r.get('quat') or []) == 4
+      and 'zoom' in r and 'pan' in r, f'(got {s})')
+s, r = api('POST', '/camera', body={'zoom': 1.2}, headers=AUTH)
+check('AC-26c POST /camera 设 zoom', s == 200 and r.get('ok')
+      and abs((r.get('zoom') or 0) - 1.2) < 1e-6, f'(got {s})')
+s, r = api('POST', '/camera', body={'pan': [10, -5]}, headers=AUTH)
+check('AC-26d POST /camera 设 pan', s == 200 and r.get('ok')
+      and r.get('pan') == [10.0, -5.0], f'(got {s})')
+s, r = api('POST', '/camera', body={'center': True}, headers=AUTH)
+check('AC-26e POST /camera 居中', s == 200 and r.get('ok'), f'(got {s})')
+s, r = api('POST', '/select_gap', body={'type': 'r', 'line': 1}, headers=AUTH)
+check('AC-26f POST /select_gap 接 r/c/d',
+      s == 200 and r.get('ok'), f'(got {s})')
+s, r = api('POST', '/select_block', body={'row': 0, 'col': 0, 'depth': 0},
+           headers=AUTH)
+check('AC-26g POST /select_block 接 depth',
+      s == 200 and r.get('ok') and '0,0,0' in (r.get('message') or ''), f'(got {s})')
+s, r = api('POST', '/move', body={'direction': 'R'}, headers=AUTH)
+check('AC-26h POST /move 接三维大写字母（不再 400 非法方向）',
+      s == 200 and '必须是' not in (r.get('message') or ''), f'(got {s})')
+# 收尾：把共享配置里的 temp_history 切回二维，避免后续测试读到三维局
+# 后按二维字段断言（例如 _test_http_api 的 blocks mod / move reason）。
+s, r = api('POST', '/new', body={'m': 3, 'n': 3, 'step': 1}, headers=AUTH)
+check('AC-26i 收尾切回二维 3×3', s == 200 and r.get('ok'), f'(got {s})')
+
 print()
 if _failures:
     print(f"共 {len(_failures)} 项失败: {_failures}")

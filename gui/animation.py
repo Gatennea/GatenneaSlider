@@ -64,6 +64,11 @@ class AnimationMixin:
         self._anim_dr = self.anim_end_pos[0][0] - self.anim_start_pos[0][0]
         self._anim_dc = self.anim_end_pos[0][1] - self.anim_start_pos[0][1]
         self._undo_redo_type = None  # 普通移动动画，清除撤销/重做标记
+        # 三维：打乱演示 / 撤销重做 / 宏回放都走这条 2D 动画管線，但时长必须
+        # 跟右侧「速度」滑条同源（cubic_anim_ms），否则三维里调速度是哑的。
+        if getattr(self, 'cubic_mode', False):
+            self._anim_duration_override = max(
+                1, int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS)))
         self.animating = True
 
     def _apply_drag_origin(self):
@@ -116,6 +121,11 @@ class AnimationMixin:
             if self._shake_t == 0:
                 self._shake_blocks = set()
                 self._reject_reason = None
+        # 三维粘滞连续撤销/重做：`cubic_anim` 是纯渲染计时，不经过
+        # `animating`/动画队列，二维 commit 后的推进链在三维里等不到，
+        # 所以每帧在这里按到期时间接下一步。返回 True 时本帧只需重绘。
+        if self._tick_cubic_continuous():
+            return
         if not self.animating:
             return
         elapsed = pygame.time.get_ticks() - self.anim_start_time
@@ -192,6 +202,11 @@ class AnimationMixin:
             move_info = self._pending_move_info
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
+            # 滑动定型（待办 §55）：动画落位后同样要判「原缝是否还分得开」。
+            # 宏播放的选中片是回放层自己管的，不参与玩家侧的连续选中规则。
+            if not getattr(self, 'macro_executing', False) \
+                    and not getattr(self, 'cubic_mode', False):
+                self._finalize_move_selection(self.anim_blocks)
             self._pending_move_info = None
             # 与无动画路径同口径：走一步不动相机（只在整盘全看不见时兜底）。
             self.ensure_blocks_visible(only_if_invisible=True)
@@ -583,7 +598,17 @@ class AnimationMixin:
             # 三维：这条滑条写 cubic_anim_ms（60..400），不动二维 animation_duration
             lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
             hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
-            self.cubic_anim_ms = int(lo + normalized * (hi - lo))
+            new_ms = int(lo + normalized * (hi - lo))
+            old_ms = max(1, int(getattr(self, 'cubic_anim_ms', 140)))
+            # 正在播三维动画：按已播进度重锚 start_time，拖动滑条立刻变速，
+            # 不会出现「改了值但要等下一步」或进度跳变。
+            if (new_ms != old_ms and self.animating
+                    and getattr(self, '_anim_duration_override', None)):
+                elapsed = pygame.time.get_ticks() - self.anim_start_time
+                progress = elapsed / old_ms
+                self.anim_start_time = pygame.time.get_ticks() - int(progress * new_ms)
+                self._anim_duration_override = new_ms
+            self.cubic_anim_ms = new_ms
             return
         new_duration = int(self.SPEED_MIN_MS + normalized * (self.SPEED_MAX_MS - self.SPEED_MIN_MS))
         if self.animating and self.animation_duration > 0:

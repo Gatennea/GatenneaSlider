@@ -75,8 +75,8 @@ curl "http://127.0.0.1:5050/status?token=<令牌>"
 | POST | `/mode` | `{"mode":"practice"|"timed"}`（計時 running 中切換被拒） |
 | POST | `/settings` | 部分更新 GUI 開關，如 `{"coloring_enabled":true,"animation_duration_ms":120}`；未知鍵/型別錯/越界回 400 且整批不套用 |
 | POST | `/timer/start` | 競速開始（需先打亂處於 ready）；`/timer/stop` = DNF |
-| POST | `/macro/record/start` `/macro/record/set_base` `{row,col}` `/macro/record/stop` `{name}` | 錄製 |
-| POST | `/macro/execute` | `{name,base_row,base_col,reverse?}`；`reverse:true` 逆序播放（與 GUI 勾選同路徑） |
+| POST | `/macro/record/start` `/macro/record/set_base` `{row,col,depth?}` `/macro/record/stop` `{name}` | 錄製；三維基準需加 `depth` |
+| POST | `/macro/execute` | `{name,base_row,base_col,base_depth?,reverse?}`；三維需 `base_depth`；`reverse:true` 逆序播放（與 GUI 勾選同路徑） |
 | POST | `/macro/delete` `{name}` `/macro/rename` `{old_name,new_name}` | 管理 |
 
 `POST /move` 失敗時的 `reason` 列舉（成功時無 reason）：
@@ -177,9 +177,9 @@ GUI 每幀執行 `process_commands()`（`gui/events.py`），支援三種佇列�
 | `macro_list` | — | 列出宏 |
 | `macro_status` | — | 錄製/執行/逆序模式等狀態 |
 | `macro_record_start` | — | 開始錄製 |
-| `macro_set_base` | `row col` | 設定錄製基準 |
+| `macro_set_base` | `row col [depth]` | 設定錄製基準（三維需 `depth`） |
 | `macro_record_stop` | `name` | 停止並命名保存 |
-| `macro_execute` | `name base_row base_col [reverse]` | 在新基準執行宏（會做 step 相容拆分）；尾參 `reverse` 逆序播放 |
+| `macro_execute` | `name base_row base_col [depth] [reverse]` | 在新基準執行宏（會做 step 相容拆分）；三維需 `depth`，`reverse` 逆序播放 |
 | `macro_delete` | `name` | 刪除 |
 | `macro_rename` | `old new` | 改名 |
 | `load_map` | `<地圖串>` | 直接導入局面（行分隔用換行或 `;`），成功後 step_count=0、歷史重置 |

@@ -54,11 +54,12 @@ class _Holder:
 h = _Holder()
 cubic_settings.reset(h)
 d = cubic_settings.defaults()
-check(set(d) == {'gap', 'seam_alpha', 'rot_sensitivity'},
-      '表里有三条（gap/seam_alpha/rot_sensitivity；双击项已随右键选缝删除）', sorted(d))
-check(h.cubic_gap == 0.12 and h.cubic_seam_alpha == 110,
+check(set(d) == {'gap', 'seam_alpha', 'cubic_anim_ms', 'rot_sensitivity'},
+      '表里有四条（gap/seam_alpha/cubic_anim_ms/rot_sensitivity）', sorted(d))
+check(h.cubic_gap == 0.12 and h.cubic_seam_alpha == 110
+      and h.cubic_anim_ms == 140,
       'reset 把默认值写到属性上',
-      (h.cubic_gap, h.cubic_seam_alpha))
+      (h.cubic_gap, h.cubic_seam_alpha, h.cubic_anim_ms))
 check(cubic_settings.clamp_value('gap', 9.9) == 0.6, 'gap 超上界夹到 0.6',
       cubic_settings.clamp_value('gap', 9.9))
 check(cubic_settings.clamp_value('gap', -1) == 0.0, 'gap 负值夹到 0.0')
@@ -73,7 +74,8 @@ try:
     check(False, '未登记的键应 KeyError')
 except KeyError:
     check(True, '未登记的键 → KeyError')
-check(len(cubic_settings.items('view')) == 2, 'view 组两条')
+check(len(cubic_settings.items('view')) == 3,
+      'view 组三条（拆分/切面/动画时长）')
 
 print('=' * 60)
 print('B. 右侧栏：三维 5 开关 + 两条滑条；二维 7 开关无滑条')
@@ -106,16 +108,39 @@ check({'animation_enabled', 'selection_animation_enabled', 'game_mode',
 gr = getattr(gui, 'cubic_gap_slider_rect', None)
 ar = getattr(gui, 'cubic_alpha_slider_rect', None)
 check(gr is not None and ar is not None, '三维态有拆分/切面透明两条滑条', (gr, ar))
-check(gr.width == gui.right_panel_width - 12, '滑条铺满右侧栏宽度（132-12=120）', gr.width)
-# 不许叠在开关或竖滑条上
+_all4 = [gui.zoom_slider_rect, gui.slider_rect, gr, ar]
+check(all(r is not None for r in _all4), '四条滑条矩形都建出来了（缩放/速度/拆分/切面）')
+check(all(r.height > r.width for r in _all4),
+      '四条全部竖向（高 > 宽）', [(r.width, r.height) for r in _all4])
+_col_w = (gui.right_panel_width - 12) // 2
+check(gr.width == _col_w and ar.width == _col_w,
+      f'2×2 每格半栏宽（{_col_w}）', (gr.width, ar.width))
+# 2×2：左列缩放/拆分，右列速度/切面；第二行在第一行轨道下方
+check(abs(gr.left - gui.zoom_slider_rect.left) <= 1
+      and abs(ar.left - gui.slider_rect.left) <= 1,
+      '左列 = 缩放/拆分，右列 = 速度/切面',
+      ((gr.left, gui.zoom_slider_rect.left), (ar.left, gui.slider_rect.left)))
+check(gr.top >= gui.zoom_slider_rect.bottom
+      and ar.top >= gui.slider_rect.bottom,
+      '第二行（拆分/切面）在第一行（缩放/速度）下方',
+      ((gr.top, gui.zoom_slider_rect.bottom), (ar.top, gui.slider_rect.bottom)))
+# 不许叠在开关或任一条滑条上
 all_sw = list(sw.values())
-check(all(not gr.colliderect(r) for r in all_sw)
-      and all(not ar.colliderect(r) for r in all_sw),
-      '两条滑条不与任何开关矩形重叠')
-check(not gr.colliderect(ar), '两条滑条彼此不重叠')
-check(not gui.zoom_slider_rect.colliderect(gr)
-      and not gui.slider_rect.colliderect(gr),
-      '竖滑条（缩放/速度）不与新滑条重叠')
+check(all(not r.colliderect(s) for r in _all4 for s in all_sw),
+      '四条滑条不与任何开关矩形重叠')
+check(all(not _all4[i].colliderect(_all4[j])
+          for i in range(len(_all4)) for j in range(i + 1, len(_all4))),
+      '四条滑条两两不重叠')
+# 开关自身也要守住面板：两两不重叠、都在面板内、不压四条滑条
+_panel_left = gui.screen_width - gui.right_panel_width
+check(all(r.left >= _panel_left and r.right <= gui.screen_width
+          and r.top >= 0 and r.bottom <= gui.screen_height for r in all_sw),
+      '所有开关都在右侧面板内', [(r.left, r.right) for r in all_sw])
+check(all(not all_sw[i].colliderect(all_sw[j])
+          for i in range(len(all_sw)) for j in range(i + 1, len(all_sw))),
+      '六个开关两两不重叠')
+check(all(not r.colliderect(s) for r in all_sw for s in _all4),
+      '开关不压任何一条竖滑条')
 
 # 速度竖滑条在三维态必须真的写 cubic_anim_ms（以前它只改二维 animation_duration，
 # 在三维里是个哑控件）
@@ -145,9 +170,14 @@ check(len(getattr(gui, 'right_panel_switch_rects', {})) == 7, '二维态仍是 7
 check(getattr(gui, 'cubic_gap_slider_rect', None) is None
       and getattr(gui, 'cubic_alpha_slider_rect', None) is None,
       '二维态不画三维滑条')
+check(gui.zoom_slider_rect.height > gui.zoom_slider_rect.width
+      and gui.slider_rect.height > gui.slider_rect.width,
+      '二维态缩放/速度仍是竖向（右栏没有横滑条）',
+      ((gui.zoom_slider_rect.width, gui.zoom_slider_rect.height),
+       (gui.slider_rect.width, gui.slider_rect.height)))
 
 print('=' * 60)
-print('C. 拖动：按横坐标写值 + 夹紧 + 缓存作废')
+print('C. 拖动：按纵坐标写值 + 夹紧 + 缓存作废（顶部=最大）')
 gui._cubic_camera_prefs = {}
 gui.new_cubic_puzzle(3, 3, 3, 1)
 gui.draw_right_panel()
@@ -155,12 +185,12 @@ gr = gui.cubic_gap_slider_rect
 gui._cubic_arrow_sig = ('sentinel',)
 gui._cubic_sil_cache = {'sentinel': 1}
 ver0 = gui._board_version
-gui._update_cubic_opt_from_mouse('gap', gr.left)
-check(abs(gui.cubic_gap - 0.0) < 1e-9, '拖到最左 = gap 0（贴死）', gui.cubic_gap)
+gui._update_cubic_opt_from_mouse('gap', gr.bottom)
+check(abs(gui.cubic_gap - 0.0) < 1e-9, '拖到最底 = gap 0（贴死）', gui.cubic_gap)
 check(cubic_settings.clamp_value('gap', gui.cubic_gap) == gui.cubic_gap,
       '写进去的值本身就在表范围内')
-gui._update_cubic_opt_from_mouse('gap', gr.right + 50)
-check(abs(gui.cubic_gap - 0.6) < 1e-9, '拖出右界夹到 0.6', gui.cubic_gap)
+gui._update_cubic_opt_from_mouse('gap', gr.top - 50)
+check(abs(gui.cubic_gap - 0.6) < 1e-9, '拖出顶部夹到 0.6', gui.cubic_gap)
 check(getattr(gui, '_cubic_arrow_sig', None) is None
       and getattr(gui, '_cubic_sil_cache', None) is None,
       'gap 变了 → 箭头可推性 / 贴纸轮廓缓存立刻作废')
@@ -168,12 +198,12 @@ check(gui._board_version == ver0,
       '只改显示参数不动棋盘版号（标题栏不该平白出现星号）',
       (ver0, gui._board_version))
 ar = gui.cubic_alpha_slider_rect
-gui._update_cubic_opt_from_mouse('seam_alpha', ar.left + ar.width // 2)
+gui._update_cubic_opt_from_mouse('seam_alpha', ar.top + ar.height / 2.0)
 check(30 <= gui.cubic_seam_alpha <= 220, '切面透明度落在 30..220', gui.cubic_seam_alpha)
 check(gui.cubic_seam_alpha == 125, '正中 = 125（30 + 0.5*(220-30)）',
       gui.cubic_seam_alpha)
 prev = gui.cubic_seam_alpha
-gui._update_cubic_opt_from_mouse('seam_alpha', ar.left + ar.width // 2)
+gui._update_cubic_opt_from_mouse('seam_alpha', ar.top + ar.height / 2.0)
 check(gui.cubic_seam_alpha == prev, '同一点再拖不重复写（幂等）')
 
 print('=' * 60)
@@ -182,17 +212,19 @@ import json
 gui.cubic_gap = 0.33
 gui.cubic_seam_alpha = 180
 gui.cubic_rot_sensitivity = 1.4
+gui.cubic_anim_ms = 260
 gui.save_config()
 with open(gui.config_path, encoding='utf-8') as f:
     cfg = json.load(f)
 cc = cfg.get('cubic_camera') or {}
-check(set(d) <= set(cc), 'cubic_camera 里带齐表内三个键', sorted(cc))
+check(set(d) <= set(cc), 'cubic_camera 里带齐表内四个键', sorted(cc))
 check(abs(cc['gap'] - 0.33) < 1e-6 and cc['seam_alpha'] == 180
-      and abs(cc['rot_sensitivity'] - 1.4) < 1e-6,
+      and abs(cc['rot_sensitivity'] - 1.4) < 1e-6
+      and cc['cubic_anim_ms'] == 260,
       '导出值 = 当前值（不是默认值）', cc)
 
 gui._cubic_camera_prefs = {'gap': 0.25, 'seam_alpha': 9999,
-                          'rot_sensitivity': -3}
+                          'rot_sensitivity': -3, 'cubic_anim_ms': 999}
 cubic_settings.reset(gui)
 gui._cubic_load_defaults()
 check(abs(gui.cubic_gap - 0.25) < 1e-6, 'gap 读回 0.25', gui.cubic_gap)
@@ -200,6 +232,8 @@ check(gui.cubic_seam_alpha == 220, 'seam_alpha 越界夹到 220（不是照抄 9
       gui.cubic_seam_alpha)
 check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
       gui.cubic_rot_sensitivity)
+check(gui.cubic_anim_ms == 400, 'cubic_anim_ms 越界夹到 400（不是照抄 999）',
+      gui.cubic_anim_ms)
 check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
       gui.cubic_rot_sensitivity)
 
@@ -282,11 +316,13 @@ check(all(_rects[i].right <= _rects[i + 1].left for i in range(len(_rects) - 1))
 check(all(_rects[i].width == 72 for i in range(len(_rects))), '页签宽 72（放得下 8 个）')
 
 _btns = getattr(gui, '_settings_cubic_btn_rects', {})
-check(len(_btns) == 6 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns,
-      '三维页三个选项各一枚 − 与 +', sorted(_btns.keys()))
+check(len(_btns) == 6 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns
+      and ('cubic_anim_ms', 1) not in _btns and ('zoom', 1) not in _btns,
+      '三维页只列三维独有 3 项（缩放/动画时长归视觉页）', sorted(_btns.keys()))
 check(all(r.collidepoint(r.center) and r.bottom <= gui._settings_content_rect.bottom + 1
           for r in _btns.values()),
       '按钮都落在可见内容区内')
+
 
 # 点 + 真的改值（走设置页真实事件入口，不直接调内部函数）
 _g0 = gui.cubic_gap
@@ -335,21 +371,46 @@ check(getattr(gui, '_settings_confirm_shuffle_toggle_rect', None) is not None
       and gui._settings_confirm_shuffle_toggle_rect.width > 0,
       '三维局保留防意外打乱开关')
 _track = getattr(gui, '_settings_slider_track_rect', None)
-check(_track is not None and _track.width > 0, '三维局视觉页动画滑条仍存在')
-_d0 = gui.cubic_anim_ms
-_2d0 = gui.animation_duration
+_ztrack = getattr(gui, '_settings_zoom_track_rect', None)
+check(_track is not None and _track.width > 0,
+      '三维视觉页保留动画滑条（动画时长不在三维页重复）', _track)
+check(_ztrack is not None and _ztrack.width > 0,
+      '三维视觉页保留缩放滑条（缩放不在三维页重复）', _ztrack)
+
+# 动画滑条仍写 cubic_anim_ms，不碰二维 animation_duration
+_2d_anim0 = gui.animation_duration
 gui._handle_settings_dialog_event(pygame.event.Event(
     pygame.MOUSEBUTTONDOWN, {'pos': (_track.left + 1, _track.centery), 'button': 1}))
 check(gui.cubic_anim_ms <= gui.CUBIC_ANIM_MIN_MS + 2,
-      '三维视觉页滑条拉到最左 = 最快', gui.cubic_anim_ms)
-gui._settings_slider_dragging = False
+      '三维视觉页动画滑条最左 = 最快', gui.cubic_anim_ms)
+gui._handle_settings_dialog_event(pygame.event.Event(
+    pygame.MOUSEBUTTONUP, {'pos': (_track.left + 1, _track.centery), 'button': 1}))
 gui._handle_settings_dialog_event(pygame.event.Event(
     pygame.MOUSEBUTTONDOWN, {'pos': (_track.right - 1, _track.centery), 'button': 1}))
 check(gui.cubic_anim_ms >= gui.CUBIC_ANIM_MAX_MS - 2,
-      '三维视觉页滑条拉到最右 = 最慢', gui.cubic_anim_ms)
-check(gui.animation_duration == _2d0,
-      '三维视觉页改速度不碰二维 animation_duration', (gui.animation_duration, _2d0))
-gui._settings_slider_dragging = False
+      '三维视觉页动画滑条最右 = 最慢', gui.cubic_anim_ms)
+check(gui.animation_duration == _2d_anim0,
+      '三维视觉页改动画时长不碰二维 animation_duration',
+      (gui.animation_duration, _2d_anim0))
+gui._handle_settings_dialog_event(pygame.event.Event(
+    pygame.MOUSEBUTTONUP, {'pos': (_track.right - 1, _track.centery), 'button': 1}))
+
+# 缩放滑条必须写 cubic_zoom（以前错写 self.zoom），且区间 0.5..3.0
+_zoom2d0 = gui.zoom
+gui._handle_settings_dialog_event(pygame.event.Event(
+    pygame.MOUSEBUTTONDOWN, {'pos': (_ztrack.left + 1, _ztrack.centery), 'button': 1}))
+check(abs(gui.cubic_zoom - gui.CUBIC_ZOOM_RANGE[0]) < 0.02,
+      '三维视觉页缩放滑条最左 = 0.5', gui.cubic_zoom)
+gui._handle_settings_dialog_event(pygame.event.Event(
+    pygame.MOUSEBUTTONUP, {'pos': (_ztrack.left + 1, _ztrack.centery), 'button': 1}))
+gui._handle_settings_dialog_event(pygame.event.Event(
+    pygame.MOUSEBUTTONDOWN, {'pos': (_ztrack.right - 1, _ztrack.centery), 'button': 1}))
+check(abs(gui.cubic_zoom - gui.CUBIC_ZOOM_RANGE[1]) < 0.02,
+      '三维视觉页缩放滑条最右 = 3.0', gui.cubic_zoom)
+check(gui.zoom == _zoom2d0,
+      '三维视觉页改缩放不碰二维 self.zoom', (gui.zoom, _zoom2d0))
+gui._handle_settings_dialog_event(pygame.event.Event(
+    pygame.MOUSEBUTTONUP, {'pos': (_ztrack.right - 1, _ztrack.centery), 'button': 1}))
 
 print('=' * 60)
 total = _ok[0] + len(_fail)

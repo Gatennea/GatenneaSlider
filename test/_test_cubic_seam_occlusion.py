@@ -98,7 +98,8 @@ def main():
                 view_dir = cam.view_axis()
                 boxes = cv.block_boxes(gui.game.blocks, gap)
                 axis = cp.FAMILY_TO_WORLD_AXIS[fam]
-                fixed = float(line + 1)
+                anchor = cv.layout_anchor(gui.game.blocks)
+                fixed = cp.seam_plane_coord(line, gap, anchor[axis])
                 a, b = [i for i in range(3) if i != axis]
                 # 切面自身的范围（渲染用的是**整张矩形**，铺满包围盒横截面：
                 # 用户 2026-11-18 第 2 条。这里按矩形取边界，别按格子外框，
@@ -128,8 +129,9 @@ def main():
                             continue
                         u, v = uv
                         # 容差 = 抗锯齿渗出的几个像素：切面按 2× 超采样再缩回，
-                        # 边上 1–2px 的过渡色会落在格线外一点点（约 0.02 格）。
-                        tol = 0.05
+                        # 边上 1–3px 的过渡色会落在格线外一点点（约 0.02 格）；
+                        # 拆分拉大后单像素对应的世界距离也变大，留到 0.1 格。
+                        tol = 0.1
                         if not (lo[a] - tol <= u <= hi[a] + tol
                                 and lo[b] - tol <= v <= hi[b] + tol):
                             outside.append(f'{fam}{line}@{name} 红点({u:.2f},{v:.2f}) 出界')
@@ -153,14 +155,14 @@ def main():
     gui.game.opt('r', 1, sel_block)
     gui.draw_cubic_board()
     opted_boxes = []
+    anchor = cv.layout_anchor(gui.game.blocks)
     for b in gui.game.blocks:
         if not b.be_opted:
             continue
-        bx = cv.block_min_corner(b.location, gui.cubic_gap)
+        bx = cv.block_min_corner(b.location, gui.cubic_gap, anchor)
         opted_boxes.append((bx[0], bx[1], bx[2],
-                            bx[0] + 1.0 - gui.cubic_gap,
-                            bx[1] + 1.0 - gui.cubic_gap,
-                            bx[2] + 1.0 - gui.cubic_gap))
+                            bx[0] + 1.0, bx[1] + 1.0, bx[2] + 1.0))
+    fixed_g = cp.seam_plane_coord(1, gui.cubic_gap, anchor[2])
     scene = gui._cubic_scene
     bad_tint = []
     for sy in range(0, gui.screen_height, 3):
@@ -168,11 +170,11 @@ def main():
             if not _is_red(gui.screen.get_at((sx, sy))):
                 continue
             uv = _plane_uv(sx, sy, gui.cubic_camera, scene['scale'],
-                           scene['origin'], 2, 2.0, 0, 1)
+                           scene['origin'], 2, fixed_g, 0, 1)
             if uv is None:
                 continue
             u, v = uv
-            pt = (u, v, 2.0)
+            pt = (u, v, fixed_g)
             if any(x0 + 0.02 <= pt[0] <= x1 - 0.02
                    and y0 + 0.02 <= pt[1] <= y1 - 0.02
                    and z0 + 0.02 <= pt[2] <= z1 - 0.02
@@ -217,8 +219,10 @@ def main():
     cells = cp.seam_plane_cells('r', 1, gui.game.blocks, gap=0.12)
     check(len(cells) == 9, f'3×3×3 的 r·1 有 9 格（实际 {len(cells)}）')
     axis = cp.FAMILY_TO_WORLD_AXIS['r']
-    check(all(abs(p[axis] - 2.0) < 1e-9 for quad, _c in cells for p in quad),
-          '每一格都在 z=2 这张平面上')
+    fixed_cells = cp.seam_plane_coord(1, 0.12, anchor[axis])
+    check(all(abs(p[axis] - fixed_cells) < 1e-9
+              for quad, _c in cells for p in quad),
+          '每一格都在 z=2.24 这张平面上')
     areas = []
     for quad, _c in cells:
         # 有向面积（平面内两轴）
@@ -229,16 +233,16 @@ def main():
             s += p0[a] * p1[b] - p1[a] * p0[b]
         areas.append(abs(s) / 2.0)
     total_area = sum(areas)
-    expect = (3.0 - 0.12) ** 2
+    expect = 9.0                       # 每格就是一块的横截面，块大小恒为 1
     check(abs(total_area - expect) < 1e-6,
-          f'九格拼起来正好是切面自身面积（{total_area:.4f}，应 {expect:.4f}）')
-    check(all(0.7 < x <= 1.0 + 1e-9 for x in areas),
-          f'单格面积不超过 1（最大 {max(areas):.4f}）')
+          f'九格面积 = 9 块横截面（{total_area:.4f}，应 {expect:.4f}）')
+    check(all(abs(x - 1.0) < 1e-9 for x in areas),
+          f'单格面积恒为 1（最大 {max(areas):.4f}）')
     centers = [c for _q, c in cells]
     check(len(set(centers)) == len(centers), '格子中心互不重合')
 
     print('F. 切面是**一整张矩形平面**，范围跟当前块堆的包围盒（2026-11-18 用户口径）')
-    edge = 3.0 + 0.12          # 包围盒 = 每格外再多半格 gap（两侧各 0.06）
+    edge = 3.0 * 1.12 - 0.12   # 块大小不变，中心距 1+gap：首块外表面到最后一块外表面
     rect = cp.seam_plane_rect('r', 1, gui.game.blocks, gap=0.12, dims=(3, 3, 3))
     a2, b2 = [i for i in range(3) if i != axis]
     span_a = max(p[a2] for p in rect) - min(p[a2] for p in rect)
@@ -246,12 +250,12 @@ def main():
     check(len(rect) == 4, '四角', len(rect))
     check(abs(span_a - edge) < 1e-9 and abs(span_b - edge) < 1e-9,
           f'一张矩形覆盖整盘（{span_a:.2f}×{span_b:.2f}）')
-    check(all(abs(p[axis] - 2.0) < 1e-9 for p in rect), '四角共面')
-    # 范围按**包围盒**、不按原始尺寸：只剩一个块就缩到这一块的外延
+    check(all(abs(p[axis] - fixed_cells) < 1e-9 for p in rect), '四角共面')
+    # 范围按**包围盒**、不按原始尺寸：只剩一个块就缩到这一块的块身
     lone = cp.seam_plane_rect('r', 1, gui.game.blocks[:1], gap=0.12, dims=(3, 3, 3))
-    lone_edge = 1.0 + 0.12
+    lone_edge = 1.0
     check(abs((max(p[a2] for p in lone) - min(p[a2] for p in lone)) - lone_edge) < 1e-9,
-          f'只剩一块时切面跟着缩到 1.12（不是原始 3×3）')
+          f'只剩一块时切面跟着缩到 1.00（不是原始 3×3）')
 
     print('H. 切面四角不被超采样画布裁掉（用户 2026-11-18：完整 = 边角不被裁）')
     tol_clip = 0

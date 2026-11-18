@@ -44,7 +44,10 @@ FACE_VIEW_LABELS = ('前 +Z', '后 −Z', '右 +X', '左 −X', '上 +Y', '下 �
 DEFAULT_VIEW_RESIDUE = (14.0, 14.0)
 
 #: 默认斜视（第 1 步就在用的那一档）。
-OBLIQUE_ANGLES = (-32.0, 24.0, 0.0)
+#: 2026-11-18 用户给了参考图：前面板约 70×98、侧面约 51×101、顶面约
+#: 112×43（像素比）。按同一投影反解，yaw=-37°、pitch=22° 最接近；
+#: 原来的 -32°/24° 侧脸太窄、前面板偏宽，整体显得「正对」了一点。
+OBLIQUE_ANGLES = (-37.0, 22.0, 0.0)
 
 
 def face_view_rotation(index: int, tilt_deg: float = DEFAULT_VIEW_RESIDUE):
@@ -153,7 +156,7 @@ class CubicCamera:
         """拖动用的连续姿态：先绕世界 Y（竖直轴）转向，再绕世界 X 抬头/低头。
 
         只供「看」的自由旋转用；正对化另有 nearest_face_view()。
-        默认斜视取 yaw=-30、pitch=22 一档（三面可见，最容易看出前后遮挡）。
+        默认斜视取 yaw=-37、pitch=22 一档（三面可见，最容易看出前后遮挡；2026-11-18 按参考图校准）。
         """
         qy = _axis_angle((0.0, 1.0, 0.0), math.radians(yaw_deg))
         qx = _axis_angle((1.0, 0.0, 0.0), math.radians(pitch_deg))

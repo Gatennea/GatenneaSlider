@@ -95,6 +95,15 @@ ys = sorted(rects['cubic_' + c].centery for c in 'cCdDrR')
 check(len(set(xs)) >= 4 and len(set(ys)) >= 4,
       f'端点散在原点四周（x 有 {len(set(xs))} 档、y 有 {len(set(ys))} 档，不是两三行表格）')
 check(gui._vk_direction_rows() == 3, '方向区仍按三维的行数算（面板高度随之变高）')
+# 原点白点必须画在坐标轴交点：布局和绘制共用 _vk_cubic_origin，不能一边按
+# _VK_CUBIC_AREA、另一边按三行按钮高度算（2026-11-18 用户实测白点浮在上方）。
+gui.draw_virtual_keyboard()
+_o = gui._vk_cubic_origin()
+_px = gui.screen.get_at((int(_o[0]), int(_o[1])))[:3]
+check(all(v > 200 for v in _px), f'原点白点落在轴交点（像素 {_px}）')
+check(gui.vk_panel_rect.top + gui._VK_TITLE_H + gui._VK_PAD
+      + gui._VK_CUBIC_AREA // 2 == int(_o[1]),
+      '原点 y 按坐标轴区域高度算（不是三行按钮高度）')
 
 print('A2. 姿态扫描：任何朝向下六键都互不重叠、都点得中')
 from engine.cubic_camera import CubicCamera  # noqa: E402

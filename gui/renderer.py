@@ -978,6 +978,8 @@ class RendererMixin:
         if gap is None:
             gap = cubic_view.DEFAULT_GAP
             self.cubic_gap = gap
+        # 拆分中心 = 当前块堆包围盒中心：整堆左右/上下/前后对称散开。
+        _split_anchor = cubic_view.layout_anchor(blocks)
         # 跟随质心（方案 §2.2「居中 = 质心落在屏幕中心」，默认开）：整盘滑动会
         # 让重心慢慢偏，若仍按固定包围盒中心装画面，盘就一点点漂出视野。开着时
         # 用块质心当装画面的参考点；手动平移（六键）后暂停跟随，按「居中」恢复。
@@ -986,12 +988,12 @@ class RendererMixin:
         if _follow:
             _locs = [tuple(int(v) for v in b.location[:3]) for b in blocks]
             if _locs:
-                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)，取块心（+0.5）的平均
-                _target = (
-                    sum(p[1] for p in _locs) / len(_locs) + 0.5,
-                    sum(p[2] for p in _locs) / len(_locs) + 0.5,
-                    sum(p[0] for p in _locs) / len(_locs) + 0.5,
-                )
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)。这里用**未拆分**的块心
+                # （gap=0）：拆分只把块在画面上拉开，不该带动相机平移/跟随中心。
+                _centers = [cubic_view.block_center(p, 0.0) for p in _locs]
+                _target = tuple(
+                    sum(c[i] for c in _centers) / len(_centers)
+                    for i in range(3))
                 # 平滑跟随（用户 2026-11-18 第 3 条）：一步走完质心会跳 1/9 盘，
                 # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
                 # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
@@ -1037,10 +1039,11 @@ class RendererMixin:
         # 不写回 selected_gap（玩家的选择不会因为一次撤销被改掉）。
         if _sel_anim is not None and getattr(self, '_sel_anim_gap', None):
             seam = self._sel_anim_gap
-        # 推一步的滑动期间（第 6 步）不画切面：那张面停在原处，块会从它中间
-        # 穿过去，深度序上必然出现「红面盖住正在滑的块」——动画一结束就恢复。
-        # ⚠️ 只停「切面」，箭头照画（seam 本身还要给箭头定位）。
-        seam_draw = None if getattr(self, 'cubic_anim', None) else seam
+        # 推一步的滑动期间（第 6 步）**不跳过切面**：跳过会让红面在动画开头
+        # 消失、结尾又出现，玩家看到的就是「闪一下」（2026-11-18 用户报）。
+        # 现在切面持续画，正在移动的块在下方画家序里强制归入近侧（画在红面
+        # 之上），既不会红面盖块，也不会闪烁。⚠️ 箭头照画，seam 仍给箭头定位。
+        seam_draw = seam
         seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
         # 切面 = **一整张矩形平面**（用户 2026-11-18：缝隙应该是一个矩形平面，
         # 不是按格拼的方块阵）。遮挡不靠「按格切碎塞进画家序」（那会画出格线、
@@ -1064,7 +1067,9 @@ class RendererMixin:
                 seam_draw[0], seam_draw[1], blocks, gap=gap, dims=_dims)
             if seam_quad:
                 seam_axis = cubic_pick.FAMILY_TO_WORLD_AXIS[seam_draw[0]]
-                seam_fixed = float(seam_draw[1] + 1.0)
+                # 拆分后缝线平面也跟块堆中心一起偏移，不能再用固定原点口径。
+                seam_fixed = cubic_pick.seam_plane_coord(
+                    seam_draw[1], gap, _split_anchor[seam_axis])
                 view_dir = camera.view_axis()
                 seam_sign = 1.0 if view_dir[seam_axis] >= 0 else -1.0
 
@@ -1079,14 +1084,25 @@ class RendererMixin:
             # 同一组内部仍按 depth 从远到近。
             opted = {(int(b.location[0]), int(b.location[1]), int(b.location[2]))
                      for b in blocks if getattr(b, 'be_opted', False)}
+            # 三维 2D 动画管線（打乱演示 / 撤销重做）里正在移动的块：它们可能
+            # 跨过切面，不能按「逻辑起点」分前后，否则中途会被红面盖住。
+            # 起终点都算近侧，保证整段动画都在切面之上（用户要的「不闪烁」）。
+            _moving_front = set()
+            if (getattr(self, 'cubic_mode', False)
+                    and getattr(self, 'animating', False)):
+                for _pts in (getattr(self, 'anim_start_pos', None),
+                             getattr(self, 'anim_end_pos', None)):
+                    for _p in _pts or ():
+                        if len(_p) >= 3:
+                            _moving_front.add((int(_p[0]), int(_p[1]), int(_p[2])))
             back_faces, front_faces = [], []
             for f in faces_all:
                 loc = f['loc']
                 key = (int(loc[0]), int(loc[1]), int(loc[2]))
-                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
-                center = (loc[1] + 0.5, loc[2] + 0.5, loc[0] + 0.5)[seam_axis]
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)；块心按包围盒中心散开算
+                center = cubic_view.block_center(loc, gap, _split_anchor)[seam_axis]
                 near = (center - seam_fixed) * seam_sign > 0
-                if key in opted or near:
+                if key in opted or key in _moving_front or near:
                     front_faces.append(f)
                 else:
                     back_faces.append(f)
@@ -1188,7 +1204,8 @@ class RendererMixin:
         if getattr(self, '_shake_t', 0) > 0:
             shake_ids = getattr(self, '_shake_blocks', set()) or set()
             shake_boxes = cubic_view.block_boxes(
-                [b for b in blocks if id(b) in shake_ids], gap)
+                [b for b in blocks if id(b) in shake_ids], gap,
+                anchor=_split_anchor)
             for box in shake_boxes:
                 hull = cubic_view.screen_hull_of_box(
                     box, camera, scene['scale'], scene['origin'])
@@ -4518,16 +4535,22 @@ class RendererMixin:
         self.screen.blit(max_label, (track_x + track_width - max_label.get_width(), track_y + 12))
         ny = speed_y + 72
 
-        # 缩放滑动条（与右侧面板的垂直缩放滑条同源：两者读写同一个
-        # self.zoom，改任意一个另一个下一帧就跟着动）。排版与上面的动画
-        # 时长一致：左栏标签、右栏轨道，左端=最小缩放、右端=最大缩放。
+        # 缩放滑动条：三维态读 cubic_zoom / CUBIC_ZOOM_RANGE，二维态读
+        # self.zoom / min_zoom..max_zoom。两态都由同一条滑条显示，事件层
+        # 按 cubic_mode 分派写回；不再把三维缩放错写到二维 self.zoom。
+        if _cubic_anim:
+            _zlo, _zhi = self.CUBIC_ZOOM_RANGE
+            _zval = float(getattr(self, 'cubic_zoom', 1.0))
+        else:
+            _zlo, _zhi = self.min_zoom, self.max_zoom
+            _zval = self.zoom
         zoom_y = ny
         zoom_label = self.dialog_font.render("缩放：", True, self.colors['dialog_text'])
         self.screen.blit(zoom_label, (x + 15, zoom_y + 6))
 
         ztrack_x = x + 220
         ztrack_width = 190
-        zoom_pct = f"{int(round(self.zoom * 100))}%"
+        zoom_pct = f"{int(round(_zval * 100))}%"
         zvalue_surface = self.input_font.render(zoom_pct, True, self.colors['input_text'])
         self.screen.blit(zvalue_surface,
                          (ztrack_x + ztrack_width - zvalue_surface.get_width(), zoom_y + 6))
@@ -4537,8 +4560,8 @@ class RendererMixin:
         self._settings_zoom_track_rect = pygame.Rect(ztrack_x, ztrack_y, ztrack_width, 4)
         pygame.draw.rect(self.screen, self.colors['dialog_border'], self._settings_zoom_track_rect)
 
-        # 滑动条位置（线性：min_zoom→0，max_zoom→1）
-        znorm = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+        # 滑动条位置（线性：下界→0，上界→1）
+        znorm = (_zval - _zlo) / max(1e-6, _zhi - _zlo)
         znorm = max(0.0, min(1.0, znorm))
         zknob_x = int(ztrack_x + znorm * ztrack_width)
         self._settings_zoom_knob_rect = pygame.Rect(zknob_x - 8, ztrack_y - 6, 16, 16)
@@ -4547,16 +4570,14 @@ class RendererMixin:
         pygame.draw.rect(self.screen, zknob_color, self._settings_zoom_knob_rect, border_radius=8)
 
         # 刻度标签（两端对齐轨道）
-        zmin_label = self.status_font.render(f"{int(round(self.min_zoom * 100))}%", True, (150, 150, 150))
-        zmax_label = self.status_font.render(f"{int(round(self.max_zoom * 100))}%", True, (150, 150, 150))
+        zmin_label = self.status_font.render(f"{int(round(_zlo * 100))}%", True, (150, 150, 150))
+        zmax_label = self.status_font.render(f"{int(round(_zhi * 100))}%", True, (150, 150, 150))
         self.screen.blit(zmin_label, (ztrack_x, ztrack_y + 12))
         self.screen.blit(zmax_label, (ztrack_x + ztrack_width - zmax_label.get_width(), ztrack_y + 12))
         ny = zoom_y + 72
 
-        # 三维局：视觉页只留三维真正生效的项。
-        # 着色 / 连锁 / 缝隙闪烁 / 复原标记 / 调试面板 / 成绩面板 / 绘制网格 /
-        # 防偏移演示 / 思考演示全部是二维语义，方案 §2.4 与 §5 明确不做三维，
-        # 因此**不画**（而不是画成灰开关）；对应矩形清零，避免旧帧的命中区残留。
+        # 三维局：视觉页保留下来的开关项；2D 专属开关不画并清空命中矩形，
+        # 避免旧帧残留（方案 §2.4 与 §5 明确不做三维的那些）。
         if _cubic_anim:
             for _attr in ('_settings_coloring_toggle_rect',
                           '_settings_chain_toggle_rect',
@@ -4581,6 +4602,7 @@ class RendererMixin:
             self._settings_anim_height = ny - y + 10
             return
 
+        # 二维局：继续画二维专属的视觉项。
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
@@ -5240,68 +5262,81 @@ class RendererMixin:
         return f"{val:.2f}" + (' 倍' if spec['key'] == 'rot_sensitivity' else '')
 
     def _draw_settings_cubic(self, x, y, width, height):
-        """三维专页：只放「设一次、很少动」的项（拆分/透明度在右侧栏边拖边看）。
+        """三维专页：版式对齐「聚拢参数」页，只放三维独有、视觉页没有的项。
 
-        二维谜题下整页置灰 + 一句说明（沿用求解器页「不隐藏入口、只解释为什么
+        右栏四条滑条只显示名称；其中缩放 / 动画时长属于视觉项，数值入口
+        留在「视觉」页（三维态读 cubic_zoom / cubic_anim_ms），这里不再
+        重复列一遍。三维页只保留拆分 / 切面透明 / 旋转灵敏度。
+
+        二维谜题下整页给一句说明（沿用求解器页「不隐藏入口、只解释为什么
         不可用」的先例），不装作这里什么都没有。
         """
         from gui import cubic_settings
         self._settings_cubic_btn_rects = {}
         self._settings_cubic_height = 0
-        ny = y
         cubic = bool(getattr(self, 'cubic_mode', False))
-        hint_w = width - 20
 
-        title = ('三维谜题专用。这里的项「设一次、很少动」；拆分与切面透明度'
-                 '在右侧栏，边拖边看更直观。')
-        for _i, _ln in enumerate(self._wrap_text(title, self.status_font, hint_w)):
-            self.screen.blit(self.status_font.render(_ln, True,
-                                                     self.colors['dialog_text']),
-                             (x + 15, ny + 4 + _i * 20))
-        ny += 26 + 20 * max(0, len(self._wrap_text(title, self.status_font, hint_w)) - 1)
+        # 与「聚拢参数」同款页头：黄色提醒 + 绿色适用范围。
+        warn = self.status_font.render(
+            "※ 三维专用参数，按一下改一档；改完立即生效", True, (220, 200, 80))
+        self.screen.blit(warn, (x + 15, y + 8))
+        scope = self.status_font.render(
+            "缩放 / 动画时长在「视觉」页；这里只放拆分 / 切面 / 旋转灵敏度",
+            True, (150, 200, 150))
+        self.screen.blit(scope, (x + 15, y + 26))
 
         if not cubic:
             note = '当前是二维谜题，这一页的选项对二维没有作用，切到三维谜题后再来。'
-            for _i, _ln in enumerate(self._wrap_text(note, self.status_font, hint_w)):
+            _lines = self._wrap_text(note, self.status_font, width - 20)
+            for _i, _ln in enumerate(_lines):
                 self.screen.blit(self.status_font.render(_ln, True, (160, 160, 160)),
-                                 (x + 15, ny + 8 + _i * 20))
-            ny += 28 + 20 * max(0, len(self._wrap_text(note, self.status_font, hint_w)) - 1)
-            self._settings_cubic_height = ny - y
+                                 (x + 15, y + 48 + _i * 18))
+            self._settings_cubic_height = y + 48 + 18 * len(_lines) + 8 - y
             return
 
-        for spec in cubic_settings.items('control') + cubic_settings.items('view'):
+        # 只列三维独有项：拆分、切面透明、旋转灵敏度。
+        # 动画时长虽然也在 CUBIC_SETTINGS 里，但它的数值入口是视觉页的
+        # 「动画时长」滑条，所以这里按 key 过滤掉，避免两页各一份。
+        _rows = ([s for s in cubic_settings.items('view')
+                  if s['key'] != 'cubic_anim_ms']
+                 + cubic_settings.items('control'))
+        row_y = y + 48
+        for spec in _rows:
             val = getattr(self, spec['attr'], spec['default'])
-            self.screen.blit(self.dialog_font.render(f"{spec['label']}：", True,
-                                                     self.colors['dialog_text']),
-                             (x + 15, ny + 6))
-            value_s = self.input_font.render(self._fmt_cubic_value(spec, val), True,
-                                             self.colors['input_text'])
-            self.screen.blit(value_s, (x + 200, ny + 6))
-
-            _bw, _bh = 30, 26
-            minus = pygame.Rect(x + 330, ny + 2, _bw, _bh)
-            plus = pygame.Rect(x + 366, ny + 2, _bw, _bh)
-            # 用 ASCII 的 '-'：状态栏字体里没有 U+2212，会画成空心方框
+            _bh = 26
+            # 左侧步进控件（与聚拢参数的 − / 数值框 / + 同一套样式）。
+            # 用 ASCII 的 '-'：状态栏字体里没有 U+2212，会画成空心方框。
+            minus = pygame.Rect(x + 15, row_y, 28, _bh)
+            box = pygame.Rect(x + 47, row_y, 80, _bh)
+            plus = pygame.Rect(x + 131, row_y, 28, _bh)
             for _rect, _txt in ((minus, '-'), (plus, '+')):
                 pygame.draw.rect(self.screen, self.colors['button_bg'], _rect,
                                  border_radius=4)
                 _t = self.status_font.render(_txt, True, (255, 255, 255))
                 self.screen.blit(_t, _t.get_rect(center=_rect.center))
+            # 数值框：与聚拢参数一样的 input_bg + 细边框
+            pygame.draw.rect(self.screen, self.colors['input_bg'], box,
+                             border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], box, 1,
+                             border_radius=4)
+            value_s = self.input_font.render(self._fmt_cubic_value(spec, val),
+                                             True, self.colors['input_text'])
+            self.screen.blit(value_s, (box.x + 6,
+                                       box.centery - value_s.get_height() // 2))
             self._settings_cubic_btn_rects[(spec['key'], -1)] = minus
             self._settings_cubic_btn_rects[(spec['key'], 1)] = plus
 
-            # 说明另起一行（右栏只放数值和按钮，说明按整行宽度换行，避免被
-            # 对话框右边缘硬切——本页第一版就是这么切掉半句话的）
-            ny += 32
-            _lines = self._wrap_text(spec['help'], self.status_font, hint_w)
-            for _i, _ln in enumerate(_lines):
+            # 名称 + 说明放在右列（x+234），与聚拢参数的标签列对齐。
+            name = self.dialog_font.render(spec['label'], True,
+                                           self.colors['dialog_text'])
+            self.screen.blit(name, (x + 234, row_y))
+            _desc_lines = self._wrap_text(spec['help'], self.status_font,
+                                          width - 234) or ['']
+            for _i, _ln in enumerate(_desc_lines):
                 self.screen.blit(self.status_font.render(_ln, True, (150, 150, 150)),
-                                 (x + 15, ny + _i * 18))
-            ny += 18 * len(_lines) + 8
-            # 行间细分隔线，免得四行糊成一片
-            pygame.draw.line(self.screen, self.colors['dialog_border'],
-                             (x + 15, ny - 6), (x + width - 15, ny - 6))
-        self._settings_cubic_height = ny - y + 10
+                                 (x + 234, row_y + 18 + _i * 16))
+            row_y += 52 + max(0, len(_desc_lines) - 1) * 16
+        self._settings_cubic_height = row_y - y + 10
 
     def _calc_settings_content_height(self, visible_height: int) -> int:
         """计算设置内容的总高度（当前tab）"""
@@ -5323,8 +5358,8 @@ class RendererMixin:
             return getattr(self, '_settings_anim_height', 2 * 60 + 72 + 72 + 4 * 60 + 10)
         elif self.settings_active_tab == 'cubic':
             # 三维页：真实高度由 _draw_settings_cubic 每帧记录；首帧兜底按
-            # 提示两行 + 四个数值行（50 行距）+ 间隔估算。
-            return getattr(self, '_settings_cubic_height', 2 * 20 + 4 * 50 + 10)
+            # 黄色提醒 + 绿色范围两行(48) + 三个数值行(52 × 3) + 余量估算。
+            return getattr(self, '_settings_cubic_height', 48 + 3 * 52 + 10)
         elif self.settings_active_tab == 'audio':
             # 音频页：真实绘制高度由 _draw_settings_audio 每帧记录。
             # 下面只是首帧的保守估算（提示行 + 三行总开关 + 分隔/标题 +
@@ -5848,9 +5883,8 @@ class RendererMixin:
         self._solved_popup_rect = pygame.Rect(x, y, w, h)
 
     def draw_right_panel(self):
-        """绘制右侧面板：垂直速度滑条 + 6 个快捷开关（滑动动画/选中动画/着色/连锁/模式/逆序）"""
+        """绘制右侧面板：上方竖滑条（三维 4 条 2×2 / 二维 2 条）+ 底部快捷开关（三维 6 / 二维 7）。"""
         panel_x = self.screen_width - self.right_panel_width
-        _panel_left = panel_x
         panel_rect = pygame.Rect(panel_x, 0, self.right_panel_width, self.screen_height)
         pygame.draw.rect(self.screen, self.colors['menu_bg'], panel_rect)
         pygame.draw.line(self.screen, self.colors['border'],
@@ -5874,15 +5908,18 @@ class RendererMixin:
         def _sw_btn(key, label, getter):
             nonlocal sw_top
             rect = pygame.Rect(sw_x, sw_top, sw_w, sw_h)
-            bg, color = self.colors['input_bg'], (150, 150, 150)
+            bg, color = self.colors['input_bg'], self.colors['status_text']
             if key == 'game_mode':
                 mode = getattr(self, 'game_mode', 'practice')
+                # 模式是「点一下会变」的动作按钮，不是禁用项：练习态也给亮字，
+                # 只靠底色区分创造/竞速（否则灰字看起来像点不动）。
+                color = self.colors['text']
                 if mode == 'create':
                     # 创造模式用「选中滑块」的绿色
-                    bg, color = self.colors['block_selected'], (255, 255, 255)
+                    bg = self.colors['block_selected']
                     text = '模式:创造'
                 elif mode == 'timed':
-                    bg, color = self.colors['button_bg'], (255, 255, 255)
+                    bg = self.colors['button_bg']
                     text = '模式:竞速'
                 else:
                     text = '模式:练习'
@@ -5890,8 +5927,12 @@ class RendererMixin:
                 on = bool(getter())
                 text = f'{label}:{"开" if on else "关"}'
                 if on:
-                    bg, color = self.colors['button_bg'], (255, 255, 255)
+                    bg = self.colors['button_bg']
+                    color = self.colors['text']
             pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+            # 统一细边框：关态不再是一块「灰字灰底」的假禁用按钮
+            pygame.draw.rect(self.screen, self.colors['border'], rect, 1,
+                             border_radius=4)
             ts = self.status_font.render(text, True, color)
             self.screen.blit(ts, ts.get_rect(center=rect.center))
             self.right_panel_switch_rects[key] = rect
@@ -5927,94 +5968,130 @@ class RendererMixin:
             # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
             _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
 
-        # ---- 上方：垂直滑条（左=缩放，右=速度）----
-        track_top = self.menu_bar_height + 35
-        # 三维态：底部开关上方要留两条横向滑条（拆分 / 切面透明），竖滑条
-        # 因此收短一点，别和它们叠在一起。
-        opt_h = 30
-        opt_n = 2 if cubic else 0
-        opt_top = switch_area_top - opt_n * opt_h - 6
-        track_bottom = (opt_top - 8) if cubic else (switch_area_top - 10)
-        track_height = track_bottom - track_top
-
-        speed_x = panel_x + self.right_panel_width - 18   # 右列轨道
-        zoom_x = panel_x + 18                            # 左列轨道
-
-        speed_label = self.status_font.render("速度", True, self.colors['status_text'])
-        zoom_label = self.status_font.render("缩放", True, self.colors['status_text'])
-        self.screen.blit(speed_label, speed_label.get_rect(center=(speed_x, self.menu_bar_height + 15)))
-        self.screen.blit(zoom_label, zoom_label.get_rect(center=(zoom_x, self.menu_bar_height + 15)))
-
-        if track_height > 0:
-            half = self.right_panel_width // 2
-            # 左半：缩放滑条
-            pygame.draw.line(self.screen, self.colors['border'],
-                            (zoom_x, track_top), (zoom_x, track_bottom), 2)
-            norm_z = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
-            if getattr(self, 'cubic_mode', False):
-                lo, hi = self.CUBIC_ZOOM_RANGE
-                norm_z = (getattr(self, 'cubic_zoom', 1.0) - lo) / max(1e-6, hi - lo)
-            norm_z = max(0.0, min(1.0, norm_z))
-            # 倒置：滑条顶部=放大(max_zoom)，底部=缩小(min_zoom)
-            knob_y = int(track_top + (1.0 - norm_z) * track_height)
-            self.zoom_slider_rect = pygame.Rect(panel_x + 4, track_top, half - 8, track_height)
-            knob_color = self.colors['button_hover'] if getattr(self, 'zoom_slider_dragging', False) else self.colors['button_bg']
-            self.zoom_knob_rect = pygame.Rect(zoom_x - 10, knob_y - 6, 20, 12)
-            pygame.draw.rect(self.screen, knob_color, self.zoom_knob_rect, border_radius=4)
-
-            # 右半：速度滑条
-            pygame.draw.line(self.screen, self.colors['border'],
-                            (speed_x, track_top), (speed_x, track_bottom), 2)
-            if cubic:
-                # 三维这一步动画时长是独立一档（`_cubic_start_anim` 读
-                # `cubic_anim_ms`），不再借二维 animation_duration，否则这条
-                # 滑条在三维里是个哑控件。
-                _dur = int(getattr(self, 'cubic_anim_ms', 140))
-                norm_v = (_dur - self.CUBIC_ANIM_MIN_MS) / max(
-                    1e-6, self.CUBIC_ANIM_MAX_MS - self.CUBIC_ANIM_MIN_MS)
-            else:
-                norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
-            norm_v = max(0.0, min(1.0, norm_v))
-            knob_y = int(track_top + norm_v * track_height)
-            self.slider_rect = pygame.Rect(panel_x + half, track_top, half - 4, track_height)
-            knob_color = self.colors['button_hover'] if self.slider_dragging else self.colors['button_bg']
-            self.slider_knob_rect = pygame.Rect(speed_x - 10, knob_y - 6, 20, 12)
-            pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
-
-        # ---- 三维专用：拆分 / 切面透明两条横向滑条（方案 §2.4）----
-        # 挂右侧栏而不是设置框：这两项的价值全在「边拖边看」，设置框一关就
-        # 够不着。棋盘可视区本来就排除 right_panel_width，天然不遮挡。
+        # ---- 上方滑条 ----
+        # 三维四条全部竖向，2×2：左上缩放、右上速度、左下拆分、右下切面。
+        # 二维仍只有缩放/速度两条通高竖条，保持原布局。
         self.cubic_gap_slider_rect = None
         self.cubic_alpha_slider_rect = None
+
+        def _clamp01(v):
+            return max(0.0, min(1.0, float(v)))
+
+        def _draw_cubic_v_slider(cell, label, frac_top,
+                                  rect_attr, knob_attr, drag_attr):
+            """一个竖滑条格：顶部只写名称（数值只在设置页显示），下方竖向轨道。
+
+            `frac_top` 是「滑块距轨道顶部」的比例；四条的语义统一成
+            「向上=更强/更快/更大」，各调用方自己把数值换算成这个比例。
+            """
+            cx = cell.centerx
+            lab = self.status_font.render(label, True,
+                                          self.colors['status_text'])
+            self.screen.blit(lab, lab.get_rect(center=(cx, cell.top + 10)))
+            t_top = cell.top + 24
+            t_bot = cell.bottom - 2
+            if t_bot <= t_top:
+                t_bot = t_top + 1
+            pygame.draw.line(self.screen, self.colors['border'],
+                             (cx, t_top), (cx, t_bot), 2)
+            knob_y = int(t_top + _clamp01(frac_top) * (t_bot - t_top))
+            setattr(self, rect_attr,
+                    pygame.Rect(cell.left, t_top,
+                                cell.width, t_bot - t_top))
+            kc = (self.colors['button_hover']
+                  if getattr(self, drag_attr, False)
+                  else self.colors['button_bg'])
+            setattr(self, knob_attr,
+                    pygame.Rect(cx - 10, knob_y - 6, 20, 12))
+            pygame.draw.rect(self.screen, kc, getattr(self, knob_attr),
+                             border_radius=4)
+
         if cubic:
             from gui.cubic_settings import by_key
-            _specs = (('gap', 'cubic_gap_slider_rect', '_cubic_gap_dragging'),
-                      ('seam_alpha', 'cubic_alpha_slider_rect', '_cubic_alpha_dragging'))
-            for _i, (_key, _rect_attr, _drag_attr) in enumerate(_specs):
+            _grid_top = self.menu_bar_height + 8
+            _grid_bottom = switch_area_top - 8
+            _row_gap = 10
+            _row_h = max(80, (_grid_bottom - _grid_top - _row_gap) // 2)
+            _gx0 = panel_x + 6
+            _gx1 = panel_x + self.right_panel_width - 6
+            _col_w = (_gx1 - _gx0) // 2
+            _cells = (
+                pygame.Rect(_gx0, _grid_top, _col_w, _row_h),
+                pygame.Rect(_gx0 + _col_w, _grid_top,
+                            _gx1 - (_gx0 + _col_w), _row_h),
+                pygame.Rect(_gx0, _grid_top + _row_h + _row_gap,
+                            _col_w, _row_h),
+                pygame.Rect(_gx0 + _col_w,
+                            _grid_top + _row_h + _row_gap,
+                            _gx1 - (_gx0 + _col_w), _row_h),
+            )
+            # 左上：缩放（顶部=放大）
+            _z = float(getattr(self, 'cubic_zoom', 1.0))
+            _zlo, _zhi = self.CUBIC_ZOOM_RANGE
+            _zfrac = 1.0 - _clamp01((_z - _zlo) / max(1e-6, _zhi - _zlo))
+            _draw_cubic_v_slider(_cells[0], '缩放', _zfrac,
+                                 'zoom_slider_rect', 'zoom_knob_rect',
+                                 'zoom_slider_dragging')
+            # 右上：速度（顶部=最快）
+            _dur = int(getattr(self, 'cubic_anim_ms', 140))
+            _vfrac = _clamp01((_dur - self.CUBIC_ANIM_MIN_MS)
+                              / max(1e-6, self.CUBIC_ANIM_MAX_MS
+                                    - self.CUBIC_ANIM_MIN_MS))
+            _draw_cubic_v_slider(_cells[1], '速度', _vfrac,
+                                 'slider_rect', 'slider_knob_rect',
+                                 'slider_dragging')
+            # 左下：拆分；右下：切面透明度（顶部=更大）
+            _specs = (
+                ('gap', _cells[2], '拆分', 'cubic_gap_slider_rect',
+                 '_cubic_gap_dragging', 'cubic_gap_knob_rect'),
+                ('seam_alpha', _cells[3], '切面', 'cubic_alpha_slider_rect',
+                 '_cubic_alpha_dragging', 'cubic_alpha_knob_rect'),
+            )
+            for _key, _cell, _label, _rect_attr, _drag_attr, _knob_attr in _specs:
                 _sp = by_key(_key)
-                _y = opt_top + _i * opt_h
                 _val = getattr(self, _sp['attr'], _sp['default'])
-                _fmt = (f"{_val:.2f}" if _sp['type'] == 'float' else f"{int(_val)}")
-                # 面板只有 132px：用短名，避免「切面透明 110」被裁掉
-                _short = {'gap': '拆分', 'seam_alpha': '切面'}.get(_key,
-                                                                 _sp['label'])
-                _lab = self.status_font.render(f"{_short} {_fmt}", True,
-                                               self.colors['status_text'])
-                self.screen.blit(_lab, (_panel_left + 6, _y + 2))
-                _track = pygame.Rect(_panel_left + 6, _y + 20,
-                                     self.right_panel_width - 12, 8)
+                _frac = 1.0 - _clamp01((_val - _sp['min'])
+                                       / max(1e-6, _sp['max'] - _sp['min']))
+                _draw_cubic_v_slider(_cell, _label, _frac,
+                                     _rect_attr, _knob_attr, _drag_attr)
+        else:
+            # 二维：原两条通高竖条（左=缩放，右=速度）
+            track_top = self.menu_bar_height + 35
+            track_bottom = switch_area_top - 10
+            track_height = track_bottom - track_top
+
+            speed_x = panel_x + self.right_panel_width - 18   # 右列轨道
+            zoom_x = panel_x + 18                            # 左列轨道
+
+            speed_label = self.status_font.render("速度", True, self.colors['status_text'])
+            zoom_label = self.status_font.render("缩放", True, self.colors['status_text'])
+            self.screen.blit(speed_label, speed_label.get_rect(center=(speed_x, self.menu_bar_height + 15)))
+            self.screen.blit(zoom_label, zoom_label.get_rect(center=(zoom_x, self.menu_bar_height + 15)))
+
+            if track_height > 0:
+                half = self.right_panel_width // 2
+                # 左半：缩放滑条
                 pygame.draw.line(self.screen, self.colors['border'],
-                                 (_track.left, _track.centery),
-                                 (_track.right, _track.centery), 2)
-                _norm = (_val - _sp['min']) / max(1e-6, _sp['max'] - _sp['min'])
-                _norm = max(0.0, min(1.0, _norm))
-                _kx = int(_track.left + _norm * _track.width)
-                _knob = pygame.Rect(_kx - 5, _track.centery - 6, 10, 12)
-                _kc = (self.colors['button_hover']
-                       if getattr(self, _drag_attr, False)
-                       else self.colors['button_bg'])
-                pygame.draw.rect(self.screen, _kc, _knob, border_radius=3)
-                setattr(self, _rect_attr, _track)
+                                (zoom_x, track_top), (zoom_x, track_bottom), 2)
+                norm_z = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+                norm_z = max(0.0, min(1.0, norm_z))
+                # 倒置：滑条顶部=放大(max_zoom)，底部=缩小(min_zoom)
+                knob_y = int(track_top + (1.0 - norm_z) * track_height)
+                self.zoom_slider_rect = pygame.Rect(panel_x + 4, track_top, half - 8, track_height)
+                knob_color = self.colors['button_hover'] if getattr(self, 'zoom_slider_dragging', False) else self.colors['button_bg']
+                self.zoom_knob_rect = pygame.Rect(zoom_x - 10, knob_y - 6, 20, 12)
+                pygame.draw.rect(self.screen, knob_color, self.zoom_knob_rect, border_radius=4)
+
+                # 右半：速度滑条
+                pygame.draw.line(self.screen, self.colors['border'],
+                                (speed_x, track_top), (speed_x, track_bottom), 2)
+                norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
+                norm_v = max(0.0, min(1.0, norm_v))
+                knob_y = int(track_top + norm_v * track_height)
+                self.slider_rect = pygame.Rect(panel_x + half, track_top, half - 4, track_height)
+                knob_color = self.colors['button_hover'] if self.slider_dragging else self.colors['button_bg']
+                self.slider_knob_rect = pygame.Rect(speed_x - 10, knob_y - 6, 20, 12)
+                pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
 
     # ==================================================================
     # 单击反馈（全 GUI 生效的涟漪动效）：左键外扩环、右键内收环

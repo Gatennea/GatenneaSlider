@@ -70,10 +70,12 @@ rect = cp.seam_plane_rect('r', 1, g.game.blocks, gap=0.18)
 check(len(rect) == 4, '返回四角', len(rect))
 axis = cp.FAMILY_TO_WORLD_AXIS['r']
 a, b = [i for i in range(3) if i != axis]
-check(all(abs(p[axis] - 2.0) < 1e-9 for p in rect), '四角都在同一张平面上')
+anchor = cp.seam_plane_coord(1, 0.18, 1.5)   # 3×3×3 的包围盒中心 = 1.5
+check(all(abs(p[axis] - anchor) < 1e-9 for p in rect),
+      '四角都在同一张平面上')
 span_a = max(p[a] for p in rect) - min(p[a] for p in rect)
 span_b = max(p[b] for p in rect) - min(p[b] for p in rect)
-expect = 3.0 + 0.18       # 铺满包围盒横截面（两侧各多半格 gap）
+expect = 3.0 * 1.18 - 0.18   # 块大小不变，中心距 1+gap：首块外表面到最后一块外表面
 check(abs(span_a - expect) < 1e-9 and abs(span_b - expect) < 1e-9,
       f'跨度覆盖整盘（{span_a:.2f}×{span_b:.2f}，应 {expect:.2f}）')
 # 面积（平面内两轴叉积）
@@ -92,8 +94,8 @@ try:
     rect_loose = cp.seam_plane_rect('r', 1, g.game.blocks, gap=0.18)
     check(rect_loose and len(rect_loose) == 4, '只剩一块时仍给出完整的矩形')
     lone_span = (max(p[a] for p in rect_loose) - min(p[a] for p in rect_loose))
-    check(abs(lone_span - (1.0 + 0.18)) < 1e-9,
-          f'范围缩到这一块的包围盒（{lone_span:.2f}，应 1.18）')
+    check(abs(lone_span - 1.0) < 1e-9,
+          f'范围缩到这一块的块身（{lone_span:.2f}，应 1.00）')
 finally:
     g.game.blocks = cp_bak
 
@@ -102,6 +104,9 @@ print('B. save_config 落盘三维局信息与平移')
 g.new_cubic_puzzle(3, 3, 3, 1)
 g.cubic_pan = [12.0, -8.0]
 g.cubic_follow_centroid = False          # 手动平移过 → 跟随已暂停，要能原样存回
+g.cubic_seam_alpha = 180
+g.cubic_rot_sensitivity = 1.4
+g.cubic_anim_ms = 260
 g.save_config()
 with open(g.config_path, 'r', encoding='utf-8') as f:
     cfg = json.load(f)
@@ -112,6 +117,10 @@ check(cfg.get('cubic_pan') == [12.0, -8.0], 'cubic_pan 写下手动平移', cfg.
 check(cfg.get('cubic_follow_centroid') is False, '跟随质心的暂停状态也写盘',
       cfg.get('cubic_follow_centroid'))
 check(isinstance(cfg.get('cubic_camera'), dict), 'cubic_camera 仍在（相机组没被挤掉）')
+_cc = cfg.get('cubic_camera') or {}
+check(_cc.get('seam_alpha') == 180 and abs(_cc.get('rot_sensitivity', 0) - 1.4) < 1e-6
+      and _cc.get('cubic_anim_ms') == 260,
+      'seam_alpha / rot_sensitivity / cubic_anim_ms 一起写盘', _cc)
 
 print('=' * 60)
 print('C. 只有 config：按配置重建三维局（不再「缺 depth」崩）')
@@ -128,6 +137,10 @@ check('cubic3*3*3' in key, f'分榜键带层数（{key}）')
 check(list(map(float, g2.cubic_pan)) == [12.0, -8.0], '平移从 config 恢复', g2.cubic_pan)
 check(g2.cubic_follow_centroid is False, '跟随暂停状态也从 config 恢复',
       g2.cubic_follow_centroid)
+check(g2.cubic_seam_alpha == 180 and abs(g2.cubic_rot_sensitivity - 1.4) < 1e-6
+      and g2.cubic_anim_ms == 260,
+      '切面透明 / 旋转灵敏度 / 动画时长都从 config 恢复',
+      (g2.cubic_seam_alpha, g2.cubic_rot_sensitivity, g2.cubic_anim_ms))
 
 print('=' * 60)
 print('D. 平移与居中（方案 §2.2：六键平移，手动平移暂停跟随，居中恢复）')

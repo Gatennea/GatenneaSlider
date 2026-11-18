@@ -16,7 +16,7 @@ class HistoryMixin:
     def undo(self):
         """撤销操作（Ctrl+Z）"""
         # 三維（§54 第 5 步）：快照走无损键表 [r,c,d,gid]，与二维矩阵无关，
-        # 所以有自己的执行段（无动画——三维动画是第 6 步）。
+        # 所以有自己的执行段（滑动由 cubic_anim 在渲染层补）。
         if getattr(self, 'cubic_mode', False):
             self._cubic_undo_redo(is_undo=True)
             return
@@ -154,7 +154,7 @@ class HistoryMixin:
         }
 
     def _cubic_undo_redo(self, is_undo: bool):
-        """三维撤销/重做：换局面即刻生效（动画留到第 6 步）。
+        """三维撤销/重做：换局面即刻生效，渲染层补滑动位移。
 
         与二维无动画路径同口径：清选中、步数取历史累计值、标脏、可撤/重做
         到边界时给一句明确的提示（不是静默没反应）。
@@ -249,7 +249,8 @@ class HistoryMixin:
         """点击虚拟键盘【撤销/重做】：进入或退出连续播放。
 
         mode='undo'/'redo'。再次点击同按钮 = 停止；点击另一按钮 = 切换方向。
-        进入时立刻播放第一步；连续播放由每次动画提交后自动推进（见 _advance_continuous_undo_redo）。
+        进入时立刻播放第一步；连续播放由每步动画结束后的推进接上
+        （二维 `commit_animation()` 回调，三维 `_tick_cubic_continuous()` 每帧检查）。
         """
         if mode == 'undo':
             # 切换到撤销方向
@@ -279,6 +280,86 @@ class HistoryMixin:
             self.undo()
         else:
             self.redo()
+
+    def _cubic_continuous_active(self) -> bool:
+        """当前是否处于三维的连续撤销/重做。"""
+        return bool(
+            getattr(self, 'cubic_mode', False)
+            and (getattr(self, '_continuous_undo', False)
+                 or getattr(self, '_continuous_redo', False))
+        )
+
+    def _tick_cubic_continuous(self) -> bool:
+        """三维粘滞连续撤销/重做：等 `cubic_anim` 播完再推下一步。
+
+        原版二维靠 `commit_animation()` 末尾的 `_advance_continuous_undo_redo()`
+        事件驱动推进；三维撤销/重做走的是独立 `cubic_anim`（逻辑已即时提交，
+        仅渲染层补位移），从不进入 `animating`/动画队列，所以那条推进链在
+        三维里永远等不到。这里按帧检查 `cubic_anim` 是否到期：
+          · 未到期 → 继续等（画面还在滑）
+          · 已到期 → 清掉并开始下一步
+          · 无动画（用户关了动画）→ 与二维无动画路径同口径，就地推到边界
+        返回 True 表示本次调用消费了连续状态，调用方无需再走二维逻辑。
+        """
+        if not self._cubic_continuous_active():
+            return False
+        # 二维动画（如三维打乱演示借用的 start_animation）还在跑时先让它收尾，
+        # 避免两套动画同时改局面。
+        if getattr(self, 'animating', False):
+            return False
+
+        import pygame
+        anim = getattr(self, 'cubic_anim', None)
+        if anim:
+            elapsed = pygame.time.get_ticks() - int(anim.get('t0', 0))
+            if elapsed < max(1, int(anim.get('ms', 0))):
+                return True
+            # 本步播完，释放渲染位移后推进下一步
+            self.cubic_anim = None
+
+        animated = (getattr(self, 'animation_enabled', True)
+                    and int(getattr(self, 'cubic_anim_ms', 0) or 0) > 0)
+        if not animated:
+            # 与二维 no-anim 路径一致：一帧内推到底（不逐步堆调用栈）。
+            if self._continuous_undo:
+                while self.game_history.can_undo():
+                    before = self.game_history.history_index
+                    self._cubic_undo_redo(is_undo=True)
+                    if self.game_history.history_index == before:
+                        break       # 被教程锁定等挡住：退出，别空转
+                if not self.game_history.can_undo():
+                    self._stop_continuous_undo_redo("已撤销到第一步")
+                else:
+                    self._stop_continuous_undo_redo()
+            else:
+                while self.game_history.can_redo():
+                    before = self.game_history.history_index
+                    self._cubic_undo_redo(is_undo=False)
+                    if self.game_history.history_index == before:
+                        break
+                if not self.game_history.can_redo():
+                    self._stop_continuous_undo_redo("已重做到最后一步")
+                else:
+                    self._stop_continuous_undo_redo()
+            return True
+
+        # 动画开启：每次只推一步，下一步由下一次 tick 在本步播完后接上。
+        if self._continuous_undo:
+            if not self.game_history.can_undo():
+                self._stop_continuous_undo_redo("已撤销到第一步")
+                return True
+            before = self.game_history.history_index
+            self._cubic_undo_redo(is_undo=True)
+        else:
+            if not self.game_history.can_redo():
+                self._stop_continuous_undo_redo("已重做到最后一步")
+                return True
+            before = self.game_history.history_index
+            self._cubic_undo_redo(is_undo=False)
+        # 这一步没推动（教程锁定 / 无步可走）→ 停止，避免每帧重试。
+        if self.game_history.history_index == before:
+            self._stop_continuous_undo_redo()
+        return True
 
     def _advance_continuous_undo_redo(self):
         """连续播放推进：在每次撤销/重做提交后，若仍在连续模式且可继续，则播放下一步；
