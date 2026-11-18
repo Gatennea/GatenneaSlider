@@ -1200,8 +1200,10 @@ class EventsMixin:
                             if event.button == 1:
                                 self._cubic_drag_begin(x, y)
                             elif event.button == 3:
-                                op_log.log('cubic_clear', sx=x, sy=y)
-                                self._cubic_clear_selection()
+                                # 2026-11-18 用户改操作方式：**右键选缝**，
+                                # 空白处右键 = 取消选中（左键专职选滑块组）。
+                                op_log.log('cubic_seam_click', sx=x, sy=y)
+                                self._cubic_seam_click(x, y)
                             continue
 
                         # S1-4 箭头按键：**命中优先于选缝与起拖**。按键画在菜单
@@ -1735,76 +1737,68 @@ class EventsMixin:
         return None
 
     def _cubic_click(self, x, y):
-        """左键点一下：点在块的面上就选它外沿那条内部切面；连点两下：选中一侧连通组。
+        """左键：选滑块（点中那块所在的连通组）。左键不再改缝。
 
-        2026-11-17 用户口径（改判定基准）：拆分之缝里的那两面墙本来就在画面上
-        （gap>0 时内部面不再剔除），它们就是「看得见的缝」——直接拿它们当判定
-        基准；外表面也算（推出它外沿的内部切面），包围盒平面一律不选。
-        2026-11-18 用户改口径：**任何姿态都能选**（拾取基于本帧渲染面 + 画家序，
-        本来就不依赖正向朝向；原「必须正向化」是当年怕渲染难做留的退路）。
+        2026-11-18 用户改操作方式（双击会先把缝挪走，无法选中想选的块）：
+          · 左键 = 选块组 → 自动挂上这块旁边一条有效内部缝（好让箭头立刻可用）；
+          · 右键 = 选缝（`_cubic_seam_click`），空白右键 = 取消选中；
+          · 单击不再需要「连点两下」，双击判定整套删掉。
         """
         from engine import cubic_pick
-        # 方向箭头优先：它在最上层，点它就该推，不该被当成「点面选缝」
         arrow = self._cubic_arrow_hit(x, y)
         if arrow is not None:
             return self._cubic_push_letter(arrow, hint='方向箭头')
         hit = self._cubic_pick(x, y)
         if hit is None:
             return False
-        locations = {tuple(int(v) for v in b.location[:3]) for b in self.game.blocks}
-        seam = cubic_pick.seam_of_face(hit, self.game.is_valid_gap, locations)
-
-        now = pygame.time.get_ticks()
-        last_t = getattr(self, '_cubic_last_click_t', None)
-        last_p = getattr(self, '_cubic_last_click_p', None)
-        is_double = (last_t is not None and last_p is not None
-                     and now - last_t <= int(getattr(self, 'cubic_dblclick_ms',
-                                                     self.CUBIC_DOUBLE_CLICK_MS))
-                     and abs(x - last_p[0]) <= self.CUBIC_DOUBLE_CLICK_PX
-                     and abs(y - last_p[1]) <= self.CUBIC_DOUBLE_CLICK_PX)
-
-        if is_double:
-            # 双击：这次是「选块」，不能再让第一下随手改的缝把人带跑（用户
-            # 2026-11-18 第 5 条：双击仍可能选中别的缝隙）。规则：
-            #   ① 只认**这个块自己挨着的**有效内部缝（它的六个邻居面，或
-            #      点击的那面外侧那条），绝不退回「离点击最近的任意一条缝」；
-            #   ② 一个都找不到就把缝恢复成双击前的那条，并明说没缝。
-            prev_gap = getattr(self, '_cubic_gap_before_click', self.selected_gap)
-            block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
-            seam_use = seam
-            if block is not None and (seam_use is None
-                                      or not self._cubic_seam_touches(seam_use, hit['loc'])):
-                seam_use = self._cubic_seam_for_block(hit)
-            if block is None or seam_use is None:
-                self._cubic_last_click_t = None
-                self._cubic_last_click_p = None
-                self.selected_gap = prev_gap
-                self.macro_notify_msg = "这一块旁边没有可切的缝（换个位置）"
-                self.macro_notify_timer = 120
-                return False
-            self.selected_gap = seam_use
-            self.game.opt(seam_use[0], seam_use[1], block)
+        block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
+        if block is None:
+            return False
+        seam_use = self._cubic_seam_for_block(hit)
+        if seam_use is None:
+            # 这块旁边没有可切的内部缝（1×1×n 之类退化局面）：只选组不给缝。
+            self.selected_gap = None
             self.selected_block = block
-            self._cubic_last_click_t = None
-            self._cubic_last_click_p = None
-            n = len([b for b in self.game.blocks if b.be_opted])
-            self.macro_notify_msg = (f"选中滑块组 共{n}个"
-                                     f"（切面 {seam_use[0]}·{seam_use[1]}）")
-            self.macro_notify_timer = 120
-            return True
-
-        # 单击：点到缝里才改切面；点在块的外表面上不动缝（否则双击的第一下
-        # 就会把缝挪走）。时间戳无论改不改缝都记，否则拼不出双击。
-        self._cubic_last_click_t = now
-        self._cubic_last_click_p = (x, y)
-        self._cubic_gap_before_click = self.selected_gap
-        if seam is None:
-            self.macro_notify_msg = "点到两块之间的缝（缝里的墙）才改切面；双击块选中一侧"
+            for b in self.game.blocks:
+                b.be_opted = False
+            self.macro_notify_msg = "这一块旁边没有可切的缝（换个位置）"
             self.macro_notify_timer = 120
             return False
+        self.selected_gap = seam_use
+        self.game.opt(seam_use[0], seam_use[1], block)
+        self.selected_block = block
+        n = len([b for b in self.game.blocks if b.be_opted])
+        self.macro_notify_msg = (f"选中滑块组 共{n}个"
+                                 f"（切面 {seam_use[0]}·{seam_use[1]}）")
+        self.macro_notify_timer = 120
+        return True
 
+    def _cubic_seam_click(self, x, y):
+        """右键：选切面。点中块的某个面 → 这条面外沿的内部缝；空白 → 取消选中。
+
+        与左键分工（用户 2026-11-18）：左键选块、右键选缝。选缝同时把**点中那块
+        所在一侧**的连通组选上，这样右键选完缝就能直接推（不用再左键补一下）。
+        """
+        from engine import cubic_pick
+        hit = self._cubic_pick(x, y)
+        if hit is None:
+            self._cubic_clear_selection()
+            return False
+        locations = {tuple(int(v) for v in b.location[:3]) for b in self.game.blocks}
+        seam = cubic_pick.seam_of_internal_face(
+            hit, self.game.is_valid_gap, locations)
+        if seam is None:
+            seam = cubic_pick.seam_of_face(hit, self.game.is_valid_gap, locations)
+        block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
+        if seam is None or block is None:
+            self.macro_notify_msg = "这个面旁边没有可切的内部缝"
+            self.macro_notify_timer = 110
+            return False
         self.selected_gap = seam
-        self.macro_notify_msg = f"切面预览：{seam[0]}·{seam[1]}（双击选中一侧）"
+        self.game.opt(seam[0], seam[1], block)
+        self.selected_block = block
+        n = len([b for b in self.game.blocks if b.be_opted])
+        self.macro_notify_msg = f"切面 {seam[0]}·{seam[1]}（同侧 {n} 块）"
         self.macro_notify_timer = 120
         return True
 

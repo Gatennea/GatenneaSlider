@@ -232,8 +232,8 @@ check(gui.selected_gap and gui.game.is_valid_gap(*gui.selected_gap),
       '预览的切面是引擎判有效的缝')
 check(gui.step_count == step0 and len(getattr(gui.game_history, 'undo_stack', []) or []) == hist0,
       '单击不产生步数、不入历史（还只是预览）')
-check(not any(getattr(b, 'be_opted', False) for b in gui.game.blocks),
-      '单击不选块（选中留给双击）')
+check(any(getattr(b, 'be_opted', False) for b in gui.game.blocks),
+      '左键单击直接选中这块所在的组（2026-11-18 新操作方式）')
 
 click(pt)
 seam = gui.selected_gap
@@ -333,9 +333,7 @@ for view in (0, 3):
         # 每次先清掉选中（否则上一轮画出的箭头会把点击抢去当「推」）
         gui._cubic_clear_selection()
         gui.draw_cubic_board()
-        gui.selected_gap = ('r', 1)      # 先把缝故意放在别处，看双击会不会被带跑
-        gui._cubic_last_click_t = None
-        gui._cubic_click(cx, cy)
+        gui.selected_gap = ('r', 1)      # 先把缝故意放在别处，看单击会不会被带跑
         gui._cubic_click(cx, cy)
         hit = gui._cubic_pick(cx, cy)
         if hit is None:
@@ -347,7 +345,23 @@ for view in (0, 3):
             bad += 1
             print('  BAD', view, tuple(int(v) for v in hit['loc']), gap,
                   gui._cubic_seam_for_block(hit))
-check(bad == 0, f'双击选中的缝都属于点中的那块（{bad} 个跑偏）')
+check(bad == 0, f'左键单击选中的缝都属于点中的那块（{bad} 个跑偏）')
+
+print('I. 右键选缝 / 空白右键取消（2026-11-18 新操作方式）')
+gui._cubic_view(0)
+gui.draw_cubic_board()
+face = gui._cubic_scene['faces'][0]
+cx = int(sum(p[0] for p in face['pts']) / 4.0)
+cy = int(sum(p[1] for p in face['pts']) / 4.0)
+ok_seam = gui._cubic_seam_click(cx, cy)
+check(ok_seam and gui.selected_gap is not None,
+      f'右键点面 → 选出切面（{gui.selected_gap}）')
+check(any(getattr(b, 'be_opted', False) for b in gui.game.blocks),
+      '右键选缝同时把点中那块的同侧组选上（选完就能推）')
+check(gui._cubic_seam_click(8, 8) is False and gui.selected_gap is None,
+      '空白处右键 → 取消选中与切面')
+check(not any(getattr(b, 'be_opted', False) for b in gui.game.blocks),
+      '取消后没有任何块被选中')
 
 print('=' * 60)
 if _fail:

@@ -1165,8 +1165,8 @@ class RendererMixin:
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
                 f'　视角 {view_label}　缩放 {zoom * 100:.0f}%'
                 f'　拆分 {gap:.2f}（0 = 贴死）')
-        hint2 = ('拖动旋转 · 1–6 切朝向 · 0 回斜视 · Ctrl+滚轮缩放 · 单击切面 / 双击选中'
-                 ' · r/R c/C d/D 推 · 右键取消 · 六键=平移 · 编辑→居中')
+        hint2 = ('拖动旋转 · 1–6 切朝向 · 0 回斜视 · Ctrl+滚轮缩放 · 左键选块组'
+                 ' · 右键选缝（空白=取消） · r/R c/C d/D 推 · 六键=平移 · 编辑→居中')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))
@@ -5143,12 +5143,11 @@ class RendererMixin:
     # 设置页「三维」专页（方案 §2.4）
     # ==================================================================
     #: 每项的步长（按一下就改这么多；细调靠连点，不必再拖一条滑条进来）
-    CUBIC_STEP = {'gap': 0.05, 'seam_alpha': 5, 'dblclick_ms': 20,
-                  'rot_sensitivity': 0.1}
+    CUBIC_STEP = {'gap': 0.05, 'seam_alpha': 5, 'rot_sensitivity': 0.1}
 
     def _fmt_cubic_value(self, spec, val):
         if spec['type'] == 'int':
-            return f"{int(val)}" + (' ms' if spec['key'] == 'dblclick_ms' else '')
+            return f"{int(val)}"
         return f"{val:.2f}" + (' 倍' if spec['key'] == 'rot_sensitivity' else '')
 
     def _draw_settings_cubic(self, x, y, width, height):

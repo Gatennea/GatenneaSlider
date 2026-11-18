@@ -809,3 +809,22 @@ generic_controls/rp_menu 回归通过。
 
 截图：`fix19/vk_axis_obl.png`（斜视 35/25）、`fix19/vk_axis_front.png`（正视 +Z，
 r 轴正对镜头退化成两个端盘）。
+
+## 2026-11-18 操作方式改版：左键选块 / 右键选缝 / 空白右键取消
+
+用户确认：「允許外表面也選縫是有代價，那就改操作方式吧——以後右鍵選縫，
+左鍵選滑塊，在空白處右鍵是取消選中」。
+
+- `_cubic_click`（左键）：点中块 → 选这块所在的连通组，并**自动挂上这块旁边
+  一条有效内部缝**（`_cubic_seam_for_block`），箭头立刻可用；不再有双击判定，
+  `_cubic_last_click_t/p`、`_cubic_gap_before_click` 全部退场。旁边一条缝都没有
+  （1×1×n 退化局）时只提示、不选组。
+- 新增 `_cubic_seam_click`（右键）：点中块的任一表面 → 取这条面所属的内部缝
+  （`seam_of_internal_face` 优先，外表面退回 `seam_of_face`），并把点中那块
+  **同侧**的连通组选上（右键选完缝就能直接推）；点空白 → `_cubic_clear_selection`。
+- 设置页删掉「双击时间窗」（已无双击），三维专页从 4 项变 3 项
+  （拆分 / 切面透明 / 旋转灵敏度），CUBIC_STEP 与数值格式同步。
+- 状态栏提示改成「左键选块组 · 右键选缝（空白=取消）」。
+
+测试：pick 301 项（H 段由双击改单击、新增 I 段右键选缝/空白取消）、
+render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。

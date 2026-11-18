@@ -54,8 +54,8 @@ class _Holder:
 h = _Holder()
 cubic_settings.reset(h)
 d = cubic_settings.defaults()
-check(set(d) == {'gap', 'seam_alpha', 'dblclick_ms', 'rot_sensitivity'},
-      '表里有四条（gap/seam_alpha/dblclick_ms/rot_sensitivity）', sorted(d))
+check(set(d) == {'gap', 'seam_alpha', 'rot_sensitivity'},
+      '表里有三条（gap/seam_alpha/rot_sensitivity；双击项已随右键选缝删除）', sorted(d))
 check(h.cubic_gap == 0.12 and h.cubic_seam_alpha == 110,
       'reset 把默认值写到属性上',
       (h.cubic_gap, h.cubic_seam_alpha))
@@ -156,25 +156,25 @@ print('D. 落盘 / 读盘：config.json 的 cubic_camera 带齐表内键，坏�
 import json
 gui.cubic_gap = 0.33
 gui.cubic_seam_alpha = 180
-gui.cubic_dblclick_ms = 420
 gui.cubic_rot_sensitivity = 1.4
 gui.save_config()
 with open(gui.config_path, encoding='utf-8') as f:
     cfg = json.load(f)
 cc = cfg.get('cubic_camera') or {}
-check(set(d) <= set(cc), 'cubic_camera 里带齐表内四个键', sorted(cc))
+check(set(d) <= set(cc), 'cubic_camera 里带齐表内三个键', sorted(cc))
 check(abs(cc['gap'] - 0.33) < 1e-6 and cc['seam_alpha'] == 180
-      and cc['dblclick_ms'] == 420 and abs(cc['rot_sensitivity'] - 1.4) < 1e-6,
+      and abs(cc['rot_sensitivity'] - 1.4) < 1e-6,
       '导出值 = 当前值（不是默认值）', cc)
 
 gui._cubic_camera_prefs = {'gap': 0.25, 'seam_alpha': 9999,
-                          'dblclick_ms': 'x', 'rot_sensitivity': -3}
+                          'rot_sensitivity': -3}
 cubic_settings.reset(gui)
 gui._cubic_load_defaults()
 check(abs(gui.cubic_gap - 0.25) < 1e-6, 'gap 读回 0.25', gui.cubic_gap)
 check(gui.cubic_seam_alpha == 220, 'seam_alpha 越界夹到 220（不是照抄 9999）',
       gui.cubic_seam_alpha)
-check(gui.cubic_dblclick_ms == 300, 'dblclick_ms 坏值回默认 300', gui.cubic_dblclick_ms)
+check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
+      gui.cubic_rot_sensitivity)
 check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
       gui.cubic_rot_sensitivity)
 
@@ -258,8 +258,8 @@ check(all(_rects[i].right <= _rects[i + 1].left for i in range(len(_rects) - 1))
 check(all(_rects[i].width == 72 for i in range(len(_rects))), '页签宽 72（放得下 8 个）')
 
 _btns = getattr(gui, '_settings_cubic_btn_rects', {})
-check(len(_btns) == 8 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns,
-      '三维页四个选项各一枚 − 与 +', sorted(_btns.keys()))
+check(len(_btns) == 6 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns,
+      '三维页三个选项各一枚 − 与 +', sorted(_btns.keys()))
 check(all(r.collidepoint(r.center) and r.bottom <= gui._settings_content_rect.bottom + 1
           for r in _btns.values()),
       '按钮都落在可见内容区内')
