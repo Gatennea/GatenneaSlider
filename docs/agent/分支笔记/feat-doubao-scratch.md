@@ -759,3 +759,17 @@ generic_controls/rp_menu 回归通过。
 `_test_cubic_seam_occlusion` F 改成 3.12 整幅、红像素边界按矩形、正视红占比阈值放宽到
 4.5%（多出来的是铺满后露出的半格红边）；`_test_cubic_config_state` 跨度改 3.18。
 全部 cubic 套件 + feature_index + statusbar 回绿（pick 297 / vk 49 / anim 24 / seam 14 / config 21）。
+
+## 2026-11-18 切面范围再纠正：按**包围盒**，不按原始尺寸
+
+上一版给 `seam_plane_rect` 传 `dims=(m,n,d)` 就按棋盘整幅取——用户指出这不对
+（「我用的是包围盒范围不是原始尺寸」）。三维盘面推散后块本来就跑出原始格数，
+几何必须跟着真实块堆走。改成：
+
+- 有块时一律用 `min/max(world)` 的包围盒（逻辑 (r,c,d) → 世界 (c,d,r)），平面内
+  两轴再各加半格 gap（块的可见外延）；`dims` 只在**一块都没有**时兜底；
+- 箭头锚点也改用同一张 `seam_plane_rect` 的边（不再用 `seam_plane_cells` 那种
+  按「缝口有没有相邻块」筛过的外框，盘面一散就缩水）。
+
+测试同步：`_test_cubic_seam_occlusion` F / `_test_cubic_config_state` A 的「只剩
+一块」断言改为**范围缩到 1 + gap**（不再要求保持整幅棋盘）。

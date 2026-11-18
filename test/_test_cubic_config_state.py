@@ -83,13 +83,17 @@ for i in range(4):
     area += p0[a] * p1[b] - p1[a] * p0[b]
 check(abs(abs(area) / 2.0 - expect ** 2) < 1e-9, f'面积 = 切面整片（{abs(area) / 2:.4f}）')
 
-# 打散后仍是一整块：只留一个块（占据角落），矩形范围不该跟着缩
+# 范围跟**当前块堆的包围盒**走（用户 2026-11-18：不是原始棋盘尺寸）：
+# 只留一个块，矩形就缩到这一块的外延（1 + gap）
 blk = g.game.blocks[0]
 cp_bak = g.game.blocks
 try:
     g.game.blocks = [blk]
     rect_loose = cp.seam_plane_rect('r', 1, g.game.blocks, gap=0.18)
-    check(rect_loose and len(rect_loose) == 4, '只剩一块时仍给出完整的矩形（不缺格）')
+    check(rect_loose and len(rect_loose) == 4, '只剩一块时仍给出完整的矩形')
+    lone_span = (max(p[a] for p in rect_loose) - min(p[a] for p in rect_loose))
+    check(abs(lone_span - (1.0 + 0.18)) < 1e-9,
+          f'范围缩到这一块的包围盒（{lone_span:.2f}，应 1.18）')
 finally:
     g.game.blocks = cp_bak
 

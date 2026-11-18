@@ -199,7 +199,7 @@ def main():
     centers = [c for _q, c in cells]
     check(len(set(centers)) == len(centers), '格子中心互不重合')
 
-    print('F. 切面是**一整张矩形平面**，且铺满包围盒横截面（2026-11-18 用户口径）')
+    print('F. 切面是**一整张矩形平面**，范围跟当前块堆的包围盒（2026-11-18 用户口径）')
     edge = 3.0 + 0.12          # 包围盒 = 每格外再多半格 gap（两侧各 0.06）
     rect = cp.seam_plane_rect('r', 1, gui.game.blocks, gap=0.12, dims=(3, 3, 3))
     a2, b2 = [i for i in range(3) if i != axis]
@@ -209,10 +209,11 @@ def main():
     check(abs(span_a - edge) < 1e-9 and abs(span_b - edge) < 1e-9,
           f'一张矩形覆盖整盘（{span_a:.2f}×{span_b:.2f}）')
     check(all(abs(p[axis] - 2.0) < 1e-9 for p in rect), '四角共面')
-    # 打散后（只剩一个块）仍是整幅矩形，不跟着块堆缩水
+    # 范围按**包围盒**、不按原始尺寸：只剩一个块就缩到这一块的外延
     lone = cp.seam_plane_rect('r', 1, gui.game.blocks[:1], gap=0.12, dims=(3, 3, 3))
-    check(abs((max(p[a2] for p in lone) - min(p[a2] for p in lone)) - edge) < 1e-9,
-          '只剩一块时切面还是整幅矩形（不会缩成一小片）')
+    lone_edge = 1.0 + 0.12
+    check(abs((max(p[a2] for p in lone) - min(p[a2] for p in lone)) - lone_edge) < 1e-9,
+          f'只剩一块时切面跟着缩到 1.12（不是原始 3×3）')
 
     print('=' * 60)
     if _fail:

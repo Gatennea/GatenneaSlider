@@ -1194,11 +1194,14 @@ class RendererMixin:
         from engine import cubic_pick
         from engine import cubic_view as _cv
         from engine.compat import CUBIC_DIRECTIONS
-        cells = cubic_pick.seam_plane_cells(seam[0], seam[1], blocks, gap=gap)
-        if not cells:
+        # 锚点按**当前块堆的包围盒**取（用户 2026-11-18：切面范围跟包围盒走，
+        # 不跟原始棋盘尺寸走）。不用 seam_plane_cells 的外框：那是按「缝口有没
+        # 有相邻块」筛过的，盘面一散就会缩水，箭头也跟着挤到中间。
+        rect = cubic_pick.seam_plane_rect(seam[0], seam[1], blocks, gap=gap)
+        if not rect:
             return
-        lo = [min(p[i] for quad, _c in cells for p in quad) for i in range(3)]
-        hi = [max(p[i] for quad, _c in cells for p in quad) for i in range(3)]
+        lo = [min(p[i] for p in rect) for i in range(3)]
+        hi = [max(p[i] for p in rect) for i in range(3)]
         mid = [(lo[i] + hi[i]) / 2.0 for i in range(3)]
         boxes = _cv.block_boxes(blocks, gap)
         view_dir = camera.view_axis()
