@@ -1576,12 +1576,15 @@ class EventsMixin:
                         # 三維：1–6 切六朝向、0 回斜视（带偏角，不是正对）
                         continue
 
-                    elif getattr(self, 'cubic_mode', False) and self._cubic_move_key(event):
-                        # 三維：r/R c/C d/D 三軸六向推選中組（§54 第 4 步）
-                        continue
-
                     else:
                         if self._tut_board_locked():
+                            continue
+                        # 三维：不再绑定物理键盘推块（用户 2026-11-18：旋转后
+                        # 键位方向与视角里的方向对不上，快捷键反而更难控制）。
+                        # 方向只留给坐标轴虚拟键盘、画面箭头和拖动；这里把
+                        # r/R/c/C/d/D 与旧 WASD/方向键吃掉，避免落进下面的
+                        # 通用字母表分支又推一步。
+                        if getattr(self, 'cubic_mode', False) and self._cubic_blocked_move_key(event):
                             continue
                         # 米字格按冻结决策不綁物理鍵盤（8 向鍵位會與撤銷/重做等
                         # 既有快捷鍵爭 W/A/S/D）：按到移動鍵只提示用虛擬鍵盤，
@@ -1906,22 +1909,26 @@ class EventsMixin:
             return True
         return False
 
-    def _cubic_move_key(self, event):
-        """三轴六向字母推一步（§54 第 4 步）：r/R c/C d/D，大写沿轴增大。
+    def _cubic_blocked_move_key(self, event):
+        """三维不再用物理键盘推块；这些键只吃掉并给一次明确提示。
 
-        与 `engine.compat` 的 cubic 字母表同一套字母（不注册会派生成 A~F，能用
-        但不直观）。两条闸门：带 Ctrl/Alt 不消费（留给快捷键）；没选中就只提示
-        「先双击选中」。2026-11-18 起**任何姿态都能推**（三条轴是世界轴，与镜头
-        朝向无关；原「旋转态只看不动」随正向化口径一并撤销）。
+        用户 2026-11-18：相机旋转后，键盘的 r/c/d 与实际画面方向不再一一对应，
+        快捷键反而容易推错。方向入口统一收敛到「坐标轴虚拟键盘 / 画面箭头 /
+        拖动」三条鼠标路径；键盘只保留视角（1–6、0）、撤销重做等全局快捷键。
+
+        返回 True = 这个按键已被消费（不再落进通用字母表/方向键分支）。
         """
         if getattr(event, 'mod', 0) & (pygame.KMOD_CTRL | pygame.KMOD_ALT):
             return False
-        mapping = {pygame.K_r: 'r', pygame.K_c: 'c', pygame.K_d: 'd'}
-        base = mapping.get(event.key)
-        if base is None:
+        blocked = {
+            pygame.K_r, pygame.K_c, pygame.K_d,
+            pygame.K_w, pygame.K_s, pygame.K_a,
+            pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT,
+        }
+        if event.key not in blocked:
             return False
-        letter = base.upper() if (event.mod & pygame.KMOD_SHIFT) else base
-        self._cubic_push_letter(letter, hint='r/R c/C d/D')
+        self.macro_notify_msg = "三维：方向请用坐标轴虚拟键盘或画面箭头"
+        self.macro_notify_timer = 120
         return True
 
     # ---- 三轴六键：虚拟键盘按钮（§54 第 4 步下半） ----

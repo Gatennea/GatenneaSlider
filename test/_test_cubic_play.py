@@ -3,14 +3,15 @@
 
 本步拆成两片做：
   ①（本文件）方向字母表 + 选中后能沿三轴六向推一步 / 推回、步数与判胜口径、
-    打乱可继续；撤销重做**明确拒绝**（历史扩到 (r,c,d) 是第 5 步）。
-  ②（未做）虚拟键盘三轴六键 + 重画箭头。
+    打乱可继续；撤销重做走三维历史。
+  ② 虚拟键盘三轴六键 + 重画箭头；2026-11-18 起虚拟键盘不写字母，
+    物理键盘不再推块（方向只留给坐标轴键盘/画面箭头/拖动）。
 
 钉住这几条：
   A. compat 注册的 cubic 字母表 = r/R c/C d/D，且与 spec 六向一一对应。
-  B. 双击选中一侧后按字母推：整组同向位移、块数守恒、步数 +1、历史不炸。
-  C. 旋转态（不在六朝向之一）按键不推；没选中按键只提示。
-  D. 撤销 / 重做在三维下被明确拒绝（不抛 ValueError，位置不变）。
+  B. 双击选中一侧后按方向推：整组同向位移、块数守恒、步数 +1、历史不炸。
+  C. 旋转态照样能推；没选中只提示；物理按键不推。
+  D. 撤销 / 重做真的换局面（历史扩到 (r,c,d)）。
   E. 未还原时 is_solved() 为假、打乱后仍为假且渲染不崩；还原态为真。
 
 跑法：D:/python/python.exe test/_test_cubic_play.py
@@ -107,16 +108,17 @@ check(gui.game.is_solved(), '建局 = 还原态，is_solved() 为真（还没推
 # 双击后选中的切面由「离点击最近的那条缝」决定（2026-11-17 改）。
 # 注意：合法推法是**沿切面滑动**——方向必须与缝族垂直（引擎 action_to_move
 # 会拒「法向推」为 bad_direction），所以从另两根轴里挑一个能走通的。
-FAMILY_KEY = {'r': pygame.K_r, 'c': pygame.K_c, 'd': pygame.K_d}
+# 2026-11-18 起物理键盘不再推块，这里走虚拟键盘/画面箭头同源的
+# `_cubic_push_letter`。
 fam = gui.selected_gap[0]
 before = locs()
 step0 = gui.step_count
 used = None
 for push in [f for f in ('r', 'c', 'd') if f != fam]:
-    for mod in (0, pygame.KMOD_SHIFT):
-        key(FAMILY_KEY[push], mod=mod)
-        if gui.step_count == step0 + 1:
-            used = (push, mod)
+    for upper in (False, True):
+        letter = push.upper() if upper else push
+        if gui._cubic_push_letter(letter):
+            used = letter
             break
     if used:
         break
@@ -126,13 +128,13 @@ check(gui.step_count == step0 + 1, f'推一步步数 +1（{gui.step_count}）')
 check(len(after) == len(before) == 27, '块数守恒 27')
 check(set(after) != set(before), '位置确实变了（不是空推）')
 check(not gui.game.is_solved(), '推一步后不再还原（is_solved 为假）')
-check(used[0] in (gui.macro_notify_msg or ''), f'提示带方向名（{gui.macro_notify_msg}）')
+check(used[0].lower() in (gui.macro_notify_msg or ''), f'提示带方向名（{gui.macro_notify_msg}）')
 
-key(FAMILY_KEY[used[0]], mod=(pygame.KMOD_SHIFT if used[1] == 0 else 0))
-check(set(locs()) == set(before), '反向字母推回原位')
+gui._cubic_push_letter(used.swapcase())
+check(set(locs()) == set(before), '反向方向推回原位')
 check(gui.game.is_solved(), '推回后重新还原')
 
-print('C. 闸门（斜视下照样能推 / 没选中不推）')
+print('C. 闸门（斜视下照样能推 / 没选中不推 / 物理键盘不推）')
 gui._cubic_view_oblique()
 gui.draw_cubic_board()
 # 斜视下仍然有选中（前进到上一步时选中的组没被清掉），推一步应该生效
@@ -140,19 +142,31 @@ opted = [tuple(int(v) for v in b.location[:3])
          for b in gui.game.blocks if getattr(b, 'be_opted', False)]
 check(bool(opted), '斜视前已有选中组')
 before = locs()
-key(pygame.K_c, mod=pygame.KMOD_SHIFT)
-check(set(locs()) != set(before) or '推不动' in (gui.macro_notify_msg or ''),
-      f'斜视下按键会真的尝试推进（{gui.macro_notify_msg}）')
+pushed = gui._cubic_push_letter('C')
+check(pushed or '推不动' in (gui.macro_notify_msg or ''),
+      f'斜视下方向入口会真的尝试推进（{gui.macro_notify_msg}）')
 check('旋转态' not in (gui.macro_notify_msg or ''),
       f'不再拦「旋转态」（{gui.macro_notify_msg}）')
 gui._cubic_view(0)
 gui._cubic_clear_selection()
 n_before = gui.step_count
 before = locs()
-key(pygame.K_c, mod=pygame.KMOD_SHIFT)
-check(set(locs()) == set(before), '没选中按键不推')
+gui._cubic_push_letter('C')
+check(set(locs()) == set(before), '没选中方向入口不推')
 check(gui.step_count == n_before,
       f'没选中被拒时步数不涨（之前 {n_before}，现在 {gui.step_count}）')
+# 物理键盘：r/R c/C d/D 与 WASD/方向键全部只给提示，不推块
+n_before = gui.step_count
+before = locs()
+key(pygame.K_c, mod=pygame.KMOD_SHIFT)
+check(set(locs()) == set(before), '物理键 Shift+C 不推块')
+check(gui.step_count == n_before, f'物理键不涨步数（{gui.step_count}）')
+check('坐标轴' in (gui.macro_notify_msg or ''),
+      f'物理键给「用坐标轴键盘」提示（{gui.macro_notify_msg}）')
+key(pygame.K_r)
+check(set(locs()) == set(before), '物理键 r 不推块')
+key(pygame.K_UP)
+check(set(locs()) == set(before), '方向键不推块')
 
 print('D. 撤销 / 重做真的换局面（第 5 步历史已扩到 (r,c,d)）')
 after_cells = locs()
@@ -220,6 +234,27 @@ gui._shake_t = 0
 gui._shake_blocks = set()
 check(gui._cubic_push_letter('C') is False, '没选块推不动')
 check(getattr(gui, '_shake_t', 0) == 0, '前提没满足不闪整盘（visual=False）')
+
+print('G. 三维虚拟键盘：六个端点仍在，但不写方向字母')
+gui.show_virtual_keyboard = True
+gui._vk_build_layout()
+rects = {k: v for k, v in gui.vk_rects.items() if k.startswith('cubic_')}
+check(len(rects) == 6, f'六个端点命中盒都在（{len(rects)}）')
+rendered = []
+_orig_font = gui.dialog_font
+
+class _FontSpy:
+    def render(self, text, *a, **kw):
+        rendered.append(text)
+        return _orig_font.render(text, *a, **kw)
+
+gui.dialog_font = _FontSpy()
+try:
+    gui.draw_virtual_keyboard()
+finally:
+    gui.dialog_font = _orig_font
+check(not any(t in ('r', 'R', 'c', 'C', 'd', 'D') for t in rendered),
+      f'端点盘没有方向字母（渲染文字={rendered}）')
 
 print('=' * 60)
 if _fail:
