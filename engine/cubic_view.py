@@ -49,32 +49,56 @@ SHADE = {
 DEFAULT_GAP = 0.12
 
 
-def block_min_corner(location, gap: float = 0.0) -> tuple:
+def layout_anchor(blocks) -> tuple:
+    """当前块堆的**包围盒中心**（世界坐标 X/Y/Z）。
+
+    拆分以它为中心向外散：两组块的位置/数量不变时，拉开间距只会让整堆
+    对称变胖，不会把整盘往某一侧顶出去，也不会逼相机重新取景。
+    """
+    locs = locations_of(blocks)
+    if not locs:
+        return (0.5, 0.5, 0.5)
+    # 逻辑 (r, c, d) → 世界 (X, Y, Z) = (c, d, r)
+    world = [(p[1], p[2], p[0]) for p in locs]
+    lo = [min(p[i] for p in world) for i in range(3)]
+    hi = [max(p[i] for p in world) + 1 for i in range(3)]
+    return tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
+
+
+def block_min_corner(location, gap: float = 0.0,
+                     anchor=None) -> tuple:
     """逻辑坐标 (r, c, d) → 该块最小角的世界坐标 (x, y, z)。
 
     gap = **拆分**：滑块**大小不变**（始终 1 格边长），只把相邻块的中心距
     从 1 格拉开到 ``1 + gap``，于是两个相邻块表面之间正好空出 gap。
+    anchor = 拆分中心（世界坐标，默认 ``(0.5, 0.5, 0.5)``，即第一格中心；
+    渲染/拾取都传 `layout_anchor(blocks)` 的包围盒中心，整堆对称散开）。
+
     gap=0 = 完全未拆分（块贴死，投影上只是一个大方块，前後遮挡无从判读）；
     上限 <1.0（再大块与块之间就隔出一整个块身，超出当前滑条范围）。
     """
     if not 0.0 <= gap < 1.0:
         raise ValueError(f'拆分 gap 须在 [0, 1) 内，收到 {gap!r}')
     r, c, d = location[0], location[1], location[2]
+    if anchor is None:
+        anchor = (0.5, 0.5, 0.5)
     pitch = 1.0 + gap
     half = gap / 2.0
-    return (float(c) * pitch + half, float(d) * pitch + half,
-            float(r) * pitch + half)
+    # min = k·(1+gap) + gap/2 − anchor·gap：中心距变 1+gap，整堆以 anchor 对称散开。
+    return (float(c) * pitch + half - float(anchor[0]) * gap,
+            float(d) * pitch + half - float(anchor[1]) * gap,
+            float(r) * pitch + half - float(anchor[2]) * gap)
 
 
-def block_center(location, gap: float = 0.0) -> tuple:
+def block_center(location, gap: float = 0.0, anchor=None) -> tuple:
     """块心世界坐标（跟随质心/切面分侧共用同一口径）。"""
-    x0, y0, z0 = block_min_corner(location, gap)
+    x0, y0, z0 = block_min_corner(location, gap, anchor)
     return (x0 + 0.5, y0 + 0.5, z0 + 0.5)
 
 
-def block_corners(location, gap: float = 0.0) -> tuple:
+def block_corners(location, gap: float = 0.0, anchor=None) -> tuple:
     """单位立方体的 8 个世界角点（拆分只拉间距，边长恒为 1）。"""
-    x0, y0, z0 = block_min_corner(location, gap)
+    x0, y0, z0 = block_min_corner(location, gap, anchor)
     x1 = x0 + 1.0
     y1 = y0 + 1.0
     z1 = z0 + 1.0
@@ -84,9 +108,10 @@ def block_corners(location, gap: float = 0.0) -> tuple:
     )
 
 
-def _face_quad(location, axis: int, sign: int, gap: float = 0.0) -> tuple:
+def _face_quad(location, axis: int, sign: int, gap: float = 0.0,
+               anchor=None) -> tuple:
     """某个面的 4 个世界角点（从该面外侧看是逆时针，fill 不依赖朝向）。"""
-    x0, y0, z0 = block_min_corner(location, gap)
+    x0, y0, z0 = block_min_corner(location, gap, anchor)
     x1 = x0 + 1.0
     y1 = y0 + 1.0
     z1 = z0 + 1.0
@@ -195,13 +220,13 @@ def locations_of(blocks) -> set:
 
 
 def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
-                  gap: float = 0.0, offsets=None) -> list:
+                  gap: float = 0.0, offsets=None, anchor=None) -> list:
     """算出**当前可见**的面（背面剔除 + 内部面剔除 + 画家排序）。
 
     gap = 拆分距离（见 block_min_corner）。**gap>0 时不再剔除内部面**：块与块
     之间空出了一条缝，站在斜视角度正好能看见缝里的那一面——这时候还按「邻块
     存在就当内部面」去删，画面会出现「该有的面不见了」的漏块感。
-    gap=0（未拆分）才按邻块剔除内部面。
+    gap=0（未拆分）才按邻块剔除内部面。anchor 默认取当前块堆的包围盒中心。
 
     返回列表，每项：
         {'pts': [(sx, sy) × 4], 'depth': 相机深度（大 = 近）,
@@ -210,6 +235,8 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
     排序：depth 从小到大（远的先画、近的后画 → 前面的块盖住后面的块）。
     """
     locations = locations_of(blocks)
+    if anchor is None:
+        anchor = layout_anchor(blocks)
     view_z = camera.view_axis()
     solid = gap < 1e-9
     out = []
@@ -219,7 +246,7 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
                 continue                       # 未拆分：内部面画出来只会漏底
             if sum(n * v for n, v in zip(normal, view_z)) <= 1e-9:
                 continue                       # 背面：法向朝里，看不见
-            quad = _face_quad(loc, axis, sign, gap)
+            quad = _face_quad(loc, axis, sign, gap, anchor)
             if offsets:
                 # 三维动画（§54 第 6 步）：逻辑已提交，渲染层给「刚动过的块」
                 # 一个还在收尾的位移，画面上就是滑过去的一段。
@@ -247,16 +274,19 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
     return out
 
 
-def block_boxes(blocks, gap: float = 0.0, offsets=None) -> list:
+def block_boxes(blocks, gap: float = 0.0, offsets=None, anchor=None) -> list:
     """每个块的世界 AABB（(x0, y0, z0, x1, y1, z1)），含拆分间距。
 
-    拆分只改相邻块中心距，块边长恒为 1；offsets 给了就给该块的盒子整体平移
-    （动画渲染期用；判定/拾取仍用原位）。
+    拆分只改相邻块中心距，块边长恒为 1，整堆以 anchor（默认包围盒中心）
+    对称散开；offsets 给了就给该块的盒子整体平移（动画渲染期用；判定/拾取
+    仍用原位）。
     """
     out = []
     edge = 1.0
+    if anchor is None:
+        anchor = layout_anchor(blocks)
     for loc in locations_of(blocks):
-        x0, y0, z0 = block_min_corner(loc, gap)
+        x0, y0, z0 = block_min_corner(loc, gap, anchor)
         if offsets:
             off = offsets.get(loc)
             if off is not None:

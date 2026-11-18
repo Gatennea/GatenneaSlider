@@ -978,6 +978,8 @@ class RendererMixin:
         if gap is None:
             gap = cubic_view.DEFAULT_GAP
             self.cubic_gap = gap
+        # 拆分中心 = 当前块堆包围盒中心：整堆左右/上下/前后对称散开。
+        _split_anchor = cubic_view.layout_anchor(blocks)
         # 跟随质心（方案 §2.2「居中 = 质心落在屏幕中心」，默认开）：整盘滑动会
         # 让重心慢慢偏，若仍按固定包围盒中心装画面，盘就一点点漂出视野。开着时
         # 用块质心当装画面的参考点；手动平移（六键）后暂停跟随，按「居中」恢复。
@@ -1065,9 +1067,9 @@ class RendererMixin:
                 seam_draw[0], seam_draw[1], blocks, gap=gap, dims=_dims)
             if seam_quad:
                 seam_axis = cubic_pick.FAMILY_TO_WORLD_AXIS[seam_draw[0]]
-                # 拆分后逻辑缝线在「两块之间的空隙中心」：中心距 1+gap，
-                # 因而第 line 与 line+1 块之间的平面在 (line+1)*(1+gap)。
-                seam_fixed = float(seam_draw[1] + 1.0) * (1.0 + gap)
+                # 拆分后缝线平面也跟块堆中心一起偏移，不能再用固定原点口径。
+                seam_fixed = cubic_pick.seam_plane_coord(
+                    seam_draw[1], gap, _split_anchor[seam_axis])
                 view_dir = camera.view_axis()
                 seam_sign = 1.0 if view_dir[seam_axis] >= 0 else -1.0
 
@@ -1097,8 +1099,8 @@ class RendererMixin:
             for f in faces_all:
                 loc = f['loc']
                 key = (int(loc[0]), int(loc[1]), int(loc[2]))
-                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)；块心按拆分间距算
-                center = cubic_view.block_center(loc, gap)[seam_axis]
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)；块心按包围盒中心散开算
+                center = cubic_view.block_center(loc, gap, _split_anchor)[seam_axis]
                 near = (center - seam_fixed) * seam_sign > 0
                 if key in opted or key in _moving_front or near:
                     front_faces.append(f)
@@ -1202,7 +1204,8 @@ class RendererMixin:
         if getattr(self, '_shake_t', 0) > 0:
             shake_ids = getattr(self, '_shake_blocks', set()) or set()
             shake_boxes = cubic_view.block_boxes(
-                [b for b in blocks if id(b) in shake_ids], gap)
+                [b for b in blocks if id(b) in shake_ids], gap,
+                anchor=_split_anchor)
             for box in shake_boxes:
                 hull = cubic_view.screen_hull_of_box(
                     box, camera, scene['scale'], scene['origin'])

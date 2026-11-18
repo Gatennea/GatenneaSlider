@@ -86,6 +86,19 @@ check(len(set(gap_scales)) == 1, f'拆分 0→0.6 缩放比例不变（{gap_scal
 check(len(set(gap_origins)) == 1, f'拆分 0→0.6 相机原点不变（{gap_origins}）')
 check(len(set(gap_edges)) == 1, f'拆分 0→0.6 单块屏幕边长不变（{gap_edges}）')
 
+print('C3. 拆分以块堆包围盒中心为轴对称散开')
+_anchor = cv.layout_anchor(CUBE3)
+_centers = []
+for g in (0.0, 0.12, 0.35, 0.6):
+    pts = [p for loc in CUBE3 for p in cv.block_corners(loc, g, _anchor)]
+    _centers.append(tuple(round((min(p[i] for p in pts)
+                                + max(p[i] for p in pts)) / 2.0, 9)
+                          for i in range(3)))
+check(len(set(_centers)) == 1,
+      f'拆分 0→0.6 包围盒中心不动（{_centers}）')
+check(all(abs(_centers[0][i] - _anchor[i]) < 1e-9 for i in range(3)),
+      f'包围盒中心就是拆分中心（{_centers[0]} vs {_anchor}）')
+
 print('D. 右侧缩放滑条改的是三维缩放')
 from GUI import SliderGUI  # noqa: E402
 

@@ -70,7 +70,8 @@ rect = cp.seam_plane_rect('r', 1, g.game.blocks, gap=0.18)
 check(len(rect) == 4, '返回四角', len(rect))
 axis = cp.FAMILY_TO_WORLD_AXIS['r']
 a, b = [i for i in range(3) if i != axis]
-check(all(abs(p[axis] - 2.0 * 1.18) < 1e-9 for p in rect),
+anchor = cp.seam_plane_coord(1, 0.18, 1.5)   # 3×3×3 的包围盒中心 = 1.5
+check(all(abs(p[axis] - anchor) < 1e-9 for p in rect),
       '四角都在同一张平面上')
 span_a = max(p[a] for p in rect) - min(p[a] for p in rect)
 span_b = max(p[b] for p in rect) - min(p[b] for p in rect)

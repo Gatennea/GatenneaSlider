@@ -98,7 +98,8 @@ def main():
                 view_dir = cam.view_axis()
                 boxes = cv.block_boxes(gui.game.blocks, gap)
                 axis = cp.FAMILY_TO_WORLD_AXIS[fam]
-                fixed = float(line + 1) * (1.0 + gap)
+                anchor = cv.layout_anchor(gui.game.blocks)
+                fixed = cp.seam_plane_coord(line, gap, anchor[axis])
                 a, b = [i for i in range(3) if i != axis]
                 # 切面自身的范围（渲染用的是**整张矩形**，铺满包围盒横截面：
                 # 用户 2026-11-18 第 2 条。这里按矩形取边界，别按格子外框，
@@ -154,12 +155,14 @@ def main():
     gui.game.opt('r', 1, sel_block)
     gui.draw_cubic_board()
     opted_boxes = []
+    anchor = cv.layout_anchor(gui.game.blocks)
     for b in gui.game.blocks:
         if not b.be_opted:
             continue
-        bx = cv.block_min_corner(b.location, gui.cubic_gap)
+        bx = cv.block_min_corner(b.location, gui.cubic_gap, anchor)
         opted_boxes.append((bx[0], bx[1], bx[2],
                             bx[0] + 1.0, bx[1] + 1.0, bx[2] + 1.0))
+    fixed_g = cp.seam_plane_coord(1, gui.cubic_gap, anchor[2])
     scene = gui._cubic_scene
     bad_tint = []
     for sy in range(0, gui.screen_height, 3):
@@ -167,11 +170,11 @@ def main():
             if not _is_red(gui.screen.get_at((sx, sy))):
                 continue
             uv = _plane_uv(sx, sy, gui.cubic_camera, scene['scale'],
-                           scene['origin'], 2, 2.0 * (1.0 + gui.cubic_gap), 0, 1)
+                           scene['origin'], 2, fixed_g, 0, 1)
             if uv is None:
                 continue
             u, v = uv
-            pt = (u, v, 2.0 * (1.0 + gui.cubic_gap))
+            pt = (u, v, fixed_g)
             if any(x0 + 0.02 <= pt[0] <= x1 - 0.02
                    and y0 + 0.02 <= pt[1] <= y1 - 0.02
                    and z0 + 0.02 <= pt[2] <= z1 - 0.02
@@ -216,7 +219,7 @@ def main():
     cells = cp.seam_plane_cells('r', 1, gui.game.blocks, gap=0.12)
     check(len(cells) == 9, f'3×3×3 的 r·1 有 9 格（实际 {len(cells)}）')
     axis = cp.FAMILY_TO_WORLD_AXIS['r']
-    fixed_cells = 2.0 * 1.12
+    fixed_cells = cp.seam_plane_coord(1, 0.12, anchor[axis])
     check(all(abs(p[axis] - fixed_cells) < 1e-9
               for quad, _c in cells for p in quad),
           '每一格都在 z=2.24 这张平面上')
