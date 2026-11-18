@@ -951,3 +951,20 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 - 测试：`_test_feature_index` 增第 7 段（形态 cubic、三维预设可建局、拆分可用、
   着色明确不支持且有理由）；`_test_cubic_render_opts` 增 G 段（视觉页裁剪、
   三维速度滑条不改二维值）。16 套 cubic + statusbar 全绿。
+
+## 2026-11-18 三维竞速 + 三维成绩表
+
+- `mode_allowed` 放行 `cubic`（仍有粘连的局照旧拒绝）；分組鍵
+  `{step}~cubic{m}*{n}*{d}` 已由 `puzzle_key` 生成，层数不会串榜。
+- 竞速初始局面不再用二维地图：`_timer_initial_map` 对三维写
+  `cubic:` + `engine_state` 无损键表 JSON（`[r,c,d,gid]`）。
+- 成绩面板识别 `cubic:` 前缀：详情显示尺寸与块数，不画二维矩阵；
+  操作菜单只留「复制初始状态 / 载入练习模式」（不产假的二维存档）。
+  载入练习按 key 取回 m/n/d，`new_cubic_puzzle` + `restore_state` 逐块还原。
+- 右侧栏三维开关从 3 个恢复到 5 个：滑动动画 / 模式 / 成绩 / 虚拟键盘 /
+  跟随质心（后两者现在都真生效）；着色/连锁/标记/选中动画仍不出现。
+- `feature_index` 把 mode_practice / mode_timed / records_panel 登记为 cubic
+  可用。
+- 新增 `_test_cubic_speedrun.py`（26 项）：竞速放行、初始键表 27 块、
+  成绩详情渲染、成绩载回练习逐块一致、计时开始→解开→写库、右侧栏开关。
+  16 套 cubic + records/statusbar 全绿。
