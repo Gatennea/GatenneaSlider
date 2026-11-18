@@ -71,19 +71,56 @@ class CubicCreateMixin:
         try:
             cells = [tuple(int(v) for v in b.location[:3])
                      for b in game.blocks]
+            # 还原态：优先用当前自定义目标；否则就是原始 m×n×d 实心盒。
+            # 注意滑过一步的局，块可能被推出 m×n×d（例如 4×4×4 的 d 层
+            # 推到 1..4），所以画布不能硬套 m×n×d——要取「当前块 ∪ 还原态」
+            # 的包围盒，再把整体平移到 0 起点，草稿坐标才和盘面一致。
+            goal_raw = getattr(game, 'goal_pattern', None)
+            if goal_raw:
+                goal_cells = [tuple(int(v) for v in p[:3]) for p in goal_raw]
+            else:
+                goal_cells = [(r, c, dep) for r in range(m)
+                              for c in range(n) for dep in range(d)]
+            all_cells = cells + goal_cells
+            if not all_cells:
+                self._ann_notify('当前三维谜题没有块，无法进入搭建')
+                return False
+            lo = [min(p[i] for p in all_cells) for i in range(3)]
+            hi = [max(p[i] for p in all_cells) for i in range(3)]
+            dims = tuple(int(hi[i] - lo[i] + 1) for i in range(3))
+            shift = tuple(-int(v) for v in lo)
+            tr_cells = [(p[0] + shift[0], p[1] + shift[1], p[2] + shift[2])
+                        for p in cells]
+            tr_goal = [(p[0] + shift[0], p[1] + shift[1], p[2] + shift[2])
+                       for p in goal_cells]
             # 等级/步长在 GUI 的 current_step，不在 EngineGame 上
-            draft = CubicDraft(m, n, d,
+            draft = CubicDraft(*dims,
                                int(getattr(self, 'current_step', 1) or 1),
-                               cells)
+                               tr_cells, solved_cells=tr_goal)
         except (TypeError, ValueError) as exc:
             self._ann_notify(f'读不出当前局面：{exc}')
+            return False
+
+        # 备份必须在平移盘面之前拿，否则取消恢复的是平移后的状态
+        backup = game.snapshot_state()
+        goal_backup = getattr(game, 'goal_pattern', None)
+
+        # 盘面统一到草稿坐标系（整体平移不改变还原判定）；取消仍会恢复备份。
+        try:
+            draft.apply_to(game)
+            # 整体平移过 / 本来就有自定义目标时，目标也要换到同一坐标系；
+            # 普通满盘且没平移时不必多设一个 goal。
+            if goal_raw or any(shift):
+                game.set_goal_pattern(sorted(draft.solved_cells))
+        except Exception as exc:      # noqa: BLE001
+            self._ann_notify(f'准备编辑画布失败：{exc}')
             return False
 
         self._cubic_edit_active = True
         self._cubic_edit_purpose = purpose
         self._cubic_draft = draft
-        self._cubic_edit_backup = game.snapshot_state()
-        self._cubic_edit_goal_backup = getattr(game, 'goal_pattern', None)
+        self._cubic_edit_backup = backup
+        self._cubic_edit_goal_backup = goal_backup
         self._cubic_edit_tool = 'remove'
         self._cubic_edit_hover = None
         self._cubic_edit_hover_valid = False

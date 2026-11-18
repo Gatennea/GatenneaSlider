@@ -123,7 +123,8 @@ class CubicDraft:
     每次增删只改集合；`to_game()` 才重建 `EngineGame`，渲染 / 试玩共用。
     """
 
-    def __init__(self, m: int, n: int, d: int, step: int = 1, cells=None):
+    def __init__(self, m: int, n: int, d: int, step: int = 1, cells=None,
+                 *, solved_cells=None):
         if not all(isinstance(v, int) and v >= 1 for v in (m, n, d)):
             raise ValueError(f'三维容积须为正整数，收到 {(m, n, d)!r}')
         if not isinstance(step, int) or step < 1:
@@ -134,12 +135,23 @@ class CubicDraft:
             self._cells = full_cells(m, n, d)
         else:
             self._cells = normalize_cells(cells, m, n, d)
+        # 「还原态」不一定是编辑包围盒本身：滑过一步的局，块可能跑出原来的
+        # m×n×d（例如 4×4×4 的 d 层推到 1..4），编辑器要拿当前包围盒当画布，
+        # 但「还原态」仍应是原来那个 4×4×4。solved_cells 就是这个目标格集。
+        self._solved_cells = normalize_cells(
+            full_cells(m, n, d) if solved_cells is None else solved_cells,
+            m, n, d)
         self._game = None
 
     # ---------------------------------------------------------------- 状态
     @property
     def cells(self) -> frozenset:
         return self._cells
+
+    @property
+    def solved_cells(self) -> frozenset:
+        """「还原态」格集；默认是 m×n×d 实心，滑过一步时可另行指定。"""
+        return self._solved_cells
 
     def __len__(self):
         return len(self._cells)
@@ -152,8 +164,8 @@ class CubicDraft:
         self._game = None
 
     def reset_solved(self) -> None:
-        """回到 m×n×d 实心还原态（草稿，不碰当前局的正式历史）。"""
-        self._cells = full_cells(self.m, self.n, self.d)
+        """回到还原态（草稿，不碰当前局的正式历史）。"""
+        self._cells = self._solved_cells
         self._game = None
 
     def clear(self) -> None:

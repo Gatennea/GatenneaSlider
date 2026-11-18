@@ -211,6 +211,58 @@ def t7_step_carry():
           (g._cubic_draft.step, g.current_step))
 
 
+def t8_shifted_box():
+    print('== 8. 滑出原盒后仍能进编辑器（不再报越过容积）==')
+    g = SliderGUI()
+    check(g.new_cubic_puzzle(4, 4, 4, 1), '建立 4×4×4')
+    shifted = [(r, c, dep + 1) for r in range(4)
+               for c in range(4) for dep in range(4)]
+    g.game.apply_pattern(shifted)
+    check(len(g.game.blocks) == 64, '整层推到 d=1..4')
+    g.set_game_mode('create')
+    g._ann_btn_cubic_manual_build()
+    check(g._cubic_edit_active, '仍能进入三维搭建', g.macro_notify_msg)
+    check((g._cubic_draft.m, g._cubic_draft.n, g._cubic_draft.d)
+          == (4, 4, 5), '画布取 4×4×5 包围盒',
+          (g._cubic_draft.m, g._cubic_draft.n, g._cubic_draft.d))
+    check(g._cubic_draft.check_save().ok, '滑出原盒后连通性/可动性通过',
+          g._cubic_draft.check_save().reasons)
+    check(len(g.game.blocks) == 64, '盘面块数不变')
+    g.draw_board()
+    face = g._cubic_scene['faces'][-1]
+    g._cubic_edit_tool = 'remove'
+    before = len(g.game.blocks)
+    g._cubic_edit_click(poly_center(face['pts']))
+    check(len(g.game.blocks) == before - 1, '还能继续挖块',
+          (before, len(g.game.blocks)))
+    g._cubic_edit_cancel()
+    check(not g._cubic_edit_active, '取消退出')
+    check(len(g.game.blocks) == 64, '取消恢复 64 块', len(g.game.blocks))
+
+
+def t9_negative_coords():
+    print('== 9. 滑到负坐标：整体平移到 0 起点再编辑 ==')
+    g = SliderGUI()
+    check(g.new_cubic_puzzle(4, 4, 4, 1), '建立 4×4×4')
+    shifted = [(r, c, dep - 1) for r in range(4)
+               for c in range(4) for dep in range(4)]
+    g.game.apply_pattern(shifted)
+    check([min(b.location[i] for b in g.game.blocks) for i in range(3)]
+          == [0, 0, -1], '整层推到 d=-1..2')
+    g.set_game_mode('create')
+    g._ann_btn_cubic_manual_build()
+    check(g._cubic_edit_active, '负坐标也能进入搭建', g.macro_notify_msg)
+    check((g._cubic_draft.m, g._cubic_draft.n, g._cubic_draft.d)
+          == (4, 4, 5), '画布仍取 4×4×5')
+    check([min(b.location[i] for b in g.game.blocks) for i in range(3)]
+          == [0, 0, 0], '盘面已整体平移到 0 起点')
+    check(g._cubic_draft.check_save().ok, '平移后连通/可动通过',
+          g._cubic_draft.check_save().reasons)
+    g._cubic_edit_cancel()
+    check([min(b.location[i] for b in g.game.blocks) for i in range(3)]
+          == [0, 0, -1], '取消恢复原负坐标')
+
+
 def main():
     print('=' * 62)
     print('三维创造模式：第 1–3 步回归')
@@ -222,6 +274,8 @@ def main():
     t5_goal_purpose()
     t6_event_dispatch()
     t7_step_carry()
+    t8_shifted_box()
+    t9_negative_coords()
     total = PASSED[0] + len(FAILED)
     print(f'结果：{"全部通过" if not FAILED else "有失败"}'
           f'（{PASSED[0]} 项通过，{len(FAILED)} 项失败）／共 {total} 项')

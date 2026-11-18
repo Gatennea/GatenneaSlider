@@ -129,6 +129,23 @@ g.apply_pattern([(0, 0, 0), (2, 0, 0)])
 check(not g.is_solved(), '拉开距离的多米诺不是同一目标')
 
 print('=' * 60)
+print('F. 滑出原盒后的包围盒 / 还原态（2026-11-18 用户报越过容积）')
+# 4×4×4 整层在 d 方向推一格：坐标变成 d=1..4，原盒 d=0..3 装不下，
+# 但局面仍连通且可动。编辑器应以 4×4×5 包围盒作画布，还原态仍是
+# 平移后的 4×4×4，不能拿原 m×n×d 直接 normalize。
+shifted = [(r, c, dep + 1) for r in range(4)
+           for c in range(4) for dep in range(4)]
+d = CubicDraft(4, 4, 5, 1, shifted, solved_cells=shifted)
+check(len(d) == 64, '64 块全部装进 4×4×5 包围盒', len(d))
+check(d.check_save().ok, '滑出原盒后仍判连通且可动', d.check_save().reasons)
+check(d.check_restorable().ok, '仍是可还原的必要条件内',
+      d.check_restorable().reasons)
+d.remove((0, 0, 1))
+d.reset_solved()
+check(d.cells == frozenset(shifted),
+      '还原态回到平移后的 4×4×4，而不是 4×4×5')
+
+print('=' * 60)
 total = _ok[0] + len(_fail)
 print(f'结果：{"全部通过" if not _fail else "有失败"}（{_ok[0]} 项通过，'
       f'{len(_fail)} 项失败）／共 {total} 项')
