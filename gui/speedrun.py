@@ -90,6 +90,10 @@ class SpeedrunMixin:
         """
         if mode not in ('practice', 'timed', 'create'):
             return False
+        if getattr(self, 'cubic_mode', False) and mode == 'create':
+            # 三维创造（搭方块 / 挖空）是方案第 5 阶段，界面仍是二维编辑器；
+            # 不挡住的话，模式开关会在三维里把玩家送进一个二维画布。
+            return False
         if mode == 'timed':
             if self._current_kind() not in ('square', 'numbered', 'triangle', 'mi',
                                             'cubic'):
@@ -132,6 +136,8 @@ class SpeedrunMixin:
                 self.macro_notify_msg = (
                     "这道题有粘连滑块，暂不支持竞速"
                     "（竞速只记录哪些格子有块，还原不出同一题）")
+            elif mode == 'create':
+                self.macro_notify_msg = "三维暂不支持创造模式（搭方块在第 5 阶段）"
             else:
                 _kind = self._current_kind()
                 _label = {'shatter': '碎三角'}.get(_kind, _kind)
