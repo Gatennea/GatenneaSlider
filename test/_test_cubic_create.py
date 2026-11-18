@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame  # noqa: E402
 
 from GUI import SliderGUI  # noqa: E402
+from engine import cubic_view  # noqa: E402
 
 FAILED = []
 PASSED = [0]
@@ -263,6 +264,87 @@ def t9_negative_coords():
           == [0, 0, -1], '取消恢复原负坐标')
 
 
+def t10_auto_expand_volume():
+    print('== 10. 放块自动扩范围（容積不再是放置墙）==')
+    g = new_gui()
+    g.set_game_mode('create')
+    g._ann_btn_cubic_manual_build()
+    g.draw_board()
+    d = g._cubic_draft
+    out_face = None
+    for face in g._cubic_scene['faces']:
+        t = d.neighbor(face['loc'], face['axis'], face['sign'])
+        if not (0 <= t[0] < d.m and 0 <= t[1] < d.n and 0 <= t[2] < d.d):
+            out_face = (face, tuple(t))
+            break
+    check(out_face is not None, '找到一个朝外、目标格在原容积外的可见面')
+    if out_face is None:
+        return
+    face, target = out_face
+    pos = poly_center(face['pts'])
+    g._cubic_edit_tool = 'add'
+    g._cubic_edit_hover_update(pos)
+    check(g._cubic_edit_hover == target, '预览目标就是面外那一格', g._cubic_edit_hover)
+    check(g._cubic_edit_hover_valid, '预览判为可放（不再按越界拦截）')
+    before = len(g.game.blocks)
+    g._cubic_edit_click(pos)
+    check(len(g.game.blocks) == before + 1, '点击后真的放上了',
+          (before, len(g.game.blocks)))
+    check(g._cubic_draft.contains(target), '目标格进入草稿', target)
+    check((g._cubic_draft.m, g._cubic_draft.n, g._cubic_draft.d) != (3, 3, 3),
+          '草稿范围已自动扩展',
+          (g._cubic_draft.m, g._cubic_draft.n, g._cubic_draft.d))
+    new_dims = (g._cubic_draft.m, g._cubic_draft.n, g._cubic_draft.d)
+    check('超出容积' not in getattr(g, 'macro_notify_msg', ''),
+          '不再报「超出容积」', getattr(g, 'macro_notify_msg', ''))
+    check(g._cubic_edit_commit(), '扩范围后仍能完成', g.macro_notify_msg)
+    check((g.current_m, g.current_n, g.current_depth) == new_dims,
+          '完成时 GUI 尺寸旗标跟着新范围走',
+          (g.current_m, g.current_n, g.current_depth))
+    check((g.game.m, g.game.n, g.game.depth) == new_dims,
+          '正式局尺寸也跟着新范围',
+          (g.game.m, g.game.n, g.game.depth))
+    check(len(g.game.blocks) == 28, '块数 28（3×3×3 + 顶上 1）',
+          len(g.game.blocks))
+
+
+def t11_ghost_anchor():
+    print('== 11. 幽灵预览与真盘共用拆分锚点 ==')
+    g = new_gui()
+    g.set_game_mode('create')
+    g._ann_btn_cubic_manual_build()
+    g.cubic_gap = 0.4
+    g.draw_board()
+    scene = g._cubic_scene
+    check('anchor' in scene, '场景缓存带 anchor')
+    check(scene['anchor'] == cubic_view.layout_anchor(g.game.blocks),
+          'anchor 就是真盘包围盒中心', (scene.get('anchor'),
+                                    cubic_view.layout_anchor(g.game.blocks)))
+    face = scene['faces'][-1]
+    ghost = cubic_view.collect_faces(
+        [face['loc']], scene['camera'], scale=scene['scale'],
+        origin=scene['origin'], gap=scene['gap'], anchor=scene['anchor'])
+    same = [f for f in ghost if f['axis'] == face['axis']
+            and f['sign'] == face['sign']]
+    check(bool(same), '幽灵有同朝向的面')
+    if not same:
+        return
+    real_c = poly_center(face['pts'])
+    ghost_c = poly_center(same[0]['pts'])
+    check(abs(real_c[0] - ghost_c[0]) < 1.0 and
+          abs(real_c[1] - ghost_c[1]) < 1.0,
+          '幽灵投影与真块完全重合', (real_c, ghost_c))
+    no_anchor = cubic_view.collect_faces(
+        [face['loc']], scene['camera'], scale=scene['scale'],
+        origin=scene['origin'], gap=scene['gap'])
+    same2 = [f for f in no_anchor if f['axis'] == face['axis']
+             and f['sign'] == face['sign']]
+    if same2:
+        drift = (abs(poly_center(same2[0]['pts'])[0] - real_c[0])
+                 + abs(poly_center(same2[0]['pts'])[1] - real_c[1]))
+        check(drift > 2.0, '旧的无 anchor 路径确实会漂（回归证据）', drift)
+
+
 def main():
     print('=' * 62)
     print('三维创造模式：第 1–3 步回归')
@@ -276,6 +358,8 @@ def main():
     t7_step_carry()
     t8_shifted_box()
     t9_negative_coords()
+    t10_auto_expand_volume()
+    t11_ghost_anchor()
     total = PASSED[0] + len(FAILED)
     print(f'结果：{"全部通过" if not FAILED else "有失败"}'
           f'（{PASSED[0]} 项通过，{len(FAILED)} 项失败）／共 {total} 项')

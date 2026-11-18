@@ -485,14 +485,18 @@ def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
                                  margin=margin, zoom=zoom, gap=gap,
                                  center=center)
     origin = (origin[0] + origin_offset[0], origin[1] + origin_offset[1])
+    # 幽灵预览必须和真盘共用同一个拆分锚点：只拿目标单块调 collect_faces
+    # 时，默认 anchor 会变成那块自己的中心，gap>0 下投影整体偏一格。
+    anchor = layout_anchor(blocks)
     faces = collect_faces(blocks, camera, scale=scale, origin=origin, gap=gap,
-                          offsets=offsets)
+                          offsets=offsets, anchor=anchor)
     return {
         'faces': faces,
         'scale': scale,
         'origin': origin,
         'camera': camera,
         'gap': gap,
+        'anchor': anchor,
         'offsets': offsets,
         'block_count': len(locations_of(blocks)),
     }

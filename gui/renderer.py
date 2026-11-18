@@ -1246,6 +1246,12 @@ class RendererMixin:
         m = getattr(game, 'm', 0) or 0
         n = getattr(game, 'n', 0) or 0
         d = getattr(game, 'depth', 0) or 0
+        # 创造模式向外放块时草稿会自动扩范围；顶栏跟着草稿走，别让玩家
+        # 看到「容积已扩、标签还是旧尺寸」。取消时草稿丢弃，正式局不变。
+        _draft = (getattr(self, '_cubic_draft', None)
+                  if getattr(self, '_cubic_edit_active', False) else None)
+        if _draft is not None:
+            m, n, d = _draft.m, _draft.n, _draft.d
         view_label = getattr(self, 'cubic_view_label', '斜视')
         zoom = getattr(self, 'cubic_zoom', 1.0)
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'

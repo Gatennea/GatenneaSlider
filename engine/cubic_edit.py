@@ -175,15 +175,46 @@ class CubicDraft:
 
     # ---------------------------------------------------------------- 增删
     def add(self, loc) -> EditResult:
-        """在空格放一块。越界 / 已有块都拒绝，不静默夹紧。"""
-        if not in_volume(loc, self.m, self.n, self.d):
-            return EditResult(False, 'out_of_bounds')
+        """在空格放一块。
+
+        2026-11-18 用户口径：创造模式的「容积」不该是放置墙——玩家从任意
+        可见面向外搭块都应该成功。这里不再拒绝越界，而是把草稿的包围盒
+        向目标格扩一格（整体平移回 0 起点），因此 ``m/n/d`` 只是当前草稿
+        范围，不是限制。已有块仍然拒绝。
+        """
         p = tuple(int(v) for v in loc)
         if p in self._cells:
             return EditResult(False, 'occupied')
+        p = self._grow_to_include(p)
         self._cells = self._cells | {p}
         self._game = None
         return EditResult(True)
+
+    def _grow_to_include(self, p) -> tuple:
+        """把草稿范围扩到包含 p；必要时整体平移，保证坐标非负。
+
+        返回**平移后的目标格**：调用方必须用返回值写回，不能拿原始 p
+        去加（负坐标时 p 已不在新坐标系里）。``solved_cells`` 一起平移，
+        否则「还原态」会和当前格错位；mod 配额检查本来按最小角归一
+        （``_mod_quota_ok``），平移不改变判定。已有范围里的空白边不主动
+        裁掉——只扩不缩，避免每次放块都改坐标。
+        """
+        if in_volume(p, self.m, self.n, self.d):
+            return p
+        lo = [min(0, int(p[i])) for i in range(3)]
+        hi = [max(self.m - 1, int(p[i])) for i in range(3)]
+        for q in self._cells | self._solved_cells:
+            for i in range(3):
+                lo[i] = min(lo[i], int(q[i]))
+                hi[i] = max(hi[i], int(q[i]))
+        shift = tuple(-v for v in lo)
+        self._cells = frozenset((q[0] + shift[0], q[1] + shift[1],
+                                 q[2] + shift[2]) for q in self._cells)
+        self._solved_cells = frozenset(
+            (q[0] + shift[0], q[1] + shift[1], q[2] + shift[2])
+            for q in self._solved_cells)
+        self.m, self.n, self.d = (hi[i] - lo[i] + 1 for i in range(3))
+        return (p[0] + shift[0], p[1] + shift[1], p[2] + shift[2])
 
     def remove(self, loc) -> EditResult:
         """挖掉一块。空格 / 越界都拒绝。"""

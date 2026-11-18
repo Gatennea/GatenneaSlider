@@ -225,6 +225,37 @@ class CubicCreateMixin:
         self._cubic_edit_apply()
         self._ann_notify('已清空（空盘不能当谜题，完成前的保存门会拦下）')
 
+    def _cubic_edit_rebuild_volume(self) -> bool:
+        """把正式局换成草稿当前的自动扩容尺寸。
+
+        编辑期只在草稿层扩范围，正式 ``game.spec`` 不动（取消才能原样退回）；
+        点「完成」时才一次换盘。返回是否真的换了尺寸。
+        """
+        draft = getattr(self, '_cubic_draft', None)
+        game = getattr(self, 'game', None)
+        if draft is None or game is None:
+            return False
+        dims = (draft.m, draft.n, draft.d)
+        cur = (getattr(game, 'm', 0), getattr(game, 'n', 0),
+               getattr(game, 'depth', 0))
+        if cur == dims:
+            return False
+
+        def _outside(cells) -> bool:
+            return any(not (0 <= int(p[0]) < cur[0]
+                            and 0 <= int(p[1]) < cur[1]
+                            and 0 <= int(p[2]) < cur[2])
+                       for p in cells)
+
+        # 草稿从「滑出原盒的局」起步时，画布本来就是更大的包围盒；只要
+        # 玩家没有把块放到正式 spec 之外，完成时别把原局尺寸改掉。
+        if not _outside(draft.cells) and not _outside(draft.solved_cells):
+            return False
+        from engine.registry import cubic_board
+        game.board = cubic_board(*dims)
+        game.m, game.n, game.depth = dims
+        return True
+
     def _cubic_edit_commit(self):
         """保存门 → 把草稿变成当前谜题。"""
         if not getattr(self, '_cubic_edit_active', False):
@@ -236,16 +267,27 @@ class CubicCreateMixin:
             if not gate.ok:
                 self._ann_notify(f'还原目标还不能保存：{gate.message}')
                 return False
-            self.game.apply_pattern(sorted(self._cubic_draft.cells))
-            self.game.set_goal_pattern(sorted(self._cubic_draft.cells))
-            self._ann_style_goal = None
         else:
             gate = self._cubic_draft.check_save()
             if not gate.ok:
                 self._ann_notify(f'还不能完成：{gate.message}')
                 return False
-            # 草稿在每次增删时已写回，这里只做「落盘为第 0 步」
-            self._cubic_edit_apply()
+        # 草稿可能因「向外放块」自动扩容；完成时才换正式 spec / 旗标。
+        volume_changed = self._cubic_edit_rebuild_volume()
+        self._cubic_edit_apply()
+        goal = (sorted(self._cubic_draft.cells)
+                if self._cubic_edit_purpose == 'goal'
+                else sorted(self._cubic_draft.solved_cells))
+        if self._cubic_edit_purpose == 'goal' or volume_changed \
+                or self._cubic_edit_goal_backup:
+            self.game.set_goal_pattern(goal)
+        self._ann_style_goal = None
+        if volume_changed:
+            self.current_m, self.current_n, self.current_depth = (
+                self._cubic_draft.m, self._cubic_draft.n, self._cubic_draft.d)
+        else:
+            self.current_m, self.current_n, self.current_depth = (
+                self.game.m, self.game.n, self.game.depth)
         self.selected_gap = None
         self.selected_block = None
         self.step_count = 0
@@ -313,8 +355,9 @@ class CubicCreateMixin:
         if event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1 and getattr(self, 'cubic_dragging', False):
                 if not getattr(self, 'cubic_drag_moved', False):
-                    start = getattr(self, 'cubic_drag_start', event.pos)
-                    self._cubic_edit_click(start)
+                    # 单击容差内以**松手点**为准：悬停预览最后显示的也是松手
+                    # 位置，两者同源，避免预览与落点差一格（2026-11-18）。
+                    self._cubic_edit_click(event.pos)
                 self.cubic_dragging = False
                 self._cubic_edit_hover_update(event.pos)
                 return True
@@ -364,12 +407,9 @@ class CubicCreateMixin:
             target = self._cubic_draft.neighbor(face['loc'],
                                                 face['axis'], face['sign'])
             self._cubic_edit_hover = tuple(target)
-            # 与 add() 的判定同源：容积内且当前没有块
-            from engine.cubic_edit import in_volume
-            self._cubic_edit_hover_valid = (
-                in_volume(target, self._cubic_draft.m,
-                          self._cubic_draft.n, self._cubic_draft.d)
-                and not self._cubic_draft.contains(target))
+            # 2026-11-18 用户口径：容積不再挡放置，草稿会自动扩范围；
+            # 因而预览只看「这一格有没有块」，不再判越界。
+            self._cubic_edit_hover_valid = not self._cubic_draft.contains(target)
 
     def _cubic_edit_click(self, pos):
         """一次点击：按当前工具放/挖；失败把原因原样说出来。"""
@@ -413,10 +453,13 @@ class CubicCreateMixin:
                 if tuple(face.get('loc', ())) == target:
                     polys.append(face['pts'])
         else:
-            # 放：用同一个相机/比例画一块幽灵的可见面（不进入真实拾取缓存）
+            # 放：用同一个相机/比例画一块幽灵的可见面（不进入真实拾取缓存）。
+            # 关键：anchor 必须取真盘的 layout_anchor；只传 [target] 会让
+            # collect_faces 回退成「单块中心」，gap>0 时幽灵整体偏移。
             ghost = cubic_view.collect_faces(
                 [target], scene['camera'], scale=scene['scale'],
-                origin=scene['origin'], gap=scene.get('gap', 0.0))
+                origin=scene['origin'], gap=scene.get('gap', 0.0),
+                anchor=scene.get('anchor'))
             polys = [f['pts'] for f in ghost]
         if not polys:
             return
@@ -459,7 +502,9 @@ class CubicCreateMixin:
         add('commit', '完成', (60, 150, 90))
         add('cancel', '取消', (120, 90, 90))
 
-        status = (f'当前 {self._cubic_edit_length()} 块 · '
+        status = (f'范围 {self._cubic_draft.m}×{self._cubic_draft.n}×'
+                  f'{self._cubic_draft.d}（自动扩展） · '
+                  f'当前 {self._cubic_edit_length()} 块 · '
                   f'工具 {"放置" if self._cubic_edit_tool == "add" else "挖除"}'
                   f' · 左键点面 · 拖动旋转 · Enter 完成 · Esc 取消')
         s = self.status_font.render(status, True, (210, 210, 220))

@@ -2,7 +2,7 @@
 """三维创造模式第 0 步：数据 / 判定层回归。
 
 锁住 `engine/cubic_edit.py` 的契约：
-  A. 容积内增删 / 越界 / 已有块 / 空格拒绝；
+  A. 增删：容積内增删 / 已有块 / 空格拒绝；向外放块自动扩草稿范围；
   B. 草稿挂到 EngineGame（含空盘），块数与局面一致；
   C. 保存门：空盘 / 不连通 / 冻形；正常拆开的局面能过；
   D. 自订还原态必要条件：块数凑不出长方体 / mod 配额不对 / 满长方体通过；
@@ -50,9 +50,18 @@ check(len(d) == 26, '块数 -1', len(d))
 check(d.remove((1, 1, 1)).reason == 'empty', '同一格再挖被拒（empty）')
 check(d.add((1, 1, 1)).ok, '放回中心')
 check(d.add((1, 1, 1)).reason == 'occupied', '已有块再放被拒（occupied）')
-check(not d.add((3, 0, 0)).ok and d.add((3, 0, 0)).reason == 'out_of_bounds',
-      '越界放块被拒（out_of_bounds）')
-check(not d.remove((-1, 0, 0)).ok, '负坐标挖块被拒')
+check(d.add((3, 0, 0)).ok, '容积外放块自动扩范围（不再 out_of_bounds）')
+check((d.m, d.n, d.d) == (4, 3, 3), '草稿范围扩到 4×3×3',
+      (d.m, d.n, d.d))
+check(d.contains((3, 0, 0)), '新块落在目标格')
+check(d.remove((3, 0, 0)).ok, '扩范围后仍能正常挖掉')
+check(not d.remove((-1, 0, 0)).ok, '负坐标没有块，挖块被拒')
+d2 = CubicDraft(2, 2, 2, 1)
+check(d2.add((-1, 0, 0)).ok, '负坐标外放块也会自动扩')
+check((d2.m, d2.n, d2.d) == (3, 2, 2), '整体平移到 0 起点后 3×2×2',
+      (d2.m, d2.n, d2.d))
+check(d2.contains((0, 0, 0)), '目标格平移到 0 起点')
+check(d2.contains((1, 0, 0)), '原有块一起平移，相对位置不变')
 check(d.neighbor((1, 1, 1), 0, 1) == (1, 2, 1), 'axis 0 对应 c 方向')
 check(d.neighbor((1, 1, 1), 1, 1) == (1, 1, 2), 'axis 1 对应 d 方向')
 check(d.neighbor((1, 1, 1), 2, -1) == (0, 1, 1), 'axis 2 对应 r 方向')
