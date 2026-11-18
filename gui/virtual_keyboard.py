@@ -96,10 +96,10 @@ class VirtualKeyboardMixin:
             # 投影越短（越正对镜头）端点越靠近原点：最短 22px，最长 = 区域半径
             r = 22.0 + (reach - 22.0) * min(1.0, plen)
             if plen < 0.15:
-                # 这条轴正对镜头：正负两端在屏幕上会重叠 → 沿屏幕横轴拆开一点，
-                # 两个方向依旧各自可点（宁可位置偏，也不能重叠成一键）。
-                off = 26 if letter.isupper() else -26
-                px, py = cx + off, cy
+                # 这条轴正对镜头：投影理论上是一个点。不硬造第三根线，两个端盘
+                # 沿**斜对角**错开（不压在另外两根轴上），一个朝观察者、一个背向。
+                off = 24
+                px, py = (cx + off, cy + off) if letter.isupper() else (cx - off, cy - off)
             else:
                 px, py = cx + dx * r, cy + dy * r
             panel = self.vk_panel_rect
@@ -544,12 +544,16 @@ class VirtualKeyboardMixin:
                 self.macro_notify_timer = 90
 
     def _vk_draw_cubic_buttons(self, rects, mouse_pos):
-        """三维键盘：画成一根**坐标轴图**（三条轴 + 六个端点）。
+        """三维键盘：画成一根**投影坐标系**（三根带箭头的轴 + 六个可点端盘）。
 
-        每个端点 = 世界某条轴的一个方向，位置由当前相机的投影决定：旋转棋盘时
-        这个「三脚架」跟着一起转，所以面板上摆的就是棋盘那个姿态，不是一张死表。
-        轴用 X/Y/Z 式的三色区分（r 轴红 / c 轴蓝 / d 轴绿），端点里仍写字母
-        （r/R c/C d/D）保证和键盘、棋盘箭头一一对得上。
+        用户口径（2026-11-18）：「我要坐標軸投影，隨著滑塊視角一起轉」，
+        不是六个散开的方键。所以：
+
+          · 每族一条直轴，从负端穿过原点连到正端，颜色区分 r 红 / c 蓝 / d 绿；
+          · 只在**正端**画箭头（r/R 的正方向），负端是轴的另一头；
+          · 两端各一个圆形端盘（写字母），整盘是命中盒——仍可六向点；
+          · 端点位置由相机投影给出，旋转棋盘时这根三脚架跟着转；
+          · 轴缩短到成一点（正对镜头）时，两端盘沿屏幕横轴拉开，仍各自可点。
         """
         axes = self._cubic_vk_axes() if hasattr(self, '_cubic_vk_axes') else {}
         axis_colors = {'r': (226, 120, 120), 'c': (98, 156, 232), 'd': (110, 200, 130)}
@@ -558,20 +562,46 @@ class VirtualKeyboardMixin:
         area_h = self._VK_BTN * 3 + self._VK_BTN_GAP * 2
         origin = (panel.centerx, area_top + area_h // 2)
 
-        # 先画轴线：从原点伸向每个端点（端点矩形已经按投影长度摆好）
-        for letter, rect in rects.items():
-            if not letter.startswith('cubic_'):
-                continue
-            fam = letter.split('_', 1)[1].lower()
-            end = rect.center
-            pygame.draw.line(self.screen, axis_colors.get(fam, (170, 170, 180)),
-                             origin, end, 2)
-        del axis_colors
+        pos = {action.split('_', 1)[1]: rect.center
+               for action, rect in rects.items() if action.startswith('cubic_')}
 
+        # ① 三根轴：负端 → 正端一条直线（穿过原点），只画一次
+        for fam in ('r', 'c', 'd'):
+            lo, hi = pos.get(fam), pos.get(fam.upper())
+            if lo is None or hi is None:
+                continue
+            color = axis_colors[fam]
+            pygame.draw.line(self.screen, color, lo, hi, 2)
+            # 正端箭头：朝轴外侧
+            ux, uy = hi[0] - lo[0], hi[1] - lo[1]
+            ln = math.hypot(ux, uy)
+            plen = axes.get(fam, (0.0, 0.0, 0.0))[2]
+            if plen < 0.15:
+                # 正对镜头的轴：两个端盘是人为错开的，再连一条线会被读成「斜轴」，
+                # 干脆不画线、不画箭头——只剩两个同色端盘点在原点旁边。
+                continue
+            if ln < 1e-6:
+                continue
+            ux, uy = ux / ln, uy / ln
+            # 箭头要画在端盘**外面**（端盘半径约 19px，画在里面就被盘盖住了）
+            r_hi = max(rects['cubic_' + fam.upper()].width,
+                       rects['cubic_' + fam.upper()].height) // 2
+            pxv, pyv = -uy, ux
+            tip = (hi[0] + ux * (r_hi + 13.0), hi[1] + uy * (r_hi + 13.0))
+            base = (hi[0] + ux * (r_hi + 3.0), hi[1] + uy * (r_hi + 3.0))
+            pygame.draw.polygon(self.screen, color, [
+                (int(tip[0]), int(tip[1])),
+                (int(base[0] + pxv * 6.0), int(base[1] + pyv * 6.0)),
+                (int(base[0] - pxv * 6.0), int(base[1] - pyv * 6.0)),
+            ])
+            # 轴名不另写：端盘里的 r/R c/C d/D + 三根轴的颜色已经把轴标清楚了，
+            # 再挤一个小写字母只会压在线和盘上（用户嫌乱）。
+
+        # ② 端点盘：圆形，字母居中；hover 提亮
         for action, rect in rects.items():
-            hovered = rect.collidepoint(mouse_pos)
             if not action.startswith('cubic_'):
-                # 粘滞 / 撤销 / 重做：与二维同一套画法（三维下撤销重做由第 5 步接）
+                # 粘滞 / 撤销 / 重做：与二维同一套画法
+                hovered = rect.collidepoint(mouse_pos)
                 color = (self.colors['button_hover']
                          if (action == 'sticky' and self.vk_sticky) or hovered
                          else self.colors['button_bg'])
@@ -586,41 +616,20 @@ class VirtualKeyboardMixin:
                 continue
 
             letter = action.split('_', 1)[1]
-            dx, dy, plen = axes.get(letter, (0.0, 0.0, 0.0))
             fam = letter.lower()
-            color = self.colors['button_hover'] if hovered else self.colors['button_bg']
-            pygame.draw.rect(self.screen, color, rect, border_radius=4)
-            if hovered:
-                pygame.draw.rect(self.screen, (200, 200, 210), rect, 1, border_radius=4)
-            cx, cy = rect.center
-            if plen < 0.15:
-                pygame.draw.circle(self.screen, (150, 150, 150), (cx, cy), 7, 1)
-            else:
-                # 箭头：尖端沿屏幕方向，尾翼在反方向
-                length = 12.0
-                tip = (cx + dx * length, cy + dy * length)
-                back = (cx - dx * 6.0, cy - dy * 6.0)
-                pxv, pyv = -dy, dx
-                p1 = (back[0] + pxv * 6.0, back[1] + pyv * 6.0)
-                p2 = (back[0] - pxv * 6.0, back[1] - pyv * 6.0)
-                pygame.draw.polygon(self.screen, (240, 240, 240),
-                                    [(int(tip[0]), int(tip[1])),
-                                     (int(p1[0]), int(p1[1])),
-                                     (int(p2[0]), int(p2[1])),])
-            ls = self.status_font.render(letter, True, (205, 205, 205))
-            self.screen.blit(ls, (rect.right - ls.get_width() - 4,
-                                  rect.bottom - ls.get_height() - 1))
+            hovered = rect.collidepoint(mouse_pos)
+            center = rect.center
+            radius = min(rect.width, rect.height) // 2 - 1
+            fill = axis_colors[fam] if hovered else (46, 48, 56)
+            pygame.draw.circle(self.screen, fill, center, radius)
+            pygame.draw.circle(self.screen, axis_colors[fam], center, radius, 2)
+            surf = self.dialog_font.render(letter, True, (245, 245, 245))
+            self.screen.blit(surf, surf.get_rect(center=center))
 
-        # 原点标记 + 轴名（写在各轴端点连线的中段外侧，避免压在端点上）
-        pygame.draw.circle(self.screen, (225, 225, 235), origin, 3)
-        for fam, off in (('c', (0, -14)), ('d', (0, 14)), ('r', (0, 0))):
-            rects_fam = [rects.get('cubic_' + fam), rects.get('cubic_' + fam.upper())]
-            if not all(rects_fam):
-                continue
-            mx = (rects_fam[0].centerx + rects_fam[1].centerx) // 2
-            my = (rects_fam[0].centery + rects_fam[1].centery) // 2
-            surf = self.status_font.render(f'{fam}', True, (150, 150, 165))
-            self.screen.blit(surf, surf.get_rect(center=(mx + off[0], my + off[1])))
+        # ③ 原点
+        pygame.draw.circle(self.screen, (228, 228, 238), origin, 4)
+        pygame.draw.circle(self.screen, (120, 120, 136), origin, 6, 1)
+
 
     def _vk_do_jump(self):
         """虚拟键盘“跳到某步”：输入的数字对应历史记录第 N 步的状态"""
