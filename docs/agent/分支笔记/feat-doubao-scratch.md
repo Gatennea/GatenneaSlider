@@ -937,3 +937,17 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 `_test_cubic_render_opts` 同步：三维 3 个开关、速度滑条写 `cubic_anim_ms` 且不改
 `animation_duration`、跟随开关关闭后手动平移保留、重开回正。全套 16 个 cubic 套件绿；
 面板截图 `fix19/panel_cubic.png`。
+
+## 2026-11-18 功能检索三维登记 + 视觉页裁剪
+
+- `gui/feature_index.py`：`FORM_NAMES` 增 `cubic: 三维`；新增 5 条三维条目
+  （三维预设 / 拆分 / 切面透明度 / 三维视角 / 右键选缝左键选块）；
+  `_CUBIC_IDS` 给 29 个已实现功能补 `cubic` 形态。明确不做的项（着色、连锁、
+  复原标记、成绩、求解器、宏、创造等）保持不支持，命令面板显示 ✕ 与「仅支持…」。
+- `gui/events.py`：命令面板 `puzzle` 动作补 `cubic` 分派 → `new_cubic_puzzle`。
+- `gui/renderer.py`：三维局「视觉」设置页只画真正生效的项——滑动动画、动画时长
+  （写 `cubic_anim_ms` 60–400）、缩放、开机动画、防意外打乱；着色/连锁/缝隙闪烁/
+  复原标记/调试面板/成绩/绘制网格/防偏移/思考演示一律不画，对应命中矩形清零。
+- 测试：`_test_feature_index` 增第 7 段（形态 cubic、三维预设可建局、拆分可用、
+  着色明确不支持且有理由）；`_test_cubic_render_opts` 增 G 段（视觉页裁剪、
+  三维速度滑条不改二维值）。16 套 cubic + statusbar 全绿。
