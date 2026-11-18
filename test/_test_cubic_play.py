@@ -176,6 +176,32 @@ gui.draw_cubic_board()
 check(len(gui._cubic_scene['faces']) > 27, '打乱后仍有可见面（渲染不崩）')
 check(gui.step_count == 0, f'打乱把步数清零（打乱本身不算一步，实得 {gui.step_count}）')
 
+print('F. 拒绝反馈：推不动 → 提示音 + 选中组红边闪 12 帧')
+gui._cubic_view(0)
+gui.draw_cubic_board()
+face = gui._cubic_scene['faces'][-1]
+pt = (int(sum(p[0] for p in face['pts']) / 4.0),
+      int(sum(p[1] for p in face['pts']) / 4.0))
+gui._cubic_seam_click(*pt)
+click(pt)
+check(any(b.be_opted for b in gui.game.blocks), '重新选出一组（准备挨拒）')
+fam = gui.selected_gap[0]
+n0 = gui.step_count
+gui._shake_t = 0
+gui._shake_blocks = set()
+res = gui._cubic_push_letter(fam.upper())     # 法向推：引擎必拒
+check(res is False and gui.step_count == n0, '法向推被拒、步数不变')
+check(getattr(gui, '_shake_t', 0) > 0, f'被拒后触发描边闪烁（_shake_t={gui._shake_t}）')
+check(bool(getattr(gui, '_shake_blocks', None)), '闪烁集合就是刚选的这组')
+gui.draw_cubic_board()
+check(True, '带红边的一帧能画出来（不崩）')
+# 前提没满足（没选块）只提示 + 出声，不闪
+gui._cubic_clear_selection()
+gui._shake_t = 0
+gui._shake_blocks = set()
+check(gui._cubic_push_letter('C') is False, '没选块推不动')
+check(getattr(gui, '_shake_t', 0) == 0, '前提没满足不闪整盘（visual=False）')
+
 print('=' * 60)
 if _fail:
     print(f'结果：{_ok[0]} 项通过，{len(_fail)} 项失败')

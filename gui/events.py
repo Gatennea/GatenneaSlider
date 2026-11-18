@@ -2020,6 +2020,8 @@ class EventsMixin:
         if not any(getattr(b, 'be_opted', False) for b in self.game.blocks):
             self.macro_notify_msg = f"先在切面一侧双击选中滑块，再用 {hint} 推"
             self.macro_notify_timer = 120
+            # 前提没满足：只出声 + 文字，不闪整盘（与二维 visual=False 同口径）
+            self._reject_move(None, visual=False)
             return False
         before = [tuple(int(v) for v in b.location[:3])
                   for b in self.game.blocks if getattr(b, 'be_opted', False)]
@@ -2027,6 +2029,10 @@ class EventsMixin:
         if not moved:
             self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
             self.macro_notify_timer = 120
+            # 三维拒绝反馈：短提示音 + 选中组红边闪 12 帧（渲染层按 _shake_t 画）
+            self._reject_move(None,
+                              [b for b in self.game.blocks
+                               if getattr(b, 'be_opted', False)])
             return False
         # 同向连续推（用户 2026-11-18 第 4 条：「箭头不能改变位置」）：选中组一走，
         # 它和没动那部分之间的切面也跟着走一格。把 selected_gap 跟着挪到新位置，

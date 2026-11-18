@@ -886,3 +886,17 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 凡落在窗口内的切面角必须落在 `_cubic_hi_rect` 内（0 个被裁）。
 
 全套 16 个 cubic 套件绿；证据帧 `fix19/dblclick_top.png`（gap 0.40 斜视，四角完整）。
+
+## 2026-11-18 第 3 阶段开工：三维拒绝反馈（提示音 + 选中组红边闪 12 帧）
+
+方案 §5「反馈与接入」第一项。二维 `_flash_reject` 是给块面换色，三维块是投影多边形，
+换色会被画家序吃掉；改为在屏幕空间描被拒组的凸包轮廓（`screen_hull_of_box`），
+颜色 `colors['line']`、线宽 2，亮 12 帧，状态复用二维的 `_shake_t/_shake_blocks`。
+
+- `_cubic_push_letter` 推不动 → `_reject_move(None, 选中组)`：出声 + 闪；
+- 没选块就按 → `_reject_move(None, visual=False)`：只出声 + 文字，不闪整盘
+  （与二维同口径）；
+- 闪烁期间 2D 的 `animation.py` 会自然递减 `_shake_t`，三维共用，无新增计时器。
+
+测试：`_test_cubic_play` F 段（法向推必拒、`_shake_t=12`、闪烁集合=选中组、带红边帧不崩、
+前提没满足不闪）；全套 16 个 cubic 套件绿。

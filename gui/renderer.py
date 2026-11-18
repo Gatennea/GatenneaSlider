@@ -1160,6 +1160,19 @@ class RendererMixin:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
 
+        # 拒绝反馈（方案 §5 第 3 阶段）：推不动时给这组块描 12 帧红边。
+        # 二维靠 `_flash_reject` 让块面变色，三维块是投影出来的多边形，直接描
+        # 屏幕轮廓更省事也不会被画家序吃掉。状态与二维共用 `_shake_t`。
+        if getattr(self, '_shake_t', 0) > 0:
+            shake_ids = getattr(self, '_shake_blocks', set()) or set()
+            shake_boxes = cubic_view.block_boxes(
+                [b for b in blocks if id(b) in shake_ids], gap)
+            for box in shake_boxes:
+                hull = cubic_view.screen_hull_of_box(
+                    box, camera, scene['scale'], scene['origin'])
+                if len(hull) >= 3:
+                    pygame.draw.polygon(self.screen, self.colors['line'], hull, 2)
+
         # 三维方向箭头（方案 §4 第 4 步「重画箭头」）：选中一组后在切面外沿画可点
         # 的方向键。画在最上层、按当前相机现算方向，旋转时跟着转。
         self._draw_cubic_arrows(scene, seam, gap, camera, blocks)
