@@ -1330,34 +1330,35 @@ class RendererMixin:
                 pygame.draw.polygon(hi, _sel_anim[0], pts, _lw)
             else:
                 pygame.draw.polygon(hi, border, pts, _ss)
-            # 面内顶部高光：平涂色块只靠整面明暗，4×4 时相邻面差异很小，
-            # 看起来仍像贴纸。沿屏幕最上一条边内侧压一条亮线，给每个小方块
-            # 一点「受光棱边」，深度不用靠加深背光面来换。
-            _edge = min(range(4), key=lambda i: pts[i][1] + pts[(i + 1) % 4][1])
-            _p1 = pts[_edge]
-            _p2 = pts[(_edge + 1) % 4]
+            # 面内四条边的「微倒角」：只压最上/最下两条时，不拆分的大方盘
+            # 只有横向棱被磨到，竖向接缝和左右外棱仍是刀口（用户 2026-11-19
+            # 指认「不是所有棱角都有打磨效果」）。这里沿四条屏幕边各压一条
+            # 窄带，亮度按「屏幕左上光」的边法向投影决定：上/左提亮，下/右
+            # 压暗；方向与 face_shade 的相机相对主光一致。
             _cx = sum(p[0] for p in pts) / 4.0
             _cy = sum(p[1] for p in pts) / 4.0
-            _inset = 0.20
-            _hi1 = (_p1[0] + (_cx - _p1[0]) * _inset,
-                    _p1[1] + (_cy - _p1[1]) * _inset)
-            _hi2 = (_p2[0] + (_cx - _p2[0]) * _inset,
-                    _p2[1] + (_cy - _p2[1]) * _inset)
-            _hi_col = (min(255, fill[0] + 24), min(255, fill[1] + 24),
-                       min(255, fill[2] + 24))
-            pygame.draw.polygon(hi, _hi_col, (_p1, _p2, _hi2, _hi1))
-            # 底边压一点暗，和高光带一起把「平涂」拉成有厚度的面。
-            _bedge = max(range(4), key=lambda i: pts[i][1] + pts[(i + 1) % 4][1])
-            _b1 = pts[_bedge]
-            _b2 = pts[(_bedge + 1) % 4]
-            _binset = 0.14
-            _lo1 = (_b1[0] + (_cx - _b1[0]) * _binset,
-                    _b1[1] + (_cy - _b1[1]) * _binset)
-            _lo2 = (_b2[0] + (_cx - _b2[0]) * _binset,
-                    _b2[1] + (_cy - _b2[1]) * _binset)
-            _lo_col = (max(0, fill[0] - 14), max(0, fill[1] - 14),
-                       max(0, fill[2] - 14))
-            pygame.draw.polygon(hi, _lo_col, (_b1, _b2, _lo2, _lo1))
+            _lx, _ly = -0.55, -0.75
+            _llen = (_lx * _lx + _ly * _ly) ** 0.5
+            for _e in range(4):
+                _a = pts[_e]
+                _b = pts[(_e + 1) % 4]
+                _mx = (_a[0] + _b[0]) / 2.0
+                _my = (_a[1] + _b[1]) / 2.0
+                _nx, _ny = _mx - _cx, _my - _cy
+                _nlen = (_nx * _nx + _ny * _ny) ** 0.5
+                if _nlen <= 1e-9:
+                    continue
+                _dot = (_nx * _lx + _ny * _ly) / (_nlen * _llen)
+                _off = int(30 * _dot)
+                _ecol = (max(0, min(255, fill[0] + _off)),
+                         max(0, min(255, fill[1] + _off)),
+                         max(0, min(255, fill[2] + _off)))
+                _inset = 0.15
+                _q1 = (_a[0] + (_cx - _a[0]) * _inset,
+                       _a[1] + (_cy - _a[1]) * _inset)
+                _q2 = (_b[0] + (_cx - _b[0]) * _inset,
+                       _b[1] + (_cy - _b[1]) * _inset)
+                pygame.draw.polygon(hi, _ecol, (_a, _b, _q2, _q1))
         if hi is not None:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
