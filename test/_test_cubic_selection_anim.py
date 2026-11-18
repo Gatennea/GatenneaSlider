@@ -62,6 +62,23 @@ def arm_history():
     gui.game_history.save_snapshot(gui.game, _MOVE)
 
 
+def arm_full_layer_history():
+    """4×4×4 实心盘，c0 层推到 c1 层；用来验动画穿切面时的分侧。"""
+    moved = [[r, 0, d] for r in range(4) for d in range(4)]
+    move = {'gap_type': 'c', 'gap_line': 0, 'direction': 'C', 'step': 1,
+            'moved_positions': moved}
+    pre = ([[r, 0, d, 0] for r in range(4) for d in range(4)]
+           + [[r, c, d, 0] for r in range(4) for c in range(1, 4)
+              for d in range(4)])
+    post = [[r, c, d, 0] for r in range(4) for c in range(4)
+            for d in range(4)]
+    gui.game.restore_state({'keys': pre, 'points_only': True})
+    gui.game_history.reset()
+    gui.game_history.save_snapshot(gui.game)
+    gui.game.restore_state({'keys': post, 'points_only': True})
+    gui.game_history.save_snapshot(gui.game, move)
+
+
 print('A. 撤销：滑动 + 选中高亮都出现')
 arm_history()
 gui.undo()
@@ -158,6 +175,36 @@ gui.update_animation()
 check(getattr(gui, '_sel_anim_timer', 0) == 0, '计时归零')
 check(not getattr(gui, '_sel_anim_locs', frozenset()), '高亮位置清空')
 check(gui.selected_gap is None, '没有误改玩家选中缝', gui.selected_gap)
+
+print('G. 撤销动画穿切面：分侧跟当前位置；切面边框保持红色')
+gui.new_cubic_puzzle(4, 4, 4, 1)
+gui.animation_enabled = True
+gui.selection_animation_enabled = True
+gui.cubic_anim_ms = 140
+arm_full_layer_history()
+gui.undo()
+_sel_locs = set(getattr(gui, '_sel_anim_locs', frozenset()))
+_anim = gui.cubic_anim
+check(_anim is not None, '撤销启动了穿切面的动画')
+# 起点：选中层还在移动前（切面近侧）；旧实现按逻辑终点分会整段都分到远侧。
+_anim['t0'] = pygame.time.get_ticks()
+gui.draw_board()
+check(_sel_locs and _sel_locs <= set(gui._cubic_seam_front_locs),
+      '动画起点选中层在切面近侧（边框不被红面压住）',
+      sorted(gui._cubic_seam_front_locs))
+# 终点：选中层落回移动前位置（切面远侧），整层应被红面/前块遮住。
+_anim['t0'] = pygame.time.get_ticks() - 138
+gui.draw_board()
+check(_sel_locs and _sel_locs <= set(gui._cubic_seam_back_locs),
+      '动画终点选中层在切面远侧（边框会被红面染色）',
+      sorted(gui._cubic_seam_back_locs))
+_red = 0
+for _y in range(80, gui.screen_height, 2):
+    for _x in range(0, gui.screen_width, 2):
+        _c = gui.screen.get_at((_x, _y))[:3]
+        if _c[0] > 200 and _c[1] < 80 and _c[2] < 80:
+            _red += 1
+check(_red > 20, '切面轮廓是红色（不再借用撤销蓝/重做橙）', _red)
 
 print('=' * 60)
 total = PASSED[0] + len(FAILED)

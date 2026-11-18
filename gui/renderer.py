@@ -1087,6 +1087,8 @@ class RendererMixin:
 
         faces_all = scene['faces']
         back_faces, front_faces = faces_all, []
+        self._cubic_seam_back_locs = frozenset()
+        self._cubic_seam_front_locs = frozenset()
         if seam_quad:
             # 画家序（2026-11-18 二次返工）：
             #   · 所有块**按实际所在侧**分前后：挡在切面前面的块要盖住切面，
@@ -1104,17 +1106,33 @@ class RendererMixin:
                     for _p in _pts or ():
                         if len(_p) >= 3:
                             _moving_front.add((int(_p[0]), int(_p[1]), int(_p[2])))
+            _offsets = scene.get('offsets') or {}
             back_faces, front_faces = [], []
             for f in faces_all:
                 loc = f['loc']
                 key = (int(loc[0]), int(loc[1]), int(loc[2]))
                 # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)；块心按包围盒中心散开算
                 center = cubic_view.block_center(loc, gap, _split_anchor)[seam_axis]
+                # 动画中的块要按**当前渲染位置**分侧，不能按逻辑终点：撤销/重做
+                # 时它会穿过切面，若用终点分侧，整段动画的边框都被分到错的
+                # 一侧（用户 2026-11-18：切面没影响高亮边框，遮挡看起来不对）。
+                _off = _offsets.get(key) if isinstance(_offsets, dict) else None
+                if _off is not None:
+                    center += float(_off[seam_axis])
                 near = (center - seam_fixed) * seam_sign > 0
-                if key in _moving_front or near:
+                if _off is None and key in _moving_front:
+                    near = True
+                if near:
                     front_faces.append(f)
                 else:
                     back_faces.append(f)
+            # 供回归测试核对「动画中的块按当前渲染位置分侧」，不参与绘制。
+            self._cubic_seam_back_locs = frozenset(
+                (int(f['loc'][0]), int(f['loc'][1]), int(f['loc'][2]))
+                for f in back_faces)
+            self._cubic_seam_front_locs = frozenset(
+                (int(f['loc'][0]), int(f['loc'][1]), int(f['loc'][2]))
+                for f in front_faces)
 
         items = [(f['depth'], 0, f) for f in back_faces]
         seam_pts_screen = []
@@ -1171,6 +1189,14 @@ class RendererMixin:
             return [(int(round((p[0] - _bx0) * _ss)),
                      int(round((p[1] - _by0) * _ss))) for p in points]
 
+        # 选中动画的切面轮廓：必须画在切面同一层，不能等全部块画完再描一圈
+        # 屏幕边——那样蓝/橙边永远浮在最上层，前面块也挡不住它（用户
+        # 2026-11-18：看起来遮挡关系不对）。轮廓仍用切面的红色，冷暖色只
+        # 留给滑块组的描边，不借用切面语义。
+        _seam_border = None
+        if _sel_anim is not None:
+            _seam_border = (seam_rgb, max(2, int(3 * self.zoom)))
+
         for _depth, _kind, item in items:
             if hi is None:
                 continue
@@ -1191,6 +1217,12 @@ class RendererMixin:
                                                   self.CUBIC_SEAM_ALPHA)),),
                     [(p[0] - x0, p[1] - y0) for p in pts])
                 hi.blit(cell, (x0, y0))
+                # 切面轮廓跟切面同深度：前面块后画会自然盖住它，背面块先画
+                # 会被它盖住；颜色恒为切面红，撤销蓝/重做橙只用于滑块组。
+                if _seam_border is not None:
+                    pygame.draw.polygon(
+                        hi, _seam_border[0], pts,
+                        max(1, int(_seam_border[1])) * _ss)
                 continue
             if _kind == 2:
                 # 三维箭头的一个面片：投影多边形 + 按面法向算出的明暗。
@@ -1225,13 +1257,6 @@ class RendererMixin:
         if hi is not None:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
-
-        # 选中动画的缝也描一圈同色边：红面仍是红面（切面语义不变），
-        # 冷暖边只表达「这一步是撤回来还是重做过去」。
-        if _sel_anim is not None and seam_pts_screen:
-            pygame.draw.polygon(self.screen, _sel_anim[0],
-                                seam_pts_screen,
-                                max(2, min(3, int(_sel_anim[1]))))
 
         # 三维方向箭头已经在上面作为世界空间面片插入画家序了；这里不再
         # 单独 blit 二维贴图。
