@@ -5800,7 +5800,7 @@ class RendererMixin:
         cubic = bool(getattr(self, 'cubic_mode', False))
         sw_h = 24
         sw_gap = 4
-        sw_count = 5 if cubic else 7
+        sw_count = 3 if cubic else 7
         switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
         switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
         sw_x = panel_x + 6
@@ -5837,19 +5837,30 @@ class RendererMixin:
 
         # 摆放原则（用户定）：右下角只放**游玩中需要经常切换**的开关；
         # 不常改的一律收回设置对话框。逆序宏因此从这里撤回设置。
-        _sw_btn('animation_enabled', '滑动动画', lambda: self.animation_enabled)
-        _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
-        _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
-        if not cubic:
+        # 三维态（2026-11-18 适配）：二维那六个开关在三维全是哑的——
+        # 选中动画 / 着色 / 连锁 / 复原标记按二维语义手写，模式只支持练习，
+        # 成绩面板也没有三维记录。只留三个真有用的：滑动动画、虚拟键盘、
+        # 跟随质心。
+        if cubic:
+            _sw_btn('animation_enabled', '滑动动画',
+                    lambda: self.animation_enabled)
+            _sw_btn('show_virtual_keyboard', '虚拟键盘',
+                    lambda: getattr(self, 'show_virtual_keyboard', False))
+            _sw_btn('cubic_follow_centroid', '跟随质心',
+                    lambda: getattr(self, 'cubic_follow_centroid', True))
+        else:
+            _sw_btn('animation_enabled', '滑动动画', lambda: self.animation_enabled)
+            _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
+            _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
             _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
             # 复原提示标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼
             # 不想看、后期要数格子又想看），故放常用区（设置页全名为
             # 「复原提示标记」，2026-10-13 由「棋盘标记」改名）
             _sw_btn('board_marks_enabled', '复原标记', lambda: self.board_marks_enabled)
-        _sw_btn('game_mode', '模式', lambda: None)
-        # 成绩面板：F3 的功能原先只有键盘能唤出，这里补一个纯鼠标入口，
-        # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
-        _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
+            _sw_btn('game_mode', '模式', lambda: None)
+            # 成绩面板：F3 的功能原先只有键盘能唤出，这里补一个纯鼠标入口，
+            # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
+            _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
 
         # ---- 上方：垂直滑条（左=缩放，右=速度）----
         track_top = self.menu_bar_height + 35
@@ -5889,7 +5900,15 @@ class RendererMixin:
             # 右半：速度滑条
             pygame.draw.line(self.screen, self.colors['border'],
                             (speed_x, track_top), (speed_x, track_bottom), 2)
-            norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
+            if cubic:
+                # 三维这一步动画时长是独立一档（`_cubic_start_anim` 读
+                # `cubic_anim_ms`），不再借二维 animation_duration，否则这条
+                # 滑条在三维里是个哑控件。
+                _dur = int(getattr(self, 'cubic_anim_ms', 140))
+                norm_v = (_dur - self.CUBIC_ANIM_MIN_MS) / max(
+                    1e-6, self.CUBIC_ANIM_MAX_MS - self.CUBIC_ANIM_MIN_MS)
+            else:
+                norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
             norm_v = max(0.0, min(1.0, norm_v))
             knob_y = int(track_top + norm_v * track_height)
             self.slider_rect = pygame.Rect(panel_x + half, track_top, half - 4, track_height)
@@ -5911,7 +5930,10 @@ class RendererMixin:
                 _y = opt_top + _i * opt_h
                 _val = getattr(self, _sp['attr'], _sp['default'])
                 _fmt = (f"{_val:.2f}" if _sp['type'] == 'float' else f"{int(_val)}")
-                _lab = self.status_font.render(f"{_sp['label']} {_fmt}", True,
+                # 面板只有 132px：用短名，避免「切面透明 110」被裁掉
+                _short = {'gap': '拆分', 'seam_alpha': '切面'}.get(_key,
+                                                                 _sp['label'])
+                _lab = self.status_font.render(f"{_short} {_fmt}", True,
                                                self.colors['status_text'])
                 self.screen.blit(_lab, (_panel_left + 6, _y + 2))
                 _track = pygame.Rect(_panel_left + 6, _y + 20,

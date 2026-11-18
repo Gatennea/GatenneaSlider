@@ -515,6 +515,12 @@ class AnimationMixin:
             return
         y = max(track_top, min(track_bottom, mouse_y))
         normalized = (y - track_top) / track_height
+        if getattr(self, 'cubic_mode', False):
+            # 三维：这条滑条写 cubic_anim_ms（60..400），不动二维 animation_duration
+            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
+            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            self.cubic_anim_ms = int(lo + normalized * (hi - lo))
+            return
         new_duration = int(self.SPEED_MIN_MS + normalized * (self.SPEED_MAX_MS - self.SPEED_MIN_MS))
         if self.animating and self.animation_duration > 0:
             elapsed = pygame.time.get_ticks() - self.anim_start_time

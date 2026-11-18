@@ -95,11 +95,13 @@ gui.new_cubic_puzzle(3, 3, 3, 1)
 
 gui.draw_right_panel()
 sw = getattr(gui, 'right_panel_switch_rects', {})
-check(len(sw) == 5, '三维态开关剩 5 个', sorted(sw))
-check('chain_hint_enabled' not in sw and 'board_marks_enabled' not in sw,
-      '连锁 / 复原标记让位（三维不做视觉强化）', sorted(sw))
-check({'animation_enabled', 'selection_animation_enabled', 'coloring_enabled',
-       'game_mode', 'show_records_panel'} == set(sw), '留下的正是常用那五个')
+check(len(sw) == 3, '三维态开关剩 3 个（二维哑开关全撤）', sorted(sw))
+check('chain_hint_enabled' not in sw and 'board_marks_enabled' not in sw
+      and 'selection_animation_enabled' not in sw
+      and 'coloring_enabled' not in sw,
+      '连锁 / 复原标记 / 选中动画 / 着色都撤掉（三维不做这些）', sorted(sw))
+check({'animation_enabled', 'show_virtual_keyboard',
+       'cubic_follow_centroid'} == set(sw), '留下的是三维真正生效的三个')
 gr = getattr(gui, 'cubic_gap_slider_rect', None)
 ar = getattr(gui, 'cubic_alpha_slider_rect', None)
 check(gr is not None and ar is not None, '三维态有拆分/切面透明两条滑条', (gr, ar))
@@ -113,6 +115,28 @@ check(not gr.colliderect(ar), '两条滑条彼此不重叠')
 check(not gui.zoom_slider_rect.colliderect(gr)
       and not gui.slider_rect.colliderect(gr),
       '竖滑条（缩放/速度）不与新滑条重叠')
+
+# 速度竖滑条在三维态必须真的写 cubic_anim_ms（以前它只改二维 animation_duration，
+# 在三维里是个哑控件）
+gui._update_slider_from_mouse(gui.slider_rect.top)
+check(gui.cubic_anim_ms == gui.CUBIC_ANIM_MIN_MS,
+      f'滑条拉到顶 = 最快（{gui.cubic_anim_ms}ms）')
+gui._update_slider_from_mouse(gui.slider_rect.bottom)
+check(gui.cubic_anim_ms == gui.CUBIC_ANIM_MAX_MS,
+      f'滑条拉到底 = 最慢（{gui.cubic_anim_ms}ms）')
+old_2d = gui.animation_duration
+gui._update_slider_from_mouse(gui.slider_rect.top)
+check(gui.animation_duration == old_2d, '三维态改速度不碰二维 animation_duration')
+
+# 跟随质心开关：关掉后不被拉回，重开即回正
+gui.cubic_pan = [40.0, -20.0]
+gui.cubic_follow_centroid = True
+gui._handle_right_panel_switch('cubic_follow_centroid')
+check(gui.cubic_follow_centroid is False, '点一下：跟随质心关掉')
+check(gui.cubic_pan == [40.0, -20.0], '关掉后手动平移保留，不会被拽回')
+gui._handle_right_panel_switch('cubic_follow_centroid')
+check(gui.cubic_follow_centroid is True and gui.cubic_pan == [0.0, 0.0],
+      '再点一下：重新跟随并立刻回正')
 
 gui.new_puzzle(4, 4, 1)
 gui.draw_right_panel()

@@ -2070,7 +2070,7 @@ class EventsMixin:
         after = {(r + dr, c + dc, d + dd) for (r, c, d) in before_locs}
         self.cubic_anim = {
             't0': pygame.time.get_ticks(),
-            'ms': int(self.CUBIC_ANIM_MS),
+            'ms': int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS)),
             'delta': tuple(float(v) for v in delta),
             'group': frozenset(after),
         }
@@ -4749,6 +4749,14 @@ class EventsMixin:
             self.board_marks_enabled = not getattr(self, 'board_marks_enabled', True)
             status = '开' if self.board_marks_enabled else '关'
             self.macro_notify_msg = f"复原提示标记：{status}"
+        elif key == 'cubic_follow_centroid':
+            # 三维右下角「跟随质心」：关掉后手动平移不会被拽回；重开即回正
+            on = not getattr(self, 'cubic_follow_centroid', True)
+            self.cubic_follow_centroid = on
+            if on:
+                self.cubic_pan = [0.0, 0.0]
+                self._cubic_follow_center = None
+            self.macro_notify_msg = f"跟随质心：{'开' if on else '关（手动平移保持）'}"
         elif key == 'show_records_panel':
             # 成绩面板（F3 的纯鼠标入口）：与 F3 走同一套收尾（清删除确认态）
             self.show_records_panel = not getattr(self, 'show_records_panel', False)

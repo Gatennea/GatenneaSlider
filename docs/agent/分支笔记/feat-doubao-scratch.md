@@ -913,3 +913,27 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   重启恢复（`_test_cubic_config_state`）一起覆盖。结论：三维存/读正常，二维存档不受影响。
 - 竞速：三维仍被 `mode_allowed` 明确拒绝（初始局面不是字符矩阵，成绩表存不了
   同一题）。要支持需扩 records schema（三维初始键表 + 回放缩略图），留到第 5 阶段。
+
+## 2026-11-18 右侧面板三维适配（用户提醒的漏项）
+
+之前只把「连锁 / 复原标记」换成两条滑条，剩下四个开关在三维里全是哑的：
+
+- 选中动画、着色：按二维块面/分组语义手写，三维 `draw_cubic_board` 根本不读；
+- 模式：三维只支持练习（竞速缺 records 初始局面），点了只会弹拒绝；
+- 成绩：三维没有成绩记录。
+
+改成三维态只留三个真生效的开关：**滑动动画 / 虚拟键盘 / 跟随质心**；二维仍是原 7 个。
+`sw_count` 5→3，虚位让给两条横向滑条，避免大片空白里混着死按钮。
+
+第二处哑控件：右侧竖向「速度」滑条以前只写 `animation_duration`，三维一步动画读的是
+`CUBIC_ANIM_MS=140` 常量，所以三维里怎么拖都没反应。现在：
+
+- 新增 `CUBIC_ANIM_MIN_MS=60` / `MAX=400` / `cubic_anim_ms=140`；
+- 三维态滑条改 `cubic_anim_ms`，`_update_slider_from_mouse` 走三维分支，不碰二维；
+- `_cubic_start_anim` 改读 `cubic_anim_ms`。
+
+第三处：132px 放不下「切面透明 110」，面板改用短名 **拆分 / 切面**。
+
+`_test_cubic_render_opts` 同步：三维 3 个开关、速度滑条写 `cubic_anim_ms` 且不改
+`animation_duration`、跟随开关关闭后手动平移保留、重开回正。全套 16 个 cubic 套件绿；
+面板截图 `fix19/panel_cubic.png`。
