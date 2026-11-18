@@ -1338,14 +1338,26 @@ class RendererMixin:
             _p2 = pts[(_edge + 1) % 4]
             _cx = sum(p[0] for p in pts) / 4.0
             _cy = sum(p[1] for p in pts) / 4.0
-            _inset = 0.26
+            _inset = 0.20
             _hi1 = (_p1[0] + (_cx - _p1[0]) * _inset,
                     _p1[1] + (_cy - _p1[1]) * _inset)
             _hi2 = (_p2[0] + (_cx - _p2[0]) * _inset,
                     _p2[1] + (_cy - _p2[1]) * _inset)
-            _hi_col = (min(255, fill[0] + 34), min(255, fill[1] + 34),
-                       min(255, fill[2] + 34))
+            _hi_col = (min(255, fill[0] + 24), min(255, fill[1] + 24),
+                       min(255, fill[2] + 24))
             pygame.draw.polygon(hi, _hi_col, (_p1, _p2, _hi2, _hi1))
+            # 底边压一点暗，和高光带一起把「平涂」拉成有厚度的面。
+            _bedge = max(range(4), key=lambda i: pts[i][1] + pts[(i + 1) % 4][1])
+            _b1 = pts[_bedge]
+            _b2 = pts[(_bedge + 1) % 4]
+            _binset = 0.14
+            _lo1 = (_b1[0] + (_cx - _b1[0]) * _binset,
+                    _b1[1] + (_cy - _b1[1]) * _binset)
+            _lo2 = (_b2[0] + (_cx - _b2[0]) * _binset,
+                    _b2[1] + (_cy - _b2[1]) * _binset)
+            _lo_col = (max(0, fill[0] - 14), max(0, fill[1] - 14),
+                       max(0, fill[2] - 14))
+            pygame.draw.polygon(hi, _lo_col, (_b1, _b2, _lo2, _lo1))
         if hi is not None:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))

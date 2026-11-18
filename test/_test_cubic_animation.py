@@ -176,8 +176,9 @@ def main():
           '再拖回最快：当前步改回 60ms')
     check(getattr(g4, 'animating', False) and bool(getattr(g4, 'anim_blocks', None)),
           '演示靠 start_animation 推进（有自己的块列表）')
-    import time as _t2
-    _t2.sleep(0.03)
+    # 不靠真实 sleep（Windows 定时器+测试机负载会把 30ms 拖过 60ms，导致动画
+    # 已经收尾、offset 变 None 的假失败）；直接把起点拨到 20ms 前，稳定验中途。
+    g4.anim_start_time = pygame.time.get_ticks() - 20
     g4.update_animation()          # 真实循环里每帧都走这一句，进度才会前进
     offs4 = g4._cubic_anim_offsets()
     check(offs4 is not None and any(v != (0.0, 0.0, 0.0) for v in offs4.values()),
@@ -186,6 +187,7 @@ def main():
         first = next(iter(offs4.values()))
         check(max(abs(v) for v in first) < 1.0,
               f'位移还在半路上（{first}），不是已经跳到落点')
+    import time as _t2
     _t2.sleep(0.10)
     g4.update_animation()
     check(getattr(g4, '_shuffle_demo_done', 0) >= 1, '演示确实在往前走')
