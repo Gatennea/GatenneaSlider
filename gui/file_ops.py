@@ -474,10 +474,13 @@ class FileOpsMixin:
                             and all(isinstance(v, (int, float))
                                     and not isinstance(v, bool) for v in quat)):
                         prefs['quat'] = [float(v) for v in quat]
-                    for key in ('zoom', 'gap'):
-                        val = cc.get(key)
+                    # 三维选项：按声明式表保留全部数值键（以前只手抄 zoom/gap，
+                    # 结果 seam_alpha / rot_sensitivity / cubic_anim_ms 读盘即丢）。
+                    for _meta in cubic_settings.CUBIC_SETTINGS:
+                        _key = _meta['key']
+                        val = cc.get(_key)
                         if isinstance(val, (int, float)) and not isinstance(val, bool):
-                            prefs[key] = float(val)
+                            prefs[_key] = float(val)
                     view = cc.get('view')
                     if isinstance(view, int) and 0 <= view < 6:
                         prefs['view'] = view

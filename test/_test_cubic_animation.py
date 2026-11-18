@@ -147,9 +147,30 @@ def main():
     g4 = make_gui()
     g4.new_cubic_puzzle(3, 3, 3, 1)
     g4.animation_enabled = True
+    # 三维打乱演示必须跟 cubic_anim_ms 同源（以前借二维 animation_duration，
+    # 右侧「速度」拖了没反应）。这里故意把二维值设成 80、三维设成 60，
+    # 断言本次动画用的是三维值。
     g4.animation_duration = 80
+    g4.cubic_anim_ms = 60
     g4.shuffle_puzzle(confirm=False)
     check(getattr(g4, '_shuffle_demo_active', False), '打乱进入演示')
+    check(getattr(g4, '_anim_duration_override', None) == 60,
+          '演示动画用的是 cubic_anim_ms（60），不是二维 80',
+          getattr(g4, '_anim_duration_override', None))
+    check(g4.animation_duration == 80, '三维演示不改二维 animation_duration')
+    # 演示中途拖速度：当前这一步也要立刻变速（重锚 start_time），不是等下一步
+    import time as _t_live_sleep
+    _t_live_sleep.sleep(0.02)
+    g4.draw_right_panel()
+    _t_live = g4.anim_start_time
+    g4._update_slider_from_mouse(g4.slider_rect.bottom)   # 最慢 400
+    check(g4.cubic_anim_ms == 400 and g4._anim_duration_override == 400,
+          '演示中拖到最慢：当前步改用 400ms',
+          (g4.cubic_anim_ms, g4._anim_duration_override))
+    check(g4.anim_start_time != _t_live, '当前步已按进度重锚，不是等下一步')
+    g4._update_slider_from_mouse(g4.slider_rect.top)      # 回到最快 60
+    check(g4.cubic_anim_ms == 60 and g4._anim_duration_override == 60,
+          '再拖回最快：当前步改回 60ms')
     check(getattr(g4, 'animating', False) and bool(getattr(g4, 'anim_blocks', None)),
           '演示靠 start_animation 推进（有自己的块列表）')
     import time as _t2

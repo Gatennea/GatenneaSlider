@@ -25,13 +25,23 @@ CLI_COMMANDS = [
     ('records', '成绩记录', ['records']),
     ('timer_status / timer_start / timer_stop', '计时查询/开始/停止',
      ['timer_status', 'timer_start', 'timer_stop']),
-    ('move <方向>', '移动滑块（w/s/a/d；三角另加 e/z/x，米字格另加 q）', ['move']),
-    ('select_gap <行> <列> <h/v>', '选中缝隙', ['select_gap']),
-    ('select_block <行> <列>', '选中方块', ['select_block']),
+    ('move <方向>', '移动滑块（w/s/a/d；三角另加 e/z/x，米字格另加 q；'
+                    '三维 r/R/c/C/d/D）', ['move']),
+    ('select_gap <行> <列> <h/v>', '选中缝隙（三维 select_gap r/c/d line）',
+     ['select_gap']),
+    ('select_block <行> <列>', '选中方块（三维 select_block r c d）',
+     ['select_block']),
     ('deselect', '清空选中', ['deselect']),
     ('undo / redo', '撤销 / 重做', ['undo', 'redo']),
     ('shuffle / reset', '打乱 / 复原到初始态', ['shuffle', 'reset']),
-    ('new <m> <n> <step> [tri/num/mi]', '新开谜题', ['new']),
+    ('new <m> <n> <step> [tri/num/mi]', '新开谜题（三维 new m n step cubic d）',
+     ['new']),
+    ('camera / camera_view <1..6>', '三维相机状态 / 切六朝向',
+     ['camera', 'camera_view']),
+    ('camera_set <qw> <qx> <qy> <qz>', '三维相机设四元数姿态', ['camera_set']),
+    ('camera_zoom <倍数>', '三维缩放（夹进相机范围）', ['camera_zoom']),
+    ('camera_pan <dx> <dy>', '三维平移（暂停跟随质心）', ['camera_pan']),
+    ('camera_center', '三维平移归零并恢复跟随质心', ['camera_center']),
     ('quit', '退出游戏', ['quit']),
     ('restart', '重启游戏（进程退出后自动重开）', ['restart']),
     ('solve / solve_cancel / solve_status', '求解 / 取消 / 进度',
@@ -2208,16 +2218,24 @@ class EventsMixin:
                     # 半整/B），它是错位态唯一稳定的分组依据（规划表 20）
                     blk['lat'] = ('A', 'B')[lattice_of(b.location)]
                     del blk['mod']
-            if kind not in ('square', 'numbered', 'triangle', 'mi'):
+            if kind not in ('square', 'numbered', 'triangle', 'mi', 'cubic'):
                 # 模型文件板型：第三分量是朝向标签串（'1'..'12'/'r1'..'r12'），
                 # 同格多块靠它区分。mod 余数在质心晶格上没有分组语义，删掉
                 # 免得调用方按方形不变量误读
                 for blk, b in zip(blocks, self.game.blocks):
                     blk['orient'] = b.location[2] if len(b.location) >= 3 else None
                     del blk['mod']
+            if kind == 'cubic':
+                # 三维：第三分量就是层号 d（不是朝向标签），必须原样发出来，
+                # 否则调用方只看到 row/col，3×3×3 的上下层全叠成一个坐标。
+                for blk, b in zip(blocks, self.game.blocks):
+                    blk['depth'] = b.location[2] if len(b.location) >= 3 else None
+                    blk.pop('orient', None)
         return {
             "puzzle": puzzle_key(step, self.current_m, self.current_n, kind=kind,
-                                 triangle_side=self.game.k if tri else None),
+                                 triangle_side=self.game.k if tri else None,
+                                 depth=(getattr(self, 'current_depth', None)
+                                        if kind == 'cubic' else None)),
             "step_count": self.step_count,
             "solved": solved,
             # matrix / blocks 已在演示期修正分支按终态取好（见上 with 块）
@@ -2850,12 +2868,148 @@ class EventsMixin:
                     self.reset_puzzle(confirm=False)
                     self._cmd_reply(resp_q, True, f"已重置为 {self.current_step}~{self.current_m}*{self.current_n}")
                 
+                elif action == 'camera':
+                    # 只读查询三维相机；二维局明确报不支持，避免调用方猜。
+                    if not getattr(self, 'cubic_mode', False):
+                        self._cmd_reply(
+                            resp_q, False, "当前不是三维局，camera 不可用",
+                            {'reason': 'unsupported'})
+                    else:
+                        try:
+                            yaw, pitch, roll = self.cubic_camera.decompose()
+                        except Exception:
+                            yaw = pitch = roll = 0.0
+                        from engine.cubic_view import DEFAULT_GAP
+                        self._cmd_reply(
+                            resp_q, True, "三维相机状态",
+                            {'quat': list(self.cubic_camera.as_tuple()),
+                             'yaw': yaw, 'pitch': pitch, 'roll': roll,
+                             'view': getattr(self, 'cubic_view_index', None),
+                             'view_label': getattr(self, 'cubic_view_label', ''),
+                             'zoom': getattr(self, 'cubic_zoom', 1.0),
+                             'pan': list(getattr(self, 'cubic_pan', [0.0, 0.0])),
+                             'follow_centroid': bool(
+                                 getattr(self, 'cubic_follow_centroid', True)),
+                             'gap': getattr(self, 'cubic_gap', DEFAULT_GAP),
+                             'seam_alpha': getattr(self, 'cubic_seam_alpha', 110),
+                             'rot_sensitivity': getattr(
+                                 self, 'cubic_rot_sensitivity', 1.0),
+                             'anim_ms': getattr(self, 'cubic_anim_ms', 140)})
+                    continue
+
+                elif action == 'camera_set':
+                    # 外部设定姿态：camera_set qw qx qy qz（四元数，自动归一化）。
+                    if not getattr(self, 'cubic_mode', False):
+                        self._cmd_reply(resp_q, False, "当前不是三维局",
+                                        {'reason': 'unsupported'})
+                        continue
+                    if len(parts) < 5:
+                        self._cmd_reply(
+                            resp_q, False, "用法: camera_set qw qx qy qz")
+                        continue
+                    try:
+                        from engine.cubic_camera import CubicCamera
+                        quat = tuple(float(v) for v in parts[1:5])
+                        self.cubic_camera = CubicCamera(quat)
+                    except (ValueError, TypeError) as exc:
+                        self._cmd_reply(resp_q, False, f"四元数不合法: {exc}")
+                        continue
+                    self.cubic_view_label = '外部设定'
+                    self.cubic_view_index = None
+                    self._cmd_reply(
+                        resp_q, True, "三维相机已设定",
+                        {'quat': list(self.cubic_camera.as_tuple())})
+                    continue
+
+                elif action == 'camera_view':
+                    # 六朝向预设 1..6；与鼠标/键盘切视角同路，不另写一份。
+                    if not getattr(self, 'cubic_mode', False):
+                        self._cmd_reply(resp_q, False, "当前不是三维局",
+                                        {'reason': 'unsupported'})
+                        continue
+                    if len(parts) < 2:
+                        self._cmd_reply(
+                            resp_q, False, "用法: camera_view 1..6")
+                        continue
+                    try:
+                        index = int(parts[1])
+                    except ValueError:
+                        self._cmd_reply(resp_q, False, "视角编号必须是整数")
+                        continue
+                    if not 1 <= index <= 6:
+                        self._cmd_reply(resp_q, False, "视角编号必须是 1..6")
+                        continue
+                    self._cubic_view(index)
+                    self._cmd_reply(
+                        resp_q, True, f"已切到视角 {index}",
+                        {'view': index,
+                         'view_label': getattr(self, 'cubic_view_label', '')})
+                    continue
+
+                elif action == 'camera_zoom':
+                    # 三维缩放绝对值（夹进 CUBIC_ZOOM_RANGE），与 Ctrl+滚轮同口径。
+                    if not getattr(self, 'cubic_mode', False):
+                        self._cmd_reply(resp_q, False, "当前不是三维局",
+                                        {'reason': 'unsupported'})
+                        continue
+                    if len(parts) < 2:
+                        self._cmd_reply(
+                            resp_q, False, "用法: camera_zoom <倍数>")
+                        continue
+                    try:
+                        zoom = float(parts[1])
+                    except ValueError:
+                        self._cmd_reply(resp_q, False, "缩放必须是数字")
+                        continue
+                    lo, hi = self.CUBIC_ZOOM_RANGE
+                    self.cubic_zoom = max(lo, min(hi, zoom))
+                    self._cmd_reply(resp_q, True,
+                                    f"缩放已设为 {self.cubic_zoom:g}",
+                                    {'zoom': self.cubic_zoom})
+                    continue
+
+                elif action == 'camera_pan':
+                    # 三维平移绝对像素偏移；手动平移会暂停跟随质心（同 _cubic_pan_by）。
+                    if not getattr(self, 'cubic_mode', False):
+                        self._cmd_reply(resp_q, False, "当前不是三维局",
+                                        {'reason': 'unsupported'})
+                        continue
+                    if len(parts) < 3:
+                        self._cmd_reply(
+                            resp_q, False, "用法: camera_pan <dx> <dy>")
+                        continue
+                    try:
+                        dx, dy = float(parts[1]), float(parts[2])
+                    except ValueError:
+                        self._cmd_reply(resp_q, False, "dx/dy 必须是数字")
+                        continue
+                    lim = 0.55 * max(self.screen_width, self.screen_height)
+                    self.cubic_pan = [max(-lim, min(lim, dx)),
+                                      max(-lim, min(lim, dy))]
+                    self.cubic_follow_centroid = False
+                    self._cmd_reply(resp_q, True, "平移已设定",
+                                    {'pan': list(self.cubic_pan),
+                                     'follow_centroid': False})
+                    continue
+
+                elif action == 'camera_center':
+                    if not getattr(self, 'cubic_mode', False):
+                        self._cmd_reply(resp_q, False, "当前不是三维局",
+                                        {'reason': 'unsupported'})
+                        continue
+                    self._cubic_pan_center()
+                    self._cmd_reply(resp_q, True, "已居中并恢复跟随质心")
+                    continue
+
                 elif action == 'move':
                     tri = getattr(self, 'triangle_mode', False)
                     mi = getattr(self, 'mi_mode', False)
+                    cubic = getattr(self, 'cubic_mode', False)
                     gen_spec = self._generic_spec()
                     if len(parts) < 2:
-                        if gen_spec is not None:
+                        if cubic:
+                            usage = "用法: move r/R/c/C/d/D（小写=沿轴减小，大写=沿轴增大）"
+                        elif gen_spec is not None:
                             from engine.compat import direction_table
                             letters = sorted(direction_table(gen_spec))
                             usage = "用法: move " + "/".join(letters)
@@ -2866,6 +3020,51 @@ class EventsMixin:
                         self._cmd_reply(resp_q, False, usage)
                         continue
                     direction = parts[1].lower()
+                    raw_direction = parts[1]
+                    if cubic:
+                        # 三维：六向字母区分大小写（r/R、c/C、d/D），不能先 lower。
+                        # 与 GUI 键盘 / 虚拟键盘走同一个 _cubic_push_letter，
+                        # 这样动画、缝号更新、滑后粘连清选中都与手玩同一条路径。
+                        # 先判「有没有选中」再判方向：调用方没选缝/块时，
+                        # not_selected 比「方向非法」更接近真实原因。
+                        if not (self.selected_gap and self.selected_block):
+                            self._cmd_reply(resp_q, False, "未选中缝隙和滑块",
+                                            {'reason': 'not_selected'})
+                            continue
+                        from engine.compat import CUBIC_DIRECTIONS
+                        if raw_direction not in CUBIC_DIRECTIONS:
+                            self._cmd_reply(
+                                resp_q, False,
+                                "方向必须是 r/R/c/C/d/D（小写=沿轴减小，大写=沿轴增大）",
+                                {'reason': 'wrong_direction'})
+                            continue
+                        gap_type, _line = self.selected_gap
+                        _parallel = {
+                            'r': ('c', 'C', 'd', 'D'),
+                            'c': ('r', 'R', 'd', 'D'),
+                            'd': ('r', 'R', 'c', 'C'),
+                        }
+                        if raw_direction not in _parallel.get(gap_type, ()):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"当前缝隙 {gap_type} 不允许 {raw_direction} 方向移动",
+                                {'reason': 'wrong_direction'})
+                            continue
+                        if self._readonly_blocked() or (
+                                self.game_mode == 'timed'
+                                and self.timer_state == 'ready'):
+                            self._cmd_reply(
+                                resp_q, False,
+                                "当前状态禁止滑动（计时就绪态或只读存档）",
+                                {'reason': 'timer_blocked'})
+                            continue
+                        moved = self._cubic_push_letter(raw_direction)
+                        if moved:
+                            self._cmd_reply(resp_q, True, f"已移动 {raw_direction}")
+                        else:
+                            self._cmd_reply(resp_q, False, "移动未生效",
+                                            {'reason': 'no_move'})
+                        continue
                     if gen_spec is not None:
                         # 通用通道（碎三角等）：12 字母中活躍的 8 個
                         # （d/a/w/s/e/q/z/x）；方向須平行於已選縫——
@@ -3029,7 +3228,7 @@ class EventsMixin:
                 elif action == 'new':
                     if len(parts) < 4:
                         self._cmd_reply(resp_q, False,
-                                        "用法: new m n step [num|tri|mi]")
+                                        "用法: new m n step [num|tri|mi]；三维: new m n step cubic d")
                         continue
                     try:
                         nm = int(parts[1])
@@ -3043,6 +3242,28 @@ class EventsMixin:
                     numbered = len(parts) >= 5 and parts[4] in ('1', 'num', 'true')
                     is_tri = len(parts) >= 5 and parts[4] in ('tri', 'triangle')
                     is_mi = len(parts) >= 5 and parts[4] in ('mi', 'mizi')
+                    is_cubic = len(parts) >= 5 and parts[4] in ('cubic', '3d')
+                    if is_cubic:
+                        # 三维必须显式给层数 d；语法与 HTTP /new 的 depth 同源。
+                        if len(parts) < 6:
+                            self._cmd_reply(
+                                resp_q, False,
+                                "用法: new m n step cubic d（三维层数 d 必填）")
+                            continue
+                        try:
+                            nd = int(parts[5])
+                        except ValueError:
+                            self._cmd_reply(resp_q, False, "三维层数 d 必须是整数")
+                            continue
+                        if self.new_cubic_puzzle(nm, nn, nd, ns):
+                            self._cmd_reply(resp_q, True,
+                                            f"新谜题 {ns}~cubic{nm}*{nn}*{nd}")
+                        else:
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"三维谜题建局失败：{nm}×{nn}×{nd} 等级{ns}"
+                                f"（尺寸须 ≥1，等级须 < max 维度）")
+                        continue
                     if is_mi:
                         if self.new_mi_puzzle(nm, nn, ns):
                             self._cmd_reply(resp_q, True, f"新谜题 {ns}~mi{nm}*{nn}")
@@ -3075,9 +3296,13 @@ class EventsMixin:
                 elif action == 'select_gap':
                     tri = getattr(self, 'triangle_mode', False)
                     mi = getattr(self, 'mi_mode', False)
+                    cubic = getattr(self, 'cubic_mode', False)
                     gen_spec = self._generic_spec()
                     if len(parts) < 3:
-                        if gen_spec is not None:
+                        if cubic:
+                            self._cmd_reply(
+                                resp_q, False, "用法: select_gap r/c/d line")
+                        elif gen_spec is not None:
                             fams = "/".join(
                                 f.name for f in gen_spec.seam_families)
                             self._cmd_reply(
@@ -3092,6 +3317,39 @@ class EventsMixin:
                             self._cmd_reply(resp_q, False, "用法: select_gap h/v line")
                         continue
                     gap_type = parts[1].lower()
+                    if cubic:
+                        # 三维三族：r（按行切）/ c（按列切）/ d（按层切）。
+                        # line 是缝序号（与 GUI 右键选缝同口径，0 起）。
+                        if gap_type not in ('r', 'c', 'd'):
+                            self._cmd_reply(
+                                resp_q, False, "类型必须是 r、c 或 d")
+                            continue
+                        try:
+                            line = int(parts[2])
+                        except ValueError:
+                            self._cmd_reply(resp_q, False, "line 必须是整数")
+                            continue
+                        if not self.game.is_valid_gap(gap_type, line):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"{gap_type} 缝隙 {line} 不合法"
+                                f"（该线处切不出可移动的滑块片：线两侧都要有滑块，"
+                                f"且线号需落在棋盘范围内）")
+                            continue
+                        if not self.game.is_live_gap(gap_type, line):
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"{gap_type} 缝隙 {line} 选不动"
+                                f"（该线两侧滑块都推不动，选它也无法移动）")
+                            continue
+                        self.selected_gap = (gap_type, line)
+                        for b in self.game.blocks:
+                            b.be_opted = False
+                        self.selected_block = None
+                        self._cmd_reply(
+                            resp_q, True,
+                            f"已选中缝隙: {gap_type} {line}")
+                        continue
                     if gen_spec is not None and gap_type not in \
                             [f.name for f in gen_spec.seam_families]:
                         # 族名大小寫不敏感（外部常寫小寫 l_v）
@@ -3205,6 +3463,43 @@ class EventsMixin:
                 elif action == 'select_block':
                     tri = getattr(self, 'triangle_mode', False)
                     mi = getattr(self, 'mi_mode', False)
+                    cubic = getattr(self, 'cubic_mode', False)
+                    if cubic:
+                        # 三维：select_block r c d（块的三元逻辑坐标）
+                        if len(parts) < 4:
+                            self._cmd_reply(
+                                resp_q, False, "用法: select_block r c d")
+                            continue
+                        try:
+                            row = int(parts[1])
+                            col = int(parts[2])
+                            dep = int(parts[3])
+                        except ValueError:
+                            self._cmd_reply(resp_q, False, "r/c/d 必须是整数")
+                            continue
+                        block = next(
+                            (b for b in self.game.blocks
+                             if tuple(int(v) for v in b.location[:3])
+                             == (row, col, dep)), None)
+                        if block is None:
+                            self._cmd_reply(
+                                resp_q, False,
+                                f"({row},{col},{dep}) 没有滑块")
+                            continue
+                        if self.selected_gap is None:
+                            self._cmd_reply(
+                                resp_q, False, "请先用 select_gap 选中缝隙")
+                            continue
+                        gap_type, line = self.selected_gap
+                        self.game.opt(gap_type, line, block)
+                        self.selected_block = block
+                        selected_count = sum(
+                            1 for b in self.game.blocks if b.be_opted)
+                        self._cmd_reply(
+                            resp_q, True,
+                            f"已选中滑块 ({row},{col},{dep}), "
+                            f"选中区域: {selected_count} 个")
+                        continue
                     if mi:
                         # 米字格：select_block r c q（q = N/E/S/W）
                         if len(parts) < 3:
@@ -4680,10 +4975,19 @@ class EventsMixin:
         normalized = (mx - track.x) / track.width
         normalized = max(0.0, min(1.0, normalized))
         if getattr(self, 'cubic_mode', False):
-            # 三维：视觉页这条滑条写 cubic_anim_ms（60..400），不动二维值
+            # 三维：视觉页这条滑条写 cubic_anim_ms（60..400），不动二维值。
+            # 若正在播三维动画，按进度重锚——和右侧速度滑条同一口径。
             lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
             hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
-            self.cubic_anim_ms = int(lo + normalized * (hi - lo))
+            new_ms = int(lo + normalized * (hi - lo))
+            old_ms = max(1, int(getattr(self, 'cubic_anim_ms', 140)))
+            if (new_ms != old_ms and self.animating
+                    and getattr(self, '_anim_duration_override', None)):
+                elapsed = pygame.time.get_ticks() - self.anim_start_time
+                progress = elapsed / old_ms
+                self.anim_start_time = pygame.time.get_ticks() - int(progress * new_ms)
+                self._anim_duration_override = new_ms
+            self.cubic_anim_ms = new_ms
             return
         new_duration = int(100 + normalized * 900)
         if self.animating and self.animation_duration > 0:

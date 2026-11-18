@@ -1037,10 +1037,11 @@ class RendererMixin:
         # 不写回 selected_gap（玩家的选择不会因为一次撤销被改掉）。
         if _sel_anim is not None and getattr(self, '_sel_anim_gap', None):
             seam = self._sel_anim_gap
-        # 推一步的滑动期间（第 6 步）不画切面：那张面停在原处，块会从它中间
-        # 穿过去，深度序上必然出现「红面盖住正在滑的块」——动画一结束就恢复。
-        # ⚠️ 只停「切面」，箭头照画（seam 本身还要给箭头定位）。
-        seam_draw = None if getattr(self, 'cubic_anim', None) else seam
+        # 推一步的滑动期间（第 6 步）**不跳过切面**：跳过会让红面在动画开头
+        # 消失、结尾又出现，玩家看到的就是「闪一下」（2026-11-18 用户报）。
+        # 现在切面持续画，正在移动的块在下方画家序里强制归入近侧（画在红面
+        # 之上），既不会红面盖块，也不会闪烁。⚠️ 箭头照画，seam 仍给箭头定位。
+        seam_draw = seam
         seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
         # 切面 = **一整张矩形平面**（用户 2026-11-18：缝隙应该是一个矩形平面，
         # 不是按格拼的方块阵）。遮挡不靠「按格切碎塞进画家序」（那会画出格线、
@@ -1079,6 +1080,17 @@ class RendererMixin:
             # 同一组内部仍按 depth 从远到近。
             opted = {(int(b.location[0]), int(b.location[1]), int(b.location[2]))
                      for b in blocks if getattr(b, 'be_opted', False)}
+            # 三维 2D 动画管線（打乱演示 / 撤销重做）里正在移动的块：它们可能
+            # 跨过切面，不能按「逻辑起点」分前后，否则中途会被红面盖住。
+            # 起终点都算近侧，保证整段动画都在切面之上（用户要的「不闪烁」）。
+            _moving_front = set()
+            if (getattr(self, 'cubic_mode', False)
+                    and getattr(self, 'animating', False)):
+                for _pts in (getattr(self, 'anim_start_pos', None),
+                             getattr(self, 'anim_end_pos', None)):
+                    for _p in _pts or ():
+                        if len(_p) >= 3:
+                            _moving_front.add((int(_p[0]), int(_p[1]), int(_p[2])))
             back_faces, front_faces = [], []
             for f in faces_all:
                 loc = f['loc']
@@ -1086,7 +1098,7 @@ class RendererMixin:
                 # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
                 center = (loc[1] + 0.5, loc[2] + 0.5, loc[0] + 0.5)[seam_axis]
                 near = (center - seam_fixed) * seam_sign > 0
-                if key in opted or near:
+                if key in opted or key in _moving_front or near:
                     front_faces.append(f)
                 else:
                     back_faces.append(f)
@@ -5848,7 +5860,7 @@ class RendererMixin:
         self._solved_popup_rect = pygame.Rect(x, y, w, h)
 
     def draw_right_panel(self):
-        """绘制右侧面板：垂直速度滑条 + 6 个快捷开关（滑动动画/选中动画/着色/连锁/模式/逆序）"""
+        """绘制右侧面板：缩放/速度竖滑条 + 底部快捷开关（三维 6 / 二维 7）+ 三维拆分/切面横滑条。"""
         panel_x = self.screen_width - self.right_panel_width
         _panel_left = panel_x
         panel_rect = pygame.Rect(panel_x, 0, self.right_panel_width, self.screen_height)
@@ -5874,15 +5886,18 @@ class RendererMixin:
         def _sw_btn(key, label, getter):
             nonlocal sw_top
             rect = pygame.Rect(sw_x, sw_top, sw_w, sw_h)
-            bg, color = self.colors['input_bg'], (150, 150, 150)
+            bg, color = self.colors['input_bg'], self.colors['status_text']
             if key == 'game_mode':
                 mode = getattr(self, 'game_mode', 'practice')
+                # 模式是「点一下会变」的动作按钮，不是禁用项：练习态也给亮字，
+                # 只靠底色区分创造/竞速（否则灰字看起来像点不动）。
+                color = self.colors['text']
                 if mode == 'create':
                     # 创造模式用「选中滑块」的绿色
-                    bg, color = self.colors['block_selected'], (255, 255, 255)
+                    bg = self.colors['block_selected']
                     text = '模式:创造'
                 elif mode == 'timed':
-                    bg, color = self.colors['button_bg'], (255, 255, 255)
+                    bg = self.colors['button_bg']
                     text = '模式:竞速'
                 else:
                     text = '模式:练习'
@@ -5890,8 +5905,12 @@ class RendererMixin:
                 on = bool(getter())
                 text = f'{label}:{"开" if on else "关"}'
                 if on:
-                    bg, color = self.colors['button_bg'], (255, 255, 255)
+                    bg = self.colors['button_bg']
+                    color = self.colors['text']
             pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+            # 统一细边框：关态不再是一块「灰字灰底」的假禁用按钮
+            pygame.draw.rect(self.screen, self.colors['border'], rect, 1,
+                             border_radius=4)
             ts = self.status_font.render(text, True, color)
             self.screen.blit(ts, ts.get_rect(center=rect.center))
             self.right_panel_switch_rects[key] = rect

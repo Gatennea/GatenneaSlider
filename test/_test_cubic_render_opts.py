@@ -54,11 +54,12 @@ class _Holder:
 h = _Holder()
 cubic_settings.reset(h)
 d = cubic_settings.defaults()
-check(set(d) == {'gap', 'seam_alpha', 'rot_sensitivity'},
-      '表里有三条（gap/seam_alpha/rot_sensitivity；双击项已随右键选缝删除）', sorted(d))
-check(h.cubic_gap == 0.12 and h.cubic_seam_alpha == 110,
+check(set(d) == {'gap', 'seam_alpha', 'cubic_anim_ms', 'rot_sensitivity'},
+      '表里有四条（gap/seam_alpha/cubic_anim_ms/rot_sensitivity）', sorted(d))
+check(h.cubic_gap == 0.12 and h.cubic_seam_alpha == 110
+      and h.cubic_anim_ms == 140,
       'reset 把默认值写到属性上',
-      (h.cubic_gap, h.cubic_seam_alpha))
+      (h.cubic_gap, h.cubic_seam_alpha, h.cubic_anim_ms))
 check(cubic_settings.clamp_value('gap', 9.9) == 0.6, 'gap 超上界夹到 0.6',
       cubic_settings.clamp_value('gap', 9.9))
 check(cubic_settings.clamp_value('gap', -1) == 0.0, 'gap 负值夹到 0.0')
@@ -73,7 +74,8 @@ try:
     check(False, '未登记的键应 KeyError')
 except KeyError:
     check(True, '未登记的键 → KeyError')
-check(len(cubic_settings.items('view')) == 2, 'view 组两条')
+check(len(cubic_settings.items('view')) == 3,
+      'view 组三条（拆分/切面/动画时长）')
 
 print('=' * 60)
 print('B. 右侧栏：三维 5 开关 + 两条滑条；二维 7 开关无滑条')
@@ -116,6 +118,17 @@ check(not gr.colliderect(ar), '两条滑条彼此不重叠')
 check(not gui.zoom_slider_rect.colliderect(gr)
       and not gui.slider_rect.colliderect(gr),
       '竖滑条（缩放/速度）不与新滑条重叠')
+# 开关自身也要守住面板：两两不重叠、都在面板内、不压竖滑条
+_panel_left = gui.screen_width - gui.right_panel_width
+check(all(r.left >= _panel_left and r.right <= gui.screen_width
+          and r.top >= 0 and r.bottom <= gui.screen_height for r in all_sw),
+      '所有开关都在右侧面板内', [(r.left, r.right) for r in all_sw])
+check(all(not all_sw[i].colliderect(all_sw[j])
+          for i in range(len(all_sw)) for j in range(i + 1, len(all_sw))),
+      '六个开关两两不重叠')
+check(all(not r.colliderect(gui.zoom_slider_rect)
+          and not r.colliderect(gui.slider_rect) for r in all_sw),
+      '开关不压缩放/速度竖滑条')
 
 # 速度竖滑条在三维态必须真的写 cubic_anim_ms（以前它只改二维 animation_duration，
 # 在三维里是个哑控件）
@@ -182,17 +195,19 @@ import json
 gui.cubic_gap = 0.33
 gui.cubic_seam_alpha = 180
 gui.cubic_rot_sensitivity = 1.4
+gui.cubic_anim_ms = 260
 gui.save_config()
 with open(gui.config_path, encoding='utf-8') as f:
     cfg = json.load(f)
 cc = cfg.get('cubic_camera') or {}
-check(set(d) <= set(cc), 'cubic_camera 里带齐表内三个键', sorted(cc))
+check(set(d) <= set(cc), 'cubic_camera 里带齐表内四个键', sorted(cc))
 check(abs(cc['gap'] - 0.33) < 1e-6 and cc['seam_alpha'] == 180
-      and abs(cc['rot_sensitivity'] - 1.4) < 1e-6,
+      and abs(cc['rot_sensitivity'] - 1.4) < 1e-6
+      and cc['cubic_anim_ms'] == 260,
       '导出值 = 当前值（不是默认值）', cc)
 
 gui._cubic_camera_prefs = {'gap': 0.25, 'seam_alpha': 9999,
-                          'rot_sensitivity': -3}
+                          'rot_sensitivity': -3, 'cubic_anim_ms': 999}
 cubic_settings.reset(gui)
 gui._cubic_load_defaults()
 check(abs(gui.cubic_gap - 0.25) < 1e-6, 'gap 读回 0.25', gui.cubic_gap)
@@ -200,6 +215,8 @@ check(gui.cubic_seam_alpha == 220, 'seam_alpha 越界夹到 220（不是照抄 9
       gui.cubic_seam_alpha)
 check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
       gui.cubic_rot_sensitivity)
+check(gui.cubic_anim_ms == 400, 'cubic_anim_ms 越界夹到 400（不是照抄 999）',
+      gui.cubic_anim_ms)
 check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
       gui.cubic_rot_sensitivity)
 
@@ -282,8 +299,9 @@ check(all(_rects[i].right <= _rects[i + 1].left for i in range(len(_rects) - 1))
 check(all(_rects[i].width == 72 for i in range(len(_rects))), '页签宽 72（放得下 8 个）')
 
 _btns = getattr(gui, '_settings_cubic_btn_rects', {})
-check(len(_btns) == 6 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns,
-      '三维页三个选项各一枚 − 与 +', sorted(_btns.keys()))
+check(len(_btns) == 8 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns
+      and ('cubic_anim_ms', 1) in _btns,
+      '三维页四个选项各一枚 − 与 +', sorted(_btns.keys()))
 check(all(r.collidepoint(r.center) and r.bottom <= gui._settings_content_rect.bottom + 1
           for r in _btns.values()),
       '按钮都落在可见内容区内')

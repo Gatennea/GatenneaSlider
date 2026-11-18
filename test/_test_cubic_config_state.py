@@ -102,6 +102,9 @@ print('B. save_config 落盘三维局信息与平移')
 g.new_cubic_puzzle(3, 3, 3, 1)
 g.cubic_pan = [12.0, -8.0]
 g.cubic_follow_centroid = False          # 手动平移过 → 跟随已暂停，要能原样存回
+g.cubic_seam_alpha = 180
+g.cubic_rot_sensitivity = 1.4
+g.cubic_anim_ms = 260
 g.save_config()
 with open(g.config_path, 'r', encoding='utf-8') as f:
     cfg = json.load(f)
@@ -112,6 +115,10 @@ check(cfg.get('cubic_pan') == [12.0, -8.0], 'cubic_pan 写下手动平移', cfg.
 check(cfg.get('cubic_follow_centroid') is False, '跟随质心的暂停状态也写盘',
       cfg.get('cubic_follow_centroid'))
 check(isinstance(cfg.get('cubic_camera'), dict), 'cubic_camera 仍在（相机组没被挤掉）')
+_cc = cfg.get('cubic_camera') or {}
+check(_cc.get('seam_alpha') == 180 and abs(_cc.get('rot_sensitivity', 0) - 1.4) < 1e-6
+      and _cc.get('cubic_anim_ms') == 260,
+      'seam_alpha / rot_sensitivity / cubic_anim_ms 一起写盘', _cc)
 
 print('=' * 60)
 print('C. 只有 config：按配置重建三维局（不再「缺 depth」崩）')
@@ -128,6 +135,10 @@ check('cubic3*3*3' in key, f'分榜键带层数（{key}）')
 check(list(map(float, g2.cubic_pan)) == [12.0, -8.0], '平移从 config 恢复', g2.cubic_pan)
 check(g2.cubic_follow_centroid is False, '跟随暂停状态也从 config 恢复',
       g2.cubic_follow_centroid)
+check(g2.cubic_seam_alpha == 180 and abs(g2.cubic_rot_sensitivity - 1.4) < 1e-6
+      and g2.cubic_anim_ms == 260,
+      '切面透明 / 旋转灵敏度 / 动画时长都从 config 恢复',
+      (g2.cubic_seam_alpha, g2.cubic_rot_sensitivity, g2.cubic_anim_ms))
 
 print('=' * 60)
 print('D. 平移与居中（方案 §2.2：六键平移，手动平移暂停跟随，居中恢复）')

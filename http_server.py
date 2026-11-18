@@ -58,15 +58,16 @@ API_INDEX = [
     ('/macro/execute', 'POST', '播放指定宏'),
     ('/macro/delete', 'POST', '删除宏'),
     ('/macro/rename', 'POST', '重命名宏'),
-    ('/select_gap', 'POST', '选中缝隙'),
-    ('/select_block', 'POST', '选中方块'),
+    ('/select_gap', 'POST', '选中缝隙（矩形 h/v，三角 p/n，米字 d1/d2，三维 r/c/d）'),
+    ('/select_block', 'POST', '选中方块（二维 row/col，三维加 depth）'),
     ('/deselect', 'POST', '清空选中'),
-    ('/move', 'POST', '移动滑块（direction: w/s/a/d，三角另加 e/z/x，米字格另加 q）'),
+    ('/move', 'POST', '移动滑块（direction: w/s/a/d，三角另加 e/z/x，米字格另加 q；三维 r/R/c/C/d/D）'),
     ('/undo', 'POST', '撤销'),
     ('/redo', 'POST', '重做'),
     ('/shuffle', 'POST', '打乱谜题'),
     ('/reset', 'POST', '复原到初始态'),
-    ('/new', 'POST', '新开谜题（m/n/step，type 可选 square/numbered/triangle/mi）'),
+    ('/new', 'POST', '新开谜题（m/n/step，type 可选 square/numbered/triangle/mi/cubic；cubic 需 depth）'),
+    ('/camera', 'BOTH', '三维相机：查询姿态/缩放/平移；POST 可设 view 或四元数'),
     ('/map/load', 'POST', '载入地图字符串'),
     ('/file/save', 'POST', '保存进度到文件'),
     ('/file/load', 'POST', '从文件载入进度'),
@@ -90,7 +91,7 @@ PUBLIC_GET_PATHS = frozenset({
     '/analysis/window', '/analysis/holes', '/analysis/actions',
     '/solver/algorithms', '/solver/status', '/solver/params',
     '/macro/list', '/macro/status',
-    '/timer/status', '/records',
+    '/timer/status', '/records', '/camera',
 })
 PUBLIC_GET_PREFIXES = ('/help/',)   # /help/<端点>
 
@@ -387,9 +388,10 @@ HELP_DETAILS = {
     '/select_gap': {
         'desc': '选中一条缝隙（刀缝）。选中后 /move 会沿这条缝移动整片。'
                 'type：方形 h/v；三角形密铺另加 p/n（3 族缝隙）；米字格另加 '
-                'd1/d2（两条对角缝族）。\n'
+                'd1/d2（两条对角缝族）；三维加 r/c/d（按行/按列/按层三族）。\n'
                 '线号语义（方形）：h 的 line 是「行与行之间」的线，有效范围 '
                 '0..行数-2；v 的 line 是「列与列之间」的线，有效范围 0..列数-2。'
+                '三维 r/c/d 的 line 同理是轴上的缝序号（0 起）。\n'
                 '失败消息会带上当前局面的有效范围，成功消息也带。\n'
                 '块与线的归属规则：块恰好在线上时归上/左——h 缝 above 侧 = '
                 '行号 ≤ line 的块，below 侧 = 行号 > line；v 缝 left 侧 = '
@@ -398,8 +400,9 @@ HELP_DETAILS = {
                 '米字格可省略 select_block（q 定向由 /move 前的两次点击决定，'
                 '接口上用 select_block 的 q 参数）。\n'
                 '不确定哪些线有效：GET /analysis/actions 直接列出全部合法'
-                '（缝隙, 侧, 方向）组合，省得试错。',
-        'params': [('type', 'string', True, 'h/v（三角加 p/n，米字格加 d1/d2）'),
+                '（缝隙, 侧, 方向）组合，省得试错（三维 /analysis 暂不支持）。',
+        'params': [('type', 'string', True,
+                    'h/v（三角加 p/n，米字格加 d1/d2，三维 r/c/d）'),
                    ('line', 'int', True, '缝号线号；失败/成功消息均带当前有效范围')],
         'returns': 'JSON：{ok, message}（message 带有效范围提示）',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
@@ -407,10 +410,12 @@ HELP_DETAILS = {
                    '-d \'{"type":"v","line":3}\' $BASE/select_gap',
     },
     '/select_block': {
-        'desc': '选中一个方块。米字格可加 q（N/E/S/W，斜边朝向哪条格边）；'
+        'desc': '选中一个方块。二维用 row/col；三维再加 depth（第三坐标 d）。'
+                '米字格可加 q（N/E/S/W，斜边朝向哪条格边）；'
                 '省略时游戏侧取该格第一块。',
         'params': [('row', 'int', True, '行（从 1 数）'),
                    ('col', 'int', True, '列（从 1 数）'),
+                   ('depth', 'int', False, '仅三维：层（第三坐标 d）'),
                    ('q', 'string', False, '仅米字格：N/E/S/W')],
         'returns': 'JSON：{ok, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
@@ -425,14 +430,17 @@ HELP_DETAILS = {
     },
     '/move': {
         'desc': '移动滑块。direction：方形 w/s/a/d（上/下/左/右）；三角形密铺'
-                '另加 e/z/x（六向）；米字格八向再加 q。\n'
+                '另加 e/z/x（六向）；米字格八向再加 q；三维 r/R/c/C/d/D'
+                '（小写沿轴减小，大写沿轴增大，大小写不可互换）。\n'
                 '合法性由游戏侧判定：方向须平行于选中缝隙（h 缝只能 a/d，'
-                'v 缝只能 w/s），且移动后全盘必须仍是一个连通整体——这条'
-                '「极简规则、复杂涌现」是游戏全部深度的来源。\n'
+                'v 缝只能 w/s；三维 r 缝只能 c/C/d/D，以此类推），且移动后'
+                '全盘必须仍是一个连通整体——这条「极简规则、复杂涌现」是'
+                '游戏全部深度的来源。\n'
                 '移动前想预演：POST /analysis/preview 看会移动哪些块、移动后'
                 '地图；移动后不满意：POST /undo 回退（/redo 重做）。\n'
                 '失败时 message 会说明原因（未选中/方向不平行/碰撞/破坏连通）。',
-        'params': [('direction', 'string', True, 'w/s/a/d；三角另加 e/z/x；米字格另加 q')],
+        'params': [('direction', 'string', True,
+                    'w/s/a/d；三角另加 e/z/x；米字格另加 q；三维 r/R/c/C/d/D')],
         'returns': 'JSON：{ok, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
                    '-H "Content-Type: application/json" '
@@ -466,16 +474,38 @@ HELP_DETAILS = {
     },
     '/new': {
         'desc': '新开一局。m/n/step 必填；type 可选 square（默认）/ numbered / '
-                'triangle / mi。三角形把 m 当大三角边长 k 用（n 仍须给出）；'
-                '米字格 m 行 n 列，每格 4 个单元三角。',
+                'triangle / mi / cubic。三角形把 m 当大三角边长 k 用（n 仍须给出）；'
+                '米字格 m 行 n 列，每格 4 个单元三角；三维 m×n×depth，'
+                '另有独立的 depth 字段（层数 d）。',
         'params': [('m', 'int', True, '行数（三角为大三角边长 k）'),
                    ('n', 'int', True, '列数'),
                    ('step', 'int', True, '等级（步长）'),
-                   ('type', 'string', False, 'square/numbered/triangle/mi，默认 square')],
+                   ('type', 'string', False,
+                    'square/numbered/triangle/mi/cubic，默认 square'),
+                   ('depth', 'int', False, '仅 cubic 必填：层数 d')],
         'returns': 'JSON：{ok, message}',
         'example': 'curl -X POST -H "Authorization: Bearer $TOKEN" '
                    '-H "Content-Type: application/json" '
                    '-d \'{"m":6,"n":6,"step":2}\' $BASE/new',
+    },
+    '/camera': {
+        'desc': '三维相机状态与控制。GET 只读：返回四元数、yaw/pitch/roll、'
+                '当前视角编号与标签、缩放、平移、跟随质心、拆分 gap、切面透明度、'
+                '旋转灵敏度、动画时长；二维局返回 unsupported。\n'
+                'POST 五种写法任选：{"view":1..6} 切六朝向；'
+                '{"quat":[w,x,y,z]} 直接设姿态（自动归一化）；'
+                '{"zoom":1.0} 设缩放（夹进相机范围）；'
+                '{"pan":[dx,dy]} 设平移（会暂停跟随质心）；'
+                '{"center":true} 平移归零并恢复跟随质心。',
+        'params': [('view', 'int', False, '1..6 六朝向预设'),
+                   ('quat', 'array', False, '[w,x,y,z] 四元数（自动归一化）'),
+                   ('zoom', 'number', False, '缩放绝对值（越界夹紧）'),
+                   ('pan', 'array', False, '[dx,dy] 平移偏移（暂停跟随质心）'),
+                   ('center', 'bool', False, '平移归零并恢复跟随质心')],
+        'returns': 'GET：{ok, quat, yaw, pitch, roll, view, view_label, zoom, '
+                   'pan, follow_centroid, gap, seam_alpha, rot_sensitivity, anim_ms}；'
+                   'POST：{ok, message, ...}',
+        'example': 'curl -H "Authorization: Bearer $TOKEN" $BASE/camera',
     },
     '/map/load': {
         'desc': '载入地图字符串（/map 导出的格式：# 墙 / _ 空，数字形态带编号）。',
@@ -795,6 +825,12 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
                 0.0, time.time() - meta.get('started_at_epoch', time.time())), 3)
             self._send_json(meta)
             return
+        elif path == '/camera':
+            # 三维相机只读快照；二维局由游戏侧回 unsupported。
+            result = self._post_command('camera')
+            self._send_json(result if result else
+                            {"ok": False, "message": "未响应"})
+            return
         # —— 局面分析 ——
         # 三角形密铺的洞/窗口/动作语义未实现：游戏侧回 reason=unsupported，
         # _send_analysis 映射为 400，让调用方能从状态码看出「该形态不支持」
@@ -906,12 +942,16 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         elif path == '/move':
             direction = body.get('direction', '')
             # 方形 w/s/a/d；三角形密铺另加 e/z/x（wedxza 六向）；米字格八向
-            # 再加 q（q/w/e/a/d/z/s/x）。合法性与「该方向是否平行于选中缝隙」
-            # 由游戏侧判定，这里只挡明显非法的字母
-            if direction not in ('w', 's', 'a', 'd', 'e', 'z', 'x', 'q'):
+            # 再加 q（q/w/e/a/d/z/s/x）；三维六向 r/R/c/C/d/D（大小写区分正负，
+            # 原样转发，不能 lower）。合法性与「该方向是否平行于选中缝隙」
+            # 由游戏侧判定，这里只挡明显非法的字母。
+            _two_d = ('w', 's', 'a', 'd', 'e', 'z', 'x', 'q')
+            _cubic = ('r', 'R', 'c', 'C', 'd', 'D')
+            if direction not in _two_d + _cubic:
                 self._send_json(
                     {"ok": False,
-                     "message": "direction 必须是 w/s/a/d（三角形另加 e/z/x，米字格另加 q）"}, 400)
+                     "message": "direction 必须是 w/s/a/d（三角形另加 e/z/x，"
+                                "米字格另加 q；三维 r/R/c/C/d/D）"}, 400)
                 return
             result = self._post_command(f'move {direction}')
             self._send_json(result)
@@ -939,18 +979,59 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             if m is None or n is None or step is None:
                 self._send_json({"ok": False, "message": "需要 m, n, step 参数"}, 400)
                 return
-            # type 可选：square（默认）/ numbered / triangle / mi。
+            # type 可选：square（默认）/ numbered / triangle / mi / cubic。
             # 三角形用 m 作大三角边长 k，n 仍须给出（ CLI 同款签名 new m n step tri ）；
-            # 米字格 m 行 n 列，每格 4 个单元三角
+            # 米字格 m 行 n 列，每格 4 个单元三角；三维额外要 depth（层数 d）。
             kind = body.get('type', 'square')
-            if kind not in ('square', 'numbered', 'triangle', 'mi'):
+            if kind not in ('square', 'numbered', 'triangle', 'mi', 'cubic'):
                 self._send_json(
-                    {"ok": False, "message": "type 必须是 square/numbered/triangle/mi"}, 400)
+                    {"ok": False,
+                     "message": "type 必须是 square/numbered/triangle/mi/cubic"}, 400)
                 return
-            suffix = {'numbered': 'num', 'triangle': 'tri',
-                      'mi': 'mi'}.get(kind, '')
-            cmd = f'new {m} {n} {step}' + (f' {suffix}' if suffix else '')
+            if kind == 'cubic':
+                depth = body.get('depth', body.get('d'))
+                if depth is None:
+                    self._send_json(
+                        {"ok": False,
+                         "message": "三维需要 depth（层数 d），如 "
+                                    '{"m":3,"n":3,"depth":3,"step":1,"type":"cubic"}'},
+                        400)
+                    return
+                cmd = f'new {m} {n} {step} cubic {depth}'
+            else:
+                suffix = {'numbered': 'num', 'triangle': 'tri',
+                          'mi': 'mi'}.get(kind, '')
+                cmd = f'new {m} {n} {step}' + (f' {suffix}' if suffix else '')
             result = self._post_command(cmd)
+            self._send_json(result)
+
+        elif path == '/camera':
+            # 三维相机控制：view 切六朝向 / quat 设姿态 / center 平移归零。
+            if 'quat' in body:
+                quat = body.get('quat')
+                if not isinstance(quat, (list, tuple)) or len(quat) != 4:
+                    self._send_json(
+                        {"ok": False,
+                         "message": "quat 必须是 [w,x,y,z] 四元数"}, 400)
+                    return
+                result = self._post_command(
+                    'camera_set ' + ' '.join(str(v) for v in quat))
+            elif 'view' in body:
+                result = self._post_command(f"camera_view {body.get('view')}")
+            elif 'zoom' in body:
+                result = self._post_command(f"camera_zoom {body.get('zoom')}")
+            elif 'pan' in body:
+                pan = body.get('pan')
+                if not isinstance(pan, (list, tuple)) or len(pan) != 2:
+                    self._send_json(
+                        {"ok": False, "message": "pan 必须是 [dx,dy]"}, 400)
+                    return
+                result = self._post_command(
+                    f"camera_pan {pan[0]} {pan[1]}")
+            elif body.get('center'):
+                result = self._post_command('camera_center')
+            else:
+                result = self._post_command('camera')
             self._send_json(result)
 
         elif path == '/deselect':
@@ -1037,11 +1118,14 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
             gap_type = body.get('type', '')
             line = body.get('line')
             # 方形 h/v；三角形密铺另加 p/n（3 族缝隙）；米字格是 d1/d2
-            # （两条对角缝族）。线号合法性由游戏侧判定
-            if gap_type not in ('h', 'v', 'p', 'n', 'd1', 'd2') or line is None:
+            # （两条对角缝族）；三维是 r/c/d（水平/纵深/层三族）。
+            # 线号合法性由游戏侧判定
+            if gap_type not in ('h', 'v', 'p', 'n', 'd1', 'd2',
+                                'r', 'c', 'd') or line is None:
                 self._send_json(
                     {"ok": False,
-                     "message": "需要 type (h/v，三角形另加 p/n，米字格另加 d1/d2) 和 line"}, 400)
+                     "message": "需要 type（矩形 h/v；三角 p/n；米字 d1/d2；"
+                                "三维 r/c/d）和 line"}, 400)
                 return
             result = self._post_command(f'select_gap {gap_type} {line}')
             self._send_json(result)
@@ -1053,6 +1137,10 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "message": "需要 row 和 col"}, 400)
                 return
             cmd = f'select_block {row} {col}'
+            # depth 只对三维有意义（块的第三坐标 d）；二维省略。
+            depth = body.get('depth', body.get('d'))
+            if depth is not None:
+                cmd += f' {depth}'
             # q 只对米字格有意义（N/E/S/W：斜边朝向哪条格边）；给了就转发，
             # 省略时游戏侧退回该格第一块
             q = body.get('q')

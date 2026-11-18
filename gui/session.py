@@ -204,9 +204,13 @@ class SessionMixin:
 
         # 打乱过程演示：滑动动画开着 + 确实有可演的步骤。
         # 演示从打乱前状态逐步重放，步数过多只演前几步，再淡出切入终态；
-        # 期间棋盘输入被 animating 守卫挡着，结束/中断都会对齐到终态
-        demo = (records and self.animation_enabled
-                and self.animation_duration > 0)
+        # 期间棋盘输入被 animating 守卫挡着，结束/中断都会对齐到终态。
+        # 三维的时长是独立一档（cubic_anim_ms）：右侧「速度」滑条写的是它，
+        # 若这里仍看二维 animation_duration，三维拖速度对打乱就是哑的。
+        _anim_ms = (getattr(self, 'cubic_anim_ms', 140)
+                    if getattr(self, 'cubic_mode', False)
+                    else self.animation_duration)
+        demo = (records and self.animation_enabled and _anim_ms > 0)
         if demo:
             # 通知延后到演示结束再补发：那会儿玩家才能真正操作
             self._start_shuffle_demo(records, pre_positions,
