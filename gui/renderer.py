@@ -5865,9 +5865,8 @@ class RendererMixin:
         self._solved_popup_rect = pygame.Rect(x, y, w, h)
 
     def draw_right_panel(self):
-        """绘制右侧面板：缩放/速度竖滑条 + 底部快捷开关（三维 6 / 二维 7）+ 三维拆分/切面横滑条。"""
+        """绘制右侧面板：上方竖滑条（三维 4 条 2×2 / 二维 2 条）+ 底部快捷开关（三维 6 / 二维 7）。"""
         panel_x = self.screen_width - self.right_panel_width
-        _panel_left = panel_x
         panel_rect = pygame.Rect(panel_x, 0, self.right_panel_width, self.screen_height)
         pygame.draw.rect(self.screen, self.colors['menu_bg'], panel_rect)
         pygame.draw.line(self.screen, self.colors['border'],
@@ -5951,94 +5950,135 @@ class RendererMixin:
             # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
             _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
 
-        # ---- 上方：垂直滑条（左=缩放，右=速度）----
-        track_top = self.menu_bar_height + 35
-        # 三维态：底部开关上方要留两条横向滑条（拆分 / 切面透明），竖滑条
-        # 因此收短一点，别和它们叠在一起。
-        opt_h = 30
-        opt_n = 2 if cubic else 0
-        opt_top = switch_area_top - opt_n * opt_h - 6
-        track_bottom = (opt_top - 8) if cubic else (switch_area_top - 10)
-        track_height = track_bottom - track_top
-
-        speed_x = panel_x + self.right_panel_width - 18   # 右列轨道
-        zoom_x = panel_x + 18                            # 左列轨道
-
-        speed_label = self.status_font.render("速度", True, self.colors['status_text'])
-        zoom_label = self.status_font.render("缩放", True, self.colors['status_text'])
-        self.screen.blit(speed_label, speed_label.get_rect(center=(speed_x, self.menu_bar_height + 15)))
-        self.screen.blit(zoom_label, zoom_label.get_rect(center=(zoom_x, self.menu_bar_height + 15)))
-
-        if track_height > 0:
-            half = self.right_panel_width // 2
-            # 左半：缩放滑条
-            pygame.draw.line(self.screen, self.colors['border'],
-                            (zoom_x, track_top), (zoom_x, track_bottom), 2)
-            norm_z = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
-            if getattr(self, 'cubic_mode', False):
-                lo, hi = self.CUBIC_ZOOM_RANGE
-                norm_z = (getattr(self, 'cubic_zoom', 1.0) - lo) / max(1e-6, hi - lo)
-            norm_z = max(0.0, min(1.0, norm_z))
-            # 倒置：滑条顶部=放大(max_zoom)，底部=缩小(min_zoom)
-            knob_y = int(track_top + (1.0 - norm_z) * track_height)
-            self.zoom_slider_rect = pygame.Rect(panel_x + 4, track_top, half - 8, track_height)
-            knob_color = self.colors['button_hover'] if getattr(self, 'zoom_slider_dragging', False) else self.colors['button_bg']
-            self.zoom_knob_rect = pygame.Rect(zoom_x - 10, knob_y - 6, 20, 12)
-            pygame.draw.rect(self.screen, knob_color, self.zoom_knob_rect, border_radius=4)
-
-            # 右半：速度滑条
-            pygame.draw.line(self.screen, self.colors['border'],
-                            (speed_x, track_top), (speed_x, track_bottom), 2)
-            if cubic:
-                # 三维这一步动画时长是独立一档（`_cubic_start_anim` 读
-                # `cubic_anim_ms`），不再借二维 animation_duration，否则这条
-                # 滑条在三维里是个哑控件。
-                _dur = int(getattr(self, 'cubic_anim_ms', 140))
-                norm_v = (_dur - self.CUBIC_ANIM_MIN_MS) / max(
-                    1e-6, self.CUBIC_ANIM_MAX_MS - self.CUBIC_ANIM_MIN_MS)
-            else:
-                norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
-            norm_v = max(0.0, min(1.0, norm_v))
-            knob_y = int(track_top + norm_v * track_height)
-            self.slider_rect = pygame.Rect(panel_x + half, track_top, half - 4, track_height)
-            knob_color = self.colors['button_hover'] if self.slider_dragging else self.colors['button_bg']
-            self.slider_knob_rect = pygame.Rect(speed_x - 10, knob_y - 6, 20, 12)
-            pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
-
-        # ---- 三维专用：拆分 / 切面透明两条横向滑条（方案 §2.4）----
-        # 挂右侧栏而不是设置框：这两项的价值全在「边拖边看」，设置框一关就
-        # 够不着。棋盘可视区本来就排除 right_panel_width，天然不遮挡。
+        # ---- 上方滑条 ----
+        # 三维四条全部竖向，2×2：左上缩放、右上速度、左下拆分、右下切面。
+        # 二维仍只有缩放/速度两条通高竖条，保持原布局。
         self.cubic_gap_slider_rect = None
         self.cubic_alpha_slider_rect = None
+
+        def _clamp01(v):
+            return max(0.0, min(1.0, float(v)))
+
+        def _draw_cubic_v_slider(cell, label, value_text, frac_top,
+                                  rect_attr, knob_attr, drag_attr):
+            """一个竖滑条格：上方两行文字（名称/当前值），下方竖向轨道。
+
+            `frac_top` 是「滑块距轨道顶部」的比例；四条的语义统一成
+            「向上=更强/更快/更大」，各调用方自己把数值换算成这个比例。
+            """
+            cx = cell.centerx
+            lab = self.status_font.render(label, True,
+                                          self.colors['status_text'])
+            self.screen.blit(lab, lab.get_rect(center=(cx, cell.top + 8)))
+            val = self.status_font.render(value_text, True,
+                                          self.colors['input_text'])
+            self.screen.blit(val, val.get_rect(center=(cx, cell.top + 22)))
+            t_top = cell.top + 32
+            t_bot = cell.bottom - 2
+            if t_bot <= t_top:
+                t_bot = t_top + 1
+            pygame.draw.line(self.screen, self.colors['border'],
+                             (cx, t_top), (cx, t_bot), 2)
+            knob_y = int(t_top + _clamp01(frac_top) * (t_bot - t_top))
+            setattr(self, rect_attr,
+                    pygame.Rect(cell.left, t_top,
+                                cell.width, t_bot - t_top))
+            kc = (self.colors['button_hover']
+                  if getattr(self, drag_attr, False)
+                  else self.colors['button_bg'])
+            setattr(self, knob_attr,
+                    pygame.Rect(cx - 10, knob_y - 6, 20, 12))
+            pygame.draw.rect(self.screen, kc, getattr(self, knob_attr),
+                             border_radius=4)
+
         if cubic:
             from gui.cubic_settings import by_key
-            _specs = (('gap', 'cubic_gap_slider_rect', '_cubic_gap_dragging'),
-                      ('seam_alpha', 'cubic_alpha_slider_rect', '_cubic_alpha_dragging'))
-            for _i, (_key, _rect_attr, _drag_attr) in enumerate(_specs):
+            _grid_top = self.menu_bar_height + 8
+            _grid_bottom = switch_area_top - 8
+            _row_gap = 10
+            _row_h = max(80, (_grid_bottom - _grid_top - _row_gap) // 2)
+            _gx0 = panel_x + 6
+            _gx1 = panel_x + self.right_panel_width - 6
+            _col_w = (_gx1 - _gx0) // 2
+            _cells = (
+                pygame.Rect(_gx0, _grid_top, _col_w, _row_h),
+                pygame.Rect(_gx0 + _col_w, _grid_top,
+                            _gx1 - (_gx0 + _col_w), _row_h),
+                pygame.Rect(_gx0, _grid_top + _row_h + _row_gap,
+                            _col_w, _row_h),
+                pygame.Rect(_gx0 + _col_w,
+                            _grid_top + _row_h + _row_gap,
+                            _gx1 - (_gx0 + _col_w), _row_h),
+            )
+            # 左上：缩放（顶部=放大）
+            _z = float(getattr(self, 'cubic_zoom', 1.0))
+            _zlo, _zhi = self.CUBIC_ZOOM_RANGE
+            _zfrac = 1.0 - _clamp01((_z - _zlo) / max(1e-6, _zhi - _zlo))
+            _draw_cubic_v_slider(_cells[0], '缩放', f'{int(_z * 100)}%',
+                                 _zfrac, 'zoom_slider_rect',
+                                 'zoom_knob_rect', 'zoom_slider_dragging')
+            # 右上：速度（顶部=最快）
+            _dur = int(getattr(self, 'cubic_anim_ms', 140))
+            _vfrac = _clamp01((_dur - self.CUBIC_ANIM_MIN_MS)
+                              / max(1e-6, self.CUBIC_ANIM_MAX_MS
+                                    - self.CUBIC_ANIM_MIN_MS))
+            _draw_cubic_v_slider(_cells[1], '速度', f'{_dur}ms', _vfrac,
+                                 'slider_rect', 'slider_knob_rect',
+                                 'slider_dragging')
+            # 左下：拆分；右下：切面透明度（顶部=更大）
+            _specs = (
+                ('gap', _cells[2], '拆分', 'cubic_gap_slider_rect',
+                 '_cubic_gap_dragging', 'cubic_gap_knob_rect'),
+                ('seam_alpha', _cells[3], '切面', 'cubic_alpha_slider_rect',
+                 '_cubic_alpha_dragging', 'cubic_alpha_knob_rect'),
+            )
+            for _key, _cell, _label, _rect_attr, _drag_attr, _knob_attr in _specs:
                 _sp = by_key(_key)
-                _y = opt_top + _i * opt_h
                 _val = getattr(self, _sp['attr'], _sp['default'])
-                _fmt = (f"{_val:.2f}" if _sp['type'] == 'float' else f"{int(_val)}")
-                # 面板只有 132px：用短名，避免「切面透明 110」被裁掉
-                _short = {'gap': '拆分', 'seam_alpha': '切面'}.get(_key,
-                                                                 _sp['label'])
-                _lab = self.status_font.render(f"{_short} {_fmt}", True,
-                                               self.colors['status_text'])
-                self.screen.blit(_lab, (_panel_left + 6, _y + 2))
-                _track = pygame.Rect(_panel_left + 6, _y + 20,
-                                     self.right_panel_width - 12, 8)
+                _fmt = (f'{_val:.2f}' if _sp['type'] == 'float'
+                        else f'{int(_val)}')
+                _frac = 1.0 - _clamp01((_val - _sp['min'])
+                                       / max(1e-6, _sp['max'] - _sp['min']))
+                _draw_cubic_v_slider(_cell, _label, _fmt, _frac,
+                                     _rect_attr, _knob_attr, _drag_attr)
+        else:
+            # 二维：原两条通高竖条（左=缩放，右=速度）
+            track_top = self.menu_bar_height + 35
+            track_bottom = switch_area_top - 10
+            track_height = track_bottom - track_top
+
+            speed_x = panel_x + self.right_panel_width - 18   # 右列轨道
+            zoom_x = panel_x + 18                            # 左列轨道
+
+            speed_label = self.status_font.render("速度", True, self.colors['status_text'])
+            zoom_label = self.status_font.render("缩放", True, self.colors['status_text'])
+            self.screen.blit(speed_label, speed_label.get_rect(center=(speed_x, self.menu_bar_height + 15)))
+            self.screen.blit(zoom_label, zoom_label.get_rect(center=(zoom_x, self.menu_bar_height + 15)))
+
+            if track_height > 0:
+                half = self.right_panel_width // 2
+                # 左半：缩放滑条
                 pygame.draw.line(self.screen, self.colors['border'],
-                                 (_track.left, _track.centery),
-                                 (_track.right, _track.centery), 2)
-                _norm = (_val - _sp['min']) / max(1e-6, _sp['max'] - _sp['min'])
-                _norm = max(0.0, min(1.0, _norm))
-                _kx = int(_track.left + _norm * _track.width)
-                _knob = pygame.Rect(_kx - 5, _track.centery - 6, 10, 12)
-                _kc = (self.colors['button_hover']
-                       if getattr(self, _drag_attr, False)
-                       else self.colors['button_bg'])
-                pygame.draw.rect(self.screen, _kc, _knob, border_radius=3)
-                setattr(self, _rect_attr, _track)
+                                (zoom_x, track_top), (zoom_x, track_bottom), 2)
+                norm_z = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+                norm_z = max(0.0, min(1.0, norm_z))
+                # 倒置：滑条顶部=放大(max_zoom)，底部=缩小(min_zoom)
+                knob_y = int(track_top + (1.0 - norm_z) * track_height)
+                self.zoom_slider_rect = pygame.Rect(panel_x + 4, track_top, half - 8, track_height)
+                knob_color = self.colors['button_hover'] if getattr(self, 'zoom_slider_dragging', False) else self.colors['button_bg']
+                self.zoom_knob_rect = pygame.Rect(zoom_x - 10, knob_y - 6, 20, 12)
+                pygame.draw.rect(self.screen, knob_color, self.zoom_knob_rect, border_radius=4)
+
+                # 右半：速度滑条
+                pygame.draw.line(self.screen, self.colors['border'],
+                                (speed_x, track_top), (speed_x, track_bottom), 2)
+                norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
+                norm_v = max(0.0, min(1.0, norm_v))
+                knob_y = int(track_top + norm_v * track_height)
+                self.slider_rect = pygame.Rect(panel_x + half, track_top, half - 4, track_height)
+                knob_color = self.colors['button_hover'] if self.slider_dragging else self.colors['button_bg']
+                self.slider_knob_rect = pygame.Rect(speed_x - 10, knob_y - 6, 20, 12)
+                pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
 
     # ==================================================================
     # 单击反馈（全 GUI 生效的涟漪动效）：左键外扩环、右键内收环

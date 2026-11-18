@@ -108,17 +108,30 @@ check({'animation_enabled', 'selection_animation_enabled', 'game_mode',
 gr = getattr(gui, 'cubic_gap_slider_rect', None)
 ar = getattr(gui, 'cubic_alpha_slider_rect', None)
 check(gr is not None and ar is not None, '三维态有拆分/切面透明两条滑条', (gr, ar))
-check(gr.width == gui.right_panel_width - 12, '滑条铺满右侧栏宽度（132-12=120）', gr.width)
-# 不许叠在开关或竖滑条上
+_all4 = [gui.zoom_slider_rect, gui.slider_rect, gr, ar]
+check(all(r is not None for r in _all4), '四条滑条矩形都建出来了（缩放/速度/拆分/切面）')
+check(all(r.height > r.width for r in _all4),
+      '四条全部竖向（高 > 宽）', [(r.width, r.height) for r in _all4])
+_col_w = (gui.right_panel_width - 12) // 2
+check(gr.width == _col_w and ar.width == _col_w,
+      f'2×2 每格半栏宽（{_col_w}）', (gr.width, ar.width))
+# 2×2：左列缩放/拆分，右列速度/切面；第二行在第一行轨道下方
+check(abs(gr.left - gui.zoom_slider_rect.left) <= 1
+      and abs(ar.left - gui.slider_rect.left) <= 1,
+      '左列 = 缩放/拆分，右列 = 速度/切面',
+      ((gr.left, gui.zoom_slider_rect.left), (ar.left, gui.slider_rect.left)))
+check(gr.top >= gui.zoom_slider_rect.bottom
+      and ar.top >= gui.slider_rect.bottom,
+      '第二行（拆分/切面）在第一行（缩放/速度）下方',
+      ((gr.top, gui.zoom_slider_rect.bottom), (ar.top, gui.slider_rect.bottom)))
+# 不许叠在开关或任一条滑条上
 all_sw = list(sw.values())
-check(all(not gr.colliderect(r) for r in all_sw)
-      and all(not ar.colliderect(r) for r in all_sw),
-      '两条滑条不与任何开关矩形重叠')
-check(not gr.colliderect(ar), '两条滑条彼此不重叠')
-check(not gui.zoom_slider_rect.colliderect(gr)
-      and not gui.slider_rect.colliderect(gr),
-      '竖滑条（缩放/速度）不与新滑条重叠')
-# 开关自身也要守住面板：两两不重叠、都在面板内、不压竖滑条
+check(all(not r.colliderect(s) for r in _all4 for s in all_sw),
+      '四条滑条不与任何开关矩形重叠')
+check(all(not _all4[i].colliderect(_all4[j])
+          for i in range(len(_all4)) for j in range(i + 1, len(_all4))),
+      '四条滑条两两不重叠')
+# 开关自身也要守住面板：两两不重叠、都在面板内、不压四条滑条
 _panel_left = gui.screen_width - gui.right_panel_width
 check(all(r.left >= _panel_left and r.right <= gui.screen_width
           and r.top >= 0 and r.bottom <= gui.screen_height for r in all_sw),
@@ -126,9 +139,8 @@ check(all(r.left >= _panel_left and r.right <= gui.screen_width
 check(all(not all_sw[i].colliderect(all_sw[j])
           for i in range(len(all_sw)) for j in range(i + 1, len(all_sw))),
       '六个开关两两不重叠')
-check(all(not r.colliderect(gui.zoom_slider_rect)
-          and not r.colliderect(gui.slider_rect) for r in all_sw),
-      '开关不压缩放/速度竖滑条')
+check(all(not r.colliderect(s) for r in all_sw for s in _all4),
+      '开关不压任何一条竖滑条')
 
 # 速度竖滑条在三维态必须真的写 cubic_anim_ms（以前它只改二维 animation_duration，
 # 在三维里是个哑控件）
@@ -158,9 +170,14 @@ check(len(getattr(gui, 'right_panel_switch_rects', {})) == 7, '二维态仍是 7
 check(getattr(gui, 'cubic_gap_slider_rect', None) is None
       and getattr(gui, 'cubic_alpha_slider_rect', None) is None,
       '二维态不画三维滑条')
+check(gui.zoom_slider_rect.height > gui.zoom_slider_rect.width
+      and gui.slider_rect.height > gui.slider_rect.width,
+      '二维态缩放/速度仍是竖向（右栏没有横滑条）',
+      ((gui.zoom_slider_rect.width, gui.zoom_slider_rect.height),
+       (gui.slider_rect.width, gui.slider_rect.height)))
 
 print('=' * 60)
-print('C. 拖动：按横坐标写值 + 夹紧 + 缓存作废')
+print('C. 拖动：按纵坐标写值 + 夹紧 + 缓存作废（顶部=最大）')
 gui._cubic_camera_prefs = {}
 gui.new_cubic_puzzle(3, 3, 3, 1)
 gui.draw_right_panel()
@@ -168,12 +185,12 @@ gr = gui.cubic_gap_slider_rect
 gui._cubic_arrow_sig = ('sentinel',)
 gui._cubic_sil_cache = {'sentinel': 1}
 ver0 = gui._board_version
-gui._update_cubic_opt_from_mouse('gap', gr.left)
-check(abs(gui.cubic_gap - 0.0) < 1e-9, '拖到最左 = gap 0（贴死）', gui.cubic_gap)
+gui._update_cubic_opt_from_mouse('gap', gr.bottom)
+check(abs(gui.cubic_gap - 0.0) < 1e-9, '拖到最底 = gap 0（贴死）', gui.cubic_gap)
 check(cubic_settings.clamp_value('gap', gui.cubic_gap) == gui.cubic_gap,
       '写进去的值本身就在表范围内')
-gui._update_cubic_opt_from_mouse('gap', gr.right + 50)
-check(abs(gui.cubic_gap - 0.6) < 1e-9, '拖出右界夹到 0.6', gui.cubic_gap)
+gui._update_cubic_opt_from_mouse('gap', gr.top - 50)
+check(abs(gui.cubic_gap - 0.6) < 1e-9, '拖出顶部夹到 0.6', gui.cubic_gap)
 check(getattr(gui, '_cubic_arrow_sig', None) is None
       and getattr(gui, '_cubic_sil_cache', None) is None,
       'gap 变了 → 箭头可推性 / 贴纸轮廓缓存立刻作废')
@@ -181,12 +198,12 @@ check(gui._board_version == ver0,
       '只改显示参数不动棋盘版号（标题栏不该平白出现星号）',
       (ver0, gui._board_version))
 ar = gui.cubic_alpha_slider_rect
-gui._update_cubic_opt_from_mouse('seam_alpha', ar.left + ar.width // 2)
+gui._update_cubic_opt_from_mouse('seam_alpha', ar.top + ar.height / 2.0)
 check(30 <= gui.cubic_seam_alpha <= 220, '切面透明度落在 30..220', gui.cubic_seam_alpha)
 check(gui.cubic_seam_alpha == 125, '正中 = 125（30 + 0.5*(220-30)）',
       gui.cubic_seam_alpha)
 prev = gui.cubic_seam_alpha
-gui._update_cubic_opt_from_mouse('seam_alpha', ar.left + ar.width // 2)
+gui._update_cubic_opt_from_mouse('seam_alpha', ar.top + ar.height / 2.0)
 check(gui.cubic_seam_alpha == prev, '同一点再拖不重复写（幂等）')
 
 print('=' * 60)

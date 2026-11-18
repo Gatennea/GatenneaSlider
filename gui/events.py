@@ -766,9 +766,9 @@ class EventsMixin:
 
                     # 滑动条拖拽（缩放/速度/三维选项）
                     if getattr(self, '_cubic_gap_dragging', False):
-                        self._update_cubic_opt_from_mouse('gap', event.pos[0])
+                        self._update_cubic_opt_from_mouse('gap', event.pos[1])
                     elif getattr(self, '_cubic_alpha_dragging', False):
-                        self._update_cubic_opt_from_mouse('seam_alpha', event.pos[0])
+                        self._update_cubic_opt_from_mouse('seam_alpha', event.pos[1])
                     elif getattr(self, 'zoom_slider_dragging', False):
                         self._update_zoom_slider_from_mouse(my)
                     elif self.slider_dragging:
@@ -1178,11 +1178,11 @@ class EventsMixin:
                             elif (getattr(self, 'cubic_gap_slider_rect', None)
                                   and self.cubic_gap_slider_rect.collidepoint(x, y)):
                                 self._cubic_gap_dragging = True
-                                self._update_cubic_opt_from_mouse('gap', x)
+                                self._update_cubic_opt_from_mouse('gap', y)
                             elif (getattr(self, 'cubic_alpha_slider_rect', None)
                                   and self.cubic_alpha_slider_rect.collidepoint(x, y)):
                                 self._cubic_alpha_dragging = True
-                                self._update_cubic_opt_from_mouse('seam_alpha', x)
+                                self._update_cubic_opt_from_mouse('seam_alpha', y)
                             elif getattr(self, 'zoom_slider_rect', None) and self.zoom_slider_rect.collidepoint(x, y):
                                 self.zoom_slider_dragging = True
                                 self._update_zoom_slider_from_mouse(y)
@@ -1970,9 +1970,10 @@ class EventsMixin:
             return (0.0, 0.0)
         return self._cubic_screen_dir(self._cubic_lattice_to_world(vec))
 
-    def _update_cubic_opt_from_mouse(self, key, mx):
-        """右侧栏三维滑条：按鼠标横坐标把值写到表里声明的属性上（越界夹紧）。
+    def _update_cubic_opt_from_mouse(self, key, mouse_y):
+        """右侧栏三维竖滑条：按鼠标纵坐标把值写到表里声明的属性上（越界夹紧）。
 
+        拆分 / 切面两条竖滑条：顶部=最大（越往上值越大）。
         写值后立刻作废两处缓存：箭头「可推性」签名里带 gap，切面格也按 gap
         切——拆一拆就得重算，否则滑条动、画面却还是旧判定。
         """
@@ -1980,9 +1981,11 @@ class EventsMixin:
         spec = cubic_settings.by_key(key)
         rect = (getattr(self, 'cubic_gap_slider_rect', None) if key == 'gap'
                 else getattr(self, 'cubic_alpha_slider_rect', None))
-        if rect is None or rect.width <= 0:
+        if rect is None or rect.height <= 0:
             return
-        norm = (mx - rect.left) / float(rect.width)
+        y = max(rect.top, min(rect.bottom, mouse_y))
+        # 顶部=最大：从底向上换算
+        norm = (rect.bottom - y) / float(rect.height)
         norm = max(0.0, min(1.0, norm))
         val = spec['min'] + norm * (spec['max'] - spec['min'])
         val = cubic_settings.clamp_value(key, val)
