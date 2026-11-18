@@ -260,9 +260,9 @@ check(not any(allowed.get(l) for l in legal
               if l not in [x for x, _r in buttons]),
       '推得动的方向一个不少')
 rects2f = [r for _l, r in buttons]
-expect = max(18, int(round(gui._ARROW_BASE_PX * gui.zoom))) - 6
-check(all(abs(r.w - expect) <= 2 for r in rects2f),
-      f'箭头命中盒就是二维那套贴图尺寸（{rects2f[0].w if rects2f else None} ≈ {expect}）')
+check(all(r.w >= 18 and r.h >= 18 for r in rects2f),
+      f'箭头命中盒是投影多边形包围盒（不强制二维贴图的定宽）'
+      f'（{[r.size for r in rects2f]}）')
 check(all(gui.screen.get_rect().contains(r) for r in rects2f), '箭头都在窗口内')
 overlap = sum(1 for i, a in enumerate(rects2f) for b in rects2f[i + 1:] if a.colliderect(b))
 check(overlap == 0, f'箭头互不重叠（{overlap} 处重叠）')

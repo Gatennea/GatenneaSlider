@@ -1082,6 +1082,9 @@ class RendererMixin:
                 view_dir = camera.view_axis()
                 seam_sign = 1.0 if view_dir[seam_axis] >= 0 else -1.0
 
+        # 三维方向箭头：世界空间几何体，和块面/切面进同一条画家序。
+        arrow_items = self._cubic_arrow_items(scene, seam_draw, gap, camera, blocks)
+
         faces_all = scene['faces']
         back_faces, front_faces = faces_all, []
         if seam_quad:
@@ -1125,18 +1128,29 @@ class RendererMixin:
                 p0, p1 = pts[i], pts[(i + 1) % len(pts)]
                 area += p0[0] * p1[1] - p1[0] * p0[1]
             if abs(area) / 2.0 >= 1.5:
-                items.append((0.0, 1, pts))
+                seam_depth = sum(
+                    cubic_view.project_point(w, camera, scene['scale'],
+                                             scene['origin'])[2]
+                    for w in seam_quad) / len(seam_quad)
+                items.append((seam_depth, 1, pts))
                 # 切面比块堆的包围盒更宽（拆分 gap 会撑到块外半格），四角会落到
                 # 块面边界之外；超采样画布若只按块面算边界，就会把这几角裁掉——
                 # 用户 2026-11-18：「完整的边角经常被相机范围裁掉」。这里把切面
                 # 的投影点也纳入边界，矩形永远整张画得下。
                 seam_pts_screen = pts
         items += [(f['depth'], 0, f) for f in front_faces]
+        # 箭头朝相机偏置 0.45 格，但切面外沿本身仍可能落到前侧块的投影里；
+        # 为了让四个合法方向始终可点，箭头统一排在 front_faces 之后。
+        # 面片本身仍是世界几何 + 深度排序，不是二维贴图。
+        items += sorted(arrow_items, key=lambda it: it[0])
         # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
         # 一级级台阶，切面边上那些「毛毛糙糙」的小三角有一半是块面自己的边。
         # 只在棋盘包围盒里开超采样，整帧仍是一次 smoothscale 缩回，成本可控。
         _ss = 2
-        _all = [p for f in scene['faces'] for p in f['pts']] + list(seam_pts_screen)
+        _arrow_pts = [p for _d, _kind, _item in arrow_items
+                      if _kind == 2 for p in _item['pts']]
+        _all = ([p for f in scene['faces'] for p in f['pts']]
+                + list(seam_pts_screen) + _arrow_pts)
         if _all:
             _bx0 = max(0, int(min(p[0] for p in _all)) - 4)
             _by0 = max(0, int(min(p[1] for p in _all)) - 4)
@@ -1178,6 +1192,15 @@ class RendererMixin:
                     [(p[0] - x0, p[1] - y0) for p in pts])
                 hi.blit(cell, (x0, y0))
                 continue
+            if _kind == 2:
+                # 三维箭头的一个面片：投影多边形 + 按面法向算出的明暗。
+                # 和块面共用 2× 画布与画家序，遮挡/明暗都自然。
+                pts = _T(item['pts'])
+                pygame.draw.polygon(hi, item['fill'], pts)
+                if item.get('edge') is not None:
+                    pygame.draw.polygon(hi, item['edge'], pts,
+                                        max(1, int(item.get('width', 1))) * _ss)
+                continue
             face = item
             _is_anim = _sel_anim is not None and face['loc'] in _anim_locs
             _is_reject = bool(_shake_locs) and face['loc'] in _shake_locs
@@ -1210,9 +1233,8 @@ class RendererMixin:
                                 seam_pts_screen,
                                 max(2, min(3, int(_sel_anim[1]))))
 
-        # 三维方向箭头（方案 §4 第 4 步「重画箭头」）：选中一组后在切面外沿画可点
-        # 的方向键。画在最上层、按当前相机现算方向，旋转时跟着转。
-        self._draw_cubic_arrows(scene, seam, gap, camera, blocks)
+        # 三维方向箭头已经在上面作为世界空间面片插入画家序了；这里不再
+        # 单独 blit 二维贴图。
 
         # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
         # 必然同源，不存在「看得见点不中」的漂移）。
@@ -1239,153 +1261,200 @@ class RendererMixin:
         except Exception:
             pass   # 文字画失败只丢这一行，不能让整帧黑掉（§4 同一条纪律）
 
-    def _draw_cubic_arrows(self, scene, seam, gap, camera, blocks):
-        """三维方向箭头：立在切面**缝口的四边**上，和二维同一套箭头贴图。
+    def _cubic_arrow_items(self, scene, seam, gap, camera, blocks):
+        """三维方向箭头：世界空间的小几何体，返回可插入画家序的面片。
 
-        用户 2026-11-18 的三条要求，逐条落在这里：
-          ① 「箭頭也要三維」——箭头不是贴在屏幕外圈的按钮，而是落在世界坐标
-             里：从切面中心沿推行轴走到切面外沿再往外探一点，投影到屏幕。所以
-             转视角时它们是跟着棋盘一起转的，不是绕着棋盘乱跑。
-          ② 「有遮擋」——锚点用 `cubic_view.point_visible` 判一次：被块挡住就
-             不画（画出来就骗人去点一个看不见的键）。
-          ③ 「和原版用一樣的風格」——直接用二维的 `_arrow_sprite`（同一张素材、
-             同一套旋转/缩放规则），不再手画三角形。
-        「某個方向推不動就不要顯示箭頭」：干跑走 `_arrow_move_allowed`，与真正
-        点下去是同一条判定路径（不是自己猜）。
+        用户 2026-11-18 的返工要求：箭头不能再用 `_arrow_sprite` 贴一张永远
+        正对相机的图，否则转视角时没有透视、没有明暗、也没有真正的遮挡。
+        这里把箭头做成一块**世界空间的薄板**：尾部在切面外沿，沿推行方向画
+        箭杆和箭头三角，再沿板法向挤出一点厚度；所有面片走
+        `cubic_view.project_point`，和块面共用同一条画家序。二维的
+        `_arrow_sprite` 路径完全不动。
+
+        薄板有两块互相垂直的候选面：一块铺在切面上（法向 = 切面法向），
+        一块立在切面内（法向 = 切面内垂直方向）。每帧只画**投影面积更大**
+        的那块——单画一块保证轮廓始终是箭头，不会像十字板那样变成飞机；
+        两块都接近侧视时按面积兜底，避免箭头被吞掉。
         """
         self._cubic_arrow_buttons = []
         if not seam or seam[0] not in ('r', 'c', 'd'):
-            return
+            return []
         opted = [b for b in blocks if getattr(b, 'be_opted', False)]
         if not opted:
-            return
+            return []
         from engine import cubic_pick
         from engine import cubic_view as _cv
         from engine.compat import CUBIC_DIRECTIONS
-        # 锚点按**当前块堆的包围盒**取（用户 2026-11-18：切面范围跟包围盒走，
-        # 不跟原始棋盘尺寸走）。不用 seam_plane_cells 的外框：那是按「缝口有没
-        # 有相邻块」筛过的，盘面一散就会缩水，箭头也跟着挤到中间。
+
+        # 锚点仍按当前块堆的切面矩形取；不按原始棋盘尺寸，盘面打散后箭头
+        # 也跟着块堆走。
         rect = cubic_pick.seam_plane_rect(seam[0], seam[1], blocks, gap=gap)
         if not rect:
-            return
+            return []
         lo = [min(p[i] for p in rect) for i in range(3)]
         hi = [max(p[i] for p in rect) for i in range(3)]
         mid = [(lo[i] + hi[i]) / 2.0 for i in range(3)]
-        boxes = _cv.block_boxes(blocks, gap)
-        view_dir = camera.view_axis()
+
         fam_index = {'r': 0, 'c': 1, 'd': 2}[seam[0]]
-        # 可推性干跑按签名缓存：只有「缝 / 选中组 / 步数档 / 拆分」变了才重算。
-        sig = (seam, tuple(sorted(tuple(int(v) for v in b.location[:3]) for b in opted)),
+        normal_axis = cubic_pick.FAMILY_TO_WORLD_AXIS[seam[0]]
+        normal = [0.0, 0.0, 0.0]
+        normal[normal_axis] = 1.0
+        view_dir = camera.view_axis()
+
+        # 可推性干跑按签名缓存；只有缝 / 选中组 / 步数档 / 拆分变了才重算。
+        sig = (seam, tuple(sorted(tuple(int(v) for v in b.location[:3])
+                                 for b in opted)),
                getattr(self, 'current_step', 1), round(float(gap), 6))
         if getattr(self, '_cubic_arrow_sig', None) != sig:
             from engine.compat import CUBIC_DIRECTIONS as _D
             self._cubic_arrow_allowed = {
                 letter: bool(self._arrow_move_allowed(letter))
                 for letter in _D
-                if [i for i in range(3) if abs(_D[letter][i]) > 0][0] != fam_index
+                if [i for i in range(3) if abs(_D[letter][i]) > 0][0]
+                != fam_index
             }
             self._cubic_arrow_sig = sig
         allowed = getattr(self, '_cubic_arrow_allowed', {})
-        # 每帧算一次各块的屏幕轮廓（只给「贴纸判定」用）；按相机/拆分/块集合缓存，
-        # 拖动时才重算。不缓存的话选中态每帧多 ~8ms（实测 18.2ms → 10.6ms）。
-        sil_key = (tuple(round(float(v), 5) for row in camera.rows() for v in row),
-                   round(float(gap), 6),
-                   tuple(sorted(tuple(int(v) for v in b.location[:3]) for b in blocks)),
-                   round(float(scene['scale']), 4),
-                   round(float(scene['origin'][0]), 3),
-                   round(float(scene['origin'][1]), 3))
-        cached = getattr(self, '_cubic_sil_cache', None)
-        if cached is not None and cached[0] == sil_key:
-            silhouettes = cached[1]
-        else:
-            silhouettes = []
-            for box in boxes:
-                far_depth = max(box[(0 if i & 1 == 0 else 3)] * view_dir[0]
-                                + box[(1 if i & 2 == 0 else 4)] * view_dir[1]
-                                + box[(2 if i & 4 == 0 else 5)] * view_dir[2]
-                                for i in range(8))
-                silhouettes.append(
-                    (far_depth, _cv.screen_hull_of_box(box, camera, scene['scale'],
-                                                       scene['origin'])))
-            self._cubic_sil_cache = (sil_key, silhouettes)
-        size = self._arrow_button_size()
+
+        base_rgb = tuple(self.colors.get('text', (235, 235, 235)))[:3]
+        edge_rgb = tuple(self.colors.get('border', (90, 90, 90)))[:3]
+
+        def _face(pts3, face_normal, cap):
+            """一个 3D 面片 → 屏幕点、深度、明暗后的填充色。"""
+            scr = []
+            depth = 0.0
+            for w in pts3:
+                sx, sy, sz = _cv.project_point(w, camera, scene['scale'],
+                                               scene['origin'])
+                scr.append((sx, sy))
+                depth += sz
+            depth /= max(1, len(pts3))
+            key = tuple(int(round(c)) for c in face_normal)
+            shade = _cv.SHADE.get(key)
+            if shade is None:
+                dot = max(0.0, sum(face_normal[i] * view_dir[i]
+                                   for i in range(3)))
+                shade = 0.50 + 0.50 * dot      # 斜边法向：用视线点积估明暗
+            fill = (int(base_rgb[0] * shade),
+                    int(base_rgb[1] * shade),
+                    int(base_rgb[2] * shade))
+            return (depth, 2, {
+                'pts': scr,
+                'fill': fill,
+                'edge': edge_rgb,
+                'width': 1 if cap else 0,   # 侧面不描边，避免箭头变成铁架子
+            })
+
+        # 箭头局部形状：尾部在锚点，沿 +u 指向；v 是板面内垂直方向。
+        # 箭杆 0.40 + 箭头 0.30，整体约 0.70 格。
+        shaft = 0.40
+        head = 0.30
+        half_w = 0.11
+        half_head = 0.26
+        shape = [(0.0, -half_w), (shaft, -half_w), (shaft, -half_head),
+                 (shaft + head, 0.0), (shaft, half_head),
+                 (shaft, half_w), (0.0, half_w)]
+
+        def _build_plate(tail, u, plate_normal, thick):
+            """铺一块箭头薄板，返回 (投影面积, 面片列表, 屏幕点)。"""
+            v = [plate_normal[1] * u[2] - plate_normal[2] * u[1],
+                 plate_normal[2] * u[0] - plate_normal[0] * u[2],
+                 plate_normal[0] * u[1] - plate_normal[1] * u[0]]
+            n_len = math.sqrt(sum(x * x for x in v)) or 1.0
+            v = [x / n_len for x in v]
+
+            front = []
+            back = []
+            for x, y in shape:
+                p = [tail[i] + u[i] * x + v[i] * y for i in range(3)]
+                front.append(tuple(p[i] + plate_normal[i] * thick
+                                   for i in range(3)))
+                back.append(tuple(p[i] - plate_normal[i] * thick
+                                  for i in range(3)))
+
+            fscr = [_cv.project_point(p, camera, scene['scale'],
+                                      scene['origin'])[:2] for p in front]
+            bscr = [_cv.project_point(p, camera, scene['scale'],
+                                      scene['origin'])[:2] for p in back]
+            area2 = 0.0
+            for i in range(len(fscr)):
+                p0, p1 = fscr[i], fscr[(i + 1) % len(fscr)]
+                area2 += p0[0] * p1[1] - p1[0] * p0[1]
+            area = abs(area2) / 2.0
+
+            faces = []
+            if area >= 2.0:
+                faces.append(_face(front, plate_normal, True))
+                faces.append(_face(back, [-x for x in plate_normal], True))
+                # 侧壁：轮廓每条边挤出一圈侧面。旋转时这里会露出来，
+                # 明暗也按各自法向算。
+                for i in range(len(front)):
+                    j = (i + 1) % len(front)
+                    e0, e1 = front[i], front[j]
+                    edge_vec = [e1[k] - e0[k] for k in range(3)]
+                    side_n = [
+                        edge_vec[1] * plate_normal[2]
+                        - edge_vec[2] * plate_normal[1],
+                        edge_vec[2] * plate_normal[0]
+                        - edge_vec[0] * plate_normal[2],
+                        edge_vec[0] * plate_normal[1]
+                        - edge_vec[1] * plate_normal[0],
+                    ]
+                    s_len = math.sqrt(sum(x * x for x in side_n)) or 1.0
+                    side_n = [x / s_len for x in side_n]
+                    faces.append(_face(
+                        [front[i], front[j], back[j], back[i]],
+                        side_n, False))
+            return area, faces, fscr + bscr
+
+        items = []
         for letter, vec in CUBIC_DIRECTIONS.items():
             axis = [i for i in range(3) if abs(vec[i]) > 0][0]
             if axis == fam_index:
-                continue                      # 法向：规则里推不动
+                continue                       # 法向：规则里推不动
             if not allowed.get(letter, False):
-                continue                      # 这一步真推不动：不画
+                continue                       # 这一步真推不动：不画
             world_axis = {0: 2, 1: 0, 2: 1}[axis]   # 词条轴 → 世界轴 (c,d,r)
             sign = 1.0 if vec[axis] > 0 else -1.0
-            # 锚点：切面中心 → 沿推行轴挪到切面外沿 → 再往外探半格
+
+            # 尾部：切面中心 → 沿推行轴挪到切面外沿 → 再往外探一点。
             anchor = list(mid)
             edge = hi[world_axis] if sign > 0 else lo[world_axis]
-            anchor[world_axis] = edge + sign * (0.5 + 0.35)
-            dx, dy = self._cubic_letter_dir(letter)
-            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-                continue                      # 这条轴正对镜头，屏幕上是点
-            fallback = False
-            if not _cv.point_visible(tuple(anchor), boxes, view_dir):
-                # 3D 锚点被块挡住（典型：俯视时 r 方向落在立方体底边后面）。
-                # 不能直接不画——那会把一个**合法方向**吞掉。改走屏幕空间
-                # 回退：贴着选中片在屏幕上的外沿放，保证四向都能点。
-                fallback = True
-            sx = sy = 0.0
-            if not fallback:
-                sx, sy, _sz = _cv.project_point(
-                    tuple(anchor), camera, scene['scale'], scene['origin'])
-                # 再判一次「屏幕位置上有没有更近的块」：锚点恰好站在某块前面时，
-                # 画上去就像贴纸糊在人家脸上（用户说的「箭頭也要三維、有遮擋」）。
-                decal = False
-                for far_depth, hull in silhouettes:
-                    if far_depth <= _sz:
-                        continue                   # 更远或同深度：挡不住
-                    if _cv.point_in_hull(sx, sy, hull):
-                        decal = True
-                        break
-                if decal:
-                    fallback = True
-                # 还要判「投影点落在任何一块的屏幕轮廓里」：朝相机/背相机
-                # 的那条轴，世界锚点虽然没被挡住，投影却会缩到方块中间
-                # （用户看到的箭头贴在选中片上）。这时也改用屏幕外沿。
-                if not fallback and any(
-                        _cv.point_in_hull(sx, sy, hull)
-                        for _d, hull in silhouettes):
-                    fallback = True
-            if fallback:
-                # 选中片的屏幕轮廓（boxes 与 blocks 同序，silhouettes 也同序）
-                pts = []
-                for _i, _b in enumerate(blocks):
-                    if getattr(_b, 'be_opted', False):
-                        pts.extend(silhouettes[_i][1])
-                if not pts:
-                    continue
-                _cx = sum(p[0] for p in pts) / len(pts)
-                _cy = sum(p[1] for p in pts) / len(pts)
-                _n = math.hypot(dx, dy) or 1.0
-                _ux, _uy = dx / _n, dy / _n
-                _reach = max((p[0] - _cx) * _ux + (p[1] - _cy) * _uy
-                             for p in pts)
-                sx = _cx + _ux * (_reach + size * 0.85)
-                sy = _cy + _uy * (_reach + size * 0.85)
-            half = size / 2.0
-            # 箭头锚点在世界里已经探到切面外沿，但大立方体贴满视口时，
-            # 顶/底那两枚的屏幕中心仍可能越过边距。旧逻辑直接 continue，
-            # 于是「能推的方向」被吞掉（用户 2026-11-18：四向只看见两枚）。
-            # 这里夹回视口边距：宁可贴边一点，也不能少一个可点的方向。
-            # 顶部多留 60px：左上角第二行操作提示画到 y≈54，箭头不能压字。
-            sx = min(max(sx, half), self.screen_width - half)
-            top_safe = max(half, 60 + half)
-            sy = min(max(sy, top_safe), self.screen_height - half)
-            ang = math.degrees(math.atan2(-dy, dx))
-            spr = self._arrow_sprite(ang)
-            if spr is None:
-                continue
-            pos = spr.get_rect(center=(int(round(sx)), int(round(sy)))
-                               ).inflate(-6, -6)   # 命中盒略小于贴图，与二维同口径
-            self.screen.blit(spr, spr.get_rect(center=(int(round(sx)),
-                                                       int(round(sy)))))
-            self._cubic_arrow_buttons.append((letter, pos))
+            anchor[world_axis] = edge + sign * 0.18
+            # 再整体朝相机推 0.45 格：箭头仍贴着切面外沿，但不会被切面
+            # 另一侧的块整块吞掉；深度仍参与画家序。
+            for i in range(3):
+                anchor[i] += view_dir[i] * 0.45
+
+            u = [0.0, 0.0, 0.0]
+            u[world_axis] = sign
+            # 切面内垂直方向 v（给第二块候选板当法向）。
+            v = [normal[1] * u[2] - normal[2] * u[1],
+                 normal[2] * u[0] - normal[0] * u[2],
+                 normal[0] * u[1] - normal[1] * u[0]]
+            n_len = math.sqrt(sum(x * x for x in v)) or 1.0
+            v = [x / n_len for x in v]
+
+            area_a, faces_a, scr_a = _build_plate(anchor, u, normal, 0.055)
+            area_b, faces_b, scr_b = _build_plate(anchor, u, v, 0.055)
+            if area_a >= area_b:
+                chosen, screen_pts = faces_a, scr_a
+            else:
+                chosen, screen_pts = faces_b, scr_b
+            if not chosen:
+                continue                       # 两块都退化：不画，避免骗点击
+            items.extend(chosen)
+            xs = [p[0] for p in screen_pts]
+            ys = [p[1] for p in screen_pts]
+            hx0, hy0 = min(xs), min(ys)
+            hx1, hy1 = max(xs), max(ys)
+            rect = pygame.Rect(int(round(hx0)) - 2, int(round(hy0)) - 2,
+                               max(1, int(round(hx1 - hx0)) + 4),
+                               max(1, int(round(hy1 - hy0)) + 4))
+            self._cubic_arrow_buttons.append((letter, rect))
+
+        return items
+
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。
