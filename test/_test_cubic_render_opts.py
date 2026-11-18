@@ -316,12 +316,20 @@ check(all(_rects[i].right <= _rects[i + 1].left for i in range(len(_rects) - 1))
 check(all(_rects[i].width == 72 for i in range(len(_rects))), '页签宽 72（放得下 8 个）')
 
 _btns = getattr(gui, '_settings_cubic_btn_rects', {})
-check(len(_btns) == 8 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns
-      and ('cubic_anim_ms', 1) in _btns,
-      '三维页四个选项各一枚 − 与 +', sorted(_btns.keys()))
+check(len(_btns) == 10 and ('gap', 1) in _btns and ('rot_sensitivity', -1) in _btns
+      and ('cubic_anim_ms', 1) in _btns and ('zoom', 1) in _btns,
+      '三维页五个选项各一枚 − 与 +（含缩放）', sorted(_btns.keys()))
 check(all(r.collidepoint(r.center) and r.bottom <= gui._settings_content_rect.bottom + 1
           for r in _btns.values()),
       '按钮都落在可见内容区内')
+
+# 缩放行：右栏四条滑条之一，必须也能在「三维」页步进
+_z0 = gui.cubic_zoom
+_rz = _btns[('zoom', 1)]
+gui._handle_settings_dialog_event(
+    pygame.event.Event(pygame.MOUSEBUTTONDOWN, {'pos': _rz.center, 'button': 1}))
+check(abs(gui.cubic_zoom - min(gui.CUBIC_ZOOM_RANGE[1], round(_z0 + 0.05, 3))) < 1e-9,
+      '三维页缩放 + 一档（0.05）', (gui.cubic_zoom, _z0))
 
 # 点 + 真的改值（走设置页真实事件入口，不直接调内部函数）
 _g0 = gui.cubic_gap
@@ -370,21 +378,13 @@ check(getattr(gui, '_settings_confirm_shuffle_toggle_rect', None) is not None
       and gui._settings_confirm_shuffle_toggle_rect.width > 0,
       '三维局保留防意外打乱开关')
 _track = getattr(gui, '_settings_slider_track_rect', None)
-check(_track is not None and _track.width > 0, '三维局视觉页动画滑条仍存在')
-_d0 = gui.cubic_anim_ms
-_2d0 = gui.animation_duration
-gui._handle_settings_dialog_event(pygame.event.Event(
-    pygame.MOUSEBUTTONDOWN, {'pos': (_track.left + 1, _track.centery), 'button': 1}))
-check(gui.cubic_anim_ms <= gui.CUBIC_ANIM_MIN_MS + 2,
-      '三维视觉页滑条拉到最左 = 最快', gui.cubic_anim_ms)
-gui._settings_slider_dragging = False
-gui._handle_settings_dialog_event(pygame.event.Event(
-    pygame.MOUSEBUTTONDOWN, {'pos': (_track.right - 1, _track.centery), 'button': 1}))
-check(gui.cubic_anim_ms >= gui.CUBIC_ANIM_MAX_MS - 2,
-      '三维视觉页滑条拉到最右 = 最慢', gui.cubic_anim_ms)
-check(gui.animation_duration == _2d0,
-      '三维视觉页改速度不碰二维 animation_duration', (gui.animation_duration, _2d0))
-gui._settings_slider_dragging = False
+_ztrack = getattr(gui, '_settings_zoom_track_rect', None)
+check(_track is not None and _track.width == 0,
+      '三维视觉页不再重复画动画滑条（数值在三维页）', _track)
+check(_ztrack is not None and _ztrack.width == 0,
+      '三维视觉页不再重复画缩放滑条（旧版还写错到二维 zoom）', _ztrack)
+check(gui.cubic_anim_ms > 0 and 0.5 <= gui.cubic_zoom <= 3.0,
+      '数值状态仍在，没有被清矩形误改', (gui.cubic_anim_ms, gui.cubic_zoom))
 
 print('=' * 60)
 total = _ok[0] + len(_fail)

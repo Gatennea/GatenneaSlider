@@ -4501,10 +4501,22 @@ class EventsMixin:
                         self, '_settings_cubic_btn_rects', {}).items():
                     if not _rect.collidepoint(mx, my):
                         continue
-                    spec = cubic_settings.by_key(_key)
-                    step = self.CUBIC_STEP.get(_key, 1)
-                    cur = getattr(self, spec['attr'], spec['default'])
-                    val = cubic_settings.clamp_value(_key, cur + _sign * step)
+                    if _key == 'zoom':
+                        # 缩放不在 CUBIC_SETTINGS 表里（它归相机存档管），
+                        # 用与 Ctrl+滚轮 / 右栏滑条同一区间夹紧。
+                        spec = {'key': 'zoom', 'label': '缩放',
+                                'attr': 'cubic_zoom', 'type': 'float',
+                                'default': 1.0, 'display': 'percent'}
+                        step = self.CUBIC_STEP.get('zoom', 0.05)
+                        cur = float(getattr(self, 'cubic_zoom', 1.0))
+                        lo, hi = self.CUBIC_ZOOM_RANGE
+                        val = max(lo, min(hi, round(cur + _sign * step, 3)))
+                    else:
+                        spec = cubic_settings.by_key(_key)
+                        step = self.CUBIC_STEP.get(_key, 1)
+                        cur = getattr(self, spec['attr'], spec['default'])
+                        val = cubic_settings.clamp_value(
+                            _key, cur + _sign * step)
                     setattr(self, spec['attr'], val)
                     self._cubic_arrow_sig = None
                     self._cubic_sil_cache = None

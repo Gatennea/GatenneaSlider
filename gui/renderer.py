@@ -4492,17 +4492,44 @@ class RendererMixin:
             x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
             "撤销、重做时高亮这次动的缝和滑块（蓝=撤销，橙=重做）", max_w=_mw)
 
-        # 动画时长滑动条（轨道与开关同一右栏对齐）
-        # 三维态写 cubic_anim_ms（60..400），与右侧栏「速度」滑条同源；
-        # 二维仍写 animation_duration（100..1000）。
+        # 三维局：视觉页只留「开关」，不再画缩放 / 动画时长滑条。
+        # 右栏四条滑条的数值统一收进「三维」专页；尤其三维缩放以前在这条
+        # 滑条上写的是二维 self.zoom（没接 cubic_zoom），是条假控件。
+        # 着色 / 连锁 / 缝隙闪烁 / 复原标记 / 调试面板 / 成绩面板 / 绘制网格 /
+        # 防偏移演示 / 思考演示全部是二维语义，方案 §2.4 与 §5 明确不做三维，
+        # 因此**不画**（而不是画成灰开关）；对应矩形清零，避免旧帧命中区残留。
         _cubic_anim = getattr(self, 'cubic_mode', False)
         if _cubic_anim:
-            _anim_lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
-            _anim_hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
-            _anim_val = getattr(self, 'cubic_anim_ms', 140)
-        else:
-            _anim_lo, _anim_hi = 100, 1000
-            _anim_val = self.animation_duration
+            for _attr in ('_settings_slider_track_rect',
+                          '_settings_slider_knob_rect',
+                          '_settings_zoom_track_rect',
+                          '_settings_zoom_knob_rect',
+                          '_settings_coloring_toggle_rect',
+                          '_settings_chain_toggle_rect',
+                          '_settings_gap_hover_toggle_rect',
+                          '_settings_marks_toggle_rect',
+                          '_settings_metrics_toggle_rect',
+                          '_settings_records_toggle_rect',
+                          '_settings_grid_toggle_rect',
+                          '_settings_anti_drift_toggle_rect',
+                          '_settings_thinking_toggle_rect'):
+                setattr(self, _attr, pygame.Rect(0, 0, 0, 0))
+
+            # 开机动画（启动时全局，三维同样生效）
+            self._settings_boot_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
+                "启动时播放标题动画，点一下可以跳过", max_w=_mw)
+            # 防意外打乱/重置（三维打乱同样清历史，提示同样有用）
+            self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
+                "打乱和重置都会清空历史、撤不回来；开启后先弹确认，防止误触",
+                max_w=_mw)
+            self._settings_anim_height = ny - y + 10
+            return
+
+        # 二维：动画时长滑动条（轨道与开关同一右栏对齐；100..1000ms）
+        _anim_lo, _anim_hi = 100, 1000
+        _anim_val = self.animation_duration
         speed_y = ny
         speed_label = self.dialog_font.render("动画时长：", True, self.colors['dialog_text'])
         self.screen.blit(speed_label, (x + 15, speed_y + 6))
@@ -4570,34 +4597,7 @@ class RendererMixin:
         self.screen.blit(zmax_label, (ztrack_x + ztrack_width - zmax_label.get_width(), ztrack_y + 12))
         ny = zoom_y + 72
 
-        # 三维局：视觉页只留三维真正生效的项。
-        # 着色 / 连锁 / 缝隙闪烁 / 复原标记 / 调试面板 / 成绩面板 / 绘制网格 /
-        # 防偏移演示 / 思考演示全部是二维语义，方案 §2.4 与 §5 明确不做三维，
-        # 因此**不画**（而不是画成灰开关）；对应矩形清零，避免旧帧的命中区残留。
-        if _cubic_anim:
-            for _attr in ('_settings_coloring_toggle_rect',
-                          '_settings_chain_toggle_rect',
-                          '_settings_gap_hover_toggle_rect',
-                          '_settings_marks_toggle_rect',
-                          '_settings_metrics_toggle_rect',
-                          '_settings_records_toggle_rect',
-                          '_settings_grid_toggle_rect',
-                          '_settings_anti_drift_toggle_rect',
-                          '_settings_thinking_toggle_rect'):
-                setattr(self, _attr, pygame.Rect(0, 0, 0, 0))
-
-            # 开机动画（启动时全局，三维同样生效）
-            self._settings_boot_toggle_rect, ny = self._draw_switch_row(
-                x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
-                "启动时播放标题动画，点一下可以跳过", max_w=_mw)
-            # 防意外打乱/重置（三维打乱同样清历史，提示同样有用）
-            self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
-                x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
-                "打乱和重置都会清空历史、撤不回来；开启后先弹确认，防止误触",
-                max_w=_mw)
-            self._settings_anim_height = ny - y + 10
-            return
-
+        # 二维局：继续画二维专属的视觉项（三维在上面已经提前返回）。
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
@@ -5249,9 +5249,13 @@ class RendererMixin:
     # 设置页「三维」专页（方案 §2.4）
     # ==================================================================
     #: 每项的步长（按一下就改这么多；细调靠连点，不必再拖一条滑条进来）
-    CUBIC_STEP = {'gap': 0.05, 'seam_alpha': 5, 'rot_sensitivity': 0.1}
+    CUBIC_STEP = {'gap': 0.05, 'seam_alpha': 5, 'rot_sensitivity': 0.1,
+                  # 缩放是倍数，0.05 一档（5%），从 0.5 到 3.0 共 50 档
+                  'zoom': 0.05}
 
     def _fmt_cubic_value(self, spec, val):
+        if spec.get('display') == 'percent':
+            return f"{int(round(float(val) * 100))}%"
         if spec['type'] == 'int':
             return f"{int(val)}"
         return f"{val:.2f}" + (' 倍' if spec['key'] == 'rot_sensitivity' else '')
@@ -5269,8 +5273,8 @@ class RendererMixin:
         cubic = bool(getattr(self, 'cubic_mode', False))
         hint_w = width - 20
 
-        title = ('三维谜题专用。这里的项「设一次、很少动」；拆分与切面透明度'
-                 '在右侧栏，边拖边看更直观。')
+        title = ('三维谜题专用。右侧栏四条滑条只显示名称，数值统一在这里：'
+                 '缩放 / 拆分 / 切面透明 / 动画时长；拆分与切面也可以边拖边看。')
         for _i, _ln in enumerate(self._wrap_text(title, self.status_font, hint_w)):
             self.screen.blit(self.status_font.render(_ln, True,
                                                      self.colors['dialog_text']),
@@ -5286,7 +5290,21 @@ class RendererMixin:
             self._settings_cubic_height = ny - y
             return
 
-        for spec in cubic_settings.items('control') + cubic_settings.items('view'):
+        # 右栏四条滑条的值必须都能在这一页看到。缩放 / 拆分 / 切面 / 动画时长
+        # 是右栏四项；旋转灵敏度是三维独有的相机手感项，排在最后。
+        # 缩放不登记进 cubic_settings（它属于相机存档 cubic_camera，不是
+        # CUBIC_SETTINGS 的配置键），这里给一条同形的临时 spec，事件层按
+        # key='zoom' 单独夹到 CUBIC_ZOOM_RANGE。
+        _zlo, _zhi = self.CUBIC_ZOOM_RANGE
+        _zoom_spec = {
+            'key': 'zoom', 'label': '缩放', 'attr': 'cubic_zoom',
+            'type': 'float', 'min': float(_zlo), 'max': float(_zhi),
+            'default': 1.0, 'group': 'view', 'display': 'percent',
+            'help': '三维画面缩放倍数（与右侧栏「缩放」滑条同源）',
+        }
+        _rows = ([_zoom_spec] + cubic_settings.items('view')
+                 + cubic_settings.items('control'))
+        for spec in _rows:
             val = getattr(self, spec['attr'], spec['default'])
             self.screen.blit(self.dialog_font.render(f"{spec['label']}：", True,
                                                      self.colors['dialog_text']),
@@ -5959,9 +5977,9 @@ class RendererMixin:
         def _clamp01(v):
             return max(0.0, min(1.0, float(v)))
 
-        def _draw_cubic_v_slider(cell, label, value_text, frac_top,
+        def _draw_cubic_v_slider(cell, label, frac_top,
                                   rect_attr, knob_attr, drag_attr):
-            """一个竖滑条格：上方两行文字（名称/当前值），下方竖向轨道。
+            """一个竖滑条格：顶部只写名称（数值只在设置页显示），下方竖向轨道。
 
             `frac_top` 是「滑块距轨道顶部」的比例；四条的语义统一成
             「向上=更强/更快/更大」，各调用方自己把数值换算成这个比例。
@@ -5969,11 +5987,8 @@ class RendererMixin:
             cx = cell.centerx
             lab = self.status_font.render(label, True,
                                           self.colors['status_text'])
-            self.screen.blit(lab, lab.get_rect(center=(cx, cell.top + 8)))
-            val = self.status_font.render(value_text, True,
-                                          self.colors['input_text'])
-            self.screen.blit(val, val.get_rect(center=(cx, cell.top + 22)))
-            t_top = cell.top + 32
+            self.screen.blit(lab, lab.get_rect(center=(cx, cell.top + 10)))
+            t_top = cell.top + 24
             t_bot = cell.bottom - 2
             if t_bot <= t_top:
                 t_bot = t_top + 1
@@ -6014,15 +6029,15 @@ class RendererMixin:
             _z = float(getattr(self, 'cubic_zoom', 1.0))
             _zlo, _zhi = self.CUBIC_ZOOM_RANGE
             _zfrac = 1.0 - _clamp01((_z - _zlo) / max(1e-6, _zhi - _zlo))
-            _draw_cubic_v_slider(_cells[0], '缩放', f'{int(_z * 100)}%',
-                                 _zfrac, 'zoom_slider_rect',
-                                 'zoom_knob_rect', 'zoom_slider_dragging')
+            _draw_cubic_v_slider(_cells[0], '缩放', _zfrac,
+                                 'zoom_slider_rect', 'zoom_knob_rect',
+                                 'zoom_slider_dragging')
             # 右上：速度（顶部=最快）
             _dur = int(getattr(self, 'cubic_anim_ms', 140))
             _vfrac = _clamp01((_dur - self.CUBIC_ANIM_MIN_MS)
                               / max(1e-6, self.CUBIC_ANIM_MAX_MS
                                     - self.CUBIC_ANIM_MIN_MS))
-            _draw_cubic_v_slider(_cells[1], '速度', f'{_dur}ms', _vfrac,
+            _draw_cubic_v_slider(_cells[1], '速度', _vfrac,
                                  'slider_rect', 'slider_knob_rect',
                                  'slider_dragging')
             # 左下：拆分；右下：切面透明度（顶部=更大）
@@ -6035,11 +6050,9 @@ class RendererMixin:
             for _key, _cell, _label, _rect_attr, _drag_attr, _knob_attr in _specs:
                 _sp = by_key(_key)
                 _val = getattr(self, _sp['attr'], _sp['default'])
-                _fmt = (f'{_val:.2f}' if _sp['type'] == 'float'
-                        else f'{int(_val)}')
                 _frac = 1.0 - _clamp01((_val - _sp['min'])
                                        / max(1e-6, _sp['max'] - _sp['min']))
-                _draw_cubic_v_slider(_cell, _label, _fmt, _frac,
+                _draw_cubic_v_slider(_cell, _label, _frac,
                                      _rect_attr, _knob_attr, _drag_attr)
         else:
             # 二维：原两条通高竖条（左=缩放，右=速度）
