@@ -2027,8 +2027,8 @@ class EventsMixin:
             # 前提没满足：只出声 + 文字，不闪整盘（与二维 visual=False 同口径）
             self._reject_move(None, visual=False)
             return False
-        before = [tuple(int(v) for v in b.location[:3])
-                  for b in self.game.blocks if getattr(b, 'be_opted', False)]
+        moving = [b for b in self.game.blocks if getattr(b, 'be_opted', False)]
+        before = [tuple(int(v) for v in b.location[:3]) for b in moving]
         moved = self.move_selected_blocks(letter)
         if not moved:
             self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
@@ -2048,6 +2048,13 @@ class EventsMixin:
             new_line = int(gap[1]) + step
             if self.game.is_valid_gap(fam, new_line):
                 self.selected_gap = (fam, new_line)
+        # 三维也走 §55 的滑后定型，但必须排在 selected_gap 随缝推进之后：
+        # 用新缝口重选，粘连时清选中；仍分得开则保留，六键可以接着推。
+        # 只有「真挪了位置」才判：测试/回放里可能有返回成功但位置没变的桩，
+        # 拿没变的盘面去重选只会误清选中。
+        if moved and any(tuple(int(v) for v in b.location[:3]) != loc
+                         for b, loc in zip(moving, before)):
+            self._finalize_move_selection(moving)
         if getattr(self, 'animation_enabled', True) and before:
             self._cubic_start_anim(letter, before)
         return moved

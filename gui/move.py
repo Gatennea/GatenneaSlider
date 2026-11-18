@@ -265,6 +265,12 @@ class MoveMixin:
             self.step_count += 1
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
+            # 滑动定型（待办 §55）：这一步提交后，原缝若已不再把选中组与
+            # 其余块分开，就必须清掉选中态，否则玩家不撤销也能沿旧缝反滑，
+            # 等于绕过历史抹掉一步。三维的缝号要跟着推进，放在
+            # `_cubic_push_letter` 更新 selected_gap 之后再判。
+            if not getattr(self, 'cubic_mode', False):
+                self._finalize_move_selection(selected)
             # 动画关闭也要有滑动声：给一个短促的默认长度
             self._play_slide_sound(move_step, duration_ms=self.SLIDE_INSTANT_MS)
             self._pending_move_info = None
@@ -277,6 +283,78 @@ class MoveMixin:
             self._maybe_show_solved_popup()
             self._mark_file_dirty()
         return True
+
+    def _finalize_move_selection(self, moved_blocks=None):
+        """一步提交后：旧缝若已不再把选中组与其余块分开，就清掉选中态。
+
+        待办 §55（全形态规则 bug）：滑后选中组与其余块粘连时，原缝已经不是
+        两者的分界；玩家却还能沿旧缝反滑，历史记「去+回」两步，等于不撤销
+        就抹掉一步。判据不新写几何：用原缝在**滑后盘面**重跑该形态的 opt，
+        重选出的片必须仍是刚移动的那批块——
+          · 重选一致 → 缝仍分得开，保留选中（两次触控连续滑动靠这条）；
+          · 重选变了（粘连）或缝已失效 → 清 selected_gap / be_opted /
+            selected_block，并结束本次选中会话（下一手另起快照）。
+        """
+        gap = getattr(self, 'selected_gap', None)
+        if not gap or gap[0] is None or gap[1] is None:
+            return False
+        moved = list(moved_blocks or [])
+        if not moved:
+            moved = [b for b in self.game.blocks
+                     if getattr(b, 'be_opted', False)]
+        if not moved:
+            return False
+
+        # 参考块必须来自刚移动的片；selected_block 若已失效就退回片内第一块。
+        ref = getattr(self, 'selected_block', None)
+        if ref is None or all(b is not ref for b in moved):
+            ref = moved[0]
+
+        if not self._move_gap_still_valid(gap):
+            self._clear_move_selection_after_adhesion()
+            return True
+
+        # 直接复用各形态现成的 opt：方形洪泛 / 三角 3-邻接 / 米字 5-邻接 /
+        # engine 的 seam_families + 捆绑组闭包。比较用「滑后位置集合」而不是
+        # 对象 id：engine 适配层在提交时可能重建块对象，id 不稳定。
+        self.game.opt(gap[0], gap[1], ref)
+        old_pos = {tuple(b.location) for b in moved}
+        new_pos = {tuple(b.location) for b in self.game.blocks
+                   if getattr(b, 'be_opted', False)}
+        if new_pos != old_pos:
+            self._clear_move_selection_after_adhesion()
+            return True
+        # 缝仍有效且重选一致：保留原选中，顺手把参考块修回片内。
+        self.selected_block = ref
+        return False
+
+    def _move_gap_still_valid(self, gap) -> bool:
+        """滑后原缝是否仍然几何有效（各形态已有的判据，不在这里重写）。"""
+        gap_type, line = gap
+        game = self.game
+        if hasattr(game, 'is_valid_gap'):
+            # 三角 / 米字 / 通用 engine（含三维）都有这个公共契约。
+            return bool(game.is_valid_gap(gap_type, line))
+        if gap_type == 'h':
+            return bool(game.is_valid_h_line(line))
+        if gap_type == 'v':
+            return bool(game.is_valid_v_line(line))
+        return False
+
+    def _clear_move_selection_after_adhesion(self):
+        """清掉已失效的选中态；engine 形态还要清内部 _opted_keys。"""
+        game = self.game
+        clear = getattr(game, '_clear_selection', None)
+        if callable(clear):
+            clear()
+        else:
+            for b in game.blocks:
+                b.be_opted = False
+        self.selected_gap = None
+        self.selected_block = None
+        if hasattr(self, '_gap_anchor_world'):
+            self._gap_anchor_world = None
+        self._bump_move_session()
 
     def _dir_name(self, direction: str) -> str:
         """方向字母 → 中文方向名（方形四向 + 三角六向；模型板型按几何算）。"""

@@ -192,6 +192,11 @@ class AnimationMixin:
             move_info = self._pending_move_info
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
+            # 滑动定型（待办 §55）：动画落位后同样要判「原缝是否还分得开」。
+            # 宏播放的选中片是回放层自己管的，不参与玩家侧的连续选中规则。
+            if not getattr(self, 'macro_executing', False) \
+                    and not getattr(self, 'cubic_mode', False):
+                self._finalize_move_selection(self.anim_blocks)
             self._pending_move_info = None
             # 与无动画路径同口径：走一步不动相机（只在整盘全看不见时兜底）。
             self.ensure_blocks_visible(only_if_invisible=True)
