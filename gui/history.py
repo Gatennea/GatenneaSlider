@@ -112,6 +112,47 @@ class HistoryMixin:
             # 连续重做（无动画路径）：继续下一轮直到边界
             self._advance_continuous_undo_redo()
 
+    def _cubic_start_undo_redo_anim(self, move_info, is_undo: bool):
+        """三维撤销/重做的滑动插值（只动渲染，逻辑已换好局面）。
+
+        做法与推一步的 `_cubic_start_anim` 相同：给当前局面里的这组块一个
+        反向位移，再按 cubic_anim_ms ease-out 归零。
+          · 撤销：局面在移动前，旧位置 = moved + delta → 偏移取 −world
+          · 重做：局面在移动后，旧位置 = moved     → 偏移取 +world
+        """
+        import pygame
+        if not getattr(self, 'animation_enabled', True):
+            return
+        if not move_info or not move_info.get('moved_positions'):
+            return
+        from engine.compat import CUBIC_DIRECTIONS
+        vec = CUBIC_DIRECTIONS.get(move_info.get('direction'))
+        if vec is None:
+            return
+        step = int(move_info.get('step', 1) or 1)
+        dr, dc, dd = (int(vec[0]) * step, int(vec[1]) * step,
+                      int(vec[2]) * step)
+        world = (float(dc), float(dd), float(dr))
+        if is_undo:
+            # 当前位置是 moved；旧位置还要再 +world
+            group = {(int(p[0]), int(p[1]), int(p[2]))
+                     for p in move_info['moved_positions']}
+            anim_delta = tuple(-v for v in world)
+        else:
+            # 当前位置是 moved+world；旧位置是 moved
+            group = {(int(p[0]) + dr, int(p[1]) + dc, int(p[2]) + dd)
+                     for p in move_info['moved_positions']}
+            anim_delta = world
+        ms = int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS))
+        if ms <= 0:
+            return
+        self.cubic_anim = {
+            't0': pygame.time.get_ticks(),
+            'ms': ms,
+            'delta': anim_delta,
+            'group': frozenset(group),
+        }
+
     def _cubic_undo_redo(self, is_undo: bool):
         """三维撤销/重做：换局面即刻生效（动画留到第 6 步）。
 
@@ -146,6 +187,9 @@ class HistoryMixin:
         clear = getattr(self, '_cubic_clear_selection', None)
         if callable(clear):
             clear()
+        # 滑动动画（用户 2026-11-18：撤销重做也要有动画） + 选中高亮
+        self._cubic_start_undo_redo_anim(_info, is_undo)
+        self._flash_cubic_move_selection(_info, is_undo)
         self.step_count = self.game_history.current_step_total()
         self.macro_notify_msg = label
         self.macro_notify_timer = 15

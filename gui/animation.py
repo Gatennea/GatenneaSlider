@@ -354,6 +354,9 @@ class AnimationMixin:
         self._sel_anim_blocks = list(blocks)
         self._sel_anim_gap = (gap_type, gap_line) if gap_type is not None else None
         self.selected_gap = self._sel_anim_gap
+        # 二维这条链确实改写了 selected_gap；到期清理时要还原。三维走独立的
+        # `_flash_cubic_move_selection`，只画不改，避免动画把玩家的选中态吞掉。
+        self._sel_anim_sets_gap = True
         # 保存元数据，供动画提交（commit_animation）后刷新高亮位置
         self._sel_anim_move_info = move_info
         self._sel_anim_is_undo = is_undo
@@ -363,6 +366,62 @@ class AnimationMixin:
         # 至少 0.75s；若正在滑动则盖过滑动时长，让高亮贯穿该步全程
         dur = max(45, (self.animation_duration + 300) // 17)
         self._sel_anim_timer = dur
+
+    def _flash_cubic_move_selection(self, move_info, is_undo):
+        """三维选中动画：撤销/重做后高亮这一步用过的缝与滑块组。
+
+        与二维 `_flash_move_selection` 的差别：**只画不改**。
+        三维的 `be_opted` / `selected_gap` 同时是真实操作状态，若为了高亮
+        临时改写，玩家在 0.75s 内点六键就会把高亮片当成选中片推走。这里
+        只记位置，渲染层按 `_sel_anim_locs` / `_sel_anim_gap` 叠色。
+
+        位置口径：历史里的 `moved_positions` 是**移动前**位置。
+        撤销后局面回到移动前 → 目标就是 moved；
+        重做后局面在移动后 → 目标 = moved + direction×step。
+        缝隙用原缝号：三维是沿缝面内滑动，缝平面本身不跟着挪
+        （见 `_cubic_push_letter` 里只有同族字母才移动 selected_gap）。
+        """
+        if not getattr(self, 'selection_animation_enabled', False):
+            return
+        if not move_info:
+            return
+        moved = move_info.get('moved_positions') or []
+        if not moved:
+            return
+        from engine.compat import CUBIC_DIRECTIONS
+        vec = CUBIC_DIRECTIONS.get(move_info.get('direction'))
+        if vec is None:
+            return
+        step = int(move_info.get('step', 1) or 1)
+        dr, dc, dd = (int(vec[0]) * step, int(vec[1]) * step,
+                      int(vec[2]) * step)
+        if is_undo:
+            targets = [tuple(int(v) for v in p[:3]) for p in moved]
+        else:
+            targets = [(int(p[0]) + dr, int(p[1]) + dc, int(p[2]) + dd)
+                       for p in moved]
+        locs = set(targets)
+        # 局面里必须真有这些块；对不上宁可不画，也不在半空描一圈。
+        if not any(tuple(int(v) for v in b.location[:3]) in locs
+                   for b in self.game.blocks):
+            return
+
+        self._clear_sel_anim()
+        self._sel_anim_blocks = []       # 不动 be_opted（见 docstring）
+        self._sel_anim_locs = frozenset(locs)
+        gap = None
+        gap_type = move_info.get('gap_type')
+        gap_line = move_info.get('gap_line')
+        if gap_type is not None and gap_line is not None:
+            _line = float(gap_line)
+            gap = (gap_type, int(_line) if _line == int(_line) else _line)
+        self._sel_anim_gap = gap
+        self._sel_anim_sets_gap = False  # 不改玩家 selected_gap
+        self._sel_anim_move_info = None  # 三维没有二维式提交后刷新
+        self._sel_anim_is_undo = bool(is_undo)
+        self._sel_anim_is_think = False
+        self._sel_anim_timer = max(45, (getattr(self, 'cubic_anim_ms', 140)
+                                        + 300) // 17)
 
     def _flash_shuffle_selection(self, moved_positions, gap):
         """选中动画：打乱演示 / 无限打乱重放一步时，高亮该步用到的缝隙与滑块组。
@@ -390,6 +449,7 @@ class AnimationMixin:
         self._sel_anim_blocks = list(blocks)
         self._sel_anim_gap = (gap[0], gap[1]) if gap else None
         self.selected_gap = self._sel_anim_gap
+        self._sel_anim_sets_gap = True
         # 打乱没有 move_info（不是历史里的真实一步）：提交时不去刷新位置，
         # 高亮到期或下一格重设时自然收掉
         self._sel_anim_move_info = None
@@ -403,13 +463,17 @@ class AnimationMixin:
 
     def _clear_sel_anim(self):
         """清除选中动画高亮（只清除自己标记过的缝隙与滑块，不打扰用户选择）。"""
-        if getattr(self, '_sel_anim_gap', None) is not None \
-                and self.selected_gap == self._sel_anim_gap:
+        if (getattr(self, '_sel_anim_sets_gap', False)
+                and getattr(self, '_sel_anim_gap', None) is not None
+                and self.selected_gap == self._sel_anim_gap):
             self.selected_gap = None
         for b in getattr(self, '_sel_anim_blocks', []):
             b.be_opted = False
         self._sel_anim_blocks = []
+        self._sel_anim_locs = frozenset()
         self._sel_anim_gap = None
+        self._sel_anim_sets_gap = False
+        self._sel_anim_timer = 0
         # 清掉游走白色标记，避免残留到下一轮真实撤销/重做
         self._sel_anim_is_think = False
         # 拒絕閃現同屬短時狀態：本方法是全專案八個「退出 / 重開 / 切關」分支的

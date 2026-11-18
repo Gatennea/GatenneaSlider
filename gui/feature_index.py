@@ -586,6 +586,8 @@ _CUBIC_IDS = frozenset({
     'mode_practice', 'mode_timed', 'records_panel',
     # 2026-11-18：自定义谜题框支持「三维」形态（m×n×d + 等级）
     'custom_puzzle',
+    # 2026-11-18：三维撤销/重做补回选中动画（滑动 + 选中组/缝高亮）
+    'selection_animation_enabled',
 })
 
 

@@ -158,14 +158,33 @@ print('D. 撤销 / 重做真的换局面（第 5 步历史已扩到 (r,c,d)）')
 after_cells = locs()
 idx0 = gui.game_history.history_index
 check(idx0 >= 1, f'推过之后历史里不止一条快照（idx {idx0}）')
+# 2026-11-18：撤销/重做补回滑动 + 选中动画。这里用真实推过的历史验一遍，
+# 不只靠合成快照的单测。
+gui.animation_enabled = True
+gui.cubic_anim_ms = 140
+gui.selection_animation_enabled = True
+gui._clear_sel_anim()
 gui.undo()
 check(gui.game_history.history_index == idx0 - 1,
       f'撤销把历史指针退回（{gui.game_history.history_index}）')
 check(set(locs()) != set(after_cells), '撤销换了局面（不是原地不动）')
+check(gui.cubic_anim is not None, '撤销有滑动插值（不是瞬间跳）')
+check(getattr(gui, '_sel_anim_timer', 0) > 0
+      and getattr(gui, '_sel_anim_is_undo', None) is True,
+      '撤销挂上选中动画（蓝）')
+check(getattr(gui, '_sel_anim_locs', frozenset())
+      .issubset(set(tuple(b.location[:3]) for b in gui.game.blocks)),
+      '撤销高亮位置都真的落在局面里', getattr(gui, '_sel_anim_locs', None))
 gui.redo()
 check(gui.game_history.history_index == idx0,
       f'重做把历史指针前进（{gui.game_history.history_index}）')
 check(set(locs()) == set(after_cells), '重做回到撤销前的局面（逐格一致）')
+check(gui.cubic_anim is not None, '重做同样有滑动插值')
+check(getattr(gui, '_sel_anim_is_undo', None) is False,
+      '重做换成重做色（橙）', getattr(gui, '_sel_anim_is_undo', None))
+check(getattr(gui, '_sel_anim_locs', frozenset())
+      .issubset(set(tuple(b.location[:3]) for b in gui.game.blocks)),
+      '重做高亮位置也都真的落在局面里', getattr(gui, '_sel_anim_locs', None))
 
 print('E. 打乱 / 判胜 / 渲染')
 gui.shuffle_puzzle(confirm=False)

@@ -145,8 +145,13 @@ gui.save_readonly_flag = False
 pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 gui.animation_enabled = True
+# 固定相机与拆分，避免读到仓库 config 里上次留下的正对视角：正对时只看得见
+# 一种朝向的面，下面「≥3 级明暗」会假失败（不是渲染退化）。
+gui._cubic_camera_prefs = {}
+gui.cubic_gap = 0.30
 
 gui.new_cubic_puzzle(3, 3, 3, 2)
+gui._cubic_view_oblique()
 check(gui.game.is_solved(), '三维建局默认是整块（与二维同口径）')
 gui.shuffle_puzzle(confirm=False)
 frames = 0

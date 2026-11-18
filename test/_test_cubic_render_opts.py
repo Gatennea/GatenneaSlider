@@ -95,14 +95,14 @@ gui.new_cubic_puzzle(3, 3, 3, 1)
 
 gui.draw_right_panel()
 sw = getattr(gui, 'right_panel_switch_rects', {})
-check(len(sw) == 5, '三维态开关剩 5 个（二维哑开关撤掉，模式/成绩可用）', sorted(sw))
+check(len(sw) == 6, '三维态开关 6 个（选中动画已补回）', sorted(sw))
 check('chain_hint_enabled' not in sw and 'board_marks_enabled' not in sw
-      and 'selection_animation_enabled' not in sw
       and 'coloring_enabled' not in sw,
-      '连锁 / 复原标记 / 选中动画 / 着色都撤掉（三维不做这些）', sorted(sw))
-check({'animation_enabled', 'game_mode', 'show_records_panel',
-       'show_virtual_keyboard', 'cubic_follow_centroid'} == set(sw),
-      '留下的是三维真正生效的五个', sorted(sw))
+      '连锁 / 复原标记 / 着色仍撤掉（三维不做这些）', sorted(sw))
+check({'animation_enabled', 'selection_animation_enabled', 'game_mode',
+       'show_records_panel', 'show_virtual_keyboard',
+       'cubic_follow_centroid'} == set(sw),
+      '留下的是三维真正生效的六个', sorted(sw))
 gr = getattr(gui, 'cubic_gap_slider_rect', None)
 ar = getattr(gui, 'cubic_alpha_slider_rect', None)
 check(gr is not None and ar is not None, '三维态有拆分/切面透明两条滑条', (gr, ar))
@@ -322,10 +322,13 @@ _hidden = ('_settings_coloring_toggle_rect', '_settings_chain_toggle_rect',
            '_settings_gap_hover_toggle_rect', '_settings_marks_toggle_rect',
            '_settings_metrics_toggle_rect', '_settings_records_toggle_rect',
            '_settings_grid_toggle_rect', '_settings_anti_drift_toggle_rect',
-           '_settings_thinking_toggle_rect', '_settings_sel_anim_toggle_rect')
+           '_settings_thinking_toggle_rect')
 _bad = [(a, getattr(gui, a, None)) for a in _hidden
         if getattr(gui, a, None) is not None and getattr(gui, a).width > 0]
 check(not _bad, '三维局视觉页不画着色/连锁/标记/面板/网格等二维项', _bad)
+check(getattr(gui, '_settings_sel_anim_toggle_rect', None) is not None
+      and gui._settings_sel_anim_toggle_rect.width > 0,
+      '三维局视觉页补回「选中动画」开关')
 check(getattr(gui, '_settings_boot_toggle_rect', None) is not None
       and gui._settings_boot_toggle_rect.width > 0,
       '三维局保留开机动画开关')

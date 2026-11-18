@@ -987,3 +987,33 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   回车导航、真点「三维」+ 确定建局、非法值拒绝、预设档合法性、命令面板预选、自定义尺寸存档往返。
   `_test_cubic_entry.py` 的菜单查找补 `p[5]==3` 以区分 3×3×2 与 3×3×3。
   17 套 cubic 全绿（pick 303、view_nav 83、history 51 等），dialog/feature/rp 回归绿。
+
+## 2026-11-18 三维撤销/重做动画 + 补回「选中动画」
+
+用户口径：三维撤销/重做不能瞬间换盘，要像推一步那样滑过去；同时把此前从三维
+入口撤掉的「选中动画」开关补回来——撤销蓝、重做橙地高亮这一步动过的滑块组与
+切面。交互顺序不变（右键选缝 → 左键选块 → 空白右键取消）。
+
+- `gui/animation.py`：新增 `_flash_cubic_move_selection`，三维只记
+  `_sel_anim_locs` / `_sel_anim_gap` 供渲染叠色，**不改 `be_opted` 与
+  `selected_gap`**——否则动画那 0.75s 内点六键会把高亮片当选中片推走。
+  撤销目标 = `moved_positions`；重做目标 = moved + `CUBIC_DIRECTIONS` × step。
+  三维是沿缝面内滑动，缝平面不挪，撤销/重做都用**原缝号**。
+  新增 `_sel_anim_sets_gap`：二维改 `selected_gap` 才还原，三维不动玩家选择。
+- `gui/history.py`：新增 `_cubic_start_undo_redo_anim`，逻辑换盘后只给渲染偏移；
+  撤销给 `-world`、重做给 `+world`，ease-out 归零，时长读 `cubic_anim_ms`。
+- `gui/renderer.py`：三维面片动画帧用选中色填充并按蓝/橙描边；切面轮廓叠同色
+  2–3px 边；动画期间顶替显示动画缝（不写回 `selected_gap`）。右侧栏三维开关
+  5→6（滑动动画、**选中动画**、模式、成绩、虚拟键盘、跟随质心）；视觉页补回
+  选中动画开关，文案标明蓝=撤销、橙=重做。
+- `gui/feature_index.py`：`_CUBIC_IDS` 加 `selection_animation_enabled`。
+- 修一个自己引入的渲染 bug：描边线宽变量曾写作 `_bw`，把超采样层
+  `smoothscale` 的目标宽度覆盖成 6px，整盘被压成一条细线；改用 `_lw`，并在
+  `_test_cubic_selection_anim` 增加「动画帧仍是完整盘面」的像素跨度断言。
+- 测试：新增 `_test_cubic_selection_anim.py`（28 项：撤销/重做目标、只画不改、
+  两个开关独立、右侧栏/视觉页/功能检索入口、到期清理）；`_test_cubic_play.py`
+  D 段补真实推块后的滑动/高亮断言；`_test_cubic_render_opts` 期望改 6 开关 +
+  视觉页选中动画；`_test_cubic_split` 固定相机/拆分，避免仓库 config 残留的
+  正对视角让「≥3 级明暗」假失败。19 套 cubic 全绿。
+- 证据帧：`fix20/sel_anim_undo.png`（蓝）、`fix20/sel_anim_redo.png`（橙）、
+  `fix20/panel_cubic6.png`（6 开关右栏）、`fix20/settings_visual_cubic.png`。

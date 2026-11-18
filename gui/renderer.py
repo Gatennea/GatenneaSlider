@@ -1024,11 +1024,19 @@ class RendererMixin:
         border = self.colors['border']
         opted = {tuple(int(v) for v in b.location[:3])
                  for b in blocks if getattr(b, 'be_opted', False)}
+        # 三维选中动画（撤销/重做）：只看不改，单独一层高亮位置与缝。
+        _sel_anim = self._sel_anim_border()
+        _anim_locs = (getattr(self, '_sel_anim_locs', frozenset())
+                      if _sel_anim is not None else frozenset())
 
         # 切面预览：和二维同一套视觉语言——**红色**（colors['line']），但三维里
         # 它是贯穿整盘的一张面，不是一条线（用户 2026-11-17 指认：这个改成红色）。
         # 遮挡按「块在平面哪一侧」分两遍画解决，见下方说明。
         seam = getattr(self, 'selected_gap', None)
+        # 撤销/重做的选中动画有自己的缝：只在这 0.75s 内顶替显示，
+        # 不写回 selected_gap（玩家的选择不会因为一次撤销被改掉）。
+        if _sel_anim is not None and getattr(self, '_sel_anim_gap', None):
+            seam = self._sel_anim_gap
         # 推一步的滑动期间（第 6 步）不画切面：那张面停在原处，块会从它中间
         # 穿过去，深度序上必然出现「红面盖住正在滑的块」——动画一结束就恢复。
         # ⚠️ 只停「切面」，箭头照画（seam 本身还要给箭头定位）。
@@ -1149,16 +1157,30 @@ class RendererMixin:
                 hi.blit(cell, (x0, y0))
                 continue
             face = item
-            color = chosen if face['loc'] in opted else base
+            _is_anim = _sel_anim is not None and face['loc'] in _anim_locs
+            color = (chosen if (face['loc'] in opted or _is_anim) else base)
             shade = face['shade']
             fill = (int(color[0] * shade), int(color[1] * shade),
                     int(color[2] * shade))
             pts = _T(face['pts'])
             pygame.draw.polygon(hi, fill, pts)
-            pygame.draw.polygon(hi, border, pts, _ss)
+            if _is_anim:
+                # 撤销蓝 / 重做橙；线宽跟超采样一起放大，缩回后仍是 2–3px。
+                # 变量名别用 _bw/_bh：那两个是下面 smoothscale 的目标尺寸。
+                _lw = max(2, int(_sel_anim[1])) * _ss
+                pygame.draw.polygon(hi, _sel_anim[0], pts, _lw)
+            else:
+                pygame.draw.polygon(hi, border, pts, _ss)
         if hi is not None:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
+
+        # 选中动画的缝也描一圈同色边：红面仍是红面（切面语义不变），
+        # 冷暖边只表达「这一步是撤回来还是重做过去」。
+        if _sel_anim is not None and seam_pts_screen:
+            pygame.draw.polygon(self.screen, _sel_anim[0],
+                                seam_pts_screen,
+                                max(2, min(3, int(_sel_anim[1]))))
 
         # 拒绝反馈（方案 §5 第 3 阶段）：推不动时给这组块描 12 帧红边。
         # 二维靠 `_flash_reject` 让块面变色，三维块是投影出来的多边形，直接描
@@ -4447,14 +4469,11 @@ class RendererMixin:
             "滑块移动时有个滑过去的过程；关掉就是瞬间到位", max_w=_mw)
 
         # 选中动画开关（撤销/重做、求解播放时高亮缝隙与滑块组）
-        # 三维不画这一步：三维的撤销/重做不走这条二维高亮链（方案 §2.4 明确不做），
-        # 因此在三维局里整行消失，而不是留一个点了没反应的灰开关。
-        if not getattr(self, 'cubic_mode', False):
-            self._settings_sel_anim_toggle_rect, ny = self._draw_switch_row(
-                x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
-                "撤销、重做和求解播放时，高亮这次动的缝和滑块", max_w=_mw)
-        else:
-            self._settings_sel_anim_toggle_rect = pygame.Rect(0, 0, 0, 0)
+        # 2026-11-18：三维补回——三维撤销/重做现在有滑动 + 选中高亮，
+        # 不再是「点了没反应的灰开关」。
+        self._settings_sel_anim_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
+            "撤销、重做时高亮这次动的缝和滑块（蓝=撤销，橙=重做）", max_w=_mw)
 
         # 动画时长滑动条（轨道与开关同一右栏对齐）
         # 三维态写 cubic_anim_ms（60..400），与右侧栏「速度」滑条同源；
@@ -5843,7 +5862,7 @@ class RendererMixin:
         cubic = bool(getattr(self, 'cubic_mode', False))
         sw_h = 24
         sw_gap = 4
-        sw_count = 5 if cubic else 7
+        sw_count = 6 if cubic else 7
         switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
         switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
         sw_x = panel_x + 6
@@ -5880,12 +5899,14 @@ class RendererMixin:
 
         # 摆放原则（用户定）：右下角只放**游玩中需要经常切换**的开关；
         # 不常改的一律收回设置对话框。逆序宏因此从这里撤回设置。
-        # 三维态（2026-11-18 适配）：去掉二维专属的选中动画 / 着色 / 连锁 /
-        # 复原标记；保留滑动动画、模式（竞速已支持）、成绩（三维成绩表可用）、
-        # 虚拟键盘、跟随质心。
+        # 三维态（2026-11-18 适配）：去掉二维专属的着色 / 连锁 / 复原标记；
+        # 保留滑动动画、选中动画（撤销/重做高亮，2026-11-18 补回）、模式
+        # （竞速已支持）、成绩（三维成绩表可用）、虚拟键盘、跟随质心。
         if cubic:
             _sw_btn('animation_enabled', '滑动动画',
                     lambda: self.animation_enabled)
+            _sw_btn('selection_animation_enabled', '选中动画',
+                    lambda: self.selection_animation_enabled)
             _sw_btn('game_mode', '模式', lambda: None)
             _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
             _sw_btn('show_virtual_keyboard', '虚拟键盘',
