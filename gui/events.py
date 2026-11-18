@@ -4670,6 +4670,12 @@ class EventsMixin:
         track = self._settings_slider_track_rect
         normalized = (mx - track.x) / track.width
         normalized = max(0.0, min(1.0, normalized))
+        if getattr(self, 'cubic_mode', False):
+            # 三维：视觉页这条滑条写 cubic_anim_ms（60..400），不动二维值
+            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
+            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            self.cubic_anim_ms = int(lo + normalized * (hi - lo))
+            return
         new_duration = int(100 + normalized * 900)
         if self.animating and self.animation_duration > 0:
             elapsed = pygame.time.get_ticks() - self.anim_start_time
@@ -4894,6 +4900,10 @@ class EventsMixin:
                 self.new_triangle_puzzle(params[0], params[1])
             elif form == 'mi':
                 self.new_mi_puzzle(params[0], params[1], params[2])
+            elif form == 'cubic':
+                # 命令面板「三维谜题」直达：params = (m, n, depth)
+                self.new_cubic_puzzle(params[0], params[1], params[2],
+                                      act.get('level', 1))
             else:
                 self.new_puzzle(params[0], params[1], params[2],
                                 numbered=(form == 'numbered'))

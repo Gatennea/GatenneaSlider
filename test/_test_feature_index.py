@@ -67,7 +67,7 @@ for f in fi.FEATURES:
     if f.get('kind') not in _KINDS:
         bad.append(f"{fid}:kind={f.get('kind')}")
     for fkey in f.get('forms', ()):
-        if fkey not in fi.ALL_FORMS:
+        if fkey not in fi.FORM_NAMES:
             bad.append(f'{fid}:形态键{fkey}')
     for mkey in f.get('modes', ()):
         if mkey not in fi.ALL_MODES:
@@ -217,9 +217,9 @@ check('米字下「单次触控」标记为不可用',
       bool(hits) and hits[0][1]['id'] == 'control_single_touch'
       and hits[0][2] is False)
 
-# 形态键必须覆盖 4 种形态，否则检索结果会漏
-_missing_forms = sorted({f for f in fi.ALL_FORMS} - {x for fe in fi.FEATURES for x in fe['forms']})
-check('四种形态都至少被一条功能覆盖', not _missing_forms, f'未被覆盖: {_missing_forms}')
+# 形态键必须覆盖全部登记形态（含 2026-11-18 新增的三维），否则检索结果会漏
+_missing_forms = sorted({f for f in fi.FORM_NAMES} - {x for fe in fi.FEATURES for x in fe['forms']})
+check('五种形态都至少被一条功能覆盖', not _missing_forms, f'未被覆盖: {_missing_forms}')
 
 # ================================================================ 4 一键到位
 print("\n--- 4 一键到位接线 ---")
@@ -410,6 +410,35 @@ _settings_place = [f['id'] for f in fi.FEATURES
                    and f['place'][0] == 'settings']
 _orphan = [i for i in _settings_place if i not in _mapped_ids]
 check('声明在设置页的条目都有对应控件', not _orphan, f'孤立条目: {_orphan}')
+
+print("\n--- 7 三维形态登记（2026-11-18） ---")
+gui_c = SliderGUI(m=3, n=3, step=1)
+gui_c.animation_enabled = False
+gui_c.new_cubic_puzzle(3, 3, 3, 1)
+check('三维局检索形态 = cubic', gui_c._feature_form() == 'cubic',
+      f'实际 {gui_c._feature_form()}')
+_hits3 = fi.search('三维', form='cubic', mode='practice')
+check('搜「三维」能命中三维谜题预设',
+      any(e['id'] == 'cubic_preset' for (_s, e, _a) in _hits3))
+_preset = [e for (_s, e, _a) in _hits3 if e['id'] == 'cubic_preset']
+check('预设条目能一键建三维局',
+      bool(_preset) and _preset[0]['action']['type'] == 'puzzle'
+      and _preset[0]['action'].get('kind') == 'cubic')
+_gap = fi.search('拆分', form='cubic', mode='practice')
+check('搜「拆分」在三维局可用',
+      any(e['id'] == 'cubic_gap' and a for (_s, e, a) in _gap))
+_col = fi.search('着色', form='cubic', mode='practice')
+_col_entry = [e for (_s, e, _a) in _col if e['id'] == 'coloring_enabled']
+check('「着色」在三维明确不支持（方案已定不做）',
+      bool(_col_entry) and 'cubic' not in _col_entry[0]['forms'])
+check('不支持时能给出理由',
+      bool(_col_entry) and bool(fi.unsupported_reason(_col_entry[0], 'cubic', 'practice')),
+      fi.unsupported_reason(_col_entry[0], 'cubic', 'practice') if _col_entry else '')
+check('着色条目没有混进 cubic 形态',
+      'cubic' not in next(e for e in fi.FEATURES
+                          if e['id'] == 'coloring_enabled')['forms'])
+check('存档在三维已登记为可用',
+      'cubic' in next(e for e in fi.FEATURES if e['id'] == 'save')['forms'])
 
 print()
 if _failures:

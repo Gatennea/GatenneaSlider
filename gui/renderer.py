@@ -4447,18 +4447,33 @@ class RendererMixin:
             "滑块移动时有个滑过去的过程；关掉就是瞬间到位", max_w=_mw)
 
         # 选中动画开关（撤销/重做、求解播放时高亮缝隙与滑块组）
-        self._settings_sel_anim_toggle_rect, ny = self._draw_switch_row(
-            x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
-            "撤销、重做和求解播放时，高亮这次动的缝和滑块", max_w=_mw)
+        # 三维不画这一步：三维的撤销/重做不走这条二维高亮链（方案 §2.4 明确不做），
+        # 因此在三维局里整行消失，而不是留一个点了没反应的灰开关。
+        if not getattr(self, 'cubic_mode', False):
+            self._settings_sel_anim_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
+                "撤销、重做和求解播放时，高亮这次动的缝和滑块", max_w=_mw)
+        else:
+            self._settings_sel_anim_toggle_rect = pygame.Rect(0, 0, 0, 0)
 
         # 动画时长滑动条（轨道与开关同一右栏对齐）
+        # 三维态写 cubic_anim_ms（60..400），与右侧栏「速度」滑条同源；
+        # 二维仍写 animation_duration（100..1000）。
+        _cubic_anim = getattr(self, 'cubic_mode', False)
+        if _cubic_anim:
+            _anim_lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
+            _anim_hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            _anim_val = getattr(self, 'cubic_anim_ms', 140)
+        else:
+            _anim_lo, _anim_hi = 100, 1000
+            _anim_val = self.animation_duration
         speed_y = ny
         speed_label = self.dialog_font.render("动画时长：", True, self.colors['dialog_text'])
         self.screen.blit(speed_label, (x + 15, speed_y + 6))
 
         track_x = x + 220
         track_width = 190
-        value_text = f"{self.animation_duration} ms"
+        value_text = f"{_anim_val} ms"
         value_surface = self.input_font.render(value_text, True, self.colors['input_text'])
         self.screen.blit(value_surface,
                          (track_x + track_width - value_surface.get_width(), speed_y + 6))
@@ -4469,7 +4484,7 @@ class RendererMixin:
         pygame.draw.rect(self.screen, self.colors['dialog_border'], self._settings_slider_track_rect)
 
         # 滑动条位置
-        normalized = (self.animation_duration - 100) / 900.0
+        normalized = (_anim_val - _anim_lo) / max(1.0, float(_anim_hi - _anim_lo))
         normalized = max(0.0, min(1.0, normalized))
         knob_x = int(track_x + normalized * track_width)
         self._settings_slider_knob_rect = pygame.Rect(knob_x - 8, track_y - 6, 16, 16)
@@ -4478,8 +4493,8 @@ class RendererMixin:
         pygame.draw.rect(self.screen, knob_color, self._settings_slider_knob_rect, border_radius=8)
 
         # 刻度标签（两端对齐轨道）
-        min_label = self.status_font.render("100ms", True, (150, 150, 150))
-        max_label = self.status_font.render("1000ms", True, (150, 150, 150))
+        min_label = self.status_font.render(f"{_anim_lo}ms", True, (150, 150, 150))
+        max_label = self.status_font.render(f"{_anim_hi}ms", True, (150, 150, 150))
         self.screen.blit(min_label, (track_x, track_y + 12))
         self.screen.blit(max_label, (track_x + track_width - max_label.get_width(), track_y + 12))
         ny = speed_y + 72
@@ -4518,6 +4533,34 @@ class RendererMixin:
         self.screen.blit(zmin_label, (ztrack_x, ztrack_y + 12))
         self.screen.blit(zmax_label, (ztrack_x + ztrack_width - zmax_label.get_width(), ztrack_y + 12))
         ny = zoom_y + 72
+
+        # 三维局：视觉页只留三维真正生效的项。
+        # 着色 / 连锁 / 缝隙闪烁 / 复原标记 / 调试面板 / 成绩面板 / 绘制网格 /
+        # 防偏移演示 / 思考演示全部是二维语义，方案 §2.4 与 §5 明确不做三维，
+        # 因此**不画**（而不是画成灰开关）；对应矩形清零，避免旧帧的命中区残留。
+        if _cubic_anim:
+            for _attr in ('_settings_coloring_toggle_rect',
+                          '_settings_chain_toggle_rect',
+                          '_settings_gap_hover_toggle_rect',
+                          '_settings_marks_toggle_rect',
+                          '_settings_metrics_toggle_rect',
+                          '_settings_records_toggle_rect',
+                          '_settings_grid_toggle_rect',
+                          '_settings_anti_drift_toggle_rect',
+                          '_settings_thinking_toggle_rect'):
+                setattr(self, _attr, pygame.Rect(0, 0, 0, 0))
+
+            # 开机动画（启动时全局，三维同样生效）
+            self._settings_boot_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
+                "启动时播放标题动画，点一下可以跳过", max_w=_mw)
+            # 防意外打乱/重置（三维打乱同样清历史，提示同样有用）
+            self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
+                "打乱和重置都会清空历史、撤不回来；开启后先弹确认，防止误触",
+                max_w=_mw)
+            self._settings_anim_height = ny - y + 10
+            return
 
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(

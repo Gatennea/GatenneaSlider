@@ -313,6 +313,42 @@ check(getattr(gui, '_settings_cubic_btn_rects', None) == {},
       '二维局下三维页不注册任何步进按钮（点不到）')
 
 print('=' * 60)
+print('G. 三维局「视觉」页：只留生效项（明确不做的直接不画）')
+gui.new_cubic_puzzle(3, 3, 3, 1)
+gui.settings_active_tab = 'animation'
+gui.draw_settings_dialog()
+_hidden = ('_settings_coloring_toggle_rect', '_settings_chain_toggle_rect',
+           '_settings_gap_hover_toggle_rect', '_settings_marks_toggle_rect',
+           '_settings_metrics_toggle_rect', '_settings_records_toggle_rect',
+           '_settings_grid_toggle_rect', '_settings_anti_drift_toggle_rect',
+           '_settings_thinking_toggle_rect', '_settings_sel_anim_toggle_rect')
+_bad = [(a, getattr(gui, a, None)) for a in _hidden
+        if getattr(gui, a, None) is not None and getattr(gui, a).width > 0]
+check(not _bad, '三维局视觉页不画着色/连锁/标记/面板/网格等二维项', _bad)
+check(getattr(gui, '_settings_boot_toggle_rect', None) is not None
+      and gui._settings_boot_toggle_rect.width > 0,
+      '三维局保留开机动画开关')
+check(getattr(gui, '_settings_confirm_shuffle_toggle_rect', None) is not None
+      and gui._settings_confirm_shuffle_toggle_rect.width > 0,
+      '三维局保留防意外打乱开关')
+_track = getattr(gui, '_settings_slider_track_rect', None)
+check(_track is not None and _track.width > 0, '三维局视觉页动画滑条仍存在')
+_d0 = gui.cubic_anim_ms
+_2d0 = gui.animation_duration
+gui._handle_settings_dialog_event(pygame.event.Event(
+    pygame.MOUSEBUTTONDOWN, {'pos': (_track.left + 1, _track.centery), 'button': 1}))
+check(gui.cubic_anim_ms <= gui.CUBIC_ANIM_MIN_MS + 2,
+      '三维视觉页滑条拉到最左 = 最快', gui.cubic_anim_ms)
+gui._settings_slider_dragging = False
+gui._handle_settings_dialog_event(pygame.event.Event(
+    pygame.MOUSEBUTTONDOWN, {'pos': (_track.right - 1, _track.centery), 'button': 1}))
+check(gui.cubic_anim_ms >= gui.CUBIC_ANIM_MAX_MS - 2,
+      '三维视觉页滑条拉到最右 = 最慢', gui.cubic_anim_ms)
+check(gui.animation_duration == _2d0,
+      '三维视觉页改速度不碰二维 animation_duration', (gui.animation_duration, _2d0))
+gui._settings_slider_dragging = False
+
+print('=' * 60)
 total = _ok[0] + len(_fail)
 print(f'结果：{"全部通过" if not _fail else "有失败"}（{_ok[0]} 项通过，{len(_fail)} 项失败）／共 {total} 项')
 if _fail:
