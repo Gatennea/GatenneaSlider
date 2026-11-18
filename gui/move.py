@@ -247,7 +247,10 @@ class MoveMixin:
                 )
 
         # 所有步骤都合法（S5：滑動摩擦聲必須跟本次動畫同起同落；無素材時靜默）
-        if self.animation_enabled and self.animation_duration > 0:
+        # 三維（§54 第 5 步）：立方动画是第 6 步的事，先把三维一律走「即时提交」
+        # 路径——二维动画层按 (r,c) 格心插值，套到 3 元位置上没有对应实现。
+        if (self.animation_enabled and self.animation_duration > 0
+                and not getattr(self, 'cubic_mode', False)):
             self.start_animation(selected, final_positions)
             # 必须排在 start_animation 之后：拖拽接续会把 animation_duration
             # 按剩余比例缩短，声音长度要取定稿后的值（见 _play_slide_sound）
@@ -281,6 +284,12 @@ class MoveMixin:
             'w': '上', 's': '下', 'a': '左', 'd': '右',
             'e': '右上', 'z': '左下', 'x': '右下',
         }
+        # 三維（§54 第 4 步）：r/R c/C d/D 是軸向字母，寫成「c-」這種才读得出
+        if getattr(self, 'cubic_mode', False):
+            cubic = {'r': 'r−', 'R': 'r+', 'c': 'c−', 'C': 'c+',
+                     'd': 'd−', 'D': 'd+'}
+            if direction in cubic:
+                return cubic[direction]
         if direction in names:
             return names[direction]
         # 模型文件板型（通用通道）：字母是**从几何派生的**（compat 的

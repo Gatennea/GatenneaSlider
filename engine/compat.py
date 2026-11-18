@@ -54,6 +54,22 @@ SQUARE_DIRECTIONS = {
     'd': (0, 1),
 }
 
+#: 立方密铺的三轴六向字母表（§54 第 4 步）。
+#: 不注册的话会走派生表，分配成 A~F——能滑但不直观。这里按轴名给字母：
+#: **大写 = 沿该轴增大，小写 = 沿该轴减小**（r/R、c/C、d/D 各一对），
+#: 与 `cubic_spec` 的逻辑坐标 (r, c, d) 一一对应。
+#: ⚠️ 小写 r/c/d 与缝族名同名：`opt()` 先认族名（`_gap_family_of` 的顺序），
+#: 所以「往里传方向字母」这种事在 cubic 上不成立——GUI 的 opt 只传族名，
+#: 字母只在 `_build_action` 查表用。
+CUBIC_DIRECTIONS = {
+    'r': (-1, 0, 0),
+    'R': (1, 0, 0),
+    'c': (0, -1, 0),
+    'C': (0, 1, 0),
+    'd': (0, 0, -1),
+    'D': (0, 0, 1),
+}
+
 _VOCAB = {}
 
 
@@ -437,3 +453,5 @@ register_direction_vocab('tri', TRI_DIRECTIONS)
 # 且转回来是同一条 Move）。
 register_direction_vocab('shatter', SHATTER_DIRECTIONS)
 register_direction_vocab('shatter_lattice', SHATTER_LATTICE_DIRECTIONS)
+# 立方三轴六向（§54 第 4 步）：r/R c/C d/D，大写沿轴增大
+register_direction_vocab('cubic', CUBIC_DIRECTIONS)

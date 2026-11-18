@@ -258,6 +258,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 三维层数 d（§54 立方体板型；二维形态恒为 0）
         self.current_depth = 0
         self.current_kind = kind
+        # 启动参数（命令行/默认）：读档失败要「回落默认局」时用这一份，
+        # 不能用 current_*——那可能已经被存档改成了三维 3×3×3。
+        self._boot_puzzle_args = (m, n, step, kind)
 
         # 游戏逻辑对象（带 kind；命令行走位若参数非法，会在下方显式报错而非静默方形）
         self.game = create_puzzle(m, n, step, kind=kind)
@@ -664,10 +667,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 自定义谜题对话框状态
         self.show_custom_dialog = False
-        self.custom_fields = {'m': '6', 'n': '6', 'step': '1'}
-        self.custom_active_field = None  # 'm', 'n', 'step'
+        self.custom_fields = {'m': '6', 'n': '6', 'd': '3', 'step': '1'}
+        self.custom_active_field = None  # 'm', 'n', 'd', 'step'
         self.custom_error = ''
-        self.custom_kind = 'rect'       # 'rect' 矩形 / 'triangle' 三角 / 'mi' 米字 / 'numbered' 数字
+        self.custom_kind = 'rect'       # 'rect' 矩形 / 'triangle' 三角 / 'mi' 米字 /
+                                        # 'numbered' 数字 / 'cubic' 三维
 
         # 通用确认弹窗（破坏性操作；目前只有谜题菜单的「删除预设」）
         # 见 gui/dialogs.py draw_confirm_dialog / handle_confirm_dialog_events
@@ -738,6 +742,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 动画速度范围（毫秒/步）：越小越快
         self.SPEED_MIN_MS = 50
         self.SPEED_MAX_MS = 1000
+        # 三维推一步的动画时长范围（毫秒）。右侧栏「速度」滑条在三维态写
+        # `cubic_anim_ms`，与二维 animation_duration 分开：三维一步是整组 9
+        # 块沿一个轴滑，时长口径本来就不一样。
+        self.CUBIC_ANIM_MIN_MS = 60
+        self.CUBIC_ANIM_MAX_MS = 400
+        self.cubic_anim_ms = 140
         self.animation_duration = 300  # 毫秒
         self.animation_enabled = True          # 滑动动画（滑块移动/撤销重做滑动）
         self.selection_animation_enabled = True  # 选中动画（撤销/重做、求解/宏播放时的缝隙与滑块组高亮；判据见 renderer._selection_visuals_enabled）
@@ -980,15 +990,19 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             ('模型谜题 ▸', '__sub__', 'models'),
         ]
         # 三维（立方体单元，方案 §4 第 0 步）：条目格式比二维多一位 depth
-        # ——(名称, m, n, step, 'cubic', d)。等级 1~2 各一档，纯作验证入口；
-        # 1×1×1 一步都动不了（等级须 < 最大维度），留着只为「入口先于功能」，
-        # 点它会得到一句明确的不可建局说明，而不是静默无反应。
+        # ——(名称, m, n, step, 'cubic', d)。1×1×1 那种「一步都动不了」的档位
+        # 不再放进菜单（new_cubic_puzzle 仍会给明确拒绝说明，供代码路径兜底）。
         self.puzzle_sub_presets['cubic'] = [
             ('__group__', '立方体（三维，正方体单元）'),
-            ('三维 1×1×1 等级1', 1, 1, 1, 'cubic', 1),
             ('三维 2×2×2 等级1', 2, 2, 1, 'cubic', 2),
+            ('三维 3×3×2 等级1', 3, 3, 1, 'cubic', 2),
             ('三维 3×3×3 等级1', 3, 3, 1, 'cubic', 3),
             ('三维 3×3×3 等级2', 3, 3, 2, 'cubic', 3),
+            ('三维 4×3×2 等级1', 4, 3, 1, 'cubic', 2),
+            ('三维 4×4×4 等级1', 4, 4, 1, 'cubic', 4),
+            ('三维 4×4×4 等级2', 4, 4, 2, 'cubic', 4),
+            ('三维 4×4×4 等级3', 4, 4, 3, 'cubic', 4),
+            ('三维 5×5×5 等级1', 5, 5, 1, 'cubic', 5),
         ]
         # 模型文件板型：条目完全由注册表决定——丢一个 models/<name>.json
         # 进目录，菜单里就多一项，这里一行都不用改。
@@ -1403,15 +1417,44 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 默认相机：斜视（三面可见）。六朝向带倾斜、拖动旋转、Ctrl+滚轮缩放
         # 都在 §54 第 2 步（gui/events.py 的 _cubic_* 一族）。
         from engine.cubic_camera import CubicCamera
-        from engine.cubic_view import DEFAULT_GAP
         self.cubic_camera = CubicCamera.oblique_default()
         self.cubic_view_label = '斜视'
         self.cubic_view_index = None
         self.cubic_zoom = 1.0
         self.cubic_dragging = False
-        # 拆分（相邻块之间空出的距离）：0 = 贴死成一整块、看不出前后；
-        # 滑条留到「渲染选项」那一步，这里先给默认值。
-        self.cubic_gap = DEFAULT_GAP
+        # 第 3 步的点击态：drag 起手记起点、松手看有没有移动（移动 = 旋转，
+        # 没移动 = 单击/双击选缝选块）；双击自己算时间窗，pygame 无原生双击。
+        self.cubic_drag_moved = False
+        self.cubic_drag_start = None
+        self.cubic_drag_from = None
+        self._cubic_scene = None
+        self._cubic_last_click_t = None
+        self._cubic_last_click_p = None
+        # 三维推一步的滑动（第 6 步）：只动渲染层，见 gui/events._cubic_start_anim
+        self.cubic_anim = None
+        # 三维选项（方案 §2.4「登记机制」）：默认值来自声明式表，别在这里手写一份
+        # ——加选项只改 gui/cubic_settings.CUBIC_SETTINGS，渲染/事件/读盘自动跟上。
+        from gui import cubic_settings
+        cubic_settings.reset(self)
+        # 平移盘面（没选中时点三轴六键 = 平移）：换局清零，别把上局的偏移带过来
+        self.cubic_pan = [0.0, 0.0]
+        # 跟随质心（方案 §2.2）：默认开——整盘滑动时把质心锁在屏幕中心，
+        # 兼作三维「防偏移」。手动平移后暂停，按「居中」恢复。
+        self.cubic_follow_centroid = True
+        self._cubic_follow_center = None      # 平滑跟随的当前参考点（换局重来）
+        # 但 config 里记着上次退出时的手工平移（用户拖过视角再退出）：套回去。
+        _pan0 = getattr(self, '_cubic_pan_prefs', None)
+        if isinstance(_pan0, (list, tuple)) and len(_pan0) == 2:
+            _lim = 0.55 * max(self.screen_width, self.screen_height)
+            self.cubic_pan = [max(-_lim, min(_lim, float(_pan0[0]))),
+                              max(-_lim, min(_lim, float(_pan0[1])))]
+        if getattr(self, '_cubic_follow_prefs', None) is not None:
+            self.cubic_follow_centroid = bool(self._cubic_follow_prefs)
+        # 三维只留虚拟键盘当鼠标操作入口（方案 §1「操作入口」）。二维里这张面板
+        # 可以被关掉（config.panels.virtual_keyboard.visible=false），进三维必须
+        # 自己打开，否则鼠标端一个能按的都没有——2026-11-18 用户就撞在这上面
+        # （「沒看到箭頭啊，感覺還是沒辦法玩」，实际存档里面板是关着的）。
+        self.show_virtual_keyboard = True
 
         # 上次的三维相机组（config.json 的 cubic_camera）：有就套用，缺字段
         # 保持上面的默认；数值越界交给夹紧逻辑兜住（不静默写坏姿势）。
@@ -1425,12 +1468,24 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 except ValueError as exc:      # 空四元数这类坏档：回声 + 保持默认
                     print(f"三维相机存档无效，已用默认视角: {exc}")
             gap = prefs.get('gap')
-            if gap is not None and 0.0 <= gap < 1.0:
+            # gap=0 是「贴死成一整块」，是测试用/临时状态，不该被存档永久继承：
+            # 一旦某次存进 0，之后每次开局都是贴死，看起来就是「拆分又没了」
+            # （2026-11-18 用户报「之前做的拆分怎麼又不拆了」）。0 一律回落默认。
+            if gap is not None and 1e-6 < gap < 1.0:
                 self.cubic_gap = gap
             zoom = prefs.get('zoom')
             if zoom is not None:
                 lo, hi = self.CUBIC_ZOOM_RANGE
                 self.cubic_zoom = max(lo, min(hi, zoom))
+            # 其余三维选项（切面透明度/双击时间窗/旋转灵敏度）：走同一张声明式表，
+            # 越界夹紧、缺项保默认（别在这里再写一份分支）。
+            for _meta in cubic_settings.CUBIC_SETTINGS:
+                if _meta['key'] == 'gap':
+                    continue
+                if _meta['key'] in prefs:
+                    setattr(self, _meta['attr'],
+                            cubic_settings.clamp_value(_meta['key'],
+                                                       prefs[_meta['key']]))
             view = prefs.get('view')
             if view is not None:
                 self.cubic_view_index = view
@@ -1834,6 +1889,14 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
     def center_map(self):
         """将地图居中显示在游戏区域中"""
+        if getattr(self, 'cubic_mode', False):
+            # 三维：居中 = 平移归零 + 恢复「跟随质心」（方案 §2.2）。二维那套
+            # camera_x/y 与矩阵包围盒对三维没有意义，别落进来算。
+            if hasattr(self, '_cubic_pan_center'):
+                return self._cubic_pan_center()
+            self.cubic_pan = [0.0, 0.0]
+            self.cubic_follow_centroid = True
+            return
         if getattr(self, 'triangle_mode', False):
             self._center_triangle()
             return

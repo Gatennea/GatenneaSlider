@@ -9,6 +9,8 @@
 面板通过标题栏拖动，点击右上角 × 关闭。
 """
 
+import math
+
 import pygame
 
 
@@ -42,22 +44,105 @@ class VirtualKeyboardMixin:
         self.vk_jump_input_rect = None
         self.vk_jump_btn_rect = None
         self.vk_sticky = True     # 粘滞开关：开=撤销/重做连续播放；关=撤销/重做单步
+        self.cubic_pan = [0.0, 0.0]   # 三维平移盘面：屏幕像素偏移（不碰逻辑坐标）
+
+    _VK_CUBIC_AREA = 200      # 三维「坐标轴」区域边长（六个端点要有地方张开）
+
+    def _vk_dir_area_height(self) -> int:
+        """方向区高度：三维用一块方形区域（坐标轴要朝四面八方伸），其余按行数算。"""
+        if getattr(self, 'cubic_mode', False):
+            return self._VK_CUBIC_AREA
+        return (self._VK_BTN + self._VK_BTN_GAP) * self._vk_direction_rows()
 
     def _vk_panel_size(self):
         """计算面板宽高"""
-        dir_rows = self._vk_direction_rows()
         width = self._VK_PAD * 2 + self._VK_ACTION_BTN_W * 2 + self._VK_STICKY_W + self._VK_BTN_GAP * 2
+        if getattr(self, 'cubic_mode', False):
+            width = max(width, self._VK_CUBIC_AREA + self._VK_PAD * 2)
         height = (self._VK_TITLE_H + self._VK_PAD
-                  + self._VK_BTN * dir_rows + self._VK_BTN_GAP * dir_rows
+                  + self._vk_dir_area_height()
                   + self._VK_ACTION_BTN_H + self._VK_BTN_GAP
                   + self._VK_JUMP_H + self._VK_PAD)
         return width, height
 
     def _vk_direction_rows(self) -> int:
-        """方向键行数：方形 2 行（上 / 左下右）；三角/米字 3 行（六向 / 八向）"""
+        """方向键行数：方形 2 行（上 / 左下右）；三角/米字/cubic 3 行（六向 / 八向 / 三轴）"""
+        if getattr(self, 'cubic_mode', False):
+            return 3
         if getattr(self, 'mi_mode', False) or getattr(self, 'triangle_mode', False):
             return 3
         return 2
+
+    def _vk_build_cubic_dirs(self, top_row_y, center_x) -> dict:
+        """三维键盘 = 一根**坐标轴图**：中心一个原点，六条端点沿三轴伸出去。
+
+        为什么改成坐标轴（用户 2026-11-18「虚拟键盘設計成坐標軸那樣，六個方向
+        都可以點」）：三行「左负右正」的排法把三维压成了表格，看不出这是三根
+        互相垂直的轴，也看不出相机转到哪个姿态。现在端点位置直接由**当前相机
+        的投影**算：某个轴正对镜头它就缩到原点附近（屏幕上压成一个点），斜着看
+        就自然张开——和棋盘上的方向箭头是同一套几何。
+
+        端点仍然落在 44×44 的命中盒里（与二维键位同尺寸，好点），只是位置不再
+        按行排。
+        """
+        btn = 40          # 三维端点键：比二维略小，六个都要挤进坐标轴区域
+        area_h = self._VK_CUBIC_AREA
+        cx = center_x
+        cy = top_row_y + area_h // 2
+        axes = self._cubic_vk_axes() if hasattr(self, '_cubic_vk_axes') else {}
+        rects = {}
+        reach = area_h / 2.0 - btn / 2.0 - 6.0
+        for letter, (dx, dy, plen) in axes.items():
+            # 投影越短（越正对镜头）端点越靠近原点：最短 22px，最长 = 区域半径
+            r = 22.0 + (reach - 22.0) * min(1.0, plen)
+            if plen < 0.15:
+                # 这条轴正对镜头：投影理论上是一个点。不硬造第三根线，两个端盘
+                # 沿**斜对角**错开（不压在另外两根轴上），一个朝观察者、一个背向。
+                off = 24
+                px, py = (cx + off, cy + off) if letter.isupper() else (cx - off, cy - off)
+            else:
+                px, py = cx + dx * r, cy + dy * r
+            panel = self.vk_panel_rect
+            px = min(max(px, panel.left + btn / 2 + 4), panel.right - btn / 2 - 4)
+            py = min(max(py, cy - area_h / 2 + btn / 2 + 2),
+                     cy + area_h / 2 - btn / 2 - 2)
+            rects['cubic_' + letter] = pygame.Rect(
+                int(px - btn / 2), int(py - btn / 2), btn, btn)
+        # 分离：某两条轴的端点在屏幕上挨得太近（甚至投影到同一处）时，两个键
+        # 会互相吃点击。这里做几轮「沿连线互相推开」的松弛：位置只会从理想投影
+        # 挪开一点点，但「点得中」比「摆得准」重要。绘制与命中用同一份 rect。
+        keys = sorted(rects)
+        lo_x = self.vk_panel_rect.left + btn / 2 + 4
+        hi_x = self.vk_panel_rect.right - btn / 2 - 4
+        lo_y = cy - area_h / 2 + btn / 2 + 2
+        hi_y = cy + area_h / 2 - btn / 2 - 2
+        pad = 5.0
+        for _ in range(14):
+            moved = False
+            for i, a in enumerate(keys):
+                for b in keys[i + 1:]:
+                    ra, rb = rects[a], rects[b]
+                    ca, cb = ra.center, rb.center
+                    dxm = cb[0] - ca[0]
+                    dym = cb[1] - ca[1]
+                    dist = math.hypot(dxm, dym)
+                    need = pad + btn
+                    if dist >= need:
+                        continue
+                    if dist < 1e-6:
+                        dxm, dym, dist = 0.0, -1.0, 1.0
+                    push = (need - dist) / 2.0 + 0.5
+                    ux, uy = dxm / dist * push, dym / dist * push
+                    ra.move_ip(-int(round(ux)), -int(round(uy)))
+                    rb.move_ip(int(round(ux)), int(round(uy)))
+                    for rr in (ra, rb):
+                        rr.center = (min(max(rr.centerx, int(lo_x)), int(hi_x)),
+                                     min(max(rr.centery, int(lo_y)), int(hi_y)))
+                    moved = True
+            if not moved:
+                break
+        return rects
+
 
     def _vk_build_triangle_dirs(self, top_row_y, center_x) -> dict:
         """三角形六向：按屏幕方向排三行两列，与键盘 W/E/A/D/Z/X 的六边形对应。"""
@@ -119,7 +204,9 @@ class VirtualKeyboardMixin:
 
         # 方向键区（行数随形态变：方形 2 行 / 三角形 3 行 / 米字 3 行）
         top_row_y = y + self._VK_TITLE_H + self._VK_PAD
-        if getattr(self, 'mi_mode', False):
+        if getattr(self, 'cubic_mode', False):
+            rects.update(self._vk_build_cubic_dirs(top_row_y, center_x))
+        elif getattr(self, 'mi_mode', False):
             rects.update(self._vk_build_mi_dirs(top_row_y, center_x))
         elif getattr(self, 'triangle_mode', False):
             rects.update(self._vk_build_triangle_dirs(top_row_y, center_x))
@@ -145,8 +232,7 @@ class VirtualKeyboardMixin:
             )
 
         # 粘滞开关 + 撤销 / 重做（方向键区下面一行）
-        action_row_y = (top_row_y
-                        + (self._VK_BTN + self._VK_BTN_GAP) * self._vk_direction_rows())
+        action_row_y = top_row_y + self._vk_dir_area_height()
         total_action_w = self._VK_STICKY_W + self._VK_ACTION_BTN_W * 2 + self._VK_BTN_GAP * 2
         action_start_x = center_x - total_action_w // 2
         rects['sticky'] = pygame.Rect(
@@ -222,7 +308,9 @@ class VirtualKeyboardMixin:
         self.screen.blit(close_surface, close_surface.get_rect(center=self.vk_close_rect.center))
 
         # 按钮
-        if getattr(self, 'mi_mode', False):
+        if getattr(self, 'cubic_mode', False):
+            self._vk_draw_cubic_buttons(rects, mouse_pos)
+        elif getattr(self, 'mi_mode', False):
             labels = {
                 'move_ul': '↖', 'move_up': '↑', 'move_ur': '↗',
                 'move_left': '←', 'move_right': '→',
@@ -242,7 +330,8 @@ class VirtualKeyboardMixin:
                 'move_left': '←', 'move_right': '→',
                 'sticky': '粘滞', 'undo': '撤销', 'redo': '重做',
             }
-        for action, rect in rects.items():
+        # 三维态已在上面按三轴六键单独画过（含粘滞/撤销/重做），这里跳过通用画法
+        for action, rect in (() if getattr(self, 'cubic_mode', False) else rects.items()):
             hovered = rect.collidepoint(mouse_pos)
             if action == 'sticky':
                 # 粘滞开关：开启时高亮边框提示「连续」状态
@@ -360,6 +449,10 @@ class VirtualKeyboardMixin:
         # 教程解法播放中：锁定棋盘操作（撤销/重做/移动/粘滞）
         if self._tut_board_locked():
             return
+        # 三维三轴六键：有选中 = 推一步，没选中 = 平移盘面（方案 §1）
+        if action.startswith('cubic_'):
+            self._cubic_vk_six(action.split('_', 1)[1])
+            return
         if action == 'sticky':
             # 粘滞开关：切换撤销/重做 连续/单步
             self.vk_sticky = not self.vk_sticky
@@ -449,6 +542,94 @@ class VirtualKeyboardMixin:
             else:
                 self.macro_notify_msg = "移动方向与缝隙方向不匹配"
                 self.macro_notify_timer = 90
+
+    def _vk_draw_cubic_buttons(self, rects, mouse_pos):
+        """三维键盘：画成一根**投影坐标系**（三根带箭头的轴 + 六个可点端盘）。
+
+        用户口径（2026-11-18）：「我要坐標軸投影，隨著滑塊視角一起轉」，
+        不是六个散开的方键。所以：
+
+          · 每族一条直轴，从负端穿过原点连到正端，颜色区分 r 红 / c 蓝 / d 绿；
+          · 只在**正端**画箭头（r/R 的正方向），负端是轴的另一头；
+          · 两端各一个圆形端盘（写字母），整盘是命中盒——仍可六向点；
+          · 端点位置由相机投影给出，旋转棋盘时这根三脚架跟着转；
+          · 轴缩短到成一点（正对镜头）时，两端盘沿屏幕横轴拉开，仍各自可点。
+        """
+        axes = self._cubic_vk_axes() if hasattr(self, '_cubic_vk_axes') else {}
+        axis_colors = {'r': (226, 120, 120), 'c': (98, 156, 232), 'd': (110, 200, 130)}
+        panel = self.vk_panel_rect
+        area_top = panel.top + self._VK_TITLE_H + self._VK_PAD
+        area_h = self._VK_BTN * 3 + self._VK_BTN_GAP * 2
+        origin = (panel.centerx, area_top + area_h // 2)
+
+        pos = {action.split('_', 1)[1]: rect.center
+               for action, rect in rects.items() if action.startswith('cubic_')}
+
+        # ① 三根轴：负端 → 正端一条直线（穿过原点），只画一次
+        for fam in ('r', 'c', 'd'):
+            lo, hi = pos.get(fam), pos.get(fam.upper())
+            if lo is None or hi is None:
+                continue
+            color = axis_colors[fam]
+            pygame.draw.line(self.screen, color, lo, hi, 2)
+            # 正端箭头：朝轴外侧
+            ux, uy = hi[0] - lo[0], hi[1] - lo[1]
+            ln = math.hypot(ux, uy)
+            plen = axes.get(fam, (0.0, 0.0, 0.0))[2]
+            if plen < 0.15:
+                # 正对镜头的轴：两个端盘是人为错开的，再连一条线会被读成「斜轴」，
+                # 干脆不画线、不画箭头——只剩两个同色端盘点在原点旁边。
+                continue
+            if ln < 1e-6:
+                continue
+            ux, uy = ux / ln, uy / ln
+            # 箭头要画在端盘**外面**（端盘半径约 19px，画在里面就被盘盖住了）
+            r_hi = max(rects['cubic_' + fam.upper()].width,
+                       rects['cubic_' + fam.upper()].height) // 2
+            pxv, pyv = -uy, ux
+            tip = (hi[0] + ux * (r_hi + 13.0), hi[1] + uy * (r_hi + 13.0))
+            base = (hi[0] + ux * (r_hi + 3.0), hi[1] + uy * (r_hi + 3.0))
+            pygame.draw.polygon(self.screen, color, [
+                (int(tip[0]), int(tip[1])),
+                (int(base[0] + pxv * 6.0), int(base[1] + pyv * 6.0)),
+                (int(base[0] - pxv * 6.0), int(base[1] - pyv * 6.0)),
+            ])
+            # 轴名不另写：端盘里的 r/R c/C d/D + 三根轴的颜色已经把轴标清楚了，
+            # 再挤一个小写字母只会压在线和盘上（用户嫌乱）。
+
+        # ② 端点盘：圆形，字母居中；hover 提亮
+        for action, rect in rects.items():
+            if not action.startswith('cubic_'):
+                # 粘滞 / 撤销 / 重做：与二维同一套画法
+                hovered = rect.collidepoint(mouse_pos)
+                color = (self.colors['button_hover']
+                         if (action == 'sticky' and self.vk_sticky) or hovered
+                         else self.colors['button_bg'])
+                pygame.draw.rect(self.screen, color, rect, border_radius=4)
+                if action == 'sticky' and self.vk_sticky:
+                    pygame.draw.rect(self.screen, (255, 205, 60), rect, 2, border_radius=4)
+                label = {'sticky': '粘滞' + ('开' if self.vk_sticky else '关'),
+                         'undo': '撤销', 'redo': '重做'}.get(action, '')
+                if label:
+                    surf = self.dialog_font.render(label, True, (255, 255, 255))
+                    self.screen.blit(surf, surf.get_rect(center=rect.center))
+                continue
+
+            letter = action.split('_', 1)[1]
+            fam = letter.lower()
+            hovered = rect.collidepoint(mouse_pos)
+            center = rect.center
+            radius = min(rect.width, rect.height) // 2 - 1
+            fill = axis_colors[fam] if hovered else (46, 48, 56)
+            pygame.draw.circle(self.screen, fill, center, radius)
+            pygame.draw.circle(self.screen, axis_colors[fam], center, radius, 2)
+            surf = self.dialog_font.render(letter, True, (245, 245, 245))
+            self.screen.blit(surf, surf.get_rect(center=center))
+
+        # ③ 原点
+        pygame.draw.circle(self.screen, (228, 228, 238), origin, 4)
+        pygame.draw.circle(self.screen, (120, 120, 136), origin, 6, 1)
+
 
     def _vk_do_jump(self):
         """虚拟键盘“跳到某步”：输入的数字对应历史记录第 N 步的状态"""

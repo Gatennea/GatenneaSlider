@@ -978,23 +978,230 @@ class RendererMixin:
         if gap is None:
             gap = cubic_view.DEFAULT_GAP
             self.cubic_gap = gap
+        # 跟随质心（方案 §2.2「居中 = 质心落在屏幕中心」，默认开）：整盘滑动会
+        # 让重心慢慢偏，若仍按固定包围盒中心装画面，盘就一点点漂出视野。开着时
+        # 用块质心当装画面的参考点；手动平移（六键）后暂停跟随，按「居中」恢复。
+        _follow = bool(getattr(self, 'cubic_follow_centroid', True))
+        _center = None
+        if _follow:
+            _locs = [tuple(int(v) for v in b.location[:3]) for b in blocks]
+            if _locs:
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)，取块心（+0.5）的平均
+                _target = (
+                    sum(p[1] for p in _locs) / len(_locs) + 0.5,
+                    sum(p[2] for p in _locs) / len(_locs) + 0.5,
+                    sum(p[0] for p in _locs) / len(_locs) + 0.5,
+                )
+                # 平滑跟随（用户 2026-11-18 第 3 条）：一步走完质心会跳 1/9 盘，
+                # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
+                # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
+                _cur = getattr(self, '_cubic_follow_center', None)
+                if _cur is None:
+                    _cur = _target
+                else:
+                    _k = 0.14
+                    _cur = tuple(_cur[i] + (_target[i] - _cur[i]) * _k
+                                 for i in range(3))
+                self._cubic_follow_center = _cur
+                _center = _cur
+        else:
+            self._cubic_follow_center = None
         scene = cubic_view.build_scene(
             blocks, camera, self.screen_width, self.screen_height,
-            margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap)
+            margin=64, zoom=getattr(self, 'cubic_zoom', 1.0), gap=gap,
+            # 「跟随质心」的参考点（None = 包围盒中心）
+            center=_center,
+            # 三维动画（§54 第 6 步）：刚推过的那组给一个逐渐归零的位移，
+            # 画面上就是「滑过去」；逻辑位置早就提交好了，这里只动渲染。
+            offsets=(self._cubic_anim_offsets()
+                     if hasattr(self, '_cubic_anim_offsets') else None),
+            # 平移盘面（没选中时点六键）：屏幕像素偏移，不碰逻辑坐标，
+            # 也不参与缩放/装画面（scale 仍只由 zoom 决定）。
+            origin_offset=tuple(getattr(self, 'cubic_pan', (0.0, 0.0))))
 
         base = self.colors['block']
         chosen = self.colors['block_selected']
         border = self.colors['border']
         opted = {tuple(int(v) for v in b.location[:3])
                  for b in blocks if getattr(b, 'be_opted', False)}
-        for face in scene['faces']:
-            color = chosen if face['loc'] in opted else base
+        # 三维选中动画（撤销/重做）：只看不改，单独一层高亮位置与缝。
+        _sel_anim = self._sel_anim_border()
+        _anim_locs = (getattr(self, '_sel_anim_locs', frozenset())
+                      if _sel_anim is not None else frozenset())
+
+        # 切面预览：和二维同一套视觉语言——**红色**（colors['line']），但三维里
+        # 它是贯穿整盘的一张面，不是一条线（用户 2026-11-17 指认：这个改成红色）。
+        # 遮挡按「块在平面哪一侧」分两遍画解决，见下方说明。
+        seam = getattr(self, 'selected_gap', None)
+        # 撤销/重做的选中动画有自己的缝：只在这 0.75s 内顶替显示，
+        # 不写回 selected_gap（玩家的选择不会因为一次撤销被改掉）。
+        if _sel_anim is not None and getattr(self, '_sel_anim_gap', None):
+            seam = self._sel_anim_gap
+        # 推一步的滑动期间（第 6 步）不画切面：那张面停在原处，块会从它中间
+        # 穿过去，深度序上必然出现「红面盖住正在滑的块」——动画一结束就恢复。
+        # ⚠️ 只停「切面」，箭头照画（seam 本身还要给箭头定位）。
+        seam_draw = None if getattr(self, 'cubic_anim', None) else seam
+        seam_rgb = tuple(self.colors.get('line', (230, 60, 60)))[:3]
+        # 切面 = **一整张矩形平面**（用户 2026-11-18：缝隙应该是一个矩形平面，
+        # 不是按格拼的方块阵）。遮挡不靠「按格切碎塞进画家序」（那会画出格线、
+        # 盘散开后还会缺格），改成按块在平面的哪一侧分两遍画：
+        #   背面那堆块 → 整张半透明红面 → 相机侧那堆块
+        # 切面是平面、每块整块只在一侧，所以这个顺序就是真实前后关系，
+        # 边界是块自身的轮廓（像素级），既没有网格缝也不会「切在另一层」。
+        seam_quad = None
+        seam_axis = None
+        seam_sign = 0.0
+        seam_fixed = 0.0
+        if seam_draw and seam_draw[0] in ('r', 'c', 'd'):
+            from engine import cubic_pick
+            _dims = None
+            _cd = int(getattr(self, 'current_depth', 0) or 0)
+            if _cd >= 1:
+                # 按棋盘整幅取切面范围（盘面打散/边缘缺块时矩形不缩水）
+                _dims = (int(getattr(self, 'current_m', 0)),
+                         int(getattr(self, 'current_n', 0)), _cd)
+            seam_quad = cubic_pick.seam_plane_rect(
+                seam_draw[0], seam_draw[1], blocks, gap=gap, dims=_dims)
+            if seam_quad:
+                seam_axis = cubic_pick.FAMILY_TO_WORLD_AXIS[seam_draw[0]]
+                seam_fixed = float(seam_draw[1] + 1.0)
+                view_dir = camera.view_axis()
+                seam_sign = 1.0 if view_dir[seam_axis] >= 0 else -1.0
+
+        faces_all = scene['faces']
+        back_faces, front_faces = faces_all, []
+        if seam_quad:
+            # 画家序（2026-11-18 二次返工）：
+            #   · 未选中块**按深度**分前后：挡在切面前面的块要盖住切面（否则
+            #     用户说「遮挡退回好几版之前」——红面糊在所有块上）；
+            #   · 选中的那一片永远画在切面之上（用户：选中滑块不能和缝隙相交），
+            #     绿色组保持不透明。
+            # 同一组内部仍按 depth 从远到近。
+            opted = {(int(b.location[0]), int(b.location[1]), int(b.location[2]))
+                     for b in blocks if getattr(b, 'be_opted', False)}
+            back_faces, front_faces = [], []
+            for f in faces_all:
+                loc = f['loc']
+                key = (int(loc[0]), int(loc[1]), int(loc[2]))
+                # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
+                center = (loc[1] + 0.5, loc[2] + 0.5, loc[0] + 0.5)[seam_axis]
+                near = (center - seam_fixed) * seam_sign > 0
+                if key in opted or near:
+                    front_faces.append(f)
+                else:
+                    back_faces.append(f)
+
+        items = [(f['depth'], 0, f) for f in back_faces]
+        seam_pts_screen = []
+        if seam_quad:
+            pts = [cubic_view.project_point(w, camera, scene['scale'],
+                                            scene['origin'])[:2] for w in seam_quad]
+            # 切面近乎侧对视线时退化成一条线（面积≈0）：这种「一条红边」既看
+            # 不出是面，又会压在块上，直接不画（保留判定，只是不绘制）。
+            area = 0.0
+            for i in range(len(pts)):
+                p0, p1 = pts[i], pts[(i + 1) % len(pts)]
+                area += p0[0] * p1[1] - p1[0] * p0[1]
+            if abs(area) / 2.0 >= 1.5:
+                items.append((0.0, 1, pts))
+                # 切面比块堆的包围盒更宽（拆分 gap 会撑到块外半格），四角会落到
+                # 块面边界之外；超采样画布若只按块面算边界，就会把这几角裁掉——
+                # 用户 2026-11-18：「完整的边角经常被相机范围裁掉」。这里把切面
+                # 的投影点也纳入边界，矩形永远整张画得下。
+                seam_pts_screen = pts
+        items += [(f['depth'], 0, f) for f in front_faces]
+        # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
+        # 一级级台阶，切面边上那些「毛毛糙糙」的小三角有一半是块面自己的边。
+        # 只在棋盘包围盒里开超采样，整帧仍是一次 smoothscale 缩回，成本可控。
+        _ss = 2
+        _all = [p for f in scene['faces'] for p in f['pts']] + list(seam_pts_screen)
+        if _all:
+            _bx0 = max(0, int(min(p[0] for p in _all)) - 4)
+            _by0 = max(0, int(min(p[1] for p in _all)) - 4)
+            _bx1 = min(self.screen_width, int(max(p[0] for p in _all)) + 4)
+            _by1 = min(self.screen_height, int(max(p[1] for p in _all)) + 4)
+        else:
+            _bx0 = _by0 = _bx1 = _by1 = 0
+        _bw, _bh = _bx1 - _bx0, _by1 - _by0
+        # 供测试核对：切面投影四角必须落在超采样画布内（否则角被裁掉）。
+        self._cubic_hi_rect = (_bx0, _by0, _bx1, _by1)
+        if _bw > 0 and _bh > 0:
+            hi = pygame.Surface((_bw * _ss, _bh * _ss))
+            hi.fill(self.colors['background'])
+        else:
+            hi = None
+
+        def _T(points):
+            return [(int(round((p[0] - _bx0) * _ss)),
+                     int(round((p[1] - _by0) * _ss))) for p in points]
+
+        for _depth, _kind, item in items:
+            if hi is None:
+                continue
+            if _kind == 1:
+                # 切面的一格：半透明红。必须在超采样画布上**按 alpha 叠加**（
+                # pygame.draw 往普通 Surface 上画会忽略 alpha），所以在小图上画
+                # 好再 blit 上来——这样它和块面共用同一张 2× 画布、同一套深度序，
+                # 缩回原尺寸时也是同一轮平滑，边不会比块面更毛。
+                pts = _T(item)
+                x0 = min(p[0] for p in pts)
+                y0 = min(p[1] for p in pts)
+                w = max(1, max(p[0] for p in pts) - x0 + 1)
+                h = max(1, max(p[1] for p in pts) - y0 + 1)
+                cell = pygame.Surface((w, h), pygame.SRCALPHA)
+                cell.fill((0, 0, 0, 0))
+                pygame.draw.polygon(
+                    cell, seam_rgb + (int(getattr(self, 'cubic_seam_alpha',
+                                                  self.CUBIC_SEAM_ALPHA)),),
+                    [(p[0] - x0, p[1] - y0) for p in pts])
+                hi.blit(cell, (x0, y0))
+                continue
+            face = item
+            _is_anim = _sel_anim is not None and face['loc'] in _anim_locs
+            color = (chosen if (face['loc'] in opted or _is_anim) else base)
             shade = face['shade']
             fill = (int(color[0] * shade), int(color[1] * shade),
                     int(color[2] * shade))
-            pts = [(int(round(p[0])), int(round(p[1]))) for p in face['pts']]
-            pygame.draw.polygon(self.screen, fill, pts)
-            pygame.draw.polygon(self.screen, border, pts, 1)
+            pts = _T(face['pts'])
+            pygame.draw.polygon(hi, fill, pts)
+            if _is_anim:
+                # 撤销蓝 / 重做橙；线宽跟超采样一起放大，缩回后仍是 2–3px。
+                # 变量名别用 _bw/_bh：那两个是下面 smoothscale 的目标尺寸。
+                _lw = max(2, int(_sel_anim[1])) * _ss
+                pygame.draw.polygon(hi, _sel_anim[0], pts, _lw)
+            else:
+                pygame.draw.polygon(hi, border, pts, _ss)
+        if hi is not None:
+            self.screen.blit(
+                pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
+
+        # 选中动画的缝也描一圈同色边：红面仍是红面（切面语义不变），
+        # 冷暖边只表达「这一步是撤回来还是重做过去」。
+        if _sel_anim is not None and seam_pts_screen:
+            pygame.draw.polygon(self.screen, _sel_anim[0],
+                                seam_pts_screen,
+                                max(2, min(3, int(_sel_anim[1]))))
+
+        # 拒绝反馈（方案 §5 第 3 阶段）：推不动时给这组块描 12 帧红边。
+        # 二维靠 `_flash_reject` 让块面变色，三维块是投影出来的多边形，直接描
+        # 屏幕轮廓更省事也不会被画家序吃掉。状态与二维共用 `_shake_t`。
+        if getattr(self, '_shake_t', 0) > 0:
+            shake_ids = getattr(self, '_shake_blocks', set()) or set()
+            shake_boxes = cubic_view.block_boxes(
+                [b for b in blocks if id(b) in shake_ids], gap)
+            for box in shake_boxes:
+                hull = cubic_view.screen_hull_of_box(
+                    box, camera, scene['scale'], scene['origin'])
+                if len(hull) >= 3:
+                    pygame.draw.polygon(self.screen, self.colors['line'], hull, 2)
+
+        # 三维方向箭头（方案 §4 第 4 步「重画箭头」）：选中一组后在切面外沿画可点
+        # 的方向键。画在最上层、按当前相机现算方向，旋转时跟着转。
+        self._draw_cubic_arrows(scene, seam, gap, camera, blocks)
+
+        # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
+        # 必然同源，不存在「看得见点不中」的漂移）。
+        self._cubic_scene = scene
 
         # 左上角两行：三維尺度 / 等级 / 视角 / 拆分距离（第 1 行），操作提示（第 2 行）。
         # 「拆分」= 相邻两块表面之间空出的距离（0 = 未拆分，块贴死成一整块）。
@@ -1007,7 +1214,8 @@ class RendererMixin:
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
                 f'　视角 {view_label}　缩放 {zoom * 100:.0f}%'
                 f'　拆分 {gap:.2f}（0 = 贴死）')
-        hint2 = '拖动旋转 · 1–6 切朝向（各带偏角，不正对）· 0 回斜视 · Ctrl+滚轮缩放'
+        hint2 = ('拖动旋转 · 1–6 切朝向 · 0 回斜视 · Ctrl+滚轮缩放 · 右键选缝→左键选块'
+                 ' · 空白右键取消 · r/R c/C d/D 推 · 六键=平移 · 编辑→居中')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))
@@ -1015,6 +1223,120 @@ class RendererMixin:
             self.screen.blit(surf2, (16, 36))
         except Exception:
             pass   # 文字画失败只丢这一行，不能让整帧黑掉（§4 同一条纪律）
+
+    def _draw_cubic_arrows(self, scene, seam, gap, camera, blocks):
+        """三维方向箭头：立在切面**缝口的四边**上，和二维同一套箭头贴图。
+
+        用户 2026-11-18 的三条要求，逐条落在这里：
+          ① 「箭頭也要三維」——箭头不是贴在屏幕外圈的按钮，而是落在世界坐标
+             里：从切面中心沿推行轴走到切面外沿再往外探一点，投影到屏幕。所以
+             转视角时它们是跟着棋盘一起转的，不是绕着棋盘乱跑。
+          ② 「有遮擋」——锚点用 `cubic_view.point_visible` 判一次：被块挡住就
+             不画（画出来就骗人去点一个看不见的键）。
+          ③ 「和原版用一樣的風格」——直接用二维的 `_arrow_sprite`（同一张素材、
+             同一套旋转/缩放规则），不再手画三角形。
+        「某個方向推不動就不要顯示箭頭」：干跑走 `_arrow_move_allowed`，与真正
+        点下去是同一条判定路径（不是自己猜）。
+        """
+        self._cubic_arrow_buttons = []
+        if not seam or seam[0] not in ('r', 'c', 'd'):
+            return
+        opted = [b for b in blocks if getattr(b, 'be_opted', False)]
+        if not opted:
+            return
+        from engine import cubic_pick
+        from engine import cubic_view as _cv
+        from engine.compat import CUBIC_DIRECTIONS
+        # 锚点按**当前块堆的包围盒**取（用户 2026-11-18：切面范围跟包围盒走，
+        # 不跟原始棋盘尺寸走）。不用 seam_plane_cells 的外框：那是按「缝口有没
+        # 有相邻块」筛过的，盘面一散就会缩水，箭头也跟着挤到中间。
+        rect = cubic_pick.seam_plane_rect(seam[0], seam[1], blocks, gap=gap)
+        if not rect:
+            return
+        lo = [min(p[i] for p in rect) for i in range(3)]
+        hi = [max(p[i] for p in rect) for i in range(3)]
+        mid = [(lo[i] + hi[i]) / 2.0 for i in range(3)]
+        boxes = _cv.block_boxes(blocks, gap)
+        view_dir = camera.view_axis()
+        fam_index = {'r': 0, 'c': 1, 'd': 2}[seam[0]]
+        # 可推性干跑按签名缓存：只有「缝 / 选中组 / 步数档 / 拆分」变了才重算。
+        sig = (seam, tuple(sorted(tuple(int(v) for v in b.location[:3]) for b in opted)),
+               getattr(self, 'current_step', 1), round(float(gap), 6))
+        if getattr(self, '_cubic_arrow_sig', None) != sig:
+            from engine.compat import CUBIC_DIRECTIONS as _D
+            self._cubic_arrow_allowed = {
+                letter: bool(self._arrow_move_allowed(letter))
+                for letter in _D
+                if [i for i in range(3) if abs(_D[letter][i]) > 0][0] != fam_index
+            }
+            self._cubic_arrow_sig = sig
+        allowed = getattr(self, '_cubic_arrow_allowed', {})
+        # 每帧算一次各块的屏幕轮廓（只给「贴纸判定」用）；按相机/拆分/块集合缓存，
+        # 拖动时才重算。不缓存的话选中态每帧多 ~8ms（实测 18.2ms → 10.6ms）。
+        sil_key = (tuple(round(float(v), 5) for row in camera.rows() for v in row),
+                   round(float(gap), 6),
+                   tuple(sorted(tuple(int(v) for v in b.location[:3]) for b in blocks)),
+                   round(float(scene['scale']), 4),
+                   round(float(scene['origin'][0]), 3),
+                   round(float(scene['origin'][1]), 3))
+        cached = getattr(self, '_cubic_sil_cache', None)
+        if cached is not None and cached[0] == sil_key:
+            silhouettes = cached[1]
+        else:
+            silhouettes = []
+            for box in boxes:
+                far_depth = max(box[(0 if i & 1 == 0 else 3)] * view_dir[0]
+                                + box[(1 if i & 2 == 0 else 4)] * view_dir[1]
+                                + box[(2 if i & 4 == 0 else 5)] * view_dir[2]
+                                for i in range(8))
+                silhouettes.append(
+                    (far_depth, _cv.screen_hull_of_box(box, camera, scene['scale'],
+                                                       scene['origin'])))
+            self._cubic_sil_cache = (sil_key, silhouettes)
+        size = self._arrow_button_size()
+        for letter, vec in CUBIC_DIRECTIONS.items():
+            axis = [i for i in range(3) if abs(vec[i]) > 0][0]
+            if axis == fam_index:
+                continue                      # 法向：规则里推不动
+            if not allowed.get(letter, False):
+                continue                      # 这一步真推不动：不画
+            world_axis = {0: 2, 1: 0, 2: 1}[axis]   # 词条轴 → 世界轴 (c,d,r)
+            sign = 1.0 if vec[axis] > 0 else -1.0
+            # 锚点：切面中心 → 沿推行轴挪到切面外沿 → 再往外探半格
+            anchor = list(mid)
+            edge = hi[world_axis] if sign > 0 else lo[world_axis]
+            anchor[world_axis] = edge + sign * (0.5 + 0.35)
+            dx, dy = self._cubic_letter_dir(letter)
+            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                continue                      # 这条轴正对镜头，屏幕上是点
+            if not _cv.point_visible(tuple(anchor), boxes, view_dir):
+                continue                      # 被块挡住：不画（也不给点）
+            sx, sy, _sz = _cv.project_point(tuple(anchor), camera, scene['scale'],
+                                            scene['origin'])
+            # 再判一次「屏幕位置上有没有更近的块」：锚点恰好站在某块前面时，
+            # 画上去就像贴纸糊在人家脸上（用户说的「箭頭也要三維、有遮擋」）。
+            decal = False
+            for far_depth, hull in silhouettes:
+                if far_depth <= _sz:
+                    continue                       # 更远或同深度：挡不住
+                if _cv.point_in_hull(sx, sy, hull):
+                    decal = True
+                    break
+            if decal:
+                continue
+            half = size / 2.0
+            if not (half <= sx <= self.screen_width - half
+                    and half <= sy <= self.screen_height - half):
+                continue                      # 出界：点了也看不见
+            ang = math.degrees(math.atan2(-dy, dx))
+            spr = self._arrow_sprite(ang)
+            if spr is None:
+                continue
+            pos = spr.get_rect(center=(int(round(sx)), int(round(sy)))
+                               ).inflate(-6, -6)   # 命中盒略小于贴图，与二维同口径
+            self.screen.blit(spr, spr.get_rect(center=(int(round(sx)),
+                                                       int(round(sy)))))
+            self._cubic_arrow_buttons.append((letter, pos))
 
     def _draw_mi_selected_gap(self, view: 'MiBoardView', hull):
         """繪製米字格選中的縫隙線（四族之一）：貫穿整個視窗，與方形同口徑。
@@ -3630,7 +3952,9 @@ class RendererMixin:
         # 挤在末尾要滚很久才看得见。
         tab_y = dialog_y + 58
         tab_height = 30
-        tab_width = 84
+        # 8 个页签按 84 宽放不下（8*84+7*4=700 > 612）：收到 72（8*72+7*4=604）。
+        # 中文页名最多四个字，72 宽在 status_font 下仍有余量。
+        tab_width = 72
         tab_gap = 4
         tab_defs = (
             ('keybindings', '快捷键', '_settings_tab_kb_rect'),
@@ -3640,6 +3964,8 @@ class RendererMixin:
             ('solver', '求解器', '_settings_tab_solver_rect'),
             ('gather', '聚拢参数', '_settings_tab_gather_rect'),
             ('file', '文件', '_settings_tab_file_rect'),
+            # 三维专页（方案 §2.4）：只放「设一次很少动」的项；二维局整页置灰
+            ('cubic', '三维', '_settings_tab_cubic_rect'),
         )
         for _i, (_tid, _tlabel, _tattr) in enumerate(tab_defs):
             _rect = pygame.Rect(dialog_x + 15 + (tab_width + tab_gap) * _i,
@@ -3687,6 +4013,8 @@ class RendererMixin:
                 self._draw_settings_file(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             elif self.settings_active_tab == 'control':
                 self._draw_settings_control(dialog_x, content_y - scroll, dialog_width - 30, content_height)
+            elif self.settings_active_tab == 'cubic':
+                self._draw_settings_cubic(dialog_x, content_y - scroll, dialog_width - 30, content_height)
             else:
                 self._draw_settings_solver(dialog_x, content_y - scroll, dialog_width - 30, content_height)
         finally:
@@ -4141,18 +4469,30 @@ class RendererMixin:
             "滑块移动时有个滑过去的过程；关掉就是瞬间到位", max_w=_mw)
 
         # 选中动画开关（撤销/重做、求解播放时高亮缝隙与滑块组）
+        # 2026-11-18：三维补回——三维撤销/重做现在有滑动 + 选中高亮，
+        # 不再是「点了没反应的灰开关」。
         self._settings_sel_anim_toggle_rect, ny = self._draw_switch_row(
             x, ny, "选中动画：", getattr(self, 'selection_animation_enabled', True),
-            "撤销、重做和求解播放时，高亮这次动的缝和滑块", max_w=_mw)
+            "撤销、重做时高亮这次动的缝和滑块（蓝=撤销，橙=重做）", max_w=_mw)
 
         # 动画时长滑动条（轨道与开关同一右栏对齐）
+        # 三维态写 cubic_anim_ms（60..400），与右侧栏「速度」滑条同源；
+        # 二维仍写 animation_duration（100..1000）。
+        _cubic_anim = getattr(self, 'cubic_mode', False)
+        if _cubic_anim:
+            _anim_lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
+            _anim_hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            _anim_val = getattr(self, 'cubic_anim_ms', 140)
+        else:
+            _anim_lo, _anim_hi = 100, 1000
+            _anim_val = self.animation_duration
         speed_y = ny
         speed_label = self.dialog_font.render("动画时长：", True, self.colors['dialog_text'])
         self.screen.blit(speed_label, (x + 15, speed_y + 6))
 
         track_x = x + 220
         track_width = 190
-        value_text = f"{self.animation_duration} ms"
+        value_text = f"{_anim_val} ms"
         value_surface = self.input_font.render(value_text, True, self.colors['input_text'])
         self.screen.blit(value_surface,
                          (track_x + track_width - value_surface.get_width(), speed_y + 6))
@@ -4163,7 +4503,7 @@ class RendererMixin:
         pygame.draw.rect(self.screen, self.colors['dialog_border'], self._settings_slider_track_rect)
 
         # 滑动条位置
-        normalized = (self.animation_duration - 100) / 900.0
+        normalized = (_anim_val - _anim_lo) / max(1.0, float(_anim_hi - _anim_lo))
         normalized = max(0.0, min(1.0, normalized))
         knob_x = int(track_x + normalized * track_width)
         self._settings_slider_knob_rect = pygame.Rect(knob_x - 8, track_y - 6, 16, 16)
@@ -4172,8 +4512,8 @@ class RendererMixin:
         pygame.draw.rect(self.screen, knob_color, self._settings_slider_knob_rect, border_radius=8)
 
         # 刻度标签（两端对齐轨道）
-        min_label = self.status_font.render("100ms", True, (150, 150, 150))
-        max_label = self.status_font.render("1000ms", True, (150, 150, 150))
+        min_label = self.status_font.render(f"{_anim_lo}ms", True, (150, 150, 150))
+        max_label = self.status_font.render(f"{_anim_hi}ms", True, (150, 150, 150))
         self.screen.blit(min_label, (track_x, track_y + 12))
         self.screen.blit(max_label, (track_x + track_width - max_label.get_width(), track_y + 12))
         ny = speed_y + 72
@@ -4212,6 +4552,34 @@ class RendererMixin:
         self.screen.blit(zmin_label, (ztrack_x, ztrack_y + 12))
         self.screen.blit(zmax_label, (ztrack_x + ztrack_width - zmax_label.get_width(), ztrack_y + 12))
         ny = zoom_y + 72
+
+        # 三维局：视觉页只留三维真正生效的项。
+        # 着色 / 连锁 / 缝隙闪烁 / 复原标记 / 调试面板 / 成绩面板 / 绘制网格 /
+        # 防偏移演示 / 思考演示全部是二维语义，方案 §2.4 与 §5 明确不做三维，
+        # 因此**不画**（而不是画成灰开关）；对应矩形清零，避免旧帧的命中区残留。
+        if _cubic_anim:
+            for _attr in ('_settings_coloring_toggle_rect',
+                          '_settings_chain_toggle_rect',
+                          '_settings_gap_hover_toggle_rect',
+                          '_settings_marks_toggle_rect',
+                          '_settings_metrics_toggle_rect',
+                          '_settings_records_toggle_rect',
+                          '_settings_grid_toggle_rect',
+                          '_settings_anti_drift_toggle_rect',
+                          '_settings_thinking_toggle_rect'):
+                setattr(self, _attr, pygame.Rect(0, 0, 0, 0))
+
+            # 开机动画（启动时全局，三维同样生效）
+            self._settings_boot_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "开机动画：", getattr(self, 'show_boot_animation', True),
+                "启动时播放标题动画，点一下可以跳过", max_w=_mw)
+            # 防意外打乱/重置（三维打乱同样清历史，提示同样有用）
+            self._settings_confirm_shuffle_toggle_rect, ny = self._draw_switch_row(
+                x, ny, "防意外打乱/重置：", getattr(self, 'confirm_before_shuffle', True),
+                "打乱和重置都会清空历史、撤不回来；开启后先弹确认，防止误触",
+                max_w=_mw)
+            self._settings_anim_height = ny - y + 10
+            return
 
         # 分组着色器开关
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
@@ -4860,6 +5228,81 @@ class RendererMixin:
         rts = self.status_font.render(ro_text, True, ro_color)
         self.screen.blit(rts, (x + 15, ro_y))
 
+    # ==================================================================
+    # 设置页「三维」专页（方案 §2.4）
+    # ==================================================================
+    #: 每项的步长（按一下就改这么多；细调靠连点，不必再拖一条滑条进来）
+    CUBIC_STEP = {'gap': 0.05, 'seam_alpha': 5, 'rot_sensitivity': 0.1}
+
+    def _fmt_cubic_value(self, spec, val):
+        if spec['type'] == 'int':
+            return f"{int(val)}"
+        return f"{val:.2f}" + (' 倍' if spec['key'] == 'rot_sensitivity' else '')
+
+    def _draw_settings_cubic(self, x, y, width, height):
+        """三维专页：只放「设一次、很少动」的项（拆分/透明度在右侧栏边拖边看）。
+
+        二维谜题下整页置灰 + 一句说明（沿用求解器页「不隐藏入口、只解释为什么
+        不可用」的先例），不装作这里什么都没有。
+        """
+        from gui import cubic_settings
+        self._settings_cubic_btn_rects = {}
+        self._settings_cubic_height = 0
+        ny = y
+        cubic = bool(getattr(self, 'cubic_mode', False))
+        hint_w = width - 20
+
+        title = ('三维谜题专用。这里的项「设一次、很少动」；拆分与切面透明度'
+                 '在右侧栏，边拖边看更直观。')
+        for _i, _ln in enumerate(self._wrap_text(title, self.status_font, hint_w)):
+            self.screen.blit(self.status_font.render(_ln, True,
+                                                     self.colors['dialog_text']),
+                             (x + 15, ny + 4 + _i * 20))
+        ny += 26 + 20 * max(0, len(self._wrap_text(title, self.status_font, hint_w)) - 1)
+
+        if not cubic:
+            note = '当前是二维谜题，这一页的选项对二维没有作用，切到三维谜题后再来。'
+            for _i, _ln in enumerate(self._wrap_text(note, self.status_font, hint_w)):
+                self.screen.blit(self.status_font.render(_ln, True, (160, 160, 160)),
+                                 (x + 15, ny + 8 + _i * 20))
+            ny += 28 + 20 * max(0, len(self._wrap_text(note, self.status_font, hint_w)) - 1)
+            self._settings_cubic_height = ny - y
+            return
+
+        for spec in cubic_settings.items('control') + cubic_settings.items('view'):
+            val = getattr(self, spec['attr'], spec['default'])
+            self.screen.blit(self.dialog_font.render(f"{spec['label']}：", True,
+                                                     self.colors['dialog_text']),
+                             (x + 15, ny + 6))
+            value_s = self.input_font.render(self._fmt_cubic_value(spec, val), True,
+                                             self.colors['input_text'])
+            self.screen.blit(value_s, (x + 200, ny + 6))
+
+            _bw, _bh = 30, 26
+            minus = pygame.Rect(x + 330, ny + 2, _bw, _bh)
+            plus = pygame.Rect(x + 366, ny + 2, _bw, _bh)
+            # 用 ASCII 的 '-'：状态栏字体里没有 U+2212，会画成空心方框
+            for _rect, _txt in ((minus, '-'), (plus, '+')):
+                pygame.draw.rect(self.screen, self.colors['button_bg'], _rect,
+                                 border_radius=4)
+                _t = self.status_font.render(_txt, True, (255, 255, 255))
+                self.screen.blit(_t, _t.get_rect(center=_rect.center))
+            self._settings_cubic_btn_rects[(spec['key'], -1)] = minus
+            self._settings_cubic_btn_rects[(spec['key'], 1)] = plus
+
+            # 说明另起一行（右栏只放数值和按钮，说明按整行宽度换行，避免被
+            # 对话框右边缘硬切——本页第一版就是这么切掉半句话的）
+            ny += 32
+            _lines = self._wrap_text(spec['help'], self.status_font, hint_w)
+            for _i, _ln in enumerate(_lines):
+                self.screen.blit(self.status_font.render(_ln, True, (150, 150, 150)),
+                                 (x + 15, ny + _i * 18))
+            ny += 18 * len(_lines) + 8
+            # 行间细分隔线，免得四行糊成一片
+            pygame.draw.line(self.screen, self.colors['dialog_border'],
+                             (x + 15, ny - 6), (x + width - 15, ny - 6))
+        self._settings_cubic_height = ny - y + 10
+
     def _calc_settings_content_height(self, visible_height: int) -> int:
         """计算设置内容的总高度（当前tab）"""
         if self.settings_active_tab == 'keybindings':
@@ -4878,6 +5321,10 @@ class RendererMixin:
             # 滑动/选中 2 行开关(60) + 速度滑条(72) + 缩放滑条(72)
             # + 着色/连锁/标记/面板 4 行开关(60) + 余量。
             return getattr(self, '_settings_anim_height', 2 * 60 + 72 + 72 + 4 * 60 + 10)
+        elif self.settings_active_tab == 'cubic':
+            # 三维页：真实高度由 _draw_settings_cubic 每帧记录；首帧兜底按
+            # 提示两行 + 四个数值行（50 行距）+ 间隔估算。
+            return getattr(self, '_settings_cubic_height', 2 * 20 + 4 * 50 + 10)
         elif self.settings_active_tab == 'audio':
             # 音频页：真实绘制高度由 _draw_settings_audio 每帧记录。
             # 下面只是首帧的保守估算（提示行 + 三行总开关 + 分隔/标题 +
@@ -5403,15 +5850,19 @@ class RendererMixin:
     def draw_right_panel(self):
         """绘制右侧面板：垂直速度滑条 + 6 个快捷开关（滑动动画/选中动画/着色/连锁/模式/逆序）"""
         panel_x = self.screen_width - self.right_panel_width
+        _panel_left = panel_x
         panel_rect = pygame.Rect(panel_x, 0, self.right_panel_width, self.screen_height)
         pygame.draw.rect(self.screen, self.colors['menu_bg'], panel_rect)
         pygame.draw.line(self.screen, self.colors['border'],
                         (panel_x, 0), (panel_x, self.screen_height))
 
         # ---- 底部：7 个快捷开关（垂直排列）----
+        # 三维态留 5 个：联动/复原标记在三维无对象，让位给「拆分」「切面透明」
+        # 两条滑条；模式与成绩在三维已真实可用（竞速 + 三维成绩表），保留。
+        cubic = bool(getattr(self, 'cubic_mode', False))
         sw_h = 24
         sw_gap = 4
-        sw_count = 7
+        sw_count = 6 if cubic else 7
         switch_area_h = sw_count * sw_h + (sw_count - 1) * sw_gap + 10
         switch_area_top = self.screen_height - self.status_bar_height - switch_area_h + 4
         sw_x = panel_x + 6
@@ -5448,22 +5899,42 @@ class RendererMixin:
 
         # 摆放原则（用户定）：右下角只放**游玩中需要经常切换**的开关；
         # 不常改的一律收回设置对话框。逆序宏因此从这里撤回设置。
-        _sw_btn('animation_enabled', '滑动动画', lambda: self.animation_enabled)
-        _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
-        _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
-        _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
-        # 复原提示标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼
-        # 不想看、后期要数格子又想看），故放常用区（设置页全名为
-        # 「复原提示标记」，2026-10-13 由「棋盘标记」改名）
-        _sw_btn('board_marks_enabled', '复原标记', lambda: self.board_marks_enabled)
-        _sw_btn('game_mode', '模式', lambda: None)
-        # 成绩面板：F3 的功能原先只有键盘能唤出，这里补一个纯鼠标入口，
-        # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
-        _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
+        # 三维态（2026-11-18 适配）：去掉二维专属的着色 / 连锁 / 复原标记；
+        # 保留滑动动画、选中动画（撤销/重做高亮，2026-11-18 补回）、模式
+        # （竞速已支持）、成绩（三维成绩表可用）、虚拟键盘、跟随质心。
+        if cubic:
+            _sw_btn('animation_enabled', '滑动动画',
+                    lambda: self.animation_enabled)
+            _sw_btn('selection_animation_enabled', '选中动画',
+                    lambda: self.selection_animation_enabled)
+            _sw_btn('game_mode', '模式', lambda: None)
+            _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
+            _sw_btn('show_virtual_keyboard', '虚拟键盘',
+                    lambda: getattr(self, 'show_virtual_keyboard', False))
+            _sw_btn('cubic_follow_centroid', '跟随质心',
+                    lambda: getattr(self, 'cubic_follow_centroid', True))
+        else:
+            _sw_btn('animation_enabled', '滑动动画', lambda: self.animation_enabled)
+            _sw_btn('selection_animation_enabled', '选中动画', lambda: self.selection_animation_enabled)
+            _sw_btn('coloring_enabled', '着色', lambda: self.coloring_enabled)
+            _sw_btn('chain_hint_enabled', '连锁', lambda: self.chain_hint_enabled)
+            # 复原提示标记：与连锁同属视觉强化，一局之内会来回切（前期晃眼
+            # 不想看、后期要数格子又想看），故放常用区（设置页全名为
+            # 「复原提示标记」，2026-10-13 由「棋盘标记」改名）
+            _sw_btn('board_marks_enabled', '复原标记', lambda: self.board_marks_enabled)
+            _sw_btn('game_mode', '模式', lambda: None)
+            # 成绩面板：F3 的功能原先只有键盘能唤出，这里补一个纯鼠标入口，
+            # 使三个悬浮面板（F1/F2/F3）都能只用鼠标开关
+            _sw_btn('show_records_panel', '成绩', lambda: self.show_records_panel)
 
         # ---- 上方：垂直滑条（左=缩放，右=速度）----
         track_top = self.menu_bar_height + 35
-        track_bottom = switch_area_top - 10
+        # 三维态：底部开关上方要留两条横向滑条（拆分 / 切面透明），竖滑条
+        # 因此收短一点，别和它们叠在一起。
+        opt_h = 30
+        opt_n = 2 if cubic else 0
+        opt_top = switch_area_top - opt_n * opt_h - 6
+        track_bottom = (opt_top - 8) if cubic else (switch_area_top - 10)
         track_height = track_bottom - track_top
 
         speed_x = panel_x + self.right_panel_width - 18   # 右列轨道
@@ -5480,6 +5951,9 @@ class RendererMixin:
             pygame.draw.line(self.screen, self.colors['border'],
                             (zoom_x, track_top), (zoom_x, track_bottom), 2)
             norm_z = (self.zoom - self.min_zoom) / max(1e-6, self.max_zoom - self.min_zoom)
+            if getattr(self, 'cubic_mode', False):
+                lo, hi = self.CUBIC_ZOOM_RANGE
+                norm_z = (getattr(self, 'cubic_zoom', 1.0) - lo) / max(1e-6, hi - lo)
             norm_z = max(0.0, min(1.0, norm_z))
             # 倒置：滑条顶部=放大(max_zoom)，底部=缩小(min_zoom)
             knob_y = int(track_top + (1.0 - norm_z) * track_height)
@@ -5491,13 +5965,56 @@ class RendererMixin:
             # 右半：速度滑条
             pygame.draw.line(self.screen, self.colors['border'],
                             (speed_x, track_top), (speed_x, track_bottom), 2)
-            norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
+            if cubic:
+                # 三维这一步动画时长是独立一档（`_cubic_start_anim` 读
+                # `cubic_anim_ms`），不再借二维 animation_duration，否则这条
+                # 滑条在三维里是个哑控件。
+                _dur = int(getattr(self, 'cubic_anim_ms', 140))
+                norm_v = (_dur - self.CUBIC_ANIM_MIN_MS) / max(
+                    1e-6, self.CUBIC_ANIM_MAX_MS - self.CUBIC_ANIM_MIN_MS)
+            else:
+                norm_v = (self.animation_duration - self.SPEED_MIN_MS) / max(1e-6, self.SPEED_MAX_MS - self.SPEED_MIN_MS)
             norm_v = max(0.0, min(1.0, norm_v))
             knob_y = int(track_top + norm_v * track_height)
             self.slider_rect = pygame.Rect(panel_x + half, track_top, half - 4, track_height)
             knob_color = self.colors['button_hover'] if self.slider_dragging else self.colors['button_bg']
             self.slider_knob_rect = pygame.Rect(speed_x - 10, knob_y - 6, 20, 12)
             pygame.draw.rect(self.screen, knob_color, self.slider_knob_rect, border_radius=4)
+
+        # ---- 三维专用：拆分 / 切面透明两条横向滑条（方案 §2.4）----
+        # 挂右侧栏而不是设置框：这两项的价值全在「边拖边看」，设置框一关就
+        # 够不着。棋盘可视区本来就排除 right_panel_width，天然不遮挡。
+        self.cubic_gap_slider_rect = None
+        self.cubic_alpha_slider_rect = None
+        if cubic:
+            from gui.cubic_settings import by_key
+            _specs = (('gap', 'cubic_gap_slider_rect', '_cubic_gap_dragging'),
+                      ('seam_alpha', 'cubic_alpha_slider_rect', '_cubic_alpha_dragging'))
+            for _i, (_key, _rect_attr, _drag_attr) in enumerate(_specs):
+                _sp = by_key(_key)
+                _y = opt_top + _i * opt_h
+                _val = getattr(self, _sp['attr'], _sp['default'])
+                _fmt = (f"{_val:.2f}" if _sp['type'] == 'float' else f"{int(_val)}")
+                # 面板只有 132px：用短名，避免「切面透明 110」被裁掉
+                _short = {'gap': '拆分', 'seam_alpha': '切面'}.get(_key,
+                                                                 _sp['label'])
+                _lab = self.status_font.render(f"{_short} {_fmt}", True,
+                                               self.colors['status_text'])
+                self.screen.blit(_lab, (_panel_left + 6, _y + 2))
+                _track = pygame.Rect(_panel_left + 6, _y + 20,
+                                     self.right_panel_width - 12, 8)
+                pygame.draw.line(self.screen, self.colors['border'],
+                                 (_track.left, _track.centery),
+                                 (_track.right, _track.centery), 2)
+                _norm = (_val - _sp['min']) / max(1e-6, _sp['max'] - _sp['min'])
+                _norm = max(0.0, min(1.0, _norm))
+                _kx = int(_track.left + _norm * _track.width)
+                _knob = pygame.Rect(_kx - 5, _track.centery - 6, 10, 12)
+                _kc = (self.colors['button_hover']
+                       if getattr(self, _drag_attr, False)
+                       else self.colors['button_bg'])
+                pygame.draw.rect(self.screen, _kc, _knob, border_radius=3)
+                setattr(self, _rect_attr, _track)
 
     # ==================================================================
     # 单击反馈（全 GUI 生效的涟漪动效）：左键外扩环、右键内收环

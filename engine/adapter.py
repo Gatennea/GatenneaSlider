@@ -912,12 +912,18 @@ class EngineGame:
         self._sync()
         bmap = self._board.block_map
         keys = []
+        orients = self.spec.orientations
         for key in sorted(self._board.keys):
             point = list(key[0])
-            oi = self.spec.orientations.index(key[1])
             gid = bmap[key].group
-            keys.append([*point, oi, gid])
-        return {'keys': keys}
+            if orients:
+                oi = orients.index(key[1])
+                keys.append([*point, oi, gid])
+            else:
+                # 无朝向板型（立方等）：键里只有点，别硬塞一个朝向下标
+                # （spec.orientations 是空元组，index() 必抛 ValueError）
+                keys.append([*point, gid])
+        return {'keys': keys} if orients else {'keys': keys, 'points_only': True}
 
     def restore_state(self, state: dict) -> None:
         """从 snapshot_state 无损还原（见 snapshot_state 的 docstring）。
@@ -926,16 +932,23 @@ class EngineGame:
         态；矩阵/边界由 update_matrix 据真实块重算，不再读 lossy 的 matrix。
         """
         raw = state.get('keys') or []
+        orients = self.spec.orientations
         if not raw:
             self._board = Board(self.spec, ())
         else:
             keys = set()
             groups = {}
             for item in raw:
-                point = tuple(item[:-2])
-                oi = item[-2]
-                gid = item[-1]
-                orient = self.spec.orientations[oi]
+                if orients:
+                    point = tuple(item[:-2])
+                    oi = item[-2]
+                    gid = item[-1]
+                    orient = orients[oi]
+                else:
+                    # 无朝向板型：最后一位是捆绑组，前面全是点分量（二维/三维通用）
+                    point = tuple(item[:-1])
+                    gid = item[-1]
+                    orient = ''
                 key = (point, orient)
                 keys.add(key)
                 if gid:

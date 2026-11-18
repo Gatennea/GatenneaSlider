@@ -515,6 +515,29 @@ class EventsMixin:
                     self._handle_settings_dialog_event(event)
                     continue
 
+                # 三维右键 = 选缝（2026-11-18 操作方式）。必须放在通用鼠标分支
+                # 之前：那条分支只给左键走「游戏区点击」，右键会直接落到
+                # 旧二维的「右键取消选中」上，导致三维右键永远选不了缝
+                # （用户实测：右键滑块仍然只是取消选中）。
+                if (getattr(self, 'cubic_mode', False)
+                        and event.type == pygame.MOUSEBUTTONDOWN
+                        and event.button == 3):
+                    mx, my = event.pos
+                    over_panel = any(
+                        hasattr(rr, 'collidepoint') and rr.collidepoint(mx, my)
+                        for rr in (getattr(self, 'vk_panel_rect', None),
+                                   getattr(self, 'mp_panel_rect', None),
+                                   getattr(self, 'rp_panel_rect', None)))
+                    if (my >= self.menu_bar_height
+                            and mx < self.screen_width - self.right_panel_width
+                            and not over_panel
+                            and not self._dropdown_blocks_click(event.pos)):
+                        if not self._tut_board_locked():
+                            self._cubic_seam_click(mx, my)
+                            # 右键选缝/取消与二维同一个音槽（音量更低）
+                            self._play_click_sound('right')
+                        continue
+
                 # 图层约定：菜单栏/下拉菜单盖住浮动面板 → 点击落在菜单层
                 # （顶栏或已打开的下拉矩形）时，面板事件让位给菜单分支；
                 # 同时补上与「点面板外」同款的清理副作用（失焦/取消确认）
@@ -731,8 +754,12 @@ class EventsMixin:
                                 self.macro_menu_hovered = i
                                 break
 
-                    # 滑动条拖拽（缩放/速度）
-                    if getattr(self, 'zoom_slider_dragging', False):
+                    # 滑动条拖拽（缩放/速度/三维选项）
+                    if getattr(self, '_cubic_gap_dragging', False):
+                        self._update_cubic_opt_from_mouse('gap', event.pos[0])
+                    elif getattr(self, '_cubic_alpha_dragging', False):
+                        self._update_cubic_opt_from_mouse('seam_alpha', event.pos[0])
+                    elif getattr(self, 'zoom_slider_dragging', False):
                         self._update_zoom_slider_from_mouse(my)
                     elif self.slider_dragging:
                         self._update_slider_from_mouse(my)
@@ -1000,10 +1027,12 @@ class EventsMixin:
                                             self.custom_kind = ('triangle' if kind == 'triangle'
                                                                 else 'mi' if kind == 'mi'
                                                                 else 'numbered' if kind == 'numbered'
+                                                                else 'cubic' if kind == 'cubic'
                                                                 else 'rect')
                                             self.custom_fields = {
                                                 'm': str(self.current_m),
                                                 'n': str(self.current_n),
+                                                'd': str(getattr(self, 'current_depth', 0) or 1),
                                                 'step': str(self.current_step)
                                             }
                                             self.custom_active_field = 'm'
@@ -1136,6 +1165,14 @@ class EventsMixin:
                                     break
                             if sw_clicked:
                                 self._handle_right_panel_switch(sw_clicked)
+                            elif (getattr(self, 'cubic_gap_slider_rect', None)
+                                  and self.cubic_gap_slider_rect.collidepoint(x, y)):
+                                self._cubic_gap_dragging = True
+                                self._update_cubic_opt_from_mouse('gap', x)
+                            elif (getattr(self, 'cubic_alpha_slider_rect', None)
+                                  and self.cubic_alpha_slider_rect.collidepoint(x, y)):
+                                self._cubic_alpha_dragging = True
+                                self._update_cubic_opt_from_mouse('seam_alpha', x)
                             elif getattr(self, 'zoom_slider_rect', None) and self.zoom_slider_rect.collidepoint(x, y):
                                 self.zoom_slider_dragging = True
                                 self._update_zoom_slider_from_mouse(y)
@@ -1181,12 +1218,17 @@ class EventsMixin:
                         # 教程解法播放中：锁定棋盘操作（点选缝隙/滑块、拖拽滑动）
                         op_locked = self._tut_board_locked()
 
-                        # 三維（§54 第 2 步）：这一盘还没有拾取，点击只起「旋转」
-                        # ——旋转态下点什么都不该选中（验收判据之一）。第 3 步
-                        # 接上射线求交后再在这里分派「点缝 / 点块 / 点空白」。
+                        # 三維（§54 第 2/3 步）：左键可能是拖（旋转）也可能是点
+                        # （选缝 / 选块），松手时按有没有移动来区分；右键清选中。
+                        # 2026-11-18 起任何姿态都能点选（原「旋转态不选」撤销）。
                         if getattr(self, 'cubic_mode', False) and not op_locked:
                             if event.button == 1:
                                 self._cubic_drag_begin(x, y)
+                            elif event.button == 3:
+                                # 2026-11-18 用户改操作方式：**右键选缝**，
+                                # 空白处右键 = 取消选中（左键专职选滑块组）。
+                                op_log.log('cubic_seam_click', sx=x, sy=y)
+                                self._cubic_seam_click(x, y)
                             continue
 
                         # S1-4 箭头按键：**命中优先于选缝与起拖**。按键画在菜单
@@ -1400,8 +1442,17 @@ class EventsMixin:
                                 self._commit_drag_move()
                         self.is_dragging = False
                         self.slider_dragging = False
+                        # 三维选项滑条（拆分 / 切面透明）：松手结束拖拽
+                        self._cubic_gap_dragging = False
+                        self._cubic_alpha_dragging = False
                         self.zoom_slider_dragging = False
-                        self.cubic_dragging = False
+                        if getattr(self, 'cubic_dragging', False):
+                            # 三维：拖过 = 旋转收尾；没拖过 = 一次点击（选缝/选块）
+                            if (event.button == 1
+                                    and not getattr(self, 'cubic_drag_moved', False)):
+                                start = getattr(self, 'cubic_drag_start', event.pos)
+                                self._cubic_click(*start)
+                            self.cubic_dragging = False
 
                 # 鼠标滚轮
                 elif event.type == pygame.MOUSEWHEEL:
@@ -1515,6 +1566,10 @@ class EventsMixin:
                         # 三維：1–6 切六朝向、0 回斜视（带偏角，不是正对）
                         continue
 
+                    elif getattr(self, 'cubic_mode', False) and self._cubic_move_key(event):
+                        # 三維：r/R c/C d/D 三軸六向推選中組（§54 第 4 步）
+                        continue
+
                     else:
                         if self._tut_board_locked():
                             continue
@@ -1595,8 +1650,8 @@ class EventsMixin:
     CUBIC_PITCH_LIMIT = 89.0
     #: 缩放区间：太小看不到缝、太大只剩一两块。
     CUBIC_ZOOM_RANGE = (0.5, 3.0)
-    #: 拖动灵敏度（度/像素）：一圈 360° 约 800px，符合常见 3D 查看器手感。
-    CUBIC_DRAG_DEG_PER_PX = 0.45
+    #: 拖动灵敏度：arcball 角度（球面夹角）再乘这个倍率。1.0 = 抓哪儿转哪儿。
+    CUBIC_DRAG_SENSITIVITY = 1.0
 
     def _cubic_camera_apply(self, cam, label=None, index=None):
         """把姿态写进 GUI（姿态本身是唯一真源，不再另存 yaw/pitch）。"""
@@ -1626,16 +1681,26 @@ class EventsMixin:
         self.macro_notify_timer = 90
 
     def _cubic_drag_begin(self, x, y):
-        """棋盘上按下左键 = 开始旋转（旋转期间不选中任何东西，见点击分派）。"""
+        """棋盘上按下左键 = 可能是拖（旋转），也可能是点（选缝/选块）。
+
+        两者靠「松手时有没有真的移动」区分（见 MOUSEBUTTONUP）：移动过 = 旋转，
+        没移动 = 单击 / 双击。旋转期间不选中任何东西（方案 §2.2 互斥口径）。
+        """
         self.cubic_dragging = True
         self.cubic_drag_start = (x, y)
+        self.cubic_drag_moved = False
         self.cubic_drag_from = getattr(self, 'cubic_camera', None)
 
     def _cubic_drag_update(self, pos):
-        """跟手旋转：右拖 → 物体跟着往右转（内容跟手，不是相机跟手）。
+        """跟手旋转（trackball）：抓住的那一面跟着鼠标走，不跟场景走。
 
-        横拖绕世界竖轴转（转台手感），竖拖绕相机自己的右轴转（抬头/低头）；
-        后者到接近极点就停住，避免画面翻个跟头。
+        为什么不是「横拖绕世界竖轴 + 竖拖绕相机右轴」：两根轴在两个不同的坐标系
+        里（世界 vs 相机），先转哪根会让结果依赖姿态——相机一旦抬头，世界竖轴在
+        屏幕上就是斜的，横拖看起来像在乱转，甚至和鼠标反向（用户实测到的）。
+        这里改成**屏幕轴**：拖动向量 d 落在相机的 right/up 平面上，绕
+        `轴 = right·dx + up·dy` 一次转 `k·|d|`（Shoemake 的 trackball 做法，
+        three.js OrbitControls / pCubes 的轨道相机同源）。轴永远垂直于屏幕、
+        永远与拖动方向共面，所以任何姿态下手感一致，也没有极点该不该停的问题。
         """
         if not getattr(self, 'cubic_dragging', False):
             return
@@ -1643,14 +1708,169 @@ class EventsMixin:
         if base is None:
             return
         sx, sy = getattr(self, 'cubic_drag_start', pos)
-        k = self.CUBIC_DRAG_DEG_PER_PX
-        cam = base.spin((0.0, 1.0, 0.0), -(pos[0] - sx) * k)
-        tilt = cam.spin(cam.right_axis(), (pos[1] - sy) * k)
-        # 极点保护：相机 z 轴离竖直轴不足 1° 就停在上一帧（再往下会翻跟头）
-        pole = math.cos(math.radians(90.0 - self.CUBIC_PITCH_LIMIT))
-        if abs(tilt.view_axis()[1]) <= pole + 1e-12:
-            cam = tilt
-        self._cubic_camera_apply(cam)
+        dx, dy = pos[0] - sx, pos[1] - sy
+        if abs(dx) >= 4 or abs(dy) >= 4:
+            # 2026-11-18：不再「一开转就清选中」。正向化口径撤销后任何姿态都能
+            # 选/滑，转一下看看再推是正常操作，清掉反而打断；切面跟着盘一起转
+            # 也是对的——它切的就是那盘。
+            self.cubic_drag_moved = True
+        if not self.cubic_drag_moved:
+            return                       # 还在点击容差内：先别动相机（避免点一下画面就歪）
+        if dx == 0 and dy == 0:
+            return
+        from engine.cubic_camera import arcball_axis_angle
+        axis_cam, ang = arcball_axis_angle(
+            (sx, sy), pos, self.screen_width, self.screen_height)
+        if axis_cam is None:
+            return
+        right, up, view = base.right_axis(), base.up_axis(), base.view_axis()
+        axis = tuple(axis_cam[0] * right[i] + axis_cam[1] * up[i]
+                     + axis_cam[2] * view[i] for i in range(3))
+        sens = float(getattr(self, 'cubic_rot_sensitivity',
+                             self.CUBIC_DRAG_SENSITIVITY))
+        self._cubic_camera_apply(base.spin(axis, -ang * sens))
+
+    # ------------------------------------------------------------------
+    # 三维选中（§54 第 3 步）：单击出白线切面、双击选中连通组
+    # ------------------------------------------------------------------
+    #: 双击判定：pygame 没有原生双击事件，自己做时间窗 + 位置容差（可调）
+    CUBIC_DOUBLE_CLICK_MS = 300
+    CUBIC_DOUBLE_CLICK_PX = 8
+    #: 单击改切面的「缝线半径」（像素）：点在缝线这么多像素以内才算选缝，
+    #: 否则不动现有切面（否则双击的第一下会把缝挪走，用户 2026-11-17 实测）
+    CUBIC_SEAM_CLICK_PX = 6
+    #: 切面预览（2026-11-17 用户口径：与二维同一套视觉语言 = **红色**；并且要
+    #: 「有平面的感觉」= 半透明填充，不是只描框）。alpha 单独放，色取 colors['line']。
+    CUBIC_SEAM_ALPHA = 110
+    CUBIC_SEAM_PAD = 0.0
+    CUBIC_ARROW_R = 19          # 三维方向箭头按键半径（像素）
+    CUBIC_ARROW_OFF = 30        # 箭头离切面投影外沿的距离
+
+    def _cubic_pick(self, x, y):
+        """屏幕点 → 命中面（用渲染层刚存下的那份 scene，命中与画面必然一致）。"""
+        from engine import cubic_pick
+        scene = getattr(self, '_cubic_scene', None)
+        if not scene:
+            return None
+        return cubic_pick.hit_face(scene['faces'], (x, y))
+
+    def _cubic_arrow_hit(self, x, y):
+        """点在三維方向箭头上？返回方向字母，否则 None（命中优先于选缝）。"""
+        for letter, rect in getattr(self, '_cubic_arrow_buttons', ()):
+            if rect.collidepoint(x, y):
+                return letter
+        return None
+
+    def _cubic_click(self, x, y):
+        """左键：选滑块（必须在**已有切面**的前提下，和原版谜题同序）。
+
+        2026-11-18 用户口径：先选缝、再选块；**没有选中缝时禁止选块**。
+          · 左键 = 在已选切面里选「点中那块所在的同侧连通组」；
+          · 右键 = 选缝（`_cubic_seam_click`），空白右键 = 取消选中；
+          · 选缝只定切面，不替用户选块——块必须由左键再点一次。
+        """
+        from engine import cubic_pick
+        arrow = self._cubic_arrow_hit(x, y)
+        if arrow is not None:
+            return self._cubic_push_letter(arrow, hint='方向箭头')
+        hit = self._cubic_pick(x, y)
+        if hit is None:
+            return False
+        seam = getattr(self, 'selected_gap', None)
+        if seam is None:
+            self.macro_notify_msg = "先右键选一条缝，再左键选要滑的滑块"
+            self.macro_notify_timer = 130
+            return False
+        block = cubic_pick.block_at_location(self.game.blocks, hit['loc'])
+        if block is None:
+            return False
+        # 选的组必须是这条缝**某一侧**的连通组（引擎 opt 自己按 rank 切侧）
+        self.game.opt(seam[0], seam[1], block)
+        self.selected_block = block
+        n = len([b for b in self.game.blocks if b.be_opted])
+        self.macro_notify_msg = f"选中滑块组 共{n}个（切面 {seam[0]}·{seam[1]}）"
+        self.macro_notify_timer = 120
+        return True
+
+    def _cubic_seam_click(self, x, y):
+        """右键：选切面。点中块的某个面 → 这条面外沿的内部缝；空白 → 取消选中。
+
+        只定切面，**不代替左键选块**（用户 2026-11-18：没有缝时禁止选块 →
+        反过来选缝也不该顺手把块选了；选完缝再左键点块）。
+        """
+        from engine import cubic_pick
+        hit = self._cubic_pick(x, y)
+        if hit is None:
+            self._cubic_clear_selection()
+            return False
+        locations = {tuple(int(v) for v in b.location[:3]) for b in self.game.blocks}
+        seam = cubic_pick.seam_of_internal_face(
+            hit, self.game.is_valid_gap, locations)
+        if seam is None:
+            seam = cubic_pick.seam_of_face(hit, self.game.is_valid_gap, locations)
+        if seam is None:
+            self.macro_notify_msg = "这个面旁边没有可切的内部缝"
+            self.macro_notify_timer = 110
+            return False
+        self.selected_gap = seam
+        self.selected_block = None
+        for b in self.game.blocks:
+            b.be_opted = False
+        self.macro_notify_msg = f"切面 {seam[0]}·{seam[1]}（左键选要滑的块）"
+        self.macro_notify_timer = 120
+        return True
+
+    def _cubic_seam_touches(self, seam, loc):
+        """这条缝是否**紧挨着**这块（它的某一个邻居面就是这条切面）。"""
+        from engine import cubic_pick
+        fam, line = seam
+        idx = cubic_pick.FAMILY_TO_LOC_INDEX[fam]
+        k = int(loc[idx])
+        return line in (k - 1, k)
+
+    def _cubic_seam_for_block(self, hit):
+        """双击时的缝：只在这块自己的边界里找，优先「点中的那面外侧」。
+
+        绝不退回 `seam_at_point`（那是「离点击最近的一条缝」，斜姿态下很容易
+        落到别的块、别的层上——用户说的「选中其他地方的缝隙」就出在这里）。
+        """
+        from engine import cubic_pick
+        loc = tuple(int(v) for v in hit['loc'])
+        fam_hint = cubic_pick.WORLD_AXIS_TO_FAMILY.get(hit.get('axis'))
+        sign = hit.get('sign', 0)
+        if fam_hint:
+            idx = cubic_pick.FAMILY_TO_LOC_INDEX[fam_hint]
+            k = int(loc[idx])
+            line = k if sign > 0 else k - 1
+            if self.game.is_valid_gap(fam_hint, line):
+                return (fam_hint, line)
+        for fam in ('r', 'c', 'd'):
+            idx = cubic_pick.FAMILY_TO_LOC_INDEX[fam]
+            k = int(loc[idx])
+            for line in (k - 1, k):
+                if self.game.is_valid_gap(fam, line):
+                    return (fam, line)
+        return None
+
+    def _cubic_scene_faces(self):
+        """本帧场景的可见面（渲染时缓存的；没有就现算一份）。"""
+        faces = getattr(self, '_cubic_scene', None)
+        if isinstance(faces, dict):
+            return faces.get('faces') or []
+        if isinstance(faces, (list, tuple)):
+            return list(faces)
+        return []
+
+    def _cubic_clear_selection(self):
+        """右键 / 点空白 / 开始旋转：取消选中与切面预览。"""
+        self.selected_gap = None
+        self.selected_block = None
+        self._cubic_last_click_t = None
+        self._cubic_last_click_p = None
+        self._cubic_gap_before_click = None
+        if getattr(self, 'game', None) is not None:
+            for b in self.game.blocks:
+                b.be_opted = False
 
     def _cubic_zoom_by(self, factor):
         """Ctrl+滚轮缩放三维画面（与二维 zoom 分开存，互不影响）。"""
@@ -1675,6 +1895,257 @@ class EventsMixin:
             self._cubic_view_oblique()
             return True
         return False
+
+    def _cubic_move_key(self, event):
+        """三轴六向字母推一步（§54 第 4 步）：r/R c/C d/D，大写沿轴增大。
+
+        与 `engine.compat` 的 cubic 字母表同一套字母（不注册会派生成 A~F，能用
+        但不直观）。两条闸门：带 Ctrl/Alt 不消费（留给快捷键）；没选中就只提示
+        「先双击选中」。2026-11-18 起**任何姿态都能推**（三条轴是世界轴，与镜头
+        朝向无关；原「旋转态只看不动」随正向化口径一并撤销）。
+        """
+        if getattr(event, 'mod', 0) & (pygame.KMOD_CTRL | pygame.KMOD_ALT):
+            return False
+        mapping = {pygame.K_r: 'r', pygame.K_c: 'c', pygame.K_d: 'd'}
+        base = mapping.get(event.key)
+        if base is None:
+            return False
+        letter = base.upper() if (event.mod & pygame.KMOD_SHIFT) else base
+        self._cubic_push_letter(letter, hint='r/R c/C d/D')
+        return True
+
+    # ---- 三轴六键：虚拟键盘按钮（§54 第 4 步下半） ----
+
+    CUBIC_PAN_STEP = 30.0      # 平移盘面一次 = 30 屏幕像素
+
+    def _cubic_screen_dir(self, world_vec):
+        """世界方向 → 屏幕单位向量（屏幕 y 向下，所以取负 vy）。
+
+        六键的箭头不能写死成上下左右：三条轴在世界里固定，但转到哪个屏幕方向
+        由当前相机决定。同一个函数也给「没选中时六键 = 平移盘面」定方向。
+        轴正对镜头时投影长度趋零（屏幕上是一个点），返回零向量，由调用方决定
+        「不画箭头 / 不按这个方向平移」。
+        """
+        cam = getattr(self, 'cubic_camera', None)
+        if cam is None:
+            return (0.0, 0.0)
+        vx, vy, _vz = cam.to_camera(world_vec)
+        norm = math.hypot(vx, vy)
+        if norm < 1e-9:
+            return (0.0, 0.0)
+        return (vx / norm, -vy / norm)
+
+    @staticmethod
+    def _cubic_lattice_to_world(vec):
+        """CUBIC_DIRECTIONS 的 (dr, dc, dd) → 世界 (x=c, y=d, z=r)。
+
+        ⚠️ 这两个坐标系是**换序**的（`cubic_view` 里 X=c / Y=d / Z=r），
+        直接拿 (dr,dc,dd) 当世界向量去投影，箭头会整体错位成另一条轴
+        （2026-11-18 实测：切面 r 的两个箭头画到了左右，本该是上下/前后）。
+        """
+        return (vec[1], vec[2], vec[0])
+
+    def _cubic_letter_dir(self, letter):
+        """方向字母 → 屏幕单位向量（内部完成 lattice→world 换序）。"""
+        from engine.compat import CUBIC_DIRECTIONS
+        vec = CUBIC_DIRECTIONS.get(letter)
+        if vec is None:
+            return (0.0, 0.0)
+        return self._cubic_screen_dir(self._cubic_lattice_to_world(vec))
+
+    def _update_cubic_opt_from_mouse(self, key, mx):
+        """右侧栏三维滑条：按鼠标横坐标把值写到表里声明的属性上（越界夹紧）。
+
+        写值后立刻作废两处缓存：箭头「可推性」签名里带 gap，切面格也按 gap
+        切——拆一拆就得重算，否则滑条动、画面却还是旧判定。
+        """
+        from gui import cubic_settings
+        spec = cubic_settings.by_key(key)
+        rect = (getattr(self, 'cubic_gap_slider_rect', None) if key == 'gap'
+                else getattr(self, 'cubic_alpha_slider_rect', None))
+        if rect is None or rect.width <= 0:
+            return
+        norm = (mx - rect.left) / float(rect.width)
+        norm = max(0.0, min(1.0, norm))
+        val = spec['min'] + norm * (spec['max'] - spec['min'])
+        val = cubic_settings.clamp_value(key, val)
+        if getattr(self, spec['attr'], None) == val:
+            return
+        setattr(self, spec['attr'], val)
+        self._cubic_arrow_sig = None      # gap 变了：可推性缓存作废
+        self._cubic_sil_cache = None      # 贴纸判定用的轮廓缓存也作废
+        # 只改显示参数，不是棋盘变更：不动 _board_version（否则标题栏平白多个
+        # 星号）；配置在退出/定期 save_config 时自然落盘。
+
+    def _cubic_pan_center(self):
+        """居中：平移归零 **并恢复「跟随质心」**（方案 §2.2 原口径）。
+
+        手动平移会暂停跟随（否则刚挪开又被拉回去）；居中把它恢复，
+        以后整盘滑动时质心继续锁在屏幕中心（兼作三维的防偏移）。
+        """
+        self.cubic_pan = [0.0, 0.0]
+        self.cubic_follow_centroid = True
+        self._cubic_follow_center = None      # 居中即从质心重新起算
+        self.macro_notify_msg = '视角已居中（恢复跟随质心）'
+        self.macro_notify_timer = 120
+        return True
+
+    def _cubic_pan_by(self, letter, notify=True):
+        """按世界方向平移盘面一格（屏幕偏移，不碰逻辑坐标）。"""
+        from engine.compat import CUBIC_DIRECTIONS
+        vec = CUBIC_DIRECTIONS.get(letter)
+        if vec is None:
+            return False
+        dir2 = self._cubic_screen_dir(self._cubic_lattice_to_world(vec))
+        if dir2 == (0.0, 0.0):
+            # 这条轴正对/背对镜头：屏幕上没有可平移的方向，提示而不是瞎挪
+            self.macro_notify_msg = f"{letter} 轴正对镜头，屏幕上没有可平移的方向"
+            self.macro_notify_timer = 120
+            return False
+        if getattr(self, 'cubic_pan', None) is None:
+            self.cubic_pan = [0.0, 0.0]
+        self.cubic_pan[0] += dir2[0] * self.CUBIC_PAN_STEP
+        self.cubic_pan[1] += dir2[1] * self.CUBIC_PAN_STEP
+        # 手动平移 → 暂停「跟随质心」（方案 §2.2：手动平移后暂停跟随，
+        # 按「居中」回正并恢复）。不暂停的话下一帧就被质心拽回中间，
+        # 按键看起来像没反应。
+        self.cubic_follow_centroid = False
+        # 夹住偏移：最多推到半屏，别让盘整个飘出可视区再也找不回来
+        lim = 0.55 * max(self.screen_width, self.screen_height)
+        self.cubic_pan[0] = max(-lim, min(lim, self.cubic_pan[0]))
+        self.cubic_pan[1] = max(-lim, min(lim, self.cubic_pan[1]))
+        if notify:
+            self.macro_notify_msg = f'平移盘面 {letter}（未选中时六键即平移）'
+            self.macro_notify_timer = 90
+        return True
+
+    def _cubic_push_letter(self, letter, hint='r/R c/C d/D'):
+        """推一步。字母键与虚拟键盘六键走同一口径（同一个 move_selected_blocks）。"""
+        if not any(getattr(b, 'be_opted', False) for b in self.game.blocks):
+            self.macro_notify_msg = f"先在切面一侧双击选中滑块，再用 {hint} 推"
+            self.macro_notify_timer = 120
+            # 前提没满足：只出声 + 文字，不闪整盘（与二维 visual=False 同口径）
+            self._reject_move(None, visual=False)
+            return False
+        before = [tuple(int(v) for v in b.location[:3])
+                  for b in self.game.blocks if getattr(b, 'be_opted', False)]
+        moved = self.move_selected_blocks(letter)
+        if not moved:
+            self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
+            self.macro_notify_timer = 120
+            # 三维拒绝反馈：短提示音 + 选中组红边闪 12 帧（渲染层按 _shake_t 画）
+            self._reject_move(None,
+                              [b for b in self.game.blocks
+                               if getattr(b, 'be_opted', False)])
+            return False
+        # 同向连续推（用户 2026-11-18 第 4 条：「箭头不能改变位置」）：选中组一走，
+        # 它和没动那部分之间的切面也跟着走一格。把 selected_gap 跟着挪到新位置，
+        # 箭头 / 可推方向就重新挂在新缝口上——不用再动鼠标去点。
+        fam = letter.lower() if letter.lower() in ('r', 'c', 'd') else None
+        step = 1 if letter.isupper() else -1
+        gap = getattr(self, 'selected_gap', None)
+        if fam and gap and gap[0] == fam:
+            new_line = int(gap[1]) + step
+            if self.game.is_valid_gap(fam, new_line):
+                self.selected_gap = (fam, new_line)
+        if getattr(self, 'animation_enabled', True) and before:
+            self._cubic_start_anim(letter, before)
+        return moved
+
+    #: 三维推一步的滑动时长（毫秒）。二维走 animation_duration，三维单独一档：
+    #: 一步是整组 9 块沿一个轴滑，太快看不出「整组在动」。
+    CUBIC_ANIM_MS = 140
+
+    def _cubic_start_anim(self, letter, before_locs):
+        """记下「这一推从哪滑到哪」，交给渲染层做收尾位移（逻辑已提交）。
+
+        只动渲染：真实位置早已就位，这里给刚动过的那组一个逐渐归零的反向位移，
+        画面上就是滑过去的一段。拾取 / 判定 / 选中始终用真实位置。
+        """
+        from engine.compat import CUBIC_DIRECTIONS
+        vec = CUBIC_DIRECTIONS.get(letter)
+        if vec is None:
+            return
+        dr, dc, dd = vec
+        # 逻辑坐标 (r,c,d) → 世界 (X=c, Y=d, Z=r)，与 cubic_view 同一口径
+        delta = (dc, dd, dr)
+        after = {(r + dr, c + dc, d + dd) for (r, c, d) in before_locs}
+        self.cubic_anim = {
+            't0': pygame.time.get_ticks(),
+            'ms': int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS)),
+            'delta': tuple(float(v) for v in delta),
+            'group': frozenset(after),
+        }
+
+    def _cubic_anim_offsets(self):
+        """当前帧的动画位移 {位置: (dx,dy,dz)}；没动画时 None。"""
+        # 打乱演示 / 任何走 2D start_animation 管線的动画，在三维里没有渲染插值
+        # （二维是按格子算屏幕坐标的，三维走投影）。用户 2026-11-18 第 1 条：
+        # 「打乱过程没有动画」。这里把 start→end 的逻辑位移按 progress 摊到
+        # 世界坐标上，交给渲染层当 offsets——逻辑位置仍是起点，commit 才写终点。
+        if getattr(self, 'cubic_mode', False) and getattr(self, 'animating', False):
+            blocks = getattr(self, 'anim_blocks', None)
+            ends = getattr(self, 'anim_end_pos', None)
+            if blocks and ends:
+                p = max(0.0, min(1.0, float(getattr(self, 'anim_progress', 0.0))))
+                out = {}
+                for b, end in zip(blocks, ends):
+                    loc = tuple(int(v) for v in b.location[:3])
+                    dr, dc, dd = (int(end[0]) - loc[0], int(end[1]) - loc[1],
+                                  int(end[2]) - loc[2])
+                    if (dr, dc, dd) == (0, 0, 0):
+                        continue
+                    # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)
+                    out[loc] = (dc * p, dd * p, dr * p)
+                if out:
+                    return out
+        anim = getattr(self, 'cubic_anim', None)
+        if not anim:
+            return None
+        elapsed = pygame.time.get_ticks() - anim['t0']
+        ms = max(1, anim['ms'])
+        if elapsed >= ms:
+            self.cubic_anim = None
+            return None
+        p = elapsed / float(ms)
+        k = (1.0 - p) ** 3            # ease-out：起手就动、落点定住
+        dx, dy, dz = anim['delta']
+        off = (-dx * k, -dy * k, -dz * k)
+        return {loc: off for loc in anim['group']}
+
+    def _cubic_vk_six(self, letter):
+        """虚拟键盘六键：有选中就推，没选中就平移盘面（方案 §1「操作入口」）。"""
+        if self._tut_board_locked():
+            return False
+        if any(getattr(b, 'be_opted', False) for b in self.game.blocks):
+            return self._cubic_push_letter(letter, hint='六键')
+        return self._cubic_pan_by(letter)
+
+    def _cubic_vk_dirs(self):
+        """六键箭头：{字母: (屏幕 dx, dy)}，按当前相机现算（旋转后要重画）。"""
+        return {letter: (dx, dy)
+                for letter, (dx, dy, _p) in self._cubic_vk_axes().items()}
+
+    def _cubic_vk_axes(self):
+        """{字母: (屏幕单位 dx, dy, 投影长度)}。
+
+        投影长度是给「坐标轴」键盘用的：真实的三维坐标轴画在平面上时，正对
+       镜头的那条轴会被压短甚至压成一个点。按投影长度缩短端点距离，屏幕上就
+        能直接读出「这条轴转到了什么姿态」，而不是六键永远一样长。
+        """
+        from engine.compat import CUBIC_DIRECTIONS
+        cam = getattr(self, 'cubic_camera', None)
+        out = {}
+        for letter, vec in CUBIC_DIRECTIONS.items():
+            world = self._cubic_lattice_to_world(vec)
+            if cam is None:
+                out[letter] = (0.0, 0.0, 0.0)
+                continue
+            vx, vy, _vz = cam.to_camera(world)
+            plen = math.hypot(vx, vy)
+            unit = (vx / plen, -vy / plen) if plen > 1e-9 else (0.0, 0.0)
+            out[letter] = (unit[0], unit[1], plen)
+        return out
 
     def _cmd_reply(self, resp_q, ok, message, data=None):
         """统一回复：有 resp_q 则通过队列回复（HTTP），否则打印到终端"""
@@ -3375,13 +3846,21 @@ class EventsMixin:
         self.camera_y = cy - wy * self.zoom
 
     def _update_zoom_slider_from_mouse(self, mouse_y):
-        """根据鼠标Y坐标更新缩放（右侧面板垂直滑条；委托共享锚点逻辑）"""
+        """根据鼠标Y坐标更新缩放（右侧面板垂直滑条；委托共享锚点逻辑）
+
+        三维态这条滑条改的是 `cubic_zoom`（不是二维 `self.zoom`）：三维的画面
+        大小只该由它决定（旋转不再重算比例，见 `cubic_view.stable_frame`）。
+        """
         zr = getattr(self, 'zoom_slider_rect', None)
         if not zr or zr.height <= 0:
             return
         y = max(zr.top, min(zr.bottom, mouse_y))
         normalized = (y - zr.top) / zr.height
         # 倒置：越靠上(滑条顶部)=放大；越靠下=缩小
+        if getattr(self, 'cubic_mode', False):
+            lo, hi = self.CUBIC_ZOOM_RANGE
+            self.cubic_zoom = round(lo + (1.0 - normalized) * (hi - lo), 3)
+            return
         new_zoom = self.min_zoom + (1.0 - normalized) * (self.max_zoom - self.min_zoom)
         self._apply_zoom_centered(new_zoom)
 
@@ -3495,6 +3974,11 @@ class EventsMixin:
         if reset_btn is not None and reset_btn.collidepoint(mx, my):
             from gui.file_ops import DEFAULT_KEYBINDINGS
             self.keybindings = dict(DEFAULT_KEYBINDINGS)
+            # 三维选项也一起回默认（表里声明的默认值，含拆分/切面透明）
+            from gui import cubic_settings
+            cubic_settings.reset(self)
+            self._cubic_arrow_sig = None
+            self._cubic_sil_cache = None
             self.settings_editing_action = None
             self.settings_editing_value = None
             self._update_menu_shortcut_texts()
@@ -3658,6 +4142,31 @@ class EventsMixin:
                 self.settings_editing_value = None
                 self.settings_scrollbar.set_scroll(0)
                 return
+            if hasattr(self, '_settings_tab_cubic_rect') and self._settings_tab_cubic_rect.collidepoint(mx, my):
+                self.settings_active_tab = 'cubic'
+                self.settings_editing_action = None
+                self.settings_editing_value = None
+                self.settings_scrollbar.set_scroll(0)
+                return
+
+            # 三维 Tab：四行数值的 − / + 步进按钮（方案 §2.4）
+            if self.settings_active_tab == 'cubic':
+                from gui import cubic_settings
+                for (_key, _sign), _rect in getattr(
+                        self, '_settings_cubic_btn_rects', {}).items():
+                    if not _rect.collidepoint(mx, my):
+                        continue
+                    spec = cubic_settings.by_key(_key)
+                    step = self.CUBIC_STEP.get(_key, 1)
+                    cur = getattr(self, spec['attr'], spec['default'])
+                    val = cubic_settings.clamp_value(_key, cur + _sign * step)
+                    setattr(self, spec['attr'], val)
+                    self._cubic_arrow_sig = None
+                    self._cubic_sil_cache = None
+                    self.macro_notify_msg = (
+                        f"{spec['label']}：{self._fmt_cubic_value(spec, val)}")
+                    self.macro_notify_timer = 90
+                    return
 
             # 文件 Tab：存档只读开关
             if self.settings_active_tab == 'file' and hasattr(self, '_settings_readonly_toggle_rect'):
@@ -4163,6 +4672,12 @@ class EventsMixin:
         track = self._settings_slider_track_rect
         normalized = (mx - track.x) / track.width
         normalized = max(0.0, min(1.0, normalized))
+        if getattr(self, 'cubic_mode', False):
+            # 三维：视觉页这条滑条写 cubic_anim_ms（60..400），不动二维值
+            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
+            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            self.cubic_anim_ms = int(lo + normalized * (hi - lo))
+            return
         new_duration = int(100 + normalized * 900)
         if self.animating and self.animation_duration > 0:
             elapsed = pygame.time.get_ticks() - self.anim_start_time
@@ -4242,6 +4757,14 @@ class EventsMixin:
             self.board_marks_enabled = not getattr(self, 'board_marks_enabled', True)
             status = '开' if self.board_marks_enabled else '关'
             self.macro_notify_msg = f"复原提示标记：{status}"
+        elif key == 'cubic_follow_centroid':
+            # 三维右下角「跟随质心」：关掉后手动平移不会被拽回；重开即回正
+            on = not getattr(self, 'cubic_follow_centroid', True)
+            self.cubic_follow_centroid = on
+            if on:
+                self.cubic_pan = [0.0, 0.0]
+                self._cubic_follow_center = None
+            self.macro_notify_msg = f"跟随质心：{'开' if on else '关（手动平移保持）'}"
         elif key == 'show_records_panel':
             # 成绩面板（F3 的纯鼠标入口）：与 F3 走同一套收尾（清删除确认态）
             self.show_records_panel = not getattr(self, 'show_records_panel', False)
@@ -4348,6 +4871,29 @@ class EventsMixin:
             self.open_command_palette()
             return
 
+        if kind == 'custom_dialog':
+            # 命令面板/帮助检索里的「自定义谜题」：按当前形态预选页签与尺寸，
+            # 三维局会直接落在「三维」并带 d。
+            self.close_all_menus()
+            self.show_help = False
+            self.show_custom_dialog = True
+            self._dialog_fade_reset('custom')
+            _kind = self._current_kind()
+            self.custom_kind = ('triangle' if _kind == 'triangle'
+                                else 'mi' if _kind == 'mi'
+                                else 'numbered' if _kind == 'numbered'
+                                else 'cubic' if _kind == 'cubic'
+                                else 'rect')
+            self.custom_fields = {
+                'm': str(self.current_m),
+                'n': str(self.current_n),
+                'd': str(getattr(self, 'current_depth', 0) or 1),
+                'step': str(self.current_step),
+            }
+            self.custom_active_field = 'm'
+            self.custom_error = ''
+            return
+
         if kind == 'toggle':
             self.show_help = False
             self._handle_right_panel_switch(act['key'])
@@ -4379,6 +4925,10 @@ class EventsMixin:
                 self.new_triangle_puzzle(params[0], params[1])
             elif form == 'mi':
                 self.new_mi_puzzle(params[0], params[1], params[2])
+            elif form == 'cubic':
+                # 命令面板「三维谜题」直达：params = (m, n, depth)
+                self.new_cubic_puzzle(params[0], params[1], params[2],
+                                      act.get('level', 1))
             else:
                 self.new_puzzle(params[0], params[1], params[2],
                                 numbered=(form == 'numbered'))
@@ -5317,3 +5867,4 @@ def _side_of_any(game, gap_type, line, key) -> int:
     else:
         raise ValueError(f'no side_of for {mod}')
     return side_of(gap_type, line, key)
+

@@ -95,7 +95,43 @@ class RecordsPanelMixin:
             return False
         if tail.startswith('tri') or tail.startswith('mi'):
             return False
+        if tail.startswith('cubic'):
+            # 三维成绩的初始局面是 `cubic:` 前缀的无损键表，有完整编码，
+            # 不是模型板型那种「朝向下标+1」矩阵。
+            return False
         return not tail.split('*')[0].isdigit()
+
+    @staticmethod
+    def _rp_is_cubic(rec) -> bool:
+        """该成绩是否三维局（initial_matrix 以 `cubic:` 开头）。"""
+        return str(rec.get('initial_matrix', '')).startswith('cubic:')
+
+    @staticmethod
+    def _rp_cubic_state(rec):
+        """解析三维成绩的无损键表；坏数据返回 None（调用方按空处理）。"""
+        raw = str(rec.get('initial_matrix', ''))
+        if not raw.startswith('cubic:'):
+            return None
+        try:
+            state = json.loads(raw[len('cubic:'):])
+        except (ValueError, TypeError):
+            return None
+        return state if isinstance(state, dict) else None
+
+    @staticmethod
+    def _rp_cubic_dims(rec):
+        """从分組鍵 `{step}~cubic{m}*{n}*{d}` 取 (m, n, d)；取不到返回 (0,0,0)。"""
+        tail = str(rec.get('puzzle_key', '')).split('~')[-1]
+        if not tail.startswith('cubic'):
+            return (0, 0, 0)
+        try:
+            vals = [int(x) for x in tail[len('cubic'):].split('*')]
+        except (ValueError, TypeError):
+            return (0, 0, 0)
+        if len(vals) != 3:
+            return (0, 0, 0)
+        return tuple(vals)
+
 
     def _rp_detail_record(self):
         """返回当前展开详情的记录，不存在则置空返回 None"""
@@ -426,19 +462,39 @@ class RecordsPanelMixin:
 
         # 左：初始矩阵（方格绘制，按可用区域等比缩放，行列再多也不会被拉伸或裁掉）
         left_w = 132
-        label = self.status_font.render("初始状态（点击）", True, (140, 160, 200))
-        self.screen.blit(label, (x + self._RP_PAD + 8, y + 6))
-        matrix = self._rp_matrix_display(rec['initial_matrix'],
-                                         self._rp_is_triangle(rec))
-        lines = [ln for ln in matrix.split('\n') if ln]
-        cols = max((len(ln) for ln in lines), default=0)
-        box = pygame.Rect(x + self._RP_PAD + 8, y + 24,
-                          left_w - 16, max(8, h - 24 - 4))
-        old_clip = self.screen.get_clip()
-        self.screen.set_clip(detail_rect)  # 极端情况下裁掉超出详情区部分，避免盖住其他内容
-        self._rp_draw_matrix(box, lines, cols)
-        self.screen.set_clip(old_clip)
-        self.rp_matrix_rect = pygame.Rect(x + self._RP_PAD, y + 4, left_w, h - 8)
+        _is_cubic = self._rp_is_cubic(rec)
+        if _is_cubic:
+            _st = self._rp_cubic_state(rec)
+            _nblk = len((_st or {}).get('keys') or [])
+            _m, _n, _d = self._rp_cubic_dims(rec)
+            label = self.status_font.render("三维初始局面（点击）", True, (140, 160, 200))
+            self.screen.blit(label, (x + self._RP_PAD + 8, y + 6))
+            _lines = [f"{_m}×{_n}×{_d}", f"{_nblk} 块"]
+            box = pygame.Rect(x + self._RP_PAD + 8, y + 24,
+                              left_w - 16, max(8, h - 24 - 4))
+            old_clip = self.screen.get_clip()
+            self.screen.set_clip(detail_rect)
+            _ty = box.y + 4
+            for _ln in _lines:
+                self.screen.blit(self.status_font.render(_ln, True, (210, 210, 210)),
+                                 (box.x + 2, _ty))
+                _ty += self.status_font.get_height() + 4
+            self.screen.set_clip(old_clip)
+            self.rp_matrix_rect = pygame.Rect(x + self._RP_PAD, y + 4, left_w, h - 8)
+        else:
+            label = self.status_font.render("初始状态（点击）", True, (140, 160, 200))
+            self.screen.blit(label, (x + self._RP_PAD + 8, y + 6))
+            matrix = self._rp_matrix_display(rec['initial_matrix'],
+                                             self._rp_is_triangle(rec))
+            lines = [ln for ln in matrix.split('\n') if ln]
+            cols = max((len(ln) for ln in lines), default=0)
+            box = pygame.Rect(x + self._RP_PAD + 8, y + 24,
+                              left_w - 16, max(8, h - 24 - 4))
+            old_clip = self.screen.get_clip()
+            self.screen.set_clip(detail_rect)  # 极端情况下裁掉超出详情区部分，避免盖住其他内容
+            self._rp_draw_matrix(box, lines, cols)
+            self.screen.set_clip(old_clip)
+            self.rp_matrix_rect = pygame.Rect(x + self._RP_PAD, y + 4, left_w, h - 8)
 
         # 右：信息每条一行（生成时间含年份与秒，超宽时值换行显示）
         info_x = x + self._RP_PAD + left_w + 4
@@ -541,6 +597,9 @@ class RecordsPanelMixin:
             # 碎三角无字符地图编码（见 _rp_is_shatter）：另存为只能产出
             # 一份读回来会变形的存档，不如不做
             return ''
+        if self._rp_is_cubic(rec):
+            # 三维：没有二维地图可导入；要落盘请直接「文件-保存」，这里不产假档
+            return ''
         try:
             numbered = bool(rec.get('numbered')) or str(rec.get('puzzle_key', '')).endswith('#num')
             triangle = self._rp_is_triangle(rec)
@@ -605,6 +664,27 @@ class RecordsPanelMixin:
             return
         if self.animating:
             self.cancel_animation()
+        if self._rp_is_cubic(rec):
+            # 三维：按 key 里的 m/n/d 重建同尺寸局，再用无损键表还原初始局面
+            _state = self._rp_cubic_state(rec)
+            _m, _n, _d = self._rp_cubic_dims(rec)
+            if not _state or _m < 1 or _n < 1 or _d < 1 \
+                    or not self.new_cubic_puzzle(_m, _n, _d, rec['step']):
+                self.macro_notify_msg = "三维成绩损坏，无法载入练习"
+                self.macro_notify_timer = 120
+                return
+            self.game.restore_state(_state)
+            self.game.update_matrix()
+            self.game_history.reset()
+            self.game_history.save_snapshot(self.game)
+            self.step_count = 0
+            self.selected_gap = None
+            self.selected_block = None
+            self.game_mode = 'practice'
+            self._timer_cancel()
+            self.current_file_path = None
+            self._cubic_pan_center()
+            return
         numbered = bool(rec.get('numbered')) or str(rec.get('puzzle_key', '')).endswith('#num')
         triangle = self._rp_is_triangle(rec)
         self.current_m = rec['m']
@@ -649,7 +729,11 @@ class RecordsPanelMixin:
         if rec is None:
             return
         if action == 'copy':
-            ok = self._rp_copy_matrix(rec['initial_matrix'])
+            text = rec['initial_matrix']
+            if self._rp_is_cubic(rec):
+                # 三维：剪贴板里放纯 JSON 键表，不带内部前缀
+                text = text[len('cubic:'):]
+            ok = self._rp_copy_matrix(text)
             self.macro_notify_msg = "已复制初始状态" if ok else "复制失败（剪贴板不可用）"
         elif action == 'save':
             path = self._rp_save_as_puzzle(rec)
@@ -666,6 +750,11 @@ class RecordsPanelMixin:
             self.rp_matrix_menu_rects = []
             return
         items = [("复制到剪贴板", 'copy'), ("另存为存档", 'save'), ("载入练习模式", 'load')]
+        _rec = self._rp_detail_record()
+        if _rec is not None and self._rp_is_cubic(_rec):
+            # 三维没有字符矩阵可「另存为」二维地图；复制的是无损键表 JSON，
+            # 只留能兑现的两项。
+            items = [("复制初始状态", 'copy'), ("载入练习模式", 'load')]
         item_h = 24
         mw = 150
         mh = len(items) * item_h + 8

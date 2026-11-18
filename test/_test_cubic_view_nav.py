@@ -151,6 +151,7 @@ gui.animation_enabled = False
 pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 gui.new_cubic_puzzle(3, 3, 3, 1)
+gui.cubic_zoom = 1.0            # 清掉配置里带进来的缩放，单看「旋转不碰缩放」
 
 board = (gui.screen_width // 2, gui.screen_height // 2)
 cam0 = gui.cubic_camera
@@ -165,11 +166,16 @@ check(gui.selected_block is None and gui.selected_gap is None,
 pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION,
                                      pos=(board[0] + 100, board[1]), rel=(100, 0)))
 gui.handle_events()
-want = cam0.spin((0.0, 1.0, 0.0), -100 * gui.CUBIC_DRAG_DEG_PER_PX)
+from engine.cubic_camera import arcball_axis_angle  # noqa: E402
+_ax, _ang = arcball_axis_angle(board, (board[0] + 100, board[1]),
+                               gui.screen_width, gui.screen_height)
+_axis_world = tuple(_ax[0] * cam0.right_axis()[i] + _ax[1] * cam0.up_axis()[i]
+                    + _ax[2] * cam0.view_axis()[i] for i in range(3))
+want = cam0.spin(_axis_world, -_ang * gui.CUBIC_DRAG_SENSITIVITY)
 check(same_pose(gui.cubic_camera, want),
-      '右拖 100px → 绕世界竖轴 −45°（内容跟手）')
-check(angle_between(gui.cubic_camera.view_axis(), cam0.view_axis()) > 30,
-      '视角确实转开了（不是没反应）')
+      '右拖 100px → arcball（球面夹角，抓住的点跟手）')
+check(angle_between(gui.cubic_camera.view_axis(), cam0.view_axis()) > 10,
+      '视角确实转开了（不是没反应）', angle_between(gui.cubic_camera.view_axis(), cam0.view_axis()))
 
 pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION,
                                      pos=(board[0] + 100, board[1] + 900),

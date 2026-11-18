@@ -108,6 +108,43 @@ def project_point(world, camera: CubicCamera, scale: float, origin) -> tuple:
     return (origin[0] + scale * vx, origin[1] - scale * vy, vz)
 
 
+def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
+                 margin: int = 40, zoom: float = 1.0, gap: float = 0.0,
+                 center=None) -> tuple:
+    """不随朝向变形的装画面：返回 (scale, origin)。
+
+    为什么另有一套：`fit_view` 按**当前朝向的投影包围盒**拟合，一旋转投影范围
+    就变，scale 跟着变——实测就是「拖一下画面忽大忽小」。这里把比例只由几何
+    本身的**包围球半径**决定（任何朝向下都不变），中心固定为包围盒中心投影到
+    屏幕中心。于是：旋转只转不缩放，画面大小**只**由 zoom（缩放滑条 / Ctrl+滚轮）
+    说了算。
+
+    center：装画面的参考点（方案 §2.2「居中 = 质心落在屏幕中心」）。给了就用它
+    ——「跟随质心」把滑块组的质心锁在屏幕中心，整盘滑动时不会慢慢漂走；
+    不给仍用包围盒中心（换局/读档时的过场口径）。
+    """
+    pts = [p for loc in locations_of(blocks) for p in block_corners(loc, gap)]
+    if not pts:
+        return 40.0 * zoom, (width / 2.0, height / 2.0)
+    lo = [min(p[i] for p in pts) for i in range(3)]
+    hi = [max(p[i] for p in pts) for i in range(3)]
+    if center is None:
+        center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
+    else:
+        center = tuple(float(v) for v in center)
+    # 比例只跟**几何外框**有关（包围盒中心到最远角），与 origin 用的参考点无关：
+    # 否则跟随质心时块一动半径就变，缩放跟着跳，「旋转/滑动画面忽大忽小」的旧病
+    # 会以另一种形式回来。
+    bbox_center = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
+    radius = max(1e-6, max(
+        sum((p[i] - bbox_center[i]) ** 2 for i in range(3)) ** 0.5 for p in pts))
+    avail_w = max(1.0, width - 2 * margin)
+    avail_h = max(1.0, height - 2 * margin)
+    scale = min(avail_w, avail_h) / (2.0 * radius) * max(0.05, float(zoom))
+    cvx, cvy, _ = camera.to_camera(center)
+    return scale, (width / 2.0 - scale * cvx, height / 2.0 + scale * cvy)
+
+
 def fit_view(blocks, camera: CubicCamera, width: int, height: int, *,
              margin: int = 40, zoom: float = 1.0, gap: float = 0.0) -> tuple:
     """把整盘装进画面：返回 (scale, origin)。
@@ -148,7 +185,7 @@ def locations_of(blocks) -> set:
 
 
 def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
-                  gap: float = 0.0) -> list:
+                  gap: float = 0.0, offsets=None) -> list:
     """算出**当前可见**的面（背面剔除 + 内部面剔除 + 画家排序）。
 
     gap = 拆分距离（见 block_min_corner）。**gap>0 时不再剔除内部面**：块与块
@@ -173,6 +210,13 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
             if sum(n * v for n, v in zip(normal, view_z)) <= 1e-9:
                 continue                       # 背面：法向朝里，看不见
             quad = _face_quad(loc, axis, sign, gap)
+            if offsets:
+                # 三维动画（§54 第 6 步）：逻辑已提交，渲染层给「刚动过的块」
+                # 一个还在收尾的位移，画面上就是滑过去的一段。
+                off = offsets.get(loc)
+                if off is not None:
+                    quad = tuple((w[0] + off[0], w[1] + off[1], w[2] + off[2])
+                                 for w in quad)
             pts = []
             depth = 0.0
             for w in quad:
@@ -193,19 +237,211 @@ def collect_faces(blocks, camera: CubicCamera, *, scale: float, origin,
     return out
 
 
+def block_boxes(blocks, gap: float = 0.0, offsets=None) -> list:
+    """每个块的世界 AABB（(x0, y0, z0, x1, y1, z1)），含拆分内收。
+
+    offsets 给了就给该块的盒子整体平移（动画渲染期用；判定/拾取仍用原位）。
+    """
+    out = []
+    edge = 1.0 - gap
+    for loc in locations_of(blocks):
+        x0, y0, z0 = block_min_corner(loc, gap)
+        if offsets:
+            off = offsets.get(loc)
+            if off is not None:
+                x0, y0, z0 = x0 + off[0], y0 + off[1], z0 + off[2]
+        out.append((x0, y0, z0, x0 + edge, y0 + edge, z0 + edge))
+    return out
+
+
+def _ray_hits_box(origin, direction, box, eps: float = 1e-6) -> bool:
+    """射线（从 origin 沿 direction 朝相机）是否穿过轴对齐盒子。"""
+    t_enter, t_exit = -1e18, 1e18
+    for i in range(3):
+        d = direction[i]
+        if abs(d) < 1e-12:
+            if origin[i] < box[i] or origin[i] > box[i + 3]:
+                return False
+            continue
+        t1 = (box[i] - origin[i]) / d
+        t2 = (box[i + 3] - origin[i]) / d
+        if t1 > t2:
+            t1, t2 = t2, t1
+        if t1 > t_enter:
+            t_enter = t1
+        if t2 < t_exit:
+            t_exit = t2
+        if t_enter > t_exit:
+            return False
+    return t_exit > eps and t_enter > -1e18
+
+
+def _convex_hull(points) -> list:
+    """二维凸包（Andrew monotone chain）。点按 (u, v) 传入，返回逆时针顶点。"""
+    pts = sorted(set((round(p[0], 9), round(p[1], 9)) for p in points))
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower, upper = [], []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def seam_shadow_polygons(quad, boxes, view_dir, eps: float = 1e-6):
+    """每个**挡在切面前面**的块，在切面上投下的影子多边形（精确，不是栅格）。
+
+    为什么需要：切面活在块与块的缝里，按格采样只能得到「格子级」的可见性，
+    边缘就被切成锯齿（用户 2026-11-18「遮擋畫的毛毛糙糙」）。这里是解析解：
+    沿视线把块的 AABB 投到切面上，得到的凸包（一般是六边形）就是它挡住的
+    那块面积，边界是平滑的直线。
+
+    返回 (shadows, n)：
+        shadows —— [(世界点 × N)]，都在切面平面上，按屏幕坐标可直接填充
+        n       —— 平面法向轴下标；视线与该轴近似平行（切面接近侧对）时返回
+                   (None, axis)，交给调用方走逐格采样兜底
+    """
+    axis = None
+    for i in range(3):
+        if all(abs(p[i] - quad[0][i]) < 1e-9 for p in quad):
+            axis = i
+            break
+    if axis is None:
+        return None, None
+    fixed = quad[0][axis]
+    d = view_dir[axis]
+    if abs(d) < 1e-3:
+        # 视线与切面平行：投影求交退化（分母趋零），而这种姿态下切面在屏幕上
+        # 只剩一条线、本来就没有可见面积，直接当作「没有可见部分」。
+        return [], axis
+    others = [i for i in range(3) if i != axis]
+    shadows = []
+    for box in boxes:
+        # 只有「朝相机那一侧」的块能挡住切面。相机在 +axis 一侧时看 box 上限，
+        # 在 −axis 一侧时看下限（切面可以被从上下任意一侧看，不能写死方向）。
+        if d > 0.0:
+            if box[axis + 3] <= fixed + eps:
+                continue
+        else:
+            if box[axis] >= fixed - eps:
+                continue
+        pts = []
+        for xi in (box[0], box[3]):
+            for yi in (box[1], box[4]):
+                for zi in (box[2], box[5]):
+                    corner = (xi, yi, zi)
+                    t = (corner[axis] - fixed) / d
+                    if t <= eps:
+                        continue   # 该角在切面背后，不参与投影
+                    p = [corner[k] - t * view_dir[k] for k in range(3)]
+                    p[axis] = fixed
+                    pts.append(tuple(p))
+        if len(pts) < 3:
+            continue
+        hull2d = _convex_hull([(p[others[0]], p[others[1]]) for p in pts])
+        if len(hull2d) < 3:
+            continue
+        world = []
+        for (u, v) in hull2d:
+            p = [0.0, 0.0, 0.0]
+            p[axis] = fixed
+            p[others[0]] = u
+            p[others[1]] = v
+            world.append(tuple(p))
+        shadows.append(world)
+    return shadows, axis
+
+
+def screen_hull_of_box(box, camera: CubicCamera, scale: float, origin) -> list:
+    """一个轴对齐盒子在屏幕上的凸包（用于判断「这个屏幕位置有没有块」）。
+
+    用途：三维方向箭头要贴在切面缝口上，而缝口在斜视下会投影到**别的块**的
+    脸上。光判「锚点沿视线没被挡住」不够——锚点可能恰好在块前面，画上去却像
+    贴纸糊在人家脸上。所以再判一次：锚点的屏幕位置是否落在「更靠近相机的块」
+    的投影轮廓里；在里面就不画。
+    """
+    pts = []
+    for xi in (box[0], box[3]):
+        for yi in (box[1], box[4]):
+            for zi in (box[2], box[5]):
+                sx, sy, _sz = project_point((xi, yi, zi), camera, scale, origin)
+                pts.append((sx, sy))
+    return _convex_hull([(round(p[0], 6), round(p[1], 6)) for p in pts])
+
+
+def point_in_hull(x, y, hull) -> bool:
+    """点是否在凸多边形内（顶点逆时针）。"""
+    if len(hull) < 3:
+        return False
+    for i in range(len(hull)):
+        ax, ay = hull[i]
+        bx, by = hull[(i + 1) % len(hull)]
+        if (bx - ax) * (y - ay) - (by - ay) * (x - ax) < 0:
+            return False
+    return True
+
+
+def point_visible(point, boxes, view_dir, eps: float = 1e-6) -> bool:
+    """世界点沿视线朝相机走，是否被某个块挡住（被挡住 = 不该画出来）。
+
+    为什么不用画家序一条排序了事：切面在块与块的缝隙里，一张面按 1/3 块宽
+    粗切时，一格会同时压住「该被挡」和「该露出来」两个区域，只能按格心深度
+    一刀切 → 出现红边爬过前面块（用户 2026-11-18「边界线被遮住还画出来」）。
+    这里对每个采样点精确求交，所见即真实。
+
+    剪枝：只测「比该点更靠近相机」的块（更远的块挡不住它）。缝隙里的采样点
+    本来只有一半方块在它前方，先把名单砍掉一半再逐个求交。
+    """
+    base = sum(point[i] * view_dir[i] for i in range(3))
+    for box in boxes:
+        # 盒子沿视线方向的投影区间 [lo, hi]；hi < base - eps 表示整块在该点后面
+        proj = [0.0] * 8
+        idx = 0
+        for xi in (box[0], box[3]):
+            for yi in (box[1], box[4]):
+                for zi in (box[2], box[5]):
+                    proj[idx] = xi * view_dir[0] + yi * view_dir[1] + zi * view_dir[2]
+                    idx += 1
+        if max(proj) < base - eps:
+            continue
+        if _ray_hits_box(point, view_dir, box, eps):
+            return False
+    return True
+
+
 def build_scene(blocks, camera: CubicCamera, width: int, height: int, *,
                 margin: int = 40, zoom: float = 1.0,
-                origin_offset=(0.0, 0.0), gap: float = 0.0) -> dict:
-    """一步到位：装画面 + 算可见面。渲染层只要拿 'faces' 去画。"""
-    scale, origin = fit_view(blocks, camera, width, height,
-                             margin=margin, zoom=zoom, gap=gap)
+                origin_offset=(0.0, 0.0), gap: float = 0.0,
+                offsets=None, center=None) -> dict:
+    """一步到位：装画面 + 算可见面。渲染层只要拿 'faces' 去画。
+
+    ⚠️ 装画面用 `stable_frame`（包围球定比例），不是 `fit_view`（按当前朝向的
+    投影包围盒拟合）。后者每帧跟着朝向变 → 拖动时画面忽大忽小；三维的「多大」
+    只该由缩放参数决定。
+
+    center：装画面的参考点（「跟随质心」传块质心；None = 包围盒中心）。
+    """
+    scale, origin = stable_frame(blocks, camera, width, height,
+                                 margin=margin, zoom=zoom, gap=gap,
+                                 center=center)
     origin = (origin[0] + origin_offset[0], origin[1] + origin_offset[1])
-    faces = collect_faces(blocks, camera, scale=scale, origin=origin, gap=gap)
+    faces = collect_faces(blocks, camera, scale=scale, origin=origin, gap=gap,
+                          offsets=offsets)
     return {
         'faces': faces,
         'scale': scale,
         'origin': origin,
         'camera': camera,
         'gap': gap,
+        'offsets': offsets,
         'block_count': len(locations_of(blocks)),
     }

@@ -114,7 +114,7 @@ check(any(p == ('三维谜题 ▸', '__sub__', 'cubic') for p in gui.puzzle_pres
       '一级菜单有「三维谜题 ▸」')
 cur = gui._all_puzzle_items()
 hit = next(p for p in cur if len(p) == 6 and p[1] == 3 and p[2] == 3
-           and p[3] == 1)
+           and p[5] == 3 and p[3] == 1)
 check(gui._preset_is_current(hit), '3×3×3 等级1 被标为当前档', hit)
 
 gui.draw_board()
@@ -129,7 +129,8 @@ gui.puzzle_menu_hovered = -1
 gui.draw_menu_bar()
 gui.draw_puzzle_menu()
 idx = next(i for i, p in enumerate(sub)
-           if len(p) == 6 and p[1] == 3 and p[2] == 3 and p[3] == 1)
+           if len(p) == 6 and p[1] == 3 and p[2] == 3 and p[5] == 3
+           and p[3] == 1)
 rect = gui.puzzle_sub_rects[idx]
 pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1,
                                      pos=rect.center))
@@ -148,7 +149,9 @@ check('动不了' in (gui.macro_notify_msg or ''),
 
 print('=' * 60)
 print('D2. 投影渲染真的画出了东西（第 1 步接入后）')
+gui._cubic_camera_prefs = {}      # 别继承存档里的姿态：六朝向各带 14° 倾斜才见三面
 gui.new_cubic_puzzle(3, 3, 3, 1)
+gui._cubic_view(0)
 gui.draw_board()
 _w, _h = gui.screen_width, gui.screen_height
 _probe = {}

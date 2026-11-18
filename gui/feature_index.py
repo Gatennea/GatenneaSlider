@@ -29,6 +29,7 @@ FORM_NAMES = {
     'numbered': '数字',
     'triangle': '三角形',
     'mi': '米字格',
+    'cubic': '三维',
 }
 
 # 模式键与显示名（与 GUI.game_mode 口径一致）
@@ -531,7 +532,74 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='按 F2 看调试面板，里面显示当前聚拢度与目标窗口。',
          confusion='聚拢度是「离还原还差多远」的内部指标，不是官方难度评分。'),
+
+    # ---------------- 三维（立方体板型） ----------------
+    # 2026-11-18 登记：方案 §54 第 0–6 步已落地，三维只在已实现的功能上
+    # 挂 `cubic` 形态；二维那套视觉强化（着色/连锁/标记）按方案明确不做，
+    # 因此继续保持不支持，命令面板会显示 ✕ 与「仅支持…」。
+    dict(id='cubic_preset', name='三维谜题（立方体）',
+         aliases=('三维', '立方', '立方体', '正方体', '3d', '三维谜题'),
+         kind='action', place=('menu_sub', '谜题', '三维谜题 ▸', '3×3×3 等级1'),
+         forms=('cubic',), modes=('practice',),
+         howto='顶栏「谜题」→「三维谜题 ▸」→ 选 1×1×1 ~ 3×3×3；也是命令面板搜「三维」的直达入口。',
+         confusion='三维目前只做长方体还原这一类，没有其他形状；竞速与求解器都还没接。'),
+    dict(id='cubic_gap', name='拆分（三维）',
+         aliases=('拆分', '间隙', '块间距', '分开看', '剥开', 'gap'),
+         kind='setting', place=('right_panel',),
+         forms=('cubic',), modes=('practice', 'timed', 'create'),
+         howto='三维局右侧栏「拆分」横向滑条：把每块沿自己的质心内收，相邻块之间空出距离，能看见内部孔洞；0 = 贴死。',
+         confusion='拆分只改渲染间距，不改逻辑坐标；拖动它不会重排谜题，也不会改变步数。'),
+    dict(id='cubic_seam_alpha', name='切面透明度（三维）',
+         aliases=('切面透明', '缝隙透明度', '红面透明度', '透明度', 'alpha'),
+         kind='setting', place=('right_panel',),
+         forms=('cubic',), modes=('practice', 'timed', 'create'),
+         howto='三维局右侧栏「切面」横向滑条：调红色半透明切面的不透明度（30–220），既看得见刀切在哪一层，又不糊住块。',
+         confusion='这是渲染透明度，不改变切面的逻辑位置；选中组始终画在切面之上，不会被红面染色。'),
+    dict(id='cubic_camera', name='三维视角（旋转 / 六朝向 / 缩放 / 平移）',
+         aliases=('旋转', '转视角', '六视角', '朝向', '缩放', '平移', '居中', 'camera', '视角'),
+         kind='concept', place=('menu_item', '编辑', '居中'),
+         forms=('cubic',), modes=('practice',),
+         howto='左键拖空白旋转（任意姿态都能操作）；1–6 切六个朝向、0 回斜视；Ctrl+滚轮缩放；虚拟键盘六键平移；「编辑 → 居中」把质心拉回屏幕中心并恢复跟随。',
+         confusion='旋转与滑动动画不同时发生，但旋转不会清掉已有选中，转完可以直接推。'),
+    dict(id='cubic_select', name='三维选缝与选块（右键选缝 / 左键选块）',
+         aliases=('选缝', '选块', '右键选缝', '左键选块', '切面', '选中'),
+         kind='concept', place=('menu', '帮助'),
+         forms=('cubic',), modes=('practice',),
+         howto='先在块面上右键点出一条缝（红面出现），再左键点缝一侧的块，选中整片连通组；空白处右键取消。',
+         confusion='**必须先有缝才能选块**：没选缝时左键点块不会选中任何东西；左键永远不会改缝。外表面（非包围盒面）也能点出内部切面。'),
 )
+
+
+# 2026-11-18：三维（cubic）登记。只给「三维真的已实现」的功能挂这个形态键，
+# 其余条目保持原样——命令面板在三维局里会显示 ✕ 并说明「仅支持…」，
+# 这正是我们要的「明确不做」而不是灰按钮。三维专有条目在上面自带 cubic。
+_CUBIC_IDS = frozenset({
+    'load', 'save', 'save_as', 'readonly_save', 'prevent_overwrite',
+    'op_log_enabled', 'screenshot', 'restart', 'command_palette',
+    'undo', 'redo', 'shuffle', 'reset', 'center_view',
+    'virtual_keyboard', 'animation_enabled',
+    'zoom', 'sfx_enabled', 'sfx_slots', 'music_enabled', 'sound_muted',
+    'keybindings', 'control_mouse_kb',
+    'help', 'website', 'check_update', 'update_now',
+    'confirm_before_shuffle', 'concept_step', 'concept_hole',
+    # 2026-11-18：三维竞速与三维成绩表接通
+    'mode_practice', 'mode_timed', 'records_panel',
+    # 2026-11-18：自定义谜题框支持「三维」形态（m×n×d + 等级）
+    'custom_puzzle',
+    # 2026-11-18：三维撤销/重做补回选中动画（滑动 + 选中组/缝高亮）
+    'selection_animation_enabled',
+})
+
+
+def _register_cubic(entry):
+    if entry.get('id') in _CUBIC_IDS:
+        forms = tuple(entry.get('forms', ALL_FORMS))
+        if 'cubic' not in forms:
+            return dict(entry, forms=forms + ('cubic',))
+    return entry
+
+
+FEATURES = tuple(_register_cubic(e) for e in FEATURES)
 
 
 # ---------------------------------------------------------------- 一键到位目标
@@ -623,6 +691,12 @@ _ACTIONS = {
     'concept_gap': {'type': 'none'},
     'concept_hole': {'type': 'none'},
     'concept_gather': {'type': 'none'},
+    # 三维
+    'cubic_preset': {'type': 'puzzle', 'kind': 'cubic', 'params': (3, 3, 3)},
+    'cubic_gap': {'type': 'settings', 'tab': 'cubic'},
+    'cubic_seam_alpha': {'type': 'settings', 'tab': 'cubic'},
+    'cubic_camera': {'type': 'none'},
+    'cubic_select': {'type': 'none'},
 }
 
 # 每条都必须登记动作；漏登记直接 KeyError，不静默兜底。

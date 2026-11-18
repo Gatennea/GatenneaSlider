@@ -463,6 +463,10 @@ class DragMixin:
             return None
         if getattr(self, 'mi_mode', False):
             return None
+        # 三维立方同理：合并快照的逐步重播（expand_snapshot_moves / cells_to_snapshot）
+        # 按方形 2-tuple 写死，立方是 3 元 + 无损键表，没有合并重播实现。
+        if getattr(self, 'cubic_mode', False):
+            return None
         game = getattr(self, 'game', None)
         if getattr(game, 'spec', None) is not None and game.spec.orientations:
             return None
