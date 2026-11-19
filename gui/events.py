@@ -5801,8 +5801,12 @@ class EventsMixin:
                 self.macro_exec_ops = []
                 self.macro_exec_index = 0
                 self._clear_macro_selection_if_disabled()
-                # 宏执行（尤其关闭动画时）可能把滑块带出视野：执行完居中一次
-                self.center_map()
+                # 宏执行（尤其关闭动画时）可能把滑块带出视野：执行完居中一次。
+                # 三维不套这条：用户 2026-11-18 明确要求关闭跟随时相机不要
+                # 自动移动；求解结束一居中还会把「单次聚拢」结果提示覆盖成
+                # 「视角已居中」。三维交给渲染层的可见性兜底。
+                if not getattr(self, 'cubic_mode', False):
+                    self.center_map()
                 return
 
             op = self.macro_exec_ops[self.macro_exec_index]
@@ -5933,14 +5937,26 @@ class EventsMixin:
 
     def _update_gather_notify(self):
         """聚拢播放中：实时刷新当前聚拢度到通知栏。"""
-        from solver.ml.gather_solver import gather_metrics
-        coords = frozenset((b.location[0], b.location[1]) for b in self.game.blocks)
-        met = gather_metrics(coords, self.game.m, self.game.n)
-        h, w = met['bbox']
+        if getattr(self, 'cubic_mode', False):
+            # 三维用三元 bbox 与自己的 3D 前缀和；不能套方形 gather_metrics，
+            # 否则 (b.location[0], b.location[1]) 会丢掉 d 轴，换行/解包也会炸。
+            from solver.ml.cubic_gather import cubic_metrics
+            coords = frozenset(tuple(b.location[:3]) for b in self.game.blocks)
+            met = cubic_metrics(coords, (self.current_m, self.current_n,
+                                         self.current_depth))
+            h, w, d = met['bbox']
+            text_size = f'{h}×{w}×{d}'
+        else:
+            from solver.ml.gather_solver import gather_metrics
+            coords = frozenset((b.location[0], b.location[1])
+                               for b in self.game.blocks)
+            met = gather_metrics(coords, self.game.m, self.game.n)
+            h, w = met['bbox']
+            text_size = f'{h}×{w}'
         idx = self.macro_exec_index
         total = len(self.macro_exec_ops)
         self.macro_notify_msg = (
-            f"聚拢 {idx}/{total} · 聚拢度 {met['score']*100:.1f}% · {h}×{w}"
+            f"聚拢 {idx}/{total} · 聚拢度 {met['score']*100:.1f}% · {text_size}"
         )
         self.macro_notify_timer = 180
         self.macro_notify_persistent = True
@@ -5964,8 +5980,13 @@ class EventsMixin:
             'invalid_action': '动作无效',
             'stages_exhausted': '阶段耗尽',
         }.get(reason, reason or '完成')
-        sh, sw = s.get('bbox', (0, 0))
-        eh, ew = e.get('bbox', (0, 0))
+        is_cubic = bool(getattr(self, 'cubic_mode', False))
+        if is_cubic:
+            sh, sw, sd = s.get('bbox', (0, 0, 0))
+            eh, ew, ed = e.get('bbox', (0, 0, 0))
+        else:
+            sh, sw = s.get('bbox', (0, 0))
+            eh, ew = e.get('bbox', (0, 0))
         # 总用时 / TPS：以本次求解起点算（与 /solver/status 同源）
         import time as _time
         from gui.progress_text import format_solve_done
@@ -5996,11 +6017,17 @@ class EventsMixin:
             self.macro_notify_msg = format_solve_done(
                 '单次聚拢', total, _elapsed, solved=True)
         else:
+            if is_cubic:
+                extra = ('%s · 聚拢度 %.1f%%→%.1f%% · 边界盒 %d×%d×%d→%d×%d×%d'
+                         % (reason_text, s.get('score', 0) * 100,
+                            e.get('score', 0) * 100,
+                            sh, sw, sd, eh, ew, ed))
+            else:
+                extra = ('%s · 聚拢度 %.1f%%→%.1f%% · 边界盒 %d×%d→%d×%d'
+                         % (reason_text, s.get('score', 0) * 100,
+                            e.get('score', 0) * 100, sh, sw, eh, ew))
             self.macro_notify_msg = format_solve_done(
-                '单次聚拢', total, _elapsed, solved=False,
-                extra='%s · 聚拢度 %.1f%%→%.1f%% · 边界盒 %d×%d→%d×%d'
-                      % (reason_text, s.get('score', 0)*100, e.get('score', 0)*100,
-                         sh, sw, eh, ew))
+                '单次聚拢', total, _elapsed, solved=False, extra=extra)
         self.macro_notify_timer = 300       # 5s 悬停
         self.macro_notify_persistent = False
         self._gather_info = None

@@ -187,6 +187,9 @@ print('E. GUI 播放轉換：三維 rep 必須保留三個分量')
 gui.game.restore_state(_start_snap)
 gui.current_step = 1
 gui._auto_solve_start_time = __import__('time').time()
+check(gui._current_kind() == 'cubic' and not gui._is_model_kind(),
+      '三維局不被誤判成模型板型（求解器 gate 不會提前拒）',
+      (gui._current_kind(), gui._is_model_kind()))
 _real_next = gui._execute_next_macro_step
 gui._execute_next_macro_step = lambda: None   # 只看轉換，不真的播完整串
 try:
@@ -202,6 +205,14 @@ check(all(len(op.get('rep_cell', ())) == 3 for op in gui.macro_exec_ops),
 check(all(op.get('kind') is None or op.get('kind') == 'cubic'
           for op in gui.macro_exec_ops),
       '三維 op 走 gap_type r/c/d，不需硬塞 kind 也會被 _execute_next_macro_step 認')
+# 播放期两条文案都必须走三元 bbox：_update_gather_notify 每步刷、_finish_gather
+# 收尾刷。二维解包会直接 ValueError（2026-11-19 实测）。
+gui._update_gather_notify()
+check('×' in gui.macro_notify_msg and '聚拢' in gui.macro_notify_msg,
+      '三維播放中的聚攏提示可用三元邊界盒', gui.macro_notify_msg)
+gui._finish_gather()
+check('边界盒' in gui.macro_notify_msg and '×' in gui.macro_notify_msg,
+      '三維聚攏收尾文案不被二元 bbox 打斷', gui.macro_notify_msg)
 
 print('=' * 60)
 print(f'{_ok[0]} ok, {len(_fail)} failed')
