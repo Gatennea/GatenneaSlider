@@ -332,6 +332,9 @@ class EventsMixin:
                     if hasattr(self, '_vk_clamp_position'): self._vk_clamp_position()
                     if hasattr(self, '_mp_clamp_position'): self._mp_clamp_position()
                     if hasattr(self, '_rp_clamp_position'): self._rp_clamp_position()
+                    # 三维整局固定的 fit 比例依赖窗口尺寸，换尺寸后重算一次
+                    self._cubic_base_scale = None
+                    self._cubic_static_scale = None
                     continue
 
                 # 更新下载中：吞掉所有鼠标点击，避免误触棋盘（下载完游戏会自行退出重启）

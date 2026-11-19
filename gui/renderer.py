@@ -979,7 +979,12 @@ class RendererMixin:
             # 跟随关着时，正常取景用当前包围盒中心；同样冻结它。
             _cur = cubic_view.layout_anchor(blocks)
         self._cubic_shuffle_center = _cur
-        # 只冻「未乘 zoom」的比例，绘制时再乘玩家当前 zoom。
+        # 只冻「未乘 zoom」的比例，绘制时再乘玩家当前 zoom。整局已有
+        # _cubic_base_scale 时直接沿用，打乱开始也不该再变一次块大小。
+        _base_scale = getattr(self, '_cubic_base_scale', None)
+        if _base_scale is not None:
+            self._cubic_shuffle_scale = _base_scale
+            return _cur
         _cam = getattr(self, 'cubic_camera', None)
         if _cam is None:
             from engine.cubic_camera import CubicCamera
@@ -987,6 +992,7 @@ class RendererMixin:
         _base_scale, _ = cubic_view.stable_frame(
             blocks, _cam, self.screen_width, self.screen_height,
             margin=64, zoom=1.0, center=_cur)
+        self._cubic_base_scale = _base_scale
         self._cubic_shuffle_scale = _base_scale
         return _cur
 
@@ -1031,10 +1037,19 @@ class RendererMixin:
         _shuffling = bool(getattr(self, '_shuffle_demo_active', False)
                           or getattr(self, '_infinite_shuffle_active', False))
         _zoom = float(getattr(self, 'cubic_zoom', 1.0))
-        _frame_scale = None
+        # 基础比例只在换局/读档/窗口尺寸变化时定一次：块移动、打乱胀缩都
+        # 不再重算，每个块显示多大只由缩放值决定（用户多次强调的口径）。
+        _base_scale = getattr(self, '_cubic_base_scale', None)
+        _frame_scale = _base_scale
         _center = None
         _locs = ([tuple(int(v) for v in b.location[:3])
                   for b in blocks] if blocks else [])
+        if _base_scale is None and _locs:
+            _base_scale, _ = cubic_view.stable_frame(
+                blocks, camera, self.screen_width, self.screen_height,
+                margin=64, zoom=1.0, center=None)
+            self._cubic_base_scale = _base_scale
+            _frame_scale = _base_scale
         _target = None
         if _locs:
             # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)。拆分只把块在画面上拉开，
@@ -1055,13 +1070,17 @@ class RendererMixin:
                 self._cubic_shuffle_center = _frozen
             _center = _frozen
             # 打乱期间 **不推进** _cubic_follow_center：相机完全冻结。
-            # 比例也冻结：只乘玩家当前 zoom，块堆边界胀大不再忽大忽小。
+            # 比例沿用同一份 _cubic_base_scale；打乱结束也不换口径，块不会
+            # 在收尾时又变一次大小。
             _base_scale = getattr(self, '_cubic_shuffle_scale', None)
+            if _base_scale is None:
+                _base_scale = getattr(self, '_cubic_base_scale', None)
             if _base_scale is None:
                 _base_scale, _ = cubic_view.stable_frame(
                     blocks, camera, self.screen_width, self.screen_height,
                     margin=64, zoom=1.0, center=_center)
-                self._cubic_shuffle_scale = _base_scale
+                self._cubic_base_scale = _base_scale
+            self._cubic_shuffle_scale = _base_scale
             _frame_scale = _base_scale
         elif _follow and _target is not None:
             self._cubic_shuffle_center = None
@@ -1086,7 +1105,9 @@ class RendererMixin:
             self._cubic_shuffle_scale = None
             self._cubic_freeze_view()
             _center = getattr(self, '_cubic_static_center', None)
-            _frame_scale = getattr(self, '_cubic_static_scale', None)
+            _frame_scale = getattr(self, '_cubic_base_scale', None)
+            if _frame_scale is None:
+                _frame_scale = getattr(self, '_cubic_static_scale', None)
         else:
             self._cubic_shuffle_center = None
             self._cubic_shuffle_scale = None
@@ -4243,9 +4264,15 @@ class RendererMixin:
         # 宏段算位 → 谜题段夹缝居中 → 宏段最后画（关键动态信息压最上层）。
         _left_right = engine_x + engine_surface.get_width()
 
-        # 右侧：缩放比例（右锚固定，宏段的右界依赖它）
-        zoom_text = f"缩放：{int(self.zoom * 100)}%"
+        # 右侧：缩放比例（右锚固定，宏段的右界依赖它）。三维读 cubic_zoom，
+        # 否则右下角一直显示二维的 self.zoom，拖三维滑条时数值不动。
+        if getattr(self, 'cubic_mode', False):
+            _zoom_val = float(getattr(self, 'cubic_zoom', 1.0))
+        else:
+            _zoom_val = float(getattr(self, 'zoom', 1.0))
+        zoom_text = f"缩放：{int(round(_zoom_val * 100))}%"
         zoom_surface = self._status_text_surface(zoom_text, self.colors['status_text'])
+        self._status_zoom_text = zoom_text
         zoom_x = self.screen_width - zoom_surface.get_width() - self.right_panel_width - 10
         self.screen.blit(zoom_surface, (zoom_x, text_y))
         self._status_zoom_rect = zoom_surface.get_rect(topleft=(zoom_x, text_y))

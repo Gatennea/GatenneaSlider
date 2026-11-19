@@ -1445,6 +1445,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 兼作三维「防偏移」。手动平移后暂停，按「居中」恢复。
         self.cubic_follow_centroid = True
         self._cubic_follow_center = None      # 平滑跟随的当前参考点（换局重来）
+        # 关闭跟随后冻结的取景，以及整局固定的未缩放比例：换局/换尺寸都重算，
+        # 块大小只由缩放值决定，不在滑动过程中跟着包围盒变。
+        self._cubic_static_center = None
+        self._cubic_static_scale = None
+        self._cubic_base_scale = None
+        self._cubic_shuffle_scale = None
         # 但 config 里记着上次退出时的手工平移（用户拖过视角再退出）：套回去。
         _pan0 = getattr(self, '_cubic_pan_prefs', None)
         if isinstance(_pan0, (list, tuple)) and len(_pan0) == 2:

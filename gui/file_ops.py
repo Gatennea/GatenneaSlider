@@ -792,9 +792,11 @@ class FileOpsMixin:
                               max(-_lim, min(_lim, float(_pan0[1])))]
         _fol = getattr(self, '_cubic_follow_prefs', None)
         self.cubic_follow_centroid = True if _fol is None else bool(_fol)
-        # 关闭跟随后冻结的取景：块移动不再改 origin/scale，箭头不会自己跑。
+        # 读档换盘面：旧的 fit 比例不能沿用，首帧按新包围盒重算一次。
+        self._cubic_base_scale = None
         self._cubic_static_center = None
         self._cubic_static_scale = None
+        self._cubic_shuffle_scale = None
         self.cubic_dragging = False
         self.cubic_drag_moved = False
         self.cubic_drag_start = None
