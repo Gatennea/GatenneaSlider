@@ -1395,13 +1395,9 @@ class RendererMixin:
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
                 f'　视角 {view_label}　缩放 {zoom * 100:.0f}%'
                 f'　拆分 {gap:.2f}（0 = 贴死）')
-        hint2 = ('拖动旋转 · 1–6 切朝向 · 0 回斜视 · Ctrl+滚轮缩放 · 右键选缝→左键选块'
-                 ' · 空白右键取消 · r/R c/C d/D 推 · 六键=平移 · 编辑→居中')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))
-            surf2 = self.status_font.render(hint2, True, self.colors['status_text'])
-            self.screen.blit(surf2, (16, 36))
         except Exception:
             pass   # 文字画失败只丢这一行，不能让整帧黑掉（§4 同一条纪律）
 
