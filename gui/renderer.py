@@ -5759,6 +5759,13 @@ class RendererMixin:
                 self.screen.blit(self.status_font.render(_ln, True, (150, 150, 150)),
                                  (x + 234, row_y + 18 + _i * 16))
             row_y += 52 + max(0, len(_desc_lines) - 1) * 16
+        # 三维调试面板开关：F2 的纯鼠标入口。三維面板只读，不上棋盘记号
+        # （三维没有二维的洞/凸起记号，_MP_SUPPORTED 也不含 cubic）。
+        row_y += 8
+        self._settings_metrics_toggle_rect, row_y = self._draw_switch_row(
+            x + 15, row_y, "调试面板：",
+            getattr(self, 'show_metrics_panel', False),
+            "显示三维相机 / 选中 / 场景 / 宏操作队列读数", max_w=width - 30)
         self._settings_cubic_height = row_y - y + 10
 
     def _calc_settings_content_height(self, visible_height: int) -> int:

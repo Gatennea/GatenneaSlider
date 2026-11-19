@@ -1054,3 +1054,62 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 - 注意：仓库 `config/config.json` 当前 `infinite_shuffle=true`；二维设计测试
   若直接跑会把首次「打乱」解释成「停止无限打乱」而误报 D6b，需在测试进程里
   先关该开关（本次未改用户配置）。
+
+## 2026-11-19 三維收尾口徑（調試面板 / 宏 / 聚攏）
+
+本節是與用戶逐條對齊後的當前真源，避免把「玩家宏 UI」與「求解器用的宏執行器」
+混成一件事。
+
+### 架構鏈路
+
+`求解器產生 actions / rep_cells → gui/auto_solve.py 轉成 macro_exec_ops
+（世界絕對座標）→ _execute_next_macro_step() → 三維 _execute_cubic_macro_op()
+→ opt() → move_selected_blocks()`。
+
+- 求解器不直接改盤面；它只產生動作序列。
+- 三維 op 契約：`kind='cubic'`、`gap_type=r/c/d`、`rep_cell=[r,c,d]`、
+  `side=above/below`、`direction=六向`、`step=當前步長`。
+- 求解器播放用絕對 op；`MacroStep` 只用於玩家錄製／存檔的相對宏。不要把
+  求解器動作先相對化再回放。
+
+### 已定案
+
+1. **自訂還原態降為低優先**：現有代碼保留，不擴充。
+2. **三維 GUI 宏入口暫時不接**：點入口提示「三維暫未開放宏功能」；
+   `feature_index` 維持三維不可用，文案寫「暫未開放」，不是 bug 式「不支援」。
+   二維宏照舊。
+3. **內部宏 op 執行器保留並必須做穩**：求解器依賴它；不做玩家錄製／命名／
+   宏管理 UI。不要因為 GUI 不接就把 `macro/` 或 `_execute_cubic_macro_op` 刪掉。
+4. **求解器只先接「聚攏」**：不搬查表／PDB／IDA*／混合；新增三維 adapter，
+   不直接把 `gather_solve` 丟給 `EngineGame`。
+5. **文檔／測試收尾不是求解器前置門檻**：先做功能，文檔口徑與既有紅燈可並行收。
+
+### 當前剩餘與順序
+
+- **P0 三維調試面板（2026-11-19 已完成）**：`gui/metrics_panel.py` 已加
+  `_MP_WIDTH_CUBIC=260`、`_mp_cubic_rows()`、cubic 分支與動態行數；面板報
+  局面尺寸/塊數、視角/視軸、縮放、拆分、切面、選中塊數、場景面片/箭頭、
+  `macro_exec_ops` 長度與 index、當前 op、最後錯誤。`gui/renderer.py`
+  `_draw_settings_cubic` 末尾加「調試面板」開關，`gui/events.py`
+  `settings_active_tab == 'cubic'` 已接點擊。三維不套二維聚攏公式，
+  `_MP_SUPPORTED` 仍不含 cubic（不畫二維目標框/洞記號）。
+  護欄：`test/_test_cubic_metrics_panel.py` 23/23；`_test_cubic_render_opts.py`
+  72/72、`_test_cubic_entry.py` 33/33、`_test_tri_metrics_panel.py` ALL PASS。
+
+- **P1 三維宏 op 執行器（內部）**：連續 20–50 個 op、動畫開／關、
+  `side=None` + `rep_cell`、目標塊被挪走後退回側邊找塊、失敗留
+  `macro_error_msg`；不做玩家 UI。
+- **P2 三維聚攏求解器**：新增 `solver/ml/cubic_gather.py`；三維 action adapter
+  （`r/c/d` 三縫族、兩側、兩方向）；三維前綴和枚舉 6 種軸排列窗口；
+  `gather_solve_unified` 分派 cubic；`SOLVER_FORM_SUPPORT['gather']` 加 cubic；
+  其他算法仍明確拒絕三維。第一版只做重疊率貪心，不承諾還原。
+- **P3 自訂還原態**：低優先，暫不動。
+- **P4 文檔同步**：§54 壓成剩餘項；後續箭頭/相機凍結/縮放/引擎標籤補記。
+
+### 已知狀態
+
+- HEAD `f54d9ee`，工作樹乾淨。
+- 三維 27 套測試：26 套全綠；`_test_cubic_vk.py` 50/51，唯一紅是既有的
+  「箭頭外接矩形角部重疊」斷言，不是箭頭多邊形本體重疊。
+- 三維調試面板已接 cubic（護欄 23/23）；三維 GUI 宏尚未 gate（仍可能從舊入口走進
+  `_start_macro_recording`），這是 P1 前的待辦。

@@ -605,9 +605,9 @@ class EventsMixin:
                                 self.macro_notify_timer = 90
                         elif self._is_action_triggered(event, 'metrics_panel'):
                             self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
-                            # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
-                            # 记号本身仍可在右下角或设置里单独开关。
-                            self.board_marks_enabled = self.show_metrics_panel
+                            # 三维没有二维的洞/凸起记号：F2 只开面板，不连带记号。
+                            if not getattr(self, 'cubic_mode', False):
+                                self.board_marks_enabled = self.show_metrics_panel
                             status = '开' if self.show_metrics_panel else '关'
                             self.macro_notify_msg = f"调试面板：{status}"
                             self.macro_notify_timer = 90
@@ -1561,9 +1561,9 @@ class EventsMixin:
                     
                     elif self._is_action_triggered(event, 'metrics_panel'):
                         self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
-                        # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
-                        # 记号本身仍可在右下角或设置里单独开关。
-                        self.board_marks_enabled = self.show_metrics_panel
+                        # 三维没有二维的洞/凸起记号：F2 只开面板，不连带记号。
+                        if not getattr(self, 'cubic_mode', False):
+                            self.board_marks_enabled = self.show_metrics_panel
                         status = '开' if self.show_metrics_panel else '关'
                         self.macro_notify_msg = f"调试面板：{status}"
                         self.macro_notify_timer = 90
@@ -4667,6 +4667,15 @@ class EventsMixin:
 
             # 动画 Tab：调试面板本体开关（F2 的纯鼠标入口）
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_metrics_toggle_rect'):
+                if self._settings_metrics_toggle_rect.collidepoint(mx, my):
+                    self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                    status = '开' if self.show_metrics_panel else '关'
+                    self.macro_notify_msg = f"调试面板：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
+            # 三维 Tab：同一个调试面板开关（三維面板只读，不连带棋盘记号）
+            if self.settings_active_tab == 'cubic' and hasattr(self, '_settings_metrics_toggle_rect'):
                 if self._settings_metrics_toggle_rect.collidepoint(mx, my):
                     self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
                     status = '开' if self.show_metrics_panel else '关'
