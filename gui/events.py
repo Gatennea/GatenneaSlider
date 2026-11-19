@@ -345,6 +345,9 @@ class EventsMixin:
                     if hasattr(self, '_vk_clamp_position'): self._vk_clamp_position()
                     if hasattr(self, '_mp_clamp_position'): self._mp_clamp_position()
                     if hasattr(self, '_rp_clamp_position'): self._rp_clamp_position()
+                    # 三维整局固定的 fit 比例依赖窗口尺寸，换尺寸后重算一次
+                    self._cubic_base_scale = None
+                    self._cubic_static_scale = None
                     continue
 
                 # 更新下载中：吞掉所有鼠标点击，避免误触棋盘（下载完游戏会自行退出重启）
@@ -615,9 +618,9 @@ class EventsMixin:
                                 self.macro_notify_timer = 90
                         elif self._is_action_triggered(event, 'metrics_panel'):
                             self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
-                            # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
-                            # 记号本身仍可在右下角或设置里单独开关。
-                            self.board_marks_enabled = self.show_metrics_panel
+                            # 三维没有二维的洞/凸起记号：F2 只开面板，不连带记号。
+                            if not getattr(self, 'cubic_mode', False):
+                                self.board_marks_enabled = self.show_metrics_panel
                             status = '开' if self.show_metrics_panel else '关'
                             self.macro_notify_msg = f"调试面板：{status}"
                             self.macro_notify_timer = 90
@@ -1571,9 +1574,9 @@ class EventsMixin:
                     
                     elif self._is_action_triggered(event, 'metrics_panel'):
                         self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
-                        # F2 连带开关棋盘记号，保留解耦前「一键开/关」的老手感；
-                        # 记号本身仍可在右下角或设置里单独开关。
-                        self.board_marks_enabled = self.show_metrics_panel
+                        # 三维没有二维的洞/凸起记号：F2 只开面板，不连带记号。
+                        if not getattr(self, 'cubic_mode', False):
+                            self.board_marks_enabled = self.show_metrics_panel
                         status = '开' if self.show_metrics_panel else '关'
                         self.macro_notify_msg = f"调试面板：{status}"
                         self.macro_notify_timer = 90
@@ -1675,7 +1678,7 @@ class EventsMixin:
     #: 俯仰夹紧：相机 z 轴与竖直轴夹角的余量——贴到极点继续拖会让画面翻跟头。
     CUBIC_PITCH_LIMIT = 89.0
     #: 缩放区间：太小看不到缝、太大只剩一两块。
-    CUBIC_ZOOM_RANGE = (0.5, 3.0)
+    CUBIC_ZOOM_RANGE = (0.1, 3.0)
     #: 拖动灵敏度：arcball 角度（球面夹角）再乘这个倍率。1.0 = 抓哪儿转哪儿。
     CUBIC_DRAG_SENSITIVITY = 1.0
 
@@ -1813,6 +1816,11 @@ class EventsMixin:
         # 选的组必须是这条缝**某一侧**的连通组（引擎 opt 自己按 rank 切侧）
         self.game.opt(seam[0], seam[1], block)
         self.selected_block = block
+        # 用户 2026-11-19：箭头要贴着「上一次点击处」，不是钉在切面外沿。
+        # 存点击射线投到切面上的世界点：转视角后仍跟着盘走，投影回来仍在点击处。
+        # 另存点击面世界点：箭头要抬到这块面之前才看得见，仍参与遮挡排序。
+        self._cubic_last_click_p = self._cubic_seam_screen_to_world(x, y, seam)
+        self._cubic_last_click_surface = self._cubic_click_surface(x, y, hit)
         n = len([b for b in self.game.blocks if b.be_opted])
         self.macro_notify_msg = f"已选中滑块组，共{n}个"
         self.macro_notify_timer = 120
@@ -1840,6 +1848,9 @@ class EventsMixin:
             return False
         self.selected_gap = seam
         self.selected_block = None
+        # 换缝 = 上一次点击的锚点作废；等左键选块后再记新的。
+        self._cubic_last_click_p = None
+        self._cubic_last_click_surface = None
         for b in self.game.blocks:
             b.be_opted = False
         self.macro_notify_msg = "已选中切面（左键选要滑的滑块）"
@@ -1893,6 +1904,7 @@ class EventsMixin:
         self.selected_block = None
         self._cubic_last_click_t = None
         self._cubic_last_click_p = None
+        self._cubic_last_click_surface = None
         self._cubic_gap_before_click = None
         if getattr(self, 'game', None) is not None:
             for b in self.game.blocks:
@@ -2007,8 +2019,35 @@ class EventsMixin:
         setattr(self, spec['attr'], val)
         self._cubic_arrow_sig = None      # gap 变了：可推性缓存作废
         self._cubic_sil_cache = None      # 贴纸判定用的轮廓缓存也作废
+        if key == 'gap':
+            # 切面平面坐标随拆分移动，旧的点击锚点已不在当前切面上。
+            self._cubic_last_click_p = None
+            self._cubic_last_click_surface = None
         # 只改显示参数，不是棋盘变更：不动 _board_version（否则标题栏平白多个
         # 星号）；配置在退出/定期 save_config 时自然落盘。
+
+    def _cubic_freeze_view(self):
+        """冻结当前取景中心和比例（关闭「跟随质心」时用）。
+
+        关掉跟随后，块移动不能再改 origin/scale，否则画面会自己平移、贴点击处
+        的箭头也会跟着跑。这里记下关闭瞬间的参考点与未缩放比例，之后只由
+        手动平移和缩放滑条改变相机。
+        """
+        if getattr(self, '_cubic_static_center', None) is not None:
+            return
+        from engine import cubic_view
+        blocks = getattr(getattr(self, 'game', None), 'blocks', None) or []
+        camera = getattr(self, 'cubic_camera', None)
+        if camera is None or not blocks:
+            return
+        center = getattr(self, '_cubic_follow_center', None)
+        if center is None:
+            center = cubic_view.layout_anchor(blocks)
+        self._cubic_static_center = tuple(float(v) for v in center)
+        base, _ = cubic_view.stable_frame(
+            blocks, camera, self.screen_width, self.screen_height,
+            margin=64, zoom=1.0, center=center)
+        self._cubic_static_scale = float(base)
 
     def _cubic_pan_center(self):
         """居中：平移归零 **并恢复「跟随质心」**（方案 §2.2 原口径）。
@@ -2019,6 +2058,8 @@ class EventsMixin:
         self.cubic_pan = [0.0, 0.0]
         self.cubic_follow_centroid = True
         self._cubic_follow_center = None      # 居中即从质心重新起算
+        self._cubic_static_center = None      # 恢复跟随后不再用冻结取景
+        self._cubic_static_scale = None
         self.macro_notify_msg = '视角已居中（恢复跟随质心）'
         self.macro_notify_timer = 120
         return True
@@ -2042,6 +2083,8 @@ class EventsMixin:
         # 手动平移 → 暂停「跟随质心」（方案 §2.2：手动平移后暂停跟随，
         # 按「居中」回正并恢复）。不暂停的话下一帧就被质心拽回中间，
         # 按键看起来像没反应。
+        if getattr(self, '_cubic_static_center', None) is None:
+            self._cubic_freeze_view()
         self.cubic_follow_centroid = False
         # 夹住偏移：最多推到半屏，别让盘整个飘出可视区再也找不回来
         lim = 0.55 * max(self.screen_width, self.screen_height)
@@ -4644,6 +4687,15 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 三维 Tab：同一个调试面板开关（三維面板只读，不连带棋盘记号）
+            if self.settings_active_tab == 'cubic' and hasattr(self, '_settings_metrics_toggle_rect'):
+                if self._settings_metrics_toggle_rect.collidepoint(mx, my):
+                    self.show_metrics_panel = not getattr(self, 'show_metrics_panel', False)
+                    status = '开' if self.show_metrics_panel else '关'
+                    self.macro_notify_msg = f"调试面板：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 视觉 Tab：成绩面板开关（右下角『成绩』/ F3 的镜像，§四十四.5）——
             # 复用右下角同一处理，通知文案与清删除确认态都同源
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_records_toggle_rect'):
@@ -5130,11 +5182,16 @@ class EventsMixin:
         elif key == 'cubic_follow_centroid':
             # 三维右下角「跟随质心」：关掉后手动平移不会被拽回；重开即回正
             on = not getattr(self, 'cubic_follow_centroid', True)
+            if not on:
+                # 关之前先冻结当前取景，之后块怎么动都不再自动平移。
+                self._cubic_freeze_view()
             self.cubic_follow_centroid = on
             if on:
                 self.cubic_pan = [0.0, 0.0]
                 self._cubic_follow_center = None
-            self.macro_notify_msg = f"跟随质心：{'开' if on else '关（手动平移保持）'}"
+                self._cubic_static_center = None
+                self._cubic_static_scale = None
+            self.macro_notify_msg = f"跟随质心：{'开' if on else '关（取景已冻结）'}"
         elif key == 'show_records_panel':
             # 成绩面板（F3 的纯鼠标入口）：与 F3 走同一套收尾（清删除确认态）
             self.show_records_panel = not getattr(self, 'show_records_panel', False)
@@ -5391,6 +5448,11 @@ class EventsMixin:
         """开始录制宏 — 等待玩家选择基准方块"""
         if self.macro_recording or self.macro_executing:
             return
+        # 三维 GUI 宏按 2026-11-19 决定暂不接入；内部宏 op 执行器仍供求解器使用。
+        if getattr(self, 'cubic_mode', False):
+            self.macro_notify_msg = "三维暂未开放宏功能"
+            self.macro_notify_timer = 120
+            return
         if self._timer_blocked():
             self.macro_notify_msg = "计时中无法使用宏"
             self.macro_notify_timer = 90
@@ -5504,6 +5566,11 @@ class EventsMixin:
     def _start_macro_execute(self, macro_name: str, reverse: bool = False):
         """开始执行宏 — 等待玩家选择基准方块"""
         if self.macro_recording or self.macro_executing:
+            return
+        # 三维 GUI 宏按 2026-11-19 决定暂不接入；内部宏 op 执行器仍供求解器使用。
+        if getattr(self, 'cubic_mode', False):
+            self.macro_notify_msg = "三维暂未开放宏功能"
+            self.macro_notify_timer = 120
             return
         # 只读存档：禁止宏执行（会改变滑块组状态）
         if getattr(self, '_readonly_blocked', lambda: False)():

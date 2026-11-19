@@ -181,6 +181,43 @@ check(abs(sx - g4.screen_width / 2.0) < 1e-6 and abs(sy - g4.screen_height / 2.0
       f'质心落在屏幕中心（{sx:.1f},{sy:.1f}）',
       (sx, sy, g4.screen_width / 2.0, g4.screen_height / 2.0))
 
+print('F. 关闭跟随质心：取景冻结，块移动不再自动平移/缩放')
+g5 = make_gui()
+g5.new_cubic_puzzle(3, 3, 3, 1)
+g5.selected_gap = ('c', 1)
+_block = next(b for b in g5.game.blocks
+              if tuple(int(v) for v in b.location[:3]) == (1, 1, 1))
+g5.selected_block = _block
+g5.game.opt('c', 1, _block)
+g5.cubic_follow_centroid = False
+g5.draw_board()
+_o0 = tuple(g5._cubic_scene['origin'])
+_s0 = float(g5._cubic_scene['scale'])
+check(g5._cubic_static_center is not None and g5._cubic_static_scale is not None,
+      '关闭跟随后首帧冻结取景中心和比例',
+      (g5._cubic_static_center, g5._cubic_static_scale))
+check(g5._cubic_push_letter('d'), '冻结取景后仍能正常推滑块')
+g5.draw_board()
+_o1 = tuple(g5._cubic_scene['origin'])
+_s1 = float(g5._cubic_scene['scale'])
+check(max(abs(_o1[i] - _o0[i]) for i in range(2)) < 1e-6,
+      '块移动后 origin 不变（视角不再自动平移）', (_o0, _o1))
+check(abs(_s1 - _s0) < 1e-6,
+      '块移动后 scale 不变（不会自动缩放）', (_s0, _s1))
+
+# 从「跟随开」切到「关」的瞬间也不能跳：记下关闭前的画面，关闭后首帧应一致。
+g6 = make_gui()
+g6.new_cubic_puzzle(3, 3, 3, 1)
+g6.cubic_follow_centroid = True
+g6.draw_board()
+_o_pre = tuple(g6._cubic_scene['origin'])
+g6._handle_right_panel_switch('cubic_follow_centroid')
+g6.draw_board()
+_o_off = tuple(g6._cubic_scene['origin'])
+check(g6.cubic_follow_centroid is False, '开关切到关闭', g6.cubic_follow_centroid)
+check(max(abs(_o_off[i] - _o_pre[i]) for i in range(2)) < 1e-6,
+      '关闭跟随的瞬间视角不跳', (_o_pre, _o_off))
+
 print('=' * 60)
 total = _ok[0] + len(_fail)
 print(f'结果：{"全部通过" if not _fail else "有失败"}（{_ok[0]} 项通过，{len(_fail)} 项失败）／共 {total} 项')

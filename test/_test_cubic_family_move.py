@@ -22,6 +22,9 @@ if _PROJ not in sys.path:
 os.chdir(_PROJ)
 
 import GUI  # noqa: E402
+from engine import cubic_pick  # noqa: E402
+from engine import cubic_view as cv  # noqa: E402
+from engine.cubic_camera import CubicCamera  # noqa: E402
 
 _ok = [0]
 _fail = []
@@ -97,7 +100,66 @@ check(shown == set(PARALLEL['c']),
       f'c 缝四个箭头全部可点（实得 {sorted(shown)}）', shown)
 
 print('=' * 60)
-print('D. 连续同向推：滑后仍连通的前三步不能被拒')
+print('D. 四个箭头贴着上一次点击处，不再散在切面外沿')
+g = fresh()
+g.selected_gap = ('c', 2)
+g.draw_board()
+anchor_w = cv.layout_anchor(g.game.blocks)
+target = next(b for b in g.game.blocks
+              if tuple(b.location)[:3] == (3, 3, 3))
+box = cv.block_boxes([target], g.cubic_gap, anchor=anchor_w)[0]
+hull = cv.screen_hull_of_box(box, g.cubic_camera, g._cubic_scene['scale'],
+                             g._cubic_scene['origin'])
+click = (int(sum(p[0] for p in hull) / len(hull)),
+         int(sum(p[1] for p in hull) / len(hull)))
+check(g._cubic_click(*click), '点在选中块上，选中成功')
+g.draw_board()
+check(g._cubic_last_click_p is not None, '记下点击锚点')
+if g._cubic_last_click_p is not None:
+    proj = cv.project_point(g._cubic_last_click_p, g.cubic_camera,
+                            g._cubic_scene['scale'], g._cubic_scene['origin'])
+    check(abs(proj[0] - click[0]) <= 1.5 and abs(proj[1] - click[1]) <= 1.5,
+          '锚点投影回点击处', (click, proj[:2]))
+scale = g._cubic_scene['scale']
+centers = [rect.center for _letter, rect in g._cubic_arrow_buttons]
+check(len(centers) == 4, '四个箭头都画出来了', len(centers))
+if centers:
+    worst = max(((cx - click[0]) ** 2 + (cy - click[1]) ** 2) ** 0.5
+                for cx, cy in centers)
+    check(worst <= scale * 1.0,
+          f'箭头中心都在点击处一格以内（最远 {worst / scale:.2f} 格）',
+          (click, centers))
+
+# 箭头顶/底面法向必须等于切面法向（永远平行切面），侧面可见但不参与这条。
+axis = cubic_pick.FAMILY_TO_WORLD_AXIS['c']
+items = g._cubic_arrow_items(g._cubic_scene, ('c', 2), g.cubic_gap,
+                             g.cubic_camera, g.game.blocks)
+caps = [it[2]['normal'] for it in items
+        if it[1] == 2 and it[2].get('cap')]
+check(len(caps) == 8,
+      '四个箭头各有一对顶/底面', len(caps))
+check(bool(caps) and all(abs(abs(n[axis]) - 1.0) <= 1e-6 for n in caps),
+      '每个箭头顶/底面的法向都等于切面法向', caps)
+check(not getattr(g, '_cubic_arrow_ghosts', set()),
+      '默认视角箭头没有被遮，不画虚线', getattr(g, '_cubic_arrow_ghosts', None))
+
+# 转到背侧：箭头被前侧块盖住，应补虚线轮廓，且四个命中盒仍在。
+g.cubic_camera = CubicCamera.from_yaw_pitch(-150, -30)
+g.draw_board()
+check(set(getattr(g, '_cubic_arrow_ghosts', set())) == set('rRdD'),
+      '被遮时四个箭头都补虚线轮廓',
+      getattr(g, '_cubic_arrow_ghosts', None))
+check(len(g._cubic_arrow_buttons) == 4,
+      '虚线箭头仍然可点（四个命中盒都在）', len(g._cubic_arrow_buttons))
+if g._cubic_arrow_buttons:
+    before = g.step_count
+    _letter, _rect = g._cubic_arrow_buttons[0]
+    check(g._cubic_click(*_rect.center), '点虚线箭头能触发滑动', _rect)
+    check(g.step_count == before + 1,
+          '虚线箭头点击后步数前进', (before, g.step_count))
+
+print('=' * 60)
+print('E. 连续同向推：滑后仍连通的前三步不能被拒')
 g = fresh(step=1)
 g.selected_gap = ('c', 2)
 anchor = next(b for b in g.game.blocks

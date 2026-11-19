@@ -979,7 +979,12 @@ class RendererMixin:
             # 跟随关着时，正常取景用当前包围盒中心；同样冻结它。
             _cur = cubic_view.layout_anchor(blocks)
         self._cubic_shuffle_center = _cur
-        # 只冻「未乘 zoom」的比例，绘制时再乘玩家当前 zoom。
+        # 只冻「未乘 zoom」的比例，绘制时再乘玩家当前 zoom。整局已有
+        # _cubic_base_scale 时直接沿用，打乱开始也不该再变一次块大小。
+        _base_scale = getattr(self, '_cubic_base_scale', None)
+        if _base_scale is not None:
+            self._cubic_shuffle_scale = _base_scale
+            return _cur
         _cam = getattr(self, 'cubic_camera', None)
         if _cam is None:
             from engine.cubic_camera import CubicCamera
@@ -987,6 +992,7 @@ class RendererMixin:
         _base_scale, _ = cubic_view.stable_frame(
             blocks, _cam, self.screen_width, self.screen_height,
             margin=64, zoom=1.0, center=_cur)
+        self._cubic_base_scale = _base_scale
         self._cubic_shuffle_scale = _base_scale
         return _cur
 
@@ -1031,10 +1037,19 @@ class RendererMixin:
         _shuffling = bool(getattr(self, '_shuffle_demo_active', False)
                           or getattr(self, '_infinite_shuffle_active', False))
         _zoom = float(getattr(self, 'cubic_zoom', 1.0))
-        _frame_scale = None
+        # 基础比例只在换局/读档/窗口尺寸变化时定一次：块移动、打乱胀缩都
+        # 不再重算，每个块显示多大只由缩放值决定（用户多次强调的口径）。
+        _base_scale = getattr(self, '_cubic_base_scale', None)
+        _frame_scale = _base_scale
         _center = None
         _locs = ([tuple(int(v) for v in b.location[:3])
                   for b in blocks] if blocks else [])
+        if _base_scale is None and _locs:
+            _base_scale, _ = cubic_view.stable_frame(
+                blocks, camera, self.screen_width, self.screen_height,
+                margin=64, zoom=1.0, center=None)
+            self._cubic_base_scale = _base_scale
+            _frame_scale = _base_scale
         _target = None
         if _locs:
             # 逻辑 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)。拆分只把块在画面上拉开，
@@ -1055,17 +1070,23 @@ class RendererMixin:
                 self._cubic_shuffle_center = _frozen
             _center = _frozen
             # 打乱期间 **不推进** _cubic_follow_center：相机完全冻结。
-            # 比例也冻结：只乘玩家当前 zoom，块堆边界胀大不再忽大忽小。
+            # 比例沿用同一份 _cubic_base_scale；打乱结束也不换口径，块不会
+            # 在收尾时又变一次大小。
             _base_scale = getattr(self, '_cubic_shuffle_scale', None)
+            if _base_scale is None:
+                _base_scale = getattr(self, '_cubic_base_scale', None)
             if _base_scale is None:
                 _base_scale, _ = cubic_view.stable_frame(
                     blocks, camera, self.screen_width, self.screen_height,
                     margin=64, zoom=1.0, center=_center)
-                self._cubic_shuffle_scale = _base_scale
+                self._cubic_base_scale = _base_scale
+            self._cubic_shuffle_scale = _base_scale
             _frame_scale = _base_scale
         elif _follow and _target is not None:
             self._cubic_shuffle_center = None
             self._cubic_shuffle_scale = None
+            self._cubic_static_center = None   # 跟随中：关闭时重新冻结当前视角
+            self._cubic_static_scale = None
             # 平滑跟随（用户 2026-11-18 第 3 条）：一步走完质心会跳 1/9 盘，
             # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
             # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
@@ -1078,6 +1099,15 @@ class RendererMixin:
                              for i in range(3))
             self._cubic_follow_center = _cur
             _center = _cur
+        elif _target is not None:
+            # 跟随质心关闭：取景中心和比例都冻结，块移动不再自动平移/缩放。
+            self._cubic_shuffle_center = None
+            self._cubic_shuffle_scale = None
+            self._cubic_freeze_view()
+            _center = getattr(self, '_cubic_static_center', None)
+            _frame_scale = getattr(self, '_cubic_base_scale', None)
+            if _frame_scale is None:
+                _frame_scale = getattr(self, '_cubic_static_scale', None)
         else:
             self._cubic_shuffle_center = None
             self._cubic_shuffle_scale = None
@@ -1136,11 +1166,12 @@ class RendererMixin:
         #   背面那堆块 → 整张半透明红面 → 相机侧那堆块
         # 切面是平面、每块整块只在一侧，所以这个顺序就是真实前后关系，
         # 边界是块自身的轮廓（像素级），既没有网格缝也不会「切在另一层」。
+        # 选中片不单独置顶：它和普通块一样按实际所在侧分前后，切面后的
+        # 选中块会被红面正常盖住（用户 2026-11-19：不能穿透、不能半透明）。
         seam_quad = None
         seam_axis = None
         seam_sign = 0.0
         seam_fixed = 0.0
-        seam_drawn = False          # 切面退化侧视（面积<1.5）时不画，别误压选中色
         if seam_draw and seam_draw[0] in ('r', 'c', 'd'):
             from engine import cubic_pick
             _dims = None
@@ -1199,6 +1230,9 @@ class RendererMixin:
                 near = (center - seam_fixed) * seam_sign > 0
                 if _off is None and key in _moving_front:
                     near = True
+                # 选中片也按实际所在侧分前后：切面后的选中块要被红面盖住，
+                # 颜色仍用原 selected 绿，不再无条件穿透切面（用户 2026-11-19
+                # 指认「被挡住的滑块不能变半透明」）。
                 if near:
                     front_faces.append(f)
                 else:
@@ -1223,7 +1257,6 @@ class RendererMixin:
                 p0, p1 = pts[i], pts[(i + 1) % len(pts)]
                 area += p0[0] * p1[1] - p1[0] * p0[1]
             if abs(area) / 2.0 >= 1.5:
-                seam_drawn = True
                 seam_depth = sum(
                     cubic_view.project_point(w, camera, scene['scale'],
                                              scene['origin'])[2]
@@ -1234,11 +1267,13 @@ class RendererMixin:
                 # 用户 2026-11-18：「完整的边角经常被相机范围裁掉」。这里把切面
                 # 的投影点也纳入边界，矩形永远整张画得下。
                 seam_pts_screen = pts
-        items += [(f['depth'], 0, f) for f in front_faces]
-        # 箭头朝相机偏置 0.45 格，但切面外沿本身仍可能落到前侧块的投影里；
-        # 为了让四个合法方向始终可点，箭头统一排在 front_faces 之后。
-        # 面片本身仍是世界几何 + 深度排序，不是二维贴图。
-        items += sorted(arrow_items, key=lambda it: it[0])
+        # 箭头不再统一置顶：和相机侧块面按各自深度一起排序，近的块能挡住
+        # 箭头（用户 2026-11-19：都是三维，应该有真实遮挡关系）。切面仍在
+        # 所有前侧块/箭头之前画，保持「背面块 → 切面 → 前侧」的两遍结构。
+        front_items = [(f['depth'], 0, f) for f in front_faces]
+        front_items += arrow_items
+        front_items.sort(key=lambda it: it[0])
+        items += front_items
         # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
         # 一级级台阶，切面边上那些「毛毛糙糙」的小三角有一半是块面自己的边。
         # 只在棋盘包围盒里开超采样，整帧仍是一次 smoothscale 缩回，成本可控。
@@ -1314,13 +1349,9 @@ class RendererMixin:
             face = item
             _is_anim = _sel_anim is not None and face['loc'] in _anim_locs
             _is_reject = bool(_shake_locs) and face['loc'] in _shake_locs
-            # 远侧选中块：切面已经在它之后画，半透明红面会盖上来。若这里仍用
-            # 亮绿选中色，绿会把红压成土黄（H 项 pixel=(110,99,49) 就是这来的），
-            # 视觉上仍像「穿透切面」。背面选中片退回普通块色，红面才是最后的色。
-            _behind_seam = (seam_drawn and
-                            face['loc'] in self._cubic_seam_back_locs)
-            color = (chosen if ((face['loc'] in opted or _is_anim)
-                                and not _behind_seam) else base)
+            # 切面后的选中片仍用原来的 selected 绿（不另调高亮色），红面
+            # 按实际遮挡盖上来；不叠透明层、不描边，保持实心。
+            color = (chosen if (face['loc'] in opted or _is_anim) else base)
             shade = face['shade']
             fill = (int(color[0] * shade), int(color[1] * shade),
                     int(color[2] * shade))
@@ -1367,6 +1398,15 @@ class RendererMixin:
                 _q2 = (_b[0] + (_cx - _b[0]) * _inset,
                        _b[1] + (_cy - _b[1]) * _inset)
                 pygame.draw.polygon(hi, _ecol, (_a, _b, _q2, _q1))
+        # 被块盖住的箭头只补一圈虚线轮廓：实心部分仍按真实遮挡消失，
+        # 虚线让玩家知道这里还有一个可点的方向（用户 2026-11-19）。
+        self._cubic_arrow_ghosts = set()
+        if hi is not None:
+            for letter, pts, depth in getattr(self, '_cubic_arrow_shapes', ()):
+                if self._cubic_arrow_occluded(pts, depth, front_faces):
+                    self._cubic_draw_arrow_ghost(hi, pts, _T, _ss)
+                    self._cubic_arrow_ghosts.add(letter)
+
         if hi is not None:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
@@ -1395,30 +1435,145 @@ class RendererMixin:
         hint = (f'三维 {m}×{n}×{d} 等级{getattr(self, "current_step", 0)}'
                 f'　视角 {view_label}　缩放 {zoom * 100:.0f}%'
                 f'　拆分 {gap:.2f}（0 = 贴死）')
-        hint2 = ('拖动旋转 · 1–6 切朝向 · 0 回斜视 · Ctrl+滚轮缩放 · 右键选缝→左键选块'
-                 ' · 空白右键取消 · r/R c/C d/D 推 · 六键=平移 · 编辑→居中')
         try:
             surf = self.status_font.render(hint, True, self.colors['status_text'])
             self.screen.blit(surf, (16, 12))
-            surf2 = self.status_font.render(hint2, True, self.colors['status_text'])
-            self.screen.blit(surf2, (16, 36))
         except Exception:
             pass   # 文字画失败只丢这一行，不能让整帧黑掉（§4 同一条纪律）
+
+    def _cubic_seam_screen_to_world(self, x, y, seam):
+        """屏幕点 → 当前切面平面上的世界点（给箭头当「上一次点击处」锚点）。
+
+        只存屏幕坐标不行：转视角/平移后箭头会留在屏幕上，不跟着盘走；只存
+        块心也不行：箭头会埋进块里。把点击射线投到切面上，投影回来仍在点击
+        处，世界坐标又能跟着盘一起转。
+        """
+        if not seam or seam[0] not in ('r', 'c', 'd'):
+            return None
+        scene = getattr(self, '_cubic_scene', None)
+        if not isinstance(scene, dict):
+            return None
+        from engine import cubic_pick
+        from engine import cubic_view
+        blocks = getattr(getattr(self, 'game', None), 'blocks', None) or []
+        rect = cubic_pick.seam_plane_rect(
+            seam[0], seam[1], blocks,
+            gap=float(getattr(self, 'cubic_gap', 0.0)))
+        if not rect:
+            return None
+        axis = cubic_pick.FAMILY_TO_WORLD_AXIS[seam[0]]
+        return cubic_view.screen_to_plane(
+            (x, y), getattr(self, 'cubic_camera'),
+            scene['scale'], scene['origin'], axis, rect[0][axis])
+
+    def _cubic_click_surface(self, x, y, hit):
+        """屏幕点击 + 命中面 → 点击处所在块面的世界点。
+
+        只给箭头当「离面多高」的参考：每帧按当前相机重新投影这个面点，
+        箭头才始终浮在它前面一格左右，转视角不会飘到盘外。
+        """
+        if not hit or hit.get('axis') not in (0, 1, 2) or hit.get('loc') is None:
+            return None
+        scene = getattr(self, '_cubic_scene', None)
+        if not isinstance(scene, dict):
+            return None
+        from engine import cubic_view
+        blocks = getattr(getattr(self, 'game', None), 'blocks', None) or []
+        if not blocks:
+            return None
+        anchor_w = cubic_view.layout_anchor(blocks)
+        corner = cubic_view.block_min_corner(
+            hit['loc'], float(getattr(self, 'cubic_gap', 0.0)), anchor_w)
+        axis = int(hit['axis'])
+        coord = corner[axis] + (1.0 if hit.get('sign', 0) > 0 else 0.0)
+        return cubic_view.screen_to_plane(
+            (x, y), getattr(self, 'cubic_camera'),
+            scene['scale'], scene['origin'], axis, coord)
+
+    @staticmethod
+    def _cubic_point_in_poly(point, poly):
+        """点在任意简单多边形内（箭头轮廓是凹多边形，不能用 point_in_quad）。"""
+        x, y = point
+        inside = False
+        j = len(poly) - 1
+        for i in range(len(poly)):
+            xi, yi = poly[i]
+            xj, yj = poly[j]
+            if ((yi > y) != (yj > y)) and (
+                    x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    def _cubic_arrow_occluded(self, pts, depth, front_faces):
+        """箭头正面被前侧块盖住的比例是否超过阈值。"""
+        from engine import cubic_pick
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return False
+        total = covered = 0
+        n = 5
+        for iy in range(n):
+            y = y0 + (y1 - y0) * (iy + 0.5) / n
+            for ix in range(n):
+                x = x0 + (x1 - x0) * (ix + 0.5) / n
+                if not self._cubic_point_in_poly((x, y), pts):
+                    continue
+                total += 1
+                for f in front_faces:
+                    if (f['depth'] > depth + 0.05
+                            and cubic_pick.point_in_quad((x, y), f['pts'])):
+                        covered += 1
+                        break
+        return bool(total) and covered / total >= 0.35
+
+    def _cubic_draw_arrow_ghost(self, hi, pts, transform, ss):
+        """被块盖住的箭头：只描一圈虚线轮廓，保持可点，不把整支箭置顶。"""
+        q = transform(pts)
+        x0 = min(p[0] for p in q)
+        y0 = min(p[1] for p in q)
+        w = max(1, max(p[0] for p in q) - x0 + 1)
+        h = max(1, max(p[1] for p in q) - y0 + 1)
+        pad = 2 * ss
+        surf = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))
+        pts2 = [(p[0] - x0 + pad, p[1] - y0 + pad) for p in q]
+        color = (245, 245, 245, 170)
+        width = max(2, int(round(2 * self.zoom))) * ss
+        dash, gap = 8 * ss, 5 * ss
+        for i in range(len(pts2)):
+            a = pts2[i]
+            b = pts2[(i + 1) % len(pts2)]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            seg_len = (dx * dx + dy * dy) ** 0.5
+            if seg_len <= 1e-9:
+                continue
+            ux, uy = dx / seg_len, dy / seg_len
+            t = 0.0
+            while t < seg_len:
+                e = min(seg_len, t + dash)
+                pygame.draw.line(surf, color,
+                                 (a[0] + ux * t, a[1] + uy * t),
+                                 (a[0] + ux * e, a[1] + uy * e), width)
+                t = e + gap
+        hi.blit(surf, (x0 - pad, y0 - pad))
 
     def _cubic_arrow_items(self, scene, seam, gap, camera, blocks):
         """三维方向箭头：世界空间的小几何体，返回可插入画家序的面片。
 
         用户 2026-11-18 的返工要求：箭头不能再用 `_arrow_sprite` 贴一张永远
         正对相机的图，否则转视角时没有透视、没有明暗、也没有真正的遮挡。
-        这里把箭头做成一块**世界空间的薄板**：尾部在切面外沿，沿推行方向画
-        箭杆和箭头三角，再沿板法向挤出一点厚度；所有面片走
-        `cubic_view.project_point`，和块面共用同一条画家序。二维的
-        `_arrow_sprite` 路径完全不动。
+        这里把箭头做成一块**世界空间的薄板**：尾部贴着玩家上一次点击处
+        （没有点击记录时回退到切面外沿），沿推行方向画箭杆和箭头三角，再沿
+        板法向挤出一点厚度；所有面片走 `cubic_view.project_point`，和块面共用
+        同一条画家序。二维的 `_arrow_sprite` 路径完全不动。
 
-        薄板有两块互相垂直的候选面：一块铺在切面上（法向 = 切面法向），
-        一块立在切面内（法向 = 切面内垂直方向）。每帧只画**投影面积更大**
-        的那块——单画一块保证轮廓始终是箭头，不会像十字板那样变成飞机；
-        两块都接近侧视时按面积兜底，避免箭头被吞掉。
+        薄板的顶/底面永远和切面平行（法向 = 切面法向），不再按投影面积
+        二选一；转到接近侧视、投影面积太小时直接跳过，避免退化成一条线。
+        面片按各自深度和块面一起排序，因此也会被更近的滑块正常遮住。
         """
         self._cubic_arrow_buttons = []
         if not seam or seam[0] not in ('r', 'c', 'd'):
@@ -1482,6 +1637,8 @@ class RendererMixin:
                 'fill': fill,
                 'edge': edge_rgb,
                 'width': 1 if cap else 0,   # 侧面不描边，避免箭头变成铁架子
+                'cap': bool(cap),
+                'normal': tuple(face_normal),
             })
 
         # 箭头局部形状：尾部在锚点，沿 +u 指向；v 是板面内垂直方向。
@@ -1544,9 +1701,13 @@ class RendererMixin:
                     faces.append(_face(
                         [front[i], front[j], back[j], back[i]],
                         side_n, False))
-            return area, faces, fscr + bscr
+            return area, faces, fscr
 
         items = []
+        shapes = []
+        click_anchor = getattr(self, '_cubic_last_click_p', None)
+        if click_anchor is not None and len(click_anchor) != 3:
+            click_anchor = None
         for letter, vec in CUBIC_DIRECTIONS.items():
             axis = [i for i in range(3) if abs(vec[i]) > 0][0]
             if axis == fam_index:
@@ -1556,33 +1717,45 @@ class RendererMixin:
             world_axis = {0: 2, 1: 0, 2: 1}[axis]   # 词条轴 → 世界轴 (c,d,r)
             sign = 1.0 if vec[axis] > 0 else -1.0
 
-            # 尾部：切面中心 → 沿推行轴挪到切面外沿 → 再往外探一点。
-            anchor = list(mid)
-            edge = hi[world_axis] if sign > 0 else lo[world_axis]
-            anchor[world_axis] = edge + sign * 0.18
-            # 再整体朝相机推 0.45 格：箭头仍贴着切面外沿，但不会被切面
-            # 另一侧的块整块吞掉；深度仍参与画家序。
-            for i in range(3):
-                anchor[i] += view_dir[i] * 0.45
-
             u = [0.0, 0.0, 0.0]
             u[world_axis] = sign
-            # 切面内垂直方向 v（给第二块候选板当法向）。
-            v = [normal[1] * u[2] - normal[2] * u[1],
-                 normal[2] * u[0] - normal[0] * u[2],
-                 normal[0] * u[1] - normal[1] * u[0]]
-            n_len = math.sqrt(sum(x * x for x in v)) or 1.0
-            v = [x / n_len for x in v]
-
-            area_a, faces_a, scr_a = _build_plate(anchor, u, normal, 0.055)
-            area_b, faces_b, scr_b = _build_plate(anchor, u, v, 0.055)
-            if area_a >= area_b:
-                chosen, screen_pts = faces_a, scr_a
+            if click_anchor is not None:
+                # 用户 2026-11-19：箭头要像原版一样贴在上一次点击处附近，
+                # 不是钉在整张切面的四个外沿。以点击处为中心，尾部沿推行
+                # 方向再偏 0.22 格（箭头半长 0.35 + 点击余量）。
+                anchor = list(click_anchor)
+                surface = getattr(self, '_cubic_last_click_surface', None)
+                if surface is not None:
+                    # 每帧按当前相机重投影点击面，把箭头抬到该面之前一格：
+                    # 屏幕位置不变，又不会埋进选中块；更近的块仍能挡住它。
+                    target_depth = _cv.project_point(
+                        surface, camera, scene['scale'],
+                        scene['origin'])[2] + 0.7
+                    cur_depth = _cv.project_point(
+                        anchor, camera, scene['scale'],
+                        scene['origin'])[2]
+                    shift = target_depth - cur_depth
+                else:
+                    shift = 0.45
+                for i in range(3):
+                    anchor[i] += view_dir[i] * shift
+                tail = [anchor[i] + u[i] * 0.22 for i in range(3)]
             else:
-                chosen, screen_pts = faces_b, scr_b
-            if not chosen:
-                continue                       # 两块都退化：不画，避免骗点击
-            items.extend(chosen)
+                # 回退（键盘/回放选中，没有点击记录）：尾部仍在切面中心
+                # 沿推行轴到外沿，再往外探一点，保持旧行为。
+                tail = list(mid)
+                edge = hi[world_axis] if sign > 0 else lo[world_axis]
+                tail[world_axis] = edge + sign * 0.18
+                # 再整体朝相机推 0.45 格：箭头仍贴着切面外沿，但不会被切面
+                # 另一侧的块整块吞掉；深度仍参与画家序。
+                for i in range(3):
+                    tail[i] += view_dir[i] * 0.45
+
+            # 薄板铺在切面上：顶/底面法向 = 切面法向，永远平行。
+            _area, faces, screen_pts = _build_plate(tail, u, normal, 0.055)
+            if not faces:
+                continue                       # 投影太薄：不画，避免骗点击
+            items.extend(faces)
             xs = [p[0] for p in screen_pts]
             ys = [p[1] for p in screen_pts]
             hx0, hy0 = min(xs), min(ys)
@@ -1591,7 +1764,9 @@ class RendererMixin:
                                max(1, int(round(hx1 - hx0)) + 4),
                                max(1, int(round(hy1 - hy0)) + 4))
             self._cubic_arrow_buttons.append((letter, rect))
+            shapes.append((letter, list(screen_pts), float(faces[0][0])))
 
+        self._cubic_arrow_shapes = shapes
         return items
 
 
@@ -4057,10 +4232,12 @@ class RendererMixin:
 
         # 左侧：当前逻辑引擎（几何引擎开关的状态指示，见 engine/config.py）
         # 常显而非只在几何态显示——玩家随时能确认自己跑的是哪一套。
-        engine_text = f"引擎：{self.engine_label()}"
-        engine_on = (self.engine_label() == '几何')
+        _engine_label = self.engine_label()
+        engine_text = f"引擎：{_engine_label}"
+        engine_on = _engine_label in ('几何', '三维')
         engine_color = (120, 220, 200) if engine_on else self.colors['status_text']
         engine_surface = self._status_text_surface(engine_text, engine_color)
+        self._engine_status_text = engine_text
         engine_x = timer_x + timer_surface.get_width() + 30
         self.screen.blit(engine_surface, (engine_x, text_y))
 
@@ -4089,9 +4266,15 @@ class RendererMixin:
         # 宏段算位 → 谜题段夹缝居中 → 宏段最后画（关键动态信息压最上层）。
         _left_right = engine_x + engine_surface.get_width()
 
-        # 右侧：缩放比例（右锚固定，宏段的右界依赖它）
-        zoom_text = f"缩放：{int(self.zoom * 100)}%"
+        # 右侧：缩放比例（右锚固定，宏段的右界依赖它）。三维读 cubic_zoom，
+        # 否则右下角一直显示二维的 self.zoom，拖三维滑条时数值不动。
+        if getattr(self, 'cubic_mode', False):
+            _zoom_val = float(getattr(self, 'cubic_zoom', 1.0))
+        else:
+            _zoom_val = float(getattr(self, 'zoom', 1.0))
+        zoom_text = f"缩放：{int(round(_zoom_val * 100))}%"
         zoom_surface = self._status_text_surface(zoom_text, self.colors['status_text'])
+        self._status_zoom_text = zoom_text
         zoom_x = self.screen_width - zoom_surface.get_width() - self.right_panel_width - 10
         self.screen.blit(zoom_surface, (zoom_x, text_y))
         self._status_zoom_rect = zoom_surface.get_rect(topleft=(zoom_x, text_y))
@@ -5576,6 +5759,13 @@ class RendererMixin:
                 self.screen.blit(self.status_font.render(_ln, True, (150, 150, 150)),
                                  (x + 234, row_y + 18 + _i * 16))
             row_y += 52 + max(0, len(_desc_lines) - 1) * 16
+        # 三维调试面板开关：F2 的纯鼠标入口。三維面板只读，不上棋盘记号
+        # （三维没有二维的洞/凸起记号，_MP_SUPPORTED 也不含 cubic）。
+        row_y += 8
+        self._settings_metrics_toggle_rect, row_y = self._draw_switch_row(
+            x + 15, row_y, "调试面板：",
+            getattr(self, 'show_metrics_panel', False),
+            "显示三维相机 / 选中 / 场景 / 宏操作队列读数", max_w=width - 30)
         self._settings_cubic_height = row_y - y + 10
 
     def _calc_settings_content_height(self, visible_height: int) -> int:

@@ -107,7 +107,11 @@ check("關回去：又走舊引擎",
 gui = SliderGUI(m=6, n=6, step=2)
 gui.animation_enabled = False
 gui.save_readonly_flag = False
-check("GUI 起手是经典引擎", gui.engine_label() == '经典')
+# 构造时可能读到磁盘上的上次存档（例如三维局）；这里显式切回经典方形，
+# 不靠「当前存档形态」来决定引擎标签的预期。
+ecfg.set_enabled(False)
+gui.new_puzzle(6, 6, 2)
+check("GUI 切回经典方形后是经典引擎", gui.engine_label() == '经典')
 
 # ================================================================ B 建局
 print("\n== B 建局（三形態）==")

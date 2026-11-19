@@ -169,6 +169,27 @@ def project_point(world, camera: CubicCamera, scale: float, origin) -> tuple:
     return (origin[0] + scale * vx, origin[1] - scale * vy, vz)
 
 
+def screen_to_plane(screen, camera: CubicCamera, scale: float, origin,
+                    axis: int, coord: float):
+    """屏幕点 → 指定轴对齐平面上的世界点（正交投影的逆解）。
+
+    用途：把「玩家上一次点击的位置」钉回世界坐标。方向箭头要贴着点击处，
+    但世界几何要跟着盘转，不能存屏幕坐标；于是把点击射线投到当前切面上，
+    得到平面上的世界点。平面与视线平行时无解，返回 None。
+    """
+    if scale <= 1e-9:
+        return None
+    rows = camera.rows()
+    vx = (float(screen[0]) - float(origin[0])) / float(scale)
+    vy = (float(origin[1]) - float(screen[1])) / float(scale)
+    base = [vx * rows[0][i] + vy * rows[1][i] for i in range(3)]
+    denom = rows[2][axis]
+    if abs(denom) < 1e-9:
+        return None
+    vz = (float(coord) - base[axis]) / denom
+    return tuple(base[i] + vz * rows[2][i] for i in range(3))
+
+
 def stable_frame(blocks, camera: CubicCamera, width: int, height: int, *,
                  margin: int = 40, zoom: float = 1.0, gap: float = 0.0,
                  center=None, frame_scale=None) -> tuple:

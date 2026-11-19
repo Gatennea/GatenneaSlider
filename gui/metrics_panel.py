@@ -28,6 +28,9 @@ class MetricsPanelMixin:
     _MP_PAD = 10
     _MP_ROW_H = 22
     _MP_WIDTH = 190
+    #: 三維面板多兩列讀數（視軸 / 當前 op / 錯誤），190 會把值擠到左邊；
+    #: 只改三維寬度，二維面板外觀不動。
+    _MP_WIDTH_CUBIC = 260
 
     def _mp_init_state(self):
         """初始化指标面板状态（在 GUI.__init__ 中调用）"""
@@ -51,7 +54,8 @@ class MetricsPanelMixin:
         if n_rows is None:
             n_rows = 6
         height = (self._MP_TITLE_H + self._MP_PAD * 2 + self._MP_ROW_H * n_rows)
-        return self._MP_WIDTH, height
+        width = self._MP_WIDTH_CUBIC if self._mp_kind() == 'cubic' else self._MP_WIDTH
+        return width, height
 
     def _mp_build_layout(self, n_rows=None):
         """根据当前 mp_pos 计算面板矩形。"""
@@ -532,7 +536,8 @@ class MetricsPanelMixin:
         title_bg = pygame.Surface((width, self._MP_TITLE_H), pygame.SRCALPHA)
         title_bg.fill((60, 60, 72, 235))
         self.screen.blit(title_bg, (x, y))
-        title_surface = self.status_font.render("调试面板", True, (220, 220, 220))
+        _title = "调试面板 · 三维" if self._mp_kind() == 'cubic' else "调试面板"
+        title_surface = self.status_font.render(_title, True, (220, 220, 220))
         self.screen.blit(title_surface, (
             x + self._MP_PAD,
             y + (self._MP_TITLE_H - title_surface.get_height()) // 2
@@ -572,6 +577,77 @@ class MetricsPanelMixin:
         """
         self._target_region = None
 
+    def _mp_cubic_rows(self):
+        """三維面板讀數：只報這一幀真實存在的狀態，不套二維聚攏公式。
+
+        三維目前還沒有求解器，所以這裡不顯示「聚攏度 / 重疊 / 剖面缺陷」
+        ——那會把二維矩形窗口公式套到 (r,c,d) 上，得到看似有效但全錯的數字。
+        先報相機、選中、場景與宏操作佇列，等三維聚攏接上後再另加求解行。
+        """
+        game = getattr(self, 'game', None)
+        if game is None:
+            return [("形态", "三维"), ("调试面板", "无局面")]
+
+        m = int(getattr(game, 'm', 0) or 0)
+        n = int(getattr(game, 'n', 0) or 0)
+        depth = int(getattr(game, 'depth', 0) or 0)
+        blocks = list(getattr(game, 'blocks', None) or [])
+        total = m * n * depth
+
+        view_label = str(getattr(self, 'cubic_view_label', '斜视'))
+        cam = getattr(self, 'cubic_camera', None)
+        if cam is not None and hasattr(cam, 'view_axis'):
+            _z = cam.view_axis()
+            axis_text = f"({_z[0]:+.2f},{_z[1]:+.2f},{_z[2]:+.2f})"
+        else:
+            axis_text = '-'
+
+        zoom = float(getattr(self, 'cubic_zoom', 1.0))
+        gap = float(getattr(self, 'cubic_gap', 0.0))
+        alpha = int(getattr(self, 'cubic_seam_alpha', 110))
+
+        seam = getattr(self, 'selected_gap', None)
+        if seam:
+            try:
+                seam_text = f"{seam[0]}{int(seam[1])}"
+            except (TypeError, ValueError):
+                seam_text = str(seam)
+        else:
+            seam_text = '-'
+        selected = sum(1 for b in blocks if getattr(b, 'be_opted', False))
+
+        scene = getattr(self, '_cubic_scene', None)
+        faces = scene.get('faces') if isinstance(scene, dict) else None
+        n_faces = len(faces) if faces else 0
+        n_arrows = len(getattr(self, '_cubic_arrow_buttons', ()) or ())
+
+        ops = list(getattr(self, 'macro_exec_ops', None) or [])
+        op_idx = int(getattr(self, 'macro_exec_index', 0) or 0)
+        cur_op = ops[op_idx] if 0 <= op_idx < len(ops) else None
+        if cur_op:
+            op_text = " ".join(str(cur_op.get(k, '?')) for k in
+                               ('gap_type', 'gap_line', 'side', 'direction'))
+        else:
+            op_text = '-'
+        err = str(getattr(self, 'macro_error_msg', '') or '-')
+        if len(err) > 30:
+            err = err[:29] + '…'
+
+        return [
+            ("形态", f"三维 {m}×{n}×{depth}"),
+            ("块数", f"{len(blocks)}/{total}"),
+            ("视角", view_label),
+            ("视轴", axis_text),
+            ("缩放", f"{zoom * 100:.0f}%"),
+            ("拆分", f"{gap:.2f}"),
+            ("切面", f"{seam_text} α{alpha}"),
+            ("选中组", f"{selected}块"),
+            ("场景", f"面{n_faces} 箭{n_arrows}"),
+            ("操作队", f"{op_idx}/{len(ops)}"),
+            ("当前op", op_text),
+            ("错误", err),
+        ]
+
     def _mp_rows(self):
         """算出面板要显示的指标行 + 指标字典。
 
@@ -586,6 +662,10 @@ class MetricsPanelMixin:
         game = self.game
         step = getattr(self, 'current_step', 1)
         kind = self._mp_kind()
+
+        if kind == 'cubic':
+            # 三維先報相機 / 選中 / 場景 / 宏佇列；求解行等聚攏接上再加。
+            return self._mp_cubic_rows(), met
 
         if kind not in self._MP_SUPPORTED:
             # 未实装形态：给占位行，**不跑任何形态专属公式**。
@@ -689,6 +769,8 @@ class MetricsPanelMixin:
         """
         if self._mp_kind() == 'mi' and self._mp_kind() in self._MP_SUPPORTED:
             return 7
+        if self._mp_kind() == 'cubic':
+            return len(self._mp_cubic_rows())
         if self._mp_kind() not in self._MP_SUPPORTED:
             return len(self._mp_unsupported_rows())
         return 6

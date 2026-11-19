@@ -102,6 +102,57 @@ check(abs(_origin2[0] - _origin1[0]) > 1.0
       (_origin1, _origin2))
 
 print('=' * 60)
+print('B2. 打乱缩放：右下角数值跟 cubic_zoom，收尾不再二次改变块大小')
+g2 = make_gui()
+g2.cubic_mode = True
+g2.cubic_follow_centroid = True
+g2.new_cubic_puzzle(3, 3, 3, 1)
+g2.draw_board()
+g2.draw_status_bar()
+_base = float(g2._cubic_scene['scale'])
+check(abs(_base - float(g2._cubic_base_scale)) < 1e-9,
+      '首帧记下整局固定比例', (g2._cubic_base_scale, _base))
+check(g2._status_zoom_text == '缩放：100%',
+      '三维右下角显示 cubic_zoom（100%）', g2._status_zoom_text)
+
+# 正常态把一块挪远：如果每帧按包围盒重算，scale 会变小；现在必须固定。
+g2.game.blocks[0].location[0] += 4
+g2.draw_board()
+check(abs(float(g2._cubic_scene['scale']) - _base) < 1e-9,
+      '正常态块移动不再改变块大小', g2._cubic_scene['scale'])
+
+g2.cubic_zoom = 1.25
+g2.draw_board()
+g2.draw_status_bar()
+check(g2._status_zoom_text == '缩放：125%',
+      '拖三维缩放后右下角数值跟着变', g2._status_zoom_text)
+check(abs(float(g2._cubic_scene['scale']) - _base * 1.25) < 1e-9,
+      '缩放只乘固定比例（125%）', g2._cubic_scene['scale'])
+
+# 打乱开始 + 中途缩放 + 结束，三个时刻的块大小必须一致。
+g2._shuffle_demo_active = True
+g2._cubic_capture_shuffle_center()
+g2.draw_board()
+_shuffle_scale = float(g2._cubic_scene['scale'])
+check(abs(_shuffle_scale - _base * 1.25) < 1e-9,
+      '打乱开始时沿用同一比例', _shuffle_scale)
+g2.game.blocks[1].location[1] += 3
+g2.draw_board()
+check(abs(float(g2._cubic_scene['scale']) - _shuffle_scale) < 1e-9,
+      '打乱中途盘面胀大也不缩放', g2._cubic_scene['scale'])
+g2.cubic_zoom = 1.5
+g2.draw_board()
+g2.draw_status_bar()
+check(abs(float(g2._cubic_scene['scale']) - _base * 1.5) < 1e-9,
+      '打乱中缩放按同一固定比例生效', g2._cubic_scene['scale'])
+check(g2._status_zoom_text == '缩放：150%',
+      '打乱中右下角数值同步', g2._status_zoom_text)
+g2._shuffle_demo_active = False
+g2.draw_board()
+check(abs(float(g2._cubic_scene['scale']) - _base * 1.5) < 1e-9,
+      '打乱结束后块大小不再改变', g2._cubic_scene['scale'])
+
+print('=' * 60)
 print('C. 三维打乱：AnchorPlanner 防偏移真的接上了')
 g = make_gui()
 g.cubic_mode = True
