@@ -264,8 +264,48 @@ check(all(r.w >= 18 and r.h >= 18 for r in rects2f),
       f'箭头命中盒是投影多边形包围盒（不强制二维贴图的定宽）'
       f'（{[r.size for r in rects2f]}）')
 check(all(gui.screen.get_rect().contains(r) for r in rects2f), '箭头都在窗口内')
-overlap = sum(1 for i, a in enumerate(rects2f) for b in rects2f[i + 1:] if a.colliderect(b))
-check(overlap == 0, f'箭头互不重叠（{overlap} 处重叠）')
+
+
+def _arrow_poly_mask(pts):
+    """把箭头正面多边形栅格化成 mask；返回 (mask, 左上角屏幕坐标)。
+
+    不能用 `rect.colliderect`：箭头是世界空间斜薄板，投影后的轴对齐包围盒
+    会把四个空角也框进去，正交两向的箭头在对角处必然相交；实际多边形可能
+    完全分开。这正是待办六十要修的误报。
+    """
+    xs = [float(p[0]) for p in pts]
+    ys = [float(p[1]) for p in pts]
+    x0, y0 = int(min(xs)), int(min(ys))
+    w = max(1, int(max(xs) - x0 + 2))
+    h = max(1, int(max(ys) - y0 + 2))
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    surf.fill((0, 0, 0, 0))
+    pygame.draw.polygon(surf, (255, 255, 255, 255),
+                        [(int(round(p[0] - x0)), int(round(p[1] - y0)))
+                         for p in pts])
+    return pygame.mask.from_surface(surf), (x0, y0)
+
+
+_shapes = list(getattr(gui, '_cubic_arrow_shapes', ()) or ())
+# 必须用本帧实际画出来的多边形对；只比较命中盒会误报。
+_poly_pairs = 0
+_poly_overlaps = 0
+for i, a in enumerate(_shapes):
+    for b in _shapes[i + 1:]:
+        _poly_pairs += 1
+        ma, oa = _arrow_poly_mask(a[1])
+        mb, ob = _arrow_poly_mask(b[1])
+        if ma.overlap(mb, (ob[0] - oa[0], ob[1] - oa[1])):
+            _poly_overlaps += 1
+check(_poly_pairs >= 1 and _poly_overlaps == 0,
+      f'箭头多边形互不重叠（{_poly_overlaps} 处重叠）')
+# 真正压在一起时仍要报红：同一枚箭头和自己比，mask 必须相交。
+_same = _shapes[0] if _shapes else None
+if _same is not None:
+    _m, _o = _arrow_poly_mask(_same[1])
+    check(_m.overlap(_m, (0, 0)) is not None,
+          '同多边形自交检查仍能抓到真实重叠（不是把断言放宽成永真）')
+
 # 箭头走的是世界坐标：换朝向后屏幕位置必须跟着变（不是绕着屏幕画圈）
 centers_before = {l: r.center for l, r in buttons}
 gui._cubic_view(4)
