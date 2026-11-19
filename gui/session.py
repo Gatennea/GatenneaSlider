@@ -535,10 +535,12 @@ class SessionMixin:
         以当前 `self.game` 的真实类型为准，而不是只看全局试运行开关：
         三维 cubic、模型文件板型（碎三角等）没有旧实现，建局直接走
         `engine.adapter.EngineGame`，即使开关关着也是几何引擎；只看开关
-        会在三维里误显示「经典」。
+        会在三维里误显示「经典」。三维在状态栏里简称「三维」。
         """
         game = getattr(self, 'game', None)
         if game is not None and game.__class__.__name__ == 'EngineGame':
+            if getattr(game, 'kind', '') == 'cubic':
+                return '三维'
             return '几何'
         try:
             from engine import config as _ecfg

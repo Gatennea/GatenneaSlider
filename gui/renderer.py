@@ -4232,10 +4232,12 @@ class RendererMixin:
 
         # 左侧：当前逻辑引擎（几何引擎开关的状态指示，见 engine/config.py）
         # 常显而非只在几何态显示——玩家随时能确认自己跑的是哪一套。
-        engine_text = f"引擎：{self.engine_label()}"
-        engine_on = (self.engine_label() == '几何')
+        _engine_label = self.engine_label()
+        engine_text = f"引擎：{_engine_label}"
+        engine_on = _engine_label in ('几何', '三维')
         engine_color = (120, 220, 200) if engine_on else self.colors['status_text']
         engine_surface = self._status_text_surface(engine_text, engine_color)
+        self._engine_status_text = engine_text
         engine_x = timer_x + timer_surface.get_width() + 30
         self.screen.blit(engine_surface, (engine_x, text_y))
 

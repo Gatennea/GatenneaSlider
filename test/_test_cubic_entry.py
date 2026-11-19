@@ -104,9 +104,13 @@ check(gui.current_depth == 3, 'current_depth = 3', gui.current_depth)
 check(len(gui.game.blocks) == 27, 'GUI 局 27 块', len(gui.game.blocks))
 check(gui._current_puzzle_key() == '1~cubic3*3*3',
       '当前键带层数', gui._current_puzzle_key())
-check(type(gui.game).__name__ == 'EngineGame' and gui.engine_label() == '几何',
-      '三维实际跑几何引擎，状态栏也显示几何',
+check(type(gui.game).__name__ == 'EngineGame' and gui.engine_label() == '三维',
+      '三维实际跑几何引擎，状态栏写「引擎：三维」',
       (type(gui.game).__name__, gui.engine_label()))
+gui.draw_board()
+gui.draw_status_bar()
+check(gui._engine_status_text == '引擎：三维',
+      '状态栏文字就是「引擎：三维」', gui._engine_status_text)
 check('三维' in gui._current_puzzle_label(), '状态行标签写三维',
       gui._current_puzzle_label())
 
