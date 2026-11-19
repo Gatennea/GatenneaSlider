@@ -1295,6 +1295,20 @@ class RendererMixin:
         front_items += [(d, 3, payload) for d, payload in target_front]
         front_items.sort(key=lambda it: it[0])
         items += front_items
+        # 箭头被块盖住多少：0..1。虚线圈仍按原判定（抬后的薄板深度）补；
+        # 实体面片另按原始锚点深度 + 全部前侧块做逐像素裁切，两者分开，
+        # 避免默认视角只因选中块压着就误报「被遮」。
+        self._cubic_arrow_ghosts = set()
+        self._cubic_arrow_occ = {}
+        for letter, pts, depth in getattr(
+                self, '_cubic_arrow_shapes', ()):
+            if self._cubic_arrow_cover_ratio(
+                    pts, [f for f in front_faces
+                          if f['depth'] > depth + 0.05]) >= 0.35:
+                self._cubic_arrow_ghosts.add(letter)
+            _anchor_depth = self._cubic_arrow_base_depth.get(letter, depth)
+            self._cubic_arrow_occ[letter] = [
+                f for f in front_faces if f['depth'] > _anchor_depth + 0.05]
         # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
         # 一级级台阶，切面边上那些「毛毛糙糙」的小三角有一半是块面自己的边。
         # 只在棋盘包围盒里开超采样，整帧仍是一次 smoothscale 缩回，成本可控。
@@ -1324,6 +1338,28 @@ class RendererMixin:
         def _T(points):
             return [(int(round((p[0] - _bx0) * _ss)),
                      int(round((p[1] - _by0) * _ss))) for p in points]
+
+        # 每支有遮挡块的箭头做一张 2× 屏幕 mask；画实体面片时逐像素扣掉
+        # 被前侧块盖住的部分。这样挡一半的箭头只缺一半，不再整支虚化。
+        self._cubic_arrow_clip = {}
+        for letter, pts, _depth in getattr(self, '_cubic_arrow_shapes', ()):
+            occ = self._cubic_arrow_occ.get(letter) or []
+            if not occ:
+                continue
+            q = _T(pts)
+            _pad = 2 * _ss
+            _mx0 = min(p[0] for p in q) - _pad
+            _my0 = min(p[1] for p in q) - _pad
+            _mw = max(1, max(p[0] for p in q) - _mx0 + _pad)
+            _mh = max(1, max(p[1] for p in q) - _my0 + _pad)
+            mask = pygame.Surface((_mw, _mh), pygame.SRCALPHA)
+            mask.fill((0, 0, 0, 0))
+            for f in occ:
+                fq = _T(f['pts'])
+                pygame.draw.polygon(
+                    mask, (255, 255, 255, 255),
+                    [(p[0] - _mx0, p[1] - _my0) for p in fq])
+            self._cubic_arrow_clip[letter] = (mask, _mx0, _my0)
 
         # 选中动画的切面轮廓：必须画在切面同一层，不能等全部块画完再描一圈
         # 屏幕边——那样蓝/橙边永远浮在最上层，前面块也挡不住它（用户
@@ -1363,6 +1399,15 @@ class RendererMixin:
             if _kind == 2:
                 # 三维箭头的一个面片：投影多边形 + 按面法向算出的明暗。
                 # 和块面共用 2× 画布与画家序，遮挡/明暗都自然。
+                # 有遮挡块的箭头按 mask 裁掉被盖住的像素；露出来的部分仍是
+                # 实心，挡一半就只缺一半（用户 2026-11-20）。
+                _letter = item.get('arrow')
+                _clip = (self._cubic_arrow_clip.get(_letter)
+                         if _letter is not None else None)
+                if _clip is not None:
+                    self._cubic_draw_arrow_face_clipped(
+                        hi, item, _clip, _T, _ss)
+                    continue
                 pts = _T(item['pts'])
                 pygame.draw.polygon(hi, item['fill'], pts)
                 if item.get('edge') is not None:
@@ -1429,14 +1474,13 @@ class RendererMixin:
                 _q2 = (_b[0] + (_cx - _b[0]) * _inset,
                        _b[1] + (_cy - _b[1]) * _inset)
                 pygame.draw.polygon(hi, _ecol, (_a, _b, _q2, _q1))
-        # 被块盖住的箭头只补一圈虚线轮廓：实心部分仍按真实遮挡消失，
-        # 虚线让玩家知道这里还有一个可点的方向（用户 2026-11-19）。
-        self._cubic_arrow_ghosts = set()
+        # 被块盖住的箭头补一圈虚线轮廓：实体已按 mask 裁过，虚线只提示
+        # 这里还有一个可点的方向，不把整支箭置顶。
         if hi is not None:
-            for letter, pts, depth in getattr(self, '_cubic_arrow_shapes', ()):
-                if self._cubic_arrow_occluded(pts, depth, front_faces):
+            for letter, pts, _depth in getattr(
+                    self, '_cubic_arrow_shapes', ()):
+                if letter in self._cubic_arrow_ghosts:
                     self._cubic_draw_arrow_ghost(hi, pts, _T, _ss)
-                    self._cubic_arrow_ghosts.add(letter)
 
         if hi is not None:
             self.screen.blit(
@@ -1536,15 +1580,15 @@ class RendererMixin:
             j = i
         return inside
 
-    def _cubic_arrow_occluded(self, pts, depth, front_faces):
-        """箭头正面被前侧块盖住的比例是否超过阈值。"""
+    def _cubic_arrow_cover_ratio(self, pts, front_faces):
+        """箭头正面被给定前侧块盖住的采样比例（0..1）。"""
         from engine import cubic_pick
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         x0, x1 = min(xs), max(xs)
         y0, y1 = min(ys), max(ys)
         if x1 - x0 < 2 or y1 - y0 < 2:
-            return False
+            return 0.0
         total = covered = 0
         n = 5
         for iy in range(n):
@@ -1555,11 +1599,10 @@ class RendererMixin:
                     continue
                 total += 1
                 for f in front_faces:
-                    if (f['depth'] > depth + 0.05
-                            and cubic_pick.point_in_quad((x, y), f['pts'])):
+                    if cubic_pick.point_in_quad((x, y), f['pts']):
                         covered += 1
                         break
-        return bool(total) and covered / total >= 0.35
+        return (covered / total) if total else 0.0
 
     def _cubic_draw_arrow_ghost(self, hi, pts, transform, ss):
         """被块盖住的箭头：只描一圈虚线轮廓，保持可点，不把整支箭置顶。"""
@@ -1592,6 +1635,29 @@ class RendererMixin:
                 t = e + gap
         hi.blit(surf, (x0 - pad, y0 - pad))
 
+    def _cubic_draw_arrow_face_clipped(self, hi, item, clip, transform, ss):
+        """画一个箭头面片，并按前侧块 mask 扣掉被盖住的像素。
+
+        箭头被抬向相机后，靠近相机的 cap/侧壁会压在块面上；整支跳过又会
+        把「只挡了一半」的箭头也变虚线。这里只抠掉真正被块盖住的像素。
+        """
+        pts = transform(item['pts'])
+        x0 = min(p[0] for p in pts)
+        y0 = min(p[1] for p in pts)
+        w = max(1, max(p[0] for p in pts) - x0 + 1)
+        h = max(1, max(p[1] for p in pts) - y0 + 1)
+        layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        layer.fill((0, 0, 0, 0))
+        local = [(p[0] - x0, p[1] - y0) for p in pts]
+        pygame.draw.polygon(layer, item['fill'], local)
+        if item.get('edge') is not None:
+            pygame.draw.polygon(layer, item['edge'], local,
+                                max(1, int(item.get('width', 1))) * ss)
+        mask, mx0, my0 = clip
+        layer.blit(mask, (mx0 - x0, my0 - y0),
+                   special_flags=pygame.BLEND_RGBA_SUB)
+        hi.blit(layer, (x0, y0))
+
     def _cubic_arrow_items(self, scene, seam, gap, camera, blocks):
         """三维方向箭头：世界空间的小几何体，返回可插入画家序的面片。
 
@@ -1607,6 +1673,8 @@ class RendererMixin:
         面片按各自深度和块面一起排序，因此也会被更近的滑块正常遮住。
         """
         self._cubic_arrow_buttons = []
+        self._cubic_arrow_shapes = []
+        self._cubic_arrow_base_depth = {}
         if not seam or seam[0] not in ('r', 'c', 'd'):
             return []
         opted = [b for b in blocks if getattr(b, 'be_opted', False)]
@@ -1750,6 +1818,12 @@ class RendererMixin:
 
             u = [0.0, 0.0, 0.0]
             u[world_axis] = sign
+            # 锚点原始深度：箭头抬向相机后，薄板深度会比真正挡在前面的块
+            # 还近；遮挡判定若用抬后的深度，就会把该遮的箭头判成没遮。
+            _base = (list(click_anchor) if click_anchor is not None
+                     else list(mid))
+            self._cubic_arrow_base_depth[letter] = _cv.project_point(
+                _base, camera, scene['scale'], scene['origin'])[2]
             if click_anchor is not None:
                 # 用户 2026-11-19：箭头要像原版一样贴在上一次点击处附近，
                 # 不是钉在整张切面的四个外沿。以点击处为中心，尾部沿推行
@@ -1786,6 +1860,10 @@ class RendererMixin:
             _area, faces, screen_pts = _build_plate(tail, u, normal, 0.055)
             if not faces:
                 continue                       # 投影太薄：不画，避免骗点击
+            # 给每个面片贴方向字母：画的时候若该箭头几乎整支被遮，跳过实体，
+            # 只留虚线轮廓；挡一半的仍按画家序画实心。
+            for _face_item in faces:
+                _face_item[2]['arrow'] = letter
             items.extend(faces)
             xs = [p[0] for p in screen_pts]
             ys = [p[1] for p in screen_pts]
