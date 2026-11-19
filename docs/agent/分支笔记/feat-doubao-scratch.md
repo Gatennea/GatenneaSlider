@@ -1096,9 +1096,12 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   護欄：`test/_test_cubic_metrics_panel.py` 23/23；`_test_cubic_render_opts.py`
   72/72、`_test_cubic_entry.py` 33/33、`_test_tri_metrics_panel.py` ALL PASS。
 
-- **P1 三維宏 op 執行器（內部）**：連續 20–50 個 op、動畫開／關、
-  `side=None` + `rep_cell`、目標塊被挪走後退回側邊找塊、失敗留
-  `macro_error_msg`；不做玩家 UI。
+- **P1 三維宏 op 執行器（2026-11-19 已完成）**：`_execute_cubic_macro_op`
+  已鎖 40 連 op（動畫開／關）、`side=None` 由 `rep_cell` 反推側別、
+  `rep_cell` 失效退回同側找塊、壞 gap 明確失敗並清隊列；三維 GUI 錄製／執行
+  入口已 gate，提示「三维暂未开放宏功能」。護欄
+  `test/_test_cubic_macro_exec.py` 15/15。求解器路徑仍直接使用
+  `macro_exec_ops` + `_execute_cubic_macro_op`，不經過 GUI gate。
 - **P2 三維聚攏求解器**：新增 `solver/ml/cubic_gather.py`；三維 action adapter
   （`r/c/d` 三縫族、兩側、兩方向）；三維前綴和枚舉 6 種軸排列窗口；
   `gather_solve_unified` 分派 cubic；`SOLVER_FORM_SUPPORT['gather']` 加 cubic；
@@ -1109,7 +1112,7 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 ### 已知狀態
 
 - HEAD `f54d9ee`，工作樹乾淨。
-- 三維 27 套測試：26 套全綠；`_test_cubic_vk.py` 50/51，唯一紅是既有的
+- 三維 28 套測試：27 套全綠；`_test_cubic_vk.py` 50/51，唯一紅是既有的
   「箭頭外接矩形角部重疊」斷言，不是箭頭多邊形本體重疊。
-- 三維調試面板已接 cubic（護欄 23/23）；三維 GUI 宏尚未 gate（仍可能從舊入口走進
-  `_start_macro_recording`），這是 P1 前的待辦。
+- 三維 GUI 宏已 gate（15/15）；求解器內部 op 執行器已鎖 40 連 op。下一步是
+  P2 三維聚攏求解器。

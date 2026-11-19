@@ -5435,6 +5435,11 @@ class EventsMixin:
         """开始录制宏 — 等待玩家选择基准方块"""
         if self.macro_recording or self.macro_executing:
             return
+        # 三维 GUI 宏按 2026-11-19 决定暂不接入；内部宏 op 执行器仍供求解器使用。
+        if getattr(self, 'cubic_mode', False):
+            self.macro_notify_msg = "三维暂未开放宏功能"
+            self.macro_notify_timer = 120
+            return
         if self._timer_blocked():
             self.macro_notify_msg = "计时中无法使用宏"
             self.macro_notify_timer = 90
@@ -5548,6 +5553,11 @@ class EventsMixin:
     def _start_macro_execute(self, macro_name: str, reverse: bool = False):
         """开始执行宏 — 等待玩家选择基准方块"""
         if self.macro_recording or self.macro_executing:
+            return
+        # 三维 GUI 宏按 2026-11-19 决定暂不接入；内部宏 op 执行器仍供求解器使用。
+        if getattr(self, 'cubic_mode', False):
+            self.macro_notify_msg = "三维暂未开放宏功能"
+            self.macro_notify_timer = 120
             return
         # 只读存档：禁止宏执行（会改变滑块组状态）
         if getattr(self, '_readonly_blocked', lambda: False)():
