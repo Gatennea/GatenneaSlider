@@ -1368,6 +1368,15 @@ class RendererMixin:
                 _q2 = (_b[0] + (_cx - _b[0]) * _inset,
                        _b[1] + (_cy - _b[1]) * _inset)
                 pygame.draw.polygon(hi, _ecol, (_a, _b, _q2, _q1))
+        # 被块盖住的箭头只补一圈虚线轮廓：实心部分仍按真实遮挡消失，
+        # 虚线让玩家知道这里还有一个可点的方向（用户 2026-11-19）。
+        self._cubic_arrow_ghosts = set()
+        if hi is not None:
+            for letter, pts, depth in getattr(self, '_cubic_arrow_shapes', ()):
+                if self._cubic_arrow_occluded(pts, depth, front_faces):
+                    self._cubic_draw_arrow_ghost(hi, pts, _T, _ss)
+                    self._cubic_arrow_ghosts.add(letter)
+
         if hi is not None:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
@@ -1450,6 +1459,77 @@ class RendererMixin:
         return cubic_view.screen_to_plane(
             (x, y), getattr(self, 'cubic_camera'),
             scene['scale'], scene['origin'], axis, coord)
+
+    @staticmethod
+    def _cubic_point_in_poly(point, poly):
+        """点在任意简单多边形内（箭头轮廓是凹多边形，不能用 point_in_quad）。"""
+        x, y = point
+        inside = False
+        j = len(poly) - 1
+        for i in range(len(poly)):
+            xi, yi = poly[i]
+            xj, yj = poly[j]
+            if ((yi > y) != (yj > y)) and (
+                    x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    def _cubic_arrow_occluded(self, pts, depth, front_faces):
+        """箭头正面被前侧块盖住的比例是否超过阈值。"""
+        from engine import cubic_pick
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return False
+        total = covered = 0
+        n = 5
+        for iy in range(n):
+            y = y0 + (y1 - y0) * (iy + 0.5) / n
+            for ix in range(n):
+                x = x0 + (x1 - x0) * (ix + 0.5) / n
+                if not self._cubic_point_in_poly((x, y), pts):
+                    continue
+                total += 1
+                for f in front_faces:
+                    if (f['depth'] > depth + 0.05
+                            and cubic_pick.point_in_quad((x, y), f['pts'])):
+                        covered += 1
+                        break
+        return bool(total) and covered / total >= 0.35
+
+    def _cubic_draw_arrow_ghost(self, hi, pts, transform, ss):
+        """被块盖住的箭头：只描一圈虚线轮廓，保持可点，不把整支箭置顶。"""
+        q = transform(pts)
+        x0 = min(p[0] for p in q)
+        y0 = min(p[1] for p in q)
+        w = max(1, max(p[0] for p in q) - x0 + 1)
+        h = max(1, max(p[1] for p in q) - y0 + 1)
+        pad = 2 * ss
+        surf = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))
+        pts2 = [(p[0] - x0 + pad, p[1] - y0 + pad) for p in q]
+        color = (245, 245, 245, 170)
+        width = max(2, int(round(2 * self.zoom))) * ss
+        dash, gap = 8 * ss, 5 * ss
+        for i in range(len(pts2)):
+            a = pts2[i]
+            b = pts2[(i + 1) % len(pts2)]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            seg_len = (dx * dx + dy * dy) ** 0.5
+            if seg_len <= 1e-9:
+                continue
+            ux, uy = dx / seg_len, dy / seg_len
+            t = 0.0
+            while t < seg_len:
+                e = min(seg_len, t + dash)
+                pygame.draw.line(surf, color,
+                                 (a[0] + ux * t, a[1] + uy * t),
+                                 (a[0] + ux * e, a[1] + uy * e), width)
+                t = e + gap
+        hi.blit(surf, (x0 - pad, y0 - pad))
 
     def _cubic_arrow_items(self, scene, seam, gap, camera, blocks):
         """三维方向箭头：世界空间的小几何体，返回可插入画家序的面片。
@@ -1591,9 +1671,10 @@ class RendererMixin:
                     faces.append(_face(
                         [front[i], front[j], back[j], back[i]],
                         side_n, False))
-            return area, faces, fscr + bscr
+            return area, faces, fscr
 
         items = []
+        shapes = []
         click_anchor = getattr(self, '_cubic_last_click_p', None)
         if click_anchor is not None and len(click_anchor) != 3:
             click_anchor = None
@@ -1618,9 +1699,11 @@ class RendererMixin:
                     # 每帧按当前相机重投影点击面，把箭头抬到该面之前一格：
                     # 屏幕位置不变，又不会埋进选中块；更近的块仍能挡住它。
                     target_depth = _cv.project_point(
-                        surface, camera, scene['scale'], scene['origin'])[2] + 0.7
+                        surface, camera, scene['scale'],
+                        scene['origin'])[2] + 0.7
                     cur_depth = _cv.project_point(
-                        anchor, camera, scene['scale'], scene['origin'])[2]
+                        anchor, camera, scene['scale'],
+                        scene['origin'])[2]
                     shift = target_depth - cur_depth
                 else:
                     shift = 0.45
@@ -1651,7 +1734,9 @@ class RendererMixin:
                                max(1, int(round(hx1 - hx0)) + 4),
                                max(1, int(round(hy1 - hy0)) + 4))
             self._cubic_arrow_buttons.append((letter, rect))
+            shapes.append((letter, list(screen_pts), float(faces[0][0])))
 
+        self._cubic_arrow_shapes = shapes
         return items
 
 

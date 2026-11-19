@@ -24,6 +24,7 @@ os.chdir(_PROJ)
 import GUI  # noqa: E402
 from engine import cubic_pick  # noqa: E402
 from engine import cubic_view as cv  # noqa: E402
+from engine.cubic_camera import CubicCamera  # noqa: E402
 
 _ok = [0]
 _fail = []
@@ -139,6 +140,23 @@ check(len(caps) == 8,
       '四个箭头各有一对顶/底面', len(caps))
 check(bool(caps) and all(abs(abs(n[axis]) - 1.0) <= 1e-6 for n in caps),
       '每个箭头顶/底面的法向都等于切面法向', caps)
+check(not getattr(g, '_cubic_arrow_ghosts', set()),
+      '默认视角箭头没有被遮，不画虚线', getattr(g, '_cubic_arrow_ghosts', None))
+
+# 转到背侧：箭头被前侧块盖住，应补虚线轮廓，且四个命中盒仍在。
+g.cubic_camera = CubicCamera.from_yaw_pitch(-150, -30)
+g.draw_board()
+check(set(getattr(g, '_cubic_arrow_ghosts', set())) == set('rRdD'),
+      '被遮时四个箭头都补虚线轮廓',
+      getattr(g, '_cubic_arrow_ghosts', None))
+check(len(g._cubic_arrow_buttons) == 4,
+      '虚线箭头仍然可点（四个命中盒都在）', len(g._cubic_arrow_buttons))
+if g._cubic_arrow_buttons:
+    before = g.step_count
+    _letter, _rect = g._cubic_arrow_buttons[0]
+    check(g._cubic_click(*_rect.center), '点虚线箭头能触发滑动', _rect)
+    check(g.step_count == before + 1,
+          '虚线箭头点击后步数前进', (before, g.step_count))
 
 print('=' * 60)
 print('E. 连续同向推：滑后仍连通的前三步不能被拒')
