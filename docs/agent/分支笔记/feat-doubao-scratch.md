@@ -67,7 +67,8 @@
   不静默 False）；一级菜单「三维谜题 ▸」+ 子菜单
   `puzzle_sub_presets['cubic']`（条目比二维多一位 depth）；
   `cubic_mode` 旗标（二维三条建局路径都会清掉）；`_cubic_blocked()` 并接入
-  `_form_blocked()`，求解器等入口对三维明确拒绝。
+  `_form_blocked()`——第 0 步时求解器也拒绝；P2 起 `gather` 已支持三维
+  （其余算法仍明确拒绝，见本文件 2026-11-19 小节）。
 - `gui/events.py`：谜题菜单两处分派（一级 + 二级）加 `kind == 'cubic'` 分支。
 - `gui/renderer.py`：`draw_board` 加三维分支 → `draw_cubic_board()` 只画
   「三维视图尚未接入」明示，**不顺二维分支画 m×n 扁平盘**。
@@ -1107,18 +1108,23 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   窗口；`gather_solve_unified` 分派 cubic；`SOLVER_FORM_SUPPORT['gather']` 加 cubic；
   其他算法仍明確拒絕三維。只做重疊率貪心，不承諾還原；返回 `form='cubic'`，
   GUI `_handle_gather_result` 已按三元 bbox 寫文案，且三維 `rep_cell` 保留三分量
-  （不再被二維分支截成 `[r,c]`）。護欄 `test/_test_cubic_gather.py` 656/656：
+  （不再被二維分支截成 `[r,c]`）。護欄 `test/_test_cubic_gather.py` 659/659：
   3D 前綴和 vs 暴力、平移/軸置換仍 score=1、4×4×4 短聚攏可逐步重放、
-  終態與返回 end 一致、GUI 轉換保留三元 rep。
+  終態與返回 end 一致、GUI 轉換保留三元 rep、播放/收尾文案三元 bbox。
 - **P3 自訂還原態**：低優先，暫不動。
 - **P4 文檔同步**：§54 已補 P2；後續箭頭/相機凍結/縮放/引擎標籤補記。
 
 ### 已知狀態
 
-- HEAD `7fe0e15`（P2 三維聚攏 MVP），工作樹僅餘本節與 §54 文檔更新。
+- HEAD 為本次 P2 收尾提交（三維形態鍵/聚攏文案 + 文檔），工作樹乾淨。
 - 三維 28 套測試：27 套全綠；`_test_cubic_vk.py` 50/51，唯一紅是既有的
   「箭頭外接矩形角部重疊」斷言，不是箭頭多邊形本體重疊。
 - 三維 GUI 宏已 gate（15/15）；求解器內部 op 執行器已鎖 40 連 op；
-  P2 聚攏 656/656，4×4×4 打亂短聚攏 0.344→0.500 共 12 步可重放。
+  P2 聚攏 659/659，4×4×4 打亂短聚攏 0.344→0.516 共 18 步可重放；
+  實機自動求解入口跑通（20 步、34.4%→53.1%、停機原因「達到時間上限」）。
+- 修正一個會擋住 P2 的既有 bug：`_current_kind()` 原先把 `cubic` 落到
+  `game.kind` 的「非四形態」分支，`_is_model_kind()` 因此把三維局當自造
+  謎題，`_model_blocked` 讓自動求解入口提示「求解器暫不支持」。現在
+  `cubic_mode` 顯式回 `'cubic'`，`_is_model_kind` 允許 `'cubic'`。
 - 下一步：核對三維自動求解入口與 `gather_params` 參數映射（GUI 目前可能把
   二維參數原樣傳入，cubic 會記進 `ignored_kwargs`）；P3 自訂還原態仍低優先。
