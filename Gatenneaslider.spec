@@ -128,6 +128,8 @@ a = Analysis(
            ('assets/picture/boot', 'assets/picture/boot'),
            ('assets/picture/splash.bmp', 'assets/picture'),
            ('docs/player/操作说明.md', 'docs/player'),
+           ('docs/player/三维操作说明.md', 'docs/player'),
+           ('docs/player/通用说明.md', 'docs/player'),
            # 新手教程资源：文案 JSON + 关卡存档（新增关卡只加 json，无需改 spec）
            ('gui/tutorial_texts.json', 'gui'),
            ('beginner_archive', 'beginner_archive'),

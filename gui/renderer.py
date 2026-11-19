@@ -6240,6 +6240,139 @@ class RendererMixin:
                         (box_x, box_y, box_w, box_h), 1)
         self.screen.blit(surf, (box_x + pad_x, box_y + pad_y))
 
+    # ------------------------------------------------------------------
+    # §59 C/D：三维新手引导卡 + 右下角常驻操作卡（仅三维局）
+    # 两者都是非模态浮层：画在模态之下、浮动面板之上；点击分发在
+    # events._cubic_hud_click（只吞卡内命中，卡外放行给棋盘）。
+    # ------------------------------------------------------------------
+    def draw_cubic_intro(self):
+        """首次进三维局的 4 步新手引导卡（屏幕底部居中，可跳过/下一步）。"""
+        self._cubic_intro_rect = None
+        self._cubic_intro_btns = []
+        if not (getattr(self, 'cubic_mode', False)
+                and getattr(self, '_cubic_intro_active', False)):
+            return
+
+        steps = self.CUBIC_INTRO_STEPS
+        idx = max(0, min(int(getattr(self, '_cubic_intro_step', 0)), len(steps) - 1))
+        step_title, step_body = steps[idx]
+
+        width = min(620, self.screen_width - 40)
+        body_lines = self._wrap_text(step_body, self.dialog_font, width - 44)
+        height = 34 + 26 + len(body_lines) * 24 + 14 + 34 + 16
+        x = (self.screen_width - width) // 2
+        y = self.screen_height - self.status_bar_height - height - 12
+        card = pygame.Rect(x, y, width, height)
+        self._cubic_intro_rect = card
+
+        pygame.draw.rect(self.screen, self.colors['dialog_bg'], card, border_radius=8)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'], card, 2, border_radius=8)
+
+        title = self.dialog_title_font.render(
+            f"三维新手引导 {idx + 1}/{len(steps)} · {step_title}", True,
+            self.colors['dialog_title'])
+        self.screen.blit(title, (x + 22, y + 14))
+
+        by = y + 34 + 26
+        for line in body_lines:
+            self.screen.blit(self.dialog_font.render(line, True, self.colors['dialog_text']),
+                             (x + 22, by))
+            by += 24
+
+        # 按钮行：[跳过] 左、[下一步]/[完成] 右
+        btn_w, btn_h = 96, 34
+        skip_rect = pygame.Rect(x + 22, y + height - 16 - btn_h, btn_w, btn_h)
+        last = (idx == len(steps) - 1)
+        next_rect = pygame.Rect(x + width - 22 - btn_w, skip_rect.y, btn_w, btn_h)
+        mouse = pygame.mouse.get_pos()
+        for rect, label in ((skip_rect, '跳过'),
+                            (next_rect, '完成' if last else '下一步')):
+            pygame.draw.rect(self.screen,
+                             self.colors['button_hover'] if rect.collidepoint(mouse)
+                             else self.colors['button_bg'], rect, border_radius=4)
+            ts = self.input_font.render(label, True, (255, 255, 255))
+            self.screen.blit(ts, ts.get_rect(center=rect.center))
+        self._cubic_intro_btns = [
+            (skip_rect, lambda: self._cubic_intro_close(seen=True)),
+            (next_rect, self._cubic_intro_advance),
+        ]
+
+    def draw_cubic_ops_card(self):
+        """§59D：三维局右下角常驻操作卡（折叠成小钮，点开列要点）。"""
+        self._cubic_ops_toggle_rect = None
+        self._cubic_ops_rect = None
+        self._cubic_ops_btns = []
+        if not getattr(self, 'cubic_mode', False):
+            return
+
+        right = self.screen_width - self.right_panel_width
+        bottom = self.screen_height - self.status_bar_height
+        mouse = pygame.mouse.get_pos()
+        margin = 10
+
+        if not getattr(self, '_cubic_ops_open', False):
+            # 折叠态：一枚小钮
+            toggle = pygame.Rect(right - margin - 74, bottom - margin - 28, 74, 28)
+            self._cubic_ops_toggle_rect = toggle
+            pygame.draw.rect(self.screen,
+                             self.colors['button_hover'] if toggle.collidepoint(mouse)
+                             else self.colors['button_bg'], toggle, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['border'], toggle, 1, border_radius=4)
+            ts = self.status_font.render("操作 ▸", True, (255, 255, 255))
+            self.screen.blit(ts, ts.get_rect(center=toggle.center))
+            return
+
+        # 展开态：要点卡（卡头即收起钮）
+        bullets = (
+            '右键点面选切面 · 左键点块选整组',
+            '点箭头 / 虚拟键盘六键推动（没选中时六键平移）',
+            '左键拖空白旋转 · Ctrl + 滚轮缩放',
+            '数字 1–6 换朝向，0 回斜视',
+            'Ctrl+Z 撤销 · Ctrl+X 重做',
+        )
+        width = 330
+        header_h = 30
+        body_h = len(bullets) * 22 + 14
+        btn_h = 32
+        height = header_h + body_h + btn_h + 16
+        card = pygame.Rect(right - margin - width, bottom - margin - height,
+                           width, height)
+        self._cubic_ops_rect = card
+        pygame.draw.rect(self.screen, self.colors['dialog_bg'], card, border_radius=8)
+        pygame.draw.rect(self.screen, self.colors['dialog_border'], card, 2, border_radius=8)
+
+        header = pygame.Rect(card.x + 1, card.y + 1, card.w - 2, header_h)
+        self._cubic_ops_toggle_rect = header
+        pygame.draw.rect(self.screen,
+                         self.colors['button_hover'] if header.collidepoint(mouse)
+                         else self.colors['button_bg'], header)
+        hs = self.input_font.render("三维操作要点 · 点击收起 ▾", True, (255, 255, 255))
+        self.screen.blit(hs, hs.get_rect(center=header.center))
+
+        by = card.y + header_h + 8
+        for b in bullets:
+            self.screen.blit(self.status_font.render("· " + b, True,
+                                                     self.colors['dialog_text']),
+                             (card.x + 14, by))
+            by += 22
+
+        # 按钮行：回到中央 / 重看引导 / 完整说明
+        labels = (("回到中央", self._cubic_pan_center),
+                  ("重看引导", self._cubic_intro_start),
+                  ("完整说明", lambda: self._open_help('3d')))
+        bw, bh, gap = 94, 26, 8
+        bx = card.x + (card.w - (bw * 3 + gap * 2)) // 2
+        by = card.bottom - 12 - bh
+        for label, act in labels:
+            rect = pygame.Rect(bx, by, bw, bh)
+            pygame.draw.rect(self.screen,
+                             self.colors['button_hover'] if rect.collidepoint(mouse)
+                             else self.colors['button_bg'], rect, border_radius=4)
+            ts = self.status_font.render(label, True, (255, 255, 255))
+            self.screen.blit(ts, ts.get_rect(center=rect.center))
+            self._cubic_ops_btns.append((rect, act))
+            bx += bw + gap
+
     def draw_solved_popup(self):
         """绘制复原成功悬浮窗（居中 + 弹入动画 + 呼吸光晕 + 自动消失）"""
         if not getattr(self, '_solved_popup_active', False):
