@@ -36,6 +36,7 @@ from solver.greedy import greedy_hill_climbing_solve
 from solver.actions import apply_action, enumerate_valid_actions
 from solver.ml.tri_adapter import tri_gather_solve
 from solver.ml.mi_adapter import mi_gather_solve
+from solver.ml.cubic_gather import cubic_gather_solve
 
 
 def solve_fast(game, step: int, max_depth: int = 80,
@@ -97,8 +98,8 @@ def hybrid_solve_with_table(game, step, cancel_check=None,
 # 实现细节，不该暴露成两个菜单项、也不该由 GUI 去猜该用哪个。
 # ---------------------------------------------------------------------------
 
-FORM_LABELS = {'square': '方形', 'triangle': '三角形', 'mi': '米字格'}
-_ALL_FORMS = ('square', 'triangle', 'mi')
+FORM_LABELS = {'square': '方形', 'triangle': '三角形', 'mi': '米字格', 'cubic': '三维'}
+_ALL_FORMS = ('square', 'triangle', 'mi', 'cubic')
 
 
 def game_form(game) -> str:
@@ -148,6 +149,8 @@ def gather_solve_unified(game, step: int = None, cancel_check=None,
         fn = mi_gather_solve
     elif form == 'triangle':
         fn = tri_gather_solve
+    elif form == 'cubic':
+        fn = cubic_gather_solve
     else:
         fn = gather_solve
     return fn(game, step=step, cancel_check=cancel_check,
@@ -158,7 +161,7 @@ def gather_solve_unified(game, step: int = None, cancel_check=None,
 # 方形语义（4 元组动作 + 矩形目标形状 + 整数坐标），套到异形上会静默走错，
 # 所以新算法必须**显式声明**自己支持异形，不能靠缺省蒙对。
 SOLVER_FORM_SUPPORT = {
-    'gather': ('square', 'triangle', 'mi'),
+    'gather': ('square', 'triangle', 'mi', 'cubic'),
 }
 
 

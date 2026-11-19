@@ -42,7 +42,7 @@ def check(cond, msg, extra=''):
 
 
 print('=' * 60)
-print('A. 三維面板不再是占位行')
+print('A. 三維面板走三維聚攏指標，不套二維公式')
 pygame.init()
 gui = SliderGUI(m=4, n=4, step=1)
 gui.animation_enabled = False
@@ -63,9 +63,13 @@ labels = [r[0] for r in rows]
 check('调试面板' not in labels, '不再出现「调试面板：本形态尚未实装」占位行', labels)
 check('形态' in labels and rows[0][1] == '三维 3×3×3',
       '首行報三維尺寸', rows[0])
-check(not any(k in labels for k in ('聚拢度', '重叠', '填充率', '边界盒')),
-      '三維不套二維聚攏指標（禁止假數字）', labels)
-check(met is None, '三維 _mp_current_metrics 明確回 None（算不出就不假裝）', met)
+check(all(k in labels for k in ('聚拢度', '重叠', '填充率', '边界盒', '目标盒')),
+      '三維面板顯示聚攏度/重疊/填充率/邊界盒/目標盒', labels)
+check(isinstance(met, dict) and abs(met.get('score', 0.0) - 1.0) < 1e-9
+      and met.get('window') == (0, 0, 0, 3, 3, 3),
+      '三維 _mp_current_metrics 走 3D cubic_metrics（還原態 100%）', met)
+check(getattr(gui, '_cubic_target_region', None) == (0, 0, 0, 3, 3, 3),
+      '面板把同一份 window 存給目標盒繪製', gui._cubic_target_region)
 
 print('=' * 60)
 print('B. 面板寬度 / 行數 / 真實狀態')
@@ -97,11 +101,32 @@ check(_d.get('当前op') == 'r 0 below L', '當前 op 報 gap/side/direction', _
 check(_d.get('错误') == '-', '沒錯誤時報 -', _d.get('错误'))
 
 gui.show_metrics_panel = True
+gui.draw_cubic_board()
+from engine import cubic_view  # noqa: E402
+from engine import cubic_pick  # noqa: E402
+_titems = gui._cubic_target_box_items(
+    gui._cubic_scene, gui.cubic_camera, gui.cubic_gap,
+    cubic_view.layout_anchor(gui.game.blocks))
+check(_titems and all(len(_p) == 3 for _d, _p in _titems),
+      '三維目標盒輸出的是帶深度的世界空間分段，不是屏幕貼圖')
+_faces = gui._cubic_scene.get('faces') or []
+_bad_segments = 0
+for _d, (_p1, _p2, _mid) in _titems:
+    _mx = (_p1[0] + _p2[0]) / 2.0
+    _my = (_p1[1] + _p2[1]) / 2.0
+    if any(_f['depth'] > _d + 0.05
+           and cubic_pick.point_in_quad((_mx, _my), _f['pts'])
+           for _f in _faces):
+        _bad_segments += 1
+check(_bad_segments == 0,
+      '目標盒分段沒有留在更近塊面前（遮擋測試）', _bad_segments)
+check(gui._cubic_metrics_now().get('window') == (0, 0, 0, 3, 3, 3),
+      '目標盒用 cubic_metrics window，不另算一份')
 gui.draw_metrics_panel()
 check(gui.mp_panel_rect is not None and gui.mp_panel_rect.width == 260,
       '三維面板寬 260（二維仍 190）', gui.mp_panel_rect)
 check(gui.mp_panel_rect.height == gui._MP_TITLE_H + gui._MP_PAD * 2 + gui._MP_ROW_H * len(rows),
-      '面板高度按 12 行算，不截最後一行', gui.mp_panel_rect.height)
+      '面板高度按真實行數算，不截最後一行', gui.mp_panel_rect.height)
 
 gui.macro_exec_index = 2
 gui.macro_error_msg = '目标块被挪走后找不到替代块'

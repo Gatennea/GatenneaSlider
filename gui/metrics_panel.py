@@ -81,6 +81,11 @@ class MetricsPanelMixin:
         """实时计算当前游戏状态的聚拢度指标。"""
         from solver.ml.gather_solver import gather_metrics
         game = getattr(self, 'game', None)
+        if self._mp_kind() == 'cubic':
+            # 三維有自己的 3D 前綴和/軸排列/ mod 約束；不能落進下面的二維
+            # gather_metrics（那會把 (r,c,d) 的 d 軸吃掉）。空盤也回三維
+            # 的空字典，別讓 bbox 退成二元組。
+            return self._cubic_metrics_now()
         if game is None or not getattr(game, 'blocks', None):
             return {'score': 0.0, 'overlap': 0, 'bbox': (0, 0), 'fill_rate': 0.0}
         if self._mp_kind() not in self._MP_SUPPORTED:
@@ -326,6 +331,82 @@ class MetricsPanelMixin:
                          (int(x), int(y), int(w), int(h)),
                          max(2, int(2 * self.zoom)))
         return region
+
+    def _cubic_target_box_items(self, scene, camera, gap, anchor):
+        """三維目標盒的**世界空間線段**，交給塊面/切面同一條畫家序。
+
+        用戶 2026-11-19 再次指認：三維世界的任何覆蓋物都不能在全部塊畫完後
+        直接 blit 到屏幕最上層，否則會穿過前方滑塊。目標盒不能只畫 8 個角
+        連線；這裡把 12 條稜按世界座標切成小段，每段帶自己的深度，插入
+        `draw_cubic_board()` 的 painter 序（kind=3），由前後塊面自然遮擋。
+
+        `window` 仍只取 `cubic_metrics()` 那一份；拆分角/錨點沿用
+        `block_min_corner()`，打開拆分時框跟著塊的實際佔位走。
+        """
+        if self._mp_kind() != 'cubic':
+            return []
+        met = self._cubic_metrics_now()
+        win = met.get('window') if isinstance(met, dict) else None
+        if not win or not isinstance(scene, dict) or camera is None:
+            return []
+
+        from engine import cubic_view
+        x0, y0, z0, a, b, c = win
+        # 邏輯 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)；首格最小角 ~ 末格最大角。
+        lo = cubic_view.block_min_corner((x0, y0, z0), gap, anchor)
+        hi = cubic_view.block_min_corner(
+            (x0 + a - 1, y0 + b - 1, z0 + c - 1), gap, anchor)
+        hi = tuple(hi[i] + 1.0 for i in range(3))
+        corners = [
+            (lo[0] if (i & 1) == 0 else hi[0],
+             lo[1] if (i & 2) == 0 else hi[1],
+             lo[2] if (i & 4) == 0 else hi[2])
+            for i in range(8)
+        ]
+        edges = []
+        for i in range(8):
+            for bit in (1, 2, 4):
+                j = i | bit
+                if j != i:
+                    edges.append((i, j))
+
+        items = []
+        # 12 條稜每條切 24 段：段內深度近似常數，塊面前後關係由 painter 序
+        # 判；太少段時斜稜會一半穿過前塊仍整段畫出來（正是這次的 bug）。
+        segs = 24
+        from engine import cubic_pick
+        faces = scene.get('faces') or []
+        for ia, ib in edges:
+            a3, b3 = corners[ia], corners[ib]
+            prev = None
+            for k in range(segs + 1):
+                t = k / float(segs)
+                w = (a3[0] + (b3[0] - a3[0]) * t,
+                     a3[1] + (b3[1] - a3[1]) * t,
+                     a3[2] + (b3[2] - a3[2]) * t)
+                sx, sy, sz = cubic_view.project_point(
+                    w, camera, scene['scale'], scene['origin'])
+                if prev is not None:
+                    px, py, pz, pw = prev
+                    seg_depth = (pz + sz) / 2.0
+                    msx, msy = (px + sx) / 2.0, (py + sy) / 2.0
+                    # painter 序之外再补一次「段中點被更近的塊面覆蓋」的否定
+                    # 測試：斜段跨過前塊輪廓時，單靠段端深度排序仍可能把
+                    # 一小段綠線留到臉前；這裡直接丟掉被覆蓋的段。
+                    if any(f['depth'] > seg_depth + 0.05
+                           and cubic_pick.point_in_quad((msx, msy), f['pts'])
+                           for f in faces):
+                        prev = (sx, sy, sz, w)
+                        continue
+                    # 段中點世界座標給切面分側；深度用投影端點平均。
+                    items.append((seg_depth,
+                                  ((px, py), (sx, sy),
+                                   ((pw[0] + w[0]) / 2.0,
+                                    (pw[1] + w[1]) / 2.0,
+                                    (pw[2] + w[2]) / 2.0))))
+                prev = (sx, sy, sz, w)
+        return items
+
 
     # ------------------------------------------------------------------
     # 三角形分支（M0 F2，计划 §4/§5）
@@ -577,31 +658,77 @@ class MetricsPanelMixin:
         """
         self._target_region = None
 
-    def _mp_cubic_rows(self):
-        """三維面板讀數：只報這一幀真實存在的狀態，不套二維聚攏公式。
+    def _cubic_metrics_now(self):
+        """三維聚攏指標（面板與目標盒共用同一份），按狀態快取。"""
+        from solver.ml.cubic_gather import (
+            cubic_metrics, cubic_mod_constraints,
+        )
+        game = getattr(self, 'game', None)
+        if game is None:
+            return {'score': 0.0, 'overlap': 0, 'bbox': (0, 0, 0),
+                    'fill_rate': 0.0, 'volume': 0, 'window': None,
+                    'mod_constraints': None}
+        dims = (int(getattr(game, 'm', 0) or 0),
+                int(getattr(game, 'n', 0) or 0),
+                int(getattr(game, 'depth', 0) or 0))
+        coords = frozenset(tuple(int(v) for v in b.location[:3])
+                           for b in (getattr(game, 'blocks', None) or []))
+        step = int(getattr(self, 'current_step', 1) or 1)
+        key = (coords, dims, step)
+        if getattr(self, '_cubic_metrics_key', None) == key:
+            _met = getattr(self, '_cubic_metrics_cache', None)
+            if isinstance(_met, dict):
+                return _met
+        mod = cubic_mod_constraints(coords, dims, step)
+        met = cubic_metrics(coords, dims, step=step, mod_constraints=mod)
+        self._cubic_metrics_key = key
+        self._cubic_metrics_cache = met
+        # 目標盒繪製要用的就是求解器同一份窗口，不另算一套。
+        self._cubic_target_region = met.get('window')
+        self._cubic_mod_constraints = mod
+        return met
 
-        三維目前還沒有求解器，所以這裡不顯示「聚攏度 / 重疊 / 剖面缺陷」
-        ——那會把二維矩形窗口公式套到 (r,c,d) 上，得到看似有效但全錯的數字。
-        先報相機、選中、場景與宏操作佇列，等三維聚攏接上後再另加求解行。
+    def _cubic_mod_text(self, met):
+        """把 mod 不變量壓成一行：step=2 r≡0 c≡0（無約束軸不寫）。"""
+        step = int(getattr(self, 'current_step', 1) or 1)
+        if step <= 1:
+            return 'step=1 无约束'
+        mod = (met or {}).get('mod_constraints') if isinstance(met, dict) else None
+        win = (met or {}).get('window') if isinstance(met, dict) else None
+        if not mod or not win:
+            return f'step={step} 无约束'
+        residues = mod.get(tuple(win[3:6]))
+        if not residues:
+            return f'step={step} 无约束'
+        parts = []
+        for axis, label in enumerate(('r', 'c', 'd')):
+            allowed = residues[axis]
+            if allowed:
+                vals = ','.join(str(v) for v in sorted(allowed))
+                parts.append(f'{label}≡{vals}')
+        if not parts:
+            return f'step={step} 无约束'
+        return f'step={step} ' + ' '.join(parts)
+
+    def _mp_cubic_rows(self, met=None):
+        """三維面板讀數：聚攏指標優先，相機/選中/宏佇列退到後半。
+
+        求解器接上後，面板最重要的不再是「相機用什麼視角」，而是
+        `聚攏度 / 重疊 / 目標盒 / 邊界盒 / 填充率 / mod 約束`——這幾行
+        必須和 `cubic_metrics()` 同源，不能另算一套近似值。
         """
         game = getattr(self, 'game', None)
         if game is None:
             return [("形态", "三维"), ("调试面板", "无局面")]
 
+        met = met if isinstance(met, dict) else self._cubic_metrics_now()
         m = int(getattr(game, 'm', 0) or 0)
         n = int(getattr(game, 'n', 0) or 0)
         depth = int(getattr(game, 'depth', 0) or 0)
         blocks = list(getattr(game, 'blocks', None) or [])
-        total = m * n * depth
+        total = len(blocks)
 
         view_label = str(getattr(self, 'cubic_view_label', '斜视'))
-        cam = getattr(self, 'cubic_camera', None)
-        if cam is not None and hasattr(cam, 'view_axis'):
-            _z = cam.view_axis()
-            axis_text = f"({_z[0]:+.2f},{_z[1]:+.2f},{_z[2]:+.2f})"
-        else:
-            axis_text = '-'
-
         zoom = float(getattr(self, 'cubic_zoom', 1.0))
         gap = float(getattr(self, 'cubic_gap', 0.0))
         alpha = int(getattr(self, 'cubic_seam_alpha', 110))
@@ -616,11 +743,6 @@ class MetricsPanelMixin:
             seam_text = '-'
         selected = sum(1 for b in blocks if getattr(b, 'be_opted', False))
 
-        scene = getattr(self, '_cubic_scene', None)
-        faces = scene.get('faces') if isinstance(scene, dict) else None
-        n_faces = len(faces) if faces else 0
-        n_arrows = len(getattr(self, '_cubic_arrow_buttons', ()) or ())
-
         ops = list(getattr(self, 'macro_exec_ops', None) or [])
         op_idx = int(getattr(self, 'macro_exec_index', 0) or 0)
         cur_op = ops[op_idx] if 0 <= op_idx < len(ops) else None
@@ -633,16 +755,32 @@ class MetricsPanelMixin:
         if len(err) > 30:
             err = err[:29] + '…'
 
+        win = met.get('window') if isinstance(met, dict) else None
+        if win:
+            target_text = (f"({win[0]},{win[1]},{win[2]}) "
+                           f"{win[3]}×{win[4]}×{win[5]}")
+        else:
+            target_text = '-'
+        bbox = met.get('bbox') if isinstance(met, dict) else None
+        bbox_text = f"{bbox[0]}×{bbox[1]}×{bbox[2]}" if bbox else '-'
+        score = float(met.get('score', 0.0)) if isinstance(met, dict) else 0.0
+        overlap = int(met.get('overlap', 0)) if isinstance(met, dict) else 0
+        fill = float(met.get('fill_rate', 0.0)) if isinstance(met, dict) else 0.0
+
         return [
             ("形态", f"三维 {m}×{n}×{depth}"),
-            ("块数", f"{len(blocks)}/{total}"),
+            ("块数", f"{total}/{m * n * depth}"),
+            ("聚拢度", f"{score * 100:.1f}%"),
+            ("重叠", f"{overlap}/{total}块"),
+            ("目标盒", target_text),
+            ("边界盒", bbox_text),
+            ("填充率", f"{fill * 100:.1f}%"),
+            ("mod约束", self._cubic_mod_text(met)),
             ("视角", view_label),
-            ("视轴", axis_text),
             ("缩放", f"{zoom * 100:.0f}%"),
             ("拆分", f"{gap:.2f}"),
             ("切面", f"{seam_text} α{alpha}"),
             ("选中组", f"{selected}块"),
-            ("场景", f"面{n_faces} 箭{n_arrows}"),
             ("操作队", f"{op_idx}/{len(ops)}"),
             ("当前op", op_text),
             ("错误", err),
@@ -664,8 +802,7 @@ class MetricsPanelMixin:
         kind = self._mp_kind()
 
         if kind == 'cubic':
-            # 三維先報相機 / 選中 / 場景 / 宏佇列；求解行等聚攏接上再加。
-            return self._mp_cubic_rows(), met
+            return self._mp_cubic_rows(met), met
 
         if kind not in self._MP_SUPPORTED:
             # 未实装形态：给占位行，**不跑任何形态专属公式**。

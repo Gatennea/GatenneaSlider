@@ -562,6 +562,11 @@ class SessionMixin:
             return 'triangle'
         if getattr(self, 'mi_mode', False):
             return 'mi'
+        if getattr(self, 'cubic_mode', False):
+            # 三维有独立旗标；不能落到下面按 game.kind=='cubic' 当模型板型，
+            # 否则 _is_model_kind() 会把三维局误判成自造谜题，求解器等入口
+            # 被 _model_blocked 提前拒掉（2026-11-19 P2 实测）。
+            return 'cubic'
         if getattr(self, 'numbered', False):
             return 'numbered'
         kind = getattr(self.game, 'kind', '')
@@ -576,7 +581,8 @@ class SessionMixin:
         而不是 `== 'shatter'`——否则丢一个新模型进目录，那些入口会静默
         把模型局换来换去。
         """
-        return self._current_kind() not in ('square', 'numbered', 'triangle', 'mi')
+        return self._current_kind() not in (
+            'square', 'numbered', 'triangle', 'mi', 'cubic')
 
     def _current_puzzle_key(self) -> str:
         """当前谜题完整标识：方形 2~4*4 / 带序号 2~4*4#num / 三角 2~tri6 /
