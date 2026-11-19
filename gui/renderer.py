@@ -1140,6 +1140,7 @@ class RendererMixin:
         seam_axis = None
         seam_sign = 0.0
         seam_fixed = 0.0
+        seam_drawn = False          # 切面退化侧视（面积<1.5）时不画，别误压选中色
         if seam_draw and seam_draw[0] in ('r', 'c', 'd'):
             from engine import cubic_pick
             _dims = None
@@ -1222,6 +1223,7 @@ class RendererMixin:
                 p0, p1 = pts[i], pts[(i + 1) % len(pts)]
                 area += p0[0] * p1[1] - p1[0] * p0[1]
             if abs(area) / 2.0 >= 1.5:
+                seam_drawn = True
                 seam_depth = sum(
                     cubic_view.project_point(w, camera, scene['scale'],
                                              scene['origin'])[2]
@@ -1312,7 +1314,13 @@ class RendererMixin:
             face = item
             _is_anim = _sel_anim is not None and face['loc'] in _anim_locs
             _is_reject = bool(_shake_locs) and face['loc'] in _shake_locs
-            color = (chosen if (face['loc'] in opted or _is_anim) else base)
+            # 远侧选中块：切面已经在它之后画，半透明红面会盖上来。若这里仍用
+            # 亮绿选中色，绿会把红压成土黄（H 项 pixel=(110,99,49) 就是这来的），
+            # 视觉上仍像「穿透切面」。背面选中片退回普通块色，红面才是最后的色。
+            _behind_seam = (seam_drawn and
+                            face['loc'] in self._cubic_seam_back_locs)
+            color = (chosen if ((face['loc'] in opted or _is_anim)
+                                and not _behind_seam) else base)
             shade = face['shade']
             fill = (int(color[0] * shade), int(color[1] * shade),
                     int(color[2] * shade))

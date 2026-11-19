@@ -467,6 +467,32 @@ def t13_cubic_random_gen():
           '三维还原页不显示随机生成', sorted(g._ann_btn_rects))
 
 
+def t14_edit_start_rollback():
+    print('== 14. 进编辑器时 set_goal_pattern 抛异常要回滚 ==')
+    g = new_gui()
+    # 自定义目标 + 偏移，保证 _cubic_edit_start 会真的调 set_goal_pattern
+    g.game.apply_pattern([(1, 1, 1)])
+    g.game.set_goal_pattern([(1, 1, 1)])
+    before = sorted(tuple(int(v) for v in b.location[:3])
+                    for b in g.game.blocks)
+
+    def boom(_cells):
+        raise RuntimeError('boom')
+
+    orig = g.game.set_goal_pattern
+    g.game.set_goal_pattern = boom
+    try:
+        ok = g._cubic_edit_start('goal')
+    finally:
+        g.game.set_goal_pattern = orig
+    check(ok is False, '异常时 _cubic_edit_start 返回 False', ok)
+    check(not getattr(g, '_cubic_edit_active', False),
+          '不留在半截编辑态', getattr(g, '_cubic_edit_active', None))
+    after = sorted(tuple(int(v) for v in b.location[:3])
+                   for b in g.game.blocks)
+    check(after == before, '盘面已回滚到进入前', (before, after))
+
+
 def main():
     print('=' * 62)
     print('三维创造模式：第 1–5 步回归')
@@ -484,6 +510,7 @@ def main():
     t11_ghost_anchor()
     t12_cubic_style_roundtrip()
     t13_cubic_random_gen()
+    t14_edit_start_rollback()
     total = PASSED[0] + len(FAILED)
     print(f'结果：{"全部通过" if not FAILED else "有失败"}'
           f'（{PASSED[0]} 项通过，{len(FAILED)} 项失败）／共 {total} 项')

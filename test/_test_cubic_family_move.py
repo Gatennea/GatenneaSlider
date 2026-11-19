@@ -9,7 +9,7 @@
 钉住：
   A. 三个缝族各选一层，四条**平行于缝**的方向都允许，法向不允许。
   B. 四个允许方向都真能走（点箭头/键盘走同一条 move_selected_blocks）。
-  C. 画面上四个可点箭头都要出现（被块挡住/落在块内的用屏幕外沿回退）。
+  C. 画面上四个可点箭头都要出现（世界几何 + 画家序，不再用屏幕外沿回退）。
 """
 import os
 import sys
@@ -21,7 +21,6 @@ if _PROJ not in sys.path:
     sys.path.insert(0, _PROJ)
 os.chdir(_PROJ)
 
-import pygame  # noqa: E402
 import GUI  # noqa: E402
 
 _ok = [0]
