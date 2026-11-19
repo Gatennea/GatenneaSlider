@@ -1802,7 +1802,9 @@ class EventsMixin:
         self.selected_block = block
         # 用户 2026-11-19：箭头要贴着「上一次点击处」，不是钉在切面外沿。
         # 存点击射线投到切面上的世界点：转视角后仍跟着盘走，投影回来仍在点击处。
+        # 另存点击面世界点：箭头要抬到这块面之前才看得见，仍参与遮挡排序。
         self._cubic_last_click_p = self._cubic_seam_screen_to_world(x, y, seam)
+        self._cubic_last_click_surface = self._cubic_click_surface(x, y, hit)
         n = len([b for b in self.game.blocks if b.be_opted])
         self.macro_notify_msg = f"已选中滑块组，共{n}个"
         self.macro_notify_timer = 120
@@ -1832,6 +1834,7 @@ class EventsMixin:
         self.selected_block = None
         # 换缝 = 上一次点击的锚点作废；等左键选块后再记新的。
         self._cubic_last_click_p = None
+        self._cubic_last_click_surface = None
         for b in self.game.blocks:
             b.be_opted = False
         self.macro_notify_msg = "已选中切面（左键选要滑的滑块）"
@@ -1885,6 +1888,7 @@ class EventsMixin:
         self.selected_block = None
         self._cubic_last_click_t = None
         self._cubic_last_click_p = None
+        self._cubic_last_click_surface = None
         self._cubic_gap_before_click = None
         if getattr(self, 'game', None) is not None:
             for b in self.game.blocks:
@@ -2002,6 +2006,7 @@ class EventsMixin:
         if key == 'gap':
             # 切面平面坐标随拆分移动，旧的点击锚点已不在当前切面上。
             self._cubic_last_click_p = None
+            self._cubic_last_click_surface = None
         # 只改显示参数，不是棋盘变更：不动 _board_version（否则标题栏平白多个
         # 星号）；配置在退出/定期 save_config 时自然落盘。
 

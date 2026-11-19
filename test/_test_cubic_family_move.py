@@ -22,6 +22,7 @@ if _PROJ not in sys.path:
 os.chdir(_PROJ)
 
 import GUI  # noqa: E402
+from engine import cubic_pick  # noqa: E402
 from engine import cubic_view as cv  # noqa: E402
 
 _ok = [0]
@@ -127,6 +128,17 @@ if centers:
     check(worst <= scale * 1.0,
           f'箭头中心都在点击处一格以内（最远 {worst / scale:.2f} 格）',
           (click, centers))
+
+# 箭头顶/底面法向必须等于切面法向（永远平行切面），侧面可见但不参与这条。
+axis = cubic_pick.FAMILY_TO_WORLD_AXIS['c']
+items = g._cubic_arrow_items(g._cubic_scene, ('c', 2), g.cubic_gap,
+                             g.cubic_camera, g.game.blocks)
+caps = [it[2]['normal'] for it in items
+        if it[1] == 2 and it[2].get('cap')]
+check(len(caps) == 8,
+      '四个箭头各有一对顶/底面', len(caps))
+check(bool(caps) and all(abs(abs(n[axis]) - 1.0) <= 1e-6 for n in caps),
+      '每个箭头顶/底面的法向都等于切面法向', caps)
 
 print('=' * 60)
 print('E. 连续同向推：滑后仍连通的前三步不能被拒')
