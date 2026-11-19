@@ -9,7 +9,36 @@
   （注：本文件早期版本在分支同步中丢失，此处重建。）
 - **认领 §五十九（三维与二维的说明体系 A–E）**，2026-11-19 用户拍板交 trae，
   承接 §五十七 后连续做。完成后只 commit 到 dev、不推送不合并，回报节号
-  由主目录核实核销。
+  由主目录核实核销。→ 已交付 `51a1ff7`，主目录已核销（`130c977`）。
+- **认领 §六十一（§五十九 新增入口未登记功能索引）**，2026-11-19 用户
+  指示开工。范围按总账：`gui/feature_index.py` 补条目 + 同步 support 表 +
+  重成功能总览 + 测试（`_test_feature_index` / `_test_help_cubic59`），
+  与 §五十六/§五十八 不交叠。完成后只 commit 到 dev。
+
+## §六十一 完成记录（2026-11-19，本分支已 commit，待核销）
+
+- **help 条扩 aliases**（总账二选一：不另立 help_tabs 条，避免同一入口
+  重复登记）：+三维操作/三维说明/通用说明/帮助页签；howto 改写为三页签
+  切换说明；confusion 点破与「设置 → 三维」的混淆。
+- **新增 `cubic_intro_replay`（action）**：place 用 `menu_sub`
+  （谜题→三维谜题→重看新手引导，place_text 原生支持四元形状），
+  进 `_CUBIC_IDS`（任何局的谜题菜单都能点到），
+  `_ACTIONS` 注册 `{'type':'menu','name':'谜题'}`——**不加 events 分支**
+  （总账限定只碰 feature_index/生成物/测试）。
+- **新增 `cubic_ops_card`（concept）**：`forms=('cubic',)` →
+  二维局 `available=False`（排序显示 ✕，不隐藏）；`place=('right_panel',)`
+  → 「主窗口右下角快捷区」；`_ACTIONS` 注册 `{'type':'none'}`。
+- **生成物**：`tools/gen_feature_overview.py` 重生成（81 项，78→81 是
+  本节 +3；**README 的「75 项」是旧账过期数字**，顺手改为 81——
+  超出总账字面范围但属生成物计数标注，回报中已说明）。
+- **测试**：`_test_feature_index` 新增 2-c1 段 7 断言（引导/三维操作/
+  常驻/操作卡 首位与可用性 + _ACTIONS/_CUBIC_IDS 防漏）；
+  实测 S1/S2/S3 不回归（怎么撤销→undo 100、三角求解→auto_solve+
+  preset_exotic、存档在三维→save）。`_test_feature_index` ALL PASS、
+  `_test_help_cubic59` 62/62、compileall 0。
+- **规定缺口已核**：AGENTS.md / readme_to_agent 中**无**「新入口必须登记
+  feature_index」条款（只有 gen 工具说明）→ §六十一 属规定缺失，
+  非执行漏项；改进提议（补红线条款 + 合并检查项）已口头报给用户。
 
 ## §五十九 完成记录（2026-11-19，本分支已 commit，待核销）
 
