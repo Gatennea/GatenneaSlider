@@ -2604,6 +2604,8 @@ class EventsMixin:
         'sfx_click_enabled', 'sfx_keyboard_enabled',
         # §59C：三维新手引导「看过」开关（三处同步 AGENTS §16）
         'cubic_intro_seen',
+        # §62：立体光效（二维面内微倒角，三处同步 AGENTS §16）
+        'face_bevel_enabled',
     )
     # 数值键：键 -> 合法范围；键 -> 对应 self 属性（与 http_server._SETTINGS_INT_RANGES 同口径）
     _SETTINGS_INT_RANGES = {
@@ -4764,6 +4766,15 @@ class EventsMixin:
                     self.macro_notify_timer = 90
                     return
 
+            # 动画 Tab：立体光效开关（§六十二 二维面内微倒角）
+            if self.settings_active_tab == 'animation' and hasattr(self, '_settings_bevel_toggle_rect'):
+                if self._settings_bevel_toggle_rect.collidepoint(mx, my):
+                    self.face_bevel_enabled = not getattr(self, 'face_bevel_enabled', True)
+                    status = '开' if self.face_bevel_enabled else '关'
+                    self.macro_notify_msg = f"立体光效：{status}"
+                    self.macro_notify_timer = 90
+                    return
+
             # 动画 Tab：悬停连锁提示开关
             if self.settings_active_tab == 'animation' and hasattr(self, '_settings_chain_toggle_rect'):
                 if self._settings_chain_toggle_rect.collidepoint(mx, my):
@@ -5289,6 +5300,11 @@ class EventsMixin:
             self.chain_hint_enabled = not self.chain_hint_enabled
             status = '开' if self.chain_hint_enabled else '关'
             self.macro_notify_msg = f"悬停连锁提示：{status}"
+        elif key == 'face_bevel_enabled':
+            # §62 立体光效：设置页 / Ctrl+K 一键切换都走这里（与着色同支）
+            self.face_bevel_enabled = not getattr(self, 'face_bevel_enabled', True)
+            status = '开' if self.face_bevel_enabled else '关'
+            self.macro_notify_msg = f"立体光效：{status}"
         elif key == 'board_marks_enabled':
             self.board_marks_enabled = not getattr(self, 'board_marks_enabled', True)
             status = '开' if self.board_marks_enabled else '关'

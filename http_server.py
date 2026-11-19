@@ -618,6 +618,8 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         'sfx_click_enabled', 'sfx_keyboard_enabled',
         # §59C：三维新手引导「看过」开关（与 gui/events.py 同口径）
         'cubic_intro_seen',
+        # §62：立体光效（与 gui/events.py 同口径）
+        'face_bevel_enabled',
     )
     _SETTINGS_INT_RANGES = {
         'animation_duration_ms': (50, 1000),

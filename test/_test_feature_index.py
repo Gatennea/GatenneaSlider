@@ -362,6 +362,7 @@ _RECT_TO_ID = {
     'anim_toggle': 'animation_enabled',
     'sel_anim_toggle': 'selection_animation_enabled',
     'coloring_toggle': 'coloring_enabled',
+    'bevel_toggle': 'face_bevel_enabled',
     'chain_toggle': 'chain_hint_enabled',
     'gap_hover_toggle': 'gap_hover_flash_enabled',
     'marks_toggle': 'board_marks_enabled',

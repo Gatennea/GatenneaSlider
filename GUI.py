@@ -580,6 +580,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.coloring_enabled = False
         # §59C：三维新手引导「看过」（load_last_state 会按 config 覆盖）
         self.cubic_intro_seen = False
+        # §62：立体光效——二维面内四边微倒角（load 按 config 覆盖）
+        self.face_bevel_enabled = True
         # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
         self.chain_hint_enabled = False
         # 悬停缝隙闪烁：鼠标停在「点得动」的那条缝上时，慢速灰闪先亮出来

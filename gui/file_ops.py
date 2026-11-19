@@ -312,6 +312,8 @@ class FileOpsMixin:
             'sfx_keyboard_enabled': getattr(self, 'sfx_keyboard_enabled', True),
             # §59C：三维新手引导「看过」（跳过/走完即置位，下次进三维不再弹）
             'cubic_intro_seen': bool(getattr(self, 'cubic_intro_seen', False)),
+            # §62：立体光效（二维面内微倒角）
+            'face_bevel_enabled': bool(getattr(self, 'face_bevel_enabled', True)),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
             # 教程进度（闯关模式）
@@ -596,6 +598,9 @@ class FileOpsMixin:
                     # §59C：三维新手引导「看过」
                     if 'cubic_intro_seen' in config:
                         self.cubic_intro_seen = bool(config['cubic_intro_seen'])
+                    # §62：立体光效（二维面内微倒角）
+                    if 'face_bevel_enabled' in config:
+                        self.face_bevel_enabled = bool(config['face_bevel_enabled'])
                     # 悬停连锁提示开关
                     if 'chain_hint_enabled' in config:
                         self.chain_hint_enabled = bool(config['chain_hint_enabled'])

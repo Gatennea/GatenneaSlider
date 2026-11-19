@@ -54,7 +54,7 @@
 | 文档 | 用途 | 状态 |
 |---|---|---|
 | `docs/player/玩家指南.md` | 玩家操作指南 | 维护中 |
-| `docs/player/功能总览.md` | 全部功能快速预览表（81 项，只列表不解释） | 自动生成（`gui/feature_index.py` → `tools/gen_feature_overview.py`） |
+| `docs/player/功能总览.md` | 全部功能快速预览表（82 项，只列表不解释） | 自动生成（`gui/feature_index.py` → `tools/gen_feature_overview.py`） |
 | `docs/player/操作说明.md` | GUI 操作说明（帮助面板加载，二维页） | 维护中 |
 | `docs/player/三维操作说明.md` | 三维操作说明（帮助面板加载，三维页） | 维护中 |
 | `docs/player/通用说明.md` | 通用功能说明（帮助面板加载，通用页：快捷键/宏/求解/关于） | 维护中 |
