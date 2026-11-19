@@ -1418,6 +1418,12 @@ class RendererMixin:
         # 必然同源，不存在「看得见点不中」的漂移）。
         self._cubic_scene = scene
 
+        # 三維目標盒：與調試面板同一份 cubic_metrics().window；只在
+        # 打開調試面板或棋盤記號時畫，避免正常遊戲被綠色框干擾。
+        if (getattr(self, 'show_metrics_panel', False)
+                or getattr(self, 'board_marks_enabled', False)):
+            self._draw_cubic_target_box()
+
         # 左上角两行：三維尺度 / 等级 / 视角 / 拆分距离（第 1 行），操作提示（第 2 行）。
         # 「拆分」= 相邻两块表面之间空出的距离（0 = 未拆分，块贴死成一整块）。
         # 放**顶部**：底部整条被 draw_status_bar 覆盖（画在下面等于没画）。

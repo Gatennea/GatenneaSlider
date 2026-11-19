@@ -27,7 +27,8 @@ import pygame  # noqa: E402
 
 from GUI import SliderGUI  # noqa: E402
 from solver.ml.cubic_gather import (  # noqa: E402
-    cubic_metrics, _prefix3, _box_count, _apply_cubic_action,
+    cubic_metrics, cubic_mod_constraints, _prefix3, _box_count,
+    _apply_cubic_action,
 )
 
 _ok = [0]
@@ -105,6 +106,32 @@ for trial in range(20):
     check(met['volume'] == want_vol,
           f'trial{trial} 最優盒體積 {met["volume"]}={want_vol}',
           (met['volume'], want_vol))
+
+print('=' * 60)
+print('A2. 三維 mod 不變量約束')
+_full3 = [(i, j, k) for i in range(3) for j in range(3) for k in range(3)]
+_mod3 = cubic_mod_constraints(_full3, (3, 3, 3), 2)
+check(_mod3 is not None, '3×3×3 / step2 有客觀 mod 約束', _mod3)
+check(_mod3 and _mod3.get((3, 3, 3)) == (
+    frozenset({0}), frozenset({0}), frozenset({0})),
+      '3×3×3 / step2 的起點餘數被鎖在 (0,0,0)', _mod3)
+_mc0 = cubic_metrics(_full3, (3, 3, 3), step=2)
+check(_mc0['window'] == (0, 0, 0, 3, 3, 3) and _mc0['score'] == 1.0,
+      '套 mod 約束後仍能找到唯一滿分窗口', _mc0)
+# 人為只允許 (1,1,1)：若過濾真的生效，3×3×3 全盤只剩 2×2×2=8 塊
+_cmc = cubic_metrics(
+    _full3, (3, 3, 3), step=2,
+    mod_constraints={(3, 3, 3): (
+        frozenset({1}), frozenset({1}), frozenset({1}))})
+check(_cmc['overlap'] == 8
+      and all(_cmc['window'][i] % 2 == 1 for i in range(3)),
+      'mod 約束真的排掉不符合的窗口起點（只剩餘數 1）', _cmc)
+check(cubic_mod_constraints(_full3, (3, 3, 3), 1) is None,
+      'step=1 無約束', cubic_mod_constraints(_full3, (3, 3, 3), 1))
+check(cubic_mod_constraints(
+          [(i, j, k) for i in range(4) for j in range(4) for k in range(4)],
+          (4, 4, 4), 2) is None,
+      '三軸都被 step 整除時無約束')
 
 print('=' * 60)
 print('B. 還原態 / 平移盒')

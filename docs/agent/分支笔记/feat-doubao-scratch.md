@@ -1088,13 +1088,16 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 ### 當前剩餘與順序
 
 - **P0 三維調試面板（2026-11-19 已完成）**：`gui/metrics_panel.py` 已加
-  `_MP_WIDTH_CUBIC=260`、`_mp_cubic_rows()`、cubic 分支與動態行數；面板報
-  局面尺寸/塊數、視角/視軸、縮放、拆分、切面、選中塊數、場景面片/箭頭、
-  `macro_exec_ops` 長度與 index、當前 op、最後錯誤。`gui/renderer.py`
-  `_draw_settings_cubic` 末尾加「調試面板」開關，`gui/events.py`
-  `settings_active_tab == 'cubic'` 已接點擊。三維不套二維聚攏公式，
-  `_MP_SUPPORTED` 仍不含 cubic（不畫二維目標框/洞記號）。
-  護欄：`test/_test_cubic_metrics_panel.py` 23/23；`_test_cubic_render_opts.py`
+  `_MP_WIDTH_CUBIC=260`、`_mp_cubic_rows()`、cubic 分支與動態行數；面板現在
+  先報聚攏數據：聚攏度、重疊、目標盒、邊界盒、填充率、mod 約束，再報
+  視角/縮放/拆分/切面/選中組/操作隊/錯誤，共 16 行。`_mp_current_metrics()`
+  對 cubic 走 `_cubic_metrics_now()`，不落二維 `gather_metrics`；空盤也回
+  三維字典。`gui/renderer.py::draw_cubic_board()` 在調試面板或棋盤記號打開時
+  畫綠色目標盒（與面板共用同一份 `cubic_metrics().window`）。
+  `gui/renderer.py::_draw_settings_cubic` 末尾有「調試面板」開關，`gui/events.py`
+  `settings_active_tab == 'cubic'` 已接點擊。`_MP_SUPPORTED` 仍不含 cubic，
+  所以二維洞記號/目標框邏輯不會誤入三維。護欄：
+  `test/_test_cubic_metrics_panel.py` 25/25；`_test_cubic_render_opts.py`
   72/72、`_test_cubic_entry.py` 33/33、`_test_tri_metrics_panel.py` ALL PASS。
 
 - **P1 三維宏 op 執行器（2026-11-19 已完成）**：`_execute_cubic_macro_op`
@@ -1108,20 +1111,28 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   窗口；`gather_solve_unified` 分派 cubic；`SOLVER_FORM_SUPPORT['gather']` 加 cubic；
   其他算法仍明確拒絕三維。只做重疊率貪心，不承諾還原；返回 `form='cubic'`，
   GUI `_handle_gather_result` 已按三元 bbox 寫文案，且三維 `rep_cell` 保留三分量
-  （不再被二維分支截成 `[r,c]`）。護欄 `test/_test_cubic_gather.py` 659/659：
-  3D 前綴和 vs 暴力、平移/軸置換仍 score=1、4×4×4 短聚攏可逐步重放、
-  終態與返回 end 一致、GUI 轉換保留三元 rep、播放/收尾文案三元 bbox。
+  （不再被二維分支截成 `[r,c]`）。
+  目標盒約束改用 **mod 不變量**（不是棋盤邊界）：`cubic_mod_constraints()`
+  按每軸 mod 分佈鎖定非整除軸的窗口起點餘數，`cubic_metrics()` 接受
+  `step` / `mod_constraints`，求解器一輪只算一次；等級 1 或三軸都整除時
+  無約束。護欄 `test/_test_cubic_gather.py` 665/665：3D 前綴和 vs 暴力、
+  平移/軸置換仍 score=1、mod 約束（3×3×3/step2 鎖 (0,0,0) 與強制餘數過濾）、
+  4×4×4 短聚攏可逐步重放、終態與返回 end 一致、GUI 轉換保留三元 rep、
+  播放/收尾文案三元 bbox。三維目標盒已在棋盤上投影成綠色線框，測試由
+  `_test_cubic_metrics_panel.py` 覆蓋「畫框用同一份 window」。
 - **P3 自訂還原態**：低優先，暫不動。
 - **P4 文檔同步**：§54 已補 P2；後續箭頭/相機凍結/縮放/引擎標籤補記。
 
 ### 已知狀態
 
-- HEAD 為本次 P2 收尾提交（三維形態鍵/聚攏文案 + 文檔），工作樹乾淨。
+- HEAD 為本次三維收尾提交（調試面板聚攏數據/目標盒 + mod 約束 + 文檔），
+  工作樹在提交前含這批改動。
 - 三維 28 套測試：27 套全綠；`_test_cubic_vk.py` 50/51，唯一紅是既有的
   「箭頭外接矩形角部重疊」斷言，不是箭頭多邊形本體重疊。
 - 三維 GUI 宏已 gate（15/15）；求解器內部 op 執行器已鎖 40 連 op；
-  P2 聚攏 659/659，4×4×4 打亂短聚攏 0.344→0.516 共 18 步可重放；
+  P2 聚攏 665/665（含 mod 約束），4×4×4 打亂短聚攏 0.344→0.516 共 18 步可重放；
   實機自動求解入口跑通（20 步、34.4%→53.1%、停機原因「達到時間上限」）。
+  三維調試面板 25/25，目標盒綠色線框已在棋盤上可見。
 - 修正一個會擋住 P2 的既有 bug：`_current_kind()` 原先把 `cubic` 落到
   `game.kind` 的「非四形態」分支，`_is_model_kind()` 因此把三維局當自造
   謎題，`_model_blocked` 讓自動求解入口提示「求解器暫不支持」。現在

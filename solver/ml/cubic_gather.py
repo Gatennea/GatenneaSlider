@@ -30,6 +30,84 @@ def _unique_orientations(dims):
     return sorted(set(itertools.permutations(dims)))
 
 
+def _axis_mod_counts(coords, axis, step):
+    counts = [0] * step
+    for p in coords:
+        counts[int(p[axis]) % step] += 1
+    return counts
+
+
+def _axis_window_counts(length, start, step):
+    """長度 length、起點殘餘 start 的實心窗口，每個 mod 類別有多少格。"""
+    q, rem = divmod(int(length), step)
+    counts = [q] * step
+    for k in range(rem):
+        counts[(start + k) % step] += 1
+    return counts
+
+
+def cubic_mod_constraints(coords, dims, step):
+    """三維目標盒的 mod 不變量約束。
+
+    與二維 `detect_target_corner` 同一個來源：滑動每步沿一軸走 step，
+    所以每塊的 `(r%step, c%step, d%step)` 不變；實心目標盒也必須有同樣的
+    三維 mod 分佈。對「邊長不被 step 整除」的軸，窗口起點的餘數因此被鎖定；
+    整除了的軸任意。
+
+    返回 `{orientation: (r_res, c_res, d_res)}`，每項是 `frozenset[int]`
+    或 `None`（None = 該軸無約束）。若整盤完全沒有可判定的約束（例如
+    step=1、三軸都可整除、或當前不是實心目標分佈），回 None。
+
+    只按**軸邊長**判：三維長方體的軸排列仍是 6 種，不引入 48 對稱裡的
+    反射/旋轉重複；對實心盒而言反射不改變軸長，旋轉就是軸置換。
+    """
+    step = int(step or 1)
+    if step <= 1 or not coords:
+        return None
+    dims = tuple(int(v) for v in dims)
+    # 先看是否至少有一軸不被 step 整除；三軸全整除時任何起點都等價。
+    if all(v % step == 0 for v in dims):
+        return None
+
+    block_axis = tuple(_axis_mod_counts(coords, ax, step) for ax in range(3))
+    out = {}
+    for (a, b, c) in _unique_orientations(dims):
+        lengths = (a, b, c)
+        residues = []
+        constrained = False
+        for ax, length in enumerate(lengths):
+            if length % step == 0:
+                residues.append(None)
+                continue
+            # 另一軸的格數：把「一條線上的 mod 計數」放大成整盒的三維
+            # 邊際總數，才能和 block_axis 的總數直接比。
+            others = 1
+            for other_ax in range(3):
+                if other_ax != ax:
+                    others *= lengths[other_ax]
+            matches = frozenset(
+                r for r in range(step)
+                if [v * others for v in _axis_window_counts(length, r, step)]
+                == block_axis[ax])
+            if len(matches) == 1:
+                residues.append(matches)
+                constrained = True
+            else:
+                # 0 個（當前不是實心目標分佈/自訂目標）或多個（分佈對稱）
+                # 都不是客觀可判定的約束；不強加，避免把合法窗口排掉。
+                residues.append(None)
+        out[(a, b, c)] = tuple(residues)
+    return out if constrained else None
+
+
+def _residue_allowed(residues, axis, value, step):
+    """residues 是 (set|None,...)，value 是窗口起點座標。"""
+    if residues is None:
+        return True
+    allowed = residues[axis]
+    return allowed is None or (int(value) % step) in allowed
+
+
 def _prefix3(points, lo, size):
     """把整數三維點集建成 3D 前綴和；座標已平移到 lo。"""
     sx, sy, sz = size
@@ -75,16 +153,26 @@ def _box_count(pref, lo, size, box):
             + pref[x1i][y0i][z0i] - pref[x0i][y0i][z0i])
 
 
-def cubic_metrics(coords, dims):
+def cubic_metrics(coords, dims, step=None, mod_constraints=None):
     """當前塊座標 vs m×n×d 實心盒的最大重疊。
 
     `score = 最大重疊 / 總塊數`，`fill_rate = 最大重疊 / 目標盒體積`。
     目標盒允許 6 種軸排列（立方體的 48 對稱對實心長方體只剩軸置換）。
+
+    `step` / `mod_constraints`：三維 mod 不變量。`step>1` 時只接受
+    「窗口起點餘數符合目標盒 mod 分佈」的窗口；`mod_constraints` 可由
+    `cubic_mod_constraints()` 預先算好，求解器一輪只算一次。step=None 或
+    step=1 = 不套約束（測試/一般查詢）。
     """
+    dims = tuple(int(v) for v in dims)
+    step = int(step) if step is not None else 1
+    if mod_constraints is None and step > 1:
+        mod_constraints = cubic_mod_constraints(coords, dims, step)
     total = len(coords)
     if total == 0:
         return {'score': 0.0, 'overlap': 0, 'bbox': (0, 0, 0),
-                'fill_rate': 0.0, 'volume': 0, 'window': None}
+                'fill_rate': 0.0, 'volume': 0, 'window': None,
+                'mod_constraints': mod_constraints}
 
     lo = (min(p[0] for p in coords), min(p[1] for p in coords),
           min(p[2] for p in coords))
@@ -98,13 +186,21 @@ def cubic_metrics(coords, dims):
     best_volume = 0
     for (a, b, c) in _unique_orientations(dims):
         volume = a * b * c
+        residues = (mod_constraints.get((a, b, c))
+                    if mod_constraints else None)
         # 只需要枚舉「盒面至少貼到某個佔用格」的起點；兩端各多一格的
         # 越界起點不可能得到更多交集。
         for x0 in range(lo[0] - a + 1, hi[0] + 1):
+            if not _residue_allowed(residues, 0, x0, step):
+                continue
             for y0 in range(lo[1] - b + 1, hi[1] + 1):
+                if not _residue_allowed(residues, 1, y0, step):
+                    continue
                 for z0 in range(lo[2] - c + 1, hi[2] + 1):
+                    if not _residue_allowed(residues, 2, z0, step):
+                        continue
                     n = _box_count(pref, lo, span, (x0, y0, z0, a, b, c))
-                    if n > best_overlap:
+                    if best_window is None or n > best_overlap:
                         best_overlap = n
                         best_window = (x0, y0, z0, a, b, c)
                         best_volume = volume
@@ -115,6 +211,7 @@ def cubic_metrics(coords, dims):
         'fill_rate': best_overlap / best_volume if best_volume else 0.0,
         'volume': best_volume,
         'window': best_window,
+        'mod_constraints': mod_constraints,
     }
 
 
@@ -206,7 +303,11 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
     ignored = sorted(kwargs.keys())
     start_time = time.time()
     start_coords = [tuple(b.location[:3]) for b in game.blocks]
-    start_metrics = cubic_metrics(start_coords, dims)
+    # mod 不變量只取決於初始方塊的 (r%step,c%step,d%step)；整場滑動都不變。
+    # 每輪候選評估都重算會把 6×step³ 的枚舉放大到每步一次，這裡只算一次。
+    mod_constraints = cubic_mod_constraints(start_coords, dims, step)
+    start_metrics = cubic_metrics(start_coords, dims,
+                                  step=step, mod_constraints=mod_constraints)
     best_metrics = start_metrics
     best_score = start_metrics['score']
     best_snap = game.snapshot_state()
@@ -234,7 +335,9 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
             reason = 'timeout'
             break
 
-        cur = cubic_metrics([tuple(b.location[:3]) for b in game.blocks], dims)
+        cur = cubic_metrics([tuple(b.location[:3]) for b in game.blocks],
+                            dims, step=step,
+                            mod_constraints=mod_constraints)
         if target_gather_score is not None and \
                 cur['score'] >= target_gather_score - 1e-9:
             reason = 'target'
@@ -275,7 +378,8 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
                 continue
             rep, _final = res
             coords = [tuple(b.location[:3]) for b in game.blocks]
-            met = cubic_metrics(coords, dims)
+            met = cubic_metrics(coords, dims, step=step,
+                                mod_constraints=mod_constraints)
             nh = tuple(sorted(coords))
             scored.append((met['score'], met['overlap'],
                            -int(met['bbox'][0] * met['bbox'][1] * met['bbox'][2]),
@@ -295,7 +399,9 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
             break
         actions.append(best_action)
         reps.append(rep)
-        end_met = cubic_metrics([tuple(b.location[:3]) for b in game.blocks], dims)
+        end_met = cubic_metrics([tuple(b.location[:3]) for b in game.blocks],
+                                dims, step=step,
+                                mod_constraints=mod_constraints)
         trace.append(end_met)
         # 不把「剛到達的狀態」直接標成已展開：visited 的語義是「這個狀態
         # 已經當過當前態去生成候選」。下一輪開頭會把它加入；若這一步真的
@@ -308,7 +414,9 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
         reps = reps[:best_idx]
         trace = trace[:best_idx]
 
-    end_metrics = cubic_metrics([tuple(b.location[:3]) for b in game.blocks], dims)
+    end_metrics = cubic_metrics([tuple(b.location[:3]) for b in game.blocks],
+                                dims, step=step,
+                                mod_constraints=mod_constraints)
     if game.is_solved():
         best_metrics = end_metrics
         reason = 'solved'
