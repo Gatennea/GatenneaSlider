@@ -96,9 +96,33 @@ def parse_mi_coord(text: str):
         return None
 
 
+# 输入上下文注册表（§五十七）：每条 = (名字, 打开判据, IME 候选框锚点)。
+# _sync_ime_text_input 只读本表决定 start/stop_text_input 与 TextInput._text_input_mode
+# （两路互斥，防一次按键插两个字符）。新增输入框 = 在此登记一行，别再改判据逻辑；
+# 漏登记的框会双插（2026-11-19 自定义谜题 bug 即因此）。
+# 顺序即锚点优先级：命令面板最上层，其后宏命名 / 帮助 / 文件名 / 自定义框 / 样式名。
+_IME_TEXT_INPUT_CONTEXTS = (
+    ('palette', lambda g: bool(getattr(g, 'palette_active', False)),
+     lambda g: getattr(g, 'palette_input_rect', None)),
+    ('macro', lambda g: bool(getattr(g, 'show_macro_name_dialog', False)),
+     lambda g: getattr(g, '_macro_name_input_rect', None)),
+    ('help', lambda g: bool(getattr(g, 'show_help', False)),
+     lambda g: getattr(g, 'help_search_rect', None)),
+    ('file', lambda g: bool(getattr(g, 'file_dialog', None)
+                            and getattr(g.file_dialog, 'active', False)),
+     lambda g: getattr(getattr(g, 'file_dialog', None), 'input_rect', None)),
+    ('custom', lambda g: bool(getattr(g, 'show_custom_dialog', False)),
+     lambda g: (getattr(g, 'custom_field_rects', None) or {}).get(
+         getattr(g, 'custom_active_field', None))),
+    ('design_name', lambda g: bool(getattr(g, '_ann_design_name_active', False)),
+     lambda g: (getattr(g, '_cubic_edit_name_rect', None)
+                or getattr(g, '_ann_design_name_rect', None))),
+)
+
+
 class EventsMixin:
     """事件处理相关方法"""
-    
+
     def _dropdown_blocks_click(self, pos):
         """点击是否落在「菜单层」：顶栏本体，或任一已打开下拉/子菜单的矩形。
 
@@ -128,34 +152,32 @@ class EventsMixin:
                     return True
         return False
 
+    def _ime_contexts_active(self):
+        """当前打开的输入上下文名列表（按注册表顺序），并给出 IME 锚点矩形。"""
+        active = []
+        rect = None
+        for name, is_open, rect_of in _IME_TEXT_INPUT_CONTEXTS:
+            if is_open(self):
+                active.append(name)
+                if rect is None:
+                    try:
+                        rect = rect_of(self)
+                    except Exception:
+                        rect = None
+        return active, rect
+
     def _sync_ime_text_input(self):
         """IME / SDL 文本输入模式同步（每帧调用一次）。
 
-        任一文本输入上下文激活时开启 SDL 文本输入（start_text_input），关闭时
-        停止（stop_text_input）；开启期间中文输入法的组字结果经 pygame.TEXTINPUT
-        投递（含中文），关闭时退回 KEYDOWN.unicode（ASCII）。两者互斥，避免重复
-        插入。覆盖：帮助检索框、宏命名框、文件对话框文件名框。
+        只读输入上下文注册表 `_IME_TEXT_INPUT_CONTEXTS`：任一上下文打开 →
+        start_text_input，关闭即 stop_text_input；`TextInput._text_input_mode`
+        与之同步（True=字符走 TEXTINPUT 含中文，False=走 KEYDOWN.unicode ASCII）。
+        两者互斥，避免一次按键两路各插一个字符。新增输入框在注册表登记一行即可。
         """
-        help_active = getattr(self, 'show_help', False)
-        macro_active = getattr(self, 'show_macro_name_dialog', False)
-        # 命令面板是最上层输入框：它开着时 IME 候选框必须锚在它上面，
-        # 否则中文输入时组字窗口会飘到别的输入框位置（或干脆不出现）。
-        palette_active = getattr(self, 'palette_active', False)
-        file_active = bool(getattr(self, 'file_dialog', None)
-                           and getattr(self.file_dialog, 'active', False))
-        needed = help_active or macro_active or file_active or palette_active
+        needed, rect = self._ime_contexts_active()
 
-        if needed == getattr(self, '_ime_text_input_on', False):
+        if bool(needed) == getattr(self, '_ime_text_input_on', None):
             # 状态未变：仍刷新候选框锚点（窗口可能移动/缩放），避免 IME 窗口错位
-            rect = None
-            if palette_active:
-                rect = getattr(self, 'palette_input_rect', None)
-            elif macro_active:
-                rect = getattr(self, '_macro_name_input_rect', None)
-            elif help_active:
-                rect = getattr(self, 'help_search_rect', None)
-            elif file_active:
-                rect = getattr(self.file_dialog, 'input_rect', None)
             if rect is not None:
                 try:
                     pygame.key.set_text_input_rect(rect)
@@ -170,15 +192,6 @@ class EventsMixin:
                 pass
             TextInput._text_input_mode = True
             self._ime_text_input_on = True
-            rect = None
-            if palette_active:
-                rect = getattr(self, 'palette_input_rect', None)
-            elif macro_active:
-                rect = getattr(self, '_macro_name_input_rect', None)
-            elif help_active:
-                rect = getattr(self, 'help_search_rect', None)
-            elif file_active:
-                rect = getattr(self.file_dialog, 'input_rect', None)
             if rect is not None:
                 try:
                     pygame.key.set_text_input_rect(rect)

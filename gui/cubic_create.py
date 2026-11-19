@@ -152,10 +152,8 @@ class CubicCreateMixin:
         # 打字；完成时没有名字会被保存门拦下（不会自动覆盖同名样式）。
         self._ann_design_style_name = ''
         self._ann_design_name_active = purpose == 'goal'
-        if self._ann_design_name_active:
-            pygame.key.start_text_input()
-        else:
-            pygame.key.stop_text_input()
+        # 文本输入开关走统一入口（§五十七 注册表），不直接调 pygame.key
+        self._sync_ime_text_input()
         if purpose == 'goal':
             self._ann_notify('三维还原目标：点面放/挖，输入样式名后点「完成」存样式')
         else:
@@ -185,10 +183,7 @@ class CubicCreateMixin:
         self._cubic_edit_btn_rects = {}
         self._cubic_edit_name_rect = None
         self._ann_design_name_active = False
-        try:
-            pygame.key.stop_text_input()
-        except Exception:      # noqa: BLE001 —— 无头环境没有输入法状态
-            pass
+        self._sync_ime_text_input()
         if self._cubic_edit_vk_prev is not None:
             self.show_virtual_keyboard = self._cubic_edit_vk_prev
         self._cubic_edit_vk_prev = None
@@ -464,9 +459,10 @@ class CubicCreateMixin:
                 _nr = getattr(self, '_cubic_edit_name_rect', None)
                 if _nr is not None and _nr.collidepoint(event.pos):
                     self._ann_design_name_active = True
-                    pygame.key.start_text_input()
+                    self._sync_ime_text_input()
                     return True
                 self._ann_design_name_active = False
+                self._sync_ime_text_input()
                 # 工具条优先；否则进拖动/点击二择一
                 for name, rect in self._cubic_edit_btn_rects.items():
                     if rect.collidepoint(event.pos):
