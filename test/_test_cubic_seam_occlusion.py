@@ -4,16 +4,18 @@
 为什么换掉上一版（用户 2026-11-18「縫隙遮擋關係還是不對，有時看起來像是切在
 另一層」）：上一版渲染是「整张切面减影子多边形」，验证也围着那套解析影子转，
 渲染错了验证跟着错。现在渲法再改（用户又要求「缝隙平面不能被切，要完整矩形」
-且「选中滑块不能和缝隙相交」）：切面画在**所有未选中块之后、选中块之前**，
-于是遮挡判定只剩一条跟选中态有关：
+且「选中滑块不能和缝隙相交」）：切面画在**背面块之后、前侧块之前**；
+选中片也按实际所在侧分前后，切面后的选中块颜色仍用原 selected 绿，红面正常叠加。
 
+遮挡判定：
   屏幕上每一个偏红的像素 → 按正交投影反解出它在切面上的世界点 →
   看这个点是否落在某个**选中块**的盒子内部。
 
 判据（2026-11-18 三次返工：遮挡优先，选中片按实际侧分前后）
   A. 偏红像素必须落在切面矩形范围内（不外扩到盘外）。
   B. **近侧**选中块画在切面之上：红像素不许落进近侧选中块的盒子内部。
-  B2. **远侧**选中块必须被红面糊住：其屏幕中心像素要偏红。
+  B2. **远侧**未选中块必须被红面糊住：其屏幕中心像素要偏红；远侧选中块也
+      进 back_faces（不穿透切面），颜色保持原选中绿，被红面染过后仍保留 g>b。
   C. 斜视 + 拆分 0.35 时必须真有一部分红露出来（不能「全挡了」）。
   D. 正视 + 拆分 0.12 时前层块把切面挡死，红占比必须很小。
   E. 切面格子：都落在同一张平面上、格数 = 缝口有块的格数、互不重叠。
@@ -184,25 +186,44 @@ def main():
     check(not bad_tint, f'选中块没被红面糊住（{len(bad_tint)} 个红像素落在选中块里）',
           bad_tint[:3])
 
-    print('H. 远侧选中块必须被红面压暗（不再穿透切面）')
-    gui.game.apply_pattern([(0, 0, 0), (2, 1, 0)])
+    print('H. 切面后的选中块用原选中绿，仍被红面遮挡')
+    # 选中片按实际侧分前后；切面后的选中块进 back_faces，被红面盖住。
+    # 颜色保持原 selected 绿，不另调高亮色、不叠透明层；被红面染过后
+    # 仍应保留 selected 的绿色通道（g 明显高于 b），而不是未选中的蓝色。
+    gui.game.apply_pattern([(0, 0, 0), (2, 1, 0), (0, 2, 0)])
     gui.cubic_gap = 0.35
     gui.cubic_camera = CubicCamera.from_yaw_pitch(0, 0)
     gui.selected_gap = ('r', 1)
     for b in gui.game.blocks:
-        b.be_opted = int(b.location[0]) == 0
+        b.be_opted = tuple(int(v) for v in b.location[:3]) == (0, 0, 0)
     gui.selected_block = next(b for b in gui.game.blocks if b.be_opted)
     gui.draw_cubic_board()
     scene = gui._cubic_scene
+    anchor_h = cv.layout_anchor(gui.game.blocks)
+
+    def _screen_center(block):
+        box = cv.block_boxes([block], gui.cubic_gap, anchor=anchor_h)[0]
+        hull = cv.screen_hull_of_box(box, gui.cubic_camera, scene['scale'],
+                                     scene['origin'])
+        return (int(sum(p[0] for p in hull) / len(hull)),
+                int(sum(p[1] for p in hull) / len(hull)))
+
     sel = gui.selected_block
-    box = cv.block_boxes([sel], gui.cubic_gap)[0]
-    hull = cv.screen_hull_of_box(box, gui.cubic_camera, scene['scale'],
-                                 scene['origin'])
-    cx = int(sum(p[0] for p in hull) / len(hull))
-    cy = int(sum(p[1] for p in hull) / len(hull))
-    px = gui.screen.get_at((cx, cy))
-    check(px[0] > px[1] + 20,
-          f'远侧选中块中心被红面压暗（pixel={tuple(px)[:3]}）')
+    sx, sy = _screen_center(sel)
+    spx = gui.screen.get_at((sx, sy))
+    check(tuple(int(v) for v in sel.location[:3]) in gui._cubic_seam_back_locs,
+          '选中块在切面之后（进 back_faces，不穿透切面）',
+          sorted(gui._cubic_seam_back_locs))
+    check(spx[1] > spx[2] + 30,
+          f'选中块保留原选中绿的绿色通道（pixel={tuple(spx)[:3]}）')
+    check(spx[0] > 80,
+          f'选中块同时保留红面遮挡色（pixel={tuple(spx)[:3]}）')
+    far = next(b for b in gui.game.blocks
+               if tuple(int(v) for v in b.location[:3]) == (0, 2, 0))
+    fx, fy = _screen_center(far)
+    fpx = gui.screen.get_at((fx, fy))
+    check(fpx[0] > fpx[1] + 20,
+          f'未选中远块仍被红面压暗（pixel={tuple(fpx)[:3]}）')
 
 
     print('C. 斜视 + 拆分 0.35：必须真有一部分露出来')
