@@ -13,7 +13,48 @@
 - **认领 §六十一（§五十九 新增入口未登记功能索引）**，2026-11-19 用户
   指示开工。范围按总账：`gui/feature_index.py` 补条目 + 同步 support 表 +
   重成功能总览 + 测试（`_test_feature_index` / `_test_help_cubic59`），
-  与 §五十六/§五十八 不交叠。完成后只 commit 到 dev。
+  与 §五十六/§五十八 不交叠。完成后只 commit 到 dev。→ 已交付 `abb137d`。
+- **认领 §六十二（三维打光实体感移植到二维）**，2026-11-19 用户点名交
+  trae（dev 分支）。范围：`gui/renderer.py` + 设置页开关（三处同步）+
+  测试；与 §五十六/§五十八 文件交叠小。先做第 2 层（四边微倒角抽公共
+  helper 接三形态），第 1 层降级不硬套相机基，第 3 层（留缝）不动。
+  默认开/关按观感定，验收 `GET /screenshot` 开关对比 + 关态渲染与改动前
+  一致的断言。完成后只 commit 不推送不合并。
+
+## §六十二 完成记录（2026-11-20，本分支已 commit，待核销）
+
+- **第 2 层（核心）**：三维面片倒角画法抽成模块级公共函数
+  `gui/renderer.py::_draw_face_bevel`（n 边泛化——三角/米字块面不是四边形；
+  `corner_inset` 参数供矩形圆角收端，带不碰角部）。**三维段改为调用它
+  （同参 strength=30/inset=0.15，行为逐位一致）**；二维三形态各接一次：
+  方形（draw_board fill 与 border 之间）、三角/米字（AA 与非 AA 双路径——
+  AA 版给 `_draw_aa_polygon` 加 `bevel=False` 默认参数，在超采样面的
+  fill 与 border 之间压带，默认零变化）。
+- **第 1 层降级**：不硬套 `face_shade` 相机基——二维用窄带本身携带
+  「上/左提亮、下/右压暗」的面内明暗（方向与三维同一 helper 数学），
+  面心保持原色，未引入逐行渐变（性能无风险）。
+- **第 3 层（留缝）**：按总账未动。
+- **开关 `face_bevel_enabled`（默认开——用户点名要这效果）**：
+  只管二维三形态；**三维恒走原倒角不受开关影响**（关态=改动前，三维
+  行为零变化）。设置页「视觉页·分组着色下一行」+ `_handle_right_panel_switch`
+  同支（Ctrl+K 一键切换）+ `_SETTINGS_BOOL_KEYS`×2 + config 存取——
+  三处同步（AGENTS §16）。三维局设置页不显示（入清零列表防旧帧残留）。
+- **feature_index 登记（§3 新红线）**：`face_bevel_enabled` setting 条
+  （forms=方/数/三角/米字，三维标不适用）+ `_ACTIONS` toggle +
+  测试 `_RECT_TO_ID` 登记；总览重生成 82 项，README 计数 81→82。
+- **护栏**：新 `test/_test_face_bevel.py` 29 断言全过——关态三形态
+  **零次**调用倒角（运行时计数，非源码判据=「关态渲染与改动前一致」）、
+  开/关两帧像素不同、关态两帧一致、方向数学（上亮下暗面心原色）、
+  AA 双路径同源、设置页点击/一键切换/config roundtrip。回归全绿：
+  `_test_engine_gui` / `_test_bandage_forms` / `_test_feature_index`；
+  compileall 0。
+- **截图验收（AGENTS §20 `GET /screenshot` 通道）**：新实例 5053
+  （`--http-port` 换端口不碰用户实例，验完强杀防写 temp_history）。
+  首拍踩坑：实例恢复用户三维局盖掉启动参数 → 对比图无效（三维不吃开关）；
+  改 `POST /new` 切回 6×6 方形后重拍成功：`s62_off.png`（纯平）vs
+  `s62_on.png`（四边明暗带、圆角完好），两图存工作区根（未跟踪、不入库）。
+- lint NEW=1（存量 `_tmp_save`）、doclink NEW 中涉本节的均为既有文档
+  引用 `renderer.py` 因目标修改重新入列（renderer.py 真实存在，非断链）。
 
 ## §六十一 完成记录（2026-11-19，本分支已 commit，待核销）
 

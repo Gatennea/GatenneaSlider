@@ -44,6 +44,63 @@ REJECT_BORDER_COLLISION = (235, 125, 100)      # #EB7D64 暖珊瑚：會重疊
 REJECT_BORDER_UNKNOWN = (200, 200, 200)         # 中性灰白：原因判不明
 
 
+def _shade255(color, offset):
+    """给 RGB 加固定偏移并夹回 0..255（整型三元组）。"""
+    return (max(0, min(255, int(color[0]) + offset)),
+            max(0, min(255, int(color[1]) + offset)),
+            max(0, min(255, int(color[2]) + offset)))
+
+
+def _draw_face_bevel(surface, pts, fill, strength=30.0, inset=0.15,
+                     corner_inset=0.0):
+    """面内多边微倒角（§六十二）：沿面的每条屏幕边压一条窄带，亮度按
+    「屏幕左上光」(-0.55, -0.75) 的边法向投影决定——上/左提亮、下/右压暗，
+    方向与 `engine/cubic_view.py::face_shade` 的相机相对主光一致。
+
+    这是三维面片倒角画法（renderer 三维绘制段，2026-11-19 实体感三件套
+    之二）抽出来的**公共唯一来源**：三维渲染、二维方形/三角/米字三形态共用
+    同一函数，保证开态下三处的亮度方向与幅度完全一致（前端三形态铁律 §3）。
+
+    pts    : 面的屏幕坐标顶点序列（>=3，任意多边形；三角/米字的块面
+             不是四边形，所以是 n 边而不是硬编码 4 边）
+    fill   : 面底色 RGB——带色 = 底色 + 偏移，不引入新色相
+    strength: 偏移幅度（三维原值 30）
+    inset  : 带宽比例（从边向质心收 inset 比例，三维原值 0.15）
+    corner_inset: 端点沿边向内收的像素数——矩形有圆角（_block_corner），
+             端点落在角点会把圆角外的角隅补成直角；圆角形态传半径让带
+             不触及角部，圆角由随后的 border 层照画。
+    """
+    n = len(pts)
+    if n < 3:
+        return
+    cx = sum(p[0] for p in pts) / n
+    cy = sum(p[1] for p in pts) / n
+    lx, ly = -0.55, -0.75
+    llen = (lx * lx + ly * ly) ** 0.5
+    for e in range(n):
+        a = pts[e]
+        b = pts[(e + 1) % n]
+        if corner_inset:
+            # 沿边把两端各向内收 corner_inset 像素（限在边长内）
+            ex, ey = b[0] - a[0], b[1] - a[1]
+            elen = (ex * ex + ey * ey) ** 0.5
+            if elen > 2.0 * corner_inset:
+                t = corner_inset / elen
+                a = (a[0] + ex * t, a[1] + ey * t)
+                b = (b[0] - ex * t, b[1] - ey * t)
+        mx = (a[0] + b[0]) / 2.0
+        my = (a[1] + b[1]) / 2.0
+        nx, ny = mx - cx, my - cy
+        nlen = (nx * nx + ny * ny) ** 0.5
+        if nlen <= 1e-9:
+            continue
+        dot = (nx * lx + ny * ly) / (nlen * llen)
+        off = int(strength * dot)
+        q1 = (a[0] + (cx - a[0]) * inset, a[1] + (cy - a[1]) * inset)
+        q2 = (b[0] + (cx - b[0]) * inset, b[1] + (cy - b[1]) * inset)
+        pygame.draw.polygon(surface, _shade255(fill, off), (a, b, q2, q1))
+
+
 def reject_border_style(reason, zoom):
     """拒絕視覺：只換邊框色 + 加粗，**填充一律不動**（UI 鐵律 §1 / S1-2）。
 
@@ -337,13 +394,19 @@ class RendererMixin:
         """三角/米字滑块是否启用抗锯齿（cell 小于阈值时）。"""
         return cell_px < self._SLIDER_AA_MIN_CELL
 
-    def _draw_aa_polygon(self, poly, fill, border_color=None, border_w=0):
+    def _draw_aa_polygon(self, poly, fill, border_color=None, border_w=0,
+                         bevel=False):
         """局部超采样抗锯齿画一个多边形（填充 + 可选描边）到 self.screen。
 
         poly 为屏幕坐标浮点列表。按外包框建一块 SRCALPHA 临时面，坐标平移
         到局部并放大 _SLIDER_AA_SCALE 倍，硬边填充 + 描边，再 smoothscale
         回 1×，blit 到外包框原点。边缘半透明与底色混合，斜边不再有阶梯；
         外形轮廓位置不变，不侵占块间缝隙（与 _board_px 的等宽缝隙兼容）。
+
+        bevel=True（§六十二）：填充与描边之间压一层「面内微倒角」窄带
+        （`_draw_face_bevel`），AA 路径与非 AA 路径的倒角位置/亮度一致；
+        带在超采样面上按放大坐标画，smoothscale 缩回后强度按比例变浅，
+        与斜边半透明混合——与直出路径观感对齐。默认 False 保持旧调用零变化。
         """
         S = self._SLIDER_AA_SCALE
         xs = [p[0] for p in poly]
@@ -359,6 +422,8 @@ class RendererMixin:
         ipoly = [(int(round((p[0] - x0) * S)), int(round((p[1] - y0) * S)))
                  for p in poly]
         pygame.draw.polygon(big, fill, ipoly)
+        if bevel:
+            _draw_face_bevel(big, ipoly, fill)
         if border_color is not None and border_w > 0:
             pygame.draw.polygon(big, border_color, ipoly, max(1, border_w * S))
         self.screen.blit(pygame.transform.smoothscale(big, (w, h)), (x0, y0))
@@ -684,9 +749,13 @@ class RendererMixin:
                         for p in view.piece_polygon(i, j, up)]
                 rpoly = self._rounded_polygon_points(poly, radius)
                 if self._slider_aa_on(scaled_cell):
-                    self._draw_aa_polygon(rpoly, fill, border_color, border_w)
+                    self._draw_aa_polygon(
+                        rpoly, fill, border_color, border_w,
+                        bevel=getattr(self, 'face_bevel_enabled', False))
                 else:
                     pygame.draw.polygon(self.screen, fill, rpoly)
+                    if getattr(self, 'face_bevel_enabled', False):
+                        _draw_face_bevel(self.screen, rpoly, fill)
                     pygame.draw.polygon(self.screen, border_color,
                                         rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（hover 更亮）
@@ -885,9 +954,13 @@ class RendererMixin:
                         for p in view.piece_polygon(r, c, q)]
                 rpoly = self._rounded_polygon_points(poly, radius)
                 if self._slider_aa_on(scaled_cell):
-                    self._draw_aa_polygon(rpoly, fill, border_color, border_w)
+                    self._draw_aa_polygon(
+                        rpoly, fill, border_color, border_w,
+                        bevel=getattr(self, 'face_bevel_enabled', False))
                 else:
                     pygame.draw.polygon(self.screen, fill, rpoly)
+                    if getattr(self, 'face_bevel_enabled', False):
+                        _draw_face_bevel(self.screen, rpoly, fill)
                     pygame.draw.polygon(self.screen, border_color,
                                         rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（與方形/三角同一套語言）
@@ -1402,33 +1475,11 @@ class RendererMixin:
                 pygame.draw.polygon(hi, border, pts, _ss)
             # 面内四条边的「微倒角」：只压最上/最下两条时，不拆分的大方盘
             # 只有横向棱被磨到，竖向接缝和左右外棱仍是刀口（用户 2026-11-19
-            # 指认「不是所有棱角都有打磨效果」）。这里沿四条屏幕边各压一条
-            # 窄带，亮度按「屏幕左上光」的边法向投影决定：上/左提亮，下/右
-            # 压暗；方向与 face_shade 的相机相对主光一致。
-            _cx = sum(p[0] for p in pts) / 4.0
-            _cy = sum(p[1] for p in pts) / 4.0
-            _lx, _ly = -0.55, -0.75
-            _llen = (_lx * _lx + _ly * _ly) ** 0.5
-            for _e in range(4):
-                _a = pts[_e]
-                _b = pts[(_e + 1) % 4]
-                _mx = (_a[0] + _b[0]) / 2.0
-                _my = (_a[1] + _b[1]) / 2.0
-                _nx, _ny = _mx - _cx, _my - _cy
-                _nlen = (_nx * _nx + _ny * _ny) ** 0.5
-                if _nlen <= 1e-9:
-                    continue
-                _dot = (_nx * _lx + _ny * _ly) / (_nlen * _llen)
-                _off = int(30 * _dot)
-                _ecol = (max(0, min(255, fill[0] + _off)),
-                         max(0, min(255, fill[1] + _off)),
-                         max(0, min(255, fill[2] + _off)))
-                _inset = 0.15
-                _q1 = (_a[0] + (_cx - _a[0]) * _inset,
-                       _a[1] + (_cy - _a[1]) * _inset)
-                _q2 = (_b[0] + (_cx - _b[0]) * _inset,
-                       _b[1] + (_cy - _b[1]) * _inset)
-                pygame.draw.polygon(hi, _ecol, (_a, _b, _q2, _q1))
+            # 指认「不是所有棱角都有打磨效果」）。画法抽成公共来源
+            # `_draw_face_bevel`（§六十二）：亮度按「屏幕左上光」的边法向
+            # 投影决定，上/左提亮、下/右压暗；方向与 face_shade 一致，
+            # 二维三形态（square/tri/mi）开态走的是同一个函数。
+            _draw_face_bevel(hi, pts, fill)
         # 被块盖住的箭头只补一圈虚线轮廓：实心部分仍按真实遮挡消失，
         # 虚线让玩家知道这里还有一个可点的方向（用户 2026-11-19）。
         self._cubic_arrow_ghosts = set()
@@ -2810,6 +2861,13 @@ class RendererMixin:
                     border_w = max(1, int(2 * self.zoom))
             rect = pygame.Rect(screen_x, screen_y, scaled_cell, scaled_cell)
             pygame.draw.rect(self.screen, fill, rect, border_radius=_block_corner)
+            if getattr(self, 'face_bevel_enabled', False):
+                # §六十二：面内四边微倒角（与三维/三角/米字同一 helper）。
+                # corner_inset=圆角半径：带端点收在角内，圆角照旧由 border 画。
+                _draw_face_bevel(
+                    self.screen,
+                    (rect.topleft, rect.topright, rect.bottomright, rect.bottomleft),
+                    fill, corner_inset=_block_corner)
             pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=_block_corner)
 
             # 连锁提示：同组格叠一层半透明白（hover 更亮），着色描边仍在最上层
@@ -5041,6 +5099,7 @@ class RendererMixin:
                           '_settings_records_toggle_rect',
                           '_settings_grid_toggle_rect',
                           '_settings_anti_drift_toggle_rect',
+                          '_settings_bevel_toggle_rect',
                           '_settings_thinking_toggle_rect'):
                 setattr(self, _attr, pygame.Rect(0, 0, 0, 0))
 
@@ -5061,6 +5120,13 @@ class RendererMixin:
         self._settings_coloring_toggle_rect, ny = self._draw_switch_row(
             x, ny, "分组着色：", getattr(self, 'coloring_enabled', False),
             "同一种颜色代表同一组；只有同组的滑块才可能换位置", max_w=_mw)
+
+        # §六十二：立体光效（面内四边微倒角）——把三维验证过的实体感移植到
+        # 二维三形态；只管二维（三维恒走原倒角，本开关关态不影响三维）。
+        self._settings_bevel_toggle_rect, ny = self._draw_switch_row(
+            x, ny, "立体光效：", getattr(self, 'face_bevel_enabled', True),
+            "滑块面四边压出明暗倒角，像凸起的实体块；纯视觉，不影响点击与规则",
+            max_w=_mw)
 
         # 悬停连锁提示开关（独立于着色器）
         self._settings_chain_toggle_rect, ny = self._draw_switch_row(
