@@ -101,6 +101,22 @@ def _draw_face_bevel(surface, pts, fill, strength=30.0, inset=0.15,
         pygame.draw.polygon(surface, _shade255(fill, off), (a, b, q2, q1))
 
 
+def draw_block_number(screen, font, num, center, block_fill, emboss=True):
+    """编号字绘制（§六十二子项，2026-11-20 用户拍板「数字也搞成这种」）。
+
+    emboss=True：黑本体 + 左上 1px 块色提亮浮雕边——屏幕左上光，与四边
+    倒角同一方向；亮边用块色自身提亮（_shade255 +44），不引入新色相，
+    黑字可读性不变。
+    emboss=False：与本函数出现**之前**的旧画法逐位一致（纯黑平贴）——
+    关态 `face_bevel_enabled=False` 走这里，守「关态渲染与改动前一致」。
+    """
+    if emboss:
+        lifted = font.render(str(num), True, _shade255(block_fill, 44))
+        screen.blit(lifted, lifted.get_rect(center=(center[0] - 1, center[1] - 1)))
+    text = font.render(str(num), True, (0, 0, 0))
+    screen.blit(text, text.get_rect(center=center))
+
+
 def reject_border_style(reason, zoom):
     """拒絕視覺：只換邊框色 + 加粗，**填充一律不動**（UI 鐵律 §1 / S1-2）。
 
@@ -777,10 +793,10 @@ class RendererMixin:
                         font = _gui_safe_font('SimHei', font_size)
                         self._num_font_cache[font_size] = font
                     cx, cy = view.piece_center(i, j, up)
-                    text = font.render(str(block.number), True, (0, 0, 0))
-                    text_rect = text.get_rect(
-                        center=self.world_to_screen(cx, cy))
-                    self.screen.blit(text, text_rect)
+                    draw_block_number(
+                        self.screen, font, block.number,
+                        self.world_to_screen(cx, cy), fill,
+                        emboss=getattr(self, 'face_bevel_enabled', False))
 
         # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**：
         # 放在循環前會被後畫的普通塊連同邊框一起蓋掉（實測只剩幾根細線）
@@ -2082,6 +2098,7 @@ class RendererMixin:
         # 2px，接頭處還是圓角咬出的缺口——遠看就是一堆歪歪扭扭的線。
         # 分趟之後每條邊只被描一次、寬度均勻，接頭處嚴絲合縫。
         _paint = []  # (base_poly, rpoly, fill, border_color, border_w)
+        _nums = []   # 编号字待落地项 (font, 数字串, center, fill)——三趟之后才画
 
         # 先算一遍所有塊的螢幕多邊形。縫帶底直接用**精確形狀**（不內縮不
         # 外擴）鋪成 gap 色：若干塊的精確形狀並集 = 整個盤面（含縫帶區域），
@@ -2153,7 +2170,10 @@ class RendererMixin:
             if hint_occ is not None and loc in hint_occ:
                 self._draw_hint_overlay(rpoly, loc == hint_hover)
 
-            # 編號字（numbered）：畫在塊質心（與舊路徑同字體缓存/同色）
+            # 編號字（numbered）：先收集、**三趟之後再落地**（§六十二子項
+            # 挪位修復）——原位置在填色趟之前，字被②整塊填色蓋掉＝碎三角
+            # 編號從未顯示過（headless 實測 0 黑像素，方形對照 811；模型板
+            # 入口不開 numbered，故長期無人發現）。
             if getattr(self, 'numbered', False) and getattr(block, 'number', None):
                 font_size = max(12, int(self.cell_size * self.zoom * 0.45))
                 if not hasattr(self, '_num_font_cache'):
@@ -2164,10 +2184,9 @@ class RendererMixin:
                     from GUI import _gui_safe_font
                     font = _gui_safe_font('SimHei', font_size)
                     self._num_font_cache[font_size] = font
-                text = font.render(str(block.number), True, (0, 0, 0))
                 cx = sum(p[0] for p in pts) / len(pts)
                 cy = sum(p[1] for p in pts) / len(pts)
-                self.screen.blit(text, text.get_rect(center=(int(cx), int(cy))))
+                _nums.append((font, str(block.number), (int(cx), int(cy)), fill))
 
         # 三趟落地：①晶格線 ②塊填色 ③描邊（僅特殊態）。
         #
@@ -2204,6 +2223,11 @@ class RendererMixin:
             if border_color == self.colors['border']:
                 continue
             pygame.draw.polygon(self.screen, border_color, rpoly, border_w)
+
+        # ④編號字落地（三趟之後）：被②填色蓋掉的舊位置已挪走，見收集段說明。
+        for _f, _s, _c, _fill4 in _nums:
+            draw_block_number(self.screen, _f, _s, _c, _fill4,
+                              emboss=getattr(self, 'face_bevel_enabled', False))
 
         # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**
         # ——放在循環前會被後畫的普通塊連同邊框一起蓋掉（三角實測過）。
@@ -2895,9 +2919,10 @@ class RendererMixin:
                     from GUI import _gui_safe_font
                     font = _gui_safe_font('SimHei', font_size)
                     self._num_font_cache[font_size] = font
-                text = font.render(str(block.number), True, (0, 0, 0))
-                text_rect = text.get_rect(center=(screen_x + scaled_cell / 2, screen_y + scaled_cell / 2))
-                self.screen.blit(text, text_rect)
+                draw_block_number(
+                    self.screen, font, block.number,
+                    (screen_x + scaled_cell / 2, screen_y + scaled_cell / 2), fill,
+                    emboss=getattr(self, 'face_bevel_enabled', False))
 
         # 捆绑组可视化（自由捆绑）：把同组滑块画成一整块实心矩形，
         # 让玩家在游玩中能一眼看出「这几块是胶粘的刚性整体」。
