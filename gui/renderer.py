@@ -1238,7 +1238,7 @@ class RendererMixin:
                 # 的投影点也纳入边界，矩形永远整张画得下。
                 seam_pts_screen = pts
         items += [(f['depth'], 0, f) for f in front_faces]
-        # 箭头朝相机偏置 0.45 格，但切面外沿本身仍可能落到前侧块的投影里；
+        # 箭头朝相机偏置 0.45 格，但仍可能落到前侧块的投影里；
         # 为了让四个合法方向始终可点，箭头统一排在 front_faces 之后。
         # 面片本身仍是世界几何 + 深度排序，不是二维贴图。
         items += sorted(arrow_items, key=lambda it: it[0])
@@ -1400,15 +1400,40 @@ class RendererMixin:
         except Exception:
             pass   # 文字画失败只丢这一行，不能让整帧黑掉（§4 同一条纪律）
 
+    def _cubic_seam_screen_to_world(self, x, y, seam):
+        """屏幕点 → 当前切面平面上的世界点（给箭头当「上一次点击处」锚点）。
+
+        只存屏幕坐标不行：转视角/平移后箭头会留在屏幕上，不跟着盘走；只存
+        块心也不行：箭头会埋进块里。把点击射线投到切面上，投影回来仍在点击
+        处，世界坐标又能跟着盘一起转。
+        """
+        if not seam or seam[0] not in ('r', 'c', 'd'):
+            return None
+        scene = getattr(self, '_cubic_scene', None)
+        if not isinstance(scene, dict):
+            return None
+        from engine import cubic_pick
+        from engine import cubic_view
+        blocks = getattr(getattr(self, 'game', None), 'blocks', None) or []
+        rect = cubic_pick.seam_plane_rect(
+            seam[0], seam[1], blocks,
+            gap=float(getattr(self, 'cubic_gap', 0.0)))
+        if not rect:
+            return None
+        axis = cubic_pick.FAMILY_TO_WORLD_AXIS[seam[0]]
+        return cubic_view.screen_to_plane(
+            (x, y), getattr(self, 'cubic_camera'),
+            scene['scale'], scene['origin'], axis, rect[0][axis])
+
     def _cubic_arrow_items(self, scene, seam, gap, camera, blocks):
         """三维方向箭头：世界空间的小几何体，返回可插入画家序的面片。
 
         用户 2026-11-18 的返工要求：箭头不能再用 `_arrow_sprite` 贴一张永远
         正对相机的图，否则转视角时没有透视、没有明暗、也没有真正的遮挡。
-        这里把箭头做成一块**世界空间的薄板**：尾部在切面外沿，沿推行方向画
-        箭杆和箭头三角，再沿板法向挤出一点厚度；所有面片走
-        `cubic_view.project_point`，和块面共用同一条画家序。二维的
-        `_arrow_sprite` 路径完全不动。
+        这里把箭头做成一块**世界空间的薄板**：尾部贴着玩家上一次点击处
+        （没有点击记录时回退到切面外沿），沿推行方向画箭杆和箭头三角，再沿
+        板法向挤出一点厚度；所有面片走 `cubic_view.project_point`，和块面共用
+        同一条画家序。二维的 `_arrow_sprite` 路径完全不动。
 
         薄板有两块互相垂直的候选面：一块铺在切面上（法向 = 切面法向），
         一块立在切面内（法向 = 切面内垂直方向）。每帧只画**投影面积更大**
@@ -1542,6 +1567,9 @@ class RendererMixin:
             return area, faces, fscr + bscr
 
         items = []
+        click_anchor = getattr(self, '_cubic_last_click_p', None)
+        if click_anchor is not None and len(click_anchor) != 3:
+            click_anchor = None
         for letter, vec in CUBIC_DIRECTIONS.items():
             axis = [i for i in range(3) if abs(vec[i]) > 0][0]
             if axis == fam_index:
@@ -1551,17 +1579,27 @@ class RendererMixin:
             world_axis = {0: 2, 1: 0, 2: 1}[axis]   # 词条轴 → 世界轴 (c,d,r)
             sign = 1.0 if vec[axis] > 0 else -1.0
 
-            # 尾部：切面中心 → 沿推行轴挪到切面外沿 → 再往外探一点。
-            anchor = list(mid)
-            edge = hi[world_axis] if sign > 0 else lo[world_axis]
-            anchor[world_axis] = edge + sign * 0.18
-            # 再整体朝相机推 0.45 格：箭头仍贴着切面外沿，但不会被切面
-            # 另一侧的块整块吞掉；深度仍参与画家序。
-            for i in range(3):
-                anchor[i] += view_dir[i] * 0.45
-
             u = [0.0, 0.0, 0.0]
             u[world_axis] = sign
+            if click_anchor is not None:
+                # 用户 2026-11-19：箭头要像原版一样贴在上一次点击处附近，
+                # 不是钉在整张切面的四个外沿。以点击处为中心，两个方向各
+                # 偏 0.57 格（箭头半长 0.35 + 间隔 0.22），留出点击余量。
+                anchor = list(click_anchor)
+                for i in range(3):
+                    anchor[i] += view_dir[i] * 0.45
+                tail = [anchor[i] + u[i] * 0.22 for i in range(3)]
+            else:
+                # 回退（键盘/回放选中，没有点击记录）：尾部仍在切面中心
+                # 沿推行轴到外沿，再往外探一点，保持旧行为。
+                tail = list(mid)
+                edge = hi[world_axis] if sign > 0 else lo[world_axis]
+                tail[world_axis] = edge + sign * 0.18
+                # 再整体朝相机推 0.45 格：箭头仍贴着切面外沿，但不会被切面
+                # 另一侧的块整块吞掉；深度仍参与画家序。
+                for i in range(3):
+                    tail[i] += view_dir[i] * 0.45
+
             # 切面内垂直方向 v（给第二块候选板当法向）。
             v = [normal[1] * u[2] - normal[2] * u[1],
                  normal[2] * u[0] - normal[0] * u[2],
@@ -1569,8 +1607,8 @@ class RendererMixin:
             n_len = math.sqrt(sum(x * x for x in v)) or 1.0
             v = [x / n_len for x in v]
 
-            area_a, faces_a, scr_a = _build_plate(anchor, u, normal, 0.055)
-            area_b, faces_b, scr_b = _build_plate(anchor, u, v, 0.055)
+            area_a, faces_a, scr_a = _build_plate(tail, u, normal, 0.055)
+            area_b, faces_b, scr_b = _build_plate(tail, u, v, 0.055)
             if area_a >= area_b:
                 chosen, screen_pts = faces_a, scr_a
             else:

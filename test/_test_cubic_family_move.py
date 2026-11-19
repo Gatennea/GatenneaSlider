@@ -22,6 +22,7 @@ if _PROJ not in sys.path:
 os.chdir(_PROJ)
 
 import GUI  # noqa: E402
+from engine import cubic_view as cv  # noqa: E402
 
 _ok = [0]
 _fail = []
@@ -97,7 +98,38 @@ check(shown == set(PARALLEL['c']),
       f'c 缝四个箭头全部可点（实得 {sorted(shown)}）', shown)
 
 print('=' * 60)
-print('D. 连续同向推：滑后仍连通的前三步不能被拒')
+print('D. 四个箭头贴着上一次点击处，不再散在切面外沿')
+g = fresh()
+g.selected_gap = ('c', 2)
+g.draw_board()
+anchor_w = cv.layout_anchor(g.game.blocks)
+target = next(b for b in g.game.blocks
+              if tuple(b.location)[:3] == (3, 3, 3))
+box = cv.block_boxes([target], g.cubic_gap, anchor=anchor_w)[0]
+hull = cv.screen_hull_of_box(box, g.cubic_camera, g._cubic_scene['scale'],
+                             g._cubic_scene['origin'])
+click = (int(sum(p[0] for p in hull) / len(hull)),
+         int(sum(p[1] for p in hull) / len(hull)))
+check(g._cubic_click(*click), '点在选中块上，选中成功')
+g.draw_board()
+check(g._cubic_last_click_p is not None, '记下点击锚点')
+if g._cubic_last_click_p is not None:
+    proj = cv.project_point(g._cubic_last_click_p, g.cubic_camera,
+                            g._cubic_scene['scale'], g._cubic_scene['origin'])
+    check(abs(proj[0] - click[0]) <= 1.5 and abs(proj[1] - click[1]) <= 1.5,
+          '锚点投影回点击处', (click, proj[:2]))
+scale = g._cubic_scene['scale']
+centers = [rect.center for _letter, rect in g._cubic_arrow_buttons]
+check(len(centers) == 4, '四个箭头都画出来了', len(centers))
+if centers:
+    worst = max(((cx - click[0]) ** 2 + (cy - click[1]) ** 2) ** 0.5
+                for cx, cy in centers)
+    check(worst <= scale * 1.0,
+          f'箭头中心都在点击处一格以内（最远 {worst / scale:.2f} 格）',
+          (click, centers))
+
+print('=' * 60)
+print('E. 连续同向推：滑后仍连通的前三步不能被拒')
 g = fresh(step=1)
 g.selected_gap = ('c', 2)
 anchor = next(b for b in g.game.blocks
