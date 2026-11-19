@@ -265,12 +265,13 @@ class MoveMixin:
             self.step_count += 1
             self.game_history.save_snapshot(self.game, move_info,
                                             self._move_merge_key())
-            # 滑动定型（待办 §55）：这一步提交后，原缝若已不再把选中组与
-            # 其余块分开，就必须清掉选中态，否则玩家不撤销也能沿旧缝反滑，
-            # 等于绕过历史抹掉一步。三维的缝号要跟着推进，放在
-            # `_cubic_push_letter` 更新 selected_gap 之后再判。
+            # 滑动定型（待办 §55）：这一步提交后，滑后盘面若已粘连，就
+            # 保留重选出来的整块（而不是清选中），并另起选中会话。
+            # 三维的缝号要跟着推进，放在 `_cubic_push_letter` 更新
+            # selected_gap 之后再判。
+            adhesion = False
             if not getattr(self, 'cubic_mode', False):
-                self._finalize_move_selection(selected)
+                adhesion = self._finalize_move_selection(selected)
             # 动画关闭也要有滑动声：给一个短促的默认长度。
             # 三维动画开着时则必须跟 cubic_anim_ms 同源（画面 202ms、声音
             # 却按 120ms 算速度会显得对不上，用户 2026-11-18 报「动画没音效」）。
@@ -283,23 +284,26 @@ class MoveMixin:
             # 走一步后**不主动拽相机**：只在整盘滑到完全看不见时兜底拉回。
             # 旧口径「有一块碰到边缘就平移」会让碎三角每步都动镜头。
             self.ensure_blocks_visible(only_if_invisible=True)
-            # 操作提示先于过关判定：过关/教程播报优先级更高，不应被“向X移动”覆盖
-            self.macro_notify_msg = f"向{self._dir_name(direction)}移动 {move_step}步"
-            self.macro_notify_timer = 120
+            # 操作提示先于过关判定：过关/教程播报优先级更高，不应被“向X移动”覆盖。
+            # 粘连时 _finalize 已给出“已改为选中整块”，不要再用方向提示盖掉。
+            if not adhesion:
+                self.macro_notify_msg = f"向{self._dir_name(direction)}移动 {move_step}步"
+                self.macro_notify_timer = 120
             self._maybe_show_solved_popup()
             self._mark_file_dirty()
         return True
 
     def _finalize_move_selection(self, moved_blocks=None):
-        """一步提交后：旧缝若已不再把选中组与其余块分开，就清掉选中态。
+        """一步提交后，按滑后盘面重选定型（待办 §55）。
 
-        待办 §55（全形态规则 bug）：滑后选中组与其余块粘连时，原缝已经不是
-        两者的分界；玩家却还能沿旧缝反滑，历史记「去+回」两步，等于不撤销
-        就抹掉一步。判据不新写几何：用原缝在**滑后盘面**重跑该形态的 opt，
-        重选出的片必须仍是刚移动的那批块——
-          · 重选一致 → 缝仍分得开，保留选中（两次触控连续滑动靠这条）；
-          · 重选变了（粘连）或缝已失效 → 清 selected_gap / be_opted /
-            selected_block，并结束本次选中会话（下一手另起快照）。
+        规则：滑后若和其余块粘成同一块，就不能再只选原来那一小片——那等于
+        假装它能单独动，玩家可以沿旧缝反滑把刚粘上的连接再拉断，绕过撤销。
+        正确做法是保留重选出来的**整块**，并把下一次推当成新的一步。
+
+        判据不新写几何：用原缝在滑后盘面重跑该形态的 opt。
+          · 重选一致 → 缝仍分得开，保留原选中（连续滑动靠这条）；
+          · 重选变大 → 粘连，保留整块；旧缝仍有效就继续用，失效则清缝；
+          · 缝失效 → 保留原选片、清缝，等玩家重新点缝（不自动取消选中）。
         """
         gap = getattr(self, 'selected_gap', None)
         if not gap or gap[0] is None or gap[1] is None:
@@ -317,7 +321,14 @@ class MoveMixin:
             ref = moved[0]
 
         if not self._move_gap_still_valid(gap):
-            self._clear_move_selection_after_adhesion()
+            # 缝失效时已无法用 opt 切出整块；先保留原选片，不自动取消。
+            # 清掉缝和箭头锚点，等玩家重新点一条缝再继续。
+            self.selected_gap = None
+            if hasattr(self, '_gap_anchor_world'):
+                self._gap_anchor_world = None
+            self._bump_move_session()
+            self.macro_notify_msg = "滑动后原缝已失效：保留选中，请重新点选缝隙"
+            self.macro_notify_timer = 120
             return True
 
         # 直接复用各形态现成的 opt：方形洪泛 / 三角 3-邻接 / 米字 5-邻接 /
@@ -327,12 +338,28 @@ class MoveMixin:
         old_pos = {tuple(b.location) for b in moved}
         new_pos = {tuple(b.location) for b in self.game.blocks
                    if getattr(b, 'be_opted', False)}
-        if new_pos != old_pos:
-            self._clear_move_selection_after_adhesion()
+        if new_pos == old_pos:
+            # 缝仍有效且重选一致：保留原选中，顺手把参考块修回片内。
+            self.selected_block = ref
+            return False
+
+        if new_pos and old_pos.issubset(new_pos):
+            # 粘连：opt 已经把「刚移动片 + 新粘上的块」选成同一块。
+            # 保留这个更大的选中，但必须另起选中会话——下一次推是新的一步，
+            # 不能和粘连前那一步并进同一条快照（方形二维会按会话合并）。
+            self.selected_block = ref
+            self._bump_move_session()
+            self.macro_notify_msg = f"滑动后粘连：已改为选中整块 {len(new_pos)} 块"
+            self.macro_notify_timer = 120
             return True
-        # 缝仍有效且重选一致：保留原选中，顺手把参考块修回片内。
-        self.selected_block = ref
-        return False
+
+        # 理论外情况：重选没有包含原片（例如参考块失效、opt 没选出任何块）。
+        # 此时无法安全地保留“整块”，清掉旧选中让玩家重新选，避免留下
+        # be_opted 与引擎 _opted_keys 不一致的假选中。
+        self._clear_move_selection_after_adhesion()
+        self.macro_notify_msg = "滑动后选区异常：请重新选择滑块"
+        self.macro_notify_timer = 120
+        return True
 
     def _move_gap_still_valid(self, gap) -> bool:
         """滑后原缝是否仍然几何有效（各形态已有的判据，不在这里重写）。"""

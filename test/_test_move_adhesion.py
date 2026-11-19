@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""§55 护栏：滑后与其余块粘连时，选中态必须撤销。
+"""§55 护栏：滑后与其余块粘连时，选中应扩成整块而不是清空。
 
 覆盖：
-  A. 方形 6×6：选中左上组件向右滑一格后与右上组件粘连 → 清选中、反滑不可用
+  A. 方形 6×6：选中左上组件向右滑一格后与右上组件粘连 → 选中扩为整块、
+     另起一步；反推整块不是撤销
   B. 方形 3×3：缝仍分得开时，同一次选中连移两步 → 选中保留、历史合并
-  C. 三角形：16 块盘面，n 缝一侧 9 块沿 w 滑后粘连 → 清选中、反滑不可用
-  D. 三维 3×3×3：27 块盘面，r 缝一侧 2 块沿 c 推后粘连 → 清选中、反推不可用
+  C. 三角形：16 块盘面，n 缝一侧 9 块沿 w 滑后粘连 → 选中扩为整块
+  D. 三维 3×3×3：r 缝一侧 2 块沿 c 推后粘连 → 选中扩为整块
 
 运行：D:\\python\\python.exe test\\_test_move_adhesion.py
 """
@@ -41,6 +42,10 @@ def selected(game):
     return [b for b in game.blocks if getattr(b, 'be_opted', False)]
 
 
+def all_locs(game):
+    return {tuple(b.location[:3]) for b in game.blocks}
+
+
 gui = SliderGUI()
 gui.save_readonly_flag = False
 gui._readonly = False
@@ -57,7 +62,7 @@ def reset_history():
 # ---------------------------------------------------------------------------
 # A. 方形：滑后粘连
 # ---------------------------------------------------------------------------
-print('A. 方形 6×6：滑后粘连 → 清选中')
+print('A. 方形 6×6：滑后粘连 → 选中扩为整块')
 gui.new_puzzle(6, 6, 1)
 cells = set()
 # 上方三行：左 3×3 组件 + 右 2×3 组件，第 3 列空出；下方三行整行铺满。
@@ -78,12 +83,26 @@ gui.game.opt('h', 2, ref)
 gui.selected_block = ref
 check('起手选中左上组件（9 块）', len(selected(gui.game)) == 9,
       str(len(selected(gui.game))))
+before = all_locs(gui.game)
 check('向右滑一格成功', bool(gui.move_selected_blocks('d')))
-check('滑后已粘连 → 选中被清', len(selected(gui.game)) == 0)
-check('selected_gap 归空', gui.selected_gap is None, str(gui.selected_gap))
-check('selected_block 归空', gui.selected_block is None)
-check('反向滑被拒绝（不再能绕过撤销）',
-      gui.move_selected_blocks('a') is False)
+check('滑后已粘连 → 选中扩为整块（15 块）',
+      len(selected(gui.game)) == 15, str(len(selected(gui.game))))
+check('selected_gap 保留原缝', gui.selected_gap == ('h', 2),
+      str(gui.selected_gap))
+check('selected_block 仍在新片内', gui.selected_block in selected(gui.game))
+check('粘连后历史独立（不并进上一条快照）',
+      len(gui.game_history.history) == 2, str(len(gui.game_history.history)))
+check('粘连提示说明改为整块',
+      '整块' in (gui.macro_notify_msg or ''), gui.macro_notify_msg or '')
+rev = bool(gui.move_selected_blocks('a'))
+check('反推整块不是撤销：盘面不能恢复原状',
+      (not rev) or all_locs(gui.game) != before)
+if rev:
+    check('反推整块独立成第三步',
+          len(gui.game_history.history) == 3,
+          str(len(gui.game_history.history)))
+check('反推后仍保留整块选中',
+      len(selected(gui.game)) == 15, str(len(selected(gui.game))))
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +131,7 @@ check('合并快照 steps=2', gui.game_history.history[-1].get('steps') == 2,
 # ---------------------------------------------------------------------------
 # C. 三角形：p 缝一侧滑后粘连
 # ---------------------------------------------------------------------------
-print('C. 三角形：滑后粘连 → 清选中')
+print('C. 三角形：滑后粘连 → 选中扩为整块')
 gui.new_triangle_puzzle(4, 1)
 gui.game.blocks = [Block(list(loc)) for loc in [
     (-1, 1, False), (-1, 2, True), (-1, 2, False), (-1, 3, True),
@@ -129,16 +148,23 @@ gui.game.opt('n', 1, ref)
 gui.selected_block = ref
 check('起手选中 n 缝一侧 9 块', len(selected(gui.game)) == 9,
       str(len(selected(gui.game))))
+before = all_locs(gui.game)
 check('沿 w 滑一步成功', bool(gui.move_selected_blocks('w')))
-check('滑后已粘连 → 选中被清', len(selected(gui.game)) == 0)
-check('selected_gap 归空', gui.selected_gap is None, str(gui.selected_gap))
-check('反向 x 被拒绝', gui.move_selected_blocks('x') is False)
+check('滑后已粘连 → 选中扩为整块（11 块）',
+      len(selected(gui.game)) == 11, str(len(selected(gui.game))))
+check('selected_gap 保留原缝', gui.selected_gap == ('n', 1),
+      str(gui.selected_gap))
+rev = bool(gui.move_selected_blocks('x'))
+check('反推整块不是撤销：盘面不能恢复原状',
+      (not rev) or all_locs(gui.game) != before)
+check('反推后仍保留整块选中',
+      len(selected(gui.game)) == 11, str(len(selected(gui.game))))
 
 
 # ---------------------------------------------------------------------------
 # D. 三维：r 缝一侧推后粘连
 # ---------------------------------------------------------------------------
-print('D. 三维 3×3×3：推后粘连 → 清选中')
+print('D. 三维 3×3×3：推后粘连 → 选中扩为整块')
 gui.new_cubic_puzzle(3, 3, 3, 1)
 gui.game.blocks = [Block(list(loc)) for loc in [
     (-2, 0, -1), (-2, 0, 0), (-1, 0, -1), (-1, 0, 0), (-1, 0, 1),
@@ -157,10 +183,50 @@ gui.game.opt('r', 2, ref)
 gui.selected_block = ref
 n_sel = len(selected(gui.game))
 check('起手选中 r 缝一侧 2 块', n_sel == 2, str(n_sel))
+before = all_locs(gui.game)
 check('沿 c 推一步成功', bool(gui._cubic_push_letter('c')))
-check('推后已粘连 → 选中被清', len(selected(gui.game)) == 0)
-check('selected_gap 归空', gui.selected_gap is None, str(gui.selected_gap))
-check('反向 C 被拒绝', gui._cubic_push_letter('C') is False)
+check('推后已粘连 → 选中扩为整块（23 块）',
+      len(selected(gui.game)) == 23, str(len(selected(gui.game))))
+check('selected_gap 保留原缝', gui.selected_gap == ('r', 2),
+      str(gui.selected_gap))
+rev = bool(gui._cubic_push_letter('C'))
+check('反推整块不是撤销：盘面不能恢复原状',
+      (not rev) or all_locs(gui.game) != before)
+check('反推后仍保留整块选中',
+      len(selected(gui.game)) == 23, str(len(selected(gui.game))))
+
+
+# ---------------------------------------------------------------------------
+# E. 动画路径：落位后同样扩成整块
+# ---------------------------------------------------------------------------
+print('E. 方形 6×6（动画）: 落位后粘连 → 选中扩为整块')
+gui.animation_enabled = True
+gui.animation_duration = 300
+gui.new_puzzle(6, 6, 1)
+cells = set()
+for r in range(3):
+    for c in range(3):
+        cells.add((r, c))
+for r in range(3):
+    for c in range(4, 6):
+        cells.add((r, c))
+for r in range(3, 6):
+    for c in range(6):
+        cells.add((r, c))
+set_cells(gui.game, cells)
+reset_history()
+gui.selected_gap = ('h', 2)
+ref = next(b for b in gui.game.blocks if tuple(b.location) == (0, 0))
+gui.game.opt('h', 2, ref)
+gui.selected_block = ref
+check('动画路径：右滑进入动画', bool(gui.move_selected_blocks('d'))
+      and getattr(gui, 'animating', False))
+gui.commit_animation()
+check('动画落位后粘连 → 选中扩为整块（15 块）',
+      len(selected(gui.game)) == 15, str(len(selected(gui.game))))
+check('动画落位后 selected_gap 保留',
+      gui.selected_gap == ('h', 2), str(gui.selected_gap))
+gui.animation_enabled = False
 
 
 print('=' * 60)
