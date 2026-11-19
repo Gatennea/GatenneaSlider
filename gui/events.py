@@ -1665,7 +1665,7 @@ class EventsMixin:
     #: 俯仰夹紧：相机 z 轴与竖直轴夹角的余量——贴到极点继续拖会让画面翻跟头。
     CUBIC_PITCH_LIMIT = 89.0
     #: 缩放区间：太小看不到缝、太大只剩一两块。
-    CUBIC_ZOOM_RANGE = (0.5, 3.0)
+    CUBIC_ZOOM_RANGE = (0.1, 3.0)
     #: 拖动灵敏度：arcball 角度（球面夹角）再乘这个倍率。1.0 = 抓哪儿转哪儿。
     CUBIC_DRAG_SENSITIVITY = 1.0
 
