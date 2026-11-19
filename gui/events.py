@@ -1939,8 +1939,10 @@ class EventsMixin:
         return True
 
     def _cubic_seam_click(self, x, y):
-        """右键：选切面。点中块的某个面 → 这条面外沿的内部缝；空白 → 取消选中。
+        """右键：选切面。只接受**两块之间的内部切面**；空白 → 取消选中。
 
+        2026-11-19 用户口径：表面上的切面不能选。点中滑塊外表面时不再退回
+        「表面之下一層」的缝；保持现有选中不动，只提示只能选内部切面。
         只定切面，**不代替左键选块**（用户 2026-11-18：没有缝时禁止选块 →
         反过来选缝也不该顺手把块选了；选完缝再左键点块）。
         """
@@ -1953,9 +1955,12 @@ class EventsMixin:
         seam = cubic_pick.seam_of_internal_face(
             hit, self.game.is_valid_gap, locations)
         if seam is None:
-            seam = cubic_pick.seam_of_face(hit, self.game.is_valid_gap, locations)
-        if seam is None:
-            self.macro_notify_msg = "这个面旁边没有可切的内部缝"
+            # 表面不是空白：不要顺手取消已有选中，也不要退到下一层缝。
+            if not cubic_pick.face_is_internal(hit, locations):
+                self.macro_notify_msg = (
+                    "这个面在滑块表面，不能选切面；只能选两块之间的内部切面")
+            else:
+                self.macro_notify_msg = "这个内部面旁边没有可切的缝"
             self.macro_notify_timer = 110
             return False
         self.selected_gap = seam

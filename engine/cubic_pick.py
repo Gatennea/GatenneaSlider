@@ -200,27 +200,6 @@ def _is_internal_cut(family, line, locations) -> bool:
     return any(k <= line for k in ks) and any(k >= line + 1 for k in ks)
 
 
-def seam_of_face(face, is_valid_gap, locations=None):
-    """点中一块的某个面 → 它所属的**内部切面**（不是包围盒平面）。
-
-    2026-11-17 用户口径（扩大可选范围）：可点的面不止缝里的墙，**块的任意外
-    表面**都算——但推出来的平面不能是包围盒那层。做法：先试「面外侧那条线」
-    （sign>0 → v，sign<0 → v-1）是内部切面就用（缝里的墙走这条，天然命中）；
-    否则退回「块的另一条边界」。所以点最前面那块的前脸，得到的是它与后面
-    那层之间的切面（画面里与屏幕平行），不是包围盒那层，也不是斜的缝。
-
-    外表面若两侧缺块（1×1×n 这类退化情形）→ 返回 None，不硬选。
-    """
-    family = AXIS_TO_FAMILY[face['axis']]
-    idx = AXIS_TO_LOC_INDEX[face['axis']]
-    v = int(face['loc'][idx])
-    candidates = (v, v - 1) if face['sign'] > 0 else (v - 1, v)
-    for line in candidates:
-        if _is_internal_cut(family, line, locations) and is_valid_gap(family, line):
-            return (family, line)
-    return None
-
-
 def seam_of_internal_face(face, is_valid_gap, locations=None):
     """「块与块之间的那块墙」→ (缝族, 缝线号)；不是内壁就返回 None。
 
@@ -233,7 +212,7 @@ def seam_of_internal_face(face, is_valid_gap, locations=None):
     面在坐标 ``v``，法向 ``sign``：sign>0 时这块在缝的**低**侧，墙立在 v+1 上
     → 缝线号 v；sign<0 时在高侧，墙立在 v 上 → 缝线号 v-1。
     """
-    if locations is not None and not face_is_internal(face, locations):
+    if locations is None or not face_is_internal(face, locations):
         return None
     family = AXIS_TO_FAMILY[face['axis']]
     idx = AXIS_TO_LOC_INDEX[face['axis']]
@@ -242,6 +221,12 @@ def seam_of_internal_face(face, is_valid_gap, locations=None):
     if not is_valid_gap(family, line):
         return None
     return (family, line)
+
+
+# 旧调用点（测试）仍写 seam_of_face；2026-11-19 起它与 seam_of_internal_face
+# 语义完全相同（外表面一律 None、不再回退下一层），故只留一个别名，别再存两份
+# 逐字相同的函数体（static_lint 的 DB 重复定义会报 NEW）。
+seam_of_face = seam_of_internal_face
 
 
 def seam_plane_polygon(family, line, blocks, pad: float = 0.0, gap: float = 0.0):

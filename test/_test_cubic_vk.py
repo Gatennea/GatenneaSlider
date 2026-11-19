@@ -44,6 +44,7 @@ def check(cond, msg, extra=''):
 
 
 from GUI import SliderGUI  # noqa: E402
+from _cubic_test_util import internal_seam_point  # noqa: E402
 
 pygame.init()
 gui = SliderGUI(m=4, n=4, step=1)
@@ -193,9 +194,9 @@ def click(pos):
     gui.handle_events()
 
 
-face = gui._cubic_scene['faces'][-1]
-pt = (int(sum(p[0] for p in face['pts']) / 4.0),
-      int(sum(p[1] for p in face['pts']) / 4.0))
+pt, seam_want, face = internal_seam_point(gui)
+check(pt is not None and seam_want is not None,
+      '找到可见的内部墙点（表面右键已禁选）', extra=str(face))
 gui._cubic_seam_click(*pt)      # 右键选缝
 click(pt)                       # 左键选块
 check(any(b.be_opted for b in gui.game.blocks), '右键选缝 + 左键选块 → 一组为推做准备')
@@ -241,9 +242,9 @@ check(not getattr(gui, '_cubic_arrow_buttons', []),
       '没选中时棋盘上不画方向箭头（只在选中后给可点的方向）')
 gui._cubic_view(0)
 gui.draw_cubic_board()
-face2 = gui._cubic_scene['faces'][-1]
-pt = (int(sum(p[0] for p in face2['pts']) / 4.0),
-      int(sum(p[1] for p in face2['pts']) / 4.0))
+pt, seam_want, face2 = internal_seam_point(gui)
+check(pt is not None and seam_want is not None,
+      '重新选一组：找到可见内部墙点', extra=str(face2))
 gui._cubic_seam_click(*pt)      # 右键选缝
 click(pt)                       # 左键选块
 gui.draw_cubic_board()

@@ -32,6 +32,7 @@ import pygame  # noqa: E402
 
 from engine.adapter import create_adapter_puzzle  # noqa: E402
 from engine.compat import CUBIC_DIRECTIONS, direction_table  # noqa: E402
+from _cubic_test_util import internal_seam_point  # noqa: E402
 
 _ok = [0]
 _fail = []
@@ -80,6 +81,10 @@ pygame.display.set_mode((gui.screen_width, gui.screen_height))
 gui.screen = pygame.display.get_surface()
 gui._cubic_camera_prefs = {}
 gui.new_cubic_puzzle(3, 3, 3, 1)
+# new_cubic_puzzle 会按 config 重新灌动画开关；本文件要验「打乱后的逻辑终态」，
+# 必须在建局之后关掉演示动画，否则 shuffle_puzzle 会把棋盘先退回打乱前重放。
+gui.animation_enabled = False
+gui.cubic_anim_ms = 0
 gui._cubic_view(0)
 gui.draw_cubic_board()
 
@@ -99,9 +104,9 @@ def key(k, mod=0):
     gui.handle_events()
 
 
-face = gui._cubic_scene['faces'][-1]
-pt = (int(sum(p[0] for p in face['pts']) / 4.0),
-      int(sum(p[1] for p in face['pts']) / 4.0))
+pt, seam_want, face = internal_seam_point(gui)
+check(pt is not None and seam_want is not None,
+      '找到可见的内部墙点（表面右键已禁选）', extra=str(face))
 gui._cubic_seam_click(*pt)       # 右键选缝
 click(pt)                        # 左键选块（新操作方式：先缝后块）
 check(any(b.be_opted for b in gui.game.blocks), '右键选缝 + 左键选块 → 选中一侧连通组')
@@ -203,6 +208,10 @@ check(getattr(gui, '_sel_anim_locs', frozenset())
       '重做高亮位置也都真的落在局面里', getattr(gui, '_sel_anim_locs', None))
 
 print('E. 打乱 / 判胜 / 渲染')
+# 本段验打乱后的**逻辑终态**；打乱演示会把棋盘先退回打乱前再逐帧重放，
+# 因此在这里显式关掉（前面的动画小节可能已把它重新打开）。
+gui.animation_enabled = False
+gui.cubic_anim_ms = 0
 gui.shuffle_puzzle(confirm=False)
 check(len(gui.game.blocks) == 27, '打乱后块数仍 27')
 check(not gui.game.is_solved(), '打乱后不是还原态')
@@ -214,9 +223,9 @@ check(gui.step_count == 0, f'打乱把步数清零（打乱本身不算一步，
 print('F. 拒绝反馈：推不动 → 提示音 + 选中组红边闪 12 帧')
 gui._cubic_view(0)
 gui.draw_cubic_board()
-face = gui._cubic_scene['faces'][-1]
-pt = (int(sum(p[0] for p in face['pts']) / 4.0),
-      int(sum(p[1] for p in face['pts']) / 4.0))
+pt, seam_want, face = internal_seam_point(gui)
+check(pt is not None and seam_want is not None,
+      '打乱后找到可见内部墙点（准备挨拒）', extra=str(face))
 gui._cubic_seam_click(*pt)
 click(pt)
 check(any(b.be_opted for b in gui.game.blocks), '重新选出一组（准备挨拒）')
@@ -243,7 +252,12 @@ for _reason, _color, _name in (
         ('collision', REJECT_BORDER_COLLISION, '重叠')):
     gui._reject_reason = _reason
     gui._shake_t = 12
-    gui._shake_blocks = {id(b) for b in gui.game.blocks if b.be_opted}
+    # 打乱后的局面是随机的：选中组可能整组在背面，边框会被前块完全挡住。
+    # 这里只验「拒绝原因 → 颜色」的渲染映射，取本帧真有可见面的块来描边即可。
+    _visible_locs = {tuple(int(v) for v in f['loc'][:3])
+                     for f in gui._cubic_scene['faces']}
+    gui._shake_blocks = {id(b) for b in gui.game.blocks
+                         if tuple(int(v) for v in b.location[:3]) in _visible_locs}
     gui.draw_cubic_board()
     _hit = any(gui.screen.get_at((x, y))[:3] == _color
                for y in range(0, gui.screen_height, 2)

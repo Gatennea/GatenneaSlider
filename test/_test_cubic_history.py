@@ -20,6 +20,7 @@ import pygame  # noqa: E402
 from GUI import SliderGUI  # noqa: E402
 from gui.file_ops import StaleCubicSave  # noqa: E402
 from history import validate_snapshot  # noqa: E402
+from _cubic_test_util import internal_seam_point  # noqa: E402
 
 FAILED = []
 PASSED = [0]
@@ -57,12 +58,12 @@ def cells(g):
 
 
 def select_front(g):
-    """右键选最前面那张脸 → 左键点块，选出一组（为推做准备）。"""
+    """右键选可见的内部墙 → 左键点块，选出一组（为推做准备）。"""
     g._cubic_view(0)
     g.draw_cubic_board()
-    f = g._cubic_scene['faces'][-1]
-    pt = (int(sum(p[0] for p in f['pts']) / 4.0),
-          int(sum(p[1] for p in f['pts']) / 4.0))
+    pt, seam, face = internal_seam_point(g, families=('r', 'd'))
+    if pt is None or seam is None:
+        return False
     g._cubic_seam_click(*pt)       # 右键选缝
     click(g, pt)                   # 左键选块
     return bool(g.selected_gap) and any(b.be_opted for b in g.game.blocks)
