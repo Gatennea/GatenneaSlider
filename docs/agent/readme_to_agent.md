@@ -371,9 +371,16 @@ python -m solver.visualize_table 4 4 2
 
 支援多程序（≤16）、checkpoint 斷點續算、定時自動存檔。
 
-### 5.4 `solver/ml`（資料管線）
+### 5.4 `solver/ml`（本節只講 ML 資料管線；服役求解器核心也在同目錄）
 
-依賴 numpy + scikit-learn。目前有兩條獨立管線：
+> **目錄名說明（2026-11-19 補）**：`solver/ml` 是**歷史命名，不是純 ML 包**。同目錄還
+> 裝著服役中的求解器核心——`gather_solver` / `shape_gather` / `fill_macro` /
+> `gap_solver` / `invariants` / `hole_detector` / 各形態 adapter，以及 2026-11-19 新增的
+> 三維聚攏 `cubic_gather`；它們屬 §5.1–5.3，不屬本節。新增服役求解器**照舊放這裡**，
+> 跟著同族檔案走，別為了「名字像 ML」另起目錄。完整劃分見 `solver/ml/__init__.py` 的
+> docstring 與 `docs/agent/踩坑与搁置.md`「別把整個 solver/ml 當擱置」。
+>
+> 本節以下只講**已擱置**的 ML / 資料管線，依賴 numpy + scikit-learn，目前有兩條獨立管線：
 
 **A. 查表導出管線（離線，未接入求解菜單）**
 `features`（特徵/動作編碼）→ `export_data`（從 BFS 表導出）→ `annotate` → `train_baseline` / `train_ranker` / `train_distance` → `ai_solver` / `distance_solver` 推理。
