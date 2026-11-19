@@ -545,7 +545,7 @@ FEATURES = (
          kind='action', place=('menu_sub', '谜题', '三维谜题 ▸', '3×3×3 等级1'),
          forms=('cubic',), modes=('practice', 'timed'),
          howto='顶栏「谜题」→「三维谜题 ▸」→ 选 2×2×2 ~ 5×5×5 共 9 档（或「自定义...」填 m/n/d）；也是命令面板搜「三维」的直达入口。',
-         confusion='三维目前只做长方体还原这一类，没有其他形状；竞速已接，三维求解器与创造模式都明确未接。'),
+         confusion='三维目前只做长方体还原这一类，没有其他形状；竞速已接，三维求解器明确未接；三维创造模式已接（搭建/放挖、样式库、随机生成）。'),
     dict(id='cubic_gap', name='拆分（三维）',
          aliases=('拆分', '间隙', '块间距', '分开看', '剥开', 'gap'),
          kind='setting', place=('right_panel',),

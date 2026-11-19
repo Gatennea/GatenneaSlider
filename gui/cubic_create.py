@@ -114,6 +114,17 @@ class CubicCreateMixin:
             if goal_raw or any(shift):
                 game.set_goal_pattern(sorted(draft.solved_cells))
         except Exception as exc:      # noqa: BLE001
+            # apply_to 可能已经平移了真盘面；set_goal_pattern 再失败时若不回滚，
+            # 备份在手却没进编辑态，取消也退不回（审查 R2-3）。异常分支先把
+            # 盘面与还原目标都恢复，再退出。
+            try:
+                game.restore_state(backup)
+                if goal_backup is not None:
+                    game.set_goal_pattern(goal_backup)
+                else:
+                    game.clear_goal_pattern()
+            except Exception:         # noqa: BLE001
+                pass
             self._ann_notify(f'准备编辑画布失败：{exc}')
             return False
 
