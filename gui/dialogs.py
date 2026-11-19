@@ -570,12 +570,38 @@ class DialogsMixin:
         real_screen.blit(surf, (0, 0))
 
 
-    def _load_help_lines(self):
-        """从 docs/player/操作说明.md 加载帮助文本，解析为 (文本, 是否高亮) 列表"""
+    # §59A：帮助三页 → 各自的文档文件（二维页沿用旧文件）。
+    _HELP_TAB_FILES = {
+        '2d': '操作说明.md',
+        '3d': '三维操作说明.md',
+        'common': '通用说明.md',
+    }
+    _HELP_TAB_LABELS = {'2d': '二维', '3d': '三维', 'common': '通用'}
+
+    def _help_title(self) -> str:
+        """帮助框标题（§59A：跟着当前页签变）。"""
+        label = self._HELP_TAB_LABELS.get(getattr(self, 'help_tab', '2d'), '二维')
+        return f"帮助 - 操作说明（{label}）"
+
+    def _load_help_lines(self, tab=None):
+        """从 docs/player/<按 tab 对应文件> 加载帮助文本，解析为 (文本, 是否高亮) 列表。
+
+        §59A：帮助分三页（二维 / 三维 / 通用），**按页读不同文件**并按 tab 缓存
+        （``_help_lines_cache``）。文件缺失回空列表（不打断绘制）。以 ``>`` 开头的
+        行（受眾标注等 Markdown 引用行）跳过、不渲染进面板。
+        """
+        if tab is None:
+            tab = getattr(self, 'help_tab', '2d')
+        cache = getattr(self, '_help_lines_cache', None)
+        if cache is None:
+            cache = self._help_lines_cache = {}
+        if tab in cache:
+            return cache[tab]
+        fname = self._HELP_TAB_FILES.get(tab, '操作说明.md')
         if getattr(sys, 'frozen', False):
-            md_path = os.path.join(sys._MEIPASS, 'docs', 'player', '操作说明.md')
+            md_path = os.path.join(sys._MEIPASS, 'docs', 'player', fname)
         else:
-            md_path = os.path.join(os.path.dirname(__file__), "..", "docs", "player", "操作说明.md")
+            md_path = os.path.join(os.path.dirname(__file__), "..", "docs", "player", fname)
         lines = []
         try:
             with open(md_path, "r", encoding="utf-8") as f:
@@ -583,6 +609,8 @@ class DialogsMixin:
                     line = line.rstrip("\n").rstrip("\r")
                     if not line:
                         lines.append(("", False))
+                    elif line.startswith("> "):
+                        continue
                     elif line.startswith("## "):
                         lines.append((line[3:], True))
                     elif line.startswith("   - "):
@@ -593,6 +621,7 @@ class DialogsMixin:
                         lines.append(("  " + line, False))
         except FileNotFoundError:
             pass
+        cache[tab] = lines
         return lines
 
     def draw_help_dialog(self):
@@ -612,8 +641,36 @@ class DialogsMixin:
         pygame.draw.rect(self.screen, self.colors['dialog_bg'], self.help_dialog_rect, border_radius=8)
         pygame.draw.rect(self.screen, self.colors['dialog_border'], self.help_dialog_rect, 2, border_radius=8)
 
-        title_surface = self.dialog_title_font.render("帮助 - 操作说明", True, self.colors['dialog_title'])
+        title_surface = self.dialog_title_font.render(self._help_title(), True, self.colors['dialog_title'])
         self.screen.blit(title_surface, (dialog_x + 20, dialog_y + 15))
+
+        # §59A 页签条（标题行右侧三个按钮）：二维 / 三维 / 通用。
+        # 每页独立滚动位在切页时经 help_scroll_pos 换入换出；矩形登记给事件层点击。
+        tab_w, tab_h, tab_gap = 54, 26, 6
+        tab_y = dialog_y + 14
+        tab_x = dialog_x + dialog_width - 15 - (tab_w * 3 + tab_gap * 2)
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        self.help_tab_rects = {}
+        cur_tab = getattr(self, 'help_tab', '2d')
+        for _key in ('2d', '3d', 'common'):
+            _r = pygame.Rect(tab_x, tab_y, tab_w, tab_h)
+            self.help_tab_rects[_key] = _r
+            _selected = (_key == cur_tab)
+            _hover = _r.collidepoint(mouse_x, mouse_y)
+            if _selected:
+                _bg = self.colors['input_active']
+            elif _hover:
+                _bg = self.colors['input_bg']
+            else:
+                _bg = None
+            if _bg is not None:
+                pygame.draw.rect(self.screen, _bg, _r, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], _r, 1, border_radius=4)
+            _tf = self.dialog_font.render(self._HELP_TAB_LABELS[_key], True,
+                                          self.colors['input_text'] if _selected
+                                          else self.colors['dialog_text'])
+            self.screen.blit(_tf, _tf.get_rect(center=_r.center))
+            tab_x += tab_w + tab_gap
 
         line_y = dialog_y + 50
         pygame.draw.line(self.screen, self.colors['dialog_border'],
@@ -668,7 +725,7 @@ class DialogsMixin:
         text_max_width = dialog_width - 65
         query = str(getattr(self, 'help_query', '') or '').strip()
 
-        cache_key = (query, self._feature_form(),
+        cache_key = (query, getattr(self, 'help_tab', '2d'), self._feature_form(),
                      getattr(self, 'game_mode', 'practice'),
                      dialog_x, dialog_width, content_top, text_max_width)
         cached = getattr(self, '_help_content_cache', None)
@@ -849,6 +906,26 @@ class DialogsMixin:
 
         title_surface = self.dialog_title_font.render("自定义谜题", True, self.colors['dialog_title'])
         self.screen.blit(title_surface, (dialog_x + 20, dialog_y + 15))
+
+        kind = getattr(self, 'custom_kind', 'rect')
+        # §59E 入口告知：三维态在标题行右侧标一句「三维操作与二维不同」+
+        # 可点「查看操作」→ 帮助三维页（事件层 custom_opshelp_rect 命中）。
+        self.custom_opshelp_rect = None
+        if kind == 'cubic':
+            _hint = self.status_font.render("三维操作与二维不同 ·", True, (150, 150, 150))
+            _link = self.status_font.render("查看操作", True, (120, 190, 255))
+            _link_rect = _link.get_rect()
+            _link_rect.right = dialog_x + dialog_width - 18
+            _link_rect.centery = dialog_y + 27
+            _hint_rect = _hint.get_rect()
+            _hint_rect.right = _link_rect.left - 6
+            _hint_rect.centery = dialog_y + 27
+            self.screen.blit(_hint, _hint_rect)
+            self.screen.blit(_link, _link_rect)
+            pygame.draw.line(self.screen, (120, 190, 255),
+                             (_link_rect.left, _link_rect.bottom + 1),
+                             (_link_rect.right, _link_rect.bottom + 1))
+            self.custom_opshelp_rect = _link_rect.inflate(8, 6)
 
         line_y = dialog_y + 50
         pygame.draw.line(self.screen, self.colors['dialog_border'],
@@ -1244,6 +1321,15 @@ class DialogsMixin:
             # 对话框还没画过一帧（双击的第二下、或刚被别的路径打开）时没有任何
             # 可点的矩形，直接吞掉这个点击，不要去摸不存在的 custom_field_rects
             if not hasattr(self, 'custom_ok_btn'):
+                return True
+
+            # §59E：「查看操作」入口。必须先关本框再开帮助——绘制顺序
+            # help 在 custom 之前（custom 盖住 help），事件分发 custom 也
+            # 在 help 之前，两框同开等于 help 点不到。
+            _oh = getattr(self, 'custom_opshelp_rect', None)
+            if _oh is not None and _oh.collidepoint(x, y):
+                self.show_custom_dialog = False
+                self._open_help('3d')
                 return True
 
             for kid, rect in getattr(self, 'custom_kind_rects', {}).items():

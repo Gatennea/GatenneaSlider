@@ -616,6 +616,8 @@ class GameHTTPHandler(BaseHTTPRequestHandler):
         # 逐项音效开关（设置页「音效一览」：滑动 / 失败 / 复原 / 点击 / 键盘）
         'sfx_slide_enabled', 'sfx_fail_enabled', 'sfx_solved_enabled',
         'sfx_click_enabled', 'sfx_keyboard_enabled',
+        # §59C：三维新手引导「看过」开关（与 gui/events.py 同口径）
+        'cubic_intro_seen',
     )
     _SETTINGS_INT_RANGES = {
         'animation_duration_ms': (50, 1000),
