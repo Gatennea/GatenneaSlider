@@ -1192,6 +1192,13 @@ class RendererMixin:
 
         # 三维方向箭头：世界空间几何体，和块面/切面进同一条画家序。
         arrow_items = self._cubic_arrow_items(scene, seam_draw, gap, camera, blocks)
+        # 目標盒也必须是世界空间线段，不能画完块后直接 blit 到屏幕最上层；
+        # 12 条棱切成小段，每段带深度，插进下面同一条 painter 序。
+        target_items = []
+        if (getattr(self, 'show_metrics_panel', False)
+                or getattr(self, 'board_marks_enabled', False)):
+            target_items = self._cubic_target_box_items(
+                scene, camera, gap, _split_anchor)
 
         faces_all = scene['faces']
         back_faces, front_faces = faces_all, []
@@ -1245,7 +1252,20 @@ class RendererMixin:
                 (int(f['loc'][0]), int(f['loc'][1]), int(f['loc'][2]))
                 for f in front_faces)
 
+        # 目標盒線段按切面分側：切面後的段先畫、被紅面蓋住；切面前的段
+        # 和前側塊/箭頭一起排序。沒有切面時全部歸前側，和所有塊面一起排。
+        target_back, target_front = [], []
+        if seam_quad:
+            for _d, _payload in target_items:
+                _mid = _payload[2]
+                _near = ((_mid[seam_axis] - seam_fixed) * seam_sign > 0)
+                (target_front if _near else target_back).append((_d, _payload))
+        else:
+            target_front = list(target_items)
+
         items = [(f['depth'], 0, f) for f in back_faces]
+        items += [(d, 3, payload) for d, payload in target_back]
+        items.sort(key=lambda it: it[0])
         seam_pts_screen = []
         if seam_quad:
             pts = [cubic_view.project_point(w, camera, scene['scale'],
@@ -1272,6 +1292,7 @@ class RendererMixin:
         # 所有前侧块/箭头之前画，保持「背面块 → 切面 → 前侧」的两遍结构。
         front_items = [(f['depth'], 0, f) for f in front_faces]
         front_items += arrow_items
+        front_items += [(d, 3, payload) for d, payload in target_front]
         front_items.sort(key=lambda it: it[0])
         items += front_items
         # 面片同样走 2× 超采样：pygame.draw 不做抗锯齿，斜着摆的块边在屏幕上就是
@@ -1280,8 +1301,10 @@ class RendererMixin:
         _ss = 2
         _arrow_pts = [p for _d, _kind, _item in arrow_items
                       if _kind == 2 for p in _item['pts']]
+        _target_pts = [p for _d, _payload in target_items
+                       for p in _payload[:2]]
         _all = ([p for f in scene['faces'] for p in f['pts']]
-                + list(seam_pts_screen) + _arrow_pts)
+                + list(seam_pts_screen) + _arrow_pts + _target_pts)
         if _all:
             _bx0 = max(0, int(min(p[0] for p in _all)) - 4)
             _by0 = max(0, int(min(p[1] for p in _all)) - 4)
@@ -1345,6 +1368,14 @@ class RendererMixin:
                 if item.get('edge') is not None:
                     pygame.draw.polygon(hi, item['edge'], pts,
                                         max(1, int(item.get('width', 1))) * _ss)
+                continue
+            if _kind == 3:
+                # 目標盒的一小段：同样是世界空间投影，只按自己的深度排队。
+                # 前方块面后画就自然把它盖住，不再出现绿线穿脸。
+                p1, p2, _mid = item
+                q1, q2 = _T((p1, p2))
+                pygame.draw.line(hi, (80, 220, 100), q1, q2,
+                                 max(1, int(round(2 * self.zoom))) * _ss)
                 continue
             face = item
             _is_anim = _sel_anim is not None and face['loc'] in _anim_locs
@@ -1417,12 +1448,6 @@ class RendererMixin:
         # 拾取用：这一帧实际画出来的面（events 的点击命中直接用它，命中与画面
         # 必然同源，不存在「看得见点不中」的漂移）。
         self._cubic_scene = scene
-
-        # 三維目標盒：與調試面板同一份 cubic_metrics().window；只在
-        # 打開調試面板或棋盤記號時畫，避免正常遊戲被綠色框干擾。
-        if (getattr(self, 'show_metrics_panel', False)
-                or getattr(self, 'board_marks_enabled', False)):
-            self._draw_cubic_target_box()
 
         # 左上角两行：三維尺度 / 等级 / 视角 / 拆分距离（第 1 行），操作提示（第 2 行）。
         # 「拆分」= 相邻两块表面之间空出的距离（0 = 未拆分，块贴死成一整块）。

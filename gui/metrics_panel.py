@@ -332,29 +332,25 @@ class MetricsPanelMixin:
                          max(2, int(2 * self.zoom)))
         return region
 
-    def _draw_cubic_target_box(self):
-        """三維：把聚攏求解器選中的目標盒投影成綠色線框。
+    def _cubic_target_box_items(self, scene, camera, gap, anchor):
+        """三維目標盒的**世界空間線段**，交給塊面/切面同一條畫家序。
 
-        與二維綠框同一個語義：窗口來自 `cubic_metrics()` 的 `window`
-        （`(r0,c0,d0,a,b,c)`），不是另畫一個「大致範圍」。盒角用
-        `cubic_view.block_min_corner()` 的同一套拆分/錨點口徑，因此打開
-        拆分時框會跟著塊的實際佔位走，不會和塊錯位。
+        用戶 2026-11-19 再次指認：三維世界的任何覆蓋物都不能在全部塊畫完後
+        直接 blit 到屏幕最上層，否則會穿過前方滑塊。目標盒不能只畫 8 個角
+        連線；這裡把 12 條稜按世界座標切成小段，每段帶自己的深度，插入
+        `draw_cubic_board()` 的 painter 序（kind=3），由前後塊面自然遮擋。
+
+        `window` 仍只取 `cubic_metrics()` 那一份；拆分角/錨點沿用
+        `block_min_corner()`，打開拆分時框跟著塊的實際佔位走。
         """
         if self._mp_kind() != 'cubic':
-            return None
+            return []
         met = self._cubic_metrics_now()
         win = met.get('window') if isinstance(met, dict) else None
-        if not win:
-            return None
-        scene = getattr(self, '_cubic_scene', None)
-        camera = getattr(self, 'cubic_camera', None)
-        if not isinstance(scene, dict) or camera is None:
-            return None
+        if not win or not isinstance(scene, dict) or camera is None:
+            return []
 
         from engine import cubic_view
-        blocks = list(getattr(getattr(self, 'game', None), 'blocks', None) or [])
-        gap = float(getattr(self, 'cubic_gap', 0.0))
-        anchor = cubic_view.layout_anchor(blocks) if blocks else (0.5, 0.5, 0.5)
         x0, y0, z0, a, b, c = win
         # 邏輯 (r,c,d) → 世界 (X,Y,Z)=(c,d,r)；首格最小角 ~ 末格最大角。
         lo = cubic_view.block_min_corner((x0, y0, z0), gap, anchor)
@@ -367,18 +363,50 @@ class MetricsPanelMixin:
              lo[2] if (i & 4) == 0 else hi[2])
             for i in range(8)
         ]
-        pts = [cubic_view.project_point(p, camera, scene['scale'],
-                                        scene['origin'])[:2] for p in corners]
-        color = (80, 220, 100)
-        width = max(2, int(2 * self.zoom))
-        # 立方體 12 條稜：低三位 bit 分別代表 X/Y/Z 端的角。
+        edges = []
         for i in range(8):
             for bit in (1, 2, 4):
                 j = i | bit
                 if j != i:
-                    pygame.draw.line(self.screen, color,
-                                     pts[i], pts[j], width)
-        return win
+                    edges.append((i, j))
+
+        items = []
+        # 12 條稜每條切 24 段：段內深度近似常數，塊面前後關係由 painter 序
+        # 判；太少段時斜稜會一半穿過前塊仍整段畫出來（正是這次的 bug）。
+        segs = 24
+        from engine import cubic_pick
+        faces = scene.get('faces') or []
+        for ia, ib in edges:
+            a3, b3 = corners[ia], corners[ib]
+            prev = None
+            for k in range(segs + 1):
+                t = k / float(segs)
+                w = (a3[0] + (b3[0] - a3[0]) * t,
+                     a3[1] + (b3[1] - a3[1]) * t,
+                     a3[2] + (b3[2] - a3[2]) * t)
+                sx, sy, sz = cubic_view.project_point(
+                    w, camera, scene['scale'], scene['origin'])
+                if prev is not None:
+                    px, py, pz, pw = prev
+                    seg_depth = (pz + sz) / 2.0
+                    msx, msy = (px + sx) / 2.0, (py + sy) / 2.0
+                    # painter 序之外再补一次「段中點被更近的塊面覆蓋」的否定
+                    # 測試：斜段跨過前塊輪廓時，單靠段端深度排序仍可能把
+                    # 一小段綠線留到臉前；這裡直接丟掉被覆蓋的段。
+                    if any(f['depth'] > seg_depth + 0.05
+                           and cubic_pick.point_in_quad((msx, msy), f['pts'])
+                           for f in faces):
+                        prev = (sx, sy, sz, w)
+                        continue
+                    # 段中點世界座標給切面分側；深度用投影端點平均。
+                    items.append((seg_depth,
+                                  ((px, py), (sx, sy),
+                                   ((pw[0] + w[0]) / 2.0,
+                                    (pw[1] + w[1]) / 2.0,
+                                    (pw[2] + w[2]) / 2.0))))
+                prev = (sx, sy, sz, w)
+        return items
+
 
     # ------------------------------------------------------------------
     # 三角形分支（M0 F2，计划 §4/§5）

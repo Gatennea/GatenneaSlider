@@ -102,8 +102,26 @@ check(_d.get('错误') == '-', '沒錯誤時報 -', _d.get('错误'))
 
 gui.show_metrics_panel = True
 gui.draw_cubic_board()
-check(gui._draw_cubic_target_box() == (0, 0, 0, 3, 3, 3),
-      '三維目標盒用 cubic_metrics window 畫，不另算一份')
+from engine import cubic_view  # noqa: E402
+from engine import cubic_pick  # noqa: E402
+_titems = gui._cubic_target_box_items(
+    gui._cubic_scene, gui.cubic_camera, gui.cubic_gap,
+    cubic_view.layout_anchor(gui.game.blocks))
+check(_titems and all(len(_p) == 3 for _d, _p in _titems),
+      '三維目標盒輸出的是帶深度的世界空間分段，不是屏幕貼圖')
+_faces = gui._cubic_scene.get('faces') or []
+_bad_segments = 0
+for _d, (_p1, _p2, _mid) in _titems:
+    _mx = (_p1[0] + _p2[0]) / 2.0
+    _my = (_p1[1] + _p2[1]) / 2.0
+    if any(_f['depth'] > _d + 0.05
+           and cubic_pick.point_in_quad((_mx, _my), _f['pts'])
+           for _f in _faces):
+        _bad_segments += 1
+check(_bad_segments == 0,
+      '目標盒分段沒有留在更近塊面前（遮擋測試）', _bad_segments)
+check(gui._cubic_metrics_now().get('window') == (0, 0, 0, 3, 3, 3),
+      '目標盒用 cubic_metrics window，不另算一份')
 gui.draw_metrics_panel()
 check(gui.mp_panel_rect is not None and gui.mp_panel_rect.width == 260,
       '三維面板寬 260（二維仍 190）', gui.mp_panel_rect)

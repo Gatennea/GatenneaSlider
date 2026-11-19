@@ -1084,6 +1084,13 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 4. **求解器只先接「聚攏」**：不搬查表／PDB／IDA*／混合；新增三維 adapter，
    不直接把 `gather_solve` 丟給 `EngineGame`。
 5. **文檔／測試收尾不是求解器前置門檻**：先做功能，文檔口徑與既有紅燈可並行收。
+6. **三維遮擋鐵律（2026-11-19 用戶再次指認，必須記錄）**：三維裡新增的
+   任何線框/標記/貼紙，只要它在世界裡有前後位置，就不能在全部塊畫完後直接
+   `blit` 到屏幕最上層。目標盒第一版就是這樣畫，綠線穿過前方塊面；現在的
+   做法是把 12 條稜按世界座標切小段（每段帶深度，kind=3）插進
+   `draw_cubic_board()` 的 painter 序，並對段中點再做一次「更近塊面是否覆蓋」
+   的否定測試。箭頭、切面、選中邊框、目標盒今後都按這條走；不要再出現
+   「畫完再貼一層」的臨時方案。
 
 ### 當前剩餘與順序
 
@@ -1092,12 +1099,13 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   先報聚攏數據：聚攏度、重疊、目標盒、邊界盒、填充率、mod 約束，再報
   視角/縮放/拆分/切面/選中組/操作隊/錯誤，共 16 行。`_mp_current_metrics()`
   對 cubic 走 `_cubic_metrics_now()`，不落二維 `gather_metrics`；空盤也回
-  三維字典。`gui/renderer.py::draw_cubic_board()` 在調試面板或棋盤記號打開時
-  畫綠色目標盒（與面板共用同一份 `cubic_metrics().window`）。
+  三維字典。`gui/renderer.py::draw_cubic_board()` 在調試面板或棋盤記號打開時，
+  把目標盒 12 條稜切成帶深度的世界空間分段，插進 painter 序（與面板共用
+  同一份 `cubic_metrics().window`）。
   `gui/renderer.py::_draw_settings_cubic` 末尾有「調試面板」開關，`gui/events.py`
   `settings_active_tab == 'cubic'` 已接點擊。`_MP_SUPPORTED` 仍不含 cubic，
   所以二維洞記號/目標框邏輯不會誤入三維。護欄：
-  `test/_test_cubic_metrics_panel.py` 25/25；`_test_cubic_render_opts.py`
+  `test/_test_cubic_metrics_panel.py` 27/27（含目標盒遮擋斷言）；`_test_cubic_render_opts.py`
   72/72、`_test_cubic_entry.py` 33/33、`_test_tri_metrics_panel.py` ALL PASS。
 
 - **P1 三維宏 op 執行器（2026-11-19 已完成）**：`_execute_cubic_macro_op`
@@ -1118,8 +1126,8 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   無約束。護欄 `test/_test_cubic_gather.py` 665/665：3D 前綴和 vs 暴力、
   平移/軸置換仍 score=1、mod 約束（3×3×3/step2 鎖 (0,0,0) 與強制餘數過濾）、
   4×4×4 短聚攏可逐步重放、終態與返回 end 一致、GUI 轉換保留三元 rep、
-  播放/收尾文案三元 bbox。三維目標盒已在棋盤上投影成綠色線框，測試由
-  `_test_cubic_metrics_panel.py` 覆蓋「畫框用同一份 window」。
+  播放/收尾文案三元 bbox。三維目標盒已是帶深度的世界空間線段，測試由
+  `_test_cubic_metrics_panel.py` 覆蓋「同一份 window + 沒有段中點落在更近塊面內」。
 - **P3 自訂還原態**：低優先，暫不動。
 - **P4 文檔同步**：§54 已補 P2；後續箭頭/相機凍結/縮放/引擎標籤補記。
 
@@ -1132,7 +1140,7 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 - 三維 GUI 宏已 gate（15/15）；求解器內部 op 執行器已鎖 40 連 op；
   P2 聚攏 665/665（含 mod 約束），4×4×4 打亂短聚攏 0.344→0.516 共 18 步可重放；
   實機自動求解入口跑通（20 步、34.4%→53.1%、停機原因「達到時間上限」）。
-  三維調試面板 25/25，目標盒綠色線框已在棋盤上可見。
+  三維調試面板 27/27；目標盒已改為帶深度的世界空間分段，進 painter 序並做塊面覆蓋否定測試，不再畫完再貼到屏幕最上層。
 - 修正一個會擋住 P2 的既有 bug：`_current_kind()` 原先把 `cubic` 落到
   `game.kind` 的「非四形態」分支，`_is_model_kind()` 因此把三維局當自造
   謎題，`_model_blocked` 讓自動求解入口提示「求解器暫不支持」。現在
