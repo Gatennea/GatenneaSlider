@@ -86,7 +86,7 @@ for f in front_faces:
         break
 check(overlap is not None, '点在前块可见面上 → 命中前块（不被后块抢）')
 
-print('B. 面 → 缝（内部面 / 外表面 / 无缝）')
+print('B. 面 → 缝（内部面可切 / 外表面一律 None）')
 game = create_adapter_puzzle('cubic', 3, 3, 1, depth=3)
 locs = cv.locations_of(game.blocks)
 check(cp.face_is_internal({'loc': (1, 1, 1), 'axis': 0, 'sign': 1}, locs),
@@ -97,27 +97,31 @@ check(not cp.face_is_internal({'loc': (1, 2, 1), 'axis': 0, 'sign': 1}, locs),
 seams = {}
 for face in faces:
     seam = cp.seam_of_face(face, game.is_valid_gap, locs)
-    check(seam is not None and face['loc'] not in (None,),
-          '每一片可见面都能给出有效切面' if face is faces[0] else
-          f'面 {face["loc"]} 轴{face["axis"]}{face["sign"]:+d} → 切面 {seam}',
-          extra=str(seam))
-    if seam:
-        seams[seam] = seams.get(seam, 0) + 1
-        check(game.is_valid_gap(seam[0], seam[1]),
-              f'切面 {seam} 引擎判为有效', extra=str(seam))
-        check(cp._is_internal_cut(seam[0], seam[1], locs),
-              f'切面 {seam} 是块与块之间的内部切面（不是包围盒平面）', extra=str(seam))
+    if cp.face_is_internal(face, locs):
+        check(seam is not None,
+              f'内部面 {face["loc"]} 轴{face["axis"]}{face["sign"]:+d} → 切面',
+              extra=str(seam))
+        if seam:
+            seams[seam] = seams.get(seam, 0) + 1
+            check(game.is_valid_gap(seam[0], seam[1]),
+                  f'切面 {seam} 引擎判为有效', extra=str(seam))
+            check(cp._is_internal_cut(seam[0], seam[1], locs),
+                  f'切面 {seam} 是块与块之间的内部切面', extra=str(seam))
+    else:
+        check(seam is None,
+              f'外表面 {face["loc"]} 轴{face["axis"]}{face["sign"]:+d} 不选切面',
+              extra=str(seam))
 check(set(seams) <= {('r', 0), ('r', 1), ('c', 0), ('c', 1), ('d', 0), ('d', 1)},
       f'所有切面都落在 3×3×3 的六条有效缝上（实得 {sorted(seams)}）')
 
 outer = {'loc': (0, 0, 0), 'axis': 0, 'sign': -1}     # c=0 外侧，line −1 无效
 seam_out = cp.seam_of_face(outer, game.is_valid_gap, locs)
-check(seam_out == ('c', 0), f'外侧面的退回相邻线（实得 {seam_out}）')
+check(seam_out is None, f'外侧表面不许退回相邻内部缝（实得 {seam_out}）')
 check(cp.seam_of_face({'loc': (0, 0, 0), 'axis': 2, 'sign': 1},
                       lambda f, l: False, locs) is None,
       '没有任何有效线时返回 None（不硬选）')
 
-print('B2. 任意外表面都能点：推出来的必须是内部切面，包围盒平面一律不选')
+print('B2. 表面上的切面不能选：只有内部墙可点，包围盒面一律 None')
 check(cp.seam_of_face({'loc': (0, 0, 0), 'axis': 0, 'sign': 1},
                       game.is_valid_gap, locs) == ('c', 0),
       'c=0 的 +X 内壁 → 缝 c·0')
@@ -125,11 +129,11 @@ check(cp.seam_of_face({'loc': (0, 1, 0), 'axis': 0, 'sign': -1},
                       game.is_valid_gap, locs) == ('c', 0),
       'c=1 的 −X 内壁 → 同一条缝 c·0（两面墙指同一条缝）')
 check(cp.seam_of_face({'loc': (0, 2, 0), 'axis': 0, 'sign': 1},
-                      game.is_valid_gap, locs) == ('c', 1),
-      '最外层 +X 面（包围盒面）→ 退回内部切面 c·1，不是包围盒那层')
+                      game.is_valid_gap, locs) is None,
+      '最外层 +X 面（表面）→ None，不退到内部切面 c·1')
 check(cp.seam_of_face({'loc': (2, 2, 2), 'axis': 2, 'sign': 1},
-                      game.is_valid_gap, locs) == ('r', 1),
-      '最前面块的前脸 → 与后面那层之间的切面 r·1（画面里和屏幕平行）')
+                      game.is_valid_gap, locs) is None,
+      '最前面块的前脸（表面）→ None，不退到后面那层的 r·1')
 check(cp.seam_of_face({'loc': (1, 1, 1), 'axis': 0, 'sign': 1},
                       lambda f, l: False, locs) is None,
       '引擎说没有有效线时返回 None（不硬选）')
@@ -186,7 +190,7 @@ def _seam_point(scene, face=None, samples=17):
     if face is None:
         cand = [f for f in scene['faces'] if cp.face_is_internal(f, locs)]
     for f in list(cand) + [f for f in scene['faces'] if cp.face_is_internal(f, locs)]:
-        seam = cp.seam_of_internal_face(f, gui.game.is_valid_gap)
+        seam = cp.seam_of_internal_face(f, gui.game.is_valid_gap, locs)
         if seam is None:
             continue
         pts = f['pts']
@@ -203,8 +207,27 @@ def _seam_point(scene, face=None, samples=17):
     return None, None, None
 
 
+def _face_center(face):
+    pts = face['pts']
+    return (int(round(sum(p[0] for p in pts) / 4.0)),
+            int(round(sum(p[1] for p in pts) / 4.0)))
+
+
+def _surface_point(scene):
+    """找一块可见的**外表面**面心，且点下去确实命中它。"""
+    locs = {tuple(int(v) for v in b.location[:3]) for b in gui.game.blocks}
+    for f in scene['faces']:
+        if cp.face_is_internal(f, locs):
+            continue
+        p = _face_center(f)
+        if cp.hit_face(scene['faces'], p) is f:
+            return p, f
+    return None, None
+
+
 # 2026-11-17 用户改口径：可点范围从「缝里的墙」扩到**块的任意外表面**，
 # 但推出来的必须是内部切面（包围盒那层平面不许选）。
+# 2026-11-19 修订：表面不能选，右键只接受内部墙；上面这句旧口径作废。
 target = gui._cubic_scene['faces'][-1]
 pt, pt_seam, target = _seam_point(gui._cubic_scene)
 check(pt is not None, '场景里能找到一个「缝里的墙」的屏幕点')
@@ -230,11 +253,11 @@ click(center_pt)
 check(gui.selected_gap is None and gui.selected_block is None,
       '没选缝时左键点块不选块（原版同序：先缝后块）')
 
-right_click(center_pt)
+right_click(pt)
 check(gui.selected_gap is not None,
-      f'右键点块的外表面 → 选缝（{gui.selected_gap}）')
+      f'右键点内部墙 → 选缝（{gui.selected_gap}）')
 check(cp._is_internal_cut(gui.selected_gap[0], gui.selected_gap[1], locs_set),
-      '推出来的切面是内部切面，不是包围盒平面')
+      '推出来的切面是内部切面，不是表面/包围盒平面')
 check(not any(getattr(b, 'be_opted', False) for b in gui.game.blocks),
       '右键只选缝，不替用户选块')
 
@@ -269,6 +292,24 @@ check(all(tuple(int(v) for v in b.location[:3]) == tuple(int(v) for v in b.locat
       '选中后块位置未被挪动（只是标记，不是滑动）')
 check(gui.step_count == step0, '双击选中也不产生步数')
 
+# 2026-11-19 新口径：表面不是空白，右键表面既不能退到下一层缝，也不能清掉已有选中。
+surface_pt, surface_face = _surface_point(gui._cubic_scene)
+check(surface_pt is not None, '场景里能找到一块可见外表面',
+      extra=str(surface_face))
+gap_before = gui.selected_gap
+sels_before = sorted(tuple(int(v) for v in b.location[:3])
+                     for b in gui.game.blocks if getattr(b, 'be_opted', False))
+ok = gui._cubic_seam_click(*surface_pt)
+check(ok is False, '右键外表面不产生切面')
+check(gui.selected_gap == gap_before,
+      f'右键外表面不改已有切面（保持 {gap_before}，实得 {gui.selected_gap}）')
+check(sorted(tuple(int(v) for v in b.location[:3])
+             for b in gui.game.blocks if getattr(b, 'be_opted', False)) == sels_before,
+      '右键外表面不改已有选中块')
+check('表面' in getattr(gui, 'macro_notify_msg', '') and
+      '内部切面' in getattr(gui, 'macro_notify_msg', ''),
+      f'提示只能选内部切面（实得 {getattr(gui, "macro_notify_msg", "")}）')
+
 print('E. 拖动只转不选 / 斜视下也能选（2026-11-18 撤销正向化）/ 右键清空')
 gui._cubic_clear_selection()
 pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pt))
@@ -286,16 +327,13 @@ check(not any(getattr(b, 'be_opted', False) for b in gui.game.blocks),
 
 gui._cubic_view_oblique()        # 斜视：不在六朝向之一
 gui.draw_cubic_board()
-target = gui._cubic_scene['faces'][-1]
-pt = (int(round(sum(p[0] for p in target['pts']) / 4.0)),
-      int(round(sum(p[1] for p in target['pts']) / 4.0)))
+pt, seam_want, target = _seam_point(gui._cubic_scene)
+check(pt is not None, '斜视下能找到内部墙的屏幕点')
 check(gui.cubic_view_index is None, '斜视下视角序号为空（自由旋转态）')
 locs_set = {tuple(int(v) for v in b.location[:3]) for b in gui.game.blocks}
-hit = gui._cubic_pick(*pt)
-seam_want = cp.seam_of_face(hit, gui.game.is_valid_gap, locs_set) if hit else None
 right_click(pt)
 check(gui.selected_gap == seam_want,
-      f'斜视下照样能右键选缝（期望 {seam_want}，实得 {gui.selected_gap}）')
+      f'斜视下照样能右键选内部缝（期望 {seam_want}，实得 {gui.selected_gap}）')
 check(gui.selected_gap is not None and
       cp._is_internal_cut(gui.selected_gap[0], gui.selected_gap[1], locs_set),
       '斜视下选到的仍是内部切面')
@@ -303,8 +341,11 @@ check(gui.selected_gap is not None and
 gui._cubic_clear_selection()
 gui._cubic_view(1)
 gui.draw_cubic_board()
+pt, seam_want, target = _seam_point(gui._cubic_scene)
+check(pt is not None, '朝向 1 能找到内部墙的屏幕点')
 right_click(pt)
-check(gui.selected_gap is not None, '回到朝向 1 后同样位置可以选')
+check(gui.selected_gap == seam_want,
+      f'回到朝向 1 后内部墙仍可选（期望 {seam_want}，实得 {gui.selected_gap}）')
 right_click((8, 8))
 check(gui.selected_gap is None and gui.selected_block is None, '空白右键清空选中与预览')
 
@@ -353,15 +394,14 @@ for view in (0, 3):
             print('  BAD', view, tuple(int(v) for v in f['loc']), gui.selected_gap)
 check(bad == 0, f'左键选块但从不改缝（{bad} 个例外）')
 
-print('I. 右键选缝 / 空白右键取消（2026-11-18 新操作方式）')
+print('I. 右键选内部缝 / 空白右键取消（2026-11-18 新操作方式）')
 gui._cubic_view(0)
 gui.draw_cubic_board()
-face = gui._cubic_scene['faces'][0]
-cx = int(sum(p[0] for p in face['pts']) / 4.0)
-cy = int(sum(p[1] for p in face['pts']) / 4.0)
-ok_seam = gui._cubic_seam_click(cx, cy)
-check(ok_seam and gui.selected_gap is not None,
-      f'右键点面 → 选出切面（{gui.selected_gap}）')
+pt, seam_want, target = _seam_point(gui._cubic_scene)
+check(pt is not None, '朝向 0 能找到内部墙的屏幕点')
+ok_seam = gui._cubic_seam_click(*pt)
+check(ok_seam and gui.selected_gap == seam_want,
+      f'右键内部墙 → 选出切面（期望 {seam_want}，实得 {gui.selected_gap}）')
 check(not any(getattr(b, 'be_opted', False) for b in gui.game.blocks),
       '右键只定切面，不替用户选块（块必须左键再点）')
 check(gui._cubic_seam_click(8, 8) is False and gui.selected_gap is None,

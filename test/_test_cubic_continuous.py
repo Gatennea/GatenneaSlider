@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame  # noqa: E402
 
 from GUI import SliderGUI  # noqa: E402
+from _cubic_test_util import internal_seam_point  # noqa: E402
 
 FAILED = []
 PASSED = [0]
@@ -68,9 +69,9 @@ def click_vk(g, action):
 def select_front(g):
     g._cubic_view(0)
     g.draw_cubic_board()
-    f = g._cubic_scene['faces'][-1]
-    pt = (int(sum(p[0] for p in f['pts']) / 4.0),
-          int(sum(p[1] for p in f['pts']) / 4.0))
+    pt, seam, face = internal_seam_point(g, families=('r', 'd'))
+    check(pt is not None and seam is not None,
+          '找到可见的内部墙点（表面右键已禁选）', extra=str(face))
     g._cubic_seam_click(*pt)
     click(g, pt)
 

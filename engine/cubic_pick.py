@@ -201,24 +201,25 @@ def _is_internal_cut(family, line, locations) -> bool:
 
 
 def seam_of_face(face, is_valid_gap, locations=None):
-    """点中一块的某个面 → 它所属的**内部切面**（不是包围盒平面）。
+    """点中一块的某个面 → 它所属的内部切面；外表面返回 None。
 
-    2026-11-17 用户口径（扩大可选范围）：可点的面不止缝里的墙，**块的任意外
-    表面**都算——但推出来的平面不能是包围盒那层。做法：先试「面外侧那条线」
-    （sign>0 → v，sign<0 → v-1）是内部切面就用（缝里的墙走这条，天然命中）；
-    否则退回「块的另一条边界」。所以点最前面那块的前脸，得到的是它与后面
-    那层之间的切面（画面里与屏幕平行），不是包围盒那层，也不是斜的缝。
+    2026-11-19 用户口径：三維滑塊**不能選中表面上的切面**。舊版這裡會在
+    「面外側那條線」不是內部切面時，退回塊的另一條邊界；結果對着最外層的
+    表面右鍵，會悄悄選中表面之下一層的切面——玩家點的是 A，選中的是 B。
+    現在只接受真正的內部面（兩側都有塊的牆），不再退回另一條邊界。
 
-    外表面若两侧缺块（1×1×n 这类退化情形）→ 返回 None，不硬选。
+    內部面的線號：面在座標 v，法向 sign>0 時這塊在縫的低側，牆立在 v+1 上
+    → 縫線 v；sign<0 時在高側，牆立在 v 上 → 縫線 v-1。
     """
+    if locations is None or not face_is_internal(face, locations):
+        return None
     family = AXIS_TO_FAMILY[face['axis']]
     idx = AXIS_TO_LOC_INDEX[face['axis']]
     v = int(face['loc'][idx])
-    candidates = (v, v - 1) if face['sign'] > 0 else (v - 1, v)
-    for line in candidates:
-        if _is_internal_cut(family, line, locations) and is_valid_gap(family, line):
-            return (family, line)
-    return None
+    line = v if face['sign'] > 0 else v - 1
+    if not is_valid_gap(family, line):
+        return None
+    return (family, line)
 
 
 def seam_of_internal_face(face, is_valid_gap, locations=None):
@@ -233,7 +234,7 @@ def seam_of_internal_face(face, is_valid_gap, locations=None):
     面在坐标 ``v``，法向 ``sign``：sign>0 时这块在缝的**低**侧，墙立在 v+1 上
     → 缝线号 v；sign<0 时在高侧，墙立在 v 上 → 缝线号 v-1。
     """
-    if locations is not None and not face_is_internal(face, locations):
+    if locations is None or not face_is_internal(face, locations):
         return None
     family = AXIS_TO_FAMILY[face['axis']]
     idx = AXIS_TO_LOC_INDEX[face['axis']]

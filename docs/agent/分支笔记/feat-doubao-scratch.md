@@ -456,6 +456,9 @@ pCubes 是闭源 exe（E:\pC 只有 pCubes.exe + 数据），HyperSpeedcube 装�
   包围盒面退回内部切面、最前块前脸 → r·1），293 项全绿；回归 view 41 / nav 83 /
   play 32 / framing 15 / gap 18 / split 25 / entry 31 全绿。
 
+> ⚠️ 2026-11-19 本条「任意外表面可点」已推翻：表面右鍵現在一律不選切面，
+> 只有兩塊之間的內部墙可選。見文末「表面右鍵不再退回表面之下一層」。
+
 ⚠️ 遗留口径：旋转态仍然「只看不选」（方案 §2.2 原文）。用户问「任意方向操作」——
 拾取基于渲染面与画家序，任意姿态下本来就成立，放开只需删 `_cubic_click` 里那个
 `cubic_view_index is None` 的闸；要不要改方案口径待用户定。
@@ -1130,6 +1133,31 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   `_test_cubic_metrics_panel.py` 覆蓋「同一份 window + 沒有段中點落在更近塊面內」。
 - **P3 自訂還原態**：低優先，暫不動。
 - **P4 文檔同步**：§54 已補 P2；後續箭頭/相機凍結/縮放/引擎標籤補記。
+
+## 修：表面右鍵不再退回表面之下一層的切面（2026-11-19）
+
+用户口径：三維滑塊不能選中「表面上的切面」。舊版 `seam_of_face()` 在表面
+外沿那條線不是內部切面時，會退回塊的另一條邊界——右鍵點最外層表面，畫面
+看到 A，實際卻選中表面之下一層的 B。這是直接的「點哪不是哪」錯位。
+
+- `engine/cubic_pick.py::seam_of_face()`：只接受 `face_is_internal()` 為真的
+  面；外表面直接 `None`，不再掃 `(v, v-1)` 兩條邊界。內部面線號保持
+  `sign>0 → v`、`sign<0 → v-1`。
+- `gui/events.py::_cubic_seam_click()`：移除 `seam_of_face()` fallback，只走
+  `seam_of_internal_face()`。表面右鍵**不改既有選中**，提示
+  「这个面在滑块表面，不能选切面；只能选两块之间的内部切面」；空白右鍵仍
+  取消選中；內部面但無縫時提示「这个内部面旁边没有可切的缝」。
+- 依賴舊 fallback 的測試全部改成「找真正可見的內部墙點」：
+  新增 `test/_cubic_test_util.py::internal_seam_point()`，用本幀渲染面 +
+  `hit_face()` 畫家序確認點沒被更近的面擋住；`_test_cubic_animation /
+  continuous / history / pick / play / vk` 均已改用它。需要沿 C 軸推的測試
+  用 `families=('r','d')` 避開 c 族切面（否則 C 正好是法向，必被拒）。
+- `_test_cubic_pick.py` 新增「右鍵外表面：不產生切面、不改既有切面與選中組、
+  提示含『表面/內部切面』」；B/B2 段改成「外表面一律 None」。
+- 全部三維測試 31 套全綠（含新增 util 檔；`_test_cubic_pick.py` 257 項）。
+  另修正兩個測試自身的狀態污染：`_test_cubic_play` 在打亂前顯式關演示動畫
+  （`new_cubic_puzzle` 會按 config 重新灌開關），以及拒絕色檢查改用本幀真有
+  可見面的塊描邊（打亂後選中組可能整組在背面）。
 
 ### 已知狀態
 
