@@ -31,6 +31,8 @@
   C3    拖拽接续：时长跟着「缩短后的」动画走，不能还用原值
   C4/C5 撤销 / 重做：也是整组沿缝滑动 → 一样出声
   C6    宏播放路径静态引用 _play_slide_sound（防未来漏接）
+  C7    三维撤销/重做的 cubic_anim 也要出声，时长取 cubic_anim_ms
+  C8    三维任何动画路线的滑动声时长都必须取 cubic_anim_ms（与画面同源）
   D1    打乱演示回放每一步都出声
   D2    无限打乱每一步都出声（无静音拦截）
   D1b/D2b 两条播放路径静态接线检查（防漏接）
@@ -305,6 +307,11 @@ check('G7 KEYDOWN 只登记，KEYUP 才结算键盘音（帧末不得再无参�
       and '_flush_keyboard_sound(getattr(event' in _ev_src
       and '_flush_keyboard_sound()' not in _ev_src, '')
 _g = SliderGUI(m=4, n=4, step=2, cmd_queue=queue.Queue())
+# 本文件测的是二维滑动/撤销音；用户 config 可能停在三维局，先把局型钉回 2D。
+_g.cubic_mode = False
+# 用户 config 可能开着「全部静音」；测试只验接线，不能让它把声音闸门关死。
+if getattr(_g, 'audio', None) is not None:
+    _g.audio.muted = False
 _g.tutorial_active = False
 _g.tut_show_prompt = False
 if getattr(_g, 'audio', None) is not None:
@@ -429,6 +436,12 @@ SIGN = {'w': -1, 'a': -1, 's': 1, 'd': 1}
 
 def boot(anim=True, dur=300):
     g = SliderGUI(m=4, n=4, step=2, cmd_queue=queue.Queue())
+    # 测试口径固定为二维移动路径（用户 config 可能停在三维局，必须先建 2D 盘）
+    g.cubic_mode = False
+    g.infinite_shuffle = False
+    g.new_puzzle(4, 4, 2)
+    if getattr(g, 'audio', None) is not None:
+        g.audio.muted = False
     g.tutorial_active = False
     g.tut_show_prompt = False
     g.shuffle_puzzle(confirm=False)
@@ -525,6 +538,34 @@ except (TypeError, OSError):
     macro_src = ''
 check('C6 宏播放路径引用了 _play_slide_sound（防漏接）',
       '_play_slide_sound' in macro_src, '')
+
+# ---- C7 三维撤销/重做：cubic_anim 也要出声 ----
+g6 = SliderGUI(m=3, n=3, step=1, cmd_queue=queue.Queue())
+g6.tutorial_active = False
+g6.new_cubic_puzzle(3, 3, 3, 1)
+g6.cubic_mode = True
+g6.animation_enabled = True
+g6.cubic_anim_ms = 140
+calls6 = spy(g6)
+_mi6 = {'gap_type': 'c', 'gap_line': 0, 'direction': 'C', 'step': 1,
+        'moved_positions': [[0, 0, 0]]}
+g6._cubic_start_undo_redo_anim(_mi6, is_undo=True)
+check('C7 三维撤销动画也出声，时长取 cubic_anim_ms',
+      bool(calls6) and g6.cubic_anim is not None
+      and abs(calls6[-1][1] - 140) <= 1,
+      f'calls={calls6} cubic_anim={getattr(g6, "cubic_anim", None)}')
+
+# ---- C8 三维动画滑动声与画面同源 ----
+g7 = SliderGUI(m=3, n=3, step=1, cmd_queue=queue.Queue())
+g7.cubic_mode = True
+g7.cubic_anim_ms = 202
+g7.animation_duration = 300
+_cubic_ms = g7._slide_sound_duration()
+g7.cubic_mode = False
+_2d_ms = g7._slide_sound_duration()
+check('C8 三维动画滑动声取 cubic_anim_ms，二维仍取 animation_duration',
+      _cubic_ms == 202 and _2d_ms == 300,
+      f'cubic={_cubic_ms} 2d={_2d_ms}')
 
 # ---- D1 打乱演示每一步都出声 ----
 g4 = boot()

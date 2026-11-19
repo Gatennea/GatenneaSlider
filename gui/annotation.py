@@ -507,6 +507,11 @@ class AnnotationMixin:
         if self._ann_modal_conflict():
             return False
 
+        # 三维创造编辑会话（方案第 1–2 步）：模态独占棋盘/键盘/滚轮，
+        # 顶栏用放行让用户还能开文件/设置（见 gui/cubic_create.py）
+        if getattr(self, '_cubic_edit_active', False):
+            return self._cubic_edit_event(event)
+
         # 自定义阶段名输入态：拦截键盘/鼠标（2026-10-02）
         if getattr(self, '_ann_phase_editing', False):
             if event.type == pygame.KEYDOWN:
@@ -728,6 +733,21 @@ class AnnotationMixin:
         碎三角（几何引擎新板型）同理：生成器是方形挖洞语义，进去会把
         48 块碎三角静默换成另一形态的盘面。
         """
+        if getattr(self, 'cubic_mode', False):
+            # 三维随机生成：m/n/d/step 四格；生成走安全打乱，终态必有解。
+            self._ann_gen_cubic = True
+            fall = {'m': self.current_m, 'n': self.current_n,
+                    'd': self.current_depth, 'step': self.current_step}
+            saved = self._ann_saved('gen')
+            self._ann_gen_fields = {
+                k: (saved.get(k) if k in saved else str(fall[k]))
+                for k in fall
+            }
+            self._ann_gen_active = 'm'
+            self._ann_gen_error = ''
+            self._ann_sub_dialog = 'gen'
+            return
+        self._ann_gen_cubic = False
         if self.triangle_mode or self.mi_mode or \
                 self._is_model_kind():
             self._ann_notify('该谜题没有随机生成功能')
@@ -1317,6 +1337,9 @@ class AnnotationMixin:
         self._ann_notify(msg)
 
     def _ann_leave_to_home(self):
+        # 三维编辑会话先原样退回盘面（ESC/切模式/文件操作都会走到这里）
+        if getattr(self, '_cubic_edit_active', False):
+            self._cubic_edit_leave(silent=True)
         self._ann_view = 'home'
         self._ann_sub_dialog = None
         self._ann_home_sub = None           # 回一级首页（二级展开态作废）
@@ -1701,7 +1724,9 @@ class AnnotationMixin:
             self._ann_gen_confirm()
             return True
         if event.key == pygame.K_TAB:
-            keys = ['m', 'n', 'step', 'k', 'hole', 'dent']
+            keys = (['m', 'n', 'd', 'step']
+                    if getattr(self, '_ann_gen_cubic', False)
+                    else ['m', 'n', 'step', 'k', 'hole', 'dent'])
             if self._ann_gen_active in keys:
                 idx = keys.index(self._ann_gen_active)
                 self._ann_gen_active = keys[(idx + 1) % len(keys)]
@@ -1721,7 +1746,40 @@ class AnnotationMixin:
             return True
         return True
 
+    def _ann_gen_confirm_cubic(self):
+        """三维随机生成对话框：校验 m/n/d/step，再安全打乱。"""
+        try:
+            m = int(self._ann_gen_fields['m'])
+            n = int(self._ann_gen_fields['n'])
+            d = int(self._ann_gen_fields['d'])
+            step = int(self._ann_gen_fields['step'])
+        except ValueError:
+            self._ann_gen_error = '请输入有效的整数'
+            return
+        if m < 2 or n < 2 or d < 2:
+            self._ann_gen_error = 'm、n、d 必须 >= 2'
+            return
+        if step < 1:
+            self._ann_gen_error = '等级必须 >= 1'
+            return
+        if step >= max(m, n, d):
+            self._ann_gen_error = f'等级必须 < {max(m, n, d)}'
+            return
+        if m * n * d > 216:
+            self._ann_gen_error = '体积上限 216（如 6×6×6），避免随机生成过慢'
+            return
+        self._ann_gen_error = ''
+        self._ann_sub_dialog = None
+        self._ann_store_inputs('gen', self._ann_gen_fields)
+        steps = self._cubic_random_generate(m, n, d, step)
+        self._ann_leave_to_home()
+        if not steps:
+            self._ann_notify('三维随机生成失败，请重试或降低尺寸/等级')
+
     def _ann_gen_confirm(self):
+        if getattr(self, '_ann_gen_cubic', False):
+            self._ann_gen_confirm_cubic()
+            return
         try:
             m = int(self._ann_gen_fields['m'])
             n = int(self._ann_gen_fields['n'])
@@ -1975,6 +2033,9 @@ class AnnotationMixin:
             self._ann_draw_build_canvas()
         elif self._ann_view in ('target', 'recording'):
             self._ann_draw_track_markers()
+        # 三维搭建：棋盘由 draw_cubic_board 画，这里只叠放/挖的幽灵预览
+        if getattr(self, '_cubic_edit_active', False):
+            self._cubic_edit_draw_overlay()
         self._ann_draw_bar()
         if self._ann_sub_dialog == 'gen':
             self._ann_draw_gen_dialog()
@@ -2022,12 +2083,16 @@ class AnnotationMixin:
         x = bar_x  # add() 会推进 x；bar_x 恒为工具条左缘（下拉定位用）
         # 手动构造/设计视图：工具条加高，内嵌参数输入 + 操作按钮，
         # 这样主棋盘完全留给点格增删滑块（不再用居中弹窗遮挡棋盘）。
-        bar_h = 82 if self._ann_view in ('build', 'design') \
+        bar_h = 82 if self._ann_view in ('build', 'design', 'cubic_edit') \
             else self._ANN_BAR_H
         y, h = self.screen_height - self.status_bar_height - \
             bar_h - 8, bar_h
         self._ann_bar_rect = pygame.Rect(x, y, w, h)
         self._ann_btn_rects = {}
+        if getattr(self, '_cubic_edit_active', False):
+            # 三维搭建工具条：按钮/状态分行，和二维画布同一套 chrome
+            self._cubic_edit_draw_bar(self._ann_bar_rect)
+            return
 
         # 条底走共用骨架（gui/editor_chrome）：搭积木编辑器的工具条用同一函数，
         # 两个还原态编辑器切换时外观不跳。
@@ -2043,6 +2108,38 @@ class AnnotationMixin:
             x = rect.right
             chrome.btn(self, rect, text, color, font=self.menu_font)
             self._ann_btn_rects[name] = rect
+
+        if self._ann_view == 'home' and self.create_mode \
+                and getattr(self, 'cubic_mode', False):
+            # 三维创造首页（方案 2026-11-18）：只给三维自己的两条入口，
+            # 不显示二维的格子画布/搭积木/样式库（它们不认立方体）。
+            sub = getattr(self, '_ann_home_sub', None)
+            if sub is None:
+                add('home_shuffle', '① 打乱状态设计', (70, 120, 180))
+                add('home_restore', '② 还原状态设计', (60, 150, 90))
+                title_text = ('三维创造：① 造打乱局面（放/挖方块）'
+                              ' ② 造还原目标 · ESC 退出')
+            elif sub == 'shuffle':
+                add('home_back', '‹ 返回')
+                add('cubic_manual_build', '三维搭建（造局面）', (70, 120, 180))
+                add('random_gen', '随机生成', (70, 120, 180))
+                title_text = ('三维打乱状态：搭建点面放/挖，或按当前 m×n×d'
+                              ' 安全打乱生成 · ESC 返回')
+            else:       # 'restore'
+                add('home_back', '‹ 返回')
+                add('cubic_goal_build', '三维搭建（造还原目标）', (60, 150, 90))
+                add('style_lib', '三维样式库', (70, 120, 180))
+                title_text = ('三维还原状态：搭出目标形状并命名存样式，'
+                              '「三维样式库」可直接开局 · ESC 返回')
+            title = self.status_font.render(title_text, True, (200, 200, 210))
+            # 样式库下拉占左侧一块；标题右移避开，否则菜单会压掉标题开头。
+            _tx = (self._ann_bar_rect.x + 250
+                   if self._ann_design_style_menu is not None
+                   else self._ann_bar_rect.x + 6)
+            self.screen.blit(title, (_tx, self._ann_bar_rect.y - 18))
+            if self._ann_design_style_menu is not None:
+                self._ann_draw_style_menu(bar_x, y, w)
+            return
 
         if self._ann_view == 'home':
             if self.create_mode:
@@ -2323,10 +2420,21 @@ class AnnotationMixin:
         st = self.status_font.render('格子画布  ' + msg, True, color)
         self.screen.blit(st, (x + 10, row2 + 3))
 
+    def _ann_style_is_cubic(self, name: str) -> bool:
+        """样式文件是否属于三维（kind='cubic'）；旧二维样式没有 kind。"""
+        from gui import design_styles
+        data = design_styles.load_style(self.config_dir, name) or {}
+        return str(data.get('kind') or '') == 'cubic'
+
     def _ann_draw_style_menu(self, x, y, w):
         """样式库下拉（首页用）：画在工具条上方，项矩形存菜单项列表。"""
         from gui import design_styles
         names = design_styles.list_styles(self.config_dir)
+        # 三维只列三维样式，二维只列二维样式：选错形态会在开局时被拒，
+        # 干脆不显示；两个库共用目录但 kind 分得开。
+        _cubic = bool(getattr(self, 'cubic_mode', False))
+        names = [nm for nm in names
+                 if self._ann_style_is_cubic(nm) == _cubic]
         mh = 24
         menu_h = max(len(names) * mh, 26)
         mrect = pygame.Rect(x + 10, y - menu_h - 4,
@@ -2935,6 +3043,14 @@ class AnnotationMixin:
 
     def _ann_dirs_for_gap(self, gap_type: str) -> tuple:
         """该缝族允许的移动方向（平行于缝）。"""
+        # 三维：cubic spec 没有 cell_polygon，走不了 _generic_spec 那条门；
+        # 但缝族/方向表仍由同一个 spec 给出。无限打乱在三维里取方向必须走
+        # 这里，否则会落到下面方形的 h/v 表，c/d 族拿到空元组后整盘误判
+        # 「无可逆走法」并自动停机（用户 2026-11-18「无限打乱也接入三维」）。
+        if getattr(self, 'cubic_mode', False):
+            spec = getattr(getattr(self, 'game', None), 'spec', None)
+            if spec is not None and getattr(spec, 'seam_families', None):
+                return self._spec_gap_letters(spec).get(gap_type, ())
         if self._generic_spec() is not None:
             # 通用通道：字母表由板型數據反查（引擎 parallel → compat 表），
             # 與渲染器/虛擬鍵盤同一源
@@ -3235,6 +3351,50 @@ class AnnotationMixin:
             return
         kind = str(data.get('kind') or 'square')
         groups = design_styles.groups_from_data(data)
+        # 两个库共目录：三维只认 kind='cubic'，二维不认；选错形态直接拒。
+        if (kind == 'cubic') != bool(getattr(self, 'cubic_mode', False)):
+            self._ann_notify('这个样式属于另一种形态，不能在当前模式打开')
+            return
+
+        if kind == 'cubic':
+            # 三维样式：cells=[[r,c,d],...]，尺寸键 m/n/d，step 为等级。
+            # 还原目标就是这份格集；开局先建 m×n×d 立方体，再 apply_pattern
+            # 摆成样式形状并 set_goal_pattern，旋转/翻面仍走 48 对称判定。
+            rs = [int(p[0]) for p in cells]
+            cs = [int(p[1]) for p in cells]
+            ds = [int(p[2]) for p in cells]
+            lo = (min(rs), min(cs), min(ds))
+            cells = [(p[0] - lo[0], p[1] - lo[1], p[2] - lo[2])
+                     for p in cells]
+            m = max(1, int(data.get('m') or 0),
+                    max(rs) - lo[0] + 1)
+            n = max(1, int(data.get('n') or 0),
+                    max(cs) - lo[1] + 1)
+            d = max(1, int(data.get('d') or data.get('depth') or 0),
+                    max(ds) - lo[2] + 1)
+            step = int(data.get('step') or self.current_step)
+            step = max(1, min(step, max(m, n, d) - 1))
+            if not self.new_cubic_puzzle(m, n, d, step):
+                self._ann_notify(f'样式「{name}」无法开局（三维 {m}×{n}×{d} '
+                                 f'等级{step}）')
+                return
+            self.game.apply_pattern(cells)
+            self.game.set_goal_pattern(cells)
+            self.current_m = self.game.m
+            self.current_n = self.game.n
+            self.current_depth = self.game.depth
+            self._ann_style_goal = name
+            self.selected_gap = None
+            self.selected_block = None
+            self.step_count = 0
+            self.center_map()
+            self.game_history.reset()
+            self.game_history.save_snapshot(self.game)
+            self._mark_file_dirty()
+            self._ann_leave_to_home()
+            self._ann_notify(f'已按三维样式「{name}」开局（{len(cells)} 块；'
+                             'Alt+S 打乱后恢复成这个形状，旋转/翻面都算还原）')
+            return
 
         if kind in ('triangle', 'mi'):
             step = int(data.get('step') or self.current_step)
@@ -3670,7 +3830,8 @@ class AnnotationMixin:
     # 随机生成参数对话框
     # ==================================================================
     def _ann_draw_gen_dialog(self):
-        w, h = 360, 400
+        cubic = bool(getattr(self, '_ann_gen_cubic', False))
+        w, h = 360, (320 if cubic else 400)
         dx = (self.screen_width - w) // 2
         dy = (self.screen_height - h) // 2
         overlay = pygame.Surface((self.screen_width, self.screen_height),
@@ -3684,17 +3845,26 @@ class AnnotationMixin:
         pygame.draw.rect(self.screen, self.colors['dialog_border'], dlg, 2,
                          border_radius=8)
         title = self.dialog_title_font.render(
-            "随机生成谜题" if self.create_mode else "随机生成标注起点",
+            "随机生成三维谜题" if cubic else
+            ("随机生成谜题" if self.create_mode else "随机生成标注起点"),
             True, self.colors['dialog_title'])
         self.screen.blit(title, (dx + 20, dy + 15))
 
-        fields = [
-            ('m', '行数:', self._ann_gen_fields['m']),
-            ('n', '列数:', self._ann_gen_fields['n']),
-            ('step', '等级:', self._ann_gen_fields['step']),
-            ('hole', '孔洞数:', self._ann_gen_fields['hole']),
-            ('dent', '缺口数:', self._ann_gen_fields['dent']),
-        ]
+        if cubic:
+            fields = [
+                ('m', '行数:', self._ann_gen_fields['m']),
+                ('n', '列数:', self._ann_gen_fields['n']),
+                ('d', '层数:', self._ann_gen_fields['d']),
+                ('step', '等级:', self._ann_gen_fields['step']),
+            ]
+        else:
+            fields = [
+                ('m', '行数:', self._ann_gen_fields['m']),
+                ('n', '列数:', self._ann_gen_fields['n']),
+                ('step', '等级:', self._ann_gen_fields['step']),
+                ('hole', '孔洞数:', self._ann_gen_fields['hole']),
+                ('dent', '缺口数:', self._ann_gen_fields['dent']),
+            ]
         self._ann_gen_field_rects = {}
         y = dy + 55
         for key, label, value in fields:
@@ -3719,8 +3889,11 @@ class AnnotationMixin:
                                          (255, 120, 120))
             self.screen.blit(es, (dx + 25, y + 4))
             y += 24
-        hint = self.status_font.render('孔洞=窗内被围空位；缺口=触窗缘空位（总空位=两者之和）',
-                                       True, (150, 150, 160))
+        hint = self.status_font.render(
+            '安全打乱：终态必有解，反转即解法'
+            if cubic else
+            '孔洞=窗内被围空位；缺口=触窗缘空位（总空位=两者之和）',
+            True, (150, 150, 160))
         self.screen.blit(hint, (dx + 25, y + 4))
         y += 28
 

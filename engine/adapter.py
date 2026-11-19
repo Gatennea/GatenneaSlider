@@ -130,6 +130,9 @@ class EngineGame:
         self._key_by_id = {}
         self._opted_keys = frozenset()
         self._opted_t = None
+        # 三维一条方向可平行于两个缝族（如 r 同时平行 c 与 d）。只凭方向
+        # 反查族会挑错，必须记住 opt 时用的是哪一族。二维两族互斥，无影响。
+        self._opted_family = None
         self._pending_board = None
         self._pending_updates = None
         self._rebuild_blocks()
@@ -254,6 +257,7 @@ class EngineGame:
         self._blocks = list(value)
         self._opted_keys = frozenset()
         self._opted_t = None
+        self._opted_family = None
         self._sync(force=True)
         self.update_matrix()
 
@@ -524,6 +528,7 @@ class EngineGame:
         if sel_key is None or sel_key not in keys:
             self._opted_keys = frozenset()
             self._opted_t = None
+            self._opted_family = None
             return
         side_lo = frozenset(k for k in keys
                             if fam.rank_of(k[0], k[1]) < t)
@@ -533,6 +538,7 @@ class EngineGame:
         moved = _group_closure(comp, self._board.block_map)
         self._opted_keys = moved
         self._opted_t = t
+        self._opted_family = fam_name
         for b in self._blocks:
             b.be_opted = self._key_of(b) in moved
 
@@ -540,6 +546,7 @@ class EngineGame:
         """清空选中态（与 game 的 _clear_selection 同义）。"""
         self._opted_keys = frozenset()
         self._opted_t = None
+        self._opted_family = None
         for b in self._blocks:
             b.be_opted = False
 
@@ -555,7 +562,20 @@ class EngineGame:
             return None
         moved_positions = [b.location for b in self._blocks if b.be_opted]
         d = table[direction]
-        fam = next(f for f in self.spec.seam_families if d in f.parallel)
+        # 维度 ≥3 时同一方向平行于多个缝族（三维 r 平行 c/d）；必须先认
+        # `opt` 记下的族，不能拿方向反查——反查会挑到第一条平行族，把
+        # 选中片的缝号套到另一条缝上，判成「选中片横跨缝」而整族推不动。
+        fam = None
+        if self._opted_family is not None:
+            fam = next((f for f in self.spec.seam_families
+                        if f.name == self._opted_family), None)
+            if fam is None or d not in fam.parallel:
+                return None
+        if fam is None:
+            fam = next((f for f in self.spec.seam_families
+                        if d in f.parallel), None)
+        if fam is None:
+            return None
         line = (self._opted_t - 1) / fam.line_scale
         line = int(line) if line == int(line) else line
         return {
@@ -656,6 +676,7 @@ class EngineGame:
         else:
             self._opted_keys = frozenset()
             self._opted_t = None
+            self._opted_family = None
             self._sync(force=True)
             self.update_matrix()
 
@@ -696,8 +717,10 @@ class EngineGame:
             return cur.is_solved()
         if len(cur.keys) != len(self._goal_keys):
             return False
-        if self.spec.lattice.symmetry == 'hyperoctahedral':
-            # 方形：D4 八变换任一命中即算还原（旋转/翻面都算）
+        if self.spec.lattice.symmetry == 'hyperoctahedral' or self.kind == 'cubic':
+            # 方形 / 立方：D4 八变换或三维 48 对称任一命中即算还原（旋转/翻面
+            # 都算）。三维 2026-11-18 补：自订 goal_pattern 以前走下面的平移
+            # 归一，只认「不转」的同一摆放，与总方案「认所有朝向」不符。
             goal_board = Board.from_keys(self.spec, self._goal_keys)
             return cur.canonical_key() == goal_board.canonical_key()
         return _translate_normalized(cur.keys) == \
@@ -757,6 +780,7 @@ class EngineGame:
                                       groups=gmap or None)
         self._opted_keys = frozenset()
         self._opted_t = None
+        self._opted_family = None
         self._rebuild_blocks()
 
     def _pattern_group_key(self, pos, keys):
@@ -959,6 +983,7 @@ class EngineGame:
         self._pending_updates = None
         self._opted_keys = frozenset()
         self._opted_t = None
+        self._opted_family = None
         self._rebuild_blocks()
 
     # ------------------------------------------------------------------
@@ -1303,6 +1328,7 @@ class EngineGame:
             self._blocks.append(_AdapterBlock(p, None))
         self._opted_keys = frozenset()
         self._opted_t = None
+        self._opted_family = None
         self._sync(force=True)
         self.update_matrix()
 

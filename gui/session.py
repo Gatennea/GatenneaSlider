@@ -264,6 +264,10 @@ class SessionMixin:
         self._last_timed_result = None
         self.macro_notify_msg = "无限打乱中：再次打乱停止"
         self.macro_notify_timer = 120
+        # 三维：在第一次走步之前定死取景中心；整个无限打乱会话相机不动，
+        # 避免跟随质心把 AnchorPlanner 的残余偏移放大成持续抖动。
+        if getattr(self, 'cubic_mode', False):
+            self._cubic_capture_shuffle_center()
         self._infinite_shuffle_step()
 
     def _infinite_shuffle_step(self):

@@ -34,6 +34,7 @@ from gui.virtual_keyboard import VirtualKeyboardMixin
 from gui.metrics_panel import MetricsPanelMixin
 from gui.records_panel import RecordsPanelMixin
 from gui.annotation import AnnotationMixin
+from gui.cubic_create import CubicCreateMixin
 from gui.model_editor import ModelEditorMixin
 from gui.tutorial import TutorialMixin
 from gui.palette import PaletteMixin
@@ -95,7 +96,7 @@ def _gui_get_resource_path(relative_path):
     return os.path.join(base, relative_path)
 
 
-class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, ModelEditorMixin, TutorialMixin, PaletteMixin, UpdateMixin, HistoryMixin, SpeedrunMixin, ExternalMixin, SessionMixin, PickFillMixin, AutoSolveMixin, MoveMixin, DragMixin):
+class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, EventsMixin, VirtualKeyboardMixin, MetricsPanelMixin, RecordsPanelMixin, AnnotationMixin, CubicCreateMixin, ModelEditorMixin, TutorialMixin, PaletteMixin, UpdateMixin, HistoryMixin, SpeedrunMixin, ExternalMixin, SessionMixin, PickFillMixin, AutoSolveMixin, MoveMixin, DragMixin):
     """
     滑块游戏图形界面类
     """
@@ -920,6 +921,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 标注模式状态
         self._ann_init_state()
+        # 三维创造编辑会话（gui/cubic_create.py）
+        self._cubic_edit_init_state()
 
         # 搭积木编辑器状态（gui/model_editor.py；会话期外全部为空）
         self._med_init_state()
@@ -1456,17 +1459,13 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # （「沒看到箭頭啊，感覺還是沒辦法玩」，实际存档里面板是关着的）。
         self.show_virtual_keyboard = True
 
-        # 上次的三维相机组（config.json 的 cubic_camera）：有就套用，缺字段
-        # 保持上面的默认；数值越界交给夹紧逻辑兜住（不静默写坏姿势）。
+        # 上次的三维相机组（config.json 的 cubic_camera）：只有明确按过
+        # 1–6 选朝向才恢复；自由旋转（view=null）一律回到参考图校准的斜视，
+        # 否则退出时的滚转姿态会被下次开局继承（2026-11-18 用户报「还是斜放」）。
         prefs = getattr(self, '_cubic_camera_prefs', None) or {}
         if prefs:
-            quat = prefs.get('quat')
-            if isinstance(quat, (list, tuple)) and len(quat) == 4:
-                try:
-                    self.cubic_camera = CubicCamera(tuple(quat))
-                    self.cubic_view_label = '上次视角'
-                except ValueError as exc:      # 空四元数这类坏档：回声 + 保持默认
-                    print(f"三维相机存档无效，已用默认视角: {exc}")
+            self.cubic_camera, self.cubic_view_label, self.cubic_view_index = \
+                self._cubic_camera_pref(prefs)
             gap = prefs.get('gap')
             # gap=0 是「贴死成一整块」，是测试用/临时状态，不该被存档永久继承：
             # 一旦某次存进 0，之后每次开局都是贴死，看起来就是「拆分又没了」
@@ -1486,9 +1485,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                     setattr(self, _meta['attr'],
                             cubic_settings.clamp_value(_meta['key'],
                                                        prefs[_meta['key']]))
-            view = prefs.get('view')
-            if view is not None:
-                self.cubic_view_index = view
 
         # 重置状态（相机/缩放沿用二维字段；三维相机组是第 2 步的事）
         self.zoom = 1.0

@@ -41,6 +41,9 @@ def make_gui():
     g.config_path = os.path.join(cfg, 'config.json')
     g.temp_history_path = os.path.join(cfg, 'temp_history.json')
     g.tutorial_active = False
+    # 玩家配置可能把「无限打乱」常开；本文件验的是有限打乱演示的动画，
+    # 显式关掉，避免 shuffle_puzzle 走无限游走分支（2026-11-18）。
+    g.infinite_shuffle = False
     pygame.display.set_mode((g.screen_width, g.screen_height))
     g.screen = pygame.display.get_surface()
     g._cubic_camera_prefs = {}
@@ -173,8 +176,9 @@ def main():
           '再拖回最快：当前步改回 60ms')
     check(getattr(g4, 'animating', False) and bool(getattr(g4, 'anim_blocks', None)),
           '演示靠 start_animation 推进（有自己的块列表）')
-    import time as _t2
-    _t2.sleep(0.03)
+    # 不靠真实 sleep（Windows 定时器+测试机负载会把 30ms 拖过 60ms，导致动画
+    # 已经收尾、offset 变 None 的假失败）；直接把起点拨到 20ms 前，稳定验中途。
+    g4.anim_start_time = pygame.time.get_ticks() - 20
     g4.update_animation()          # 真实循环里每帧都走这一句，进度才会前进
     offs4 = g4._cubic_anim_offsets()
     check(offs4 is not None and any(v != (0.0, 0.0, 0.0) for v in offs4.values()),
@@ -183,6 +187,7 @@ def main():
         first = next(iter(offs4.values()))
         check(max(abs(v) for v in first) < 1.0,
               f'位移还在半路上（{first}），不是已经跳到落点')
+    import time as _t2
     _t2.sleep(0.10)
     g4.update_animation()
     check(getattr(g4, '_shuffle_demo_done', 0) >= 1, '演示确实在往前走')
@@ -204,6 +209,22 @@ def main():
     check(firsts < 0.35 * total, f'首帧只走一小段，不是瞬移（{firsts:.2f}/{total:.2f}）')
     check(all(abs(centers[i + 1][2] - centers[i][2]) <= firsts + 1e-6
               for i in range(len(centers) - 1)), '每帧位移不增（平滑收敛）')
+
+    print('H. 未拆分动画：移动块的内部面不再被剔除（防黑块）')
+    cube3 = [(r, c, d) for r in range(3) for c in range(3) for d in range(3)]
+    cam3 = cubic_view.CubicCamera.oblique_default()
+    base3 = cubic_view.collect_faces(cube3, cam3, scale=30.0,
+                                     origin=(200.0, 200.0), gap=0.0)
+    anim3 = cubic_view.collect_faces(
+        cube3, cam3, scale=30.0, origin=(200.0, 200.0), gap=0.0,
+        offsets={(0, 0, 0): (0.3, 0.0, 0.0)})
+    keys_base3 = {(f['loc'], f['axis'], f['sign']) for f in base3}
+    keys_anim3 = {(f['loc'], f['axis'], f['sign']) for f in anim3}
+    check(len(anim3) > len(base3),
+          f'有位移时补出内部面（{len(base3)} → {len(anim3)}）')
+    check((((0, 0, 0), 0, 1) in keys_anim3)
+          and (((0, 0, 0), 0, 1) not in keys_base3),
+          '移动块贴死时被剔除的那一面，动画中重新画出来')
 
     print('=' * 60)
     if FAILED:

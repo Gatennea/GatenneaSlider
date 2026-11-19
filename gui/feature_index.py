@@ -436,11 +436,14 @@ FEATURES = (
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='右下角「模式」切到竞速；按空格或点状态栏计时区开始/放弃。',
          confusion='计时中禁止：求解、宏、打乱、重置、打开存档。'),
-    dict(id='mode_create', name='创造模式', aliases=('创造', '创造模式', '造题', '自定义谜题'),
+    dict(id='mode_create', name='创造模式', aliases=('创造', '创造模式', '造题', '自定义谜题',
+                                                     '三维创造', '三维搭建'),
          kind='setting', place=('right_panel', 'game_mode'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='右下角「模式」切到创造，可[随机生成]或[手动构造]造题。',
-         confusion='**[随机生成]只支持矩形与数字**；三角/米字没有这个按钮，请用[手动构造]（三种形态都能用）。'),
+         howto='右下角「模式」切到创造：二维可[随机生成]或[手动构造]；'
+               '三维进「打乱/还原状态设计」→ 三维搭建，点面放块/挖块。',
+         confusion='**[随机生成]只支持矩形与数字**；三角/米字没有这个按钮，请用[手动构造]；'
+                   '三维创造目前只做放/挖与保存门，随机生成待接。'),
     dict(id='annotation_mode', name='标注模式（隐藏入口）',
          aliases=('标注', '标注模式', '隐藏模式', '录示范', '示范录制', '数据录制'),
          kind='action', place=('key', 'annotation_mode'),

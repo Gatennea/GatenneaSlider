@@ -742,23 +742,32 @@ class FileOpsMixin:
                 f'模型 {kind} 与存档时不一致（内容已改动），旧档的朝向可能有偏移')
             self.macro_notify_timer = 240
 
+    def _cubic_camera_pref(self, prefs=None):
+        """按存档选默认相机：只认明确选过的 1–6 朝向，自由旋转不恢复。
+
+        2026-11-18 用户报「默认载入还是个斜放的」：旧逻辑会把 config 里
+        退出时的任意四元数当默认，拖到滚转 80° 的姿态也会被下次开局继承。
+        新建/载入三维局一律回到参考图校准过的斜视；只有玩家按过 1–6 选了
+        某个朝向，才把那个朝向（含统一 14° 倾斜）带回来。
+        """
+        from engine.cubic_camera import CubicCamera, FACE_VIEW_LABELS
+        prefs = (prefs if prefs is not None
+                 else getattr(self, '_cubic_camera_prefs', None) or {})
+        view = prefs.get('view')
+        if (isinstance(view, int) and not isinstance(view, bool)
+                and 0 <= view < len(FACE_VIEW_LABELS)):
+            return (CubicCamera.from_view_angles(view),
+                    FACE_VIEW_LABELS[view], view)
+        return CubicCamera.oblique_default(), '斜视', None
+
     def _cubic_load_defaults(self, load: bool = False):
         """载入三维存档后把三维专属的 GUI 状态补齐（相机/缩放/拆分/平移/键盘）。"""
-        from engine.cubic_camera import CubicCamera
         from engine.cubic_view import DEFAULT_GAP
         prefs = getattr(self, '_cubic_camera_prefs', None) or {}
-        cam = CubicCamera.oblique_default()
-        label = '斜视'
-        quat = prefs.get('quat')
-        if isinstance(quat, (list, tuple)) and len(quat) == 4:
-            try:
-                cam = CubicCamera(tuple(quat))
-                label = '上次视角'
-            except ValueError:
-                pass
+        cam, label, view_idx = self._cubic_camera_pref(prefs)
         self.cubic_camera = cam
         self.cubic_view_label = label
-        self.cubic_view_index = prefs.get('view')
+        self.cubic_view_index = view_idx
         self.cubic_zoom = 1.0
         zoom = prefs.get('zoom')
         if zoom is not None:

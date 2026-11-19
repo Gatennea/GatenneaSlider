@@ -1801,7 +1801,7 @@ class EventsMixin:
         self.game.opt(seam[0], seam[1], block)
         self.selected_block = block
         n = len([b for b in self.game.blocks if b.be_opted])
-        self.macro_notify_msg = f"选中滑块组 共{n}个（切面 {seam[0]}·{seam[1]}）"
+        self.macro_notify_msg = f"已选中滑块组，共{n}个"
         self.macro_notify_timer = 120
         return True
 
@@ -1829,7 +1829,7 @@ class EventsMixin:
         self.selected_block = None
         for b in self.game.blocks:
             b.be_opted = False
-        self.macro_notify_msg = f"切面 {seam[0]}·{seam[1]}（左键选要滑的块）"
+        self.macro_notify_msg = "已选中切面（左键选要滑的滑块）"
         self.macro_notify_timer = 120
         return True
 
@@ -2053,10 +2053,9 @@ class EventsMixin:
         if not moved:
             self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
             self.macro_notify_timer = 120
-            # 三维拒绝反馈：短提示音 + 选中组红边闪 12 帧（渲染层按 _shake_t 画）
-            self._reject_move(None,
-                              [b for b in self.game.blocks
-                               if getattr(b, 'be_opted', False)])
+            # 不再补第二次 _reject_move：move_selected_blocks 已经按真实原因
+            # 闪了边（disconnected=冷紫 / collision=暖珊瑚）。再传 None 会把
+            # _reject_reason 覆盖成中性色，两种拒绝原因就分不出来了。
             return False
         # 同向连续推（用户 2026-11-18 第 4 条：「箭头不能改变位置」）：选中组一走，
         # 它和没动那部分之间的切面也跟着走一格。把 selected_gap 跟着挪到新位置，
