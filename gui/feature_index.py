@@ -480,16 +480,36 @@ FEATURES = (
          confusion=''),
 
     # ---------------- 引导 ----------------
-    dict(id='help', name='帮助（操作说明）', aliases=('帮助', '说明', '操作说明', '怎么用', '教程'),
+    dict(id='help', name='帮助（操作说明）',
+         aliases=('帮助', '说明', '操作说明', '怎么用', '教程',
+                  # §六十一：帮助分三页签后，按页叫法也能搜到同一个入口
+                  '三维操作', '三维说明', '通用说明', '帮助页签'),
          kind='action', place=('menu', '帮助'),
          forms=ALL_FORMS, modes=ALL_MODES,
-         howto='顶栏「帮助」，或直接按 F1 旁的搜索入口（本对话框顶部搜索框）。',
-         confusion=''),
+         howto='顶栏「帮助」（或按 F1 旁搜索入口）→ 标题右侧三页签：'
+               '二维=玩法与规则，三维=相机/切面/箭头六键，通用=快捷键/宏/求解/关于。',
+         confusion='「三维操作」指帮助里的三维页签；三维画面的选项在「设置 → 三维」页。'),
     dict(id='tutorial', name='新手教程', aliases=('教程', '新手', '教学', '闯关'),
          kind='action', place=('menu', '教程'),
          forms=ALL_FORMS, modes=ALL_MODES,
          howto='顶栏「教程」，按关卡一步步走。',
          confusion='首次进入游戏（无存档且没看过）会自动开始；教程不覆盖你原来的局面。'),
+    # §六十一：§五十九 两个新入口补登记（漏登记 = 帮助/命令面板里搜不到）
+    dict(id='cubic_intro_replay', name='重看三维新手引导',
+         aliases=('重看引导', '引导', '新手引导', '三维引导', '再看一遍'),
+         kind='action', place=('menu_sub', '谜题', '三维谜题', '重看新手引导'),
+         forms=ALL_FORMS, modes=ALL_MODES,
+         howto='顶栏「谜题」→「三维谜题」→「重看新手引导」。首次进三维局自动弹'
+               '4 步引导（转视角/选切面/箭头推/撤销），跳过或走完就记住，想再看从这里进。',
+         confusion='重看不改变当前局面，也不会让引导下次再自动弹（自动弹只看「看过没有」）。'),
+    dict(id='cubic_ops_card', name='三维操作卡（右下常驻）',
+         aliases=('操作卡', '操作要点', '常驻', '回到中央', '三维要点'),
+         kind='concept', place=('right_panel',),
+         forms=('cubic',), modes=ALL_MODES,
+         howto='三维局右下角「操作 ▸」小钮点开展开：五行要点 + 回到中央/重看引导/'
+               '完整说明三个按钮；点卡头收起。',
+         confusion='只在三维局出现（二维右下角没有）；收起/展开只记在本次会话，'
+                   '不是设置开关。'),
     dict(id='website', name='官网', aliases=('官网', '网站', '网页版', '下载'),
          kind='link', place=('menu', '官网'),
          forms=ALL_FORMS, modes=ALL_MODES,
@@ -591,6 +611,8 @@ _CUBIC_IDS = frozenset({
     'custom_puzzle',
     # 2026-11-18：三维撤销/重做补回选中动画（滑动 + 选中组/缝高亮）
     'selection_animation_enabled',
+    # §六十一：重看引导入口在三维子菜单，但任何局的谜题菜单都能点到它
+    'cubic_intro_replay',
 })
 
 
@@ -686,6 +708,10 @@ _ACTIONS = {
     # 引导 / 链接
     'help': {'type': 'none'},
     'tutorial': {'type': 'tutorial'},
+    # §六十一：重看引导打开谜题菜单（行在「三维谜题」子菜单，指路见 howto）；
+    # 操作卡是概念条，点开只弹说明
+    'cubic_intro_replay': {'type': 'menu', 'name': '谜题'},
+    'cubic_ops_card': {'type': 'none'},
     'website': {'type': 'website'},
     # 增量更新器
     'check_update': {'type': 'updater_check'},

@@ -119,6 +119,29 @@ check('S3「求解」首位 = auto_solve（精确别名优先）',
 hits = fi.search('着色')
 check('S3「着色」首位 = coloring_enabled', bool(hits) and hits[0][1]['id'] == 'coloring_enabled')
 
+# ================================================================ 2-c1 §六十一：§五十九 新入口已登记
+print("\n--- 2-c1 §六十一：帮助页签 / 重看引导 / 操作卡 ---")
+hits = [e['id'] for _s, e, _a in fi.search('引导')]
+check('§61「引导」→ cubic_intro_replay（原为空结果）', 'cubic_intro_replay' in hits)
+hits = fi.search('三维操作', form='cubic')
+check('§61「三维操作」首位 = help（帮助三维页签）',
+      bool(hits) and hits[0][1]['id'] == 'help')
+hits = [e['id'] for _s, e, _a in fi.search('常驻')]
+check('§61「常驻」→ cubic_ops_card（原为空结果）', 'cubic_ops_card' in hits)
+hits = fi.search('操作卡', form='cubic')
+check('§61「操作卡」首位 = cubic_ops_card',
+      bool(hits) and hits[0][1]['id'] == 'cubic_ops_card')
+hits = fi.search('操作卡', form='square')
+op = [(e['id'], av) for _s, e, av in hits if e['id'] == 'cubic_ops_card']
+check('§61 操作卡在二维局标不可用（二维没有这张卡）',
+      bool(op) and op[0][1] is False, str(op))
+check('§61 新条目 action 已注册（_ACTIONS 防漏）',
+      fi._ACTIONS.get('cubic_intro_replay') == {'type': 'menu', 'name': '谜题'}
+      and fi._ACTIONS.get('cubic_ops_card') == {'type': 'none'})
+check('§61 重看引导条目支持五形态（_CUBIC_IDS 登记）',
+      'cubic' in dict((f['id'], f['forms']) for f in fi.FEATURES)
+      ['cubic_intro_replay'])
+
 check('空查询返回空结果', fi.search('') == [])
 check('无匹配返回空结果', fi.search('zzzz不存在的东西') == [])
 
