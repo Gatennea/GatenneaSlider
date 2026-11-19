@@ -1066,6 +1066,8 @@ class RendererMixin:
         elif _follow and _target is not None:
             self._cubic_shuffle_center = None
             self._cubic_shuffle_scale = None
+            self._cubic_static_center = None   # 跟随中：关闭时重新冻结当前视角
+            self._cubic_static_scale = None
             # 平滑跟随（用户 2026-11-18 第 3 条）：一步走完质心会跳 1/9 盘，
             # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
             # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
@@ -1078,6 +1080,13 @@ class RendererMixin:
                              for i in range(3))
             self._cubic_follow_center = _cur
             _center = _cur
+        elif _target is not None:
+            # 跟随质心关闭：取景中心和比例都冻结，块移动不再自动平移/缩放。
+            self._cubic_shuffle_center = None
+            self._cubic_shuffle_scale = None
+            self._cubic_freeze_view()
+            _center = getattr(self, '_cubic_static_center', None)
+            _frame_scale = getattr(self, '_cubic_static_scale', None)
         else:
             self._cubic_shuffle_center = None
             self._cubic_shuffle_scale = None

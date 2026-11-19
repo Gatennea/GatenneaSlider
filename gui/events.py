@@ -2010,6 +2010,29 @@ class EventsMixin:
         # 只改显示参数，不是棋盘变更：不动 _board_version（否则标题栏平白多个
         # 星号）；配置在退出/定期 save_config 时自然落盘。
 
+    def _cubic_freeze_view(self):
+        """冻结当前取景中心和比例（关闭「跟随质心」时用）。
+
+        关掉跟随后，块移动不能再改 origin/scale，否则画面会自己平移、贴点击处
+        的箭头也会跟着跑。这里记下关闭瞬间的参考点与未缩放比例，之后只由
+        手动平移和缩放滑条改变相机。
+        """
+        if getattr(self, '_cubic_static_center', None) is not None:
+            return
+        from engine import cubic_view
+        blocks = getattr(getattr(self, 'game', None), 'blocks', None) or []
+        camera = getattr(self, 'cubic_camera', None)
+        if camera is None or not blocks:
+            return
+        center = getattr(self, '_cubic_follow_center', None)
+        if center is None:
+            center = cubic_view.layout_anchor(blocks)
+        self._cubic_static_center = tuple(float(v) for v in center)
+        base, _ = cubic_view.stable_frame(
+            blocks, camera, self.screen_width, self.screen_height,
+            margin=64, zoom=1.0, center=center)
+        self._cubic_static_scale = float(base)
+
     def _cubic_pan_center(self):
         """居中：平移归零 **并恢复「跟随质心」**（方案 §2.2 原口径）。
 
@@ -2019,6 +2042,8 @@ class EventsMixin:
         self.cubic_pan = [0.0, 0.0]
         self.cubic_follow_centroid = True
         self._cubic_follow_center = None      # 居中即从质心重新起算
+        self._cubic_static_center = None      # 恢复跟随后不再用冻结取景
+        self._cubic_static_scale = None
         self.macro_notify_msg = '视角已居中（恢复跟随质心）'
         self.macro_notify_timer = 120
         return True
@@ -2042,6 +2067,8 @@ class EventsMixin:
         # 手动平移 → 暂停「跟随质心」（方案 §2.2：手动平移后暂停跟随，
         # 按「居中」回正并恢复）。不暂停的话下一帧就被质心拽回中间，
         # 按键看起来像没反应。
+        if getattr(self, '_cubic_static_center', None) is None:
+            self._cubic_freeze_view()
         self.cubic_follow_centroid = False
         # 夹住偏移：最多推到半屏，别让盘整个飘出可视区再也找不回来
         lim = 0.55 * max(self.screen_width, self.screen_height)
@@ -5130,11 +5157,16 @@ class EventsMixin:
         elif key == 'cubic_follow_centroid':
             # 三维右下角「跟随质心」：关掉后手动平移不会被拽回；重开即回正
             on = not getattr(self, 'cubic_follow_centroid', True)
+            if not on:
+                # 关之前先冻结当前取景，之后块怎么动都不再自动平移。
+                self._cubic_freeze_view()
             self.cubic_follow_centroid = on
             if on:
                 self.cubic_pan = [0.0, 0.0]
                 self._cubic_follow_center = None
-            self.macro_notify_msg = f"跟随质心：{'开' if on else '关（手动平移保持）'}"
+                self._cubic_static_center = None
+                self._cubic_static_scale = None
+            self.macro_notify_msg = f"跟随质心：{'开' if on else '关（取景已冻结）'}"
         elif key == 'show_records_panel':
             # 成绩面板（F3 的纯鼠标入口）：与 F3 走同一套收尾（清删除确认态）
             self.show_records_panel = not getattr(self, 'show_records_panel', False)
