@@ -1428,15 +1428,27 @@ class AutoSolveMixin:
             return
 
         s, e = result.get('start', {}), result.get('end', {})
-        sh, sw = s.get('bbox', (0, 0))
-        eh, ew = e.get('bbox', (0, 0))
+        is_cubic = result.get('form') == 'cubic'
+        if is_cubic:
+            sh, sw, sd = s.get('bbox', (0, 0, 0))
+            eh, ew, ed = e.get('bbox', (0, 0, 0))
+        else:
+            sh, sw = s.get('bbox', (0, 0))
+            eh, ew = e.get('bbox', (0, 0))
         gstage = result.get('gradient_stage')
         # 异形（tri）求解器返回的键名与方形不同：score 走 'score' /
         # 'best_score'，没有 start/end 两段指标。文案必须分形态写，
         # 否则会显示「聚拢度 0.0%→0.0%」这种假数字（同 11b 的教训：
         # 宁可少说，不要说错）。
         is_shape = 'start' not in result and 'score' in result
-        if gstage:
+        if is_cubic:
+            self.macro_notify_msg = format_solve_done(
+                '单次聚拢', len(actions), _elapsed, solved=bool(solved),
+                extra='%s · 聚拢度 %.1f%%→%.1f%% · 边界盒 %d×%d×%d→%d×%d×%d'
+                      % (reason_text, s.get('score', 0) * 100, e.get('score', 0) * 100,
+                         sh, sw, sd, eh, ew, ed))
+            self.macro_notify_timer = 300
+        elif gstage:
             gtotal = result.get('gradient_total', 4)
             self.macro_notify_msg = (
                 f"梯度聚拢 第{gstage}/{gtotal}阶段完成（{reason_text}）· {len(actions)}步 · "
@@ -1507,7 +1519,9 @@ class AutoSolveMixin:
                 # 朝向分量，维持两分量。
                 loc = list(rep)
                 op['rep_cell'] = loc[:3] if (self.mi_mode
-                                             or self.triangle_mode) else loc[:2]
+                                             or self.triangle_mode
+                                             or getattr(self, 'cubic_mode', False)
+                                             ) else loc[:2]
             ops.append(op)
 
         self._gather_info = {
