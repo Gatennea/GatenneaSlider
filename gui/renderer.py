@@ -2190,6 +2190,11 @@ class RendererMixin:
         #   它們也不走 aalines）。
         for _base, rpoly, fill, _bc, _bw in _paint:
             pygame.draw.polygon(self.screen, fill, rpoly)
+            if getattr(self, 'face_bevel_enabled', False):
+                # §六十二：聚合板型（模型板/碎三角等多边形路径）与三条手画
+                # 路径同一倒角来源；rpoly 本身就是 fill 轮廓（顶点在轮廓上），
+                # 带不会溢出，无需 corner_inset。描边趟在后面，边框照画其上。
+                _draw_face_bevel(self.screen, rpoly, fill)
         for _base, rpoly, _fill, border_color, border_w in _paint:
             # 普通塊**不描灰邊**：晶格線已經把塊界畫清楚了，再給每塊描一圈灰
             # 等於一條縫上並排三條灰線（塊邊+晶格線+塊邊），正是「整盤發灰」。

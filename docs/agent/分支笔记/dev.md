@@ -55,6 +55,15 @@
   `s62_on.png`（四边明暗带、圆角完好），两图存工作区根（未跟踪、不入库）。
 - lint NEW=1（存量 `_tmp_save`）、doclink NEW 中涉本节的均为既有文档
   引用 `renderer.py` 因目标修改重新入列（renderer.py 真实存在，非断链）。
+- **补接（2026-11-20 用户问「其他二维谜题改了没」后排查）**：`draw_board`
+  三分流——方/数字走手画循环（**数字已随方形覆盖**）、`_polygon_view`
+  非空走 `_draw_polygon_board` 聚合填色趟（**碎三角/模型板，首交付漏了
+  这条，已补同款 gate**）、triangle_mode 走三角。捆绑组**刻意全不接**：
+  它是逐块填色+桥接拼合（`_draw_bandaged_groups_poly`/`draw_group_chunks`），
+  逐格压带会画出组内不存在的假内棱，外轮廓级倒角需几何重构、超 §六十二
+  范围——全不接反而让所有捆绑态统一平坦（部分接=矩形鼓异形平，更不一致）；
+  预览缩图非游玩盘面不接。护栏补「碎三角(聚合板)」4 断言（33/33），回归
+  engine_gui / bandage_forms / gap_second_step 全绿。
 
 ## §六十一 完成记录（2026-11-19，本分支已 commit，待核销）
 

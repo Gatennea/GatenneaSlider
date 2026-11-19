@@ -137,6 +137,9 @@ def run():
         run_form('方形', 'new_puzzle', (6, 6, 2), 'draw_board')
         run_form('三角', 'new_triangle_puzzle', (5, 2), 'draw_triangle_board')
         run_form('米字', 'new_mi_puzzle', (4, 4, 2), 'draw_mi_board')
+        # §62 补验：碎三角/模型板走 draw_board 的 _polygon_view 分流
+        #（_draw_polygon_board 聚合填色趟），与三条手画路径同一 gate。
+        run_form('碎三角(聚合板)', 'new_model_puzzle', ('shatter', 1), 'draw_board')
 
         # ---------- 4 AA 路径与直出路径同一 helper ----------
         print('\n--- 4 AA 路径 ---')
