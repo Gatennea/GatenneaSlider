@@ -1102,17 +1102,23 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   入口已 gate，提示「三维暂未开放宏功能」。護欄
   `test/_test_cubic_macro_exec.py` 15/15。求解器路徑仍直接使用
   `macro_exec_ops` + `_execute_cubic_macro_op`，不經過 GUI gate。
-- **P2 三維聚攏求解器**：新增 `solver/ml/cubic_gather.py`；三維 action adapter
-  （`r/c/d` 三縫族、兩側、兩方向）；三維前綴和枚舉 6 種軸排列窗口；
-  `gather_solve_unified` 分派 cubic；`SOLVER_FORM_SUPPORT['gather']` 加 cubic；
-  其他算法仍明確拒絕三維。第一版只做重疊率貪心，不承諾還原。
+- **P2 三維聚攏求解器（2026-11-19 已完成）**：新增 `solver/ml/cubic_gather.py`；
+  三維 action adapter（`r/c/d` 三縫族、兩側、兩方向）；三維前綴和枚舉 6 種軸排列
+  窗口；`gather_solve_unified` 分派 cubic；`SOLVER_FORM_SUPPORT['gather']` 加 cubic；
+  其他算法仍明確拒絕三維。只做重疊率貪心，不承諾還原；返回 `form='cubic'`，
+  GUI `_handle_gather_result` 已按三元 bbox 寫文案，且三維 `rep_cell` 保留三分量
+  （不再被二維分支截成 `[r,c]`）。護欄 `test/_test_cubic_gather.py` 656/656：
+  3D 前綴和 vs 暴力、平移/軸置換仍 score=1、4×4×4 短聚攏可逐步重放、
+  終態與返回 end 一致、GUI 轉換保留三元 rep。
 - **P3 自訂還原態**：低優先，暫不動。
-- **P4 文檔同步**：§54 壓成剩餘項；後續箭頭/相機凍結/縮放/引擎標籤補記。
+- **P4 文檔同步**：§54 已補 P2；後續箭頭/相機凍結/縮放/引擎標籤補記。
 
 ### 已知狀態
 
-- HEAD `f54d9ee`，工作樹乾淨。
+- HEAD `7fe0e15`（P2 三維聚攏 MVP），工作樹僅餘本節與 §54 文檔更新。
 - 三維 28 套測試：27 套全綠；`_test_cubic_vk.py` 50/51，唯一紅是既有的
   「箭頭外接矩形角部重疊」斷言，不是箭頭多邊形本體重疊。
-- 三維 GUI 宏已 gate（15/15）；求解器內部 op 執行器已鎖 40 連 op。下一步是
-  P2 三維聚攏求解器。
+- 三維 GUI 宏已 gate（15/15）；求解器內部 op 執行器已鎖 40 連 op；
+  P2 聚攏 656/656，4×4×4 打亂短聚攏 0.344→0.500 共 12 步可重放。
+- 下一步：核對三維自動求解入口與 `gather_params` 參數映射（GUI 目前可能把
+  二維參數原樣傳入，cubic 會記進 `ignored_kwargs`）；P3 自訂還原態仍低優先。
