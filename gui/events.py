@@ -123,6 +123,87 @@ _IME_TEXT_INPUT_CONTEXTS = (
 class EventsMixin:
     """事件处理相关方法"""
 
+    def _open_help(self, tab=None):
+        """打开帮助框并定默认页（§59A/E）。
+
+        tab 省略时按当前局形态：三维局开三维页，否则二维页。
+        页签按钮跳转（E 入口）传 tab='3d' 直达。
+        """
+        self.close_all_menus()
+        self.show_help = True
+        self._dialog_fade_reset('help')
+        if tab is None:
+            tab = '3d' if getattr(self, 'cubic_mode', False) else '2d'
+        old = getattr(self, 'help_tab', '2d')
+        if old != tab:
+            if not hasattr(self, 'help_scroll_pos'):
+                self.help_scroll_pos = {'2d': 0.0, '3d': 0.0, 'common': 0.0}
+            self.help_scroll_pos[old] = self.help_scrollbar.scroll
+            self.help_tab = tab
+            self.help_scrollbar.set_scroll(self.help_scroll_pos.get(tab, 0.0))
+        else:
+            self.help_scrollbar.set_scroll(0)
+
+    # ---- §59 C：三维新手引导卡（状态机 + 点击分发，绘制在 renderer）----
+    CUBIC_INTRO_STEPS = (
+        ('转视角', '按住左键拖动空白处旋转视角；Ctrl + 滚轮缩放；数字键 1–6 换朝向、0 回斜视。'),
+        ('选切面', '右键点方块的一个面 = 选中整片切面（红色预览）；右键点空白取消选中。'),
+        ('点箭头推', '左键点切面一侧的滑块选中整组，点画面上的箭头，或虚拟键盘六个键，一格一格推。'),
+        ('撤销', '走乱了 Ctrl+Z 撤销、Ctrl+X 重做；右下角「操作」卡随时可查要点。'),
+    )
+
+    def _cubic_intro_start(self):
+        """打开引导卡（§59C：首次进三维局自动；谜题菜单可重看）。"""
+        self._cubic_intro_active = True
+        self._cubic_intro_step = 0
+
+    def _cubic_intro_close(self, seen=True):
+        """关闭引导卡；seen=True 表示看完/跳过，落盘后下次进三维不再弹。"""
+        self._cubic_intro_active = False
+        if seen and not getattr(self, 'cubic_intro_seen', False):
+            self.cubic_intro_seen = True
+            try:
+                self.save_config()
+            except Exception:
+                pass
+
+    def _cubic_intro_advance(self):
+        """引导卡「下一步」；第 4 步再按 = 完成并记住看过。"""
+        self._cubic_intro_step = int(getattr(self, '_cubic_intro_step', 0)) + 1
+        if self._cubic_intro_step >= len(self.CUBIC_INTRO_STEPS):
+            self._cubic_intro_close(seen=True)
+
+    def _cubic_hud_click(self, pos) -> bool:
+        """§59 C/D：新手引导卡 + 右下角操作卡的点击分发。
+
+        只吞卡内命中（按钮先于卡体），点卡外返回 False 放行给棋盘；
+        矩形未绘制过（rects 为 None）一律放行——无头测试不 draw 时零影响。
+        """
+        # C 引导卡：按钮（跳过/下一步）→ 卡体
+        if getattr(self, '_cubic_intro_active', False):
+            for _r, _act in (getattr(self, '_cubic_intro_btns', None) or ()):
+                if _r.collidepoint(pos):
+                    _act()
+                    return True
+            _card = getattr(self, '_cubic_intro_rect', None)
+            if _card is not None and _card.collidepoint(pos):
+                return True
+        # D 操作卡（仅三维局）：折叠钮 → 展开卡内按钮 → 卡体
+        if getattr(self, 'cubic_mode', False):
+            _tg = getattr(self, '_cubic_ops_toggle_rect', None)
+            if _tg is not None and _tg.collidepoint(pos):
+                self._cubic_ops_open = not getattr(self, '_cubic_ops_open', False)
+                return True
+            if getattr(self, '_cubic_ops_open', False):
+                for _r, _act in (getattr(self, '_cubic_ops_btns', None) or ()):
+                    if _r.collidepoint(pos):
+                        _act()
+                        return True
+                _card = getattr(self, '_cubic_ops_rect', None)
+                if _card is not None and _card.collidepoint(pos):
+                    return True
+        return False
+
     def _dropdown_blocks_click(self, pos):
         """点击是否落在「菜单层」：顶栏本体，或任一已打开下拉/子菜单的矩形。
 
@@ -484,6 +565,22 @@ class EventsMixin:
                             continue
                     # 结果条目点击（点检索框内由 TextInput 处理光标定位，这里只管结果）
                     if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        # §59A 页签：命中即切页（滚动位换出/换入，检索词保留跨页）
+                        _tab_hit = None
+                        for _tname, _tr in (getattr(self, 'help_tab_rects', None) or {}).items():
+                            if _tr.collidepoint(event.pos):
+                                _tab_hit = _tname
+                                break
+                        if _tab_hit is not None:
+                            if _tab_hit != getattr(self, 'help_tab', '2d'):
+                                if not hasattr(self, 'help_scroll_pos'):
+                                    self.help_scroll_pos = {'2d': 0.0, '3d': 0.0, 'common': 0.0}
+                                self.help_scroll_pos[getattr(self, 'help_tab', '2d')] = \
+                                    self.help_scrollbar.scroll
+                                self.help_tab = _tab_hit
+                                self.help_scrollbar.set_scroll(
+                                    self.help_scroll_pos.get(_tab_hit, 0.0))
+                            continue
                         hit_entry = None
                         for _i, (_r, _entry) in enumerate(
                                 getattr(self, 'help_result_rects', None) or ()):
@@ -584,6 +681,14 @@ class EventsMixin:
 
                     # 成绩记录面板事件（浮动面板：拖动/关闭/删除/滚动）
                     if self.handle_records_panel_event(event):
+                        continue
+
+                    # §59 C/D 三维浮层卡：新手引导卡 + 右下角常驻操作卡。
+                    # 优先级低于菜单层（607 已让位）与三块浮动面板，高于游戏
+                    # 区点击；只吞卡内命中，点卡外原样放行给棋盘。
+                    if (event.type == pygame.MOUSEBUTTONDOWN
+                            and event.button == 1
+                            and self._cubic_hud_click(event.pos)):
                         continue
 
                 # 动画期间阻止游戏键盘输入（但允许撤销/重做/自动求解，连续播放时
@@ -986,6 +1091,16 @@ class EventsMixin:
                                                     and preset[0] == '---')):
                                             # 分组标题和分隔线：点了不该关掉菜单
                                             puzzle_keep_open = True
+                                        elif (len(preset) == 2
+                                              and preset[1] == '__opshelp__'):
+                                            # §59E：三维建局入口告知 → 帮助三维页
+                                            self._open_help('3d')
+                                            puzzle_clicked = True
+                                        elif (len(preset) == 2
+                                              and preset[1] == '__intro_replay__'):
+                                            # §59C：重看三维新手引导（不改 seen 标记）
+                                            self._cubic_intro_start()
+                                            puzzle_clicked = True
                                         elif len(preset) == 3 and preset[1] == '__custom__':
                                             # 自定义预设（捆绑谜题 / 自定义还原态两个
                                             # 子菜单都走这里）：按保存的还原态样式开局。
@@ -1121,10 +1236,7 @@ class EventsMixin:
                             for i, rect in enumerate(self.menu_item_rects):
                                 if rect.collidepoint(x, y):
                                     if self.menu_items[i] == '帮助':
-                                        self.close_all_menus()
-                                        self.show_help = True
-                                        self._dialog_fade_reset('help')
-                                        self.help_scrollbar.set_scroll(0)
+                                        self._open_help()
                                     elif self.menu_items[i] == '文件':
                                         self.show_edit_menu = False
                                         self.show_puzzle_menu = False
@@ -2490,6 +2602,8 @@ class EventsMixin:
         # 逐项音效开关（设置页「音效一览」：滑动 / 失败 / 复原 / 点击 / 键盘）
         'sfx_slide_enabled', 'sfx_fail_enabled', 'sfx_solved_enabled',
         'sfx_click_enabled', 'sfx_keyboard_enabled',
+        # §59C：三维新手引导「看过」开关（三处同步 AGENTS §16）
+        'cubic_intro_seen',
     )
     # 数值键：键 -> 合法范围；键 -> 对应 self 属性（与 http_server._SETTINGS_INT_RANGES 同口径）
     _SETTINGS_INT_RANGES = {

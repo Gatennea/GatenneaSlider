@@ -349,6 +349,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
         # 帮助对话框状态
         self.show_help = False
+        # §59A：帮助分三页（二维/三维/通用）——当前页 + 每页独立滚动位
+        # （切页时经 help_scroll_pos 换入换出，见 events._open_help / 页签分支）
+        self.help_tab = '2d'
+        self.help_scroll_pos = {'2d': 0.0, '3d': 0.0, 'common': 0.0}
         # 帮助检索（功能可发现性的主入口）：打开帮助时焦点默认落在检索框，
         # 输入即过滤；回车 = 直接到位。数据来自 gui/feature_index.py。
         self.help_query = ''
@@ -574,6 +578,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self._gradient_busy = False           # 后台流水线线程是否存活
         # 分组着色器：按 (位置 mod step) 给滑块分组涂色，帮助人工还原
         self.coloring_enabled = False
+        # §59C：三维新手引导「看过」（load_last_state 会按 config 覆盖）
+        self.cubic_intro_seen = False
         # 悬停连锁提示：悬停某格时，边界盒内同组位置发光（独立开关）
         self.chain_hint_enabled = False
         # 悬停缝隙闪烁：鼠标停在「点得动」的那条缝上时，慢速灰闪先亮出来
@@ -704,6 +710,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 三维立方体模式（§54）：self.game 为 kind='cubic' 的 EngineGame 时 True。
         # 第 0 步只有建局与菜单入口；渲染 / 拾取 / 六向操作按方案第 1–4 步推进。
         self.cubic_mode = False
+        # §59 C/D：三维新手引导卡状态 + 右下角操作卡折叠态（会话内记忆）
+        self._cubic_intro_active = False
+        self._cubic_intro_step = 0
+        self._cubic_ops_open = False
 
         # 历史记录
         self.game_history = GameHistory()
@@ -997,6 +1007,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 不再放进菜单（new_cubic_puzzle 仍会给明确拒绝说明，供代码路径兜底）。
         self.puzzle_sub_presets['cubic'] = [
             ('__group__', '立方体（三维，正方体单元）'),
+            # §59E 入口告知：标一句 + 点击直达帮助三维页（events 点击分支）
+            ('三维操作与二维不同 · 查看操作', '__opshelp__'),
+            # §59C 重看入口：引导看完/跳过后可从这里再放一遍
+            ('重看新手引导', '__intro_replay__'),
             ('三维 2×2×2 等级1', 2, 2, 1, 'cubic', 2),
             ('三维 3×3×2 等级1', 3, 3, 1, 'cubic', 2),
             ('三维 3×3×3 等级1', 3, 3, 1, 'cubic', 3),
@@ -1512,6 +1526,10 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             f"切换谜题：三维 {m}×{n}×{d} 等级{step}"
             f"（拆分 {self.cubic_gap:.2f}；拖动旋转 · 1–6 切朝向 · Ctrl+滚轮缩放）")
         self.macro_notify_timer = 180
+
+        # §59C：首次进三维局弹 4 步新手引导（看过即不再弹；谜题菜单可重看）
+        if not getattr(self, 'cubic_intro_seen', False):
+            self._cubic_intro_start()
         return True
 
     def new_shatter_puzzle(self, step: int = 1) -> bool:
@@ -2709,6 +2727,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 # 击、浮层却浮在模态表面」的视觉错位（求解进行中按设置键即触发）。
                 self.draw_macro_notify()
                 self.draw_solved_popup()
+                # §59 C/D：三维新手引导卡 + 右下角常驻操作卡（非模态浮层）
+                self.draw_cubic_intro()
+                self.draw_cubic_ops_card()
                 self.draw_tutorial_prompt()
                 self.draw_tutorial_panel()
                 self.draw_update_banner()

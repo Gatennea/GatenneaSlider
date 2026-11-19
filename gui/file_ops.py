@@ -310,6 +310,8 @@ class FileOpsMixin:
             'sfx_solved_enabled': getattr(self, 'sfx_solved_enabled', True),
             'sfx_click_enabled': getattr(self, 'sfx_click_enabled', True),
             'sfx_keyboard_enabled': getattr(self, 'sfx_keyboard_enabled', True),
+            # §59C：三维新手引导「看过」（跳过/走完即置位，下次进三维不再弹）
+            'cubic_intro_seen': bool(getattr(self, 'cubic_intro_seen', False)),
             'gather_params': getattr(self, 'gather_params', {}),
             'gather_enabled': getattr(self, 'gather_enabled', {}),
             # 教程进度（闯关模式）
@@ -591,6 +593,9 @@ class FileOpsMixin:
                     # 着色器开关
                     if 'coloring_enabled' in config:
                         self.coloring_enabled = bool(config['coloring_enabled'])
+                    # §59C：三维新手引导「看过」
+                    if 'cubic_intro_seen' in config:
+                        self.cubic_intro_seen = bool(config['cubic_intro_seen'])
                     # 悬停连锁提示开关
                     if 'chain_hint_enabled' in config:
                         self.chain_hint_enabled = bool(config['chain_hint_enabled'])
