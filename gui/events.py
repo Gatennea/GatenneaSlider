@@ -2248,9 +2248,9 @@ class EventsMixin:
             self._cubic_start_anim(letter, before, step=self.current_step)
         return moved
 
-    #: 三维推一步的滑动时长（毫秒）。二维走 animation_duration，三维单独一档：
-    #: 一步是整组 9 块沿一个轴滑，太快看不出「整组在动」。
-    CUBIC_ANIM_MS = 140
+    #: 三维每格滑动时长（毫秒）。二维走 animation_duration，三维单独一档：
+    #: 一步是选中整组沿一个轴滑，太快看不出「整组在动」。
+    CUBIC_ANIM_MS = 300
 
     def _cubic_start_anim(self, letter, before_locs, step=1):
         """记下「这一推从哪滑到哪」，交给渲染层做收尾位移（逻辑已提交）。
@@ -2258,8 +2258,9 @@ class EventsMixin:
         只动渲染：真实位置早已就位，这里给刚动过的那组一个逐渐归零的反向位移，
         画面上就是滑过去的一段。拾取 / 判定 / 选中始终用真实位置。
 
-        `step` 是本次实际滑动的格数（宏播放会显式传 `op['step']`，手推恒为 1），
-        位移向量与落点都按它缩放，否则多格动作的动画只画一格。
+        `step` 是本次实际滑动的格数（宏播放传 `op['step']`，手推传
+        `self.current_step`），位移向量与落点都按它缩放，否则多格动作的动画
+        只画一格。
         """
         from engine.compat import CUBIC_DIRECTIONS
         vec = CUBIC_DIRECTIONS.get(letter)
@@ -2272,7 +2273,9 @@ class EventsMixin:
         after = {(r + dr, c + dc, d + dd) for (r, c, d) in before_locs}
         self.cubic_anim = {
             't0': pygame.time.get_ticks(),
-            'ms': int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS)),
+            # 与二维同口径：cubic_anim_ms 是「每格」时长，本次走 N 格就乘 N。
+            'ms': max(1, int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS))
+                      * max(1, _n)),
             'delta': tuple(float(v) for v in delta),
             'group': frozenset(after),
         }
@@ -3087,7 +3090,7 @@ class EventsMixin:
                              'seam_alpha': getattr(self, 'cubic_seam_alpha', 110),
                              'rot_sensitivity': getattr(
                                  self, 'cubic_rot_sensitivity', 1.0),
-                             'anim_ms': getattr(self, 'cubic_anim_ms', 140)})
+                             'anim_ms': getattr(self, 'cubic_anim_ms', 300)})
                     continue
 
                 elif action == 'camera_set':
@@ -5217,18 +5220,30 @@ class EventsMixin:
         normalized = (mx - track.x) / track.width
         normalized = max(0.0, min(1.0, normalized))
         if getattr(self, 'cubic_mode', False):
-            # 三维：视觉页这条滑条写 cubic_anim_ms（60..400），不动二维值。
+            # 三维：视觉页这条滑条写 cubic_anim_ms（50..1000，每格），不动二维值。
             # 若正在播三维动画，按进度重锚——和右侧速度滑条同一口径。
-            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
-            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 50)
+            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 1000)
             new_ms = int(lo + normalized * (hi - lo))
-            old_ms = max(1, int(getattr(self, 'cubic_anim_ms', 140)))
-            if (new_ms != old_ms and self.animating
-                    and getattr(self, '_anim_duration_override', None)):
-                elapsed = pygame.time.get_ticks() - self.anim_start_time
-                progress = elapsed / old_ms
-                self.anim_start_time = pygame.time.get_ticks() - int(progress * new_ms)
-                self._anim_duration_override = new_ms
+            old_ms = max(1, int(getattr(self, 'cubic_anim_ms', 300)))
+            if new_ms != old_ms:
+                # 多格动画的 override 是「总时长」，先还原这次动画走几格，
+                # 再按新每格时长重算总时长；否则进度会被按一格时长错误重锚。
+                old_total = int(getattr(self, '_anim_duration_override', None)
+                                or old_ms)
+                step = max(1, int(round(old_total / float(old_ms))))
+                new_total = new_ms * step
+                if self.animating and getattr(self, '_anim_duration_override', None):
+                    elapsed = pygame.time.get_ticks() - self.anim_start_time
+                    progress = elapsed / max(1, old_total)
+                    self.anim_start_time = pygame.time.get_ticks() - int(progress * new_total)
+                    self._anim_duration_override = new_total
+                anim = getattr(self, 'cubic_anim', None)
+                if anim and anim.get('ms'):
+                    progress = (pygame.time.get_ticks() - anim['t0']) / max(1, anim['ms'])
+                    anim['ms'] = new_ms * max(1, int(round(anim['ms'] / float(old_ms))))
+                    anim['t0'] = pygame.time.get_ticks() - int(
+                        max(0.0, min(1.0, progress)) * anim['ms'])
             self.cubic_anim_ms = new_ms
             return
         new_duration = int(100 + normalized * 900)

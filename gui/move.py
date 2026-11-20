@@ -273,12 +273,12 @@ class MoveMixin:
             if not getattr(self, 'cubic_mode', False):
                 adhesion = self._finalize_move_selection(selected)
             # 动画关闭也要有滑动声：给一个短促的默认长度。
-            # 三维动画开着时则必须跟 cubic_anim_ms 同源（画面 202ms、声音
-            # 却按 120ms 算速度会显得对不上，用户 2026-11-18 报「动画没音效」）。
+            # 三维动画开着时则必须跟 cubic_anim_ms 同源（每格时长 × 本次步数，
+            # 画面和声音用同一个总时长）。
             _sound_ms = self.SLIDE_INSTANT_MS
             if (getattr(self, 'cubic_mode', False)
                     and getattr(self, 'animation_enabled', True)):
-                _sound_ms = self._slide_sound_duration()
+                _sound_ms = self._slide_sound_duration(move_step)
             self._play_slide_sound(move_step, duration_ms=_sound_ms)
             self._pending_move_info = None
             # 走一步后**不主动拽相机**：只在整盘滑到完全看不见时兜底拉回。

@@ -5099,13 +5099,13 @@ class RendererMixin:
             "撤销、重做时高亮这次动的缝和滑块（蓝=撤销，橙=重做）", max_w=_mw)
 
         # 动画时长滑动条（轨道与开关同一右栏对齐）
-        # 三维态写 cubic_anim_ms（60..400），与右侧栏「速度」滑条同源；
+        # 三维态写 cubic_anim_ms（50..1000，每格），与右侧栏「速度」滑条同源；
         # 二维仍写 animation_duration（100..1000）。
         _cubic_anim = getattr(self, 'cubic_mode', False)
         if _cubic_anim:
-            _anim_lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
-            _anim_hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
-            _anim_val = getattr(self, 'cubic_anim_ms', 140)
+            _anim_lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 50)
+            _anim_hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 1000)
+            _anim_val = getattr(self, 'cubic_anim_ms', 300)
         else:
             _anim_lo, _anim_hi = 100, 1000
             _anim_val = self.animation_duration
@@ -6469,10 +6469,15 @@ class RendererMixin:
         bottom = self.screen_height - self.status_bar_height
         mouse = pygame.mouse.get_pos()
         margin = 10
+        # 通知浮窗也贴在右下角（底边距 -8，高约 status_font 高 + 12）。
+        # 操作卡若仍贴底会压住通知文字，所以整体上移「通知高度 + 间距」；
+        # 折叠钮与展开卡一起移，收起/展开都不会再盖住提示。
+        ops_lift = self.status_font.get_height() + 20
 
         if not getattr(self, '_cubic_ops_open', False):
             # 折叠态：一枚小钮
-            toggle = pygame.Rect(right - margin - 74, bottom - margin - 28, 74, 28)
+            toggle = pygame.Rect(right - margin - 74,
+                                 bottom - margin - 28 - ops_lift, 74, 28)
             self._cubic_ops_toggle_rect = toggle
             pygame.draw.rect(self.screen,
                              self.colors['button_hover'] if toggle.collidepoint(mouse)
@@ -6495,8 +6500,8 @@ class RendererMixin:
         body_h = len(bullets) * 22 + 14
         btn_h = 32
         height = header_h + body_h + btn_h + 16
-        card = pygame.Rect(right - margin - width, bottom - margin - height,
-                           width, height)
+        card = pygame.Rect(right - margin - width,
+                           bottom - margin - height - ops_lift, width, height)
         self._cubic_ops_rect = card
         pygame.draw.rect(self.screen, self.colors['dialog_bg'], card, border_radius=8)
         pygame.draw.rect(self.screen, self.colors['dialog_border'], card, 2, border_radius=8)
@@ -6787,7 +6792,7 @@ class RendererMixin:
                                  'zoom_slider_rect', 'zoom_knob_rect',
                                  'zoom_slider_dragging')
             # 右上：速度（顶部=最快）
-            _dur = int(getattr(self, 'cubic_anim_ms', 140))
+            _dur = int(getattr(self, 'cubic_anim_ms', 300))
             _vfrac = _clamp01((_dur - self.CUBIC_ANIM_MIN_MS)
                               / max(1e-6, self.CUBIC_ANIM_MAX_MS
                                     - self.CUBIC_ANIM_MIN_MS))

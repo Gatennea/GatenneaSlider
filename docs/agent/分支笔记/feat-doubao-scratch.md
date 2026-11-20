@@ -1203,6 +1203,30 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 斷言整組實際位移 = 等級格數、動畫組覆蓋全部塊、所有塊共用同一個 N 格反向
 位移；52 項全綠，全部 cubic 套件全綠。
 
+## 修：三維動畫時長統一為二維「每格」口徑（2026-11-21）
+
+用戶指出三維速度上下限和二維不一致，且拉到最慢仍覺得快。核對後不是錯覺：
+三維原本是 `60–400ms/次`、默認 `140`，而二維是 `50–1000ms/格`、默認 `300`；
+更關鍵是三維一次走 N 格卻只給一格時長，二級每格 70ms、四級每格 35ms。
+
+現統一成二維口徑：
+
+- `CUBIC_ANIM_MIN_MS=50`、`MAX=1000`、`cubic_anim_ms=300`；
+  `CUBIC_SETTINGS` 的 `min/max/default` 與右側「速度」、設置頁滑條同步。
+- `cubic_anim_ms` 定義為**每格毫秒**。手推、撤銷/重做、宏回放、打亂演示的
+  總時長一律 `cubic_anim_ms * 本次步數`：
+  - `_cubic_start_anim()` 寫 `cubic_anim['ms'] = 每格 × step`；
+  - `history._cubic_start_undo_redo_anim()` 按 `move_info['step']` 乘算；
+  - `start_animation()` 的三維分支按動畫起終點最大軸向距離乘算。
+- 滑動聲同步用總時長（`_slide_sound_duration(step)`）；移動、撤銷/重做、
+  宏播放、打亂演示都不再按一格算。
+- 動畫途中拖速度仍按已播進度重錨，但多格動畫先還原步數再換算新總時長，
+  不會因為 override 是總時長而把進度算錯。
+
+回歸：`_test_cubic_animation.py` 55 項（2/3/4 級總時長分別 600/900/1200ms）、
+`_test_cubic_render_opts.py` 72 項、`_test_slide_audio.py` 全綠；全部 29 個
+cubic 測試套件全綠。
+
 ### 已知狀態
 
 - HEAD 為本次三維收尾提交（調試面板聚攏數據/目標盒 + mod 約束 + 文檔），

@@ -207,7 +207,7 @@ class SessionMixin:
         # 期间棋盘输入被 animating 守卫挡着，结束/中断都会对齐到终态。
         # 三维的时长是独立一档（cubic_anim_ms）：右侧「速度」滑条写的是它，
         # 若这里仍看二维 animation_duration，三维拖速度对打乱就是哑的。
-        _anim_ms = (getattr(self, 'cubic_anim_ms', 140)
+        _anim_ms = (getattr(self, 'cubic_anim_ms', 300)
                     if getattr(self, 'cubic_mode', False)
                     else self.animation_duration)
         demo = (records and self.animation_enabled and _anim_ms > 0)

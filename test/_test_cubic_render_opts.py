@@ -57,7 +57,7 @@ d = cubic_settings.defaults()
 check(set(d) == {'gap', 'seam_alpha', 'cubic_anim_ms', 'rot_sensitivity'},
       '表里有四条（gap/seam_alpha/cubic_anim_ms/rot_sensitivity）', sorted(d))
 check(h.cubic_gap == 0.12 and h.cubic_seam_alpha == 110
-      and h.cubic_anim_ms == 140,
+      and h.cubic_anim_ms == 300,
       'reset 把默认值写到属性上',
       (h.cubic_gap, h.cubic_seam_alpha, h.cubic_anim_ms))
 check(cubic_settings.clamp_value('gap', 9.9) == 0.6, 'gap 超上界夹到 0.6',
@@ -224,7 +224,7 @@ check(abs(cc['gap'] - 0.33) < 1e-6 and cc['seam_alpha'] == 180
       '导出值 = 当前值（不是默认值）', cc)
 
 gui._cubic_camera_prefs = {'gap': 0.25, 'seam_alpha': 9999,
-                          'rot_sensitivity': -3, 'cubic_anim_ms': 999}
+                          'rot_sensitivity': -3, 'cubic_anim_ms': 9999}
 cubic_settings.reset(gui)
 gui._cubic_load_defaults()
 check(abs(gui.cubic_gap - 0.25) < 1e-6, 'gap 读回 0.25', gui.cubic_gap)
@@ -232,7 +232,7 @@ check(gui.cubic_seam_alpha == 220, 'seam_alpha 越界夹到 220（不是照抄 9
       gui.cubic_seam_alpha)
 check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
       gui.cubic_rot_sensitivity)
-check(gui.cubic_anim_ms == 400, 'cubic_anim_ms 越界夹到 400（不是照抄 999）',
+check(gui.cubic_anim_ms == 1000, 'cubic_anim_ms 越界夹到 1000（不是照抄 9999）',
       gui.cubic_anim_ms)
 check(abs(gui.cubic_rot_sensitivity - 0.2) < 1e-6, 'rot_sensitivity 负值夹到 0.2',
       gui.cubic_rot_sensitivity)
@@ -381,13 +381,15 @@ check(_ztrack is not None and _ztrack.width > 0,
 _2d_anim0 = gui.animation_duration
 gui._handle_settings_dialog_event(pygame.event.Event(
     pygame.MOUSEBUTTONDOWN, {'pos': (_track.left + 1, _track.centery), 'button': 1}))
-check(gui.cubic_anim_ms <= gui.CUBIC_ANIM_MIN_MS + 2,
+check(gui.cubic_anim_ms <= gui.CUBIC_ANIM_MIN_MS
+      + 0.02 * (gui.CUBIC_ANIM_MAX_MS - gui.CUBIC_ANIM_MIN_MS),
       '三维视觉页动画滑条最左 = 最快', gui.cubic_anim_ms)
 gui._handle_settings_dialog_event(pygame.event.Event(
     pygame.MOUSEBUTTONUP, {'pos': (_track.left + 1, _track.centery), 'button': 1}))
 gui._handle_settings_dialog_event(pygame.event.Event(
     pygame.MOUSEBUTTONDOWN, {'pos': (_track.right - 1, _track.centery), 'button': 1}))
-check(gui.cubic_anim_ms >= gui.CUBIC_ANIM_MAX_MS - 2,
+check(gui.cubic_anim_ms >= gui.CUBIC_ANIM_MAX_MS
+      - 0.02 * (gui.CUBIC_ANIM_MAX_MS - gui.CUBIC_ANIM_MIN_MS),
       '三维视觉页动画滑条最右 = 最慢', gui.cubic_anim_ms)
 check(gui.animation_duration == _2d_anim0,
       '三维视觉页改动画时长不碰二维 animation_duration',

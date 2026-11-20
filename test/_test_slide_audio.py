@@ -567,6 +567,13 @@ check('C8 三维动画滑动声取 cubic_anim_ms，二维仍取 animation_durati
       _cubic_ms == 202 and _2d_ms == 300,
       f'cubic={_cubic_ms} 2d={_2d_ms}')
 
+# ---- C9 三维多格移动：声音时长也按每格 × 步数 ----
+g8 = SliderGUI(m=3, n=3, step=1, cmd_queue=queue.Queue())
+g8.cubic_mode = True
+g8.cubic_anim_ms = 200
+check('C9 三维 3 格移动的声音总时长 = 200 × 3 = 600ms',
+      g8._slide_sound_duration(3) == 600, g8._slide_sound_duration(3))
+
 # ---- D1 打乱演示每一步都出声 ----
 g4 = boot()
 g4._shuffle_demo_playing = True

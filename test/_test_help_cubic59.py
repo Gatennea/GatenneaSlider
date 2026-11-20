@@ -258,7 +258,15 @@ def run_ops_d():
     # 三维默认折叠 → 点开 → 收起
     gui.cubic_mode = True
     gui._cubic_ops_open = False
+    # 通知浮窗也在右下角：操作钮必须整体上移，不能压住提示文字
+    gui.macro_notify_msg = '测试通知：操作钮不得遮挡'
+    gui.macro_notify_timer = 120
+    gui._macro_notify_msg_prev = None
+    gui.draw_macro_notify()
     gui.draw_cubic_ops_card()
+    check(gui._macro_notify_rect is not None
+          and not gui._macro_notify_rect.colliderect(gui._cubic_ops_toggle_rect),
+          '折叠操作钮不遮挡通知浮窗')
     check(gui._cubic_ops_toggle_rect is not None and gui._cubic_ops_rect is None,
           '三维默认折叠只画小钮')
     toggle = gui._cubic_ops_toggle_rect
@@ -267,6 +275,8 @@ def run_ops_d():
     gui.draw_cubic_ops_card()
     check(gui._cubic_ops_rect is not None and len(gui._cubic_ops_btns) == 3,
           '展开画出卡体与三个按钮', len(gui._cubic_ops_btns))
+    check(not gui._macro_notify_rect.colliderect(gui._cubic_ops_rect),
+          '展开操作卡不遮挡通知浮窗')
     # 卡体（非按钮区）吃点击，卡外放行
     body = (gui._cubic_ops_rect.centerx, gui._cubic_ops_rect.y + 60)
     check(gui._cubic_hud_click(body) is True, '卡体吃点击（不透到棋盘）')
