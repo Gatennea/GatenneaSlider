@@ -42,8 +42,13 @@ from GUI import SliderGUI  # noqa: E402
 from solver.ml.cubic_gather import cubic_gather_solve, cubic_metrics  # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, 'experiments', 'results')
-# 打亂力度按塊數給：3×3×3=27 塊洗 120 步；4×4×4=64 塊洗 200 步。
+# 打亂力度：預設 = 塊數的 4 倍（3×3×3=108、4×4×4=256、5×5×5=500）；
+# 已知尺寸沿用先前跑過的固定力度，保證與歷史結果同一局面。
 SCRAMBLE_MOVES = {(3, 3, 3): 120, (4, 4, 4): 200}
+
+
+def scramble_moves(dims):
+    return SCRAMBLE_MOVES.get(tuple(dims), max(120, 4 * dims[0] * dims[1] * dims[2]))
 
 
 def build_gui():
@@ -61,30 +66,37 @@ def build_gui():
     return gui
 
 
-def run_case(gui, dims, seed, max_steps, patience, wait):
-    """一個固定 case：同 seed 必然生成同一打亂局面。"""
-    gui.new_cubic_puzzle(dims[0], dims[1], dims[2], 1)
+def run_case(gui, dims, seed, max_steps, patience, wait, step, phi_k):
+    """一個固定 case：同 (seed, step) 必然生成同一打亂局面。"""
+    gui.new_cubic_puzzle(dims[0], dims[1], dims[2], step)
     random.seed(1000 + seed)
-    gui.game.shuffle(SCRAMBLE_MOVES[dims], 1, record=[])
+    gui.game.shuffle(scramble_moves(dims), step, record=[])
     gui.game_history.reset()
     gui.step_count = 0
 
-    start = cubic_metrics([tuple(b.location[:3]) for b in gui.game.blocks], dims)
+    start = cubic_metrics([tuple(b.location[:3]) for b in gui.game.blocks],
+                          dims, step=step)
     t0 = time.perf_counter()
-    res = cubic_gather_solve(gui.game, step=1, max_steps=max_steps,
+    res = cubic_gather_solve(gui.game, step=step, max_steps=max_steps,
                              patience=patience, max_wait_time=wait,
-                             target_gather_score=None)
+                             target_gather_score=None,
+                             phi_prescreen_k=phi_k)
     dt = time.perf_counter() - t0
+    st = res.get('stats') or {}
     return {
         'dims': list(dims),
         'seed': seed,
+        'step': step,
+        'phi_k': phi_k,
         'wall': dt,
         'solved': bool(res['solved']),
         'steps': len(res['actions']),
         'reason': res['reason'],
         'score_start': start['score'],
         'score_end': res['end']['score'],
-        'expanded': (res.get('stats') or {}).get('expanded'),
+        'expanded': st.get('expanded'),
+        'metric_calls': st.get('metric_calls'),
+        'prescreened': st.get('prescreened'),
         'reps_have_3': all(len(r) == 3 for r in res['rep_cells']),
         'actions_len': sorted({len(a) for a in res['actions']}),
     }
@@ -102,6 +114,9 @@ def summarize(rows):
     walls = [r['wall'] for r in rows]
     steps = [r['steps'] for r in rows]
     expanded = [r['expanded'] for r in rows if r['expanded'] is not None]
+    prescreened = [r['prescreened'] for r in rows
+                   if r.get('prescreened') is not None]
+    gains = [r['score_end'] - r['score_start'] for r in rows]
     return {
         'n': len(rows),
         'solve_rate': sum(1 for r in rows if r['solved']) / len(rows),
@@ -109,7 +124,11 @@ def summarize(rows):
         'wall_p95': pct(walls, 0.95),
         'wall_total': sum(walls),
         'steps_median': statistics.median(steps) if steps else 0,
+        'score_gain_mean': statistics.mean(gains) if gains else 0.0,
+        'score_end_mean': statistics.mean([r['score_end'] for r in rows]),
         'expanded_median': statistics.median(expanded) if expanded else None,
+        'prescreened_median': (statistics.median(prescreened)
+                               if prescreened else None),
         'reasons': {k: sum(1 for r in rows if r['reason'] == k)
                     for k in sorted({r['reason'] for r in rows})},
     }
@@ -123,53 +142,62 @@ def main():
     ap.add_argument('--max-steps', type=int, default=240)
     ap.add_argument('--patience', type=int, default=80)
     ap.add_argument('--wait', type=float, default=20.0)
+    ap.add_argument('--steps', default='1',
+                    help='等級（step）逗號列表，如 1,2')
+    ap.add_argument('--phi-k', type=int, default=8,
+                    help='Φ 預篩 top-k；0 = 關閉預篩（全候選算完整指標）')
     ap.add_argument('--profile', type=int, default=0,
                     help='對第 N 個 case（1 起）跑 cProfile；0 = 不剖析')
     args = ap.parse_args()
 
     dims_list = [tuple(int(x) for x in s.lower().split('x'))
                  for s in args.sizes.split(',')]
+    step_list = [int(s) for s in str(args.steps).split(',')]
     gui = build_gui()
     rows = []
     profile_target = args.profile
     idx = 0
     for dims in dims_list:
-        for seed in range(args.seeds):
-            idx += 1
-            if profile_target and idx == profile_target:
-                prof = cProfile.Profile()
-                prof.enable()
-                row = run_case(gui, dims, seed, args.max_steps,
-                               args.patience, args.wait)
-                prof.disable()
-                buf = io.StringIO()
-                stats = pstats.Stats(prof, stream=buf).sort_stats('tottime')
-                stats.print_stats(20)
-                print(buf.getvalue())
-                print(f'  [profiled case] {row}')
-            else:
-                row = run_case(gui, dims, seed, args.max_steps,
-                               args.patience, args.wait)
-            rows.append(row)
-            print(f'  {dims} seed={seed}: {row["wall"]:.2f}s '
-                  f'solved={row["solved"]} steps={row["steps"]} '
-                  f'reason={row["reason"]} '
-                  f'score {row["score_start"]:.3f}->{row["score_end"]:.3f}')
+        for step in step_list:
+            for seed in range(args.seeds):
+                idx += 1
+                if profile_target and idx == profile_target:
+                    prof = cProfile.Profile()
+                    prof.enable()
+                    row = run_case(gui, dims, seed, args.max_steps,
+                                   args.patience, args.wait, step, args.phi_k)
+                    prof.disable()
+                    buf = io.StringIO()
+                    stats = pstats.Stats(prof, stream=buf).sort_stats('tottime')
+                    stats.print_stats(20)
+                    print(buf.getvalue())
+                    print(f'  [profiled case] {row}')
+                else:
+                    row = run_case(gui, dims, seed, args.max_steps,
+                                   args.patience, args.wait, step, args.phi_k)
+                rows.append(row)
+                print(f'  {dims} step={step} seed={seed}: {row["wall"]:.2f}s '
+                      f'solved={row["solved"]} steps={row["steps"]} '
+                      f'reason={row["reason"]} '
+                      f'score {row["score_start"]:.3f}->{row["score_end"]:.3f}')
 
     overall = summarize(rows)
     by_size = {}
     for dims in dims_list:
-        by_size['x'.join(str(v) for v in dims)] = summarize(
-            [r for r in rows if tuple(r['dims']) == dims])
+        for step in step_list:
+            by_size['x'.join(str(v) for v in dims) + f'/step{step}'] = summarize(
+                [r for r in rows
+                 if tuple(r['dims']) == dims and r['step'] == step])
     payload = {
         'label': args.label,
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),
         'params': {
             'sizes': ['x'.join(str(v) for v in d) for d in dims_list],
+            'steps': step_list, 'phi_k': args.phi_k,
             'seeds': args.seeds, 'max_steps': args.max_steps,
             'patience': args.patience, 'wait': args.wait,
-            'scramble': {k[0].__str__() + 'x' + str(k[1]) + 'x' + str(k[2]): v
-                         for k, v in SCRAMBLE_MOVES.items()},
+            'scramble': {('x'.join(str(v) for v in k)): scramble_moves(k)
+                         for k in dims_list},
         },
         'overall': overall,
         'by_size': by_size,
