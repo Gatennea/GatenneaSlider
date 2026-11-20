@@ -85,7 +85,7 @@ def main():
     gui.animation_duration = 80  # 毫秒（不是秒）
     pygame.display.set_mode((gui.screen_width, gui.screen_height))
     gui.screen = pygame.display.get_surface()
-    gui.new_shatter_puzzle(1)
+    gui.new_model_puzzle('shatter', 1)
     gui.center_map()
     g = gui.game
 

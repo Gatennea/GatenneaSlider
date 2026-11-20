@@ -1534,10 +1534,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
             self._cubic_intro_start()
         return True
 
-    def new_shatter_puzzle(self, step: int = 1) -> bool:
-        """创建碎三角谜题（保留旧调用点，等价于 new_model_puzzle('shatter')）。"""
-        return self.new_model_puzzle('shatter', step)
-
     def new_model_puzzle(self, model_name: str, step: int = 1) -> bool:
         """按模型文件开局（几何引擎解释器路线的通用入口）。
 
@@ -1685,7 +1681,7 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         「自造谜题没这个功能」，也不留一个按得下去、反馈是错的入口。
 
         判据用 `_is_model_kind()`（形态键不在旧四形态里），与竞速/打乱/
-        设计画布各处拦截同源，不硬编码 ``'shatter'``。
+        设计画布各处拦截同源，不按板型名硬编码。
         """
         if not self._is_model_kind():
             return False

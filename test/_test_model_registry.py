@@ -65,10 +65,8 @@ def test_file_is_source():
           '缝族同名同序', f'{[f.name for f in board.spec.seam_families]}')
     check(board.spec.orientations == file_model.spec.orientations,
           '朝向顺序 = 文件书写顺序', f'{board.spec.orientations[:4]}…')
-    # 顺序是盘型身份的一部分（update_matrix 用它编码快照），必须与代码版一致
-    from engine.shatter_geometry import shatter_spec
-    check(board.spec.orientations == shatter_spec(full=True).orientations,
-          '朝向顺序与代码版一致（旧存档编码不会错位）')
+    # 顺序是盘型身份的一部分（update_matrix 用它编码快照）——单一来源就是
+    # 这个文件本身，上面已逐项比过；不再回引代码版 shatter_spec（§63）
     check(len(board.blocks) == 48 and len(board.legal_moves(1)) == 48,
           '48 块 / 48 条合法移动')
     check(board.is_solved(), '还原态 is_solved() 为真')

@@ -142,7 +142,7 @@ def run():
         run_form('碎三角(聚合板)', 'new_model_puzzle', ('shatter', 1), 'draw_board')
 
         # ---------- 3b 编号字浮雕（§六十二子项，用户 11-20 拍板）----------
-        print('\n--- 3b 编号字：helper 逐位等价 / 三路径 gate / 挪位锁 ---')
+        print('\n--- 3b 编号字：helper 逐位等价 / 方形路径 gate ---')
         # helper 单元：emboss=False 必须与旧画法逐位一致（关态=改动前）
         import pygame.font as _pf
         _pf.init()
@@ -166,7 +166,9 @@ def run():
                      for x in range(24, 37) for y in range(11, 29))
         check(_found, '编号字 emboss=True 有左上提亮浮雕边', f'target={_hl}')
 
-        # 三路径 gate 计数：wrap draw_block_number 记录 emboss 参数
+        # 路径 gate 计数：wrap draw_block_number 记录 emboss 参数
+        # （§63：编号只有方形数字形态真实存在；三角/聚合板的编号段是照搬
+        #  带来的死代码，已删——见 docs/spec/几何引擎残留清理方案 §2.4）
         _num_calls = []
         _orig_num = renderer_mod.draw_block_number
 
@@ -198,38 +200,6 @@ def run():
                   '方形数字开态 emboss=True', str(set(_num_calls)))
             on_frame = pygame.image.tobytes(gui.screen, 'RGB')
             check(off_frame != on_frame, '方形数字开/关两帧不同')
-
-            # 聚合板（碎三角）：编号挪位回归锁——被填色盖掉时黑像素=0 即红
-            gui2 = SliderGUI(cmd_queue=queue.Queue(),
-                             ext_state={'enabled': False, 'token': None})
-            gui2.animation_enabled = False
-            gui2.tutorial_active = False
-            gui2.tut_show_prompt = False
-            pygame.display.set_mode((gui2.screen_width, gui2.screen_height))
-            gui2.screen = pygame.display.get_surface()
-            gui2.new_model_puzzle('shatter', 1)
-            # 模型板建局不生成编号数据，手动赋号（与真实数字形态等价触发）
-            for _i, _b in enumerate(gui2.game.blocks, 1):
-                _b.number = _i
-            gui2.numbered = True
-            gui2.face_bevel_enabled = False
-            gui2.draw_board()
-            _s = pygame.image.tobytes(gui2.screen, 'RGB')
-            _blk = sum(1 for i in range(0, len(_s), 3)
-                       if _s[i] == 0 and _s[i + 1] == 0 and _s[i + 2] == 0)
-            check(_blk > 0, '碎三角编号可见（挪位修复回归锁：被填色盖=0）',
-                  f'黑像素 {_blk}')
-
-            # 三角编号路径：三角建局不带编号数据，手动赋号后开态走 emboss
-            gui3 = boot('new_triangle_puzzle', 5, 2)
-            for _i, _b in enumerate(gui3.game.blocks, 1):
-                _b.number = _i
-            gui3.numbered = True
-            gui3.face_bevel_enabled = True
-            _num_calls.clear()
-            gui3.draw_triangle_board()
-            check(any(v is True for v in _num_calls),
-                  '三角数字开态 emboss=True', str(set(_num_calls)))
         finally:
             renderer_mod.draw_block_number = _orig_num
 

@@ -824,18 +824,16 @@ class FileOpsMixin:
         self.game.update_matrix()
         # 模型文件板型（碎三角等）：matrix 是「朝向下标+1」编码（质心晶格），
         # 压缩存档的方形公式（0/1 + (r,c) 二元组 canonicalize）一概不适用。
-        # 判据是「形态名不在旧四种里」，不是硬编码 'shatter'——否则换一个
-        # models/<name>.json 就会被静默当成方形存下去。
+        # 判据走能力口径 _is_model_kind()（形态名不在旧四种+三维里），不是
+        # 按板型名硬编码——否则换一个 models/<name>.json 就会被静默当成方形存下去。
         kind_now = self._current_kind()
         is_cubic = kind_now == 'cubic'
-        is_model = (kind_now not in ('square', 'numbered', 'triangle', 'mi')
-                    and not is_cubic)
-        shatter = is_model
+        is_model = self._is_model_kind()
         # 矩形谜题 + 开启压缩：直接生成 replay 压缩格式
         # （初始+末态+步骤原语+哈希校验点），异形不受此开关影响
         if getattr(self, 'use_compressed_save', False) and not (
                 getattr(self, 'triangle_mode', False) or getattr(self, 'mi_mode', False)
-                or shatter or is_cubic):
+                or is_model or is_cubic):
             try:
                 return compress_from_game(self)
             except Exception as e:
@@ -882,9 +880,9 @@ class FileOpsMixin:
         triangle = bool(getattr(self, 'triangle_mode', False))
         mi = bool(getattr(self, 'mi_mode', False))
         data = {
-            # 带序号/三角形/米字格/碎三角谜题写 v2（puzzle.type 标明形态）；
+            # 带序号/三角形/米字格/模型局（碎三角等）写 v2（puzzle.type 标明形态）；
             # 普通方形保持 v1 不变
-            'version': 2 if (numbered or triangle or mi or shatter or is_cubic) else 1,
+            'version': 2 if (numbered or triangle or mi or is_model or is_cubic) else 1,
             'puzzle': {
                 'm': self.current_m,
                 'n': self.current_n,
@@ -905,7 +903,7 @@ class FileOpsMixin:
             # 局面从每条快照的 engine_state 无损还原（[r,c,d,gid] 列表）。
             data['puzzle']['type'] = 'cubic'
             data['puzzle']['depth'] = int(getattr(self.game, 'depth', 0))
-        if shatter:
+        if is_model:
             # 不写 type 的模型局存档会被 v1 口径读成「方形 4×4」——载入即
             # 静默换形态（48 块变 16 块）。type = 模型名，载入时据此
             # 重新注册表取板型。matrix 的值域校验走 validate_snapshot 的

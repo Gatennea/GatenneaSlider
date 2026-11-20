@@ -1121,17 +1121,12 @@ class EventsMixin:
                                                 self.new_triangle_puzzle(pm, ps)
                                             elif kind == 'mi':
                                                 self.new_mi_puzzle(pm, pn, ps)
-                                            elif kind == 'shatter':
-                                                # 碎三角固定 48 块：m/n 是菜单
-                                                # 占位，只传等级（见 GUI.py
-                                                # puzzle_sub_presets 注释）
-                                                self.new_shatter_puzzle(ps)
                                             elif kind not in ('triangle', 'mi',
                                                               'numbered', 'square',
                                                               'rect'):
                                                 # 模型文件板型（任意
-                                                # models/<name>.json）：同样固定
-                                                # 块数，m/n 是占位，只传等级。
+                                                # models/<name>.json，含碎三角）：
+                                                # 固定块数，m/n 是占位，只传等级。
                                                 self.new_model_puzzle(kind, ps)
                                             elif kind == 'numbered':
                                                 self.new_puzzle(pm, pn, ps, numbered=True)
@@ -1195,17 +1190,12 @@ class EventsMixin:
                                                 self.new_triangle_puzzle(pm, ps)
                                             elif kind == 'mi':
                                                 self.new_mi_puzzle(pm, pn, ps)
-                                            elif kind == 'shatter':
-                                                # 碎三角固定 48 块：m/n 是菜单
-                                                # 占位，只传等级（见 GUI.py
-                                                # puzzle_sub_presets 注释）
-                                                self.new_shatter_puzzle(ps)
                                             elif kind not in ('triangle', 'mi',
                                                               'numbered', 'square',
                                                               'rect'):
                                                 # 模型文件板型（任意
-                                                # models/<name>.json）：同样固定
-                                                # 块数，m/n 是占位，只传等级。
+                                                # models/<name>.json，含碎三角）：
+                                                # 固定块数，m/n 是占位，只传等级。
                                                 self.new_model_puzzle(kind, ps)
                                             elif kind == 'numbered':
                                                 self.new_puzzle(pm, pn, ps, numbered=True)

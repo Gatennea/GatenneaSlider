@@ -76,7 +76,7 @@ _found = 0
 _bad = 0
 _sample = None
 for _seed in (7, 1, 2, 3):
-    gui = boot('new_shatter_puzzle', _seed)
+    gui = boot('new_model_puzzle', 'shatter', _seed)
     g = gui.game
     _tbl = direction_table(g.spec)
     random.seed(_seed)

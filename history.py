@@ -393,8 +393,8 @@ class GameHistory:
         # ⚠️ 只在「會走通用分支」时计算：三角(self.k→2-bit 专属分支)、米字
         # (self.Q_ORDER→8-bit 专属分支) 的块朝向不在 spec.orientations 里，
         # 调用 snapshot_state 会因 index 找不到朝向而崩；且二者位打包已无损，
-        # 也不需要 engine_state。模型板型(shield/shatter…)才走通用分支、矩阵
-        # 编码丢同格多块，才有必要算。
+        # 也不需要 engine_state。模型板型（models/<name>.json 各板型）才走通用
+        # 分支、矩阵编码丢同格多块，才有必要算。
         _spec = getattr(game, 'spec', None)
         _engine_generic = (
             _spec is not None

@@ -50,7 +50,7 @@ def make_gui(port, anim=False):
     gui.animation_duration = 0.06
     pygame.display.set_mode((gui.screen_width, gui.screen_height))
     gui.screen = pygame.display.get_surface()
-    gui.new_shatter_puzzle(1)
+    gui.new_model_puzzle('shatter', 1)
     gui.center_map()
     return gui
 

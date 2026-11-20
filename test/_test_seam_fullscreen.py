@@ -103,7 +103,7 @@ def main():
 
     # ---- 碎三角（通用多邊形通道）：六族裡有縫的都測 ----
     g = _gui()
-    g.new_shatter_puzzle(1)
+    g.new_model_puzzle('shatter', 1)
     all_gaps = list(g.game.all_gaps())
     sh = []
     for fam in ('h', 'd30', 'd60', 'v', 'd120', 'd150'):
@@ -111,7 +111,7 @@ def main():
         if cand:
             sh.append(cand[0])
     check(len(sh) >= 4, f'碎三角拿到多族的縫（{len(sh)} 條：{sh}）')
-    check_boards('碎三角', lambda g: g.new_shatter_puzzle(1), sh)
+    check_boards('碎三角', lambda g: g.new_model_puzzle('shatter', 1), sh)
 
     # ---- 方形（舊手畫路徑）：本來就貫穿，作對照 ----
     # SliderMatrix 沒有 all_gaps；6×6 的內部縫號是 h 0..4 / v 0..4
