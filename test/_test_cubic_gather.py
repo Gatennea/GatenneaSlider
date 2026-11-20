@@ -10,6 +10,8 @@ E. GUI 播放轉換：三維 rep 必須保留三個分量；
 F. 候選枚舉（逐分量 + rep_cell）：候選數等於引擎 legal_moves，每個候選
    的「落點座標預測」必須與真實執行結果一致；實心盒快速還原判定與
    自訂目標回落。
+G. 逐洞段收口：同一局面開收口的終態重疊不低於純聚攏，且動作含 rep_cell、
+   可逐步重放並落在返回的 end 指標上。
 
 跑法：D:/python/python.exe test/_test_cubic_gather.py
 """
@@ -32,7 +34,7 @@ from GUI import SliderGUI  # noqa: E402
 from solver.ml.cubic_gather import (  # noqa: E402
     cubic_metrics, cubic_mod_constraints, _prefix3, _box_count,
     _apply_cubic_action, cubic_candidates, _solid_goal_signature,
-    _solved_fast,
+    _solved_fast, cubic_gather_solve,
 )
 
 _ok = [0]
@@ -287,6 +289,34 @@ for _idx, (_a, _coords, _m) in enumerate(_cands):
 check(not _bad,
       f'全部 {len(_cands)} 個候選可執行，且落點座標預測與真實執行一致',
       _bad[:3])
+gui.game.restore_state(_start_snap)
+
+print('=' * 60)
+print('G. 逐洞段收口：終態不低於純聚攏，且動作可重放')
+gui.game.restore_state(_start_snap)
+_res_g = cubic_gather_solve(gui.game, step=1, max_steps=20, patience=8,
+                            max_wait_time=5, closeout_segments=0)
+_ov_g = _res_g['end']['overlap']
+gui.game.restore_state(_start_snap)
+_res_c = cubic_gather_solve(gui.game, step=1, max_steps=20, patience=8,
+                            max_wait_time=5, closeout_segments=3,
+                            closeout_budget=400)
+check(_res_c['end']['overlap'] >= _ov_g,
+      f'同一局面開收口後重疊不低於純聚攏（{_res_c["end"]["overlap"]}'
+      f' >= {_ov_g}）')
+check(all(len(a) == 5 for a in _res_c['actions']),
+      '收口動作仍保留五分量（含 rep_cell）')
+gui.game.restore_state(_start_snap)
+_replay_bad = None
+for _a in _res_c['actions']:
+    if _apply_cubic_action(gui.game, _a, 1) is None:
+        _replay_bad = _a
+        break
+_after = [tuple(b.location[:3]) for b in gui.game.blocks]
+_met = cubic_metrics(_after, (4, 4, 4), step=1)
+check(_replay_bad is None and _met['overlap'] == _res_c['end']['overlap'],
+      '收口動作逐步重放，終態重疊與返回 end 一致',
+      (_replay_bad, _met['overlap'], _res_c['end']['overlap']))
 gui.game.restore_state(_start_snap)
 
 print('=' * 60)

@@ -66,7 +66,7 @@ def build_gui():
     return gui
 
 
-def run_case(gui, dims, seed, max_steps, patience, wait, step, phi_k):
+def run_case(gui, dims, seed, max_steps, patience, wait, step, phi_k, co_segments=0, co_budget=1500):
     """一個固定 case：同 (seed, step) 必然生成同一打亂局面。"""
     gui.new_cubic_puzzle(dims[0], dims[1], dims[2], step)
     random.seed(1000 + seed)
@@ -80,7 +80,7 @@ def run_case(gui, dims, seed, max_steps, patience, wait, step, phi_k):
     res = cubic_gather_solve(gui.game, step=step, max_steps=max_steps,
                              patience=patience, max_wait_time=wait,
                              target_gather_score=None,
-                             phi_prescreen_k=phi_k)
+                             phi_prescreen_k=phi_k, closeout_segments=co_segments, closeout_budget=co_budget)
     dt = time.perf_counter() - t0
     st = res.get('stats') or {}
     return {
@@ -97,6 +97,8 @@ def run_case(gui, dims, seed, max_steps, patience, wait, step, phi_k):
         'expanded': st.get('expanded'),
         'metric_calls': st.get('metric_calls'),
         'prescreened': st.get('prescreened'),
+        'closeout_segments': st.get('closeout_segments_done'),
+        'closeout_stuck': st.get('closeout_stuck_overlap'),
         'reps_have_3': all(len(r) == 3 for r in res['rep_cells']),
         'actions_len': sorted({len(a) for a in res['actions']}),
     }
@@ -148,6 +150,10 @@ def main():
                     help='Φ 預篩 top-k；0 = 關閉預篩（全候選算完整指標）')
     ap.add_argument('--profile', type=int, default=0,
                     help='對第 N 個 case（1 起）跑 cProfile；0 = 不剖析')
+    ap.add_argument('--closeout-segments', type=int, default=0,
+                    help='逐洞段數；0 = 關閉（與線上默認一致）')
+    ap.add_argument('--closeout-budget', type=int, default=1500,
+                    help='每段節點預算')
     args = ap.parse_args()
 
     dims_list = [tuple(int(x) for x in s.lower().split('x'))
@@ -165,7 +171,9 @@ def main():
                     prof = cProfile.Profile()
                     prof.enable()
                     row = run_case(gui, dims, seed, args.max_steps,
-                                   args.patience, args.wait, step, args.phi_k)
+                                   args.patience, args.wait, step, args.phi_k,
+                                   args.closeout_segments,
+                                   args.closeout_budget)
                     prof.disable()
                     buf = io.StringIO()
                     stats = pstats.Stats(prof, stream=buf).sort_stats('tottime')
@@ -174,7 +182,9 @@ def main():
                     print(f'  [profiled case] {row}')
                 else:
                     row = run_case(gui, dims, seed, args.max_steps,
-                                   args.patience, args.wait, step, args.phi_k)
+                                   args.patience, args.wait, step, args.phi_k,
+                                   args.closeout_segments,
+                                   args.closeout_budget)
                 rows.append(row)
                 print(f'  {dims} step={step} seed={seed}: {row["wall"]:.2f}s '
                       f'solved={row["solved"]} steps={row["steps"]} '
@@ -194,6 +204,8 @@ def main():
         'params': {
             'sizes': ['x'.join(str(v) for v in d) for d in dims_list],
             'steps': step_list, 'phi_k': args.phi_k,
+            'closeout_segments': args.closeout_segments,
+            'closeout_budget': args.closeout_budget,
             'seeds': args.seeds, 'max_steps': args.max_steps,
             'patience': args.patience, 'wait': args.wait,
             'scramble': {('x'.join(str(v) for v in k)): scramble_moves(k)
@@ -216,3 +228,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

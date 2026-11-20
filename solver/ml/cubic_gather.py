@@ -16,9 +16,16 @@
   · Φ 預篩 + top-k 完整指標；
   · 實心盒目標走快速還原判定，自訂目標回落引擎判據。
 
+2026-11-20 第二輪（逐洞段收口，方案 P1）：
+  · 默認 4 段 × 1200 節點：聚攏停滯後每段只要求「洞 -1」，段內允許分數
+    持平/下降，最佳優先（洞數, 塊到窗口的曼哈頓距離和）展開；
+  · 一段命中就落盤，並用實際盤面重算指標、要求重疊真的 +1，否則回滾；
+  · 實測終態 +0.03 ~ +0.06、代價 0.3 ~ 0.7s（三檔尺寸，見優化記錄 §11）。
+
 返回字典鍵與 `gather_solver.gather_solve` 對齊，GUI 現有播放管道可直接吃；
 `form='cubic'` 供 GUI 文案分流。
 """
+import heapq
 import itertools
 import time
 
@@ -395,7 +402,15 @@ def cubic_candidates(game, step):
 
     回傳 list[(action, coords, move)]；coords 為落點點集（未排序）。
     """
-    board = game.board          # property：先把塊位置同步回引擎
+    return _candidates_from_board(game, game.board, step)
+
+
+def _candidates_from_board(game, board, step):
+    """`cubic_candidates` 的內核：接受現成 Board。
+
+    逐洞 segment 的搜索每層由「純座標集」重建 Board（`Board.from_points`），
+    不必 restore_state 重建整盤 Block 對象。
+    """
     scale = game.spec.lattice.scale
     if scale != 1:
         raise ValueError(
@@ -465,9 +480,152 @@ def _solved_fast(coords, met, signature):
             and tuple(sorted(met['bbox'])) == dims_sorted)
 
 
+# ---------------------------------------------------------------------------
+# 逐洞 segment 收口（方案 P1）
+# ---------------------------------------------------------------------------
+def _holes_and_distance(coords, window):
+    """洞數與「塊到窗口的曼哈頓距離和」；都是 O(塊數)。
+
+    洞數是段目標（每段只要求 -1），距離和是段內排序的次鍵：
+    「同樣少的洞，離得近的更可能真的收得進去」。
+    """
+    if not window:
+        return 10 ** 9, 10 ** 9
+    x0, y0, z0, a, b, c = window
+    x1, y1, z1 = x0 + a, y0 + b, z0 + c
+    holes = a * b * c
+    dist = 0
+    for p in coords:
+        if x0 <= p[0] < x1:
+            dx = 0
+        else:
+            dx = x0 - p[0] if p[0] < x0 else p[0] - x1 + 1
+        if y0 <= p[1] < y1:
+            dy = 0
+        else:
+            dy = y0 - p[1] if p[1] < y0 else p[1] - y1 + 1
+        if z0 <= p[2] < z1:
+            dz = 0
+        else:
+            dz = z0 - p[2] if p[2] < z0 else p[2] - z1 + 1
+        dist += dx + dy + dz
+        if dx == 0 and dy == 0 and dz == 0:
+            holes -= 1
+    return holes, dist
+
+
+def _best_first_segment(game, step, dims, mod_constraints, solid_goal,
+                        target_overlap, node_budget, deadline=None,
+                        cancel_check=None, stats=None):
+    """單個「洞數 -1」段：最佳優先搜尋，允許分數持平/下降。
+
+    與主迴圈的差別：主迴圈是「每步都挑當下最聚攏的一步」，撞局部最優就停；
+    這裡允許先拆開再裝回，只要求段結束時重疊嚴格 +1（洞 -1）。狀態只在
+    純座標層展開（`Board.from_points`），不碰盤面 Block。
+
+    回傳 `(path, nodes)`：path 是從當前局面起、達到段目標的動作序列；
+    找不到回 `(None, nodes)`。
+    """
+    if solid_goal is None or node_budget is None or node_budget <= 0:
+        return None, 0
+    from engine.board import Board
+
+    start = [tuple(b.location[:3]) for b in game.blocks]
+    start_met = cubic_metrics(start, dims, step=step,
+                              mod_constraints=mod_constraints)
+    seq = itertools.count()
+    h0, d0 = _holes_and_distance(start, start_met['window'])
+    queue = [(h0, d0, next(seq), tuple(sorted(start)), ())]
+    visited = {tuple(sorted(start))}
+    nodes = 0
+    while queue:
+        if cancel_check and cancel_check():
+            return None, nodes
+        if deadline is not None and time.time() >= deadline:
+            return None, nodes
+        _h, _d, _seq, key, path = heapq.heappop(queue)
+        board = Board.from_points(game.spec, [tuple(p) for p in key])
+        for act, child, _mv in _candidates_from_board(game, board, step):
+            nodes += 1
+            if stats is not None:
+                stats['closeout_nodes'] = stats.get('closeout_nodes', 0) + 1
+            if cancel_check and cancel_check():
+                return None, nodes
+            if nodes >= node_budget:
+                return None, nodes
+            if deadline is not None and time.time() >= deadline:
+                return None, nodes
+            child_key = tuple(sorted(child))
+            if child_key in visited:
+                continue
+            visited.add(child_key)
+            met = cubic_metrics(child, dims, step=step,
+                                mod_constraints=mod_constraints)
+            if stats is not None:
+                stats['metric_calls'] = stats.get('metric_calls', 0) + 1
+            if _solved_fast(child, met, solid_goal):
+                return list(path) + [act], nodes
+            if met['overlap'] > target_overlap:
+                return list(path) + [act], nodes
+            holes, dist = _holes_and_distance(child, met['window'])
+            heapq.heappush(queue, (holes, dist, next(seq), child_key,
+                                   path + (act,)))
+    return None, nodes
+
+
+def _closeout_segments(game, step, dims, mod_constraints, solid_goal,
+                       segments, node_budget, deadline, cancel_check, stats):
+    """連續跑若干個逐洞段，命中一段就落盤一段。
+
+    回傳 `(actions_added, metrics_added)`；每段落盤後都重新算實際指標並
+    要求「重疊嚴格 +1」，任何回放失敗 / 沒漲都立刻回滾到段前快照。
+    """
+    added_actions, added_metrics = [], []
+    for _seg in range(int(segments)):
+        if game.is_solved():
+            break
+        start_coords = [tuple(b.location[:3]) for b in game.blocks]
+        start_met = cubic_metrics(start_coords, dims, step=step,
+                                  mod_constraints=mod_constraints)
+        target = start_met['overlap']
+        if target >= len(start_coords):
+            break
+        path, _nodes = _best_first_segment(
+            game, step, dims, mod_constraints, solid_goal, target,
+            node_budget, deadline=deadline, cancel_check=cancel_check,
+            stats=stats)
+        if not path:
+            stats['closeout_stuck_overlap'] = target
+            break
+        pre_snap = game.snapshot_state()
+        played, mets = [], []
+        for act in path:
+            if _apply_cubic_action(game, act, step) is None:
+                break
+            played.append(act)
+            after = [tuple(b.location[:3]) for b in game.blocks]
+            mets.append(cubic_metrics(after, dims, step=step,
+                                      mod_constraints=mod_constraints))
+            stats['metric_calls'] = stats.get('metric_calls', 0) + 1
+        if not mets or len(played) != len(path) or \
+                mets[-1]['overlap'] <= target:
+            # 預測與真實落點不一致 / 沒真的漲：回滾，不污染結果
+            game.restore_state(pre_snap)
+            stats['closeout_replay_fail'] = \
+                stats.get('closeout_replay_fail', 0) + 1
+            break
+        added_actions += played
+        added_metrics += mets
+        stats['closeout_segments_done'] = \
+            stats.get('closeout_segments_done', 0) + 1
+        stats['closeout_best_overlap'] = mets[-1]['overlap']
+    return added_actions, added_metrics
+
+
 def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
                        max_wait_time=20, target_gather_score=1.0,
-                       phi_prescreen_k=8, cancel_check=None,
+                       phi_prescreen_k=8, closeout_segments=4,
+                       closeout_budget=1200, cancel_check=None,
                        progress_callback=None, **kwargs):
     """三維單次聚攏：貪心最大重疊，停在歷史最優。
 
@@ -632,6 +790,20 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
         actions = actions[:best_idx]
         reps = reps[:best_idx]
         trace = trace[:best_idx]
+
+    # 【新增】逐洞 segment 收口：默認關閉（closeout_segments=0）。開啟時用
+    # 剩餘時間預算，一個段只要求「洞 -1」，允許段內分數持平/下降。
+    if (not game.is_solved()) and closeout_segments and closeout_segments > 0:
+        deadline = (start_time + max_wait_time
+                    if max_wait_time and max_wait_time > 0 else None)
+        added_actions, added_metrics = _closeout_segments(
+            game, step, dims, mod_constraints, solid_goal,
+            closeout_segments, closeout_budget, deadline, cancel_check, stats)
+        if added_actions:
+            actions = list(actions) + added_actions
+            reps = [a[4] for a in actions]
+            trace = list(trace) + added_metrics
+            reason = 'closeout'
 
     end_metrics = cubic_metrics([tuple(b.location[:3]) for b in game.blocks],
                                 dims, step=step,
