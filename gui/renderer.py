@@ -1165,12 +1165,18 @@ class RendererMixin:
             # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
             # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
             _cur = getattr(self, '_cubic_follow_center', None)
+            _old_cur = _cur
             if _cur is None:
                 _cur = _target
             else:
                 _k = 0.14
                 _cur = tuple(_cur[i] + (_target[i] - _cur[i]) * _k
                              for i in range(3))
+            if _old_cur is not None:
+                _dc = tuple(_cur[i] - _old_cur[i] for i in range(3))
+                if any(abs(v) > 1e-9 for v in _dc):
+                    # 箭头要相对鼠标不动：相机平移多少，锚点就反向补多少。
+                    self._cubic_lock_click_anchor_against_follow(_dc)
             self._cubic_follow_center = _cur
             _center = _cur
         elif _target is not None:
@@ -1526,13 +1532,16 @@ class RendererMixin:
             # 投影决定，上/左提亮、下/右压暗；方向与 face_shade 一致，
             # 二维三形态（square/tri/mi）开态走的是同一个函数。
             _draw_face_bevel(hi, pts, fill)
-        # 被块盖住的箭头补一圈虚线轮廓：实体已按 mask 裁过，虚线只提示
-        # 这里还有一个可点的方向，不把整支箭置顶。
+        # 被块盖住的部分补虚线轮廓：实体已按 mask 裁过，虚线只画在
+        # **真正被挡住的区域**里。挡一半 → 露出的半截实心、被挡的半截虚线；
+        # 全挡 → 整支虚线。不能等覆盖率 ≥0.35 才补整支，否则挡得少的箭头
+        # 被扣掉后就直接消失了（用户 2026-11-21）。
         if hi is not None:
             for letter, pts, _depth in getattr(
                     self, '_cubic_arrow_shapes', ()):
-                if letter in self._cubic_arrow_ghosts:
-                    self._cubic_draw_arrow_ghost(hi, pts, _T, _ss)
+                _clip = self._cubic_arrow_clip.get(letter)
+                if _clip is not None:
+                    self._cubic_draw_arrow_ghost(hi, pts, _T, _ss, clip=_clip)
 
         if hi is not None:
             self.screen.blit(
@@ -1656,8 +1665,12 @@ class RendererMixin:
                         break
         return (covered / total) if total else 0.0
 
-    def _cubic_draw_arrow_ghost(self, hi, pts, transform, ss):
-        """被块盖住的箭头：只描一圈虚线轮廓，保持可点，不把整支箭置顶。"""
+    def _cubic_draw_arrow_ghost(self, hi, pts, transform, ss, clip=None):
+        """箭头遮罩区域的虚线轮廓。
+
+        `clip=(mask,mx0,my0)` 时只保留 mask 覆盖到的虚线像素——被挡多少就
+        虚多少；全挡就是整支虚线。`clip=None` 保留旧的全支虚线行为。
+        """
         q = transform(pts)
         x0 = min(p[0] for p in q)
         y0 = min(p[1] for p in q)
@@ -1685,6 +1698,10 @@ class RendererMixin:
                                  (a[0] + ux * t, a[1] + uy * t),
                                  (a[0] + ux * e, a[1] + uy * e), width)
                 t = e + gap
+        if clip is not None:
+            mask, mx0, my0 = clip
+            surf.blit(mask, (mx0 - (x0 - pad), my0 - (y0 - pad)),
+                      special_flags=pygame.BLEND_RGBA_MULT)
         hi.blit(surf, (x0 - pad, y0 - pad))
 
     def _cubic_draw_arrow_face_clipped(self, hi, item, clip, transform, ss):

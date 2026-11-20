@@ -1227,6 +1227,45 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 `_test_cubic_render_opts.py` 72 項、`_test_slide_audio.py` 全綠；全部 29 個
 cubic 測試套件全綠。
 
+## 修：箭頭只虛化真正被擋住的部分（2026-11-21）
+
+逐像素裁切把被前側塊蓋住的像素直接扣成透明，但虛線輪廓只在**整支遮擋覆蓋率
+≥ 0.35** 時才補。結果擋得少的箭頭（例如覆蓋率 0.1–0.3）被扣掉後沒有虛線，
+看起來像「擋住就徹底消失」。
+
+改法：
+
+- `_cubic_draw_arrow_ghost(..., clip=mask)`：虛線仍是整支箭的白色虛線，
+  但用同一張遮擋 mask 做 `BLEND_RGBA_MULT`，只保留被塊蓋住區域的虛線像素。
+- 實體面片仍按 mask 扣像素；於是：露出的部分實心、被擋的部分虛線、
+  全擋就是整支虛線。不再依賴 `_cubic_arrow_ghosts` 的 0.35 門檻。
+- `_cubic_arrow_ghosts` 保留原判定供既有回歸/拾取提示使用，但不再決定
+  是否畫虛線。
+
+回歸：新增 `_test_cubic_arrow_ghost.py`，驗證半張 mask 只留左半虛線、
+全透明 mask 不畫、部分遮擋（`D` 不在 ghosts 但 clips 有）也會傳入裁切
+mask；全部 30 個 cubic 套件全綠。
+
+## 修：箭頭螢幕位置固定在點擊處（2026-11-21）
+
+用戶澄清：箭頭是操作入口，要**相對鼠標/螢幕不動**；滑塊可以位移，但箭頭
+不跟著選中組走。舊實現存的是世界座標 `_cubic_last_click_p`，開「跟隨質心」
+後相機 origin 隨質心平移，世界錨點的投影也跟著漂，箭頭就離開鼠標。
+
+修法：
+
+- 保留世界錨點（轉視角時仍隨盤轉），只在 `_cubic_follow_center` 每幀移動時
+  做反向補償：`_cubic_lock_click_anchor_against_follow(Δcenter)` 把
+  `_cubic_last_click_p` / `_cubic_last_click_surface` 都 `+Δcenter`。
+  因 `origin` 隨中心反向移動，`project(anchor + Δ, center + Δ)` 正好回到
+  原螢幕點。
+- 不補償旋轉/縮放：轉視角時幾何仍按新相機投影，箭頭跟著盤轉，不會變成
+  2D 貼紙。
+- 手推後錨點不平移、動畫也不疊位移：滑塊滑走、箭頭釘住。
+
+回歸：`_test_cubic_arrow_follow.py` 覆蓋無跟隨、跟隨（origin 確實移動但
+箭頭 ≤1.5px）、動畫開始/結束、二級多格，全部 0px；31 個 cubic 套件全綠。
+
 ### 已知狀態
 
 - HEAD 為本次三維收尾提交（調試面板聚攏數據/目標盒 + mod 約束 + 文檔），

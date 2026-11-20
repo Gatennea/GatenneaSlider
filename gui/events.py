@@ -2008,6 +2008,21 @@ class EventsMixin:
             return list(faces)
         return []
 
+    def _cubic_lock_click_anchor_against_follow(self, center_delta):
+        """相机因「跟随质心」平移时，把点击锚点等量反向搬回去。
+
+        箭头要相对鼠标不动：锚点存世界坐标，相机 origin 随质心平移会让
+        投影跟着走。`_cubic_follow_center` 每帧移动 Δ，锚点和点击面就
+        +Δ；`project(anchor + Δ, center + Δ)` 正好回到原屏幕点。
+        只抵消跟随造成的平移，不抵消旋转/缩放——转视角时箭头仍随盘转。
+        """
+        for attr in ('_cubic_last_click_p', '_cubic_last_click_surface'):
+            p = getattr(self, attr, None)
+            if p is None or len(p) != 3:
+                continue
+            setattr(self, attr, tuple(float(p[i]) + float(center_delta[i])
+                                     for i in range(3)))
+
     def _cubic_clear_selection(self):
         """右键 / 点空白 / 开始旋转：取消选中与切面预览。"""
         self.selected_gap = None

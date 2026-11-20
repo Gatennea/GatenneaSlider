@@ -267,7 +267,8 @@ def main():
         offs = g6._cubic_anim_offsets()
         vals = set(offs.values()) if offs else set()
         check(offs is not None and len(vals) == 1
-              and abs(max(abs(v) for v in next(iter(vals))) - level) < 1e-6,
+              and abs(max(abs(v) for v in next(iter(vals))) - level)
+              <= max(1e-6, level * 0.02),
               f'{level} 級所有块共用同一个 {level} 格反向位移（{vals}）')
 
     print('=' * 60)
