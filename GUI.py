@@ -2570,6 +2570,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 流式求解：把后台算好的段接进宏播放管道（边算边播）
                 self._pump_stream_segments()
+                # 三维宏播放：按每步收尾位移播完的时机逐步推进（否则一帧跳完）
+                self._pump_cubic_macro_playback()
                 # 自动规划·流式：hybrid 边算边播 + 历史最优 checkpoint
                 self._pump_auto_stages()
 

@@ -1929,10 +1929,12 @@ class EventsMixin:
         return True
 
     def _cubic_seam_click(self, x, y):
-        """右键：选切面。只接受**两块之间的内部切面**；空白 → 取消选中。
+        """右键：选切面。只拒绝**包围盒边界**上的面；空白 → 取消选中。
 
-        2026-11-19 用户口径：表面上的切面不能选。点中滑塊外表面时不再退回
-        「表面之下一層」的缝；保持现有选中不动，只提示只能选内部切面。
+        2026-11-20 用户口径修正：不是所有外表面都禁选。块堆内部因为拆分/
+        滑动朝空洞露出来的面，只要这条缝两侧都还有块，就应当可选；否则
+        会把「块堆内部露出的面」也一并拒绝。禁选边界面的目的仍是防止
+        选中「最外层整体滑出去」、把所有滑块组都选走。
         只定切面，**不代替左键选块**（用户 2026-11-18：没有缝时禁止选块 →
         反过来选缝也不该顺手把块选了；选完缝再左键点块）。
         """
@@ -1946,11 +1948,12 @@ class EventsMixin:
             hit, self.game.is_valid_gap, locations)
         if seam is None:
             # 表面不是空白：不要顺手取消已有选中，也不要退到下一层缝。
-            if not cubic_pick.face_is_internal(hit, locations):
+            if cubic_pick.face_on_outer_boundary(hit, locations):
                 self.macro_notify_msg = (
-                    "这个面在滑块表面，不能选切面；只能选两块之间的内部切面")
+                    "这个面在滑块堆的外边界表面，不能选切面；"
+                    "只能选穿过滑块堆的内部切面")
             else:
-                self.macro_notify_msg = "这个内部面旁边没有可切的缝"
+                self.macro_notify_msg = "这个面旁边没有可切的内部缝"
             self.macro_notify_timer = 110
             return False
         self.selected_gap = seam
@@ -2212,7 +2215,7 @@ class EventsMixin:
             return False
         moving = [b for b in self.game.blocks if getattr(b, 'be_opted', False)]
         before = [tuple(int(v) for v in b.location[:3]) for b in moving]
-        moved = self.move_selected_blocks(letter)
+        moved = self.move_selected_blocks(letter, step=self.current_step)
         if not moved:
             self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
             self.macro_notify_timer = 120
@@ -2238,24 +2241,32 @@ class EventsMixin:
                          for b, loc in zip(moving, before)):
             self._finalize_move_selection(moving)
         if getattr(self, 'animation_enabled', True) and before:
-            self._cubic_start_anim(letter, before)
+            # 移动和动画用同一个 step（当前关卡值，二/三/四级都适用）。
+            # 若只给动画默认 1 格，整组走 N 格时反向位移组只覆盖中途位置，
+            # 一部分选中的块不在动画组里，画面就会各块先后/不同步。
+            # 撤销重做读 move_info['step']，本来就没这个问题。
+            self._cubic_start_anim(letter, before, step=self.current_step)
         return moved
 
     #: 三维推一步的滑动时长（毫秒）。二维走 animation_duration，三维单独一档：
     #: 一步是整组 9 块沿一个轴滑，太快看不出「整组在动」。
     CUBIC_ANIM_MS = 140
 
-    def _cubic_start_anim(self, letter, before_locs):
+    def _cubic_start_anim(self, letter, before_locs, step=1):
         """记下「这一推从哪滑到哪」，交给渲染层做收尾位移（逻辑已提交）。
 
         只动渲染：真实位置早已就位，这里给刚动过的那组一个逐渐归零的反向位移，
         画面上就是滑过去的一段。拾取 / 判定 / 选中始终用真实位置。
+
+        `step` 是本次实际滑动的格数（宏播放会显式传 `op['step']`，手推恒为 1），
+        位移向量与落点都按它缩放，否则多格动作的动画只画一格。
         """
         from engine.compat import CUBIC_DIRECTIONS
         vec = CUBIC_DIRECTIONS.get(letter)
         if vec is None:
             return
-        dr, dc, dd = vec
+        _n = max(1, int(step or 1))
+        dr, dc, dd = (vec[0] * _n, vec[1] * _n, vec[2] * _n)
         # 逻辑坐标 (r,c,d) → 世界 (X=c, Y=d, Z=r)，与 cubic_view 同一口径
         delta = (dc, dd, dr)
         after = {(r + dr, c + dc, d + dd) for (r, c, d) in before_locs}
@@ -5796,8 +5807,10 @@ class EventsMixin:
         """执行一个三维宏操作；成功返回 True，失败置中断态并返回 False。
 
         三维动作是整组沿轴滑：先把目标组 opt 出来，再直接走
-        `move_selected_blocks`（cubic 分支即时提交、不排 2D 动画），
-        避免 `_cubic_push_letter` 的 cubic_anim 只做视觉、不推进宏队列。
+        `move_selected_blocks`（cubic 分支即时提交、不排 2D 动画）。
+        逻辑仍然即时提交，但提交后补一段渲染位移（`_cubic_start_anim`，
+        与手推一步同一套）；宏队列的推进由 `_pump_cubic_macro_playback`
+        按这段位移播完的时机逐步驱动，不再一帧跑完整串。
         """
         gap_type = op['gap_type']
         gap_line = int(op['gap_line'])
@@ -5859,6 +5872,11 @@ class EventsMixin:
             self._clear_macro_selection_if_disabled()
             return False
 
+        # 动画：先把这一组「移动前」的格子记下来，提交后交给渲染层补滑动
+        # （与手推一步共用 `_cubic_start_anim`）。不记的话宏播放没有位移可画。
+        _before = [tuple(int(v) for v in b.location[:3])
+                   for b in self.game.blocks if getattr(b, 'be_opted', False)]
+
         if not self.move_selected_blocks(direction, step):
             self.macro_error_msg = (
                 f'宏在第 {self.macro_exec_index + 1} 步失败: '
@@ -5870,6 +5888,10 @@ class EventsMixin:
             self._clear_macro_selection_if_disabled()
             return False
 
+        # 逻辑已落位，这里只排渲染位移（`cubic_anim`），不推进逻辑。
+        if getattr(self, 'animation_enabled', True) and _before:
+            self._cubic_start_anim(direction, set(_before), step)
+
         # 即时提交路径：没有动画收尾会推进 index，这里自己推进。
         self.macro_exec_index += 1
         self._pending_move_info = None
@@ -5879,6 +5901,31 @@ class EventsMixin:
             except Exception:
                 pass
         return True
+
+    def _pump_cubic_macro_playback(self):
+        """三维宏播放的逐帧推进（主循环每帧调一次）。
+
+        三维动作是即时提交、不走二维动画层，所以宏队列没有「动画收尾回调」
+        可以用来推进；原先一次调用就在 `while` 里跑完整串，画面直接跳终态。
+        这里补一条帧驱动：上一步的渲染位移（`cubic_anim`）播完才推下一步。
+        """
+        if not getattr(self, 'cubic_mode', False):
+            return
+        if not getattr(self, 'macro_executing', False):
+            return
+        if getattr(self, 'animating', False):
+            return
+        if getattr(self, 'macro_selecting_base', False):
+            return
+        # 渲染位移还在播：自己按时间判到期（渲染层不一定会被调用来清它）
+        anim = getattr(self, 'cubic_anim', None)
+        if anim is not None:
+            if pygame.time.get_ticks() - anim['t0'] < max(1, int(anim['ms'])):
+                return
+            self.cubic_anim = None
+        if self.macro_exec_index >= len(getattr(self, 'macro_exec_ops', None) or ()):
+            return
+        self._execute_next_macro_step()
 
     def _execute_next_macro_step(self):
         """执行宏队列中的下一个操作（无动画时用循环迭代，避免长解法递归爆栈）"""
@@ -5957,6 +6004,10 @@ class EventsMixin:
             # 三维宏：r/c/d 三族 + 六向，走独立分支。二维的 h/v 校验、
             # 侧别和 _find_block_on_side 都不认层号，混在一起会静默走错轴。
             if op.get('kind') == 'cubic' or gap_type in ('r', 'c', 'd'):
+                # 上一步的收尾位移还没画完就先等着：立刻执行下一步会把
+                # `cubic_anim` 覆盖掉，画面上仍是一帧跳完（等于没动画）。
+                if getattr(self, 'cubic_anim', None):
+                    return
                 if not self._execute_cubic_macro_op(op):
                     return
                 continue

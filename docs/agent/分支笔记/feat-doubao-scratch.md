@@ -456,8 +456,9 @@ pCubes 是闭源 exe（E:\pC 只有 pCubes.exe + 数据），HyperSpeedcube 装�
   包围盒面退回内部切面、最前块前脸 → r·1），293 项全绿；回归 view 41 / nav 83 /
   play 32 / framing 15 / gap 18 / split 25 / entry 31 全绿。
 
-> ⚠️ 2026-11-19 本条「任意外表面可点」已推翻：表面右鍵現在一律不選切面，
-> 只有兩塊之間的內部墙可選。見文末「表面右鍵不再退回表面之下一層」。
+> ⚠️ 2026-11-19 本条「任意外表面可点」曾收紧成「表面右键一律不选切面」；
+> 2026-11-20 又按人工验收修正为：只禁**包围盒边界**表面，块堆内部朝空洞
+> 露出的面只要切面两侧还有块仍可选。见文末两节。
 
 ⚠️ 遗留口径：旋转态仍然「只看不选」（方案 §2.2 原文）。用户问「任意方向操作」——
 拾取基于渲染面与画家序，任意姿态下本来就成立，放开只需删 `_cubic_click` 里那个
@@ -1136,6 +1137,10 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
 
 ## 修：表面右鍵不再退回表面之下一層的切面（2026-11-19）
 
+> ⚠️ 2026-11-20 修正：本節「只接受 `face_is_internal()`」的判據過嚴。
+> 正確口徑是只拒絕**包圍盒邊界**上的面；塊堆內部因拆分/滑動朝空洞露出
+> 的面，只要切面兩側都還有塊，仍應可選。見下一節。
+
 用户口径：三維滑塊不能選中「表面上的切面」。舊版 `seam_of_face()` 在表面
 外沿那條線不是內部切面時，會退回塊的另一條邊界——右鍵點最外層表面，畫面
 看到 A，實際卻選中表面之下一層的 B。這是直接的「點哪不是哪」錯位。
@@ -1158,6 +1163,45 @@ render_opts 46、config 22、statusbar 及全部 cubic 套件全绿。
   另修正兩個測試自身的狀態污染：`_test_cubic_play` 在打亂前顯式關演示動畫
   （`new_cubic_puzzle` 會按 config 重新灌開關），以及拒絕色檢查改用本幀真有
   可見面的塊描邊（打亂後選中組可能整組在背面）。
+
+## 修：表面右鍵只禁包圍盒邊界（2026-11-20 人工驗收修正）
+
+用户验收指出上一版「任何外表面都不能選」與預期不符。正確目的是只禁止
+**包圍盒邊界**上的面，防止選中「最外一層整體滑出去」、把所有滑塊組都選走；
+塊堆內部因拆分/滑動朝空洞露出來的面不是邊界表面，只要切面兩側都還有塊，
+就應該可選。
+
+- `engine/cubic_pick.py` 新增 `face_on_outer_boundary(face, locations)`：
+  只看這條縫線兩側在整個塊堆裡是否都還有塊（`_is_internal_cut`），不再用
+  「緊鄰格有沒有塊」的 `face_is_internal()` 當唯一判據。
+- `seam_of_internal_face()` / `seam_of_face()`：保留面自身外沿那條線
+  （`sign>0 → v`、`sign<0 → v-1`），但把准入條件從 `face_is_internal()` 改為
+  `_is_internal_cut()`；仍然**不退回**塊的另一條邊界，包圍盒邊界直接 `None`。
+- `gui/events.py::_cubic_seam_click()`：縫為 `None` 時用
+  `face_on_outer_boundary()` 區分提示「外邊界表面」或「內部面旁邊沒有可切縫」。
+- `_test_cubic_pick.py`：B 段改按 `face_on_outer_boundary()` 分類；新增
+  空洞內部面回歸（`face_is_internal` 為假但切面兩側有塊 → 仍可選），
+  以及塊堆最外側面仍被拒。三維全套餐全綠（`_test_cubic_pick.py` 262 項）。
+
+## 修：手推動畫步數跟實際關卡步數（2026-11-20）
+
+用戶在二級 5×5×5 打亂後一次選中大批塊手推，發現動畫中途各塊不同步；
+撤銷/重做沒有此現象。根因是 `gui/events.py::_cubic_push_letter()` 起動畫時
+`_cubic_start_anim(letter, before)` 沒傳 `step`，默認 1 格：
+
+- 實際整組按 `current_step` 走了 N 格（N=2/3/4…）；
+- 動畫反向位移組卻只覆蓋「走 1 格後」的位置，很多選中塊的落點不在
+  `cubic_anim['group']` 裡，於是只有一部分塊拿到收尾位移。
+- 撤銷/重做走 `_cubic_start_undo_redo_anim()`，讀 `move_info['step']`，
+  所以不受影響。
+
+修法：移動與動畫用同一個 `self.current_step`（不是寫死 2，也不做事後位移
+反推），`move_selected_blocks(letter, step=self.current_step)` 與
+`_cubic_start_anim(..., step=self.current_step)` 成對。
+
+回歸：`_test_cubic_animation.py` 在 5×5×5 上跑 2/3/4 級，每次選 25 塊手推，
+斷言整組實際位移 = 等級格數、動畫組覆蓋全部塊、所有塊共用同一個 N 格反向
+位移；52 項全綠，全部 cubic 套件全綠。
 
 ### 已知狀態
 

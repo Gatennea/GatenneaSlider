@@ -227,6 +227,43 @@ def main():
           and (((0, 0, 0), 0, 1) not in keys_base3),
           '移动块贴死时被剔除的那一面，动画中重新画出来')
 
+    print('I. 各等级手推：动画步数必须跟实际位移一致，不能只按 1 格')
+    for level in (2, 3, 4):
+        g6 = make_gui()
+        g6.new_cubic_puzzle(5, 5, 5, level)
+        g6.cubic_gap = 0.12
+        g6.animation_enabled = True
+        select_front(g6)
+        moving = [b for b in g6.game.blocks if b.be_opted]
+        before = [tuple(int(v) for v in b.location[:3]) for b in moving]
+        chosen = None
+        for letter in ('c', 'C', 'd', 'D', 'r', 'R'):
+            fp, _reason = g6.game.try_move_ex(letter, g6.current_step)
+            if fp:
+                chosen = letter
+                break
+        check(chosen is not None, f'{level} 級找到可推方向', chosen)
+        if chosen is None:
+            continue
+        moved = g6._cubic_push_letter(chosen)
+        anim = getattr(g6, 'cubic_anim', None)
+        after = {tuple(int(v) for v in b.location[:3]) for b in moving}
+        deltas = {tuple(int(b.location[i]) - p[i] for i in range(3))
+                  for b, p in zip(moving, before)}
+        mag = (max(abs(v) for v in next(iter(deltas))) if deltas else -1)
+        check(moved and isinstance(anim, dict), f'{level} 級推成功且建立动画')
+        check(len(deltas) == 1 and mag == level,
+              f'{level} 級整组确实走了 {level} 格（{deltas}）')
+        check(anim['group'] == frozenset(after),
+              f'{level} 級动画组覆盖全部块（{len(anim["group"])} vs {len(after)}）')
+        # 起跑时机重锚到当前帧，避免 push 与取样之间的几毫秒让位移提前收敛
+        anim['t0'] = pygame.time.get_ticks()
+        offs = g6._cubic_anim_offsets()
+        vals = set(offs.values()) if offs else set()
+        check(offs is not None and len(vals) == 1
+              and abs(max(abs(v) for v in next(iter(vals))) - level) < 1e-6,
+              f'{level} 級所有块共用同一个 {level} 格反向位移（{vals}）')
+
     print('=' * 60)
     if FAILED:
         print(f'结果：{len(FAILED)} 项失败（{PASSED[0]} 项通过）')

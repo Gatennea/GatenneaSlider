@@ -86,20 +86,22 @@ for f in front_faces:
         break
 check(overlap is not None, '点在前块可见面上 → 命中前块（不被后块抢）')
 
-print('B. 面 → 缝（内部面可切 / 外表面一律 None）')
+print('B. 面 → 缝（非包围盒边界可切 / 边界表面一律 None）')
 game = create_adapter_puzzle('cubic', 3, 3, 1, depth=3)
 locs = cv.locations_of(game.blocks)
 check(cp.face_is_internal({'loc': (1, 1, 1), 'axis': 0, 'sign': 1}, locs),
       '心块 +X 面是内部面')
 check(not cp.face_is_internal({'loc': (1, 2, 1), 'axis': 0, 'sign': 1}, locs),
       '最外层 +X 面不是内部面')
+check(cp.face_on_outer_boundary({'loc': (1, 2, 1), 'axis': 0, 'sign': 1}, locs),
+      '最外层 +X 面在包围盒边界')
 
 seams = {}
 for face in faces:
     seam = cp.seam_of_face(face, game.is_valid_gap, locs)
-    if cp.face_is_internal(face, locs):
+    if not cp.face_on_outer_boundary(face, locs):
         check(seam is not None,
-              f'内部面 {face["loc"]} 轴{face["axis"]}{face["sign"]:+d} → 切面',
+              f'非边界表面 {face["loc"]} 轴{face["axis"]}{face["sign"]:+d} → 切面',
               extra=str(seam))
         if seam:
             seams[seam] = seams.get(seam, 0) + 1
@@ -109,7 +111,7 @@ for face in faces:
                   f'切面 {seam} 是块与块之间的内部切面', extra=str(seam))
     else:
         check(seam is None,
-              f'外表面 {face["loc"]} 轴{face["axis"]}{face["sign"]:+d} 不选切面',
+              f'包围盒边界表面 {face["loc"]} 轴{face["axis"]}{face["sign"]:+d} 不选切面',
               extra=str(seam))
 check(set(seams) <= {('r', 0), ('r', 1), ('c', 0), ('c', 1), ('d', 0), ('d', 1)},
       f'所有切面都落在 3×3×3 的六条有效缝上（实得 {sorted(seams)}）')
@@ -121,7 +123,7 @@ check(cp.seam_of_face({'loc': (0, 0, 0), 'axis': 2, 'sign': 1},
                       lambda f, l: False, locs) is None,
       '没有任何有效线时返回 None（不硬选）')
 
-print('B2. 表面上的切面不能选：只有内部墙可点，包围盒面一律 None')
+print('B2. 只有包围盒边界表面不可选；块堆内部露出的面仍可切')
 check(cp.seam_of_face({'loc': (0, 0, 0), 'axis': 0, 'sign': 1},
                       game.is_valid_gap, locs) == ('c', 0),
       'c=0 的 +X 内壁 → 缝 c·0')
@@ -130,13 +132,27 @@ check(cp.seam_of_face({'loc': (0, 1, 0), 'axis': 0, 'sign': -1},
       'c=1 的 −X 内壁 → 同一条缝 c·0（两面墙指同一条缝）')
 check(cp.seam_of_face({'loc': (0, 2, 0), 'axis': 0, 'sign': 1},
                       game.is_valid_gap, locs) is None,
-      '最外层 +X 面（表面）→ None，不退到内部切面 c·1')
+      '最外层 +X 面（包围盒边界）→ None，不退到内部切面 c·1')
 check(cp.seam_of_face({'loc': (2, 2, 2), 'axis': 2, 'sign': 1},
                       game.is_valid_gap, locs) is None,
-      '最前面块的前脸（表面）→ None，不退到后面那层的 r·1')
+      '最前面块的前脸（包围盒边界）→ None，不退到后面那层的 r·1')
 check(cp.seam_of_face({'loc': (1, 1, 1), 'axis': 0, 'sign': 1},
                       lambda f, l: False, locs) is None,
       '引擎说没有有效线时返回 None（不硬选）')
+
+# 关键回归：块堆因滑动/拆分空出一格时，朝空洞的块面不是包围盒边界，
+# 只要缝线两侧都还有块，就应可选。不能用「紧邻有没有块」来判。
+hole_locs = {(0, 0, 0), (0, 2, 0)}
+hole_face = {'loc': (0, 0, 0), 'axis': 0, 'sign': 1}
+check(not cp.face_is_internal(hole_face, hole_locs),
+      '空洞内部面不紧邻块，face_is_internal 为假')
+check(not cp.face_on_outer_boundary(hole_face, hole_locs),
+      '空洞内部面不在包围盒边界')
+check(cp.seam_of_face(hole_face, lambda f, l: True, hole_locs) == ('c', 0),
+      '空洞内部面仍能选出两侧都有块的切面 c·0')
+check(cp.seam_of_face({'loc': (0, 2, 0), 'axis': 0, 'sign': 1},
+                      lambda f, l: True, hole_locs) is None,
+      '块堆最外侧 +X 面仍被拒绝，防止整体滑出')
 
 print('C. 切面预览多边形')
 for family, line in (('r', 1), ('c', 0), ('d', 1)):
@@ -227,7 +243,8 @@ def _surface_point(scene):
 
 # 2026-11-17 用户改口径：可点范围从「缝里的墙」扩到**块的任意外表面**，
 # 但推出来的必须是内部切面（包围盒那层平面不许选）。
-# 2026-11-19 修订：表面不能选，右键只接受内部墙；上面这句旧口径作废。
+# 2026-11-19 曾收紧成「表面不能选」；2026-11-20 修正：只禁包围盒边界表面，
+# 块堆内部朝空洞露出的面只要切面两侧还有块仍可选。
 target = gui._cubic_scene['faces'][-1]
 pt, pt_seam, target = _seam_point(gui._cubic_scene)
 check(pt is not None, '场景里能找到一个「缝里的墙」的屏幕点')
