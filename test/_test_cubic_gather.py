@@ -5,7 +5,11 @@ A. 3D 前綴和 / 目標盒重疊：與暴力枚舉逐值一致；
 B. 還原態 score=1；平移後的實心盒仍 score=1；
 C. `gather_solve_unified` 對 cubic 分派到 `cubic_gather_solve`；
 D. 打亂 4×4×4 跑一輪短聚攏：動作可逐步重放，終態與返回的 end 指標一致，
-   聚攏度不低於起點（停在歷史最優）。
+   聚攏度不低於起點（停在歷史最優）；
+E. GUI 播放轉換：三維 rep 必須保留三個分量；
+F. 候選枚舉（逐分量 + rep_cell）：候選數等於引擎 legal_moves，每個候選
+   的「落點座標預測」必須與真實執行結果一致；實心盒快速還原判定與
+   自訂目標回落。
 
 跑法：D:/python/python.exe test/_test_cubic_gather.py
 """
@@ -27,7 +31,8 @@ import pygame  # noqa: E402
 from GUI import SliderGUI  # noqa: E402
 from solver.ml.cubic_gather import (  # noqa: E402
     cubic_metrics, cubic_mod_constraints, _prefix3, _box_count,
-    _apply_cubic_action,
+    _apply_cubic_action, cubic_candidates, _solid_goal_signature,
+    _solved_fast,
 )
 
 _ok = [0]
@@ -239,6 +244,50 @@ check('×' in gui.macro_notify_msg and '聚拢' in gui.macro_notify_msg,
 gui._finish_gather()
 check('边界盒' in gui.macro_notify_msg and '×' in gui.macro_notify_msg,
       '三維聚攏收尾文案不被二元 bbox 打斷', gui.macro_notify_msg)
+
+print('=' * 60)
+print('F. 候選枚舉：逐分量 + rep_cell + 落點預測')
+_sig = _solid_goal_signature(gui.game.spec, (4, 4, 4))
+check(_sig == (64, (4, 4, 4)),
+      '4×4×4 實心目標有快判簽名（64 塊 / 邊長有序 4,4,4）', _sig)
+check(_solid_goal_signature(gui.game.spec, (4, 4, 3)) is None,
+      '目標體積與 board 體積不符時不給快判簽名（回落引擎 48 對稱判據）')
+_box = [(i, j, k) for i in range(4) for j in range(4) for k in range(4)]
+check(_solved_fast(_box, cubic_metrics(_box, (4, 4, 4)), _sig) is True,
+      '還原態快判為 True')
+gui.game.restore_state(_start_snap)
+_scr = [tuple(b.location[:3]) for b in gui.game.blocks]
+check(_solved_fast(_scr, cubic_metrics(_scr, (4, 4, 4)), _sig) is False,
+      '打亂態快判為 False（不誤報還原）')
+
+gui.game.restore_state(_start_snap)
+_moves = gui.game.board.legal_moves(1)
+_cands = cubic_candidates(gui.game, 1)
+check(len(_cands) == len(_moves),
+      f'候選數等於引擎 legal_moves（{len(_cands)}={len(_moves)}）')
+check(all(len(a) == 5 and len(a[4]) == 3 for a, _c, _m in _cands),
+      '每個候選動作都帶三元 rep_cell（第五分量）')
+_groups = {}
+for _a, _c, _m in _cands:
+    _groups[_a[:3]] = _groups.get(_a[:3], 0) + 1
+check(any(v > 2 for v in _groups.values()),
+      '同一 (縫, 側) 出現多個分量動作（舊枚舉只取首塊所在分量）',
+      max(_groups.values()) if _groups else 0)
+_snap = gui.game.snapshot_state()
+_bad = []
+for _idx, (_a, _coords, _m) in enumerate(_cands):
+    _res = _apply_cubic_action(gui.game, _a, 1)
+    if _res is None:
+        _bad.append((_idx, 'apply_none', _a))
+    else:
+        _after = sorted(tuple(b.location[:3]) for b in gui.game.blocks)
+        if _after != sorted(_coords):
+            _bad.append((_idx, 'pred_mismatch', _a))
+    gui.game.restore_state(_snap)
+check(not _bad,
+      f'全部 {len(_cands)} 個候選可執行，且落點座標預測與真實執行一致',
+      _bad[:3])
+gui.game.restore_state(_start_snap)
 
 print('=' * 60)
 print(f'{_ok[0]} ok, {len(_fail)} failed')
