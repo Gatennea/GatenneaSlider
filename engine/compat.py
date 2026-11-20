@@ -448,9 +448,9 @@ register_direction_vocab('mi', MI_DIRECTIONS)
 # 等价性由 M 节差分钉死）
 register_direction_vocab('tri', TRI_DIRECTIONS)
 # 碎三角两张表（全谜题 12 字母 / 晶格谜题 6 字母）。碎三角没有旧引擎
-# 可对拍——字母↔spec 各族 parallel 的一一对应由 _test_shatter 的
-# 「move_to_action 双射」断言钉死（每个合法 Move 都能转成动作 dict，
-# 且转回来是同一条 Move）。
+# 可对拍——存档动作 dict 里存的就是这些字母，本表是**旧档回放兼容锚点**
+# （确定性派生规则对 shatter 会给出不同字母，删注册=旧檔回放错位）。
+# 字母↔spec 各族 parallel 的对应关系由 _test_shatter_gui.py 的断言覆盖。
 register_direction_vocab('shatter', SHATTER_DIRECTIONS)
 register_direction_vocab('shatter_lattice', SHATTER_LATTICE_DIRECTIONS)
 # 立方三轴六向（§54 第 4 步）：r/R c/C d/D，大写沿轴增大

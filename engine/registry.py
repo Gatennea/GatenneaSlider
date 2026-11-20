@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
-"""板型注册表 + 内置板型 preset（几何引擎的「谜题定义」入口）。
+"""板型注册表（几何引擎的「谜题定义」入口）——双路径叙事：
 
-定义新谜题 = 写一个 BoardSpec（代码基石）并 register_board_type。
-GUI 绘制层（P3）将直接消费 spec.cell_polygon 等钩子把板型画出来。
+  · 内置板型（square / cubic / mi / tri）＝写一个 BoardSpec 并
+    register_board_type（代码基石，见文件末「内置注册」段）。
+    GUI 绘制层（P3）直接消费 spec.cell_polygon 等钩子把板型画出来。
+  · 模型板型（碎三角等）＝写 `models/*.json`，由文件末 `_install_models()`
+    注册。**不为新谜题写 Python 适配代码**（几何引擎的初衷）；同一盘型
+    只能有一个来源，详见「内置注册」段注释。
 
-当前 preset：
+当前内置 preset：
   · 'square'  方形密铺（Z²、4 邻接、D4、m×n 还原态）——已与现有引擎
     差分对齐；
   · 'cubic'   立方密铺（Z³、6 邻接、48 对称、m×n×d 还原态）——用于
@@ -15,11 +19,8 @@ GUI 绘制层（P3）将直接消费 spec.cell_polygon 等钩子把板型画出�
   · 'tri'     三角密铺（斜坐标 Z²、up/down 朝向 3 邻接、3 缝族 h/p/n、
     中心反演对称 + 还原态 120° 轨道 solved_check）——P2 落地，与
     game_triangle.TriangleSliderMatrix 差分对拍见测试 M 节。
-  · 'shatter' 碎三角（双形状非正则密铺：红=边长1正三角 / 绿=30-30-120
-    等腰；48 块 = 4 单元；显式邻接 Lattice + 几何 SAT overlap + 精确拼合
-    solved_check；6 缝族全开）。首个「显式邻接」泛化的真实受益板型——
-    边邻接图不规则（18 种邻接签名），固定偏移表表达不了。
-  · 'shatter_lattice' 碎三角·晶格（同几何，仅 3 条晶格缝，绿底缝关闭）。
+  （'shatter' / 'shatter_lattice' 等模型板型不在本表，由 models/*.json
+    注册，见 `_install_models()`。）
 
 三角 preset 的还原态 120° 旋转轨道走 solved_check 钩子（凸包）；其 6 折
 旋转群不闭合于「朝向=方向向量」机制，故对称群用最小合法的 C2（中心反演），
@@ -32,7 +33,6 @@ from . import mi_geometry
 from . import tri_geometry
 from .board import Block, Board, BoardSpec, SeamFamily
 from .lattice import Lattice, cubic_lattice, square_lattice
-from .shatter_geometry import shatter_spec
 
 
 # ----------------------------------------------------------------------

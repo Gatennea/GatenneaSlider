@@ -20,7 +20,7 @@
   2 square oracle       —— 通用通道位置 ≙ 舊 SquareBoardView 位置（同一 k）
   3 接線冒烟            —— 強制通用後 GUI.draw_board() 在 headless 下能畫（不拋）
   4 碎三角上場          —— create_puzzle('shatter') → 通用通道能畫
-  5 建局入口            —— new_shatter_puzzle() 可用
+  5 建局入口            —— new_model_puzzle('shatter') 可用
   6 Port 1 功能層       —— 舊三形態全功能態（編號/捆綁/著色/連鎖/填空/宏點/
                            標記/箭頭）走通用通道：不拋 + 機器級斷言路徑已執行
                            （S6 對賬表的 oracle；抓出過兩個真 bug：三角布爾朝向
@@ -152,9 +152,9 @@ try:
     check(err2 is None, f"碎三角 draw_board() headless 繪製無異常（{err2}）")
 
     # ==================================================================
-    print("== 5 建局入口：new_shatter_puzzle() 可用（S3 入口側）==")
-    ok = gui.new_shatter_puzzle(1)
-    check(ok, "new_shatter_puzzle() 回傳 True（建局成功）")
+    print("== 5 建局入口：new_model_puzzle('shatter') 可用（S3 入口側）==")
+    ok = gui.new_model_puzzle('shatter', 1)
+    check(ok, "new_model_puzzle('shatter') 回傳 True（建局成功）")
     check(getattr(gui.game.spec, 'name', '') == 'shatter',
           f"建局後板型為 shatter（實際 {getattr(gui.game.spec, 'name', '?')}）")
     check(gui.game.board.block_count == 48,

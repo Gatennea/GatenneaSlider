@@ -76,16 +76,17 @@ class RecordsPanelMixin:
         return '~tri' in str(rec.get('puzzle_key', ''))
 
     @staticmethod
-    def _rp_is_shatter(rec) -> bool:
+    def _rp_is_model(rec) -> bool:
         """该成绩是否**模型文件板型**（key 形如 `{step}~{模型名}`，无尺寸维度）。
 
         模型局的 initial_matrix 是「朝向下标+1」整数矩阵，没有 #/_ 字符编码：
         载入练习/另存为两条路都按方形 import_map 还原，会把 48 块静默拆成
         另一形态——一律明拒。
 
-        判据不用 `'~shatter' in key`（那只能认碎三角，换个模型名就漏），
-        改看「~ 后面不是尺寸」：方形 `4*4` / 三角形 `tri6` / 米字 `mi4*4` /
-        编号 `4*4#num` 之外的都算模型局。
+        判据只看 key 格式：成绩记录里没有 spec 可查（cell_polygon 连内置
+        板型也挂，见 registry 各 spec），按「~ 后面不是尺寸」识别模型局——
+        方形 `4*4` / 三角形 `tri6` / 米字 `mi4*4` /
+        编号 `4*4#num` 之外的都算模型局，换任何模型名都认得。
         """
         key = str(rec.get('puzzle_key', ''))
         if '~' not in key:
@@ -593,8 +594,8 @@ class RecordsPanelMixin:
 
     def _rp_save_as_puzzle(self, rec) -> str:
         """把该打乱另存为 .json 存档（结构同普通存档，可直接「文件-打开」载入）"""
-        if self._rp_is_shatter(rec):
-            # 碎三角无字符地图编码（见 _rp_is_shatter）：另存为只能产出
+        if self._rp_is_model(rec):
+            # 模型局无字符地图编码（见 _rp_is_model）：另存为只能产出
             # 一份读回来会变形的存档，不如不做
             return ''
         if self._rp_is_cubic(rec):
@@ -656,9 +657,9 @@ class RecordsPanelMixin:
 
     def _rp_load_into_practice(self, rec):
         """把该打乱载入为当前谜题（练习模式），立即复现"""
-        if self._rp_is_shatter(rec):
-            # 碎三角成绩没有 #/_ 字符地图（21×31 朝向下标矩阵），按方形
-            # import_map 会把 48 块静默拆成另一形态——明拒（见 _rp_is_shatter）
+        if self._rp_is_model(rec):
+            # 模型局成绩没有 #/_ 字符地图（朝向下标矩阵），按方形
+            # import_map 会把块静默拆成另一形态——明拒（见 _rp_is_model）
             self.macro_notify_msg = "模型局成绩暂不支持载入练习（无字符地图编码）"
             self.macro_notify_timer = 120
             return

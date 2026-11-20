@@ -66,7 +66,7 @@ def _gui_shatter(step=1):
     gui.tut_show_prompt = False
     gui.tutorial_active = False
     gui.animation_enabled = False
-    gui.new_shatter_puzzle(step)
+    gui.new_model_puzzle('shatter', step)
     return gui
 
 
@@ -491,7 +491,7 @@ check(gui6._ann_view != 'design',
 
 # 帶著 timed 進碎三角：建局自動退回練習並說明（不留丟朝向的競速局）
 gui6.game_mode = 'timed'
-gui6.new_shatter_puzzle(1)
+gui6.new_model_puzzle('shatter', 1)
 check(gui6.game_mode == 'practice',
       f'建局把 timed 退回練習（mode={gui6.game_mode!r}）')
 check('碎三角' in gui6.macro_notify_msg,
@@ -518,7 +518,7 @@ check(gui6._mp_kind() not in gui6._MP_SUPPORTED,
 # —— 成績回放：碎三角成績明拒（無 #/_ 字符地圖，載入會靜默變形）——
 rec = {'puzzle_key': '2~shatter', 'm': 4, 'n': 4, 'step': 2,
        'initial_matrix': 'x', 'numbered': False}
-check(gui6._rp_is_shatter(rec), '_rp_is_shatter 認得碎三角成績')
+check(gui6._rp_is_model(rec), '_rp_is_model 認得碎三角成績')
 before_pos = _positions(gui6.game)
 gui6._rp_load_into_practice(rec)
 check(_positions(gui6.game) == before_pos,

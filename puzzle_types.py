@@ -8,11 +8,11 @@
   | MiSliderMatrix
 
     kind: square / numbered / triangle / mi / cubic（三维，另需 depth）/
-    shatter（碎三角，几何引擎新板型）。
+    模型文件板型（models/<name>.json，如 shatter 碎三角）。
 
-    shatter 没有旧实现（无 game_shatter.py），也无「缺失回退方形」一说——
-    引擎模块缺失时**直接抛 ImportError**：静默回退会把 48 块碎三角变成
-    16 块矩形，那正是本项目明令禁止的静默兜底。
+    模型文件板型没有旧实现（无 game_shatter.py 这类模块），也无「缺失回退
+    方形」一说——引擎模块缺失时**直接抛 ImportError**：静默回退会把 48 块
+    碎三角变成 16 块矩形，那正是本项目明令禁止的静默兜底。
     """
 
 from __future__ import annotations
@@ -42,9 +42,9 @@ def puzzle_key(
     - mi：格式 ``f"{step}~mi{m}*{n}"``，m/n 為棋盤行列數（每格 4 個單元）。
     - cubic（三維）：格式 ``f"{step}~cubic{m}*{n}*{d}"``——三維**必須**帶層數，
       否则 3×3×2 与 3×3×5 会共用一个榜/一份存档识别，成绩与读档全串味。
-    - shatter（碎三角）：格式 ``f"{step}~shatter"``。板型固定 48 塊、
-      無尺寸維度，故鍵裡不含 m/n——也**不能**含：碎三角的 matrix 是
-      21×31（質心晶格），若按方形 4×4 計鍵會與矩形 4×4 分榜相撞，
+    - 模型文件板型（如碎三角 shatter）：格式 ``f"{step}~{kind}"``。板型固定
+      块数、無尺寸維度，故鍵裡不含 m/n——也**不能**含：模型局的 matrix 是
+      质心晶格（如碎三角 21×31），若按方形 4×4 計鍵會與矩形 4×4 分榜相撞，
       成績/存檔識別全部串味。
     """
     if kind == 'triangle':
@@ -59,7 +59,7 @@ def puzzle_key(
                 '不許用不帶層數的鍵——那會讓不同層數的三維局共用一份榜/存檔')
         return f'{step}~cubic{m}*{n}*{depth}'
     if kind not in _NATIVE_KINDS:
-        # 模型文件板型（shatter / shatter_lattice / 以后任何 <name>.json）：
+        # 模型文件板型（任何 models/<name>.json）：
         # 固定块数、无尺寸维度，键里不能含 m/n——否则会与矩形同尺寸分榜
         # 相撞，成绩/存档识别全部串味。
         return f'{step}~{kind}'

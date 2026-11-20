@@ -253,7 +253,7 @@ def test_four_forms_same_style():
     # 曾在頂點補灰圓「節點」被用戶判畫蛇添足，已刪，勿再加回。
     _audit('米字', lambda g: g.new_mi_puzzle(4, 4, 2), seam_style='line')
     _audit('三角', lambda g: g.new_triangle_puzzle(6, 2), seam_style='line')
-    _audit('碎三角', lambda g: g.new_shatter_puzzle(1), seam_style='line')
+    _audit('碎三角', lambda g: g.new_model_puzzle('shatter', 1), seam_style='line')
 
 
 def test_corner_radius_proportional():

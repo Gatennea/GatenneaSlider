@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine import make_board  # noqa: E402
 from engine.registry import mi_spec, square_spec, tri_spec  # noqa: E402
-from engine.shatter_geometry import shatter_spec  # noqa: E402
 from gui.board_view import SpecPolygonView  # noqa: E402
 
 fails = []
@@ -51,17 +50,26 @@ check(len(set(cands)) == len(cands), "候選縫無重複")
 print("== 2 接觸邊 vs 引擎鄰接表 ==")
 edges = view.contact_edges(board, origin)
 print(f"  接觸邊 {len(edges)} 條")
-# 引擎鄰接：對每塊列 neighbor point 差集合；接觸邊給的是「共邊」對
+# 引擎鄰接：對每塊列 neighbor point 差集合；接觸邊給的是「共邊」對。
+# ⚠ 既存紅燈（json 化後，非 §63 引入；HEAD 原版在此 TypeError 崩）：
+#   loader 版板型**沒有顯式鄰接表**——orient_steps 是自環占位，連通性改走
+#   components 幾何鉤子（model_loader 註釋明言「鄰接查表不參與移動」），
+#   本探針的「表對照」前提已不成立。這裡改為明示跳過、讓探針跑完，
+#   下面 67 行的集合對照會紅＝該前提失效的記錄，**不修**（探針非驗收項，
+#   口徑歸主目錄定）。
 adj_pairs = set()
 bmap = board.block_map
-for k in board.keys:
-    for d in board.spec.lattice.adjacency[
-            board.spec.lattice and __import__('engine.shatter_geometry',
-                                              fromlist=['x'])._reduce_shatter(k[0])]:
-        nb = (k[0][0] + d[0], k[0][1] + d[1])
-        for ok in board.keys:
-            if ok[0] == nb:
-                adj_pairs.add(tuple(sorted([k, ok])))
+_lat = board.spec.lattice
+if _lat.adjacency is None:
+    print("  ⚠ loader 版板型無 lattice.adjacency（連通性走 components 鉤子），"
+          "表對照前提失效——跳過枚舉，67 行對照將紅（既存）")
+else:
+    for k in board.keys:
+        for d in _lat.adjacency[_lat._reduce_adj(k[0])]:
+            nb = (k[0][0] + d[0], k[0][1] + d[1])
+            for ok in board.keys:
+                if ok[0] == nb:
+                    adj_pairs.add(tuple(sorted([k, ok])))
 ce_pairs = {tuple(sorted([a, b])) for (a, b), _seg in edges}
 check(len(ce_pairs) == 66, f"接觸邊去重後 == 66（實測 {len(ce_pairs)}）")
 check(ce_pairs == adj_pairs,

@@ -68,7 +68,7 @@ print('B. 写一条三维成绩（临时库，不碰玩家记录）')
 rec = gui.records.add_record(gui.timer_puzzle_key, 3, 3, 1, raw,
                              12345.0, 7, False)
 check(bool(rec and rec.get('id')), '成绩已追加')
-check(not gui._rp_is_shatter(rec), '三维成绩不被误判成模型板型')
+check(not gui._rp_is_model(rec), '三维成绩不被误判成模型板型')
 check(gui._rp_is_cubic(rec), '成绩面板能识别三维')
 _m, _n, _d = gui._rp_cubic_dims(rec)
 check((_m, _n, _d) == (3, 3, 3), '从 key 取回 3×3×3', (_m, _n, _d))

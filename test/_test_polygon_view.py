@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine import make_board  # noqa: E402
 from engine.registry import mi_spec, square_spec, tri_spec  # noqa: E402
-from engine.shatter_geometry import shatter_spec  # noqa: E402
 from gui.board_view import SpecPolygonView, point_in_polygon  # noqa: E402
 
 failures = []

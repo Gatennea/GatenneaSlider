@@ -38,7 +38,7 @@ try:
                     ext_state={'enabled': True, 'token': 'T', 'port': 5050})
     gui.tut_show_prompt = False
     gui.tutorial_active = False
-    check(gui.new_shatter_puzzle(1), "new_shatter_puzzle(1) 建局成功")
+    check(gui.new_model_puzzle('shatter', 1), "new_model_puzzle('shatter', 1) 建局成功")
 
     game = gui.game
     view = gui._polygon_view()

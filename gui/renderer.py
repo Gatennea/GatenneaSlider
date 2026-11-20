@@ -783,21 +783,6 @@ class RendererMixin:
                                         self._tri_ring(poly, ring_w / 2.0),
                                         ring_w)
 
-                if getattr(self, 'numbered', False) and getattr(block, 'number', None):
-                    font_size = max(12, int(scaled_cell * 0.45))
-                    if not hasattr(self, '_num_font_cache'):
-                        self._num_font_cache = {}
-                    font = self._num_font_cache.get(font_size)
-                    if font is None:
-                        from GUI import _gui_safe_font
-                        font = _gui_safe_font('SimHei', font_size)
-                        self._num_font_cache[font_size] = font
-                    cx, cy = view.piece_center(i, j, up)
-                    draw_block_number(
-                        self.screen, font, block.number,
-                        self.world_to_screen(cx, cy), fill,
-                        emboss=getattr(self, 'face_bevel_enabled', False))
-
         # 捆綁組：整組畫成一塊（組內無縫、只描組外邊）。必須在**塊循環之後**：
         # 放在循環前會被後畫的普通塊連同邊框一起蓋掉（實測只剩幾根細線）
         self._draw_bandaged_groups_poly(
@@ -2248,10 +2233,11 @@ class RendererMixin:
             if hint_occ is not None and loc in hint_occ:
                 self._draw_hint_overlay(rpoly, loc == hint_hover)
 
-            # 編號字（numbered）：先收集、**三趟之後再落地**（§六十二子項
-            # 挪位修復）——原位置在填色趟之前，字被②整塊填色蓋掉＝碎三角
-            # 編號從未顯示過（headless 實測 0 黑像素，方形對照 811；模型板
-            # 入口不開 numbered，故長期無人發現）。
+            # 編號字（numbered）：先收集、**三趟之後再落地**（e97eadf 挪位
+            # 修复，§63 复核保留——原位置在填色趟之前，字被②整塊填色蓋掉）。
+            # 活路徑：引擎开关打开时 EngineGame 的数字谜题走本通道
+            #（adapter 挂 Block.number + GUI numbered 标志），不是死代码；
+            # 碎三角等模型局入口不開 numbered，降级为不收集（零开销）。
             if getattr(self, 'numbered', False) and getattr(block, 'number', None):
                 font_size = max(12, int(self.cell_size * self.zoom * 0.45))
                 if not hasattr(self, '_num_font_cache'):
