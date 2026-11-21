@@ -176,10 +176,96 @@ try:
           and not has_color(REJECT_BORDER_DISCONNECTED))
     pygame.image.save(_coll, os.path.join(_tmp, 'gatsli_reject_collision.png'))
     print(f'  screenshots -> {_tmp}/gatsli_reject_*.png')
+
+    # ---- H. §70 捆绑组组级边框反馈（整组重绘不再盖掉反馈色） ----
+    def has_color_on(scr, rgb, tol=10):
+        arr = pygame.surfarray.array3d(scr).astype(int)
+        return bool((np.abs(arr - np.array(rgb)).max(axis=2) <= tol).any())
+
+    def boot_bandaged():
+        g = SliderGUI(cmd_queue=queue.Queue(),
+                      ext_state={'enabled': False, 'token': None})
+        g.game_mode = 'practice'
+        g.tutorial_active = False
+        g.tut_show_prompt = False
+        g.animation_enabled = False
+        g.new_puzzle(5, 5, 1)
+        g._update_in_progress = False
+        pos = {tuple(b.location): b for b in g.game.blocks}
+        for c in ((0, 0), (0, 1), (1, 0), (1, 1)):
+            pos[c].group = 1      # 2x2 捆绑组
+        return g
+
+    gb = boot_bandaged()
+    _bb_calls = []
+    _orig_bb = SliderGUI._bandaged_border
+
+    def _spy_bb(self, *a, **k):
+        r = _orig_bb(self, *a, **k)
+        _bb_calls.append((a, r))
+        return r
+
+    SliderGUI._bandaged_border = _spy_bb
+
+    def render_band(reason=None, anim=None):
+        """清态 → 组成员设反馈 → 清屏画一帧 → (屏幕, spy 捕获的返回值)。"""
+        gb._shake_t = 0
+        gb._shake_blocks = set()
+        gb._reject_reason = None
+        gb._sel_anim_timer = 0
+        gb._sel_anim_is_undo = None
+        gb.drag_following = False
+        gb.drag_follow_invalid = False
+        for b in gb.game.blocks:
+            b.be_opted = False
+        members = [b for b in gb.game.blocks if getattr(b, 'group', 0) == 1]
+        if reason:
+            for b in members:
+                b.be_opted = True
+            gb._shake_blocks = set(id(b) for b in members)
+            gb._shake_t = 12
+            gb._reject_reason = reason
+        elif anim is not None:
+            for b in members:
+                b.be_opted = True
+            gb._sel_anim_timer = 12
+            gb._sel_anim_is_undo = anim
+        _bb_calls.clear()
+        gb.screen.fill((0, 0, 0))
+        gb.draw_board()
+        return gb.screen.copy(), [r for _a, r in _bb_calls]
+
+    try:
+        _scr, _rets = render_band(reason='disconnected')
+        _cols = [r[0] for r in _rets]
+        check('H1 捆绑组拒绝闪现走组级反馈 = 冷紫（不再被盖成死灰）',
+              REJECT_BORDER_DISCONNECTED in _cols, str(set(_cols)))
+        check('H1b 冷紫真实出现在画面像素里',
+              has_color_on(_scr, REJECT_BORDER_DISCONNECTED))
+        _scr, _rets = render_band(reason='collision')
+        check('H2 捆绑组拒绝 = 暖珊瑚',
+              REJECT_BORDER_COLLISION in [r[0] for r in _rets],
+              str(set(r[0] for r in _rets)))
+        _scr, _rets = render_band(anim=True)
+        check('H3 捆绑组撤销 = UNDO 蓝',
+              SliderGUI.SEL_ANIM_BORDER_UNDO in [r[0] for r in _rets],
+              str(set(r[0] for r in _rets)))
+        check('H3b UNDO 蓝真实出现在画面像素里',
+              has_color_on(_scr, SliderGUI.SEL_ANIM_BORDER_UNDO))
+        _scr, _rets = render_band(anim=False)
+        check('H4 捆绑组重做 = REDO 橙',
+              SliderGUI.SEL_ANIM_BORDER_REDO in [r[0] for r in _rets],
+              str(set(r[0] for r in _rets)))
+        _scr, _rets = render_band()
+        check('H5 计时器归零后回默认灰',
+              _rets and all(r[0] == gb.colors['border'] for r in _rets),
+              str(set(r[0] for r in _rets)))
+    finally:
+        SliderGUI._bandaged_border = _orig_bb
 except Exception as e:
     import traceback
     traceback.print_exc()
-    check('G 离屏渲染', False, str(e))
+    check('H 捆绑组反馈', False, str(e))
 
 print('\n===', 'ALL PASS' if not _failures else f'{len(_failures)} FAILURES', '===')
 sys.exit(1 if _failures else 0)

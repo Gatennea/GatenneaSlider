@@ -2362,7 +2362,8 @@ class RendererMixin:
             lambda b: self._visual_key(b),
             lambda key, inset: view.world_polygon(
                 *self._poly_key_parts(tuple(key)), origin, inset=inset),
-            self._poly_neighbors_of(view))
+            self._poly_neighbors_of(view),
+            shake=True)   # §70：聚合板普通块有位移抖动，捆绑组整组跟抖
 
         # 選中縫（通用通道**壓在塊之上**）：碎三角多邊形邊貼邊、無縫隙，
         # 若沿用方形「先畫縫再畫塊」，塊會把整條紅縫蓋光——用戶實測「點了縫
@@ -3101,7 +3102,8 @@ class RendererMixin:
         # 悬停缝高亮（画在最上层，与三角/米字同一处）
         self._draw_hover_gap()
 
-    def _draw_bandaged_groups_poly(self, disp_key, poly_of, neighbors_of):
+    def _draw_bandaged_groups_poly(self, disp_key, poly_of, neighbors_of,
+                                   shake=False):
         """三角/米字：把捆绑组画成一整块（组内无缝、只描组外边界）。
 
         与方形 `_draw_bandaged_groups_play` 同观感。单位块是多边形，所以
@@ -3115,13 +3117,19 @@ class RendererMixin:
         噪声，故键统一 round 到 1e-3 再比对相邻关系。
         poly_of(key, inset)：该位置的世界坐标多边形（inset=True 为普通块形状）。
         neighbors_of(key)：该形态的相邻位置表（game_triangle/game_mi.neighbors）。
+        shake：拒绝闪现时**整组做像素位移抖动**（§70）——只有聚合板传 True
+        （它的普通块有 _shake_offset 位移）；三角/米字的普通块只闪不位移
+        （键位拒绝 _shake_dr=0 本就无位移），捆绑层跟它们保持一致。
         """
         groups = {}
         for b in self.game.blocks:
             gid = getattr(b, 'group', 0)
             if not gid:
                 continue
-            groups.setdefault(gid, []).append((disp_key(b), b.be_opted))
+            # 4 元组：显示键 / 是否选中 / 块 id（拒绝闪现比对）/ 逻辑位置
+            #（求解演示光边比对，与 _play_head_keys 同源）
+            groups.setdefault(gid, []).append(
+                (disp_key(b), b.be_opted, id(b), tuple(b.location)))
         if not groups:
             return
 
@@ -3133,9 +3141,14 @@ class RendererMixin:
         from gui.group_render import (_round_pt, bridge_quad, draw_group_pieces,
                                       interior_angle, piece_edge_flags,
                                       shared_edge_index)
+        # §70 组级边框反饋三件套（每帧只算一次，供每组的 _bandaged_border 用）
+        _shaking = getattr(self, '_shake_t', 0) > 0
+        _shake_ids = getattr(self, '_shake_blocks', set()) if _shaking else set()
+        _warn_all = (getattr(self, 'drag_following', False)
+                     and getattr(self, 'drag_follow_invalid', False))
         for _gid, items in groups.items():
-            fulls = {_n(key): poly_of(key, False) for key, _sel in items}
-            insets = {_n(key): poly_of(key, True) for key, _sel in items}
+            fulls = {_n(k): poly_of(k, False) for k, _s, _i, _l in items}
+            insets = {_n(k): poly_of(k, True) for k, _s, _i, _l in items}
             keys = set(fulls)
             pieces = []
             bridges = []
@@ -3147,7 +3160,7 @@ class RendererMixin:
             # 组外边界上恰好也有 3 块同组块交于一点（角各 60°，和为 π），
             # 那里根本没有洞，画圆就鼓到轮廓外面去了。
             vmap = {}
-            for key, sel in items:
+            for key, sel, _bid, _loc in items:
                 nk = _n(key)
                 full_poly, inset_poly = fulls[nk], insets[nk]
                 for vi, v in enumerate(full_poly):
@@ -3161,7 +3174,7 @@ class RendererMixin:
                     else:
                         rec[0] += ang
                         rec[1] = max(rec[1], off)
-            for key, sel in items:
+            for key, sel, _bid, _loc in items:
                 nk = _n(key)
                 nbs = {_n(nb) for nb in neighbors_of(key)} & keys
                 nbs.discard(nk)
@@ -3182,17 +3195,35 @@ class RendererMixin:
             # 外边界上的顶点（和 < 2π）本来就没有洞，补了会鼓出轮廓。
             dots = [(v, off, sel) for v, (ang, off, sel) in vmap.items()
                     if ang >= 2 * math.pi - 0.2]
+            # §70 组级边框：组内任一成员命中即整组生效（撤销蓝/拒绝色/
+            # 演示光边不再被这层重绘盖成死灰）。
+            _sel = any(s for _k, s, _i, _l in items)
+            _ids = {i for _k, _s, i, _l in items}
+            _locs = {l for _k, _s, _i, l in items}
+            _warn = _warn_all and _sel
+            _rejecting = _shaking and bool(_ids & _shake_ids)
+            _bc, _bw = self._bandaged_border(_warn, _rejecting, _sel, _locs)
+            # §70 整组抖动：组内任一成员在闪现里，整组一起位移（仅 shake=True
+            # 的调用方——聚合板普通块有位移，三角/米字没有）
+            _ts = self.world_to_screen
+            if shake and _rejecting:
+                _sox, _soy = self._shake_offset()
+                if _sox or _soy:
+                    def _ts(x, y, _o=(_sox, _soy)):
+                        sx, sy = self.world_to_screen(x, y)
+                        return (sx + _o[0], sy + _o[1])
             # §六十五 捆绑光效：三角/米字/聚合板三形态共用本方法——gate 在
             # 这里接一次，三形態同時生效（铁律 §3）；bevel 以可调用传入，
             # group_render 保持零依赖。带只压组外轮廓（edges 过滤见原语）。
-            _grp_ow = max(1, int(2 * self.zoom))
+            # edge_inset 用**实际**组级边框宽 _bw（§70 后 reject/anim 态
+            # 边框会加粗，让位量要跟着走，否则提亮带压到粗框内缘）。
             draw_group_pieces(
-                self.screen, pieces, bridges, self.world_to_screen,
+                self.screen, pieces, bridges, _ts,
                 self.colors['block'], self.colors['block_selected'],
-                self.colors['border'], _grp_ow, dots,
+                _bc, _bw, dots,
                 bevel=(_draw_face_bevel
                        if getattr(self, 'face_bevel_enabled', False) else None),
-                edge_inset_px=_grp_ow / 2.0,
+                edge_inset_px=_bw / 2.0,
                 bevel_inset_px=BEVEL_INSET_PX * self.zoom)
 
     def _draw_bandaged_groups_play(self, scaled_cell, scaled_gap):
@@ -3227,6 +3258,7 @@ class RendererMixin:
         # (位置) -> 是否选中，给 draw_group_chunks 决定填充色
         sel_pos = set()
         groups = {}
+        gmeta = {}      # §70: gid -> {'ids', 'locs', 'sel'}（组级边框反馈用）
         for block in self.game.blocks:
             g = getattr(block, 'group', 0)
             if not g:
@@ -3240,6 +3272,11 @@ class RendererMixin:
             if block.be_opted:
                 sel_pos.add((lr, lc))
             groups.setdefault(g, []).append((lr, lc))
+            m = gmeta.setdefault(g, {'ids': set(), 'locs': set(), 'sel': False})
+            m['ids'].add(id(block))
+            m['locs'].add(tuple(block.location))
+            if block.be_opted:
+                m['sel'] = True
         if not groups:
             return
         step_px = scaled_cell + scaled_gap    # 两个参数已是整数像素（见 _board_px）
@@ -3254,23 +3291,36 @@ class RendererMixin:
             return (x, y, scaled_cell)
 
         from .group_render import draw_group_chunks
-        # 与普通块完全一致的边框：颜色 / 宽度 / 圆角（同源，與單塊同口徑）
-        border_color = self.colors['border']
-        border_w = max(1, int(2 * self.zoom))
+        # §70 组级边框反馈三件套（每帧只算一次）——旧代码在这里写死
+        # colors['border']，撤销蓝/拒绝色/演示光边全被整组重绘盖掉。
+        _shaking = getattr(self, '_shake_t', 0) > 0
+        _shake_ids = getattr(self, '_shake_blocks', set()) if _shaking else set()
+        _warn_all = (getattr(self, 'drag_following', False)
+                     and getattr(self, 'drag_follow_invalid', False))
+        _shake_off = self._shake_offset() if _shaking else (0.0, 0.0)
 
         for gid, cells in groups.items():
+            m = gmeta[gid]
             rs = [r for r, c in cells]
             cs = [c for r, c in cells]
             r0, r1 = min(rs), max(rs)
             c0, c1 = min(cs), max(cs)
             is_rect = len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1)
-            selected = any((r, c) in sel_pos for r, c in cells)
+            selected = m['sel']
+            # 组内任一成员命中即整组生效（warn → reject → anim → play → 灰）
+            _warn = _warn_all and selected
+            _rejecting = _shaking and bool(m['ids'] & _shake_ids)
+            border_color, border_w = self._bandaged_border(
+                _warn, _rejecting, selected, m['locs'])
+            # §70 整组抖动：组内任一成员在闪现里，整组一起位移
+            #（与普通块 _shake_offset 同源；键位拒绝 dr=dc=0 时自然为零）
+            _sox, _soy = _shake_off if _rejecting else (0.0, 0.0)
             if is_rect:
                 # 像「一个大一号的普通滑塊」：单个圆角矩形，填充+边框同普通块。
                 # 宽高用「整数步进 × 格数 − 缝隙」算，正好覆盖到相邻格的外沿，
                 # 与逐块画出来的边界逐像素对齐。
-                x = int(round(c0 * step_px)) + cam_x
-                y = int(round(r0 * step_px)) + cam_y
+                x = int(round(c0 * step_px)) + cam_x + _sox
+                y = int(round(r0 * step_px)) + cam_y + _soy
                 w = (c1 - c0 + 1) * step_px - scaled_gap
                 h = (r1 - r0 + 1) * step_px - scaled_gap
                 fill = self.colors['block_selected'] if selected else self.colors['block']
@@ -3295,7 +3345,12 @@ class RendererMixin:
             else:
                 # 非矩形（L 形/折线）：通用原语——实心填充 + 仅外轮廓，无内部线
                 # §六十五：bevel 同上（只压组外侧边，组内相邻边跳过）
-                draw_group_chunks(self.screen, {gid: cells}, get_rect, scaled_gap,
+                _gr = get_rect
+                if _sox or _soy:
+                    def _gr(r, c, _o=(_sox, _soy), _g=get_rect):
+                        x0, y0, s0 = _g(r, c)
+                        return (x0 + _o[0], y0 + _o[1], s0)
+                draw_group_chunks(self.screen, {gid: cells}, _gr, scaled_gap,
                                   self.colors['block'], self.colors['block_selected'],
                                   border_color, border_w,
                                   is_selected=lambda r, c: (r, c) in sel_pos,
@@ -3325,6 +3380,40 @@ class RendererMixin:
     # 原始设计特色（用户 2026-10-05 明确要求保色）。
     SEL_ANIM_BORDER_UNDO = (70, 150, 255)
     SEL_ANIM_BORDER_REDO = (255, 150, 50)
+
+    def _bandaged_border(self, warn, rejecting, sel, member_locs):
+        """§70 捆绑组的组级边框反馈：与普通块同一优先级，按组聚合。
+
+        捆绑组是在普通块画完之后整组重绘的一层，旧代码把边框写死
+        colors['border']——撤销蓝 / 重做橙、拒绝闪现色、拖拽越界橙全被
+        这层盖掉。这里按组算一次（组内任一成员命中即整组生效），优先级
+        照普通块四条路径：warn（拖拽越界）→ reject（拒绝闪现）→ anim
+        （撤销/重做）→ play（求解演示光边）→ 默认灰。
+
+        warn       : 拖拽跟隨超可达上限（调用方算——各形态 follow 结构不同）。
+        rejecting  : 拒绝闪现窗口内组内有成员被点亮（_shake_t>0 且成员
+                     ∈ _shake_blocks）。
+        sel        : 组内任一成员 be_opted（撤销/重做高亮的套用条件）。
+        member_locs: 组内成员 tuple(block.location) 集合（求解演示光边比对；
+                     动画期 location=起点，与 _play_head_keys 同源）。
+        返回 (color, width)。
+        """
+        if warn:
+            # 跟随期超上限：原因用 _probe_max_cells 探测留存的
+            # collision/disconnected/locked_ring（§71）；探不到才落中性
+            return reject_border_style(
+                getattr(self, 'drag_follow_reject_reason', None), self.zoom)
+        if rejecting:
+            # 键盘/松手拒绝：按底层原因分色（与普通块同）
+            return reject_border_style(
+                getattr(self, '_reject_reason', None), self.zoom)
+        anim = self._sel_anim_border()
+        if anim is not None and sel:
+            return anim
+        head = self._play_head_border()
+        if head is not None and member_locs & set(self._play_head_keys()):
+            return head
+        return (self.colors['border'], max(1, int(2 * self.zoom)))
 
     def _selection_visuals_enabled(self):
         """「选中动画」总开关的共用判据（三形态 + 宏播放清理都读这一处）。
