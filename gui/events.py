@@ -1790,6 +1790,12 @@ class EventsMixin:
         self.cubic_view_label = label if label is not None else '自由旋转'
         self.cubic_view_index = index
 
+    def _cubic_vk_reset_rot_tracks(self):
+        """视角换档/回正/换局时，弧轨把手回到中点。"""
+        self._vk_rot_t = {}
+        self.vk_rot_drag = None
+        self._vk_frozen_cubic = None
+
     def _cubic_view(self, index):
         """切到第 index 个朝向（带倾斜偏角，不是正对）。"""
         from engine.cubic_camera import (DEFAULT_VIEW_RESIDUE,
@@ -1797,6 +1803,7 @@ class EventsMixin:
                                          face_view_rotation)
         self._cubic_camera_apply(face_view_rotation(index),
                                  label=FACE_VIEW_LABELS[index], index=index)
+        self._cubic_vk_reset_rot_tracks()
         yaw_off, tilt_off = (DEFAULT_VIEW_RESIDUE if isinstance(DEFAULT_VIEW_RESIDUE, tuple)
                              else (DEFAULT_VIEW_RESIDUE, DEFAULT_VIEW_RESIDUE))
         self.macro_notify_msg = (
@@ -1808,8 +1815,88 @@ class EventsMixin:
         from engine.cubic_camera import CubicCamera
         self._cubic_camera_apply(CubicCamera.oblique_default(),
                                  label='斜视', index=None)
+        self._cubic_vk_reset_rot_tracks()
         self.macro_notify_msg = "视角：斜视（三面可见）"
         self.macro_notify_timer = 90
+
+    def _cubic_camera_is_default(self) -> bool:
+        """当前姿态是否就是默认斜视；四元数 q 与 -q 视为同一姿态。"""
+        from engine.cubic_camera import CubicCamera
+        cam = getattr(self, 'cubic_camera', None)
+        if cam is None:
+            return True
+        default = CubicCamera.oblique_default()
+        dot = abs(sum(a * b for a, b in zip(cam.q, default.q)))
+        return dot >= 1.0 - 1e-6
+
+    def _cubic_vk_push_allowed(self, letter) -> bool:
+        """虚拟键盘端点当前能不能真推一步。
+
+        渲染层每帧已经为盘面箭头做过一次同路径干跑，结果按选中组/切面签名
+        缓存在 `_cubic_arrow_allowed`；有缓存就复用，避免虚拟键盘每帧再跑
+        五遍棋盘试推。没有缓存（测试直接调键盘）才现算。
+        """
+        cache = getattr(self, '_cubic_arrow_allowed', None)
+        if isinstance(cache, dict) and letter in cache:
+            return bool(cache[letter])
+        return bool(self._arrow_move_allowed(letter))
+
+    def _cubic_vk_endpoint_state(self, letter) -> str:
+        """端点状态：pan（没选中→平移）/ push（可推）/ seam（切面步进）/ off。
+
+        绘制、隐藏、点击三处共用这一个判据。off 的端点不画正式按键，也不
+        吃点击——只留一个暗点表示轴还伸到那里。
+        """
+        fam = letter.lower()
+        opted = any(getattr(b, 'be_opted', False) for b in self.game.blocks)
+        if not opted:
+            return 'pan'
+        gap = getattr(self, 'selected_gap', None)
+        if gap and gap[0] == fam:
+            return ('seam' if self._cubic_seam_step_target(letter) is not None
+                    else 'off')
+        return 'push' if self._cubic_vk_push_allowed(letter) else 'off'
+
+    def _cubic_vk_action_visible(self, action) -> bool:
+        """虚拟键盘上这个动作当前是否显示/可点。"""
+        if action.startswith('cubic_'):
+            return self._cubic_vk_endpoint_state(
+                action.split('_', 1)[1]) != 'off'
+        return True
+
+    def _cubic_vk_spin(self, fam, screen_delta_deg):
+        """按屏幕角（正 = 逆时针）绕某条世界轴连续转。"""
+        if fam not in ('r', 'c', 'd'):
+            return False
+        from engine.compat import CUBIC_DIRECTIONS
+        axis = CUBIC_DIRECTIONS[fam.upper()]
+        cam = getattr(self, 'cubic_camera', None)
+        if cam is None:
+            return False
+        # 世界轴朝向观察者时，屏幕逆时针 = 绕轴正角；背向时反过来。
+        toward = cam.view_axis()
+        factor = 1.0 if sum(axis[i] * toward[i] for i in range(3)) >= 0 else -1.0
+        self._cubic_camera_apply(cam.spin(axis, screen_delta_deg * factor),
+                                 label='自由旋转', index=None)
+        return True
+
+    def _cubic_vk_rotate(self, action):
+        """弧轨两端的步进点：绕世界轴转 15°（不推块、不算步、不写历史）。"""
+        if not (action.startswith('gyro_cw_')
+                or action.startswith('gyro_ccw_')):
+            return False
+        fam = action.rsplit('_', 1)[1]
+        if fam not in ('r', 'c', 'd'):
+            return False
+        delta = 15.0 if action.startswith('gyro_ccw_') else -15.0
+        if not self._cubic_vk_spin(fam, delta):
+            return False
+        t_old = float(getattr(self, '_vk_rot_t', {}).get(fam, 0.0))
+        self._vk_rot_t[fam] = max(-1.0, min(1.0, t_old + delta / 90.0))
+        self.macro_notify_msg = (f"绕 {fam} 轴旋转 "
+                                 f"{'+' if delta > 0 else '−'}15°")
+        self.macro_notify_timer = 90
+        return True
 
     def _cubic_drag_begin(self, x, y):
         """棋盘上按下左键 = 可能是拖（旋转），也可能是点（选缝/选块）。
@@ -1901,6 +1988,9 @@ class EventsMixin:
           · 选缝只定切面，不替用户选块——块必须由左键再点一次。
         """
         from engine import cubic_pick
+        seam_step = self._cubic_seam_step_hit(x, y)
+        if seam_step is not None:
+            return self._cubic_step_seam(seam_step, hint='盘面')
         arrow = self._cubic_arrow_hit(x, y)
         if arrow is not None:
             return self._cubic_push_letter(arrow, hint='方向箭头')
@@ -2331,10 +2421,77 @@ class EventsMixin:
         off = (-dx * k, -dy * k, -dz * k)
         return {loc: off for loc in anim['group']}
 
+    def _cubic_seam_step_target(self, letter):
+        """当前切面沿法线走到下一个**有效**切面；没有就返回 None。
+
+        字母沿用法线轴的正负端：大写 = 正方向 line+1，小写 = 负方向 line-1。
+        跳过中间没有块、或只有一侧有块的空线，避免按一下只挪到一条不存在的缝。
+        """
+        gap = getattr(self, 'selected_gap', None)
+        if not gap or gap[0] not in ('r', 'c', 'd') or gap[1] is None:
+            return None
+        fam = gap[0]
+        if letter.lower() != fam:
+            return None
+        from engine import cubic_pick
+        idx = cubic_pick.FAMILY_TO_LOC_INDEX[fam]
+        vals = [int(b.location[idx]) for b in self.game.blocks]
+        if not vals:
+            return None
+        lo, hi = min(vals), max(vals) - 1
+        step = 1 if letter.isupper() else -1
+        line = int(gap[1]) + step
+        while lo <= line <= hi:
+            if self.game.is_valid_gap(fam, line):
+                return int(line)
+            line += step
+        return None
+
+    def _cubic_step_seam(self, letter, hint=''):
+        """切到下一条切面；保留同一参考块并沿新切面重选同侧组。"""
+        target = self._cubic_seam_step_target(letter)
+        fam = (getattr(self, 'selected_gap', None) or (None,))[0]
+        if target is None:
+            self.macro_notify_msg = (
+                f"沿 {letter.lower()} 轴这个方向没有下一个可用切面")
+            self.macro_notify_timer = 110
+            return False
+        self.selected_gap = (fam, target)
+        blocks = list(getattr(self.game, 'blocks', ()))
+        ref = getattr(self, 'selected_block', None)
+        if ref is None or all(b is not ref for b in blocks):
+            ref = next((b for b in blocks if getattr(b, 'be_opted', False)), None)
+        n = 0
+        if ref is not None:
+            self.game.opt(fam, target, ref)
+            self.selected_block = ref
+            n = len([b for b in blocks if getattr(b, 'be_opted', False)])
+        else:
+            for b in blocks:
+                b.be_opted = False
+        if hint:
+            hint = f'（{hint}）'
+        self.macro_notify_msg = (
+            f"切面 {fam}{target}：沿新切面重选 {n} 块{hint}"
+            if n else f"切面 {fam}{target}：请左键选要滑的滑块{hint}")
+        self.macro_notify_timer = 120
+        return True
+
+    def _cubic_seam_step_hit(self, x, y):
+        """点在盘面的「上/下一个切面」按钮上？"""
+        for item in getattr(self, '_cubic_seam_step_buttons', ()):
+            letter, rect = item[0], item[1]
+            if rect.collidepoint(x, y):
+                return letter
+        return None
+
     def _cubic_vk_six(self, letter):
-        """虚拟键盘六键：有选中就推，没选中就平移盘面（方案 §1「操作入口」）。"""
+        """虚拟键盘六键：法线轴切面步进；其余有选中推、没选中平移。"""
         if self._tut_board_locked():
             return False
+        gap = getattr(self, 'selected_gap', None)
+        if gap and gap[0] in ('r', 'c', 'd') and letter.lower() == gap[0]:
+            return self._cubic_step_seam(letter, hint='虚拟键盘')
         if any(getattr(b, 'be_opted', False) for b in self.game.blocks):
             return self._cubic_push_letter(letter, hint='六键')
         return self._cubic_pan_by(letter)

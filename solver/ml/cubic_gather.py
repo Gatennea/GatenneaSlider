@@ -447,6 +447,60 @@ def _candidates_from_board(game, board, step):
 # ---------------------------------------------------------------------------
 # 主求解
 # ---------------------------------------------------------------------------
+def _touches_moved_cells(mv, locked, step):
+    """【新增】這一動作的**源**或**落點**是否壓到鎖定格（鎖層剪枝用）。"""
+    if not locked:
+        return False
+    delta = tuple(int(step) * d for d in mv.direction)
+    for key in mv.moved:
+        p = key[0]
+        if p in locked:
+            return True
+        if tuple(p[i] + delta[i] for i in range(3)) in locked:
+            return True
+    return False
+
+
+def _layer_lock_and_structure(coords, window):
+    """【新增】按目標窗口逐層切，回 `(locked_cells, structure)`。
+
+    locked_cells：某個平面在窗口投影內**整層填滿**時，這層格子全鎖死——
+    實測 3×3×3 鎖一層後合法動作仍剩 19–28 個（不會死鎖），但能擋掉
+    「把已還原層再拆開」那批動作（原本占 37–39/50）。
+
+    structure：`(滿層數, Σ每層佔格數²)`。平方和是集中度——同樣的總塊數，
+    堆在一層比攤在三層得分高，用來當「層結構」主目標。
+    """
+    if not window:
+        return frozenset(), (0, 0)
+    x0, y0, z0, a, b, c = window
+    span = ((x0, a), (y0, b), (z0, c))
+    occ = set(coords)
+    locked = set()
+    counts = []
+    full = 0
+    for axis in range(3):
+        lo, n = span[axis]
+        u_axis, v_axis = (axis + 1) % 3, (axis + 2) % 3
+        u0, un = span[u_axis]
+        v0, vn = span[v_axis]
+        for k in range(n):
+            cells = set()
+            for i in range(un):
+                for j in range(vn):
+                    p = [0, 0, 0]
+                    p[axis] = lo + k
+                    p[u_axis] = u0 + i
+                    p[v_axis] = v0 + j
+                    cells.add(tuple(p))
+            hit = len(cells & occ)
+            counts.append(hit)
+            if hit == len(cells):
+                full += 1
+                locked |= cells
+    return frozenset(locked), (full, sum(v * v for v in counts))
+
+
 def _solid_goal_signature(spec, dims):
     """目標盒是否「實心長方體」；是則回 `(塊數, 排序後邊長)`，否則 None。
 
@@ -626,7 +680,8 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
                        max_wait_time=20, target_gather_score=1.0,
                        phi_prescreen_k=8, closeout_segments=4,
                        closeout_budget=1200, cancel_check=None,
-                       progress_callback=None, **kwargs):
+                       progress_callback=None, layer_lock=False,
+                       min_drop=0, **kwargs):
     """三維單次聚攏：貪心最大重疊，停在歷史最優。
 
     `**kwargs` 吃掉 GUI 的 gather_params（stochastic / seed / kick_moves
@@ -721,6 +776,15 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
         snap = game.snapshot_state()
         scored = []
         cands = cubic_candidates(game, step)
+        # 【新增】鎖層剪枝：已整層填滿的格子不許再被源/落點壓到。
+        if layer_lock:
+            locked, _cur_struct = _layer_lock_and_structure(
+                cur_coords, cur.get('window'))
+            if locked:
+                cands = [c for c in cands
+                         if not _touches_moved_cells(c[2], locked, step)]
+                stats['locked_planes'] = stats.get('locked_planes', 0) + 1
+            stats['locked_cells'] = len(locked)
         stats['expanded'] += len(cands)
         # 【新增】Φ 預篩（方案 P1「便宜 Φ 預篩 + 前 k 個算完整指標」）：
         # 4×4×4 打亂後同側多分量使候選漲到 ~110 個，每個都算完整 3D
@@ -747,15 +811,29 @@ def cubic_gather_solve(game, step=None, max_steps=240, patience=80,
             nh = tuple(sorted(coords))
             scored.append((met['score'], met['overlap'],
                            -int(met['bbox'][0] * met['bbox'][1] * met['bbox'][2]),
-                           nh in visited, act, act[4], nh, met))
+                           nh in visited, act, act[4], nh, met,
+                           (_layer_lock_and_structure(coords, met.get('window'))[1]
+                            if layer_lock else (0, 0))))
 
         if not scored:
             reason = 'no_candidates'
             break
-        # 選未訪問優先；再按聚攏度 / 重疊 / 較大邊界盒 / 動作字典序。
-        # 排序鍵與舊版逐位一致（只多帶了 met，不參與比較）。
-        scored.sort(key=lambda t: (t[3], -t[0], -t[1], t[2], t[4]))
-        _, _, _, _, best_action, rep, nh, end_met = scored[0]
+        # 【新增】小幅下降通道：只在「重疊掉不超過 min_drop」的候選裡挑，
+        # 挑法改看層結構（滿層數, Σ佔格²），聚攏度退為次鍵。實測人類解
+        # 的單步降幅 ≤3，而全局最大重疊貪心只會挑 +3/+4 的大步，中間那檔
+        # 根本不存在；min_drop 就是為了把那檔放進候選池。
+        pool = scored
+        if layer_lock and min_drop:
+            floor = cur['overlap'] - int(min_drop)
+            elig = [t for t in scored if t[1] >= floor]
+            if elig:
+                pool = elig
+        if layer_lock:
+            pool.sort(key=lambda t: (t[3], -t[8][0], -t[8][1],
+                                     -t[0], -t[1], t[2], t[4]))
+        else:
+            pool.sort(key=lambda t: (t[3], -t[0], -t[1], t[2], t[4]))
+        _, _, _, _, best_action, rep, nh, end_met, _struct = pool[0]
 
         res = _apply_cubic_action(game, best_action, step)
         if res is None:

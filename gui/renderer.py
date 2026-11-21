@@ -1547,6 +1547,10 @@ class RendererMixin:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
 
+        # 法线轴上的「上/下一个切面」两枚键：屏幕 UI，最后盖在盘面上，
+        # 不再被块面裁切；命中盒与绘制共用同一份 rect。
+        self._cubic_draw_seam_step_buttons()
+
         # 三维方向箭头已经在上面作为世界空间面片插入画家序了；这里不再
         # 单独 blit 二维贴图。
 
@@ -1640,6 +1644,47 @@ class RendererMixin:
                 inside = not inside
             j = i
         return inside
+
+    def _cubic_draw_seam_step_button(self, surface, rect, direction,
+                                     color, enabled, hovered=False):
+        """法线轴端点的「上/下一个切面」键：圆角方块 + 双箭头。
+
+        和推块端盘明确区分：它是一个方形控制键，只在法线轴出现；不可用时
+        整键压暗、双箭头变灰，但保留位置，玩家仍能看出这条轴在管切面。
+        """
+        fill = color if (enabled and hovered) else (
+            (46, 48, 56) if enabled else (30, 31, 36))
+        pygame.draw.rect(surface, fill, rect, border_radius=6)
+        pygame.draw.rect(surface, color if enabled else (82, 84, 92),
+                         rect, 2, border_radius=6)
+        ux, uy = direction
+        if abs(ux) < 1e-6 and abs(uy) < 1e-6:
+            ux, uy = 1.0, 0.0
+        px, py = -uy, ux
+        cx, cy = rect.center
+        ink = (240, 240, 245) if enabled else (110, 112, 120)
+        for _k in (-4.0, 4.0):
+            _ax = cx + ux * (4.0 + _k)
+            _ay = cy + uy * (4.0 + _k)
+            _bx = _ax - ux * 7.0
+            _by = _ay - uy * 7.0
+            pygame.draw.line(surface, ink,
+                             (_ax, _ay), (_bx + px * 4.0, _by + py * 4.0), 2)
+            pygame.draw.line(surface, ink,
+                             (_ax, _ay), (_bx - px * 4.0, _by - py * 4.0), 2)
+
+    def _cubic_draw_seam_step_buttons(self):
+        """画盘面的两枚切面键（虚拟键盘用同一套图标）。"""
+        mouse = pygame.mouse.get_pos()
+        colors = {'r': (226, 120, 120),
+                  'c': (98, 156, 232),
+                  'd': (110, 200, 130)}
+        for letter, rect, direction, enabled in getattr(
+                self, '_cubic_seam_step_buttons', ()):
+            self._cubic_draw_seam_step_button(
+                self.screen, rect, direction, colors.get(letter.lower(),
+                                                          (200, 200, 210)),
+                enabled, rect.collidepoint(mouse))
 
     def _cubic_arrow_cover_ratio(self, pts, front_faces):
         """箭头正面被给定前侧块盖住的采样比例（0..1）。"""
@@ -1744,6 +1789,7 @@ class RendererMixin:
         self._cubic_arrow_buttons = []
         self._cubic_arrow_shapes = []
         self._cubic_arrow_base_depth = {}
+        self._cubic_seam_step_buttons = []
         if not seam or seam[0] not in ('r', 'c', 'd'):
             return []
         opted = [b for b in blocks if getattr(b, 'be_opted', False)]
@@ -1767,6 +1813,27 @@ class RendererMixin:
         normal = [0.0, 0.0, 0.0]
         normal[normal_axis] = 1.0
         view_dir = camera.view_axis()
+
+        # 法线轴的两个端点不再空着：改成「上/下一个切面」。
+        # 位置取切面中心沿法线屏幕方向外推；两枚键都是屏幕 UI，不参与画家序。
+        _mid_scr = _cv.project_point(mid, camera, scene['scale'], scene['origin'])
+        _ndir = (self._cubic_screen_dir(tuple(normal))
+                 if hasattr(self, '_cubic_screen_dir') else (0.0, 0.0))
+        if abs(_ndir[0]) < 1e-6 and abs(_ndir[1]) < 1e-6:
+            # 法线正对镜头：沿屏幕竖/横方向错开，别让两键叠成一个点。
+            _ndir = (0.0, 1.0) if normal_axis == 1 else (1.0, 0.0)
+        _off = 46.0
+        for _letter, _sign in ((seam[0].upper(), 1.0), (seam[0], -1.0)):
+            _ux, _uy = (_ndir[0] * _sign, _ndir[1] * _sign)
+            _cx = min(max(_mid_scr[0] + _ux * _off, 18.0),
+                      self.screen_width - 18.0)
+            _cy = min(max(_mid_scr[1] + _uy * _off, 18.0),
+                      self.screen_height - 18.0)
+            _rect = pygame.Rect(int(_cx - 14), int(_cy - 14), 28, 28)
+            if self._cubic_seam_step_target(_letter) is None:
+                continue            # 这个方向没有下一张切面：不显示、不可点
+            self._cubic_seam_step_buttons.append(
+                (_letter, _rect, (_ux, _uy), True))
 
         # 可推性干跑按签名缓存；只有缝 / 选中组 / 步数档 / 拆分变了才重算。
         sig = (seam, tuple(sorted(tuple(int(v) for v in b.location[:3])

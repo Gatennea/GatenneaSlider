@@ -1439,6 +1439,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.cubic_camera = CubicCamera.oblique_default()
         self.cubic_view_label = '斜视'
         self.cubic_view_index = None
+        self._vk_rot_t = {}
+        self.vk_rot_drag = None
+        self._vk_frozen_cubic = None
         self.cubic_zoom = 1.0
         self.cubic_dragging = False
         # 第 3 步的点击态：drag 起手记起点、松手看有没有移动（移动 = 旋转，
