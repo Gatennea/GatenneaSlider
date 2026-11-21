@@ -81,10 +81,10 @@
   抽成真实产品入口 `_reject_msg_with_seams` 直测、端到端用方形外沿
   （`_test_sq_seam_hint` 同款）测「不静默改旧文案」半边；②`GAP_UNSELECTABLE_MSG`
   是 MoveMixin 类属性非模组级。
-- **截图验收（离屏，同一 draw 路径）**：`s6566_sq/tri/mi_{on,off}.png`
-  六张 + `s6566_band_sq_on/band_tri_on.png`（像素抽验：捆绑矩形上边
-  +24 左边 +17 提亮、下边 -24 压暗、灰框在外）+ `s69_hint.png`
-  （左下提示框清晰未被盖）/ `s69_nohint.png` 对照。存工作区根不入库。
+- **截图验收（离屏，同一 draw 路径）**：s6566_sq/tri/mi_{on,off}.png
+  六张 + s6566_band_sq_on/band_tri_on.png（像素抽验：捆绑矩形上边
+  +24 左边 +17 提亮、下边 -24 压暗、灰框在外）+ s69_hint.png
+  （左下提示框清晰未被盖）/ s69_nohint.png 对照。存工作区根不入库。
   HTTP 实例方案中途放弃（main.py 启动 stdout 缓冲抓不到 token），离屏
   与 HTTP 走同一 draw 函数，视觉证据等价。
 - **回归**：group_render / bandage_forms / bandage_click / sq_seam_hint /
@@ -103,7 +103,7 @@
   （面片尺寸统一、比例制无此问题且是原设计）；group_render 两原语加
   `bevel_inset_px` 转传。测试 8e 断言 60px/126px 块带厚一致（±1 允许
   rasterize 边界含侧误差；原比例制下此断言红）。截图
-  `s65_fix_thickness.png` 复现用户盘面（1×5+2×2）目视厚度统一。
+  s65_fix_thickness.png 复现用户盘面（1×5+2×2）目视厚度统一。
   **贴图化性能议题（用户同日问）已答倾向不做**：收益未实测（无卡顿
   报告）、颜色跟状态走+尺寸跟缩放走+拆掉单 helper 结构的复杂度更重；
   若要做先 cProfile 测倒角占帧比再定。engine_gui 本次随机断言轮流红
@@ -139,8 +139,8 @@
 - **截图验收（AGENTS §20 `GET /screenshot` 通道）**：新实例 5053
   （`--http-port` 换端口不碰用户实例，验完强杀防写 temp_history）。
   首拍踩坑：实例恢复用户三维局盖掉启动参数 → 对比图无效（三维不吃开关）；
-  改 `POST /new` 切回 6×6 方形后重拍成功：`s62_off.png`（纯平）vs
-  `s62_on.png`（四边明暗带、圆角完好），两图存工作区根（未跟踪、不入库）。
+  改 `POST /new` 切回 6×6 方形后重拍成功：s62_off.png（纯平）vs
+  s62_on.png（四边明暗带、圆角完好），两图存工作区根（未跟踪、不入库）。
 - lint NEW=1（存量 `_tmp_save`）、doclink NEW 中涉本节的均为既有文档
   引用 `renderer.py` 因目标修改重新入列（renderer.py 真实存在，非断链）。
 - **补接（2026-11-20 用户问「其他二维谜题改了没」后排查）**：`draw_board`
@@ -171,7 +171,7 @@
   ②测试 357 行存在无 seed 的 `o.shuffle(...)`（随机源）；③最近三提交
   stat 全为 renderer 绘制层/文档，无人动求解引擎（AGENTS §10 引擎不依赖
   渲染）。**复发时按 §23 对拍未修基线，不许直接当 flaky。**
-- **截图验收**：数字形态 off/on ＝ `s62_num_off.png` / `s62_num_on.png`
+- **截图验收**：数字形态 off/on ＝ s62_num_off.png / s62_num_on.png
   （5054 新实例 `/new type=numbered`，验完强杀），关＝纯平贴、开＝数字左上
   浮雕亮缘 + 块面倒角；连同方形两张共四张存工作区根（不入库）。
 

@@ -15,8 +15,6 @@ draw_group_pieces / draw_group_chunks（纯 pygame 零依赖模块）要给捆�
 `_draw_face_bevel` 以 `bevel=` 可调用参数传入，那边只管按签名调用。
 """
 
-import math
-
 import pygame
 
 #: 倒角带设计厚度（屏幕像素，调用方按 zoom 缩放后传 inset_px）。
