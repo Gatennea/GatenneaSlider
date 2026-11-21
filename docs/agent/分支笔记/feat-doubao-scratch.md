@@ -8,6 +8,40 @@
 - **§五十四 三维滑块扩展（正方体单元）**：2026-11-17 用户拍板交豆包，已认领、未排期。
   方案真源 `docs/spec/三维扩展方案_正方体单元_2026-11-17.md`（七节）；总账在 `docs/agent/待办清单.md` §五十四。
   本轮只接手、未动任何游戏代码。
+- **§六十七 捆绑态安全打乱漏 group**：2026-11-21 认领并完成（已提交本分支，未推送）。
+  动 `game.py`（`can_undo_shuffle_step` / `commit_shuffle_step` /
+  `record_shuffle_move`）、`engine/analysis.py`（`_find_inverse` / `_exact_key`）；
+  新增 `test/_test_bandage_shuffle_group.py`，并把 `_test_safe_shuffle.py` /
+  `_test_shuffle_guard.py` 的证书重放改用 `record['trigger']`。
+
+## §67 复核结论（2026-11-21，防后人重走）
+
+- **旧判据用「同一个正向 trigger」时，位置相等 ⇒ group 相等**：逆移动是
+  同一片的平移，平移平行于缝、侧别不变；反向 opt 只会选中「平移后的原片」
+  或并上同侧邻块（数量变多→已被位置集合判掉）。随机 120 局 / 1582 步实测
+  `same_trigger_fail = 0`。所以「组内互换 / 异组同位」不是 `can_undo` 本身
+  放进去的——它根本选不到另一组等数量块。
+- **真正的洞在撤销时点哪颗块**：组跨缝时，缝两侧各是一个连通分量；正向用
+  东侧块选中了「西侧组员 + 整片」，撤销时若随手点 `final` 第一颗（可能在西
+  侧），opt 只选到西侧子片，落点位置仍可能等于 `moved`，但 group 归属已变。
+  `undo_with_record` 旧写法正是这样，seed=6/10/12/13/16/17/21 会卡住。已在
+  `record_shuffle_move` 增 `trigger`（移动前位置），证书按 moved/final 同序
+  索引取它的**移动后**位置再 opt，逐条精确回到每步前局面。
+- **`engine/analysis.py` 另一个真 bug**：`_find_inverse` 的 `moved_nxt` 只给
+  块键加了 `d` 一格，step>1 时逆移动块键落在空位，`move_ok` 恒假、
+  `safe_scramble` 一步都走不动（4×4/step2 实测 0 步；既有测试只跑 step=1）。
+  改为 `d * step`；`_exact_key` 再显式钉 group。
+- **取舍**：不做终态 BFS 终检。每步含 group 精确可逆 ⇒ 反转路径是字面解法，
+  终态必有解；`canonical_key` 忽略 group，另写 BFS 键只是把同一结论重算。
+- **护栏**：`_test_bandage_shuffle_group.py` A2 用「位置同、group 异」的
+  before_sel 直接判死（旧代码会红）；B 在 5×5 四对捆绑典例上逐条反转
+  （位置+group 精确），并断言 naive「final 第一块」在 seed=6 走不通；C1 断言
+  还原态 100 条合法步都不切开中心 3×3，C2 断言打乱后各组仍刚体；D 断言引擎
+  step=2 每步逆移动 `_exact_key` 精确。
+- 基线缺 `pytest` / `numpy` / `pygame`：`pytest --collect-only` 无法启动，
+  `_test_safe_shuffle.py` 的 A/B、`_test_geometry_engine.py`、
+  `_test_bandage_forms.py`、`_test_shuffle_demo.py` 在本机跑不全，非本次改动回归。
+
 
 ## 动哪些文件（认领范围，防撞车）
 

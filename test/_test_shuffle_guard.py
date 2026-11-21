@@ -75,8 +75,18 @@ def undo_with_record(g, records):
         gap_type, line = rec['gap']
         moved = {tuple(p) for p in rec['moved']}
         final_set = set(rec['final'])
-        trig = next((b for b in g.blocks
-                     if tuple(b.location) in final_set), None)
+        trig = None
+        trig_pos = rec.get('trigger')
+        if trig_pos is not None:
+            idx = next((i for i, p in enumerate(rec['moved'])
+                        if tuple(p) == tuple(trig_pos)), None)
+            if idx is not None:
+                target = rec['final'][idx]
+                trig = next((b for b in g.blocks
+                             if tuple(b.location) == tuple(target)), None)
+        if trig is None:
+            trig = next((b for b in g.blocks
+                         if tuple(b.location) in final_set), None)
         if trig is None:
             return False
         g.opt(gap_type, line, trig)
