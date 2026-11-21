@@ -443,6 +443,29 @@ def run():
               '§65 固定厚度：60px 与 126px 块带厚一致 ≈ 设计像素',
               f'60px={_t60} 126px={_t126} design={BEVEL_INSET_PX}')
 
+        # 8f 长条端头不斜切（用户 11-21「最上面的长条画的不好」）：
+        # 旧「端点向质心收」在 306×60 长条上把上边带内沿端点拉进 25.5px
+        # ——近端 x=10 处带缺失（厚 0）；角平分线内缩后全带等厚。
+        def _long_band_thick(x):
+            s = pygame.Surface((326, 80))
+            s.fill(_bg8)
+            r = pygame.Rect(10, 10, 306, 60)
+            pygame.draw.rect(s, _fill7, r)
+            _orig_bevel(s, (r.topleft, r.topright, r.bottomright, r.bottomleft),
+                        _fill7, inset_px=BEVEL_INSET_PX)
+            thick = 0
+            for y in range(10, 10 + 40):
+                if tuple(s.get_at((x, y)))[:3] == _fill7:
+                    break
+                thick += 1
+            return thick
+
+        _near = _long_band_thick(20)      # 距左端 10px（旧几何斜切区内、左端竖带外）
+        _mid = _long_band_thick(160)      # 中段
+        check(_near == _mid and abs(_mid - int(BEVEL_INSET_PX)) <= 1,
+              '§65 长条上边带全带等厚（端头不斜切）',
+              f'near_end={_near} mid={_mid} design={BEVEL_INSET_PX}')
+
         # ---------- 9 §六十九：禁用缝族提示（文案 + 就地附句）----------
         print('\n--- 9 §69 禁用缝族提示 ---')
         # 用模型局（EngineGame）：SliderMatrix 有 __slots__ 挂不了
