@@ -1,0 +1,93 @@
+# -*- coding: utf-8 -*-
+"""光照原语：面内微倒角 + 色彩偏移（§六十二 / §六十五 / §六十六）。
+
+纯 pygame、零依赖（不 import renderer / group_render），供
+`gui/renderer.py`（二维三形态 + 三维面片 + 方形/聚合板）与
+`gui/group_render.py`（捆绑组）共用同一亮度方向与幅度——前端三形态
+铁律 §3「一處 helper、三形態各接一次」的公共落点。
+
+屏幕左上光 (-0.55, -0.75)：面内每条边压一条窄带，亮度按边法向投影
+决定——上/左提亮、下/右压暗，方向与 `engine/cubic_view.py::face_shade`
+的相机相对主光一致。
+
+draw_group_pieces / draw_group_chunks（纯 pygame 零依赖模块）要给捆绑组
+压同一套倒角，但不能反向依赖 renderer——调用方把本模块的
+`_draw_face_bevel` 以 `bevel=` 可调用参数传入，那边只管按签名调用。
+"""
+
+import pygame
+
+
+def _shade255(color, offset):
+    """给 RGB 加固定偏移并夹回 0..255（整型三元组）。"""
+    return (max(0, min(255, int(color[0]) + offset)),
+            max(0, min(255, int(color[1]) + offset)),
+            max(0, min(255, int(color[2]) + offset)))
+
+
+def _draw_face_bevel(surface, pts, fill, strength=30.0, inset=0.15,
+                     corner_inset=0.0, edge_inset_px=0.0, edges=None):
+    """面内多边微倒角：沿面的每条屏幕边压一条窄带，亮度按
+    「屏幕左上光」(-0.55, -0.75) 的边法向投影决定——上/左提亮、下/右压暗，
+    方向与 `engine/cubic_view.py::face_shade` 的相机相对主光一致。
+
+    这是三维面片倒角画法（renderer 三维绘制段，2026-11-19 实体感三件套
+    之二）抽出来的**公共唯一来源**：三维渲染、二维方形/三角/米字三形态、
+    捆绑组共用同一函数，保证开态下各处的亮度方向与幅度完全一致。
+
+    pts    : 面的屏幕坐标顶点序列（>=3，任意多边形；三角/米字的块面
+             不是四边形，所以是 n 边而不是硬编码 4 边）
+    fill   : 面底色 RGB——带色 = 底色 + 偏移，不引入新色相
+    strength: 偏移幅度（三维原值 30）
+    inset  : 带宽比例（从边向质心收 inset 比例，三维原值 0.15）
+    corner_inset: 端点沿边向内收的像素数——矩形有圆角（_block_corner），
+             端点落在角点会把圆角外的角隅补成直角；圆角形态传半径让带
+             不触及角部，圆角由随后的 border 层照画。
+    edge_inset_px: 整条边沿法向朝质心推入的像素数（§六十六 蓝色溢出修复）
+             ——倒角带从**边框内沿**开始、不碰边界线，灰色边框独占边界，
+             提亮色不渗到框外。调用方按当前 border_w 传 border_w/2；
+             默认 0 保持旧调用（无边框/三维旧口径）零变化。
+    edges   : 只压这些下标的边（集合/列表），None=全部（§六十五 捆绑组
+             只沿**组外轮廓**压带，组内共用边跳过——否则组内重现分隔线，
+             违背「一整块刚体」观感）。
+    """
+    n = len(pts)
+    if n < 3:
+        return
+    edge_set = None if edges is None else set(edges)
+    cx = sum(p[0] for p in pts) / n
+    cy = sum(p[1] for p in pts) / n
+    lx, ly = -0.55, -0.75
+    llen = (lx * lx + ly * ly) ** 0.5
+    for e in range(n):
+        if edge_set is not None and e not in edge_set:
+            continue
+        a = pts[e]
+        b = pts[(e + 1) % n]
+        if corner_inset:
+            # 沿边把两端各向内收 corner_inset 像素（限在边长内）
+            ex, ey = b[0] - a[0], b[1] - a[1]
+            elen = (ex * ex + ey * ey) ** 0.5
+            if elen > 2.0 * corner_inset:
+                t = corner_inset / elen
+                a = (a[0] + ex * t, a[1] + ey * t)
+                b = (b[0] - ex * t, b[1] - ey * t)
+        mx = (a[0] + b[0]) / 2.0
+        my = (a[1] + b[1]) / 2.0
+        nx, ny = mx - cx, my - cy
+        nlen = (nx * nx + ny * ny) ** 0.5
+        if nlen <= 1e-9:
+            continue
+        if edge_inset_px:
+            # 沿边法向（外法向 nx,ny 的反向 = 朝质心）把整条边推入
+            # edge_inset_px 像素——带的外沿（a,b 边）落在边界线内侧，
+            # 灰框独占边界（§六十六：提亮蓝不渗出灰框）。
+            a = (a[0] - nx / nlen * edge_inset_px,
+                 a[1] - ny / nlen * edge_inset_px)
+            b = (b[0] - nx / nlen * edge_inset_px,
+                 b[1] - ny / nlen * edge_inset_px)
+        dot = (nx * lx + ny * ly) / (nlen * llen)
+        off = int(strength * dot)
+        q1 = (a[0] + (cx - a[0]) * inset, a[1] + (cy - a[1]) * inset)
+        q2 = (b[0] + (cx - b[0]) * inset, b[1] + (cy - b[1]) * inset)
+        pygame.draw.polygon(surface, _shade255(fill, off), (a, b, q2, q1))
