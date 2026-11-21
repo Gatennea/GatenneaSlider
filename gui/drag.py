@@ -34,6 +34,7 @@ class DragMixin:
         self.drag_follow_direction = None
         self.drag_follow_step = 0
         self.drag_follow_invalid = False
+        self.drag_follow_reject_reason = None   # §71：跟随期越界分色原因，随跟随之清
         # 单次触控发起的跟随：拖动结束后自动取消选中（与旧 _drag_slide 行为一致）
         # 两次触控（预选缝隙）发起时不取消，保留缝隙选中以便继续操作
         if auto_deselect and getattr(self, 'selected_gap', None):
@@ -357,12 +358,21 @@ class DragMixin:
         """探测沿 direction 可连续推进的最大格数，向下取整到 current_step 的整数倍。
 
         跟随期间棋盘状态不变，故只需在进入跟随时探测一次。
+
+        §71：探测撞到的第一個失敗原因（collision/disconnected/locked_ring）
+        留存到 ``drag_follow_reject_reason``——它正是「再走一步會為什麼失敗」
+        的语义，拖拽跟隨期越界的边框按它分色（渲染端 warn 分支读取），
+        不再一律落中性白。非语义类 reason（探測入口自身的 no_selection 等）
+        不存，宁可落中性也不瞎归类。
         """
         limit = 64  # 安全上限，防止异常情况下死循环
         reach = 0
+        self.drag_follow_reject_reason = None
         while reach < limit:
             _, reason = self.game.try_move_ex(direction, reach + 1)
             if reason != '':
+                if reason in ('collision', 'disconnected', 'locked_ring'):
+                    self.drag_follow_reject_reason = reason
                 break
             reach += 1
         step_size = max(1, self.current_step)
@@ -423,6 +433,11 @@ class DragMixin:
                 self._shake_dr = (1 if dr > 0 else (-1 if dr < 0 else 0))
                 self._shake_dc = (1 if dc > 0 else (-1 if dc < 0 else 0))
                 self._shake_t = 12  # 约 200ms（帧）
+                # §71：松手越界的闪现带上探测留存的原因（collision/…），与
+                # 跟随期 warn 边框同一语义色；不带的话 _reject_reason 残留
+                # 上一次键盘拒绝的旧值或 None，边框落中性白。
+                self._reject_reason = getattr(
+                    self, 'drag_follow_reject_reason', None)
 
         # 清除跟随状态（含 single-touch auto-deselect）
         self.clear_drag_follow()

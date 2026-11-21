@@ -38,6 +38,41 @@
   位置+就近点击提示，不动几何层）。护栏：三形态开/关截图、关态逐像素、
   真实像素断言。完成后只 commit 不推送不合并。
 
+- **认领 §七十（捆绑组边框反馈被整组重绘盖掉）+ §七十一（拖拽越界拒绝
+  边框永远中性白）**，2026-11-21 用户点名两节一起交 trae（dev 分支）。
+  同属边框反馈、renderer/drag 串行做，各自独立 commit。豆包分析标了
+  「先按当前代码核实」——已核：§70 落点属实（方形/多边形两条捆绑路径
+  border 写死 colors['border']）；§71 落点稍偏（真根因是 drag.py:419
+  松手越界设 shaking 时没带 _reject_reason + _probe_max_cells 的 reason
+  没留存，两处都要修）。§71 的 locked_ring 语义按待办建议沿用断开冷紫。
+  完成后只 commit 不推送不合并。
+
+## §七十 / §七十一 完成记录（2026-11-21，本分支已 commit，待核销）
+
+- **§70（`d624536`）**：新增 `_bandaged_border(warn, rejecting, sel,
+  member_locs)` 组级边框 helper——与普通块同一优先级（warn 拖拽越界 →
+  reject 拒绝闪现 → anim 撤销/重做 → play 演示光边 → 默认灰），组内任一
+  成员命中即整组生效。方形 `_draw_bandaged_groups_play` 收集段加 gmeta
+  （ids/locs/sel）替掉写死的 colors['border']，矩形与 chunks 两分支共用，
+  拒绝闪现整组一起 `_shake_offset()`（键位拒绝 dr=dc=0 自然为零）；
+  poly 路径 items 扩 4 元组（显示键/选中/id/逻辑位置），每组组级边框传
+  `draw_group_pieces` 的 outline，新增 `shake=` 参数——聚合板传 True
+  （其普通块有位移抖动），三角/米字普通块只闪不位移、捆绑层保持一致。
+  倒角 edge_inset 改用实际组级边框宽 `_bw`（reject/anim 加粗时让位量跟着
+  走）。测试 `_test_reject_visual` 加 H 段（spy 运行时返回值 + 像素采样）：
+  冷紫/暖珊瑚/UNDO 蓝/REDO 橙/归零回灰 7 断言。
+- **§71（本笔）**：核实修正豆包落点——真根因两处：①`_probe_max_cells`
+  的 try_move_ex reason 只当停止条件没留存；②drag.py 松手越界设 shaking
+  时没带 `_reject_reason`（残留旧值/None → 中性白）。修：probe 留存
+  `drag_follow_reject_reason`（只存 collision/disconnected/locked_ring
+  三种语义 reason，探不到宁可中性不瞎归类）、`clear_drag_follow` 随跟随之清、
+  松手 shaking 带上它、渲染四处 warn 分支改读它（含 §70 helper 的 warn
+  分支）、`reject_border_style` 认 `locked_ring` → 沿用断开冷紫（待办建议，
+  拆环后果与断开同类，不许默默落中性白）。测试加 I 段：locked_ring 色、
+  probe 留存（左两列右推撞静块 → collision）、warn 渲染 spy 分支 + 冷紫
+  4 断言。回归 mi_drag/triangle_play/bandage_ring_lock/generic_controls
+  全绿，compileall 0。
+
 ## §六十五 / §六十六 / §六十九 完成记录（2026-11-21，本分支已 commit，待核销）
 
 - **§66 蓝色溢出**：`_draw_face_bevel` 抽到新文件 `gui/lighting.py`
