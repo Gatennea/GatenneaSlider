@@ -647,6 +647,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.drag_threshold = 14
         # 鼠标拖拽状态：None 或 dict(起始屏幕坐标, 起点滑块, 累计位移, 是否已判定为拖拽)
         self._mouse_drag_state = None
+        # 方形单次触控的「按下候选缝」：按在块上且宽兜底命中活缝时先挂起，
+        # 拖动超过阈值就丢弃、松手没拖才补提交选缝（gui/events.py）。
+        self._pending_gap_click = None
         # 存档只读：
         #  _readonly=True 时禁用改变滑块组状态的功能（滑动/求解/打乱/宏等），仅允许撤销重做
         # save_readonly_flag 是设置开关：打开后所有保存的存档都带 readonly 标记

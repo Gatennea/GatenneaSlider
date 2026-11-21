@@ -827,8 +827,16 @@ class MoveMixin:
                 best = b
         return best
 
-    def _sq_click_query(self, screen_x: int, screen_y: int) -> tuple:
+    def _sq_click_query(self, screen_x: int, screen_y: int,
+                        preserve_block: bool = False) -> tuple:
         """方形/三角一次點擊的命中結果 (縫隙, 滑塊)，選不動/切不開的線改走提示。
+
+        ``preserve_block``：方形單次觸控的按下階段用。寬兜底命中活縫時
+        仍回報 gap，但**不把 block 清掉**，讓事件層可以先記住「這一按既
+        可能選縫、也可能從塊起拖」，等位移超過閾值再二選一；松手沒拖才
+        補提交選縫（見 gui/events.py 的 _pending_gap_click）。
+        默認 False 保持舊語義：寬兜底選縫後 block 作廢，兩擊模式按下即
+        選縫、測試與其他調用方不受影響。
 
         三種「畫得出、卻沒反應」都要說清楚，不再靜默：
           ① 死在縫上（外沿、兩側都推不動）：_rejected_seam_at 找回那條縫並
@@ -906,7 +914,8 @@ class MoveMixin:
                                            tolerance=28.0)
                 if near is not None:
                     gap = near
-                    block = None
+                    if not preserve_block:
+                        block = None
         # 选块填空的两下点击语义是「选哪块、填哪个坑」，不是滑动，
         # 此时别插嘴说缝选不动
         if (gap is None and block is None
