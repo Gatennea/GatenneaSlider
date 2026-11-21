@@ -103,7 +103,8 @@ def bridge_quad(edge_a, edge_b):
 
 
 def draw_group_pieces(screen, pieces, bridges, to_screen, fill, fill_sel,
-                      outline_color, outline_width, dots=()):
+                      outline_color, outline_width, dots=(),
+                      bevel=None, edge_inset_px=0.0):
     """多边形形态的捆绑组：整组填色 + 内部缝隙填平 + 只描组外边界。
 
     与方形 `draw_group_chunks` 同一套观感（复用现有块色/边框色，不引入新色）：
@@ -126,6 +127,14 @@ def draw_group_pieces(screen, pieces, bridges, to_screen, fill, fill_sel,
                     ≈gap 的小洞（米字同格四块的中心就是典型），由调用方按
                     「顶点 → 到内缩顶点的最大距离」算好半径，这里补一个同色
                     圆盖住。方形那套 draw_group_chunks 的「四格交点小方块」同理。
+    bevel         : §六十五 捆绑光效——`gui.lighting._draw_face_bevel` 同签名
+                    的可调用（或 None=不压）。由调用方按 face_bevel_enabled
+                    传入，本模块保持零依赖（不反向 import renderer）。
+                    **只压每块的组外轮廓边**（internal=False 的边）：组内
+                    共用边已由 bridges 填平，压带会重现组内分隔线，违背
+                    「一整块刚体」观感。
+    edge_inset_px : 倒角带从外轮廓描边内沿开始的让位像素（边框宽/2），
+                    §六十六 提亮色不出灰框。
     """
     # 第一遍：填平内部缝隙 + 各块填色
     for quad, sel in bridges:
@@ -143,6 +152,14 @@ def draw_group_pieces(screen, pieces, bridges, to_screen, fill, fill_sel,
         if rad >= 1:
             pygame.draw.circle(screen, fill_sel if sel else fill,
                                (int(round(sx)), int(round(sy))), rad)
+    # 1.6 遍（§六十五）：面内微倒角——只压组外轮廓边，压在填色后、描边前
+    if bevel is not None:
+        for poly, internal, selected in pieces:
+            edges = [i for i in range(len(poly)) if not internal[i]]
+            if edges:
+                bevel(screen, [to_screen(*p) for p in poly],
+                      fill_sel if selected else fill,
+                      edge_inset_px=edge_inset_px, edges=edges)
     # 第二遍：只描组外边界（第二遍画，避免被相邻组员的填充盖掉）
     for poly, internal, selected in pieces:
         n = len(poly)
@@ -154,7 +171,8 @@ def draw_group_pieces(screen, pieces, bridges, to_screen, fill, fill_sel,
 
 
 def draw_group_chunks(screen, groups, get_rect, gap_px, fill, fill_sel,
-                      outline_color, outline_width, is_selected=None):
+                      outline_color, outline_width, is_selected=None,
+                      bevel=None, edge_inset_px=0.0):
     """把同组格画成一整块实心矩形（无内部网格线 + 单一外轮廓）。
 
     参数
@@ -169,6 +187,9 @@ def draw_group_chunks(screen, groups, get_rect, gap_px, fill, fill_sel,
     outline_width : 外轮廓线宽
     is_selected   : (r,c) -> bool；该格是否处于选中态（决定用 fill 还是
                     fill_sel）。构造画布无选中概念时传 None。
+    bevel         : §六十五 捆绑光效——同 draw_group_pieces 的 bevel 口径
+                    （可调用/None；只压该格的**组外侧边**，组内相邻边跳过）。
+    edge_inset_px : 倒角带从外轮廓线内沿开始的让位像素（§六十六）。
     """
     if is_selected is None:
         is_selected = lambda r, c: False
@@ -190,6 +211,29 @@ def draw_group_chunks(screen, groups, get_rect, gap_px, fill, fill_sel,
             # 右+下同时在组时补上，否则中心漏出一个背景色小点
             if (r, c + 1) in pos and (r + 1, c) in pos:
                 pygame.draw.rect(screen, f, (x + sz, y + sz, gap_px, gap_px))
+
+    # 1.5 遍（§六十五）：面内微倒角——只压该格的组外侧边（不在组内的那几条），
+    # 组内相邻边跳过（否则组内重现分隔线，违背「一整块」观感）。
+    # 顶点序 (x,y)→(x+sz,y)→(x+sz,y+sz)→(x,y+sz)：边 0=上 1=右 2=下 3=左。
+    if bevel is not None:
+        for gid, cells in groups.items():
+            pos = set(cells)
+            for (r, c) in cells:
+                x, y, sz = get_rect(r, c)
+                edges = []
+                if (r, c - 1) not in pos:
+                    edges.append(0)
+                if (r, c + 1) not in pos:
+                    edges.append(1)
+                if (r + 1, c) not in pos:
+                    edges.append(2)
+                if (r - 1, c) not in pos:
+                    edges.append(3)
+                if edges:
+                    bevel(screen,
+                          [(x, y), (x + sz, y), (x + sz, y + sz), (x, y + sz)],
+                          fill_sel if is_selected(r, c) else fill,
+                          edge_inset_px=edge_inset_px, edges=edges)
 
     # 第二遍：外轮廓（只描组外边界，内部相邻边不描，读作一整块）
     ow = outline_width

@@ -3172,10 +3172,17 @@ class RendererMixin:
             # 外边界上的顶点（和 < 2π）本来就没有洞，补了会鼓出轮廓。
             dots = [(v, off, sel) for v, (ang, off, sel) in vmap.items()
                     if ang >= 2 * math.pi - 0.2]
+            # §六十五 捆绑光效：三角/米字/聚合板三形态共用本方法——gate 在
+            # 这里接一次，三形態同時生效（铁律 §3）；bevel 以可调用传入，
+            # group_render 保持零依赖。带只压组外轮廓（edges 过滤见原语）。
+            _grp_ow = max(1, int(2 * self.zoom))
             draw_group_pieces(
                 self.screen, pieces, bridges, self.world_to_screen,
                 self.colors['block'], self.colors['block_selected'],
-                self.colors['border'], max(1, int(2 * self.zoom)), dots)
+                self.colors['border'], _grp_ow, dots,
+                bevel=(_draw_face_bevel
+                       if getattr(self, 'face_bevel_enabled', False) else None),
+                edge_inset_px=_grp_ow / 2.0)
 
     def _draw_bandaged_groups_play(self, scaled_cell, scaled_gap):
         """游玩主棋盘的捆绑组渲染：同组滑块 → 一整块「放大版普通滑塊」。
@@ -3259,14 +3266,29 @@ class RendererMixin:
                 rect = pygame.Rect(x, y, w, h)
                 _grp_corner = int(round(self._board_corner_radius()))
                 pygame.draw.rect(self.screen, fill, rect, border_radius=_grp_corner)
+                if getattr(self, 'face_bevel_enabled', False):
+                    # §六十五：捆绑块与普通块同一倒角 helper——放大版矩形
+                    # 就是「大一号普通块」，同 corner_inset 口径（圆角收端），
+                    # §六十六 让位半个边框宽（带不出灰框）。
+                    _draw_face_bevel(
+                        self.screen,
+                        (rect.topleft, rect.topright,
+                         rect.bottomright, rect.bottomleft),
+                        fill, corner_inset=_grp_corner,
+                        edge_inset_px=border_w / 2.0)
                 pygame.draw.rect(self.screen, border_color, rect, border_w,
                                  border_radius=_grp_corner)
             else:
                 # 非矩形（L 形/折线）：通用原语——实心填充 + 仅外轮廓，无内部线
+                # §六十五：bevel 同上（只压组外侧边，组内相邻边跳过）
                 draw_group_chunks(self.screen, {gid: cells}, get_rect, scaled_gap,
                                   self.colors['block'], self.colors['block_selected'],
                                   border_color, border_w,
-                                  is_selected=lambda r, c: (r, c) in sel_pos)
+                                  is_selected=lambda r, c: (r, c) in sel_pos,
+                                  bevel=(_draw_face_bevel
+                                         if getattr(self, 'face_bevel_enabled', False)
+                                         else None),
+                                  edge_inset_px=border_w / 2.0)
 
     # ---------- S1-2 / S1-4：三形态共用的语义反馈原语 ----------
     #
