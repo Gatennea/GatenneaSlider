@@ -1165,12 +1165,18 @@ class RendererMixin:
             # 直接换 origin 就是「滑完猛地把画面拽一下」。这里让参考点按
             # 固定比例追过去（约 8 帧收敛），滑动收尾时是滑过去而不是弹过去。
             _cur = getattr(self, '_cubic_follow_center', None)
+            _old_cur = _cur
             if _cur is None:
                 _cur = _target
             else:
                 _k = 0.14
                 _cur = tuple(_cur[i] + (_target[i] - _cur[i]) * _k
                              for i in range(3))
+            if _old_cur is not None:
+                _dc = tuple(_cur[i] - _old_cur[i] for i in range(3))
+                if any(abs(v) > 1e-9 for v in _dc):
+                    # 箭头要相对鼠标不动：相机平移多少，锚点就反向补多少。
+                    self._cubic_lock_click_anchor_against_follow(_dc)
             self._cubic_follow_center = _cur
             _center = _cur
         elif _target is not None:
@@ -1526,17 +1532,24 @@ class RendererMixin:
             # 投影决定，上/左提亮、下/右压暗；方向与 face_shade 一致，
             # 二维三形态（square/tri/mi）开态走的是同一个函数。
             _draw_face_bevel(hi, pts, fill)
-        # 被块盖住的箭头补一圈虚线轮廓：实体已按 mask 裁过，虚线只提示
-        # 这里还有一个可点的方向，不把整支箭置顶。
+        # 被块盖住的部分补虚线轮廓：实体已按 mask 裁过，虚线只画在
+        # **真正被挡住的区域**里。挡一半 → 露出的半截实心、被挡的半截虚线；
+        # 全挡 → 整支虚线。不能等覆盖率 ≥0.35 才补整支，否则挡得少的箭头
+        # 被扣掉后就直接消失了（用户 2026-11-21）。
         if hi is not None:
             for letter, pts, _depth in getattr(
                     self, '_cubic_arrow_shapes', ()):
-                if letter in self._cubic_arrow_ghosts:
-                    self._cubic_draw_arrow_ghost(hi, pts, _T, _ss)
+                _clip = self._cubic_arrow_clip.get(letter)
+                if _clip is not None:
+                    self._cubic_draw_arrow_ghost(hi, pts, _T, _ss, clip=_clip)
 
         if hi is not None:
             self.screen.blit(
                 pygame.transform.smoothscale(hi, (_bw, _bh)), (_bx0, _by0))
+
+        # 法线轴上的「上/下一个切面」两枚键：屏幕 UI，最后盖在盘面上，
+        # 不再被块面裁切；命中盒与绘制共用同一份 rect。
+        self._cubic_draw_seam_step_buttons()
 
         # 三维方向箭头已经在上面作为世界空间面片插入画家序了；这里不再
         # 单独 blit 二维贴图。
@@ -1632,6 +1645,47 @@ class RendererMixin:
             j = i
         return inside
 
+    def _cubic_draw_seam_step_button(self, surface, rect, direction,
+                                     color, enabled, hovered=False):
+        """法线轴端点的「上/下一个切面」键：圆角方块 + 双箭头。
+
+        和推块端盘明确区分：它是一个方形控制键，只在法线轴出现；不可用时
+        整键压暗、双箭头变灰，但保留位置，玩家仍能看出这条轴在管切面。
+        """
+        fill = color if (enabled and hovered) else (
+            (46, 48, 56) if enabled else (30, 31, 36))
+        pygame.draw.rect(surface, fill, rect, border_radius=6)
+        pygame.draw.rect(surface, color if enabled else (82, 84, 92),
+                         rect, 2, border_radius=6)
+        ux, uy = direction
+        if abs(ux) < 1e-6 and abs(uy) < 1e-6:
+            ux, uy = 1.0, 0.0
+        px, py = -uy, ux
+        cx, cy = rect.center
+        ink = (240, 240, 245) if enabled else (110, 112, 120)
+        for _k in (-4.0, 4.0):
+            _ax = cx + ux * (4.0 + _k)
+            _ay = cy + uy * (4.0 + _k)
+            _bx = _ax - ux * 7.0
+            _by = _ay - uy * 7.0
+            pygame.draw.line(surface, ink,
+                             (_ax, _ay), (_bx + px * 4.0, _by + py * 4.0), 2)
+            pygame.draw.line(surface, ink,
+                             (_ax, _ay), (_bx - px * 4.0, _by - py * 4.0), 2)
+
+    def _cubic_draw_seam_step_buttons(self):
+        """画盘面的两枚切面键（虚拟键盘用同一套图标）。"""
+        mouse = pygame.mouse.get_pos()
+        colors = {'r': (226, 120, 120),
+                  'c': (98, 156, 232),
+                  'd': (110, 200, 130)}
+        for letter, rect, direction, enabled in getattr(
+                self, '_cubic_seam_step_buttons', ()):
+            self._cubic_draw_seam_step_button(
+                self.screen, rect, direction, colors.get(letter.lower(),
+                                                          (200, 200, 210)),
+                enabled, rect.collidepoint(mouse))
+
     def _cubic_arrow_cover_ratio(self, pts, front_faces):
         """箭头正面被给定前侧块盖住的采样比例（0..1）。"""
         from engine import cubic_pick
@@ -1656,8 +1710,12 @@ class RendererMixin:
                         break
         return (covered / total) if total else 0.0
 
-    def _cubic_draw_arrow_ghost(self, hi, pts, transform, ss):
-        """被块盖住的箭头：只描一圈虚线轮廓，保持可点，不把整支箭置顶。"""
+    def _cubic_draw_arrow_ghost(self, hi, pts, transform, ss, clip=None):
+        """箭头遮罩区域的虚线轮廓。
+
+        `clip=(mask,mx0,my0)` 时只保留 mask 覆盖到的虚线像素——被挡多少就
+        虚多少；全挡就是整支虚线。`clip=None` 保留旧的全支虚线行为。
+        """
         q = transform(pts)
         x0 = min(p[0] for p in q)
         y0 = min(p[1] for p in q)
@@ -1685,6 +1743,10 @@ class RendererMixin:
                                  (a[0] + ux * t, a[1] + uy * t),
                                  (a[0] + ux * e, a[1] + uy * e), width)
                 t = e + gap
+        if clip is not None:
+            mask, mx0, my0 = clip
+            surf.blit(mask, (mx0 - (x0 - pad), my0 - (y0 - pad)),
+                      special_flags=pygame.BLEND_RGBA_MULT)
         hi.blit(surf, (x0 - pad, y0 - pad))
 
     def _cubic_draw_arrow_face_clipped(self, hi, item, clip, transform, ss):
@@ -1727,6 +1789,7 @@ class RendererMixin:
         self._cubic_arrow_buttons = []
         self._cubic_arrow_shapes = []
         self._cubic_arrow_base_depth = {}
+        self._cubic_seam_step_buttons = []
         if not seam or seam[0] not in ('r', 'c', 'd'):
             return []
         opted = [b for b in blocks if getattr(b, 'be_opted', False)]
@@ -1750,6 +1813,27 @@ class RendererMixin:
         normal = [0.0, 0.0, 0.0]
         normal[normal_axis] = 1.0
         view_dir = camera.view_axis()
+
+        # 法线轴的两个端点不再空着：改成「上/下一个切面」。
+        # 位置取切面中心沿法线屏幕方向外推；两枚键都是屏幕 UI，不参与画家序。
+        _mid_scr = _cv.project_point(mid, camera, scene['scale'], scene['origin'])
+        _ndir = (self._cubic_screen_dir(tuple(normal))
+                 if hasattr(self, '_cubic_screen_dir') else (0.0, 0.0))
+        if abs(_ndir[0]) < 1e-6 and abs(_ndir[1]) < 1e-6:
+            # 法线正对镜头：沿屏幕竖/横方向错开，别让两键叠成一个点。
+            _ndir = (0.0, 1.0) if normal_axis == 1 else (1.0, 0.0)
+        _off = 46.0
+        for _letter, _sign in ((seam[0].upper(), 1.0), (seam[0], -1.0)):
+            _ux, _uy = (_ndir[0] * _sign, _ndir[1] * _sign)
+            _cx = min(max(_mid_scr[0] + _ux * _off, 18.0),
+                      self.screen_width - 18.0)
+            _cy = min(max(_mid_scr[1] + _uy * _off, 18.0),
+                      self.screen_height - 18.0)
+            _rect = pygame.Rect(int(_cx - 14), int(_cy - 14), 28, 28)
+            if self._cubic_seam_step_target(_letter) is None:
+                continue            # 这个方向没有下一张切面：不显示、不可点
+            self._cubic_seam_step_buttons.append(
+                (_letter, _rect, (_ux, _uy), True))
 
         # 可推性干跑按签名缓存；只有缝 / 选中组 / 步数档 / 拆分变了才重算。
         sig = (seam, tuple(sorted(tuple(int(v) for v in b.location[:3])
@@ -5099,13 +5183,13 @@ class RendererMixin:
             "撤销、重做时高亮这次动的缝和滑块（蓝=撤销，橙=重做）", max_w=_mw)
 
         # 动画时长滑动条（轨道与开关同一右栏对齐）
-        # 三维态写 cubic_anim_ms（60..400），与右侧栏「速度」滑条同源；
+        # 三维态写 cubic_anim_ms（50..1000，每格），与右侧栏「速度」滑条同源；
         # 二维仍写 animation_duration（100..1000）。
         _cubic_anim = getattr(self, 'cubic_mode', False)
         if _cubic_anim:
-            _anim_lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
-            _anim_hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
-            _anim_val = getattr(self, 'cubic_anim_ms', 140)
+            _anim_lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 50)
+            _anim_hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 1000)
+            _anim_val = getattr(self, 'cubic_anim_ms', 300)
         else:
             _anim_lo, _anim_hi = 100, 1000
             _anim_val = self.animation_duration
@@ -6469,10 +6553,15 @@ class RendererMixin:
         bottom = self.screen_height - self.status_bar_height
         mouse = pygame.mouse.get_pos()
         margin = 10
+        # 通知浮窗也贴在右下角（底边距 -8，高约 status_font 高 + 12）。
+        # 操作卡若仍贴底会压住通知文字，所以整体上移「通知高度 + 间距」；
+        # 折叠钮与展开卡一起移，收起/展开都不会再盖住提示。
+        ops_lift = self.status_font.get_height() + 20
 
         if not getattr(self, '_cubic_ops_open', False):
             # 折叠态：一枚小钮
-            toggle = pygame.Rect(right - margin - 74, bottom - margin - 28, 74, 28)
+            toggle = pygame.Rect(right - margin - 74,
+                                 bottom - margin - 28 - ops_lift, 74, 28)
             self._cubic_ops_toggle_rect = toggle
             pygame.draw.rect(self.screen,
                              self.colors['button_hover'] if toggle.collidepoint(mouse)
@@ -6495,8 +6584,8 @@ class RendererMixin:
         body_h = len(bullets) * 22 + 14
         btn_h = 32
         height = header_h + body_h + btn_h + 16
-        card = pygame.Rect(right - margin - width, bottom - margin - height,
-                           width, height)
+        card = pygame.Rect(right - margin - width,
+                           bottom - margin - height - ops_lift, width, height)
         self._cubic_ops_rect = card
         pygame.draw.rect(self.screen, self.colors['dialog_bg'], card, border_radius=8)
         pygame.draw.rect(self.screen, self.colors['dialog_border'], card, 2, border_radius=8)
@@ -6787,7 +6876,7 @@ class RendererMixin:
                                  'zoom_slider_rect', 'zoom_knob_rect',
                                  'zoom_slider_dragging')
             # 右上：速度（顶部=最快）
-            _dur = int(getattr(self, 'cubic_anim_ms', 140))
+            _dur = int(getattr(self, 'cubic_anim_ms', 300))
             _vfrac = _clamp01((_dur - self.CUBIC_ANIM_MIN_MS)
                               / max(1e-6, self.CUBIC_ANIM_MAX_MS
                                     - self.CUBIC_ANIM_MIN_MS))

@@ -1790,6 +1790,12 @@ class EventsMixin:
         self.cubic_view_label = label if label is not None else '自由旋转'
         self.cubic_view_index = index
 
+    def _cubic_vk_reset_rot_tracks(self):
+        """视角换档/回正/换局时，弧轨把手回到中点。"""
+        self._vk_rot_t = {}
+        self.vk_rot_drag = None
+        self._vk_frozen_cubic = None
+
     def _cubic_view(self, index):
         """切到第 index 个朝向（带倾斜偏角，不是正对）。"""
         from engine.cubic_camera import (DEFAULT_VIEW_RESIDUE,
@@ -1797,6 +1803,7 @@ class EventsMixin:
                                          face_view_rotation)
         self._cubic_camera_apply(face_view_rotation(index),
                                  label=FACE_VIEW_LABELS[index], index=index)
+        self._cubic_vk_reset_rot_tracks()
         yaw_off, tilt_off = (DEFAULT_VIEW_RESIDUE if isinstance(DEFAULT_VIEW_RESIDUE, tuple)
                              else (DEFAULT_VIEW_RESIDUE, DEFAULT_VIEW_RESIDUE))
         self.macro_notify_msg = (
@@ -1808,8 +1815,88 @@ class EventsMixin:
         from engine.cubic_camera import CubicCamera
         self._cubic_camera_apply(CubicCamera.oblique_default(),
                                  label='斜视', index=None)
+        self._cubic_vk_reset_rot_tracks()
         self.macro_notify_msg = "视角：斜视（三面可见）"
         self.macro_notify_timer = 90
+
+    def _cubic_camera_is_default(self) -> bool:
+        """当前姿态是否就是默认斜视；四元数 q 与 -q 视为同一姿态。"""
+        from engine.cubic_camera import CubicCamera
+        cam = getattr(self, 'cubic_camera', None)
+        if cam is None:
+            return True
+        default = CubicCamera.oblique_default()
+        dot = abs(sum(a * b for a, b in zip(cam.q, default.q)))
+        return dot >= 1.0 - 1e-6
+
+    def _cubic_vk_push_allowed(self, letter) -> bool:
+        """虚拟键盘端点当前能不能真推一步。
+
+        渲染层每帧已经为盘面箭头做过一次同路径干跑，结果按选中组/切面签名
+        缓存在 `_cubic_arrow_allowed`；有缓存就复用，避免虚拟键盘每帧再跑
+        五遍棋盘试推。没有缓存（测试直接调键盘）才现算。
+        """
+        cache = getattr(self, '_cubic_arrow_allowed', None)
+        if isinstance(cache, dict) and letter in cache:
+            return bool(cache[letter])
+        return bool(self._arrow_move_allowed(letter))
+
+    def _cubic_vk_endpoint_state(self, letter) -> str:
+        """端点状态：pan（没选中→平移）/ push（可推）/ seam（切面步进）/ off。
+
+        绘制、隐藏、点击三处共用这一个判据。off 的端点不画正式按键，也不
+        吃点击——只留一个暗点表示轴还伸到那里。
+        """
+        fam = letter.lower()
+        opted = any(getattr(b, 'be_opted', False) for b in self.game.blocks)
+        if not opted:
+            return 'pan'
+        gap = getattr(self, 'selected_gap', None)
+        if gap and gap[0] == fam:
+            return ('seam' if self._cubic_seam_step_target(letter) is not None
+                    else 'off')
+        return 'push' if self._cubic_vk_push_allowed(letter) else 'off'
+
+    def _cubic_vk_action_visible(self, action) -> bool:
+        """虚拟键盘上这个动作当前是否显示/可点。"""
+        if action.startswith('cubic_'):
+            return self._cubic_vk_endpoint_state(
+                action.split('_', 1)[1]) != 'off'
+        return True
+
+    def _cubic_vk_spin(self, fam, screen_delta_deg):
+        """按屏幕角（正 = 逆时针）绕某条世界轴连续转。"""
+        if fam not in ('r', 'c', 'd'):
+            return False
+        from engine.compat import CUBIC_DIRECTIONS
+        axis = CUBIC_DIRECTIONS[fam.upper()]
+        cam = getattr(self, 'cubic_camera', None)
+        if cam is None:
+            return False
+        # 世界轴朝向观察者时，屏幕逆时针 = 绕轴正角；背向时反过来。
+        toward = cam.view_axis()
+        factor = 1.0 if sum(axis[i] * toward[i] for i in range(3)) >= 0 else -1.0
+        self._cubic_camera_apply(cam.spin(axis, screen_delta_deg * factor),
+                                 label='自由旋转', index=None)
+        return True
+
+    def _cubic_vk_rotate(self, action):
+        """弧轨两端的步进点：绕世界轴转 15°（不推块、不算步、不写历史）。"""
+        if not (action.startswith('gyro_cw_')
+                or action.startswith('gyro_ccw_')):
+            return False
+        fam = action.rsplit('_', 1)[1]
+        if fam not in ('r', 'c', 'd'):
+            return False
+        delta = 15.0 if action.startswith('gyro_ccw_') else -15.0
+        if not self._cubic_vk_spin(fam, delta):
+            return False
+        t_old = float(getattr(self, '_vk_rot_t', {}).get(fam, 0.0))
+        self._vk_rot_t[fam] = max(-1.0, min(1.0, t_old + delta / 90.0))
+        self.macro_notify_msg = (f"绕 {fam} 轴旋转 "
+                                 f"{'+' if delta > 0 else '−'}15°")
+        self.macro_notify_timer = 90
+        return True
 
     def _cubic_drag_begin(self, x, y):
         """棋盘上按下左键 = 可能是拖（旋转），也可能是点（选缝/选块）。
@@ -1901,6 +1988,9 @@ class EventsMixin:
           · 选缝只定切面，不替用户选块——块必须由左键再点一次。
         """
         from engine import cubic_pick
+        seam_step = self._cubic_seam_step_hit(x, y)
+        if seam_step is not None:
+            return self._cubic_step_seam(seam_step, hint='盘面')
         arrow = self._cubic_arrow_hit(x, y)
         if arrow is not None:
             return self._cubic_push_letter(arrow, hint='方向箭头')
@@ -1929,10 +2019,12 @@ class EventsMixin:
         return True
 
     def _cubic_seam_click(self, x, y):
-        """右键：选切面。只接受**两块之间的内部切面**；空白 → 取消选中。
+        """右键：选切面。只拒绝**包围盒边界**上的面；空白 → 取消选中。
 
-        2026-11-19 用户口径：表面上的切面不能选。点中滑塊外表面时不再退回
-        「表面之下一層」的缝；保持现有选中不动，只提示只能选内部切面。
+        2026-11-20 用户口径修正：不是所有外表面都禁选。块堆内部因为拆分/
+        滑动朝空洞露出来的面，只要这条缝两侧都还有块，就应当可选；否则
+        会把「块堆内部露出的面」也一并拒绝。禁选边界面的目的仍是防止
+        选中「最外层整体滑出去」、把所有滑块组都选走。
         只定切面，**不代替左键选块**（用户 2026-11-18：没有缝时禁止选块 →
         反过来选缝也不该顺手把块选了；选完缝再左键点块）。
         """
@@ -1946,11 +2038,12 @@ class EventsMixin:
             hit, self.game.is_valid_gap, locations)
         if seam is None:
             # 表面不是空白：不要顺手取消已有选中，也不要退到下一层缝。
-            if not cubic_pick.face_is_internal(hit, locations):
+            if cubic_pick.face_on_outer_boundary(hit, locations):
                 self.macro_notify_msg = (
-                    "这个面在滑块表面，不能选切面；只能选两块之间的内部切面")
+                    "这个面在滑块堆的外边界表面，不能选切面；"
+                    "只能选穿过滑块堆的内部切面")
             else:
-                self.macro_notify_msg = "这个内部面旁边没有可切的缝"
+                self.macro_notify_msg = "这个面旁边没有可切的内部缝"
             self.macro_notify_timer = 110
             return False
         self.selected_gap = seam
@@ -2004,6 +2097,21 @@ class EventsMixin:
         if isinstance(faces, (list, tuple)):
             return list(faces)
         return []
+
+    def _cubic_lock_click_anchor_against_follow(self, center_delta):
+        """相机因「跟随质心」平移时，把点击锚点等量反向搬回去。
+
+        箭头要相对鼠标不动：锚点存世界坐标，相机 origin 随质心平移会让
+        投影跟着走。`_cubic_follow_center` 每帧移动 Δ，锚点和点击面就
+        +Δ；`project(anchor + Δ, center + Δ)` 正好回到原屏幕点。
+        只抵消跟随造成的平移，不抵消旋转/缩放——转视角时箭头仍随盘转。
+        """
+        for attr in ('_cubic_last_click_p', '_cubic_last_click_surface'):
+            p = getattr(self, attr, None)
+            if p is None or len(p) != 3:
+                continue
+            setattr(self, attr, tuple(float(p[i]) + float(center_delta[i])
+                                     for i in range(3)))
 
     def _cubic_clear_selection(self):
         """右键 / 点空白 / 开始旋转：取消选中与切面预览。"""
@@ -2212,7 +2320,7 @@ class EventsMixin:
             return False
         moving = [b for b in self.game.blocks if getattr(b, 'be_opted', False)]
         before = [tuple(int(v) for v in b.location[:3]) for b in moving]
-        moved = self.move_selected_blocks(letter)
+        moved = self.move_selected_blocks(letter, step=self.current_step)
         if not moved:
             self.macro_notify_msg = f"按 {letter} 推不动（被挡住或会断开）"
             self.macro_notify_timer = 120
@@ -2238,30 +2346,41 @@ class EventsMixin:
                          for b, loc in zip(moving, before)):
             self._finalize_move_selection(moving)
         if getattr(self, 'animation_enabled', True) and before:
-            self._cubic_start_anim(letter, before)
+            # 移动和动画用同一个 step（当前关卡值，二/三/四级都适用）。
+            # 若只给动画默认 1 格，整组走 N 格时反向位移组只覆盖中途位置，
+            # 一部分选中的块不在动画组里，画面就会各块先后/不同步。
+            # 撤销重做读 move_info['step']，本来就没这个问题。
+            self._cubic_start_anim(letter, before, step=self.current_step)
         return moved
 
-    #: 三维推一步的滑动时长（毫秒）。二维走 animation_duration，三维单独一档：
-    #: 一步是整组 9 块沿一个轴滑，太快看不出「整组在动」。
-    CUBIC_ANIM_MS = 140
+    #: 三维每格滑动时长（毫秒）。二维走 animation_duration，三维单独一档：
+    #: 一步是选中整组沿一个轴滑，太快看不出「整组在动」。
+    CUBIC_ANIM_MS = 300
 
-    def _cubic_start_anim(self, letter, before_locs):
+    def _cubic_start_anim(self, letter, before_locs, step=1):
         """记下「这一推从哪滑到哪」，交给渲染层做收尾位移（逻辑已提交）。
 
         只动渲染：真实位置早已就位，这里给刚动过的那组一个逐渐归零的反向位移，
         画面上就是滑过去的一段。拾取 / 判定 / 选中始终用真实位置。
+
+        `step` 是本次实际滑动的格数（宏播放传 `op['step']`，手推传
+        `self.current_step`），位移向量与落点都按它缩放，否则多格动作的动画
+        只画一格。
         """
         from engine.compat import CUBIC_DIRECTIONS
         vec = CUBIC_DIRECTIONS.get(letter)
         if vec is None:
             return
-        dr, dc, dd = vec
+        _n = max(1, int(step or 1))
+        dr, dc, dd = (vec[0] * _n, vec[1] * _n, vec[2] * _n)
         # 逻辑坐标 (r,c,d) → 世界 (X=c, Y=d, Z=r)，与 cubic_view 同一口径
         delta = (dc, dd, dr)
         after = {(r + dr, c + dc, d + dd) for (r, c, d) in before_locs}
         self.cubic_anim = {
             't0': pygame.time.get_ticks(),
-            'ms': int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS)),
+            # 与二维同口径：cubic_anim_ms 是「每格」时长，本次走 N 格就乘 N。
+            'ms': max(1, int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS))
+                      * max(1, _n)),
             'delta': tuple(float(v) for v in delta),
             'group': frozenset(after),
         }
@@ -2302,10 +2421,77 @@ class EventsMixin:
         off = (-dx * k, -dy * k, -dz * k)
         return {loc: off for loc in anim['group']}
 
+    def _cubic_seam_step_target(self, letter):
+        """当前切面沿法线走到下一个**有效**切面；没有就返回 None。
+
+        字母沿用法线轴的正负端：大写 = 正方向 line+1，小写 = 负方向 line-1。
+        跳过中间没有块、或只有一侧有块的空线，避免按一下只挪到一条不存在的缝。
+        """
+        gap = getattr(self, 'selected_gap', None)
+        if not gap or gap[0] not in ('r', 'c', 'd') or gap[1] is None:
+            return None
+        fam = gap[0]
+        if letter.lower() != fam:
+            return None
+        from engine import cubic_pick
+        idx = cubic_pick.FAMILY_TO_LOC_INDEX[fam]
+        vals = [int(b.location[idx]) for b in self.game.blocks]
+        if not vals:
+            return None
+        lo, hi = min(vals), max(vals) - 1
+        step = 1 if letter.isupper() else -1
+        line = int(gap[1]) + step
+        while lo <= line <= hi:
+            if self.game.is_valid_gap(fam, line):
+                return int(line)
+            line += step
+        return None
+
+    def _cubic_step_seam(self, letter, hint=''):
+        """切到下一条切面；保留同一参考块并沿新切面重选同侧组。"""
+        target = self._cubic_seam_step_target(letter)
+        fam = (getattr(self, 'selected_gap', None) or (None,))[0]
+        if target is None:
+            self.macro_notify_msg = (
+                f"沿 {letter.lower()} 轴这个方向没有下一个可用切面")
+            self.macro_notify_timer = 110
+            return False
+        self.selected_gap = (fam, target)
+        blocks = list(getattr(self.game, 'blocks', ()))
+        ref = getattr(self, 'selected_block', None)
+        if ref is None or all(b is not ref for b in blocks):
+            ref = next((b for b in blocks if getattr(b, 'be_opted', False)), None)
+        n = 0
+        if ref is not None:
+            self.game.opt(fam, target, ref)
+            self.selected_block = ref
+            n = len([b for b in blocks if getattr(b, 'be_opted', False)])
+        else:
+            for b in blocks:
+                b.be_opted = False
+        if hint:
+            hint = f'（{hint}）'
+        self.macro_notify_msg = (
+            f"切面 {fam}{target}：沿新切面重选 {n} 块{hint}"
+            if n else f"切面 {fam}{target}：请左键选要滑的滑块{hint}")
+        self.macro_notify_timer = 120
+        return True
+
+    def _cubic_seam_step_hit(self, x, y):
+        """点在盘面的「上/下一个切面」按钮上？"""
+        for item in getattr(self, '_cubic_seam_step_buttons', ()):
+            letter, rect = item[0], item[1]
+            if rect.collidepoint(x, y):
+                return letter
+        return None
+
     def _cubic_vk_six(self, letter):
-        """虚拟键盘六键：有选中就推，没选中就平移盘面（方案 §1「操作入口」）。"""
+        """虚拟键盘六键：法线轴切面步进；其余有选中推、没选中平移。"""
         if self._tut_board_locked():
             return False
+        gap = getattr(self, 'selected_gap', None)
+        if gap and gap[0] in ('r', 'c', 'd') and letter.lower() == gap[0]:
+            return self._cubic_step_seam(letter, hint='虚拟键盘')
         if any(getattr(b, 'be_opted', False) for b in self.game.blocks):
             return self._cubic_push_letter(letter, hint='六键')
         return self._cubic_pan_by(letter)
@@ -3076,7 +3262,7 @@ class EventsMixin:
                              'seam_alpha': getattr(self, 'cubic_seam_alpha', 110),
                              'rot_sensitivity': getattr(
                                  self, 'cubic_rot_sensitivity', 1.0),
-                             'anim_ms': getattr(self, 'cubic_anim_ms', 140)})
+                             'anim_ms': getattr(self, 'cubic_anim_ms', 300)})
                     continue
 
                 elif action == 'camera_set':
@@ -5206,18 +5392,30 @@ class EventsMixin:
         normalized = (mx - track.x) / track.width
         normalized = max(0.0, min(1.0, normalized))
         if getattr(self, 'cubic_mode', False):
-            # 三维：视觉页这条滑条写 cubic_anim_ms（60..400），不动二维值。
+            # 三维：视觉页这条滑条写 cubic_anim_ms（50..1000，每格），不动二维值。
             # 若正在播三维动画，按进度重锚——和右侧速度滑条同一口径。
-            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
-            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 50)
+            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 1000)
             new_ms = int(lo + normalized * (hi - lo))
-            old_ms = max(1, int(getattr(self, 'cubic_anim_ms', 140)))
-            if (new_ms != old_ms and self.animating
-                    and getattr(self, '_anim_duration_override', None)):
-                elapsed = pygame.time.get_ticks() - self.anim_start_time
-                progress = elapsed / old_ms
-                self.anim_start_time = pygame.time.get_ticks() - int(progress * new_ms)
-                self._anim_duration_override = new_ms
+            old_ms = max(1, int(getattr(self, 'cubic_anim_ms', 300)))
+            if new_ms != old_ms:
+                # 多格动画的 override 是「总时长」，先还原这次动画走几格，
+                # 再按新每格时长重算总时长；否则进度会被按一格时长错误重锚。
+                old_total = int(getattr(self, '_anim_duration_override', None)
+                                or old_ms)
+                step = max(1, int(round(old_total / float(old_ms))))
+                new_total = new_ms * step
+                if self.animating and getattr(self, '_anim_duration_override', None):
+                    elapsed = pygame.time.get_ticks() - self.anim_start_time
+                    progress = elapsed / max(1, old_total)
+                    self.anim_start_time = pygame.time.get_ticks() - int(progress * new_total)
+                    self._anim_duration_override = new_total
+                anim = getattr(self, 'cubic_anim', None)
+                if anim and anim.get('ms'):
+                    progress = (pygame.time.get_ticks() - anim['t0']) / max(1, anim['ms'])
+                    anim['ms'] = new_ms * max(1, int(round(anim['ms'] / float(old_ms))))
+                    anim['t0'] = pygame.time.get_ticks() - int(
+                        max(0.0, min(1.0, progress)) * anim['ms'])
             self.cubic_anim_ms = new_ms
             return
         new_duration = int(100 + normalized * 900)
@@ -5796,8 +5994,10 @@ class EventsMixin:
         """执行一个三维宏操作；成功返回 True，失败置中断态并返回 False。
 
         三维动作是整组沿轴滑：先把目标组 opt 出来，再直接走
-        `move_selected_blocks`（cubic 分支即时提交、不排 2D 动画），
-        避免 `_cubic_push_letter` 的 cubic_anim 只做视觉、不推进宏队列。
+        `move_selected_blocks`（cubic 分支即时提交、不排 2D 动画）。
+        逻辑仍然即时提交，但提交后补一段渲染位移（`_cubic_start_anim`，
+        与手推一步同一套）；宏队列的推进由 `_pump_cubic_macro_playback`
+        按这段位移播完的时机逐步驱动，不再一帧跑完整串。
         """
         gap_type = op['gap_type']
         gap_line = int(op['gap_line'])
@@ -5859,6 +6059,11 @@ class EventsMixin:
             self._clear_macro_selection_if_disabled()
             return False
 
+        # 动画：先把这一组「移动前」的格子记下来，提交后交给渲染层补滑动
+        # （与手推一步共用 `_cubic_start_anim`）。不记的话宏播放没有位移可画。
+        _before = [tuple(int(v) for v in b.location[:3])
+                   for b in self.game.blocks if getattr(b, 'be_opted', False)]
+
         if not self.move_selected_blocks(direction, step):
             self.macro_error_msg = (
                 f'宏在第 {self.macro_exec_index + 1} 步失败: '
@@ -5870,6 +6075,10 @@ class EventsMixin:
             self._clear_macro_selection_if_disabled()
             return False
 
+        # 逻辑已落位，这里只排渲染位移（`cubic_anim`），不推进逻辑。
+        if getattr(self, 'animation_enabled', True) and _before:
+            self._cubic_start_anim(direction, set(_before), step)
+
         # 即时提交路径：没有动画收尾会推进 index，这里自己推进。
         self.macro_exec_index += 1
         self._pending_move_info = None
@@ -5879,6 +6088,31 @@ class EventsMixin:
             except Exception:
                 pass
         return True
+
+    def _pump_cubic_macro_playback(self):
+        """三维宏播放的逐帧推进（主循环每帧调一次）。
+
+        三维动作是即时提交、不走二维动画层，所以宏队列没有「动画收尾回调」
+        可以用来推进；原先一次调用就在 `while` 里跑完整串，画面直接跳终态。
+        这里补一条帧驱动：上一步的渲染位移（`cubic_anim`）播完才推下一步。
+        """
+        if not getattr(self, 'cubic_mode', False):
+            return
+        if not getattr(self, 'macro_executing', False):
+            return
+        if getattr(self, 'animating', False):
+            return
+        if getattr(self, 'macro_selecting_base', False):
+            return
+        # 渲染位移还在播：自己按时间判到期（渲染层不一定会被调用来清它）
+        anim = getattr(self, 'cubic_anim', None)
+        if anim is not None:
+            if pygame.time.get_ticks() - anim['t0'] < max(1, int(anim['ms'])):
+                return
+            self.cubic_anim = None
+        if self.macro_exec_index >= len(getattr(self, 'macro_exec_ops', None) or ()):
+            return
+        self._execute_next_macro_step()
 
     def _execute_next_macro_step(self):
         """执行宏队列中的下一个操作（无动画时用循环迭代，避免长解法递归爆栈）"""
@@ -5957,6 +6191,10 @@ class EventsMixin:
             # 三维宏：r/c/d 三族 + 六向，走独立分支。二维的 h/v 校验、
             # 侧别和 _find_block_on_side 都不认层号，混在一起会静默走错轴。
             if op.get('kind') == 'cubic' or gap_type in ('r', 'c', 'd'):
+                # 上一步的收尾位移还没画完就先等着：立刻执行下一步会把
+                # `cubic_anim` 覆盖掉，画面上仍是一帧跳完（等于没动画）。
+                if getattr(self, 'cubic_anim', None):
+                    return
                 if not self._execute_cubic_macro_op(op):
                     return
                 continue

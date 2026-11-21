@@ -29,16 +29,16 @@ class AnimationMixin:
         """缓出插值函数"""
         return 1.0 - (1.0 - t) ** 2
 
-    def _slide_sound_duration(self):
+    def _slide_sound_duration(self, step=1):
         """滑动声的「本次动画时长」口径。
 
-        二维用 animation_duration；三维一步动画读的是 cubic_anim_ms。
-        两者必须同源，否则三维把速度拖到 202ms 时，画面在滑、声音却仍按
-        120ms 瞬时口径算音量（用户 2026-11-18 报「动画没音效/不同步」）。
+        二维用每格 ``animation_duration``；三维用每格 ``cubic_anim_ms``，
+        本次移动走 N 格时两者都按 N 乘算，保证画面和声音用同一个总时长。
         """
         if getattr(self, 'cubic_mode', False):
-            return max(1, int(getattr(self, 'cubic_anim_ms',
-                                       getattr(self, 'CUBIC_ANIM_MS', 140))))
+            base = max(1, int(getattr(self, 'cubic_anim_ms',
+                                      getattr(self, 'CUBIC_ANIM_MS', 300))))
+            return base * max(1, int(step or 1))
         return getattr(self, 'animation_duration', 0) or self.SLIDE_INSTANT_MS
 
     def _play_slide_sound(self, steps=1, duration_ms=None):
@@ -61,7 +61,7 @@ class AnimationMixin:
         if audio is None:
             return
         if duration_ms is None:
-            duration_ms = self._slide_sound_duration()
+            duration_ms = self._slide_sound_duration(steps)
         audio.play_slide(steps, duration_ms=duration_ms)
 
     def start_animation(self, selected, target_positions):
@@ -77,10 +77,17 @@ class AnimationMixin:
         self._anim_dc = self.anim_end_pos[0][1] - self.anim_start_pos[0][1]
         self._undo_redo_type = None  # 普通移动动画，清除撤销/重做标记
         # 三维：打乱演示 / 撤销重做 / 宏回放都走这条 2D 动画管線，但时长必须
-        # 跟右侧「速度」滑条同源（cubic_anim_ms），否则三维里调速度是哑的。
+        # 跟右侧「速度」滑条同源（cubic_anim_ms，每格毫秒）。本次动画走几格
+        # 就乘几格；否则二/三/四级一次走 N 格却只用一格时长，每格被隐性加速。
         if getattr(self, 'cubic_mode', False):
-            self._anim_duration_override = max(
-                1, int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS)))
+            _step = 1.0
+            for _s, _e in zip(self.anim_start_pos, self.anim_end_pos):
+                if _s and _e:
+                    _step = max(_step, max(abs(float(_e[_i]) - float(_s[_i]))
+                                           for _i in range(min(len(_s), len(_e)))))
+            _base = max(1, int(getattr(self, 'cubic_anim_ms',
+                                       getattr(self, 'CUBIC_ANIM_MS', 300))))
+            self._anim_duration_override = max(1, int(_base * _step))
         self.animating = True
 
     def _apply_drag_origin(self):
@@ -447,7 +454,7 @@ class AnimationMixin:
         self._sel_anim_move_info = None  # 三维没有二维式提交后刷新
         self._sel_anim_is_undo = bool(is_undo)
         self._sel_anim_is_think = False
-        self._sel_anim_timer = max(45, (getattr(self, 'cubic_anim_ms', 140)
+        self._sel_anim_timer = max(45, (getattr(self, 'cubic_anim_ms', 300)
                                         + 300) // 17)
 
     def _flash_shuffle_selection(self, moved_positions, gap):
@@ -607,19 +614,30 @@ class AnimationMixin:
         y = max(track_top, min(track_bottom, mouse_y))
         normalized = (y - track_top) / track_height
         if getattr(self, 'cubic_mode', False):
-            # 三维：这条滑条写 cubic_anim_ms（60..400），不动二维 animation_duration
-            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 60)
-            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 400)
+            # 三维：这条滑条写 cubic_anim_ms（50..1000，每格），不动二维值
+            lo = getattr(self, 'CUBIC_ANIM_MIN_MS', 50)
+            hi = getattr(self, 'CUBIC_ANIM_MAX_MS', 1000)
             new_ms = int(lo + normalized * (hi - lo))
-            old_ms = max(1, int(getattr(self, 'cubic_anim_ms', 140)))
+            old_ms = max(1, int(getattr(self, 'cubic_anim_ms', 300)))
             # 正在播三维动画：按已播进度重锚 start_time，拖动滑条立刻变速，
-            # 不会出现「改了值但要等下一步」或进度跳变。
-            if (new_ms != old_ms and self.animating
-                    and getattr(self, '_anim_duration_override', None)):
-                elapsed = pygame.time.get_ticks() - self.anim_start_time
-                progress = elapsed / old_ms
-                self.anim_start_time = pygame.time.get_ticks() - int(progress * new_ms)
-                self._anim_duration_override = new_ms
+            # 不会出现「改了值但要等下一步」或进度跳变。多格动画的 override
+            # 是总时长，先还原步数，再按新每格时长重算。
+            if new_ms != old_ms:
+                old_total = int(getattr(self, '_anim_duration_override', None)
+                                or old_ms)
+                step = max(1, int(round(old_total / float(old_ms))))
+                new_total = new_ms * step
+                if self.animating and getattr(self, '_anim_duration_override', None):
+                    elapsed = pygame.time.get_ticks() - self.anim_start_time
+                    progress = elapsed / max(1, old_total)
+                    self.anim_start_time = pygame.time.get_ticks() - int(progress * new_total)
+                    self._anim_duration_override = new_total
+                anim = getattr(self, 'cubic_anim', None)
+                if anim and anim.get('ms'):
+                    progress = (pygame.time.get_ticks() - anim['t0']) / max(1, anim['ms'])
+                    anim['ms'] = new_ms * max(1, int(round(anim['ms'] / float(old_ms))))
+                    anim['t0'] = pygame.time.get_ticks() - int(
+                        max(0.0, min(1.0, progress)) * anim['ms'])
             self.cubic_anim_ms = new_ms
             return
         new_duration = int(self.SPEED_MIN_MS + normalized * (self.SPEED_MAX_MS - self.SPEED_MIN_MS))

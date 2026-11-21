@@ -96,6 +96,9 @@ def main():
     check(mid is not None and abs(mid[list(mid)[0]][0]) < abs(offs[list(offs)[0]][0]),
           '中途位移比开始时小（在收尾）')
     _t.sleep(0.12)
+    # 总时长已改成「每格 × 步数」，sleep 固定值不够稳；直接把起点拨到
+    # 超过本次总时长，验证到期收尾。
+    anim['t0'] = pygame.time.get_ticks() - anim['ms'] - 1
     end = g._cubic_anim_offsets()
     check(end is None, '时长到了就彻底清掉（不留尾巴）')
     check(g.cubic_anim is None, '动画状态已释放')
@@ -155,11 +158,11 @@ def main():
     # 右侧「速度」拖了没反应）。这里故意把二维值设成 80、三维设成 60，
     # 断言本次动画用的是三维值。
     g4.animation_duration = 80
-    g4.cubic_anim_ms = 60
+    g4.cubic_anim_ms = 50
     g4.shuffle_puzzle(confirm=False)
     check(getattr(g4, '_shuffle_demo_active', False), '打乱进入演示')
-    check(getattr(g4, '_anim_duration_override', None) == 60,
-          '演示动画用的是 cubic_anim_ms（60），不是二维 80',
+    check(getattr(g4, '_anim_duration_override', None) == 50,
+          '演示动画用的是 cubic_anim_ms（50），不是二维 80',
           getattr(g4, '_anim_duration_override', None))
     check(g4.animation_duration == 80, '三维演示不改二维 animation_duration')
     # 演示中途拖速度：当前这一步也要立刻变速（重锚 start_time），不是等下一步
@@ -167,14 +170,14 @@ def main():
     _t_live_sleep.sleep(0.02)
     g4.draw_right_panel()
     _t_live = g4.anim_start_time
-    g4._update_slider_from_mouse(g4.slider_rect.bottom)   # 最慢 400
-    check(g4.cubic_anim_ms == 400 and g4._anim_duration_override == 400,
-          '演示中拖到最慢：当前步改用 400ms',
+    g4._update_slider_from_mouse(g4.slider_rect.bottom)   # 最慢 1000
+    check(g4.cubic_anim_ms == 1000 and g4._anim_duration_override == 1000,
+          '演示中拖到最慢：当前步改用 1000ms',
           (g4.cubic_anim_ms, g4._anim_duration_override))
     check(g4.anim_start_time != _t_live, '当前步已按进度重锚，不是等下一步')
-    g4._update_slider_from_mouse(g4.slider_rect.top)      # 回到最快 60
-    check(g4.cubic_anim_ms == 60 and g4._anim_duration_override == 60,
-          '再拖回最快：当前步改回 60ms')
+    g4._update_slider_from_mouse(g4.slider_rect.top)      # 回到最快 50
+    check(g4.cubic_anim_ms == 50 and g4._anim_duration_override == 50,
+          '再拖回最快：当前步改回 50ms')
     check(getattr(g4, 'animating', False) and bool(getattr(g4, 'anim_blocks', None)),
           '演示靠 start_animation 推进（有自己的块列表）')
     # 不靠真实 sleep（Windows 定时器+测试机负载会把 30ms 拖过 60ms，导致动画
@@ -226,6 +229,47 @@ def main():
     check((((0, 0, 0), 0, 1) in keys_anim3)
           and (((0, 0, 0), 0, 1) not in keys_base3),
           '移动块贴死时被剔除的那一面，动画中重新画出来')
+
+    print('I. 各等级手推：动画步数必须跟实际位移一致，不能只按 1 格')
+    for level in (2, 3, 4):
+        g6 = make_gui()
+        g6.new_cubic_puzzle(5, 5, 5, level)
+        g6.cubic_gap = 0.12
+        g6.animation_enabled = True
+        select_front(g6)
+        moving = [b for b in g6.game.blocks if b.be_opted]
+        before = [tuple(int(v) for v in b.location[:3]) for b in moving]
+        chosen = None
+        for letter in ('c', 'C', 'd', 'D', 'r', 'R'):
+            fp, _reason = g6.game.try_move_ex(letter, g6.current_step)
+            if fp:
+                chosen = letter
+                break
+        check(chosen is not None, f'{level} 級找到可推方向', chosen)
+        if chosen is None:
+            continue
+        moved = g6._cubic_push_letter(chosen)
+        anim = getattr(g6, 'cubic_anim', None)
+        after = {tuple(int(v) for v in b.location[:3]) for b in moving}
+        deltas = {tuple(int(b.location[i]) - p[i] for i in range(3))
+                  for b, p in zip(moving, before)}
+        mag = (max(abs(v) for v in next(iter(deltas))) if deltas else -1)
+        check(moved and isinstance(anim, dict), f'{level} 級推成功且建立动画')
+        check(len(deltas) == 1 and mag == level,
+              f'{level} 級整组确实走了 {level} 格（{deltas}）')
+        check(anim['group'] == frozenset(after),
+              f'{level} 級动画组覆盖全部块（{len(anim["group"])} vs {len(after)}）')
+        check(anim['ms'] == g6.cubic_anim_ms * level,
+              f'{level} 級总时长 = 每格 {g6.cubic_anim_ms}ms × {level} = '
+              f'{g6.cubic_anim_ms * level}ms', anim['ms'])
+        # 起跑时机重锚到当前帧，避免 push 与取样之间的几毫秒让位移提前收敛
+        anim['t0'] = pygame.time.get_ticks()
+        offs = g6._cubic_anim_offsets()
+        vals = set(offs.values()) if offs else set()
+        check(offs is not None and len(vals) == 1
+              and abs(max(abs(v) for v in next(iter(vals))) - level)
+              <= max(1e-6, level * 0.02),
+              f'{level} 級所有块共用同一个 {level} 格反向位移（{vals}）')
 
     print('=' * 60)
     if FAILED:

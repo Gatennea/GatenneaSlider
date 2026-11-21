@@ -143,7 +143,8 @@ class HistoryMixin:
             group = {(int(p[0]) + dr, int(p[1]) + dc, int(p[2]) + dd)
                      for p in move_info['moved_positions']}
             anim_delta = world
-        ms = int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS))
+        # 与二维同口径：cubic_anim_ms 是每格时长，撤销/重做也按本次步数乘算。
+        ms = int(getattr(self, 'cubic_anim_ms', self.CUBIC_ANIM_MS)) * max(1, step)
         if ms <= 0:
             return
         self.cubic_anim = {
@@ -153,8 +154,8 @@ class HistoryMixin:
             'group': frozenset(group),
         }
         # 撤销/重做也是整组沿缝滑回去：与二维同口径，动画启动后出声。
-        # 时长必须取 cubic_anim_ms，否则声音速度会按二维 animation_duration
-        # 换算，三维里调「速度」滑条就听不出差别。
+        # 时长取 cubic_anim_ms * 本次步数（每格口径），否则三维里调「速度」
+        # 滑条时，多格撤销仍只按一格时长算。
         self._play_slide_sound(max(1, int(move_info.get('step', 1))),
                                duration_ms=ms)
 

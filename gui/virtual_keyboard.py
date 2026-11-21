@@ -12,6 +12,7 @@
 import math
 
 import pygame
+import pygame.gfxdraw  # noqa: F401  （pygame-ce 里要显式 import 才有 .gfxdraw）
 
 
 class VirtualKeyboardMixin:
@@ -45,8 +46,10 @@ class VirtualKeyboardMixin:
         self.vk_jump_btn_rect = None
         self.vk_sticky = True     # 粘滞开关：开=撤销/重做连续播放；关=撤销/重做单步
         self.cubic_pan = [0.0, 0.0]   # 三维平移盘面：屏幕像素偏移（不碰逻辑坐标）
+        self.vk_rot_drag = None       # 三维弧轨拖动：{fam, center, theta, last_ang}
+        self._vk_rot_t = {}           # 三维弧轨把手位置：fam -> [-1, 1]
 
-    _VK_CUBIC_AREA = 200      # 三维「坐标轴」区域边长（六个端点要有地方张开）
+    _VK_CUBIC_AREA = 232      # 三维「陀螺仪」区域边长：端点 + 弧轨 + 中心复位
 
     def _vk_dir_area_height(self) -> int:
         """方向区高度：三维用一块方形区域（坐标轴要朝四面八方伸），其余按行数算。"""
@@ -95,6 +98,14 @@ class VirtualKeyboardMixin:
         端点仍然落在 44×44 的命中盒里（与二维键位同尺寸，好点），只是位置不再
         按行排。
         """
+        # 拖动旋转时把整块坐标轴图冻住：相机每转一点，轴投影就会跟着转，
+        # 若边拖边重算，弧轨和端点会在鼠标底下跑掉。拖动期间沿用按下瞬间
+        # 的布局，松手后的下一次布局再按新视角重排。
+        frozen = getattr(self, '_vk_frozen_cubic', None)
+        if getattr(self, 'vk_rot_drag', None) and frozen:
+            self._vk_cubic_rot_tracks = frozen['tracks']
+            return {k: v.copy() for k, v in frozen['rects'].items()}
+
         btn = 40          # 三维端点键：比二维略小，六个都要挤进坐标轴区域
         area_h = self._VK_CUBIC_AREA
         cx, cy = self._vk_cubic_origin()
@@ -107,7 +118,7 @@ class VirtualKeyboardMixin:
             if plen < 0.15:
                 # 这条轴正对镜头：投影理论上是一个点。不硬造第三根线，两个端盘
                 # 沿**斜对角**错开（不压在另外两根轴上），一个朝观察者、一个背向。
-                off = 24
+                off = 30
                 px, py = (cx + off, cy + off) if letter.isupper() else (cx - off, cy - off)
             else:
                 px, py = cx + dx * r, cy + dy * r
@@ -150,6 +161,79 @@ class VirtualKeyboardMixin:
                     moved = True
             if not moved:
                 break
+
+        # 中心复位：只有视角已经离开默认斜视才出现；回正后自己消失。
+        if not self._cubic_camera_is_default():
+            rects['gyro_reset'] = pygame.Rect(cx - 8, cy - 8, 16, 16)
+
+        # 内圈「旋转弧轨」：每条轴中段一段 36×36 的半圆弧轨，弧上有一个
+        # 可拖把手；弧两端各有一个 15° 步进点。弧轨只占位，不当作普通按钮，
+        # 拖动由 handle_virtual_keyboard_event 的 vk_rot_drag 分支处理。
+        self._vk_cubic_rot_tracks = {}
+        occupied = [rects['cubic_' + c] for c in 'cCdDrR' if 'cubic_' + c in rects]
+        if 'gyro_reset' in rects:
+            occupied.append(rects['gyro_reset'])
+        for fam in ('r', 'c', 'd'):
+            hi = rects.get('cubic_' + fam.upper())
+            if hi is None:
+                continue
+            dx, dy = hi.centerx - cx, hi.centery - cy
+            dist = math.hypot(dx, dy)
+            box = None
+            axis_theta = None
+            if dist >= 68.0:
+                ux, uy = dx / dist, dy / dist
+                axis_theta = math.atan2(-uy, ux)
+                for t in range(int(dist - 42.0), 25, -4):
+                    cand = pygame.Rect(int(cx + ux * t - 18),
+                                       int(cy + uy * t - 18), 36, 36)
+                    if not self.vk_panel_rect.contains(cand):
+                        continue
+                    if any(cand.colliderect(r) for r in occupied):
+                        continue
+                    box = cand
+                    break
+            if box is None:
+                # 轴几乎正对镜头：在原点周围找空位放一段同色弧轨。
+                start = {'r': 90, 'c': 210, 'd': 330}.get(fam, 90)
+                for radius in (28, 36, 44, 52, 60, 68, 76, 84, 92):
+                    for k in range(12):
+                        ang = math.radians(start + k * 30)
+                        cand = pygame.Rect(
+                            int(cx + math.cos(ang) * radius - 18),
+                            int(cy - math.sin(ang) * radius - 18), 36, 36)
+                        if not self.vk_panel_rect.contains(cand):
+                            continue
+                        if any(cand.colliderect(r) for r in occupied):
+                            continue
+                        box = cand
+                        axis_theta = ang
+                        break
+                    if box is not None:
+                        break
+            if box is None:
+                continue
+            # 弧两端：各让出 60° 的短弧段，起点 = 左端 15° 步进，终点 = 右端。
+            half_span = math.radians(60.0)
+            start_pt = (box.centerx + math.cos(axis_theta + math.pi / 2.0
+                                               - half_span) * 12.0,
+                        box.centery - math.sin(axis_theta + math.pi / 2.0
+                                               - half_span) * 12.0)
+            end_pt = (box.centerx + math.cos(axis_theta + math.pi / 2.0
+                                             + half_span) * 12.0,
+                      box.centery - math.sin(axis_theta + math.pi / 2.0
+                                             + half_span) * 12.0)
+            rects['gyro_cw_' + fam] = pygame.Rect(
+                int(start_pt[0] - 6), int(start_pt[1] - 6), 12, 12)
+            rects['gyro_ccw_' + fam] = pygame.Rect(
+                int(end_pt[0] - 6), int(end_pt[1] - 6), 12, 12)
+            self._vk_cubic_rot_tracks[fam] = {
+                'box': box,
+                'theta': axis_theta,
+                'span': half_span,
+            }
+            occupied.append(box)
+
         return rects
 
 
@@ -377,6 +461,67 @@ class VirtualKeyboardMixin:
             btxt = self.dialog_font.render("跳到", True, (255, 255, 255))
             self.screen.blit(btxt, btxt.get_rect(center=btn_rect.center))
 
+    def _vk_cubic_rot_track_hit(self, pos):
+        """点在一条旋转弧轨的 36×36 占位框里？"""
+        mx, my = pos
+        for fam, data in getattr(self, '_vk_cubic_rot_tracks', {}).items():
+            if data['box'].collidepoint(mx, my):
+                return fam, data
+        return None, None
+
+    def _vk_cubic_rot_angle(self, data, pos):
+        """鼠标相对弧轨圆心的数学角（屏幕 y 轴翻转）。"""
+        cx, cy = data['box'].center
+        return math.atan2(cy - pos[1], pos[0] - cx)
+
+    def _vk_cubic_rot_begin(self, pos):
+        fam, data = self._vk_cubic_rot_track_hit(pos)
+        if fam is None:
+            return False
+        box = data['box']
+        dist = math.hypot(pos[0] - box.centerx, pos[1] - box.centery)
+        if not (5.0 <= dist <= 20.0):
+            return False          # 点弧线附近才抓得住把手，点圆心不启动
+        ang = self._vk_cubic_rot_angle(data, pos)
+        mid = data['theta'] + math.pi / 2.0
+        span = data.get('span', math.pi / 2.0)
+        rel = (ang - mid + math.pi) % (2.0 * math.pi) - math.pi
+        t = max(-1.0, min(1.0, rel / span))
+        self._vk_rot_t[fam] = t
+        self.vk_rot_drag = {'fam': fam, 'data': data, 'last_ang': ang}
+        self._vk_frozen_cubic = {
+            'rects': {k: v.copy() for k, v in self.vk_rects.items()
+                      if k.startswith('cubic_') or k.startswith('gyro_')},
+            'tracks': {f: {'box': d['box'].copy(), 'theta': d['theta'],
+                           'span': d.get('span', math.pi / 2.0)}
+                       for f, d in self._vk_cubic_rot_tracks.items()},
+        }
+        return True
+
+    def _vk_cubic_rot_update(self, pos):
+        drag = getattr(self, 'vk_rot_drag', None)
+        if not drag:
+            return False
+        fam = drag['fam']
+        data = drag['data']
+        ang = self._vk_cubic_rot_angle(data, pos)
+        delta = (math.degrees(ang - drag['last_ang']) + 180.0) % 360.0 - 180.0
+        drag['last_ang'] = ang
+        t_old = float(self._vk_rot_t.get(fam, 0.0))
+        t_new = max(-1.0, min(1.0, t_old + delta / 90.0))
+        applied = (t_new - t_old) * 90.0
+        self._vk_rot_t[fam] = t_new
+        if abs(applied) > 0.01:
+            self._cubic_vk_spin(fam, applied)
+        return True
+
+    def _vk_cubic_rot_end(self):
+        if getattr(self, 'vk_rot_drag', None):
+            self.vk_rot_drag = None
+            self._vk_frozen_cubic = None
+            return True
+        return False
+
     def handle_virtual_keyboard_event(self, event):
         """处理虚拟键盘事件，返回 True 表示事件已消费"""
         if not getattr(self, 'show_virtual_keyboard', False):
@@ -392,6 +537,8 @@ class VirtualKeyboardMixin:
                 # 关闭按钮
                 if self.vk_close_rect and self.vk_close_rect.collidepoint(mx, my):
                     self.show_virtual_keyboard = False
+                    self.vk_rot_drag = None
+                    self._vk_frozen_cubic = None
                     return True
                 # 标题栏 → 拖动
                 if self.vk_title_rect and self.vk_title_rect.collidepoint(mx, my):
@@ -406,11 +553,17 @@ class VirtualKeyboardMixin:
                     self.vk_jump_focus = False
                     self._vk_do_jump()
                     return True
-                # 功能按钮
+                # 功能按钮（隐藏的条件键仍占位，但吃掉点击、不触发动作）
                 for action, rect in self.vk_rects.items():
                     if rect.collidepoint(mx, my):
+                        if not self._cubic_vk_action_visible(action):
+                            return True
                         self._vk_trigger_action(action)
                         return True
+                # 旋转弧轨：端点步进键已经在上面处理；其余落在弧轨框里的
+                # 点击 = 抓住把手开始拖，不走普通按钮。
+                if self._vk_cubic_rot_begin((mx, my)):
+                    return True
                 # 面板空白处：消费事件，避免穿透到地图
                 self.vk_jump_focus = False
                 return True
@@ -440,6 +593,8 @@ class VirtualKeyboardMixin:
             return False
 
         elif event.type == pygame.MOUSEMOTION:
+            if self._vk_cubic_rot_update(event.pos):
+                return True
             if self.vk_dragging:
                 self.vk_pos[0] = event.pos[0] - self.vk_drag_offset[0]
                 self.vk_pos[1] = event.pos[1] - self.vk_drag_offset[1]
@@ -447,6 +602,8 @@ class VirtualKeyboardMixin:
                 return True
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if self._vk_cubic_rot_end():
+                return True
             if self.vk_dragging:
                 self.vk_dragging = False
                 return True
@@ -459,6 +616,12 @@ class VirtualKeyboardMixin:
         if self._tut_board_locked():
             return
         # 三维三轴六键：有选中 = 推一步，没选中 = 平移盘面（方案 §1）
+        if action.startswith('gyro_cw_') or action.startswith('gyro_ccw_'):
+            self._cubic_vk_rotate(action)
+            return
+        if action == 'gyro_reset':
+            self._cubic_view_oblique()
+            return
         if action.startswith('cubic_'):
             self._cubic_vk_six(action.split('_', 1)[1])
             return
@@ -552,6 +715,39 @@ class VirtualKeyboardMixin:
                 self.macro_notify_msg = "移动方向与缝隙方向不匹配"
                 self.macro_notify_timer = 90
 
+    @staticmethod
+    def _vk_aa_circle(surface, color, center, radius, width=0):
+        """gfxdraw 抗锯齿圆：填充/描边都比 draw.circle 干净。"""
+        cx, cy, r = int(round(center[0])), int(round(center[1])), int(radius)
+        if width <= 0:
+            pygame.gfxdraw.filled_circle(surface, cx, cy, r, color)
+            pygame.gfxdraw.aacircle(surface, cx, cy, r, color)
+            return
+        pygame.gfxdraw.aacircle(surface, cx, cy, r, color)
+        if width >= 2:
+            pygame.gfxdraw.aacircle(surface, cx, cy, r - 1, color)
+
+    @staticmethod
+    def _vk_aa_polygon(surface, color, points):
+        """gfxdraw 抗锯齿多边形：轴端箭头、盘心箭头不再锯齿。"""
+        pts = [(int(round(x)), int(round(y))) for x, y in points]
+        pygame.gfxdraw.filled_polygon(surface, pts, color)
+        pygame.gfxdraw.aapolygon(surface, pts, color)
+
+    @staticmethod
+    def _vk_aa_line(surface, color, a, b, width=2):
+        """抗锯齿直线：用两条 1px aaline 并排模拟 2px，斜轴不会阶梯化。"""
+        if width <= 1:
+            pygame.draw.aaline(surface, color, a, b)
+            return
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        ln = math.hypot(dx, dy) or 1.0
+        px, py = -dy / ln * 0.6, dx / ln * 0.6
+        for s in (-1.0, 1.0):
+            pygame.draw.aaline(surface, color,
+                               (a[0] + px * s, a[1] + py * s),
+                               (b[0] + px * s, b[1] + py * s))
+
     def _vk_draw_cubic_buttons(self, rects, mouse_pos):
         """三维键盘：画成一根**投影坐标系**（三根带箭头的轴 + 六个可点端盘）。
 
@@ -579,7 +775,7 @@ class VirtualKeyboardMixin:
             if lo is None or hi is None:
                 continue
             color = axis_colors[fam]
-            pygame.draw.line(self.screen, color, lo, hi, 2)
+            self._vk_aa_line(self.screen, color, lo, hi, 2)
             # 正端箭头：朝轴外侧
             ux, uy = hi[0] - lo[0], hi[1] - lo[1]
             ln = math.hypot(ux, uy)
@@ -597,7 +793,7 @@ class VirtualKeyboardMixin:
             pxv, pyv = -uy, ux
             tip = (hi[0] + ux * (r_hi + 13.0), hi[1] + uy * (r_hi + 13.0))
             base = (hi[0] + ux * (r_hi + 3.0), hi[1] + uy * (r_hi + 3.0))
-            pygame.draw.polygon(self.screen, color, [
+            self._vk_aa_polygon(self.screen, color, [
                 (int(tip[0]), int(tip[1])),
                 (int(base[0] + pxv * 6.0), int(base[1] + pyv * 6.0)),
                 (int(base[0] - pxv * 6.0), int(base[1] - pyv * 6.0)),
@@ -607,6 +803,8 @@ class VirtualKeyboardMixin:
         #    （用户 2026-11-18：去掉虚拟键盘字母标记，避免相机旋转后
         #     字母与实际方向对不上，反而误导。）
         for action, rect in rects.items():
+            if action.startswith('gyro_') or action == 'gyro_reset':
+                continue                  # 陀螺环/复位在端点之后单独画
             if not action.startswith('cubic_'):
                 # 粘滞 / 撤销 / 重做：与二维同一套画法
                 hovered = rect.collidepoint(mouse_pos)
@@ -627,15 +825,172 @@ class VirtualKeyboardMixin:
             fam = letter.lower()
             hovered = rect.collidepoint(mouse_pos)
             center = rect.center
+            state = self._cubic_vk_endpoint_state(letter)
+            if state == 'off':
+                # 条件不满足：不画按键、不吃点击；只留暗点保住轴端位置。
+                self._vk_aa_circle(self.screen, (62, 64, 72), center, 3)
+                continue
+            if state == 'seam':
+                # 法线轴：两个端点不做推块，改成「上/下一个切面」。
+                # 方形键 + 双箭头，和圆形推块端盘明确区分。
+                dx, dy = center[0] - origin[0], center[1] - origin[1]
+                ln = math.hypot(dx, dy)
+                if ln < 1e-6:
+                    dx, dy = ((0.0, -1.0) if letter.isupper()
+                              else (0.0, 1.0))
+                else:
+                    dx, dy = dx / ln, dy / ln
+                btn = pygame.Rect(center[0] - 14, center[1] - 14, 28, 28)
+                self._cubic_draw_seam_step_button(
+                    self.screen, btn, (dx, dy), axis_colors[fam],
+                    True, hovered)
+                continue
+
             radius = min(rect.width, rect.height) // 2 - 1
-            fill = axis_colors[fam] if hovered else (46, 48, 56)
-            pygame.draw.circle(self.screen, fill, center, radius)
-            pygame.draw.circle(self.screen, axis_colors[fam], center, radius, 2)
+            if state == 'push':
+                fill = (axis_colors[fam] if hovered
+                        else tuple(int(v * 0.42) for v in axis_colors[fam]))
+            else:                          # pan：没选中，端点只做视角平移
+                fill = (72, 76, 86) if hovered else (40, 42, 50)
+            self._vk_aa_circle(self.screen, fill, center, radius)
+            self._vk_aa_circle(self.screen, axis_colors[fam], center, radius,
+                               2 if state == 'push' else 1)
 
-        # ③ 原点
-        pygame.draw.circle(self.screen, (228, 228, 238), origin, 4)
-        pygame.draw.circle(self.screen, (120, 120, 136), origin, 6, 1)
+            dx, dy = center[0] - origin[0], center[1] - origin[1]
+            ln = math.hypot(dx, dy)
+            if ln < 1e-6:
+                continue
+            ux, uy = dx / ln, dy / ln
+            if state == 'push':
+                # 可用方向预览：盘心一个朝轴外的白色小箭头，表示这一端能推。
+                tip = (center[0] + ux * 10.0, center[1] + uy * 10.0)
+                base = (center[0] + ux * 3.0, center[1] + uy * 3.0)
+                pxv, pyv = -uy * 4.5, ux * 4.5
+                self._vk_aa_polygon(self.screen, (245, 246, 250), [
+                    (tip[0], tip[1]),
+                    (base[0] + pxv, base[1] + pyv),
+                    (base[0] - pxv, base[1] - pyv),
+                ])
+            else:
+                # 平移提示：一小段垂直双向箭头，和“推”的单向箭头区分。
+                ax, ay = center[0] - ux * 7.0, center[1] - uy * 7.0
+                bx, by = center[0] + ux * 7.0, center[1] + uy * 7.0
+                self._vk_aa_line(self.screen, (210, 214, 224),
+                                 (ax, ay), (bx, by), 1)
+                pxv, pyv = -uy * 2.5, ux * 2.5
+                for ex, ey, s in ((ax, ay, 1.0), (bx, by, -1.0)):
+                    self._vk_aa_polygon(self.screen, (210, 214, 224), [
+                        (ex, ey),
+                        (ex + ux * s * 4.0 + pxv, ey + uy * s * 4.0 + pyv),
+                        (ex + ux * s * 4.0 - pxv, ey + uy * s * 4.0 - pyv),
+                    ])
 
+        # ③ 内圈旋转弧轨：半圆弧 + 可拖把手 + 两端 15° 步进箭头
+        for fam, data in getattr(self, '_vk_cubic_rot_tracks', {}).items():
+            hovered = data['box'].collidepoint(mouse_pos)
+            self._cubic_draw_rot_track(
+                self.screen, data, axis_colors[fam],
+                float(self._vk_rot_t.get(fam, 0.0)), hovered)
+
+        # ④ 原点：视角已离开默认斜视时，这里变成「复位」小键；否则只是白点
+        if 'gyro_reset' in rects:
+            hovered = rects['gyro_reset'].collidepoint(mouse_pos)
+            self._cubic_draw_reset_button(self.screen, origin, hovered)
+        else:
+            self._vk_aa_circle(self.screen, (228, 228, 238), origin, 4)
+            self._vk_aa_circle(self.screen, (120, 120, 136), origin, 6, 1)
+
+
+    def _cubic_draw_arc_arrow(self, surface, center, radius, start_deg,
+                              end_deg, color, width=2):
+        """画一段圆弧并在末端加箭头；角度按数学正方向（屏幕 y 轴翻转）。"""
+        steps = 18
+        pts = []
+        for i in range(steps + 1):
+            a = math.radians(start_deg + (end_deg - start_deg) * i / steps)
+            pts.append((center[0] + math.cos(a) * radius,
+                        center[1] - math.sin(a) * radius))
+        if len(pts) >= 2:
+            pygame.draw.lines(surface, color, False,
+                              [(int(x), int(y)) for x, y in pts], width)
+        # 末端切线方向（沿参数前进方向）
+        ax, ay = pts[-2]
+        bx, by = pts[-1]
+        tx, ty = bx - ax, by - ay
+        ln = math.hypot(tx, ty) or 1.0
+        tx, ty = tx / ln, ty / ln
+        px, py = -ty * 4.0, tx * 4.0
+        tip = (bx + tx * 4.0, by + ty * 4.0)
+        pygame.draw.polygon(surface, color, [
+            (int(tip[0]), int(tip[1])),
+            (int(bx + px), int(by + py)),
+            (int(bx - px), int(by - py)),
+        ])
+
+    def _cubic_draw_rot_track(self, surface, data, color, t, hovered=False):
+        """旋转弧轨：120° 短弧 + 中点可拖把手；两端 −/+ 是 15° 步进点。
+
+        这段线条很细、半径又小，直接在屏幕上 draw.lines/draw.circle 会出现
+        明显锯齿（用户说的「毛毛糙糙」）。统一先在 4 倍画布上画，再
+        smoothscale 回 36×36：弧线、十字、白芯把手都能拿到抗锯齿边缘。
+        """
+        ss = 4
+        size = data['box'].width
+        big = pygame.Surface((size * ss, size * ss), pygame.SRCALPHA)
+        c = size * ss / 2.0
+        radius = 12.0 * ss
+        theta = math.degrees(data['theta'])
+        span = math.degrees(data.get('span', math.pi / 2.0))
+        ink = tuple(min(255, int(v * 1.2)) for v in color) if hovered else color
+        dim = tuple(max(0, int(v * 0.55)) for v in color)
+        width = (3 if hovered else 2) * ss
+        # 整条弧轨是一条连续的槽线，不再拆成两枚箭头（避免又读成「环」）。
+        pts = []
+        for i in range(49):
+            a = math.radians(theta + 90.0 - span
+                             + 2.0 * span * i / 48.0)
+            pts.append((int(c + math.cos(a) * radius),
+                        int(c - math.sin(a) * radius)))
+        pygame.draw.lines(big, ink, False, pts, width)
+        # 三道刻度：中点 + 两边半个行程。
+        for k in (-span / 2.0, 0.0, span / 2.0):
+            a = math.radians(theta + 90.0 + k)
+            pygame.draw.line(
+                big, dim,
+                (int(c + math.cos(a) * 9.0 * ss),
+                 int(c - math.sin(a) * 9.0 * ss)),
+                (int(c + math.cos(a) * 15.0 * ss),
+                 int(c - math.sin(a) * 15.0 * ss)), ss)
+        # 两端步进点：左 −15°，右 +15°，用短横/十字标出来。
+        for sign in (-1.0, 1.0):
+            a = math.radians(theta + 90.0 + sign * span)
+            ex = int(c + math.cos(a) * radius)
+            ey = int(c - math.sin(a) * radius)
+            arm = 3 * ss
+            pygame.draw.line(big, ink, (ex - arm, ey), (ex + arm, ey),
+                             2 * ss)
+            if sign > 0:
+                pygame.draw.line(big, ink, (ex, ey - arm), (ex, ey + arm),
+                                 2 * ss)
+        # 把手：沿弧 t∈[-1,1]，0 在弧中点；白芯 + 轴色描边。
+        a = math.radians(theta + 90.0 + t * span)
+        hx = c + math.cos(a) * radius
+        hy = c - math.sin(a) * radius
+        pygame.draw.circle(big, (32, 34, 42),
+                           (int(hx), int(hy)), 5 * ss)
+        pygame.draw.circle(big, (245, 246, 250),
+                           (int(hx), int(hy)), 4 * ss)
+        pygame.draw.circle(big, ink, (int(hx), int(hy)), 4 * ss, ss)
+        small = pygame.transform.smoothscale(big, (size, size))
+        surface.blit(small, data['box'].topleft)
+
+    def _cubic_draw_reset_button(self, surface, center, hovered=False):
+        """中心复位键：一个小回环箭头；只有视角离开默认斜视时出现。"""
+        color = (255, 214, 102) if hovered else (200, 204, 214)
+        self._vk_aa_circle(surface, (40, 42, 50), center, 8)
+        self._vk_aa_circle(surface, color, center, 8, 1)
+        self._cubic_draw_arc_arrow(surface, center, 5.0, 300.0, 30.0,
+                                   color, 1)
 
     def _vk_do_jump(self):
         """虚拟键盘“跳到某步”：输入的数字对应历史记录第 N 步的状态"""

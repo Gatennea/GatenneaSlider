@@ -755,12 +755,12 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         # 动画速度范围（毫秒/步）：越小越快
         self.SPEED_MIN_MS = 50
         self.SPEED_MAX_MS = 1000
-        # 三维推一步的动画时长范围（毫秒）。右侧栏「速度」滑条在三维态写
-        # `cubic_anim_ms`，与二维 animation_duration 分开：三维一步是整组 9
-        # 块沿一个轴滑，时长口径本来就不一样。
-        self.CUBIC_ANIM_MIN_MS = 60
-        self.CUBIC_ANIM_MAX_MS = 400
-        self.cubic_anim_ms = 140
+        # 三维推一步的动画时长范围（毫秒/格）。与二维同一口径：二维
+        # animation_duration 也是「每格」时长，三维一次走 N 格时总时长
+        # 按 N 乘上去，避免高关卡每格被隐性加速。
+        self.CUBIC_ANIM_MIN_MS = 50
+        self.CUBIC_ANIM_MAX_MS = 1000
+        self.cubic_anim_ms = 300
         self.animation_duration = 300  # 毫秒
         self.animation_enabled = True          # 滑动动画（滑块移动/撤销重做滑动）
         self.selection_animation_enabled = True  # 选中动画（撤销/重做、求解/宏播放时的缝隙与滑块组高亮；判据见 renderer._selection_visuals_enabled）
@@ -1439,6 +1439,9 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         self.cubic_camera = CubicCamera.oblique_default()
         self.cubic_view_label = '斜视'
         self.cubic_view_index = None
+        self._vk_rot_t = {}
+        self.vk_rot_drag = None
+        self._vk_frozen_cubic = None
         self.cubic_zoom = 1.0
         self.cubic_dragging = False
         # 第 3 步的点击态：drag 起手记起点、松手看有没有移动（移动 = 旋转，
@@ -2570,6 +2573,8 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
 
                 # 流式求解：把后台算好的段接进宏播放管道（边算边播）
                 self._pump_stream_segments()
+                # 三维宏播放：按每步收尾位移播完的时机逐步推进（否则一帧跳完）
+                self._pump_cubic_macro_playback()
                 # 自动规划·流式：hybrid 边算边播 + 历史最优 checkpoint
                 self._pump_auto_stages()
 

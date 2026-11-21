@@ -114,11 +114,27 @@ def seam_edge_distance(faces, hit_face, point, band: float = 28.0) -> float:
 
 
 def face_is_internal(face, locations) -> bool:
-    """该面另一侧是否还有块（= 内部面 = 一条可以选的缝）。"""
+    """该面另一侧是否紧邻还有块（= 真正的两块之间的内壁）。"""
     loc, axis, sign = face['loc'], face['axis'], face['sign']
     other = list(loc)
     other[AXIS_TO_LOC_INDEX[axis]] += sign
     return tuple(other) in locations
+
+
+def face_on_outer_boundary(face, locations) -> bool:
+    """这个面外沿的切面是否已经越过整个块堆（包围盒边界）。
+
+    注意不是「这一格旁边有没有块」：拆分/滑动后，块堆内部可能空出格子，
+    朝空洞的块面不是包围盒边界，仍然应该可选。判据只看这条缝线两侧
+    在整个块堆里是否都还有块（`_is_internal_cut`）。
+    """
+    if not locations:
+        return True
+    family = AXIS_TO_FAMILY[face['axis']]
+    idx = AXIS_TO_LOC_INDEX[face['axis']]
+    v = int(face['loc'][idx])
+    line = v if face['sign'] > 0 else v - 1
+    return not _is_internal_cut(family, line, locations)
 
 
 #: 世界轴 → 缝族名（X=c / Y=d / Z=r）
@@ -201,31 +217,33 @@ def _is_internal_cut(family, line, locations) -> bool:
 
 
 def seam_of_internal_face(face, is_valid_gap, locations=None):
-    """「块与块之间的那块墙」→ (缝族, 缝线号)；不是内壁就返回 None。
+    """「非包围盒边界」的块面 → (缝族, 缝线号)；边界表面返回 None。
 
-    2026-11-17 用户口径：拆分渲染之后，缝里的那两面墙本来就画出来了（gap>0
-    时不再剔除内部面），它们就是**看得见的缝**——直接拿它们当判定基准，比
-    「按面边猜一条线」直观得多。外表面（贴棋盘边界、背后没有块）一律不算，
-    否则会把包围盒的平面也当成缝（引擎其实允许「最外一层整体滑出去」，那是
-    包围盒的平面，不该被点出来）。
+    2026-11-20 用户口径修正：不是所有外表面都禁选，只有**包围盒边界**上的
+    面禁选。块堆内部拆分/滑动后朝空洞露出来的面，只要这条缝线两侧都还有
+    块，就是可选的内部切面。这样也正好防止选中「最外一层整体滑出去」那种
+    会选走所有滑块组的包围盒平面。
 
     面在坐标 ``v``，法向 ``sign``：sign>0 时这块在缝的**低**侧，墙立在 v+1 上
     → 缝线号 v；sign<0 时在高侧，墙立在 v 上 → 缝线号 v-1。
     """
-    if locations is None or not face_is_internal(face, locations):
+    if locations is None:
         return None
     family = AXIS_TO_FAMILY[face['axis']]
     idx = AXIS_TO_LOC_INDEX[face['axis']]
     v = int(face['loc'][idx])
     line = v if face['sign'] > 0 else v - 1
+    if not _is_internal_cut(family, line, locations):
+        return None
     if not is_valid_gap(family, line):
         return None
     return (family, line)
 
 
-# 旧调用点（测试）仍写 seam_of_face；2026-11-19 起它与 seam_of_internal_face
-# 语义完全相同（外表面一律 None、不再回退下一层），故只留一个别名，别再存两份
-# 逐字相同的函数体（static_lint 的 DB 重复定义会报 NEW）。
+# 旧调用点（测试）仍写 seam_of_face；2026-11-20 起它与
+# seam_of_internal_face 语义相同：只有包围盒边界表面返回 None，块堆内部
+# 朝空洞露出的面只要两侧还有块就可选。故只留一个别名，别再存两份逐字
+# 相同的函数体（static_lint 的 DB 重复定义会报 NEW）。
 seam_of_face = seam_of_internal_face
 
 
