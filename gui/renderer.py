@@ -6447,6 +6447,17 @@ class RendererMixin:
         text_surf_alpha.blit(self.status_font.render(msg, True, color), (0, 0))
         self.screen.blit(text_surf_alpha, (box_x + pad_x, box_y + pad_y))
 
+    def _seam_disable_hint_text(self):
+        """本局被编辑器关掉缝族时的常驻提示文案；没有则回 None（§69）。"""
+        if getattr(self, '_med_active', False):
+            return None
+        seams = getattr(getattr(self, 'game', None), 'disabled_seams', None)
+        if not seams:
+            return None
+        descs = [s.get('desc') or s.get('name') or '?' for s in seams]
+        return ('本模型关闭了部分方向的缝：' + '、'.join(descs)
+                + '——这些方向推不动是设计如此，试试其它方向')
+
     def draw_seam_disable_hint(self):
         """谜题 HUD：本谜题被编辑器关掉的缝族提示。
 
@@ -6454,19 +6465,20 @@ class RendererMixin:
         这里把「关了哪些、为什么不滑」明示出来（设计如此）。只在**非编辑器**
         且**当前谜题确有被关缝族**时画；棋盘类谜题（非模型）的 game 没这个
         属性，getattr 回落 None → 不画。
+
+        §69 文案改提纲挈领 + 人话（见 `_seam_disable_hint_text`）：原
+        「已关闭缝族：X（这些缝在谜题里不滑动，是设计如此）」把术语放最前、
+        括号里才讲人话；现在开头点题、结尾给行动指引。位置随调用点挪到
+        非模态浮层末尾（GUI.py 主循环），不再被 records/annotation/menu_bar
+        盖住。
         """
-        if getattr(self, '_med_active', False):
+        msg = self._seam_disable_hint_text()
+        if not msg:
             return
-        seams = getattr(getattr(self, 'game', None), 'disabled_seams', None)
-        if not seams:
-            return
-        descs = [s.get('desc') or s.get('name') or '?' for s in seams]
-        msg = ('已关闭缝族：' + '、'.join(descs)
-               + '（这些缝在谜题里不滑动，是设计如此）')
         f = self.status_font
         surf = f.render(msg, True, (235, 235, 235))
         pad_x, pad_y = 12, 6
-        box_w = surf.get_width() + pad_x * 2
+        box_w = min(surf.get_width() + pad_x * 2, self.screen_width - 24)
         box_h = surf.get_height() + pad_y * 2
         box_x = 12
         box_y = self.screen_height - self.status_bar_height - box_h - 8

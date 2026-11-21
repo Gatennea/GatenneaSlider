@@ -28,6 +28,72 @@
   死编号段 + 删 `_test_face_bevel` 两条人造状态锁 + 挂起记录定性改写；
   连锁 hint 不动。完成后只 commit 不推送不合并，回报节号由主目录核销。
 
+- **认领 §六十五（立体光效对捆绑样式无效）+ §六十六（蓝色溢出灰色边框）
+  + §六十九（模型禁用缝族提示加强）**，2026-11-21 用户点名三节一起交
+  trae（dev 分支，B 组·光效）。同属 `_draw_face_bevel` / renderer 体系
+  串行做。§65 两条捆绑路径（方形 `_draw_bandaged_groups_play`、多边形
+  `group_render.draw_group_pieces`，helper 要抽到零依赖公共处、只沿组外
+  轮廓压带）；§66 给 `_draw_face_bevel` 加 `edge_inset_px` 沿边法向内推
+  `border_w/2`，五处调用点同步、默认 0 零变化；§69 走轻量路（改文案+挪
+  位置+就近点击提示，不动几何层）。护栏：三形态开/关截图、关态逐像素、
+  真实像素断言。完成后只 commit 不推送不合并。
+
+## §六十五 / §六十六 / §六十九 完成记录（2026-11-21，本分支已 commit，待核销）
+
+- **§66 蓝色溢出**：`_draw_face_bevel` 抽到新文件 `gui/lighting.py`
+  （零依赖光照原语，renderer 与 group_render 共用——§65 要求 group_render
+  不能反向依赖 renderer），加 `edge_inset_px` 参数：每条边沿法向朝质心推入
+  `border_w/2`，带外沿落在框内沿、灰框独占边界。六处调用点同步传参：
+  AA 路径 `border_w*S/2`（超采样面）、三角/米字/方形 `border_w/2`、
+  三维段三分支各自的实际线宽 `_fbw/2`、聚合板**只有真会被描边的块**
+  （特殊态，与描边趟同条件）才让位——普通块不描灰边，让位反而留空隙。
+  默认 0 保持旧调用零变化。像素实证：直角矩形静态下新旧无差（后画的框
+  本就盖住带外沿），真实盘面（圆角+浮点）新旧差 10656px（带整体内移）、
+  三形态开态背景侧扫描 0 溢出。
+- **§65 捆绑光效**：`draw_group_pieces` / `draw_group_chunks` 加
+  `bevel=None, edge_inset_px=0.0` 可调用参数（零依赖，renderer 按
+  face_bevel_enabled 传 `_draw_face_bevel` 或 None）。**只压组外轮廓边**
+  （pieces 按 internal flags 过滤、chunks 按邻格在不在组内过滤边 0-3），
+  组内共用边跳过——不现组内分隔线，守「一整块刚体」观感。三条 poly
+  调用点（三角/米字/聚合板）共用 `_draw_bandaged_groups_poly`，gate 在
+  方法内接一次三形态同步生效（铁律 §3）；方形矩形组在
+  `_draw_bandaged_groups_play` 内接（同普通块口径 corner_inset +
+  edge_inset）。三维不接（face_shade 自带光效）。
+- **§69 禁缝提示（轻量路）**：①常驻文案抽 `_seam_disable_hint_text()`
+  改提纲挈领+人话（「本模型关闭了部分方向的缝：X——推不动是设计如此，
+  试试其它方向」，原版术语在前、括号里才讲人话）；②调用点从
+  draw_status_bar 之后挪到主循环**非模态浮层末尾**（原位被
+  records/annotation/menu_bar 一层层盖，用户「提示太弱」根因之一）；
+  ③就地附句抽 `_reject_msg_with_seams(base)`：点「画得出选不中」的缝时
+  （`_sq_click_query` 的 dead_seam/edge_hint 两分支汇合处）追加「（本模型
+  关闭了X方向的缝，设计如此）」——只陈述事实不宣称点的就是它（同分支
+  还覆盖外沿/切口，避免错误归因）；无 seams 原样返回不静默改旧提示。
+  文案加宽夹 `screen_width-24` 防溢出。
+- **测试 `_test_face_bevel.py` 38→67 断言**：§66 段（让位单元有区分度
+  ——inset=2 边界线保持底色 vs 默认 0 带压边界、三趟模拟框外侧背景/框
+  保持灰、三形态开态背景侧扫描 0 越界）；§65 段（方形 2x2 与三角 3 块
+  捆绑局关态零调用/开态走 helper/两帧不同、离屏 pieces+chunks 组外有带
+  组内无带=不现分隔线）；§69 段（无 seams 不提示、文案点题/列族/行动
+  指引、draw 真画出框、方形外沿死缝端到端保持旧文案、附句入口有/无
+  seams 两态）。**踩坑记录**：①`SliderMatrix.__slots__` 挂不了
+  disabled_seams——seams 只有模型局（EngineGame）才有，附句端到端在
+  shatter 全活局扫不出死缝（12 条不活接触边是特定场景），故附句拼装
+  抽成真实产品入口 `_reject_msg_with_seams` 直测、端到端用方形外沿
+  （`_test_sq_seam_hint` 同款）测「不静默改旧文案」半边；②`GAP_UNSELECTABLE_MSG`
+  是 MoveMixin 类属性非模组级。
+- **截图验收（离屏，同一 draw 路径）**：`s6566_sq/tri/mi_{on,off}.png`
+  六张 + `s6566_band_sq_on/band_tri_on.png`（像素抽验：捆绑矩形上边
+  +24 左边 +17 提亮、下边 -24 压暗、灰框在外）+ `s69_hint.png`
+  （左下提示框清晰未被盖）/ `s69_nohint.png` 对照。存工作区根不入库。
+  HTTP 实例方案中途放弃（main.py 启动 stdout 缓冲抓不到 token），离屏
+  与 HTTP 走同一 draw 函数，视觉证据等价。
+- **回归**：group_render / bandage_forms / bandage_click / sq_seam_hint /
+  reject_text_only / mi_h3_hint / poly_render / shatter_gui / generic_gap_band /
+  gap_second_step 全绿；`_test_engine_gui` 首跑「引擎/经典打乱在 6× 以内」
+  红一次，同状态重跑 2 次全绿——打乱步数统计的随机波动，本次改动只碰
+  绘制与点击提示、不碰打乱逻辑（按 §23 记录，复发再对拍未修基线）。
+  compileall 0；static_lint NEW=1 为他人 `_tmp_save` 存量。
+
 ## §六十二 完成记录（2026-11-20，本分支已 commit，待核销）
 
 - **第 2 层（核心）**：三维面片倒角画法抽成模块级公共函数

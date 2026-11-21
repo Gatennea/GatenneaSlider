@@ -2686,8 +2686,6 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 if not getattr(self, '_med_active', False):
                     self.draw_right_panel()
                 self.draw_status_bar()
-                # 谜题 HUD：被编辑器关掉的缝族提示（编辑器激活时不画）
-                self.draw_seam_disable_hint()
 
                 # 动态更新编辑菜单的求解按钮文字
                 shortcut = self._format_menu_shortcut('auto_solve')
@@ -2736,6 +2734,11 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
                 self.draw_tutorial_prompt()
                 self.draw_tutorial_panel()
                 self.draw_update_banner()
+                # §69：被编辑器关掉的缝族提示——挪到非模态浮层末尾（原在
+                # draw_status_bar 之后、浮动面板之前，被 records/annotation/
+                # menu_bar 一层层盖掉，用户「提示太弱」的根因之一）；
+                # 编辑器激活时不画（见函数内 gate）。模态对话框仍在其上。
+                self.draw_seam_disable_hint()
 
                 # 模态对话框（后画，真正最上层；盖住上述所有浮层）
                 # 除文件浏览器外，全部走 160ms 淡入（S4-3）——文件浏览器自持

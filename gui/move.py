@@ -909,6 +909,7 @@ class MoveMixin:
         if (gap is None and block is None
                 and getattr(self, '_pick_fill', None) is None):
             seam = _dead_seam or self._rejected_seam_at(screen_x, screen_y)
+            _reject_msg = None
             if seam is not None:
                 # 排障日誌：與米字格的 mi_seam_reject 對位，事後能看出
                 # 玩家說的「點了沒反應」到底落在哪條外沿縫上
@@ -920,8 +921,7 @@ class MoveMixin:
                 # 通用通道的否決原因有兩種，但對玩家無本質區別 → 統一提示。
                 # main 是文字态（无图形反馈），故不设置 rejected_gap 载体
                 # （图形态的 archive 分支才会用它画拒绝白线/叉号）。
-                self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
-                self.macro_notify_timer = 120
+                _reject_msg = self.GAP_UNSELECTABLE_MSG
             elif _edge_hint is not None:
                 # 點在「看得到、卻不是可選縫」的邊線上（棋盤外沿，或走位後
                 # 錯位形成的 T 接切口）。舊代碼這裡 block 非空、gap 為空，
@@ -929,9 +929,27 @@ class MoveMixin:
                 op_log.log('sq_seam_reject', gap=None, form='generic',
                            reason='nonplayable_edge')
                 # 这条边不是可選縫，無法畫拒絕白線，但提示語仍統一
-                self.macro_notify_msg = self.GAP_UNSELECTABLE_MSG
+                _reject_msg = self.GAP_UNSELECTABLE_MSG
+            if _reject_msg is not None:
+                self.macro_notify_msg = self._reject_msg_with_seams(_reject_msg)
                 self.macro_notify_timer = 120
         return gap, block
+
+    def _reject_msg_with_seams(self, base_msg):
+        """「选不动」提示 + 当前模型禁缝附句（§69 就地提示）。
+
+        被禁的缝在几何层没有 seam 条目（编辑器保存时不写），点它落的正是
+        「画得出、选不中」分支——玩家此刻想知道的就是「为什么推不动」，
+        附句把这次点击和左下角常驻提示连起来。只陈述「本模型关闭了哪些
+        方向」，不宣称玩家点的就是它（同一分支还覆盖外沿/切口，避免错误
+        归因）。无 disabled_seams 时原样返回 base（不静默改旧提示）。
+        """
+        seams = getattr(getattr(self, 'game', None), 'disabled_seams', None)
+        if not seams:
+            return base_msg
+        descs = '、'.join(s.get('desc') or s.get('name') or '?'
+                         for s in seams)
+        return base_msg + f'（本模型关闭了{descs}方向的缝，设计如此）'
 
     def _mi_click_query(self, screen_x: int, screen_y: int) -> tuple:
         """米字格一次點擊的命中結果 (縫隙, 滑塊)，選不動的縫改走提示。
