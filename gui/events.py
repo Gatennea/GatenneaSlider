@@ -116,7 +116,13 @@ _IME_TEXT_INPUT_CONTEXTS = (
          getattr(g, 'custom_active_field', None))),
     ('design_name', lambda g: bool(getattr(g, '_ann_design_name_active', False)),
      lambda g: (getattr(g, '_cubic_edit_name_rect', None)
+                or getattr(g, '_ann_style_rename_rect', None)   # §64 改名框
                 or getattr(g, '_ann_design_name_rect', None))),
+    # 模型编辑器名字框（§58）：模型名要能输中文，必须先登记才开 SDL TEXTINPUT。
+    # 锚点 med['name_rect'] 每帧重建（_med_draw），用 getattr 兜住未打开态。
+    ('model_name',
+     lambda g: bool((getattr(g, '_med', None) or {}).get('name_active')),
+     lambda g: (getattr(g, '_med', None) or {}).get('name_rect')),
 )
 
 
@@ -6719,6 +6725,11 @@ class EventsMixin:
         tgt = menu_delete.item_target(item)
         if tgt is None:
             return None
+        # §68：入库示范样式只读——不给删（玩家想改就先「另存为自建」）
+        if tgt['kind'] == 'style':
+            from gui import design_styles
+            if design_styles.style_source(self.config_dir, tgt['key']) == 'builtin':
+                return None
         if tgt['kind'] == 'model' and self._current_kind() == tgt['key']:
             return None
         if (tgt['kind'] == 'style'

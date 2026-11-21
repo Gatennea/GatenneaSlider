@@ -1883,10 +1883,12 @@ class ModelEditorMixin:
         name = med['name'].strip()
         if not name:
             med['name_active'] = True
-            self._med_notify('先给模型起个名字（字母/数字/_/-）')
+            self._med_notify('先给模型起个名字（字母/数字/汉字/_/-）')
             return False
+        # Python 3 的 str.isalnum() 已含汉字（§58 实测），这道过滤只挡
+        # 路径分隔符/空白/标点，别把文案写回“只能英文”误导玩家。
         if not all(c.isalnum() or c in '_-' for c in name):
-            self._med_notify('名字只能含字母、数字、_ 和 -')
+            self._med_notify('名字只能含字母、数字、汉字、_ 和 -')
             return False
         from engine.model_loader import DEFAULT_MODEL_DIR
         path = os.path.join(DEFAULT_MODEL_DIR, f'{name}.json')
@@ -2188,6 +2190,10 @@ class ModelEditorMixin:
                     or getattr(self, 'show_puzzle_menu', False)
                     or getattr(self, 'show_macro_menu', False)):
                 return False
+        # §58：模型名框的字符走 TEXTINPUT（IME 中文选字只从这个事件投递）。
+        # 未聚焦时回 False 放行；聚焦时收下，别再让 KEYDOWN.unicode 插字。
+        if event.type == pygame.TEXTINPUT:
+            return self._med_text_input(event)
         if event.type == pygame.KEYDOWN:
             return self._med_key(event)
         if event.type == pygame.MOUSEBUTTONDOWN:
@@ -2223,6 +2229,21 @@ class ModelEditorMixin:
         med['open_list'] = None            # 点外面 = 取消
         return True
 
+    def _med_text_input(self, event) -> bool:
+        """模型名框的字符输入（§58）：整串插入，ASCII/中文都走这里。
+
+        IME 组字结果只会以 TEXTINPUT 投递，KEYDOWN.unicode 收不到中文；
+        故 KEYDOWN 那条分支不再插字，避免 ASCII 键两路各插一次（§57 坑）。
+        """
+        med = self._med
+        if not med.get('name_active'):
+            return False
+        text = ''.join(ch for ch in (event.text or '') if ch.isprintable())
+        room = 40 - len(med['name'])
+        if room > 0:
+            med['name'] += text[:room]
+        return True
+
     def _med_key(self, event) -> bool:
         med = self._med
         k = event.key
@@ -2239,10 +2260,8 @@ class ModelEditorMixin:
                 med['name_active'] = False
             elif k == pygame.K_BACKSPACE:
                 med['name'] = med['name'][:-1]
-            else:
-                ch = event.unicode
-                if ch and len(ch) == 1 and (ch.isalnum() or ch in '_-'):
-                    med['name'] += ch
+            # 字符已由 _med_text_input 从 TEXTINPUT 整串插入（§58），
+            # 这里不再看 event.unicode，否则 ASCII 一次按键插两个字符。
             return True
         ctrl = bool(event.mod & pygame.KMOD_CTRL) if hasattr(event, 'mod') else False
         if med.get('array_dlg') is not None:

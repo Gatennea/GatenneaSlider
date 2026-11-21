@@ -135,7 +135,9 @@ a = Analysis(
            ('beginner_archive', 'beginner_archive'),
            # assets/ 是外部资源统一根（打包后根 = _MEIPASS）：
            #   picture/ 封面·开机帧·splash、ui/arrows/ 方向键贴图、
-           #   audio/{sound,music}/ 音效与背景乐（gui/audio.py 读）。
+           #   audio/{sound,music}/ 音效与背景乐（gui/audio.py 读）、
+           #   presets/design_styles/ 入库示范样式（§68，design_styles.builtin_styles_dir 读；
+           #     随 _collect_assets 整树进包，别改成跳过 assets 子目录）。
            # ⚠️ 走 _collect_assets() 过滤：music/ 下的 .wav 是母带、不进包，
            #   正式素材是压缩格式 assets/audio/music/bgm.ogg（约 5MB）。
            *_collect_assets()],

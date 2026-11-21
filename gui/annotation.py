@@ -371,6 +371,13 @@ class AnnotationMixin:
         self._ann_design_name_rect = None   # 工具条上的样式名输入框（每帧重建）
         self._ann_design_menu_rect = None   # 样式库下拉矩形（每帧重建）
         self._ann_design_menu_items = []    # 样式库下拉项 [(name, rect)]
+        # 样式改名（§64）：None=普通下拉；否则是正在改名的旧样式名。
+        # 复用 §58 的 _ann_design_style_name / _ann_design_name_active 输入，
+        # 不另造输入框；改名框画在下拉顶端，锚点存 _ann_style_rename_rect。
+        self._ann_style_renaming = None
+        self._ann_style_rename_rect = None
+        self._ann_style_rename_confirm = False  # 新名撞已有样式时的二次确认
+        self._ann_style_rename_btns = []    # 下拉每项的改名按钮矩形（每帧重建）
         self._ann_design_frozen = False     # 设计视图冻形缓存（重建时刷新）
         # 输入框记忆（config/annotation_inputs.json，随机生成 + 手动构造共用）
         self._ann_saved_inputs = None
@@ -541,6 +548,35 @@ class AnnotationMixin:
                 self._ann_phase_editing = False
                 return True
             return True
+
+        # §64 样式改名态：下拉在首页（_ann_sub_dialog 为 None），不走 build
+        # 对话框分发，需在此单独接。回车提交 / Esc 取消 / 退格；字符走 TEXTINPUT。
+        if getattr(self, '_ann_style_renaming', None) is not None:
+            if event.type == pygame.TEXTINPUT:
+                text = ''.join(ch for ch in (event.text or '')
+                               if ch.isprintable())
+                room = 20 - len(self._ann_design_style_name)
+                if room > 0:
+                    self._ann_design_style_name += text[:room]
+                return True
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    self._ann_style_rename_commit()
+                elif event.key == pygame.K_ESCAPE:
+                    self._ann_style_rename_cancel()
+                    self._ann_notify('已取消改名')
+                elif event.key == pygame.K_BACKSPACE:
+                    self._ann_design_style_name = \
+                        self._ann_design_style_name[:-1]
+                return True
+
+        # §58：TEXTINPUT（含 IME 中文候选）是独立事件类型，不会自动喂给
+        # 手写框；样式名框聚焦时转给它收整串，没聚焦则放行别吞。
+        if event.type == pygame.TEXTINPUT:
+            if (self._ann_sub_dialog in ('build', 'design')
+                    and getattr(self, '_ann_design_name_active', False)):
+                return self._ann_build_dialog_event(event)
+            return False
 
         if event.type == pygame.KEYDOWN:
             if self._ann_sub_dialog == 'gen':
@@ -909,7 +945,25 @@ class AnnotationMixin:
         self._ann_notify(f'已用模型「{models[name].title}」开局（还原态）')
 
     def _ann_style_menu_click(self, x, y):
-        """首页样式库下拉点击：点项开局；点他处收起。返回 True=已消费。"""
+        """样式库下拉点击：点✎改名 / 点项开局 / 点他处收起。返回 True=已消费。"""
+        # 改名态：点输入框=聚焦（保持），点菜单内其它处=取消改名收起
+        if getattr(self, '_ann_style_renaming', None) is not None:
+            rr = getattr(self, '_ann_style_rename_rect', None)
+            if rr and rr.collidepoint(x, y):
+                self._ann_design_name_active = True
+                return True
+            self._ann_style_rename_cancel()
+            return True
+        # 行尾按钮优先于整项开局（按钮在项内，先判命中）
+        # 自建项=✎改名；示范项=存（另存为自建副本，§68 写权隔离）
+        for entry in getattr(self, '_ann_style_rename_btns', []):
+            nm, rb, action = entry
+            if rb.collidepoint(x, y):
+                if action == 'copy':
+                    self._ann_style_copy_builtin(nm)
+                else:
+                    self._ann_style_rename_start(nm)
+                return True
         for nm, r in getattr(self, '_ann_design_menu_items', []):
             if r.collidepoint(x, y):
                 self._ann_design_style_menu = None
@@ -917,6 +971,68 @@ class AnnotationMixin:
                 return True
         self._ann_design_style_menu = None
         return True
+
+    def _ann_style_copy_builtin(self, name: str):
+        """把入库示范另存为玩家自建副本（§68：示范只读，改先复制）。"""
+        from gui import design_styles
+        self._ann_design_style_menu = None
+        ok, result = design_styles.copy_builtin_to_user(self.config_dir, name)
+        if ok:
+            self._refresh_puzzle_presets()
+            self._ann_notify(f'示范「{name}」已另存为自建样式，现在可改名')
+        elif result == 'exists':
+            self._ann_notify(f'你已有自建样式「{name}」，可直接编辑，无需另存')
+        else:
+            self._ann_notify('另存失败（磁盘写入错误）')
+
+    def _ann_style_rename_start(self, old: str):
+        """进入改名态：预填旧名，复用 §58 的 name 输入缓冲。"""
+        self._ann_style_renaming = old
+        self._ann_design_style_name = old
+        self._ann_design_name_active = True
+        self._ann_style_rename_confirm = False
+
+    def _ann_style_rename_cancel(self):
+        """退出改名态：清状态、收起下拉、关闭输入。"""
+        self._ann_style_renaming = None
+        self._ann_design_name_active = False
+        self._ann_style_rename_confirm = False
+        self._ann_design_style_menu = None
+
+    def _ann_style_rename_commit(self):
+        """提交改名：原子换文件 + 同步 name 字段 + 旧名映射 + HUD/菜单。"""
+        from gui import design_styles
+        old = self._ann_style_renaming
+        new = (self._ann_design_style_name or '').strip()
+        if not old:
+            return
+        if not new:
+            self._ann_notify('新名字不能为空')
+            return
+        if new == old:
+            self._ann_style_rename_cancel()
+            self._ann_notify('名字没变，已取消')
+            return
+        ok, result = design_styles.rename_style(
+            self.config_dir, old, new,
+            overwrite=self._ann_style_rename_confirm)
+        if not ok:
+            if result == 'exists':
+                self._ann_style_rename_confirm = True
+                self._ann_notify(f'已有样式「{new}」——再按一次回车确认覆盖')
+            elif result == 'empty':
+                self._ann_notify('新名字不能为空')
+            elif result == 'missing_old':
+                self._ann_notify(f'原样式「{old}」已不在，改名取消')
+            else:
+                self._ann_notify('改名失败（磁盘写入错误）')
+            return
+        # HUD：当前局的还原目标若是旧名，改成新名（存档 preset 靠映射兜底）
+        if getattr(self, '_ann_style_goal', None) == old:
+            self._ann_style_goal = new
+        self._ann_style_rename_cancel()
+        self._refresh_puzzle_presets()
+        self._ann_notify(f'样式「{old}」已改名为「{new}」')
 
     def _ann_btn_manual_build(self):
         """手动构造：直接在主棋盘上自由点选。
@@ -2437,8 +2553,12 @@ class AnnotationMixin:
                  if self._ann_style_is_cubic(nm) == _cubic]
         mh = 24
         menu_h = max(len(names) * mh, 26)
+        # 改名态：下拉顶部让出一格画输入框（复用 §58 name_active 那套）
+        renaming = getattr(self, '_ann_style_renaming', None) is not None
+        extra_rows = 1 if renaming else 0
+        menu_h = max((len(names) + extra_rows) * mh, 26)
         mrect = pygame.Rect(x + 10, y - menu_h - 4,
-                            min(220, w - 20), menu_h)
+                            min(260 if renaming else 220, w - 20), menu_h)
         bg = pygame.Surface(mrect.size, pygame.SRCALPHA)
         bg.fill((45, 45, 60, 245))
         self.screen.blit(bg, mrect)
@@ -2446,14 +2566,45 @@ class AnnotationMixin:
                          border_radius=6)
         self._ann_design_menu_rect = mrect
         self._ann_design_menu_items = []
+        self._ann_style_rename_btns = []
+        self._ann_style_rename_rect = None
+        row0 = mrect.y + 2
+        if renaming:
+            # 输入框占顶部一格；显示名预填旧名（进入改名时已写进 buffer）
+            nrect = pygame.Rect(mrect.x + 46, row0, mrect.w - 52, mh - 4)
+            self._ann_style_rename_rect = nrect   # IME 锚点（注册表读它）
+            self._ann_design_name_rect = nrect    # §58 名字框锚点同步
+            nbg = self.colors['input_active'] if self._ann_design_name_active \
+                else self.colors['input_bg']
+            pygame.draw.rect(self.screen, nbg, nrect, border_radius=4)
+            pygame.draw.rect(self.screen, self.colors['dialog_border'], nrect,
+                             1, border_radius=4)
+            ns = self.status_font.render(self._ann_design_style_name or '',
+                                         True, self.colors['input_text'])
+            self.screen.blit(ns, (nrect.x + 5, nrect.y + 3))
+            lab = self.status_font.render('新名', True, (255, 210, 120))
+            self.screen.blit(lab, (mrect.x + 6, row0 + 3))
+            hint = self.status_font.render('回车确认 · Esc 取消', True,
+                                           (180, 200, 230))
+            self.screen.blit(hint, (mrect.x + 8, mrect.y + mh + 2))
         for i, nm in enumerate(names):
-            r = pygame.Rect(mrect.x + 4, mrect.y + i * mh + 2,
+            r = pygame.Rect(mrect.x + 4, row0 + (i + extra_rows) * mh,
                             mrect.w - 8, mh - 4)
             self._ann_design_menu_items.append((nm, r))
             if r.collidepoint(pygame.mouse.get_pos()):
                 pygame.draw.rect(self.screen, (70, 90, 130), r,
                                  border_radius=4)
-            s = self.status_font.render(nm, True, (230, 230, 240))
+            # §68：示范项标「·示范」，末尾是「另存」按钮；自建项才是「改名✎」
+            is_builtin = design_styles.style_source(self.config_dir, nm) == 'builtin'
+            act_label = '存' if is_builtin else '✎'
+            rb = pygame.Rect(r.right - 26, r.y + 2, 22, mh - 8)
+            self._ann_style_rename_btns.append(
+                (nm, rb, 'copy' if is_builtin else 'rename'))
+            pygame.draw.rect(self.screen, (90, 110, 150), rb, border_radius=3)
+            es = self.status_font.render(act_label, True, (225, 230, 245))
+            self.screen.blit(es, (rb.x + (6 if is_builtin else 5), rb.y + 1))
+            disp = nm + ('·示范' if is_builtin else '')
+            s = self.status_font.render(disp, True, (230, 230, 240))
             self.screen.blit(s, (r.x + 8, r.y + 3))
         if not names:
             s = self.status_font.render('（没有已存样式）', True,
@@ -3494,6 +3645,8 @@ class AnnotationMixin:
         if not name:
             return False
         data = design_styles.load_style(self.config_dir, name)
+        # §64：存档 preset 可能是改名前的旧名，HUD 显示当前名
+        name = design_styles.resolve_name(self.config_dir, name)
         kind = str((data or {}).get('kind') or 'square')
         if not hasattr(self.game, 'set_goal_pattern'):
             # 旧版异形 Block 没有该接口：只记名字（HUD/菜单 ✓ 用），不动判定
@@ -3514,9 +3667,20 @@ class AnnotationMixin:
         return True
 
     def _ann_build_dialog_event(self, event):
+        # §58：字符统一走 TEXTINPUT（IME 中文选字只从这个事件投递）。
+        # 与三维样式名框 cubic_create._cubic_edit_event 同一口径。
+        if event.type == pygame.TEXTINPUT:
+            if not self._ann_design_name_active:
+                return False
+            text = ''.join(ch for ch in (event.text or '') if ch.isprintable())
+            room = 20 - len(self._ann_design_style_name)
+            if room > 0:
+                self._ann_design_style_name += text[:room]
+            return True
         if event.type != pygame.KEYDOWN:
             return False
-        # 样式名输入态：优先吃键盘（中文/字母/数字/退格/回车确认）
+        # 样式名输入态：优先吃键盘（回车/ESC/退格；字符已走 TEXTINPUT，
+        # 这里不再从 event.unicode 插字，否则 ASCII 会双插——§57 的坑）
         if self._ann_design_name_active:
             if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
                 self._ann_design_save_style()
@@ -3528,11 +3692,7 @@ class AnnotationMixin:
             if event.key == pygame.K_BACKSPACE:
                 self._ann_design_style_name = self._ann_design_style_name[:-1]
                 return True
-            if event.unicode and event.unicode.isprintable():
-                if len(self._ann_design_style_name) < 20:
-                    self._ann_design_style_name += event.unicode
-                return True
-            return True
+            return True   # 其余键吞掉；字符只由上面的 TEXTINPUT 分支插入
         # 捆绑工具激活：ESC 取消待配对第一点（否则走整体退出）
         if self._ann_design_bind_active and self._ann_design_bind_first \
                 is not None and event.key == pygame.K_ESCAPE:

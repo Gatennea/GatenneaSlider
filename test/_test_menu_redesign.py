@@ -272,13 +272,23 @@ check(len(gui.puzzle_presets) == _before,
       f'{_before} -> {len(gui.puzzle_presets)}')
 
 # 空的那个不出现：把无粘连的清光 → 「自定义还原态」入口消失
-for i in range(5):
-    os.remove(os.path.join(STYLES, f'zz_many{i}.json'))
-os.remove(os.path.join(STYLES, 'zz_plain.json'))
-gui._refresh_puzzle_presets()
-_keys = [p[2] for p in gui.puzzle_presets if len(p) == 3 and p[1] == '__sub__']
-check('custom' not in _keys and 'bundled' in _keys,
-      'E7 空的子菜单不出现（不点开一个空白目录）', f'{_keys}')
+# §68 后入库示范恒占两个子菜单，为测「空目录不出现」这一机制，临时把
+# builtin 目录指向空目录（测完还原），让环境回到「无示范」再断言。
+_orig_builtin = design_styles.builtin_styles_dir
+_EMPTY_BUILTIN = tempfile.mkdtemp(prefix='menu_no_builtin_')
+design_styles.builtin_styles_dir = lambda: _EMPTY_BUILTIN
+try:
+    for i in range(5):
+        os.remove(os.path.join(STYLES, f'zz_many{i}.json'))
+    os.remove(os.path.join(STYLES, 'zz_plain.json'))
+    gui._refresh_puzzle_presets()
+    _keys = [p[2] for p in gui.puzzle_presets
+             if len(p) == 3 and p[1] == '__sub__']
+    check('custom' not in _keys and 'bundled' in _keys,
+          'E7 空的子菜单不出现（不点开一个空白目录）', f'{_keys}')
+finally:
+    design_styles.builtin_styles_dir = _orig_builtin
+    gui._refresh_puzzle_presets()
 
 print('=' * 60)
 print('F. 自定义对话框的「高级选项…」')

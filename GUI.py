@@ -1063,11 +1063,16 @@ class SliderGUI(RendererMixin, DialogsMixin, AnimationMixin, FileOpsMixin, Event
         for name in styles:
             data = design_styles.load_style(self.config_dir, name)
             groups = design_styles.groups_from_data(data) if data else {}
-            (bundled if groups else plain).append(name)
+            # §68：入库示范样式显示「·示范」角标区分来源；key 仍是真名
+            # （开局/删除都按 item[2]，显示名只进确认框文案）
+            label = (name + '·示范'
+                     if design_styles.style_source(self.config_dir, name)
+                     == 'builtin' else name)
+            (bundled if groups else plain).append((label, name))
         self.puzzle_sub_presets['bundled'] = [
-            (name, '__custom__', name) for name in bundled]
+            (label, '__custom__', name) for label, name in bundled]
         self.puzzle_sub_presets['custom'] = [
-            (name, '__custom__', name) for name in plain]
+            (label, '__custom__', name) for label, name in plain]
         if bundled:
             base.append(('捆绑谜题 ▸', '__sub__', 'bundled'))
         if plain:
