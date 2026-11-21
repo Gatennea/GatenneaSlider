@@ -216,46 +216,24 @@ def case_b():
         good, detail = replay_and_undo(seed)
         ok &= check(f'B seed={seed} 證書逐條反轉（位置+group）',
                     good, detail)
-    # trigger 記錄的價值：seed=6 用「final 第一塊」會走不通
-    good, detail = replay_with_first_final(6)
-    ok &= check('B6 seed=6 不記 trigger / 只點 final 第一塊 → 走不通',
-                not good, detail)
-    return ok
-
-
-def replay_with_first_final(seed, attempts=200):
-    """故意用舊策略（final 第一塊）反向，證明 trigger 不是可省略的。"""
-    random.seed(seed)
+    # trigger 仍是证书重放的确定性入口：每条 record 必须带，且能在
+    # moved 里定位（同缝两侧各一个分量时，只靠 final 第一块会点错侧）。
+    random.seed(6)
     src = build()
     recs = []
-    src.shuffle(attempts, STEP, min_score=None, record=recs)
-    g = build()
-    for rec in recs:
-        trig = next((b for b in g.blocks
-                     if tuple(b.location) == tuple(rec['trigger'])), None)
-        g.opt(*rec['gap'], trig)
-        g.commit_move(g.try_move(rec['direction'], STEP))
-        clear(g)
-    # 逆序，不按 trigger，只取 final 第一個塊
-    for k in range(len(recs) - 1, -1, -1):
-        rec = recs[k]
-        gt, line = rec['gap']
-        final = {tuple(p) for p in rec['final']}
-        trig = next((b for b in g.blocks
-                     if tuple(b.location) in final), None)
-        g.opt(gt, line, trig)
-        ok = False
-        for d in dirs_of(gt):
-            back = g.try_move(d, STEP)
-            if back and {tuple(p) for p in back} == \
-                    {tuple(p) for p in rec['moved']}:
-                g.commit_move(back)
-                ok = True
-                break
-        clear(g)
-        if not ok:
-            return False, f'naive 卡在 rec#{k}'
-    return True, 'naive 恰好走通'
+    src.shuffle(200, STEP, min_score=None, record=recs)
+    bad = []
+    for k, rec in enumerate(recs):
+        trig = rec.get('trigger')
+        if trig is None:
+            bad.append(f'rec#{k} 缺 trigger')
+            continue
+        if not any(tuple(p) == tuple(trig) for p in rec['moved']):
+            bad.append(f'rec#{k} trigger 不在 moved')
+    ok &= check('B6 record 必帶 trigger 且可在 moved 定位',
+                bool(recs) and not bad,
+                f'{len(recs)} 步' if not bad else bad[0])
+    return ok
 
 
 def case_goal_no_split():

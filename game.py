@@ -299,7 +299,7 @@ class SliderMatrix:
     """
     
     __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds', 'numbered',
-                 'goal_pattern')
+                 'goal_pattern', 'locked_rings')
     
     def __init__(self, m: int = 6, n: int = 6):
         """
@@ -328,6 +328,10 @@ class SliderMatrix:
         # None = 默认满矩形（is_solved 走矩形快路径）；frozenset((r,c),...)
         # = 设计态保存的样式，is_solved 改走 D4 八变换比较（旋转/翻面都算还原）
         self.goal_pattern = None
+        # 封闭捆绑环（2026-11-21 §67 补）：3×3 实心窗、8 个周边格全属
+        # 捆绑组且每组不出窗、中心格无组。形如 5×5test 的「四对围一块」。
+        # 存组号集合，不存 Block 对象——撤销/重放会重建 Block，组号仍随块。
+        self.locked_rings = ()
         self.update_matrix()
     
     def get_boundaries(self) -> dict:
@@ -657,6 +661,7 @@ class SliderMatrix:
         gids = {b.group for b in self.blocks if b.group}
         for b in self.blocks:
             b.group = 0
+        self.locked_rings = ()
         return len(gids)
 
     def groups_summary(self) -> list:
@@ -674,6 +679,7 @@ class SliderMatrix:
         """
         self.clear_groups()
         if not mapping:
+            self.locked_rings = self._detect_ring_locks()
             return
         pmap = self._pos_to_block()
         for pos, gid in mapping.items():
@@ -681,6 +687,82 @@ class SliderMatrix:
             b = pmap.get(pos)
             if b is not None:
                 b.group = int(gid)
+        # 快照回放/讀檔也會走這裡（gui/compressed_save、history.restore），
+        # 組歸屬一變就按當前盤面重算封閉環，避免只存組號而在新局丟鎖。
+        self.locked_rings = self._detect_ring_locks()
+
+    def _detect_ring_locks(self):
+        """找出「封闭捆绑环」并返回组号集合列表（2026-11-21 §67）。
+
+        判据只认几何 + 组归属，不加样式开关：
+          · 3×3 实心窗（9 格全有块）；
+          · 8 个周边格全部属于捆绑组；
+          · 每个组的所有组员都在这 8 格里（没有组员伸到窗外）；
+          · 中心格不属于任何组。
+        5×5test 的四对捆绑围住中心单块正是此形。这样的环与中心块在
+        几何上是一个封闭整体；一旦被缝切开，中心块会漏出、局面散开。
+        """
+        by_pos = {(b.location[0], b.location[1]): b for b in self.blocks}
+        if not by_pos:
+            return ()
+        bounds = self.get_boundaries()
+        found = []
+        for r0 in range(bounds['min_row'], bounds['max_row'] - 1):
+            for c0 in range(bounds['min_col'], bounds['max_col'] - 1):
+                cells = [(r, c) for r in (r0, r0 + 1, r0 + 2)
+                         for c in (c0, c0 + 1, c0 + 2)]
+                if not all(p in by_pos for p in cells):
+                    continue
+                center = (r0 + 1, c0 + 1)
+                ring = [p for p in cells if p != center]
+                if any(by_pos[p].group == 0 for p in ring):
+                    continue
+                if by_pos[center].group != 0:
+                    continue
+                gids = frozenset(by_pos[p].group for p in ring)
+                ring_set = set(ring)
+                for gid in gids:
+                    members = {p for p, b in by_pos.items()
+                               if b.group == gid}
+                    if not members <= ring_set:
+                        break
+                else:
+                    found.append(gids)
+        # 同一组集合可能被多个重叠窗命中，去重保序
+        out = []
+        for gids in found:
+            if gids not in out:
+                out.append(gids)
+        return tuple(out)
+
+    def _locked_rings_ok(self, selected, non_selected, next_pos):
+        """本步每个中间态是否仍保住所有封闭捆绑环（2026-11-21 §67）。"""
+        if not self.locked_rings:
+            return True
+        projected = {}
+        for b, p in zip(selected, next_pos):
+            projected[b] = (p[0], p[1])
+        for b in non_selected:
+            projected[b] = (b.location[0], b.location[1])
+        for gids in self.locked_rings:
+            pts = {projected[b] for b in self.blocks if b.group in gids}
+            if len(pts) != 8:
+                return False
+            r0 = min(p[0] for p in pts)
+            c0 = min(p[1] for p in pts)
+            r1 = max(p[0] for p in pts)
+            c1 = max(p[1] for p in pts)
+            if (r1 - r0, c1 - c0) != (2, 2):
+                return False
+            center = (r0 + 1, c0 + 1)
+            expected = {(r, c) for r in (r0, r0 + 1, r0 + 2)
+                        for c in (c0, c0 + 1, c0 + 2)} - {center}
+            if pts != expected:
+                return False
+            at_center = [b for b in self.blocks if projected[b] == center]
+            if not at_center or any(b.group != 0 for b in at_center):
+                return False
+        return True
 
     def groups_as_positions(self) -> dict:
         """捆绑状态的 {位置: gid} 序列化形式（供快照存档）。"""
@@ -792,6 +874,7 @@ class SliderMatrix:
             self.set_groups_from_positions(
                 {(r - mr, c - mc): gid for (r, c), gid in
                  ((tuple(k), v) for k, v in groups.items())})
+        self.locked_rings = self._detect_ring_locks()
 
     def has_legal_move(self, step: int = 1) -> bool:
         """当前盘面是否存在至少一步合法移动（step=1 即可动性检测）。
@@ -1013,7 +1096,8 @@ class SliderMatrix:
                       'all_selected' 全员选中（纯平移，无意义）；
                       'bad_direction' 方向字母无效；
                       'collision' 移动后与未选中滑块重叠；
-                      'disconnected' 移动后整体断开（失去单一连通）
+                      'disconnected' 移动后整体断开（失去单一连通）；
+                      'locked_ring' 会拆开封闭捆绑环（中心块漏出）。
         """
         selected = [b for b in self.blocks if b.be_opted]
         non_selected = [b for b in self.blocks if not b.be_opted]
@@ -1045,6 +1129,10 @@ class SliderMatrix:
             is_valid, reason = SliderMatrix.check_move_valid(next_set, non_selected_positions)
             if not is_valid:
                 return [], reason
+            # 封闭捆绑环保安（2026-11-21 §67）：每一步中间态都要保住，
+            # 不能只验最终态——拖拽/打乱可能先破后合，玩家仍会看到散开。
+            if not self._locked_rings_ok(selected, non_selected, next_pos):
+                return [], 'locked_ring'
 
             current = next_pos
 

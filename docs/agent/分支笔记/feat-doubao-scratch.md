@@ -8,11 +8,10 @@
 - **§五十四 三维滑块扩展（正方体单元）**：2026-11-17 用户拍板交豆包，已认领、未排期。
   方案真源 `docs/spec/三维扩展方案_正方体单元_2026-11-17.md`（七节）；总账在 `docs/agent/待办清单.md` §五十四。
   本轮只接手、未动任何游戏代码。
-- **§六十七 捆绑态安全打乱漏 group**：2026-11-21 认领并完成（已提交本分支，未推送）。
-  动 `game.py`（`can_undo_shuffle_step` / `commit_shuffle_step` /
-  `record_shuffle_move`）、`engine/analysis.py`（`_find_inverse` / `_exact_key`）；
-  新增 `test/_test_bandage_shuffle_group.py`，并把 `_test_safe_shuffle.py` /
-  `_test_shuffle_guard.py` 的证书重放改用 `record['trigger']`。
+- **§六十七 捆绑态安全打乱漏 group**：2026-11-21 认领。初版提交 `3453de7`
+  （`game.py` 可逆校验收紧到位置 + group、`record_shuffle_move` 增 trigger；
+  `engine/analysis.py` 的 `_find_inverse` 补 `d*step` 与 `_exact_key`），
+  二轮补「中心封闭捆绑环不可拆」尚未提交。
 
 ## §67 复核结论（2026-11-21，防后人重走）
 
@@ -27,6 +26,8 @@
   `undo_with_record` 旧写法正是这样，seed=6/10/12/13/16/17/21 会卡住。已在
   `record_shuffle_move` 增 `trigger`（移动前位置），证书按 moved/final 同序
   索引取它的**移动后**位置再 opt，逐条精确回到每步前局面。
+  （这组 seed 是环锁前旧打乱轨迹上的实测；加锁后轨迹已变，B6 改为正向断言，
+  不再用 seed=6 反例。）
 - **`engine/analysis.py` 另一个真 bug**：`_find_inverse` 的 `moved_nxt` 只给
   块键加了 `d` 一格，step>1 时逆移动块键落在空位，`move_ok` 恒假、
   `safe_scramble` 一步都走不动（4×4/step2 实测 0 步；既有测试只跑 step=1）。
@@ -35,12 +36,41 @@
   终态必有解；`canonical_key` 忽略 group，另写 BFS 键只是把同一结论重算。
 - **护栏**：`_test_bandage_shuffle_group.py` A2 用「位置同、group 异」的
   before_sel 直接判死（旧代码会红）；B 在 5×5 四对捆绑典例上逐条反转
-  （位置+group 精确），并断言 naive「final 第一块」在 seed=6 走不通；C1 断言
-  还原态 100 条合法步都不切开中心 3×3，C2 断言打乱后各组仍刚体；D 断言引擎
-  step=2 每步逆移动 `_exact_key` 精确。
+  （位置+group 精确），B6 正向断言每条 record 都带 `trigger` 且能在 `moved`
+  定位；C1 断言还原态 100 条合法步都不切开中心 3×3，C2 断言打乱后各组仍刚体；
+  D 断言引擎 step=2 每步逆移动 `_exact_key` 精确。旧的「naive 第一块在 seed=6
+  必卡」已被环锁改写，不再是有效反例（见下节）。
 - 基线缺 `pytest` / `numpy` / `pygame`：`pytest --collect-only` 无法启动，
   `_test_safe_shuffle.py` 的 A/B、`_test_geometry_engine.py`、
   `_test_bandage_forms.py`、`_test_shuffle_demo.py` 在本机跑不全，非本次改动回归。
+
+## §67 二轮补：中心封闭捆绑环不可拆（2026-11-21）
+
+- **用户复验**：自定义 `5x5test`（5×5 step1，中心 3×3 四对捆绑围住 (2,2)
+  单块）自动打乱仍把中心拆开；拖拽也能拆；新存档 `1-5-5-20261121-164713.json`
+  第 4 步 `v2,s` 移 17 块拆环、第 5 步 `v2,w` 复圆，若用键盘重放第 4 步起就违规。
+  实测关锁时第 4 步的 `opt` 选中 g2/g3 的跨缝组员，17 块整体平移，中心块被甩下。
+- **不是样式 flag，是拓扑推导**：`apply_pattern` 在 `set_groups_from_positions`
+  后调 `_detect_ring_locks()`——3×3 实心窗、8 周边格全属捆绑组、每组组员全部
+  在窗内、中心格无组，即锁一个 `frozenset(gids)`；`5x5test` 得
+  `(frozenset({1,2,3,4}),)`，中心单块不参与锁但必须留在中心。
+- **闸的位置**：`try_move_ex` 的每一单位中间态都过 `_locked_rings_ok`，违反即
+  `[], 'locked_ring'`。键盘、拖拽（`gui/drag._probe_max_cells` 走
+  `try_move_ex`）、`shuffle` / `commit_shuffle_step` 共用同一条路径，堵住
+  「先破后合」；`gui/move.py` 只补中文提示。
+- **读档/撤销**：`set_groups_from_positions` 清空或灌组后都重算锁，避免
+  `gui/compressed_save` / `history.restore_snapshot` 只恢复组号而丢锁。
+- **对照实验**：同一局面把 `locked_rings` 置空，第 4 步被接受且环被拆开、
+  拖拽探针 `max=1`；开锁时第 4 步 `locked_ring`、探针 `max=0`。证明拒绝来自
+  环锁本身，不是碰撞/连通等别的原因。
+- **引擎通道**：`engine.analysis.safe_scramble` 在 5×5 同构 Board 上 10 个
+  seed×80 步未破环（纯引擎规则下环确实是可达不变量），本轮没有改
+  `engine/board.py`；只保留上一提交的 `_find_inverse` group 精确修复。
+- **回归**：新增 `test/_test_bandage_ring_lock.py` A/A2/A3（识别与读档重算）、
+  B（seed0–3 打乱逐步不破环）、E（存檔 1–3 合法、第 4 步 `locked_ring`）、
+  D（拖拽探针 0）、F（关锁对照）全 PASS；`_test_bandage_shuffle_group.py`
+  B6 已从旧的 seed6 反例改为正向「每条 record 必带 trigger 且能定位」。
+  加锁改变了打乱轨迹，旧「seed6 naive 必卡」结论作废，seed0–39 实测全走通。
 
 
 ## 动哪些文件（认领范围，防撞车）
