@@ -103,13 +103,45 @@ class Block:
             raise ValueError("Invalid direction")
 
 
+def _selection_state(blocks):
+    """选中片的可逆状态：(位置, 捆绑组号)，2026-11-21 §67。
+
+    位置之外必须带 group：捆绑组随块身走，位置集合相等并不能推出局面
+    相等——组内块互换、或不同组的块落到同一批位置时，位置全对但组归属
+    已变，玩家沿原缝推不回去。group=0 的普通块位形相同即同态，带上 0
+    不增加误拒。
+    """
+    return {(tuple(b.location), getattr(b, 'group', 0))
+            for b in blocks if b.be_opted}
+
+
+def _normalise_before_sel(before_sel):
+    """把 before_sel 归一成 ({(位置, group)}, 是否带 group)。
+
+    产品路径（commit_shuffle_step）传新口径 {(位置, group)}；2026-10 的
+    实验脚本仍传旧口径 {位置}。方形位置是二元组、三角/米字是三元组，
+    带 group 的条目首元素必为位置元组，据此判别。旧口径没有 group 信息，
+    只能退回只比位置（兼容用途，产品路径不得使用）。
+    """
+    if isinstance(before_sel, dict):
+        return {(tuple(pos), int(gid)) for pos, gid in before_sel.items()}, True
+    items = list(before_sel)
+    group_aware = (bool(items) and isinstance(items[0], (tuple, list))
+                   and len(items[0]) == 2
+                   and isinstance(items[0][0], (tuple, list)))
+    if group_aware:
+        return {(tuple(pos), int(gid)) for pos, gid in items}, True
+    return {(tuple(pos), None) for pos in items}, False
+
+
 def can_undo_shuffle_step(game, gap_type, line, block, step, directions,
                           before_sel):
     """安全打乱的可逆性校验（2026-10-18，对齐网页版 shuffle_safe）。
 
     在一步移动 commit **之后**调用：用同一个块触发同一条缝的 opt，遍历该
     缝族的所有方向，看能否把当前选中的分量精确推回 before_sel（该步移动前
-    那组块的位置集合）。能 → 该步可逆、保留；不能 → 调用方回滚该步。
+    那组块的 **位置 + 捆绑组归属**）。能 → 该步可逆、保留；不能 → 调用方
+    回滚该步。
 
     为什么遍历方向而非固定「反方向」：
       · 三角有三种缝隙朝向、米字含斜向半格，「反向」没有统一方向表；
@@ -119,14 +151,26 @@ def can_undo_shuffle_step(game, gap_type, line, block, step, directions,
     选中更大组，落点集合数量就对不上 before_sel → 判定不可逆（保守但
     安全：宁可少走一步，也不放行任何可能回不去的操作）。
 
+    before_sel 的口径见 _normalise_before_sel：位置 + group 才是精确可逆；
+    只给位置（旧实验脚本）时退回只比位置。
+
     只读不改：opt/try_move 均不动坐标，调用方随后清 be_opted 即可。
     """
     game.opt(gap_type, line, block)
     if not any(b.be_opted for b in game.blocks):
         return False
+    before_state, group_aware = _normalise_before_sel(before_sel)
     for d in directions:
         back = game.try_move(d, step)
-        if back and {tuple(p) for p in back} == before_sel:
+        if not back:
+            continue
+        if group_aware:
+            selected = [b for b in game.blocks if b.be_opted]
+            back_state = {(tuple(p), b.group)
+                          for b, p in zip(selected, back)}
+        else:
+            back_state = {(tuple(p), None) for p in back}
+        if back_state == before_state:
             return True
     return False
 
@@ -137,7 +181,7 @@ def commit_shuffle_step(game, gap_type, line, block, direction, step,
 
     对齐网页版 shuffle_safe 的结构：**先提交、再校验、不可逆回滚**——用
     同一个块触发同一条缝的 opt，遍历 directions 看能否把当前选中的分量
-    精确推回移动前的位置集合。可逆 → 采纳该步；不可逆 → 回滚坐标与
+    精确推回移动前的位置 + group。可逆 → 采纳该步；不可逆 → 回滚坐标与
     record，当作这步没走过（4_4_2 实测约 15% 的随机走法不可逆）。
 
     为什么值得：每一步都可逆 ⟺ 整条打乱路径反转是一条合法解法 ⟺ 终态
@@ -145,16 +189,23 @@ def commit_shuffle_step(game, gap_type, line, block, direction, step,
     永远有答案；也不可能撞死局（死局都在 cone\\B 里，可逆可达的终态必然
     不在），死局黑名单降级为冗余兜底。
 
+    **单步精确可逆（含 group）已足够，不做终态 BFS 终检**（2026-11-21
+    §67 定）：反转路径逐条都是同缝合法移动、可由 opt 按极大分量重放，
+    本身就是一条字面意义的解法；再跑全局可达性 BFS 只会把同一结论重算
+    一遍（且 canonical_key 忽略 group，还得另写键）。判据更严后，捆绑态
+    下「位置相同、group 不同」的逆向不会再被放行——只会更保守，不会
+    更松；宁可少走一步，也不放行走不回去的终态。
+
     校验必须在 commit 之后：未提交时 opt 选中的组还在原位，任何方向的
     落点都不可能等于「原位」——放在提交前会恒假（2026-10-18 踩过）。
 
     record 非 None 时按执行顺序记录；该步被回滚则退回这条记录。
     """
     before_locs = [list(b.location) for b in game.blocks]
-    before_sel = {tuple(b.location) for b in game.blocks if b.be_opted}
+    before_sel = _selection_state(game.blocks)
     if record is not None:
         record_shuffle_move(record, game, gap_type, line, direction, step,
-                            final_positions)
+                            final_positions, trigger=tuple(block.location))
     game.commit_move(final_positions)
     ok = can_undo_shuffle_step(game, gap_type, line, block, step, directions,
                                before_sel)
@@ -172,7 +223,7 @@ def commit_shuffle_step(game, gap_type, line, block, direction, step,
 
 
 def record_shuffle_move(record, game, gap_type, line, direction, step,
-                        final_positions):
+                        final_positions, trigger=None):
     """记录一步打乱移动，供 GUI 演示动画重放（纯数据，无 GUI 依赖）。
 
     三种形态（方形 / 三角 / 米字）的打乱都是「选缝 → 选中一片 → 平移」，
@@ -183,18 +234,25 @@ def record_shuffle_move(record, game, gap_type, line, direction, step,
         'gap'       : (gap_type, line) 该步用的缝隙
         'direction' : 移动方向字母
         'step'      : 步长
+        'trigger'   : 触发这一步的块（移动前位置）；捆绑态下同一条缝的
+                      两侧可能各自是一个分量，只有点同一侧的那颗才会选中
+                      原选中片——记录它，撤销/证书重放才能确定性复现，
+                      不必在一堆 final 位置里碰运气。
 
     GUI 端重放：_find_blocks_at_positions(moved) 找到块对象 →
     start_animation(blocks, final)。调用方传 None 时整体跳过（零开销），
     故 solver/ml 等批量打乱的调用方不受影响。
     """
-    record.append({
+    rec = {
         'moved': [tuple(b.location) for b in game.blocks if b.be_opted],
         'final': [tuple(p) for p in final_positions],
         'gap': (gap_type, line),
         'direction': direction,
         'step': step,
-    })
+    }
+    if trigger is not None:
+        rec['trigger'] = tuple(trigger)
+    record.append(rec)
 
 
 def default_shuffle_attempts(m, n, kind='square', tile_count=None):
@@ -241,7 +299,7 @@ class SliderMatrix:
     """
     
     __slots__ = ('m', 'n', 'blocks', 'matrix', 'matrix_bounds', 'numbered',
-                 'goal_pattern')
+                 'goal_pattern', 'locked_rings')
     
     def __init__(self, m: int = 6, n: int = 6):
         """
@@ -270,6 +328,10 @@ class SliderMatrix:
         # None = 默认满矩形（is_solved 走矩形快路径）；frozenset((r,c),...)
         # = 设计态保存的样式，is_solved 改走 D4 八变换比较（旋转/翻面都算还原）
         self.goal_pattern = None
+        # 封闭捆绑环（2026-11-21 §67 补）：3×3 实心窗、8 个周边格全属
+        # 捆绑组且每组不出窗、中心格无组。形如 5×5test 的「四对围一块」。
+        # 存组号集合，不存 Block 对象——撤销/重放会重建 Block，组号仍随块。
+        self.locked_rings = ()
         self.update_matrix()
     
     def get_boundaries(self) -> dict:
@@ -599,6 +661,7 @@ class SliderMatrix:
         gids = {b.group for b in self.blocks if b.group}
         for b in self.blocks:
             b.group = 0
+        self.locked_rings = ()
         return len(gids)
 
     def groups_summary(self) -> list:
@@ -616,6 +679,7 @@ class SliderMatrix:
         """
         self.clear_groups()
         if not mapping:
+            self.locked_rings = self._detect_ring_locks()
             return
         pmap = self._pos_to_block()
         for pos, gid in mapping.items():
@@ -623,6 +687,82 @@ class SliderMatrix:
             b = pmap.get(pos)
             if b is not None:
                 b.group = int(gid)
+        # 快照回放/讀檔也會走這裡（gui/compressed_save、history.restore），
+        # 組歸屬一變就按當前盤面重算封閉環，避免只存組號而在新局丟鎖。
+        self.locked_rings = self._detect_ring_locks()
+
+    def _detect_ring_locks(self):
+        """找出「封闭捆绑环」并返回组号集合列表（2026-11-21 §67）。
+
+        判据只认几何 + 组归属，不加样式开关：
+          · 3×3 实心窗（9 格全有块）；
+          · 8 个周边格全部属于捆绑组；
+          · 每个组的所有组员都在这 8 格里（没有组员伸到窗外）；
+          · 中心格不属于任何组。
+        5×5test 的四对捆绑围住中心单块正是此形。这样的环与中心块在
+        几何上是一个封闭整体；一旦被缝切开，中心块会漏出、局面散开。
+        """
+        by_pos = {(b.location[0], b.location[1]): b for b in self.blocks}
+        if not by_pos:
+            return ()
+        bounds = self.get_boundaries()
+        found = []
+        for r0 in range(bounds['min_row'], bounds['max_row'] - 1):
+            for c0 in range(bounds['min_col'], bounds['max_col'] - 1):
+                cells = [(r, c) for r in (r0, r0 + 1, r0 + 2)
+                         for c in (c0, c0 + 1, c0 + 2)]
+                if not all(p in by_pos for p in cells):
+                    continue
+                center = (r0 + 1, c0 + 1)
+                ring = [p for p in cells if p != center]
+                if any(by_pos[p].group == 0 for p in ring):
+                    continue
+                if by_pos[center].group != 0:
+                    continue
+                gids = frozenset(by_pos[p].group for p in ring)
+                ring_set = set(ring)
+                for gid in gids:
+                    members = {p for p, b in by_pos.items()
+                               if b.group == gid}
+                    if not members <= ring_set:
+                        break
+                else:
+                    found.append(gids)
+        # 同一组集合可能被多个重叠窗命中，去重保序
+        out = []
+        for gids in found:
+            if gids not in out:
+                out.append(gids)
+        return tuple(out)
+
+    def _locked_rings_ok(self, selected, non_selected, next_pos):
+        """本步每个中间态是否仍保住所有封闭捆绑环（2026-11-21 §67）。"""
+        if not self.locked_rings:
+            return True
+        projected = {}
+        for b, p in zip(selected, next_pos):
+            projected[b] = (p[0], p[1])
+        for b in non_selected:
+            projected[b] = (b.location[0], b.location[1])
+        for gids in self.locked_rings:
+            pts = {projected[b] for b in self.blocks if b.group in gids}
+            if len(pts) != 8:
+                return False
+            r0 = min(p[0] for p in pts)
+            c0 = min(p[1] for p in pts)
+            r1 = max(p[0] for p in pts)
+            c1 = max(p[1] for p in pts)
+            if (r1 - r0, c1 - c0) != (2, 2):
+                return False
+            center = (r0 + 1, c0 + 1)
+            expected = {(r, c) for r in (r0, r0 + 1, r0 + 2)
+                        for c in (c0, c0 + 1, c0 + 2)} - {center}
+            if pts != expected:
+                return False
+            at_center = [b for b in self.blocks if projected[b] == center]
+            if not at_center or any(b.group != 0 for b in at_center):
+                return False
+        return True
 
     def groups_as_positions(self) -> dict:
         """捆绑状态的 {位置: gid} 序列化形式（供快照存档）。"""
@@ -734,6 +874,7 @@ class SliderMatrix:
             self.set_groups_from_positions(
                 {(r - mr, c - mc): gid for (r, c), gid in
                  ((tuple(k), v) for k, v in groups.items())})
+        self.locked_rings = self._detect_ring_locks()
 
     def has_legal_move(self, step: int = 1) -> bool:
         """当前盘面是否存在至少一步合法移动（step=1 即可动性检测）。
@@ -955,7 +1096,8 @@ class SliderMatrix:
                       'all_selected' 全员选中（纯平移，无意义）；
                       'bad_direction' 方向字母无效；
                       'collision' 移动后与未选中滑块重叠；
-                      'disconnected' 移动后整体断开（失去单一连通）
+                      'disconnected' 移动后整体断开（失去单一连通）；
+                      'locked_ring' 会拆开封闭捆绑环（中心块漏出）。
         """
         selected = [b for b in self.blocks if b.be_opted]
         non_selected = [b for b in self.blocks if not b.be_opted]
@@ -987,6 +1129,10 @@ class SliderMatrix:
             is_valid, reason = SliderMatrix.check_move_valid(next_set, non_selected_positions)
             if not is_valid:
                 return [], reason
+            # 封闭捆绑环保安（2026-11-21 §67）：每一步中间态都要保住，
+            # 不能只验最终态——拖拽/打乱可能先破后合，玩家仍会看到散开。
+            if not self._locked_rings_ok(selected, non_selected, next_pos):
+                return [], 'locked_ring'
 
             current = next_pos
 

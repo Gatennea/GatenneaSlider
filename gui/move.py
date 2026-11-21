@@ -207,6 +207,9 @@ class MoveMixin:
                 elif fail_reason == 'collision':
                     self.macro_notify_msg = "滑动失败：移动后滑块会重叠"
                     self.macro_notify_timer = 90
+                elif fail_reason == 'locked_ring':
+                    self.macro_notify_msg = "滑动失败：会拆开封闭捆绑环（中心块漏出）"
+                    self.macro_notify_timer = 90
                 return self._reject_move(reason=fail_reason)
 
         # 构建移动元数据

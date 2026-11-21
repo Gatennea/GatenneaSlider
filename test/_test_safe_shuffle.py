@@ -48,10 +48,22 @@ def undo_with_record(g, records):
         moved = {tuple(p) for p in rec['moved']}
         final_set = set(rec['final'])
         trig = None
-        for b in g.blocks:
-            if tuple(b.location) in final_set:
-                trig = b
-                break
+        trig_pos = rec.get('trigger')
+        if trig_pos is not None:
+            # trigger 记录的是**移动前**位置；moved/final 按块同序，先定位
+            # 它的索引，再取该块移动后的位置——直接拿 trigger 原位置去找
+            # 会扑空（那块已经滑走了）。
+            idx = next((i for i, p in enumerate(rec['moved'])
+                        if tuple(p) == tuple(trig_pos)), None)
+            if idx is not None:
+                target = rec['final'][idx]
+                trig = next((b for b in g.blocks
+                             if tuple(b.location) == tuple(target)), None)
+        if trig is None:
+            for b in g.blocks:
+                if tuple(b.location) in final_set:
+                    trig = b
+                    break
         if trig is None:
             return False
         g.opt(gap_type, line, trig)

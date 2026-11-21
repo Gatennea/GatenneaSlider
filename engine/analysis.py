@@ -82,14 +82,25 @@ def shape_reachability(board: Board, step: int, cap: int = 20000,
             'target_reachable': found}
 
 
+def _exact_key(board: Board):
+    """精确局面键：((point, orient, group), ...)，2026-11-21 §67。
+
+    与 canonical_key 的分工：canonical 做对称 / 平移归一，是求解器的
+    「同形」等价；可逆校验要的是**同一个局面**，必须逐块带 group
+    （捆绑组随块走，组归属是块键之外唯一影响能否走回去的状态）。
+    Board 已按 (point, orient, group) 排序，直接元组比较即可。
+    """
+    return tuple((b.point, b.orient, b.group) for b in board.blocks)
+
+
 def _find_inverse(board: Board, move, step: int):
     """找 move 的逆移动：走完这步后，**精确回到走前局面**的那个合法移动。
 
-    与 game.can_undo_shuffle_step（2026-10-18 安全打乱）同标准——绝对
-    坐标集合精确相等，不是规范形相等。
+    与 game.can_undo_shuffle_step（2026-10-18 安全打乱）同标准——
+    精确局面相等（位置 + 朝向 + **捆绑组归属**），不是规范形相等。
 
     判定走 ``Board.move_ok``：逆移动选中片 = 原选中片沿 move.direction 平移
-    一步的落点，沿相反方向推回。它本来就是走前那一次合法点击的产物（同缝、
+    step 格的落点，沿相反方向推回。它本来就是走前那一次合法点击的产物（同缝、
     同侧、同一连通分量——平移平行于缝、rank 不变，落点仍整片落在与原移动
     相同的缝侧）；``move_ok`` 既校验「推得动、不断开、不撞锁死缝」，又要求
     「选中片在 nxt 上是缝某一侧的连通分量闭包（极大分量）」——这后一道正是
@@ -106,12 +117,23 @@ def _find_inverse(board: Board, move, step: int):
     nxt = board.apply(move)
     d = move.direction
     opp = tuple(-x for x in d)
-    moved_nxt = tuple(sorted((_add(p, d), o) for (p, o) in move.moved))
+    # 注意是 d * step，不是 d：move.moved 记的是**移动前**块键，apply 后
+    # 整片沿 d 平移了 step 格。旧实现只加一个单位，step>1 时逆移动的块键
+    # 会落在空位上，move_ok 恒假、safe_scramble 一步都走不动（2026-11-21
+    # 在 4×4/step2 上暴露；既有测试只跑 step=1 没踩到）。
+    delta = tuple(c * step for c in d)
+    moved_nxt = tuple(sorted((_add(p, delta), o) for (p, o) in move.moved))
     inv = Move(move.family, move.t, move.side, opp, step, moved_nxt)
     # move_ok 权威校验：逆移动在 nxt 上是合法极大分量且推得动 ⟺ 它是游戏
     # 可执行的精确逆移动（保证 safe_scramble 产出的撤销路径逐条反转后真能
     # 由游戏/适配器按「点击极大分量」的语义重放）。
     if not nxt.move_ok(inv):
+        return None
+    # §67：再把「位置 + group 逐块相等」钉成显式判据。apply 本就保留
+    # b.group，move_ok 的块键也唯一标识块，这道理应恒真；写成断言是为了
+    # 防将来 apply / group_closure 改成按位置重排组号后静默退化——没有
+    # 这一道，组归属不同的局面会被当成精确逆放行。
+    if _exact_key(nxt.apply(inv)) != _exact_key(board):
         return None
     return inv
 
@@ -120,6 +142,7 @@ def safe_scramble(board: Board, step: int, attempts: int, rng,
                   record: list = None):
     """可逆打乱：每步只走「存在合法移动能精确回到移动前」的走法。
 
+    精确 = 位置 + 朝向 + 捆绑组归属（见 _find_inverse / _exact_key）。
     于是记录下来的撤销路径逐条反转、就是一条**字面意义的合法解法**
     （每步都精确可逆，不靠规范形近似）。终态保证有解：指示 / 自动
     求解 / 关卡生成永远有答案，也撞不上死局（死局态不可逆可达）。
