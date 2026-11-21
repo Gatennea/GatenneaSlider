@@ -70,10 +70,13 @@ def draw_block_number(screen, font, num, center, block_fill, emboss=True):
 def reject_border_style(reason, zoom):
     """拒絕視覺：只換邊框色 + 加粗，**填充一律不動**（UI 鐵律 §1 / S1-2）。
 
-    reason 只接受 'disconnected' / 'collision'；其它值（含 None）一律中性色，
-    絕不靜默歸進兩色之一——未知原因假裝知道，比不分色更糟。
+    reason 接受 'disconnected' / 'collision' / 'locked_ring'：
+    locked_ring（拆开封闭捆绑环会让中心块漏出，§67）的后果与断开同类
+    ——沿用冷紫（§71 拍板：给它语义色，不许默默落中性白）。
+    其它值（含 None）一律中性色，绝不静默归进两色之一——未知原因假装
+    知道，比不分色更糟。
     """
-    if reason == 'disconnected':
+    if reason in ('disconnected', 'locked_ring'):
         color = REJECT_BORDER_DISCONNECTED
     elif reason == 'collision':
         color = REJECT_BORDER_COLLISION
@@ -700,7 +703,10 @@ class RendererMixin:
                 ring_color = None
                 # 拖曳跟隨無效（超過可達上限，原因判不明）→ 中性色邊框；填充不動
                 if is_follow and self.drag_follow_invalid:
-                    border_color, border_w = reject_border_style(None, self.zoom)
+                    # §71：跟随期越界按探测留存的原因分色（探不到才中性）
+                    border_color, border_w = reject_border_style(
+                        getattr(self, 'drag_follow_reject_reason', None),
+                        self.zoom)
                 elif _reject_flash and id(block) in _reject_flash_ids:
                     # 鍵盤／虛擬鍵盤／箭頭被拒：同一套樣式點亮 12 幀，按原因分色
                     border_color, border_w = reject_border_style(
@@ -902,7 +908,10 @@ class RendererMixin:
                 border_w = max(1, int(2 * self.zoom))
                 if warn:
                     # 拖曳跟隨無效：原因判不明 → 中性色；填充不動
-                    border_color, border_w = reject_border_style(None, self.zoom)
+                    # §71：跟随期越界按探测留存的原因分色（探不到才中性）
+                    border_color, border_w = reject_border_style(
+                        getattr(self, 'drag_follow_reject_reason', None),
+                        self.zoom)
                 elif _reject_flash and bid in _reject_flash_ids:
                     border_color, border_w = reject_border_style(
                         getattr(self, '_reject_reason', None), self.zoom)
@@ -2261,7 +2270,10 @@ class RendererMixin:
             loc = tuple(block.location)
             if id(block) in follow_ids:
                 # 拖曳跟隨無效：原因判不明 → 中性色；填充不動
-                border_color, border_w = reject_border_style(None, self.zoom)
+                # §71：跟随期越界按探测留存的原因分色（探不到才中性）
+                border_color, border_w = reject_border_style(
+                    getattr(self, 'drag_follow_reject_reason', None),
+                    self.zoom)
             elif id(block) in _shake_ids:
                 # 拒絕閃現（鍵盤 / 鬆手越界）：同一套樣式，按原因分色
                 border_color, border_w = reject_border_style(
@@ -2996,7 +3008,10 @@ class RendererMixin:
             if (self.drag_following and self.drag_follow_invalid
                     and id(block) in follow_ids):
                 # 跟隨期「超過可達上限」原因判不明 → 中性色
-                border_color, border_w = reject_border_style(None, self.zoom)
+                # §71：跟随期越界按探测留存的原因分色（探不到才中性）
+                border_color, border_w = reject_border_style(
+                    getattr(self, 'drag_follow_reject_reason', None),
+                    self.zoom)
             elif _is_shaking:
                 # 一次性閃現（鍵盤 / 鬆手越界）：按底層原因分色
                 border_color, border_w = reject_border_style(

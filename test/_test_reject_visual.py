@@ -260,6 +260,40 @@ try:
         check('H5 计时器归零后回默认灰',
               _rets and all(r[0] == gb.colors['border'] for r in _rets),
               str(set(r[0] for r in _rets)))
+
+        # ---- I. §71 拖拽越界按探测原因分色 + locked_ring 语义 ----
+        check('I1 locked_ring = 断开冷紫（不再默默落中性白）',
+              reject_border_style('locked_ring', 1)[0]
+              == REJECT_BORDER_DISCONNECTED)
+        # I2 探测留存：左两列往右推，第一步就撞上静块 → reason 留存
+        gi = boot()
+        for b in gi.game.blocks:
+            b.be_opted = (b.location[1] < 2)
+        gi._probe_max_cells('d')
+        check('I2 _probe_max_cells 留存越界原因',
+              gi.drag_follow_reject_reason in ('collision', 'disconnected'),
+              repr(getattr(gi, 'drag_follow_reject_reason', None)))
+        # I3 跟随期 warn 渲染按留存原因分色（spy 组级 helper 的 warn 分支）
+        gb.drag_following = True
+        gb.drag_follow_invalid = True
+        gb.drag_follow_reject_reason = 'disconnected'
+        for b in gb.game.blocks:
+            b.be_opted = (getattr(b, 'group', 0) == 1)   # 只选捆绑组
+        SliderGUI._bandaged_border = _spy_bb
+        _bb_calls.clear()
+        gb.screen.fill((0, 0, 0))
+        gb.draw_board()
+        _warn_hits = [a[0] for a, _r in _bb_calls]
+        _warn_rets = [r for _a, r in _bb_calls]
+        check('I3 拖拽越界 warn 分支被触发', any(_warn_hits), str(_warn_hits))
+        check('I3b warn 边框 = 冷紫（探测留存原因生效，非中性白）',
+              REJECT_BORDER_DISCONNECTED in [r[0] for r in _warn_rets],
+              str(set(r[0] for r in _warn_rets)))
+        gb.drag_following = False
+        gb.drag_follow_invalid = False
+        gb.drag_follow_reject_reason = None
+        for b in gb.game.blocks:
+            b.be_opted = False
     finally:
         SliderGUI._bandaged_border = _orig_bb
 except Exception as e:
