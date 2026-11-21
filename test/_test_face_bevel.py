@@ -391,7 +391,8 @@ def run():
              (_pr, [False, False, False, True], False)],
             [], lambda x, y: (x, y),
             _fill7, (140, 180, 220), _bd7, 2, (),
-            bevel=_orig_bevel, edge_inset_px=1.0)
+            bevel=_orig_bevel, edge_inset_px=1.0,
+            bevel_inset_px=5.0)
         # 组外上边（y=0，让位1后带在 y≈1）：提亮带存在
         check(tuple(sp8.get_at((5, 1)))[:3] != _fill7,
               '§65 pieces 组外轮廓边有倒角带',
@@ -407,13 +408,40 @@ def run():
             sp8d, {1: [(0, 0), (0, 1)]},
             lambda r, c: (c * 12, 0, 10), 2,
             _fill7, (140, 180, 220), _bd7, 2,
-            bevel=_orig_bevel, edge_inset_px=1.0)
+            bevel=_orig_bevel, edge_inset_px=1.0,
+            bevel_inset_px=5.0)
         check(tuple(sp8d.get_at((5, 1)))[:3] != _fill7,
               '§65 chunks 组外侧边有倒角带',
               str(tuple(sp8d.get_at((5, 1)))[:3]))
         check(tuple(sp8d.get_at((9, 5)))[:3] == _fill7,
               '§65 chunks 组内相邻边无带（组内不现分隔线）',
               str(tuple(sp8d.get_at((9, 5)))[:3]))
+        # 8e §65 修正（用户 11-21「厚度不一样」）：固定厚度——不同尺寸
+        # 矩形走产品口径（inset_px=BEVEL_INSET_PX）带厚一致。原比例制
+        # （0.15）下 60px 块带≈4.5、126px 块带≈9.5，此断言会红。
+        from gui.lighting import BEVEL_INSET_PX
+
+        def _band_thick(size):
+            s = pygame.Surface((size + 20, size + 20))
+            s.fill(_bg8)
+            r = pygame.Rect(10, 10, size, size)
+            pygame.draw.rect(s, _fill7, r)
+            _orig_bevel(s, (r.topleft, r.topright, r.bottomright, r.bottomleft),
+                        _fill7, inset_px=BEVEL_INSET_PX)
+            mid = 10 + size // 2
+            thick = 0
+            for y in range(10, 10 + 40):
+                if tuple(s.get_at((mid, y)))[:3] == _fill7:
+                    break
+                thick += 1
+            return thick
+
+        _t60 = _band_thick(60)
+        _t126 = _band_thick(126)
+        # 一致是硬条件；绝对值允许 ±1（多边形 rasterize 对边界行的含侧）
+        check(_t60 == _t126 and abs(_t60 - int(BEVEL_INSET_PX)) <= 1,
+              '§65 固定厚度：60px 与 126px 块带厚一致 ≈ 设计像素',
+              f'60px={_t60} 126px={_t126} design={BEVEL_INSET_PX}')
 
         # ---------- 9 §六十九：禁用缝族提示（文案 + 就地附句）----------
         print('\n--- 9 §69 禁用缝族提示 ---')

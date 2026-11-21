@@ -26,7 +26,7 @@ from game_triangle import DIRECTIONS as TRI_DIRECTIONS
 from game_triangle import GAP_DIRECTIONS as TRI_GAP_DIRECTIONS
 from engine.cell_class import cell_class, class_index
 from gui.group_render import draw_group_chunks
-from gui.lighting import _draw_face_bevel, _shade255
+from gui.lighting import BEVEL_INSET_PX, _draw_face_bevel, _shade255
 from gui.mi_view import MiBoardView
 from gui.triangle_view import TriangleBoardView
 from records import format_time
@@ -391,10 +391,12 @@ class RendererMixin:
         if bevel:
             # §六十六：倒角带在超采样面上让位半个描边宽（描边以边界为中心
             # 向内外各扩半宽），提亮色不渗出灰框；无边框调用保持 0 零变化。
+            # §65 修正：inset_px 厚度按超采样倍率放大（缩回后 = 设计像素）。
             _draw_face_bevel(
                 big, ipoly, fill,
                 edge_inset_px=(max(1, border_w * S) / 2.0)
-                if (border_color is not None and border_w > 0) else 0.0)
+                if (border_color is not None and border_w > 0) else 0.0,
+                inset_px=BEVEL_INSET_PX * self.zoom * S)
         if border_color is not None and border_w > 0:
             pygame.draw.polygon(big, border_color, ipoly, max(1, border_w * S))
         self.screen.blit(pygame.transform.smoothscale(big, (w, h)), (x0, y0))
@@ -727,8 +729,10 @@ class RendererMixin:
                     pygame.draw.polygon(self.screen, fill, rpoly)
                     if getattr(self, 'face_bevel_enabled', False):
                         # §六十六：带让位半个描边宽，提亮色不出灰框
+                        # §65 修正：inset_px 固定厚度（三角块大小不一）
                         _draw_face_bevel(self.screen, rpoly, fill,
-                                         edge_inset_px=border_w / 2.0)
+                                         edge_inset_px=border_w / 2.0,
+                                         inset_px=BEVEL_INSET_PX * self.zoom)
                     pygame.draw.polygon(self.screen, border_color,
                                         rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（hover 更亮）
@@ -919,8 +923,10 @@ class RendererMixin:
                     pygame.draw.polygon(self.screen, fill, rpoly)
                     if getattr(self, 'face_bevel_enabled', False):
                         # §六十六：带让位半个描边宽，提亮色不出灰框
+                        # §65 修正：inset_px 固定厚度（米字块大小不一）
                         _draw_face_bevel(self.screen, rpoly, fill,
-                                         edge_inset_px=border_w / 2.0)
+                                         edge_inset_px=border_w / 2.0,
+                                         inset_px=BEVEL_INSET_PX * self.zoom)
                     pygame.draw.polygon(self.screen, border_color,
                                         rpoly, border_w)
                 # 连锁提示：同類塊叠半透明白（與方形/三角同一套語言）
@@ -2327,10 +2333,12 @@ class RendererMixin:
                 # §六十六：只有「后面真会被描边」的块（特殊态，与描边趟同
                 # 条件）才让位半个线宽；普通块不描灰边（晶格线画在填色前），
                 # 让位反而会在块界留空隙，保持旧口径。
+                # §65 修正：inset_px 固定厚度（模型板各形状块大小不一）。
                 _draw_face_bevel(
                     self.screen, rpoly, fill,
                     edge_inset_px=(_bw / 2.0)
-                    if (_bw > 0 and _bc != self.colors['border']) else 0.0)
+                    if (_bw > 0 and _bc != self.colors['border']) else 0.0,
+                    inset_px=BEVEL_INSET_PX * self.zoom)
         for _base, rpoly, _fill, border_color, border_w in _paint:
             # 普通塊**不描灰邊**：晶格線已經把塊界畫清楚了，再給每塊描一圈灰
             # 等於一條縫上並排三條灰線（塊邊+晶格線+塊邊），正是「整盤發灰」。
@@ -3011,11 +3019,13 @@ class RendererMixin:
                 # §六十二：面内四边微倒角（与三维/三角/米字同一 helper）。
                 # corner_inset=圆角半径：带端点收在角内，圆角照旧由 border 画。
                 # §六十六：edge_inset 让带从边框内沿开始，提亮色不出灰框。
+                # §65 修正：inset_px 固定厚度（普通块与捆绑块同厚）。
                 _draw_face_bevel(
                     self.screen,
                     (rect.topleft, rect.topright, rect.bottomright, rect.bottomleft),
                     fill, corner_inset=_block_corner,
-                    edge_inset_px=border_w / 2.0)
+                    edge_inset_px=border_w / 2.0,
+                    inset_px=BEVEL_INSET_PX * self.zoom)
             pygame.draw.rect(self.screen, border_color, rect, border_w, border_radius=_block_corner)
 
             # 连锁提示：同组格叠一层半透明白（hover 更亮），着色描边仍在最上层
@@ -3182,7 +3192,8 @@ class RendererMixin:
                 self.colors['border'], _grp_ow, dots,
                 bevel=(_draw_face_bevel
                        if getattr(self, 'face_bevel_enabled', False) else None),
-                edge_inset_px=_grp_ow / 2.0)
+                edge_inset_px=_grp_ow / 2.0,
+                bevel_inset_px=BEVEL_INSET_PX * self.zoom)
 
     def _draw_bandaged_groups_play(self, scaled_cell, scaled_gap):
         """游玩主棋盘的捆绑组渲染：同组滑块 → 一整块「放大版普通滑塊」。
@@ -3270,12 +3281,15 @@ class RendererMixin:
                     # §六十五：捆绑块与普通块同一倒角 helper——放大版矩形
                     # 就是「大一号普通块」，同 corner_inset 口径（圆角收端），
                     # §六十六 让位半个边框宽（带不出灰框）。
+                    # §65 修正：inset_px 固定厚度——大矩形不再按比例画出
+                    # 比普通块厚一倍的带（用户 11-21 反馈「厚度不一样」）。
                     _draw_face_bevel(
                         self.screen,
                         (rect.topleft, rect.topright,
                          rect.bottomright, rect.bottomleft),
                         fill, corner_inset=_grp_corner,
-                        edge_inset_px=border_w / 2.0)
+                        edge_inset_px=border_w / 2.0,
+                        inset_px=BEVEL_INSET_PX * self.zoom)
                 pygame.draw.rect(self.screen, border_color, rect, border_w,
                                  border_radius=_grp_corner)
             else:
@@ -3288,7 +3302,8 @@ class RendererMixin:
                                   bevel=(_draw_face_bevel
                                          if getattr(self, 'face_bevel_enabled', False)
                                          else None),
-                                  edge_inset_px=border_w / 2.0)
+                                  edge_inset_px=border_w / 2.0,
+                                  bevel_inset_px=BEVEL_INSET_PX * self.zoom)
 
     # ---------- S1-2 / S1-4：三形态共用的语义反馈原语 ----------
     #

@@ -104,7 +104,7 @@ def bridge_quad(edge_a, edge_b):
 
 def draw_group_pieces(screen, pieces, bridges, to_screen, fill, fill_sel,
                       outline_color, outline_width, dots=(),
-                      bevel=None, edge_inset_px=0.0):
+                      bevel=None, edge_inset_px=0.0, bevel_inset_px=0.0):
     """多边形形态的捆绑组：整组填色 + 内部缝隙填平 + 只描组外边界。
 
     与方形 `draw_group_chunks` 同一套观感（复用现有块色/边框色，不引入新色）：
@@ -135,6 +135,9 @@ def draw_group_pieces(screen, pieces, bridges, to_screen, fill, fill_sel,
                     「一整块刚体」观感。
     edge_inset_px : 倒角带从外轮廓描边内沿开始的让位像素（边框宽/2），
                     §六十六 提亮色不出灰框。
+    bevel_inset_px: 倒角带固定厚度像素（§65 修正：捆绑块与普通块同厚，
+                    原比例制下大组画出比普通块厚一倍的带）。0=用 helper
+                    的比例默认（仅离屏旧调用）。
     """
     # 第一遍：填平内部缝隙 + 各块填色
     for quad, sel in bridges:
@@ -159,7 +162,8 @@ def draw_group_pieces(screen, pieces, bridges, to_screen, fill, fill_sel,
             if edges:
                 bevel(screen, [to_screen(*p) for p in poly],
                       fill_sel if selected else fill,
-                      edge_inset_px=edge_inset_px, edges=edges)
+                      edge_inset_px=edge_inset_px,
+                      inset_px=bevel_inset_px or None, edges=edges)
     # 第二遍：只描组外边界（第二遍画，避免被相邻组员的填充盖掉）
     for poly, internal, selected in pieces:
         n = len(poly)
@@ -172,7 +176,7 @@ def draw_group_pieces(screen, pieces, bridges, to_screen, fill, fill_sel,
 
 def draw_group_chunks(screen, groups, get_rect, gap_px, fill, fill_sel,
                       outline_color, outline_width, is_selected=None,
-                      bevel=None, edge_inset_px=0.0):
+                      bevel=None, edge_inset_px=0.0, bevel_inset_px=0.0):
     """把同组格画成一整块实心矩形（无内部网格线 + 单一外轮廓）。
 
     参数
@@ -190,6 +194,7 @@ def draw_group_chunks(screen, groups, get_rect, gap_px, fill, fill_sel,
     bevel         : §六十五 捆绑光效——同 draw_group_pieces 的 bevel 口径
                     （可调用/None；只压该格的**组外侧边**，组内相邻边跳过）。
     edge_inset_px : 倒角带从外轮廓线内沿开始的让位像素（§六十六）。
+    bevel_inset_px: 倒角带固定厚度像素（§65 修正，同 draw_group_pieces）。
     """
     if is_selected is None:
         is_selected = lambda r, c: False
@@ -233,7 +238,8 @@ def draw_group_chunks(screen, groups, get_rect, gap_px, fill, fill_sel,
                     bevel(screen,
                           [(x, y), (x + sz, y), (x + sz, y + sz), (x, y + sz)],
                           fill_sel if is_selected(r, c) else fill,
-                          edge_inset_px=edge_inset_px, edges=edges)
+                          edge_inset_px=edge_inset_px,
+                          inset_px=bevel_inset_px or None, edges=edges)
 
     # 第二遍：外轮廓（只描组外边界，内部相邻边不描，读作一整块）
     ow = outline_width

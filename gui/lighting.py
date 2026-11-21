@@ -17,6 +17,15 @@ draw_group_pieces / draw_group_chunks（纯 pygame 零依赖模块）要给捆�
 
 import pygame
 
+#: 倒角带设计厚度（屏幕像素，调用方按 zoom 缩放后传 inset_px）。
+#: §65 修正（2026-11-21 用户：「捆绑块和普通滑块厚度不一样」）：原 inset
+#: 是**比例制**（0.15=向质心收 15%），带厚 = 0.15×(边中到质心距离)——
+#: 普通 60px 块带≈4.5px、2×2 捆绑 126px 块≈9.5px、1×5 长条端头≈22px，
+#: 同一盘三种厚度。5.0 取自原比例制在 60px 普通块上的厚度（4.5）取整，
+#: 普通块观感不变、大块带收薄到与它一致。小块（算出的 inset 超 0.45 会
+#: 令带越过质心自交）按 0.45 夹紧，退化为随块缩小——画不下就缩，不翻转。
+BEVEL_INSET_PX = 5.0
+
 
 def _shade255(color, offset):
     """给 RGB 加固定偏移并夹回 0..255（整型三元组）。"""
@@ -26,7 +35,8 @@ def _shade255(color, offset):
 
 
 def _draw_face_bevel(surface, pts, fill, strength=30.0, inset=0.15,
-                     corner_inset=0.0, edge_inset_px=0.0, edges=None):
+                     corner_inset=0.0, edge_inset_px=0.0, edges=None,
+                     inset_px=None):
     """面内多边微倒角：沿面的每条屏幕边压一条窄带，亮度按
     「屏幕左上光」(-0.55, -0.75) 的边法向投影决定——上/左提亮、下/右压暗，
     方向与 `engine/cubic_view.py::face_shade` 的相机相对主光一致。
@@ -39,7 +49,9 @@ def _draw_face_bevel(surface, pts, fill, strength=30.0, inset=0.15,
              不是四边形，所以是 n 边而不是硬编码 4 边）
     fill   : 面底色 RGB——带色 = 底色 + 偏移，不引入新色相
     strength: 偏移幅度（三维原值 30）
-    inset  : 带宽比例（从边向质心收 inset 比例，三维原值 0.15）
+    inset  : 带宽**比例**（从边向质心收 inset 比例，三维原值 0.15）——
+             仅在 inset_px=None 时生效。比例制带厚随块尺寸变，三维面片
+             尺寸统一无此问题；二维一律传 inset_px（见下）。
     corner_inset: 端点沿边向内收的像素数——矩形有圆角（_block_corner），
              端点落在角点会把圆角外的角隅补成直角；圆角形态传半径让带
              不触及角部，圆角由随后的 border 层照画。
@@ -50,6 +62,11 @@ def _draw_face_bevel(surface, pts, fill, strength=30.0, inset=0.15,
     edges   : 只压这些下标的边（集合/列表），None=全部（§六十五 捆绑组
              只沿**组外轮廓**压带，组内共用边跳过——否则组内重现分隔线，
              违背「一整块刚体」观感）。
+    inset_px: 带厚**固定像素**（§65 修正：厚度不随块尺寸变，捆绑块与
+             普通块同厚）。每条边的收边比例 = inset_px / (边中到质心
+             距离)，夹紧 0.45 防带越过质心自交。调用方传
+             `BEVEL_INSET_PX * zoom`（AA 路径再 ×S）；None=用比例 inset
+             （三维旧口径零变化）。
     """
     n = len(pts)
     if n < 3:
@@ -88,6 +105,10 @@ def _draw_face_bevel(surface, pts, fill, strength=30.0, inset=0.15,
                  b[1] - ny / nlen * edge_inset_px)
         dot = (nx * lx + ny * ly) / (nlen * llen)
         off = int(strength * dot)
-        q1 = (a[0] + (cx - a[0]) * inset, a[1] + (cy - a[1]) * inset)
-        q2 = (b[0] + (cx - b[0]) * inset, b[1] + (cy - b[1]) * inset)
+        # 带厚：inset_px 固定像素（每边独立换算成收边比例）优先；
+        # 法向厚度 = 收边比例 × nlen = inset_px（nlen 是边中到质心的
+        # 法向距离）。0.45 夹紧防 q 越过质心翻转（小块退化为随块缩小）。
+        _inset = min(inset_px / nlen, 0.45) if inset_px else inset
+        q1 = (a[0] + (cx - a[0]) * _inset, a[1] + (cy - a[1]) * _inset)
+        q2 = (b[0] + (cx - b[0]) * _inset, b[1] + (cy - b[1]) * _inset)
         pygame.draw.polygon(surface, _shade255(fill, off), (a, b, q2, q1))
