@@ -1408,3 +1408,36 @@ target 为 0 时不能被当成不可用、同一参考块重选、步数/历史
 停/不推块不算步不写历史、反向拖回、切视角/回正/换局归中。全部 33 个 cubic
 套件全绿。
 
+## 方形單次觸控：按塊不再被寬兜底選縫劫持（2026-11-21）
+
+用户報「单次触控似乎不灵敏或者用不了」。根因不是触摸采样，而是 2026-11-07
+`14aef2d` 把通用通道的 ±28 活缝宽兜底接到方形第一击后，事件层在按下滑块时
+先判缝：`cell 60 + gap 4` 的格距是 64，块中心到两侧缝中心各 32，判据
+`abs(...) < gap+tolerance = 32` 严格小于，于是**只有块正中心一个点保留块命中**，
+偏 1px 就被判成选缝，`block` 清空，单次触控连 `_mouse_drag_state` 都记不下来。
+
+不改宽兜底的选缝能力，改成**按下只挂起、移动/松手再裁决**：
+
+- `gui/move.py::_sq_click_query(..., preserve_block=False)`：宽兜底命中活缝时
+  仍回報 gap，但 `preserve_block=True` 不再清 block；默认 False 保持两击旧语义。
+- `gui/events.py`：方形、未选中缝、`control_single_touch` 开启、命中块时，
+  把 gap 挂到 `_pending_gap_click`，块照常记进 `_mouse_drag_state`；
+  `MOUSEMOTION` 超过 `drag_threshold` 立即丢 pending（即使 follow 初始化失败
+  也不再回头选缝）；`MOUSEBUTTONUP` 没拖才补提交选缝。右键/新按下清 pending。
+- 选中状态/提示/教程抽成 `_select_gap_click()`，按下即选与松手补选共用，
+  避免两套分支分叉。
+- 两击模式（`control_single_touch=False`）不走 pending，仍是按下即选缝；
+  三角/米字/通用通道不变。
+
+回归：新增 `test/_test_single_touch_press.py` 21 项：按下挂起、拖动进 follow
+并真实提交移动动画、松手没拖补选缝、右键作废、默认/保留 block 两种查询语义、
+两击模式旧语义。另更新 `_test_gap_second_step.py` 的 click helper 补上
+`MOUSEBUTTONUP`（选缝现在可能在松手才提交）。已跑通
+`_test_single_touch_press.py`、`_test_gap_second_step.py`、`_test_hover_gap.py`、
+`_test_generic_gap_band.py`、`_test_seam_select_generic.py`、`_test_sq_seam_hint.py`、
+`_test_anim_click.py`、`_test_click_feedback_buttons.py`、
+`_test_bandage_ring_lock.py`、`_test_bandage_shuffle_group.py`、
+`_test_generic_bandage.py`。`_test_bandage_forms.py` 的 6g 仍因
+「无限打乱中：再次打乱停止」基线状态转红（与本次接线无关）；`_test_bandage_click.py`
+因 `演示-捆绑` 样式不在本工作树无法启动。
+

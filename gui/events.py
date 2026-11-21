@@ -387,6 +387,52 @@ class EventsMixin:
             return
         audio.play_keyboard()
 
+    def _select_gap_click(self, gap, selectable=True):
+        """选缝的选中逻辑：按下即选与单次触控延迟到松手共用同一段。
+
+        只负责“选中状态/提示/教程”，不决定何时调用。调用前 gap 必须已
+        通过 _sq_click_query 的合法缝校验；内部缝已在上层转成选块。
+        """
+        if gap is None:
+            return
+        # 跟随中点击缝隙 → 清除跟随，不执行移动
+        if self.drag_following:
+            self.clear_drag_follow()
+        if not selectable:
+            return
+        # 选中变化 → 结束上一次选中会话（后续移动另起快照）
+        self._bump_move_session()
+        if self.selected_gap == gap:
+            self.selected_gap = None
+            return
+        gap_type, line = gap
+        self.selected_gap = gap
+        for b in self.game.blocks:
+            b.be_opted = False
+        self.selected_block = None
+        # 换缝 = 上一次「选中滑块的那一点」作废，
+        # 箭头按键回到切片外沿（不再钉在旧鼠标点）
+        self._gap_anchor_world = None
+        # 操作提示：选中缝隙
+        msg = f"选中{self._gap_type_name(gap_type)}缝隙"
+        note = self.MI_STEP_NOTE.get(gap_type)
+        if getattr(self, 'mi_mode', False) and note:
+            # 米字格的「一格」按族定義，選縫時就把
+            # 距離說清楚，玩家才好預期滑多遠
+            msg += f"（{note}）"
+        self.macro_notify_msg = msg
+        self.macro_notify_timer = 120
+        # 新手教程：步骤1 选中缝隙 → 步骤2
+        self._tut_on_gap_clicked()
+
+    def _commit_pending_gap_click(self):
+        """松手时提交按下阶段挂起的选缝；拖动路径已提前清空，不会走到这里。"""
+        pending = getattr(self, '_pending_gap_click', None)
+        self._pending_gap_click = None
+        if pending:
+            self._select_gap_click(pending['gap'],
+                                   pending.get('selectable', True))
+
     def handle_events(self):
         """处理用户输入事件"""
         # 每帧同步 IME / SDL 文本输入模式（任一文本输入上下文激活时开启）
@@ -915,6 +961,9 @@ class EventsMixin:
                         st['dy'] = event.pos[1] - st['sy']
                         th = getattr(self, 'drag_threshold', 14)
                         if abs(st['dx']) >= th or abs(st['dy']) >= th:
+                            # 已确认是拖动：挂起的选缝作废（即使下面跟随初始化
+                            # 因方向无效失败，也不能松手回头补一次选缝）。
+                            self._pending_gap_click = None
                             # 首次超过阈值：进入跟随状态
                             if not st.get('follow_active'):
                                 st['follow_active'] = True
@@ -1008,6 +1057,9 @@ class EventsMixin:
                     x, y = event.pos
                     
                     if event.button == 1:
+                        # 新一次按下先作废上一按遗留的候选缝（例如上一下在
+                        # 窗口外松开、没收到 MOUSEBUTTONUP）。
+                        self._pending_gap_click = None
                         # 文件菜单项点击
                         if self.show_file_menu:
                             file_clicked = False
@@ -1377,6 +1429,7 @@ class EventsMixin:
                             self._arrow_button_click(arrow_dir)
                             continue
 
+                        defer_sq = False
                         if op_locked:
                             gap = block = None
                         elif getattr(self, 'mi_mode', False):
@@ -1389,8 +1442,18 @@ class EventsMixin:
                             gap, block = self._mi_click_query(x, y)
                         else:
                             # 方形/三角：命中缝/块；点到「画得出、点得到、
-                            # 选不动」的外沿缝时给提示（与米字格一致）
-                            gap, block = self._sq_click_query(x, y)
+                            # 选不动」的外沿缝时给提示（与米字格一致）。
+                            # 方形单次触控在“未选中缝”时先保留块命中：宽兜底
+                            # 同时命中活缝也不立即裁决，交给下面的 pending 机制
+                            # 等拖动阈值/松手再二选一（见 _pending_gap_click）。
+                            defer_sq = bool(
+                                not getattr(self, 'triangle_mode', False)
+                                and self._generic_spec() is None
+                                and getattr(self, 'control_single_touch', True)
+                                and getattr(self, 'selected_gap', None) is None
+                                and getattr(self, '_pick_fill', None) is None)
+                            gap, block = self._sq_click_query(
+                                x, y, preserve_block=defer_sq)
 
                         # 已选中缝后的第二下把缝隙命中带收窄了（便于选滑块），
                         # 但捆绑「内部缝」的语义本来就是「点整组滑块」，不能跟着
@@ -1433,6 +1496,25 @@ class EventsMixin:
                             self._pick_fill_click(x, y, block, gap)
                             continue
 
+                        # 方形單次觸控：按在塊上、寬兜底又命中活縫時先掛起。
+                        # 這一按既可能是「點偏進相鄰塊選縫」，也可能是「按住
+                        # 塊直接拖」；按下時無法區分，故 gap 暫不提交，塊照舊
+                        # 記進 _mouse_drag_state。移動超過閾值 → 丟掉 pending、
+                        # 走單次觸控；松手沒拖 → 才補提交選縫。
+                        pending_gap = (gap if (defer_sq and gap is not None
+                                               and block is not None)
+                                       else None)
+                        if pending_gap is not None:
+                            if self.drag_following:
+                                self.clear_drag_follow()
+                            gap = None
+                            self._pending_gap_click = {
+                                'gap': pending_gap, 'selectable': selectable,
+                                'sx': x, 'sy': y,
+                            }
+                        else:
+                            self._pending_gap_click = None
+
                         # 拖拽滑动：记录起点（按下滑块时记录；最终由 MOUSEBUTTONUP 判定点击/拖拽）
                         # 单次/两次触控都关闭时拖拽无意义，不记录起点，避免残留中间态
                         # 米字格也记：它的方向就来自这一次「按住并拖动」的位移
@@ -1444,35 +1526,11 @@ class EventsMixin:
                             }
 
                         if gap is not None:
-                            # 跟随中点击缝隙 → 清除跟随，不执行移动
-                            if self.drag_following:
-                                self.clear_drag_follow()
-                            if selectable:
-                                # 选中变化 → 结束上一次选中会话（后续移动另起快照）
-                                self._bump_move_session()
-                                if self.selected_gap == gap:
-                                    self.selected_gap = None
-                                else:
-                                    gap_type, line = gap
-                                    self.selected_gap = gap
-                                    for b in self.game.blocks:
-                                        b.be_opted = False
-                                    self.selected_block = None
-                                    # 换缝 = 上一次「选中滑块的那一点」作废，
-                                    # 箭头按键回到切片外沿（不再钉在旧鼠标点）
-                                    self._gap_anchor_world = None
-                                    # 操作提示：选中缝隙
-                                    msg = f"选中{self._gap_type_name(gap_type)}缝隙"
-                                    note = self.MI_STEP_NOTE.get(gap_type)
-                                    if getattr(self, 'mi_mode', False) and note:
-                                        # 米字格的「一格」按族定義，選縫時就把
-                                        # 距離說清楚，玩家才好預期滑多遠
-                                        msg += f"（{note}）"
-                                    self.macro_notify_msg = msg
-                                    self.macro_notify_timer = 120
-                                    # 新手教程：步骤1 选中缝隙 → 步骤2
-                                    self._tut_on_gap_clicked()
-                            # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，不选中、不平移
+                            # 按下即选缝（非单次触控延后路径）；与松手补提交
+                            # 共用 _select_gap_click，避免两套状态/提示分叉。
+                            # 不可选中（两次触控+鼠标键盘都关）：吞掉点击，
+                            # 不选中、不平移。
+                            self._select_gap_click(gap, selectable)
                         elif getattr(self, 'mi_mode', False) and block is not None \
                                 and self.selected_gap is not None and selectable:
                             # 米字格第二下按下：只选中滑块组，不提交。
@@ -1541,6 +1599,9 @@ class EventsMixin:
                                    msg=op_new_msg, locked=op_locked)
                     
                     elif event.button == 3:
+                        # 右键取消选中：按下阶段挂起的候选缝也一并作废，
+                        # 不能等松左键时又补一次“选中缝隙”。
+                        self._pending_gap_click = None
                         # 右键取消选中
                         if self.drag_following:
                             self.clear_drag_follow()
@@ -1558,6 +1619,14 @@ class EventsMixin:
                 # 鼠标释放
                 elif event.type == pygame.MOUSEBUTTONUP:
                     if event.button == 1:
+                        # 方形单次触控：按下时挂起的候选缝，只有“没拖动”
+                        # 才在松手时补提交；拖动路径已在 MOUSEMOTION 阈值处
+                        # 清掉，不会把一次拖动变成选缝。
+                        if getattr(self, '_pending_gap_click', None) is not None:
+                            if not self.drag_following:
+                                self._commit_pending_gap_click()
+                            else:
+                                self._pending_gap_click = None
                         # 拖拽滑动判定：按下过滑块且位移超过阈值 → 执行一次拖拽滑动
                         if self._mouse_drag_state is not None:
                             st = self._mouse_drag_state

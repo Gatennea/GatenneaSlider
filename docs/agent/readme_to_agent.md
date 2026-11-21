@@ -265,6 +265,12 @@ build_exe.bat / Gatenneaslider.spec / package_zip.bat   # 打包（§10）
   ⚠️ 例外：捆綁「內部縫」等於「點整組滑塊」，不跟著收窄，`events.py` 用
   `_internal_seam_at()` 按默認帶單獨撈回（`_test_bandage_click.py` 守）。見
   `docs/CAPABILITIES.md` 的 `get_gap_at_pos` 條目、`test/_test_gap_second_step.py`。
+- ⚠️ **方形單次觸控按塊優先起拖**（2026-11-21）：未選中縫時若按在塊上、寬兜底又
+  命中活縫，按下不立即裁決，而是把 gap 掛進 `_pending_gap_click`、塊照常記進
+  `_mouse_drag_state`。位移超過 `drag_threshold` → 丟 pending 走單次觸控（即使
+  follow 初始化失敗也不回頭選縫）；松手沒拖 → 才補提交選縫。兩擊模式
+  （`control_single_touch=False`）不走 pending，仍是按下即選縫。護欄
+  `test/_test_single_touch_press.py`。
 - 拖拽判定：按下累計位移超過 `drag_threshold`（預設 14px）才算拖拽，否則視為點擊。
 - 桌面版一次拖拽滑動 = `step` 格（網頁版為 1 格）。
 - **拖拽提交的動畫要「接續」**：跟隨預覽已經把整組畫到近乎落點，松手時若動畫仍從 `b.location` 起算，整組會先跳回原位再滑一遍（玩家看到的「拖完又播一次」）。`_commit_drag_move` 把跟隨位移記進 `_drag_anim_origin`，`animation._apply_drag_origin` 按它在總位移中的佔比 s 把 `anim_start_pos` 前移，動畫只滑剩餘段、時長按同比例縮短（`_anim_duration_base` 記基準，commit/cancel 時還原）。s 夾在 [0,1]：跟隨量超過落點時退化成一幀落位，不會往回滑。**取消動畫要走 `_anim_true_start`（真實起點）**，不能用被前移過的 `anim_start_pos`。

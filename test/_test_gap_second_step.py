@@ -64,8 +64,14 @@ def boot(kind):
 
 
 def click(g, x, y):
+    # 2026-11-21 起：方形单次触控在“按在块上、宽兜底命中缝”时把选缝
+    # 延迟到松手裁决；完整点击必须补 MOUSEBUTTONUP，否则测试看到的是
+    # pending 中间态而不是最终选中。
     pygame.event.post(pygame.event.Event(
         pygame.MOUSEBUTTONDOWN, button=1, pos=(int(x), int(y))))
+    g.handle_events()
+    pygame.event.post(pygame.event.Event(
+        pygame.MOUSEBUTTONUP, button=1, pos=(int(x), int(y))))
     g.handle_events()
 
 
