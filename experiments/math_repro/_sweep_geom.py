@@ -174,7 +174,7 @@ def main():
             fh.write(row_md(st) + "\n")
             fh.flush()
             print(f"[ok] {tag:8s} N={st['N']:7d} unsolv={st['unsolv']:5d} "
-                  f"弱或={st['w']}/{st['unsolv']} 無洞={st['h']}/{st['unsolv']} "
+                  f"弱或={st['w']}/{st['unsolv']} 有洞={st['h']}/{st['unsolv']} "
                   f"god {st['god_ret']}/{st['god_fwd']}", flush=True)
             if not keep:
                 shutil.rmtree(d, ignore_errors=True)
