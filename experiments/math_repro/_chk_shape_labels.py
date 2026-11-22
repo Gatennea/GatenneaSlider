@@ -58,7 +58,10 @@ def nbrs(lab, s):
 def main(name, s):
     P = SHAPES[name]
     S = frozenset(P)
-    start = frozenset((r, c, (r, c)) for (r, c) in S)
+    # 標籤用整數 id（第 i 格），只正規化格子座標——用座標當標籤會被「整體平移」騙出假狀態
+    order = sorted(mv.normalize(S))
+    base = frozenset(order)
+    start = frozenset((r, c, i) for i, (r, c) in enumerate(order))
     dist = {key(norm_lab(start)): 0}
     q = deque([start])
     while q:
@@ -80,7 +83,7 @@ def main(name, s):
     # 回到本形狀的置換
     perms = []
     for k, dd in dist.items():
-        if {(r, c) for (r, c, _) in k} != S:
+        if {(r, c) for (r, c, _) in k} != base:
             continue
         perms.append(dd)
     print('%s（s=%d，K=%d）' % (name, s, len(S)))
