@@ -63,31 +63,32 @@ def n_moves(S, s):
 
 
 def labels_group(S, s):
-    """帶標籤 BFS：回傳 (可達帶標籤狀態數, 回原形的置換個數, 上界)"""
+    """帶標籤 BFS（標籤用 id，只正規化格子）：回傳 (可達標籤狀態數, 回原形置換數, 上界)"""
     from math import factorial
-    start = frozenset((r, c, (r, c)) for (r, c) in S)
+    base = mv.normalize(S)
+    order = sorted(base)
+    start = frozenset((r, c, i) for i, (r, c) in enumerate(order))
 
     def norm(lab):
         r0 = min(p[0] for p in lab); c0 = min(p[1] for p in lab)
-        return tuple(sorted((r - r0, c - c0, l) for (r, c, l) in lab))
+        return tuple(sorted((r - r0, c - c0, i) for (r, c, i) in lab))
 
     key0 = norm(start)
     dist = {key0: 0}
-    q = deque([norm(start)])
-    base = mv.normalize(S)
+    q = deque([start])
     while q:
-        k = q.popleft()
-        cur = frozenset(k)
+        cur = q.popleft()
+        kk = norm(cur)
         Ss = {(r, c) for (r, c, _) in cur}
         for seam, side, comp, unit in mv.legal_moves(Ss, s):
             if mv.apply_move(Ss, comp, unit, s) is None:
                 continue
-            nxt = {(r + unit[0] * s, c + unit[1] * s, l) if (r, c) in comp else (r, c, l)
-                   for (r, c, l) in cur}
+            nxt = frozenset((r + unit[0] * s, c + unit[1] * s, i) if (r, c) in comp else (r, c, i)
+                            for (r, c, i) in cur)
             nk = norm(nxt)
             if nk not in dist:
-                dist[nk] = dist[k] + 1
-                q.append(nk)
+                dist[nk] = dist[kk] + 1
+                q.append(nxt)
     perms = 0
     for k in dist:
         if {(r, c) for (r, c, _) in k} == base:
