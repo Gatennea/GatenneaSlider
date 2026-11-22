@@ -155,7 +155,7 @@ def main():
     os.makedirs(DUMPROOT, exist_ok=True)
     path = os.path.join(ROOT, "sweep_geom_matrix.md")
     fh = open(path, "w", encoding="utf-8")
-    fh.write("| (m,n,s) | \\|A\\| | \\|F\\| | \\|R\\| | 可解 | 困局 | 兩不沾 | 不可解 |"
+    fh.write("| (m,n,s) | \\|A\\| | \\|F\\| | \\|R\\| | 可解 | 困局 | 孤立死 | 不可解 |"
              " C 內實心矩形 | 弱或 | 無洞 | god 回程/正向 |\n")
     fh.write("|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---|\n")
     fh.flush()
