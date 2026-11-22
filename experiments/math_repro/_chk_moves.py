@@ -13,7 +13,12 @@ import moves as mv
 
 
 def canon(cs):
-    """D4 規範化：取 8 個正交變換下、逐行位圖字典序最小者，回傳 (tuple of rows) 可比字串。"""
+    """D4 規範化，回傳引擎用的類代表：8 個正交變換下 **memcmp 序（u16 小端逐位元組）** 最小者。
+
+    注意：引擎 canon_from_rows 用 memcmp 比較 u16 陣列，那是「低位元組優先」的字典序，
+    與數值序不同——2000 個 4×4 盤面裡有 6.0% 兩者選出不同代表（`_work/_repr_order.py` 已驗）。
+    外部腳本必須用同一個序，否則 key 對不上，會誤判成「走法集合不相交」。
+    """
     cs = set(cs)
     rmin = min(r for r, _ in cs); cmin = min(c for _, c in cs)
     cs = {(r - rmin, c - cmin) for r, c in cs}
@@ -36,10 +41,12 @@ def canon(cs):
                 t.add((nr, nc))
             tr = min(r for r, _ in t); tc = min(c for _, c in t)
             t = tuple(sorted((r - tr, c - tc) for r, c in t))
-            key = tuple(sum(1 << c for r2, c in t if r2 == r) for r in range(max(r2 for r2, _ in t) + 1))
-            if best is None or key < best:
-                best = key
-    return best
+            rows = tuple(sum(1 << c for r2, c in t if r2 == r) for r in range(max(r2 for r2, _ in t) + 1))
+            # memcmp 序 = 逐行的低 8 位、高 8 位
+            key = tuple(v for x in rows for v in (x & 0xFF, x >> 8))
+            if best is None or key < best[0]:
+                best = (key, rows)
+    return best[1]
 
 
 def cells(bd, i, lim=16):
