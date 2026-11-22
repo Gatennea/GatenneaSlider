@@ -146,3 +146,4 @@ Gatennea Slider（**貓九**的滑块游戏）= 平面滑块拼图，四种密�
 - 「死局」已退役 → 讀作 **困局**（`cone−B`）；兩不沾（`A−cone−B`）不得改稱死局。
 - 任何「全部 / 恆為 0 / 唯一」級結論，必須標明是全量枚舉還是抽樣。
 - 任何比例必須標分母（形狀全集 U / 着色集 A / cone）。
+- **動過任何已核數字後，必須跑 `D:\python\python.exe experiments\math_repro/_audit.py` 並全部 PASS**，再提交；FAIL 時先查是哪一邊（dump 或文檔）錯，不得兩邊都留。
