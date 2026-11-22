@@ -91,6 +91,9 @@ def main(d, s, g):
     start = frozenset((r, c, (r, c)) for (r, c) in S)   # 標籤 = 起始座標
     dist = bfs(start, s)
     print('\n可達帶標籤狀態（平移正規化後）: %d' % len(dist))
+    shapes = {frozenset((r, c) for (r, c, _) in k) for k in dist}
+    print('可達棋形（丟標籤）: %d → 每形平均標籤數 %.6f'
+          % (len(shapes), len(dist) / len(shapes)))
 
     perms = []
     for k, dd in dist.items():
