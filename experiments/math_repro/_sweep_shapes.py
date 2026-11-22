@@ -63,7 +63,13 @@ def n_moves(S, s):
 
 
 def labels_group(S, s):
-    """帶標籤 BFS（標籤用 id，只正規化格子）：回傳 (可達標籤狀態數, 回原形置換數, 上界)"""
+    """帶標籤 BFS（標籤用 id，只正規化格子）：回傳 (可達標籤狀態數, 保色置換數, 上界, 未過濾置換數)
+
+    為什麼要「保色」過濾：格子整體平移 1 格時，最小座標的殘餘會翻轉，這個被平移過的
+    副本在正規化後看起來就像「同一個棋形、另一種標籤」。只有每塊都落回**自己顏色的格子**
+    （order[i] 的 (r% s, c% s) 等於落點的殘餘）才是真正回到原位、且符合作弊不變式的排列。
+    未過濾的數字會多出 2～4 倍，別用。
+    """
     from math import factorial
     base = mv.normalize(S)
     order = sorted(base)
@@ -90,16 +96,19 @@ def labels_group(S, s):
                 dist[nk] = dist[kk] + 1
                 q.append(nxt)
     perms = 0
+    strict = 0
     for k in dist:
         if {(r, c) for (r, c, _) in k} == base:
             perms += 1
+            if all((order[i][0] % s, order[i][1] % s) == (r % s, c % s) for (r, c, i) in k):
+                strict += 1
     classes = {}
     for (r, c) in S:
         classes[(r % s, c % s)] = classes.get((r % s, c % s), 0) + 1
     bound = 1
     for v in classes.values():
         bound *= factorial(v)
-    return len(dist), perms, bound
+    return len(dist), strict, bound, perms
 
 
 def render(S):
@@ -130,7 +139,7 @@ def main(N, s, lab_min):
     for K, nm, r0, S in rows:
         if nm == 0 or r0 < lab_min:
             continue
-        L, perms, bound = labels_group(S, s)
+        L, perms, bound, raw = labels_group(S, s)
         if perms == bound:
             verdict = '滿'
         elif perms == 1:
@@ -138,16 +147,16 @@ def main(N, s, lab_min):
         else:
             verdict = '中間值'
         verdicts[verdict] = verdicts.get(verdict, 0) + 1
-        print('   %-22s K=%-2d 走法=%-3d R0=%-4d 標籤=%-6d 置換=%-5d 上界=%-6d %s 每形%.4f'
-              % (render(S), K, nm, r0, L, perms, bound, verdict, L / r0))
-        rows_out.append((K, render(S), nm, r0, L, perms, bound, verdict, L / r0))
+        print('   %-22s K=%-2d 走法=%-3d R0=%-4d 標籤=%-6d 保色=%-5d 未濾=%-5d 上界=%-6d %s 每形%.4f'
+              % (render(S), K, nm, r0, L, perms, raw, bound, verdict, L / r0))
+        rows_out.append((K, render(S), nm, r0, L, perms, bound, verdict, L / r0, raw))
     print('\n判定統計: %s' % verdicts)
     if rows_out:
         import csv
         out = HERE + '\\_work\\sweep_shapes_%d_s%d.csv' % (N, s)
         with open(out, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
-            w.writerow(['K', 'shape', 'moves', 'R0', 'labeled', 'G', 'bound', 'verdict', 'labels_per_shape'])
+            w.writerow(['K', 'shape', 'moves', 'R0', 'labeled', 'G', 'bound', 'verdict', 'labels_per_shape', 'G_unfiltered'])
             w.writerows(rows_out)
         print('CSV → %s' % out)
     print('\n凍結形狀一覽:')
