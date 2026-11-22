@@ -45,6 +45,9 @@ experiments/disks/
 experiments/disks_gallery.html
 experiments/bench_results_*.json
 
+# ===== 數學實驗臨時 dump（可由 _sweep_geom.py --keep 重建）=====
+experiments/math_repro/_work/
+
 # ===== 人工核对用截图（由 test/_shot_triangle.py 重新生成）=====
 test/_shot_triangle.png
 
