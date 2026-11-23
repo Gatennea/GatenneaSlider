@@ -62,6 +62,9 @@ def n_moves(S, s):
     return sum(1 for mv_ in mv.legal_moves(S, s) if mv.apply_move(S, mv_[2], mv_[3], s) is not None)
 
 
+CAP = 600_000  # 單一形狀的帶標籤狀態上限；超過就放棄（記憶體不夠，回傳 None）
+
+
 def labels_group(S, s):
     """帶標籤 BFS（標籤用 id，只正規化格子）：回傳 (可達標籤狀態數, 保色置換數, 上界, 未過濾置換數)
 
@@ -77,38 +80,46 @@ def labels_group(S, s):
 
     def norm(lab):
         r0 = min(p[0] for p in lab); c0 = min(p[1] for p in lab)
-        return tuple(sorted((r - r0, c - c0, i) for (r, c, i) in lab))
+        # 用整數打包（每塊一個 byte）省記憶體：dr 4 bit、dc 4 bit
+        code = 0
+        for (r, c, i) in lab:
+            code |= (((r - r0) << 4 | (c - c0)) << (8 * i))
+        return code
 
-    key0 = norm(start)
-    dist = {key0: 0}
+    keys = {norm(start): 0}
     q = deque([start])
-    while q:
-        cur = q.popleft()
-        kk = norm(cur)
-        Ss = {(r, c) for (r, c, _) in cur}
-        for seam, side, comp, unit in mv.legal_moves(Ss, s):
-            if mv.apply_move(Ss, comp, unit, s) is None:
-                continue
-            nxt = frozenset((r + unit[0] * s, c + unit[1] * s, i) if (r, c) in comp else (r, c, i)
-                            for (r, c, i) in cur)
-            nk = norm(nxt)
-            if nk not in dist:
-                dist[nk] = dist[kk] + 1
-                q.append(nxt)
-    perms = 0
-    strict = 0
-    for k in dist:
-        if {(r, c) for (r, c, _) in k} == base:
-            perms += 1
-            if all((order[i][0] % s, order[i][1] % s) == (r % s, c % s) for (r, c, i) in k):
-                strict += 1
+    perms = 1  # 起始態本身就是「回原形」且保色
+    strict = 1
+    try:
+        while q:
+            cur = q.popleft()
+            kk = norm(cur)
+            d = keys[kk]
+            Ss = {(r, c) for (r, c, _) in cur}
+            for seam, side, comp, unit in mv.legal_moves(Ss, s):
+                if mv.apply_move(Ss, comp, unit, s) is None:
+                    continue
+                nxt = frozenset((r + unit[0] * s, c + unit[1] * s, i) if (r, c) in comp else (r, c, i)
+                                for (r, c, i) in cur)
+                nk = norm(nxt)
+                if nk not in keys:
+                    keys[nk] = d + 1
+                    if len(keys) > CAP:
+                        return None
+                    if mv.normalize({(r, c) for (r, c, _) in nxt}) == base:
+                        perms += 1
+                        if all((order[i][0] % s, order[i][1] % s) == (r % s, c % s) for (r, c, i) in nxt):
+                            strict += 1
+                    q.append(nxt)
+    except MemoryError:
+        return None
     classes = {}
     for (r, c) in S:
         classes[(r % s, c % s)] = classes.get((r % s, c % s), 0) + 1
     bound = 1
     for v in classes.values():
         bound *= factorial(v)
-    return len(dist), strict, bound, perms
+    return len(keys), strict, bound, perms
 
 
 def render(S):
@@ -140,6 +151,9 @@ def main(N, s, lab_min):
         if nm == 0 or r0 < lab_min:
             continue
         L, perms, bound, raw = labels_group(S, s)
+        if L is None:
+            print('   %-22s K=%-2d 走法=%-3d R0=%-4d 跳過（狀態數 > %d，記憶體不足）' % (render(S), K, nm, r0, CAP))
+            continue
         if perms == bound:
             verdict = '滿'
         elif perms == 1:
