@@ -40,7 +40,7 @@ typedef int8_t i8;
 #define BOARD_S 2
 #endif
 static const int M = BOARD_M, N = BOARD_N, S = BOARD_S, K = BOARD_M * BOARD_N;
-static_assert(K <= 12, "arr pack = 4 bits x K <= 48 bits (與 shape<<48 共用 u64)");
+static_assert(K <= 16, "arr pack = 4 bits x K <= 64 bits");
 static const int NR = 24, NC = 24, RO = 6, CO = 6;
 static const u32 BAD = 0xFFFFFFFFu;
 
@@ -67,7 +67,13 @@ struct KeyTable {
     void grow() {
         Key* ok = keys; int* oi = ids; int oc = cap;
         alloc(cap * 2);
-        for (int i = 0; i < oc; i++) if (oi[i] >= 0) put(ok[i]);
+        // 擴容時必須「搬」而不是「重插」：重插會重編 id 並重複寫 g_dense，
+        // 使 dump 裡的 shape id 與 shapes.bin 錯位（5×3 就踩了這個）。
+        for (int i = 0; i < oc; i++) if (oi[i] >= 0) {
+            u64 h = key_hash(ok[i]); size_t j = (size_t)(h & (u64)mask);
+            while (ids[j] >= 0) j = (j + 1) & (size_t)mask;
+            keys[j] = ok[i]; ids[j] = oi[i]; cnt++;
+        }
         free(ok); free(oi);
     }
     int find(const Key& k) const {
@@ -276,46 +282,59 @@ static void build_targets() {
     fflush(stdout);
 }
 
-// 平價雜湊：key = shape<<48 | arrPack
-struct Map { int cap, mask, cnt; u64* keys; u32* ids; };
+// 鍵：排布 arr（4 bit × K，K ≤ 16 ⟹ u64）＋ 形狀 id，共 128 位。
+struct MKey { u64 a; u64 s; };
+static inline bool mk_eq(const MKey& x, const MKey& y) { return x.a == y.a && x.s == y.s; }
+static inline u64 mk_hash(const MKey& k) {
+    u64 h = k.a ^ (k.s * 1000003ULL);
+    h ^= h >> 29; h *= 0x9E3779B97F4A7C15ULL; h ^= h >> 32;
+    return h;
+}
+struct Map { int cap, mask, cnt; u64* arr; u64* shp; u32* ids; };
 static void map_init(Map& m, int cap) {
     m.cap = cap; m.mask = cap - 1; m.cnt = 0;
-    m.keys = (u64*)malloc(cap * sizeof(u64));
+    m.arr = (u64*)malloc(cap * sizeof(u64));
+    m.shp = (u64*)malloc(cap * sizeof(u64));
     m.ids = (u32*)malloc(cap * sizeof(u32));
     for (int i = 0; i < cap; i++) m.ids[i] = BAD;
 }
 static inline void map_grow(Map& m);
-static inline u32 map_find(const Map& m, u64 key) {
-    size_t i = (size_t)(key & (u64)m.mask);
+static inline u32 map_find(const Map& m, const MKey& key) {
+    size_t i = (size_t)(mk_hash(key) & (u64)m.mask);
     while (true) {
         if (m.ids[i] == BAD) return BAD;
-        if (m.keys[i] == key) return m.ids[i];
+        if (m.arr[i] == key.a && m.shp[i] == key.s) return m.ids[i];
         i = (i + 1) & (u64)m.mask;
     }
 }
-static void map_put_impl(Map& m, u64 key, u32 id) {
+static void map_put_impl(Map& m, const MKey& key, u32 id) {
     if ((m.cnt + 1) * 10 > m.cap * 7) map_grow(m);
-    size_t i = (size_t)(key & (u64)m.mask);
+    size_t i = (size_t)(mk_hash(key) & (u64)m.mask);
     while (true) {
-        if (m.ids[i] == BAD) { m.keys[i] = key; m.ids[i] = id; m.cnt++; return; }
-        if (m.keys[i] == key) return;
+        if (m.ids[i] == BAD) {
+            m.arr[i] = key.a; m.shp[i] = key.s; m.ids[i] = id; m.cnt++; return;
+        }
+        if (m.arr[i] == key.a && m.shp[i] == key.s) return;
         i = (i + 1) & (u64)m.mask;
     }
 }
 static inline void map_grow(Map& m) {
     Map nm; map_init(nm, m.cap * 2);
-    for (int i = 0; i < m.cap; i++) if (m.ids[i] != BAD) map_put_impl(nm, m.keys[i], m.ids[i]);
-    free(m.keys); free(m.ids); m = nm;
+    for (int i = 0; i < m.cap; i++)
+        if (m.ids[i] != BAD) map_put_impl(nm, MKey{m.arr[i], m.shp[i]}, m.ids[i]);
+    free(m.arr); free(m.shp); free(m.ids); m = nm;
 }
 
 int main(int argc, char** argv) {
     std::string outdir = ".";
     int maxlayer = 12;
     int only = -1;
+    int layers = 0;
     for (int a = 1; a < argc; a++) {
         if (!strcmp(argv[a], "-out") && a + 1 < argc) outdir = argv[++a];
         else if (!strcmp(argv[a], "-maxlayer") && a + 1 < argc) maxlayer = atoi(argv[++a]);
         else if (!strcmp(argv[a], "-only") && a + 1 < argc) only = atoi(argv[++a]);
+        else if (!strcmp(argv[a], "-layers")) layers = 1;
     }
 
     // ---- 階段 A ----
@@ -436,9 +455,9 @@ int main(int argc, char** argv) {
         }
 
         fs.push_back((u32)g_solid); fa.push_back(sp); fp.push_back(BAD); fpe.push_back(BAD); fd.push_back(0);
-        map_put_impl(F, ((u64)g_solid << 48) | sp, 0);
+        map_put_impl(F, MKey{sp, (u64)g_solid}, 0);
         bs.push_back((u32)g_solid); ba.push_back(tp); bp.push_back(BAD); bpe.push_back(BAD); bd.push_back(0);
-        map_put_impl(B, ((u64)g_solid << 48) | tp, 0);
+        map_put_impl(B, MKey{tp, (u64)g_solid}, 0);
 
         u32 best = BAD, meetF = BAD, meetB = BAD;
         int lf = 0, lb = 0;
@@ -470,7 +489,7 @@ int main(int argc, char** argv) {
                         u8 narr[K];
                         for (int j = 0; j < K; j++) narr[e.map[j]] = arr[j];
                         u64 nap = 0; for (int j = 0; j < K; j++) nap |= (u64)narr[j] << (4 * j);
-                        u64 nkey = ((u64)e.dest << 48) | nap;
+                        MKey nkey{nap, (u64)e.dest};
                         if (dbg && !is_perm(narr)) {
                             printf("[BAD NAP] shape %u edge %d ur %d uc %d cmask %u\n",
                                    g, ei, (int)e.ur, (int)e.uc, (unsigned)e.compMask);
@@ -516,7 +535,7 @@ int main(int argc, char** argv) {
                         u8 parr[K];
                         for (int j = 0; j < K; j++) parr[j] = arr[e.map[j]];
                         u64 pap = 0; for (int j = 0; j < K; j++) pap |= (u64)parr[j] << (4 * j);
-                        u64 nkey = ((u64)srcShape << 48) | pap;
+                        MKey nkey{pap, (u64)srcShape};
                         if (dbg && !is_perm(parr)) {
                             printf("[BAD PAP] child shape %u edge %u src %u\\n", g, ei, srcShape);
                             for (int z = 0; z < K; z++) printf(" %d", parr[z]); printf("\\n");
@@ -539,6 +558,11 @@ int main(int argc, char** argv) {
             }
             cur.swap(nxt);
             if (expandF) lf++; else lb++;
+            if (layers) {
+                printf("  layer %s%d frontier=%zu total=%zu\n", expandF ? "F" : "B",
+                       expandF ? lf : lb, cur.size(), expandF ? fs.size() : bs.size());
+                fflush(stdout);
+            }
             if (cur.empty() && (best != BAD)) break;
             if (cur.empty() && best == BAD) { best = BAD; break; }
         }
@@ -574,7 +598,7 @@ int main(int argc, char** argv) {
         }
         fclose(fout);
 
-        free(F.keys); free(F.ids); free(B.keys); free(B.ids);
+        free(F.arr); free(F.shp); free(F.ids); free(B.arr); free(B.shp); free(B.ids);
     }
 
     // ---- 共用傾倒：形狀表 / 邊表 ----

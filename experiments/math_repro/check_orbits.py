@@ -16,6 +16,7 @@ DEFAULT = [
     os.path.join(HERE, "sequences", "swap_432_all14_cases.json"),
     os.path.join(HERE, "sequences", "swap_332_all8_cases.json"),
     os.path.join(HERE, "sequences", "swap_321_all15_cases.json"),
+    os.path.join(HERE, "sequences", "swap_532_all25_cases.json"),
 ]
 
 
