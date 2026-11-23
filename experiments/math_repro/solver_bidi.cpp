@@ -1,5 +1,5 @@
 // =====================================================================
-//  (4,3,2) 同色類全表最短對換：雙向 BFS（逐目標）
+//  同色類全表最短對換：雙向 BFS（逐目標）
 //
 //  為什麼要雙向：單向帶標 BFS 到深度 12 已 310 萬態，深度 13→16 會爆記憶體。
 //  雙向各搜一半，記憶體降到幾十萬級，且兩個方向互不依賴。
@@ -11,7 +11,9 @@
 //
 //  反向圖：由前向邊表直接建（每條邊 dest 已知），不去「猜」反向走法是否合法。
 //
-//  用法：solver_bidi [ -out <dir> ] [ -maxlayer <d> ] [ -only <i> ]
+//  用法：g++ -O2 -std=c++17 -DBOARD_M=4 -DBOARD_N=3 -DBOARD_S=2 solver_bidi.cpp -o solver_bidi.exe
+//        solver_bidi [ -out <dir> ] [ -maxlayer <d> ] [ -only <i> ]
+//  預設 4×3、s=2；K = m*n 必須 ≤ 12（排布用 4 bit × K 打包進 u64）。
 // =====================================================================
 #include <cstdio>
 #include <cstdlib>
@@ -28,7 +30,17 @@ typedef uint64_t u64;
 typedef unsigned char u8;
 typedef int8_t i8;
 
-static const int M = 4, N = 3, S = 2, K = 12;
+#ifndef BOARD_M
+#define BOARD_M 4
+#endif
+#ifndef BOARD_N
+#define BOARD_N 3
+#endif
+#ifndef BOARD_S
+#define BOARD_S 2
+#endif
+static const int M = BOARD_M, N = BOARD_N, S = BOARD_S, K = BOARD_M * BOARD_N;
+static_assert(K <= 12, "arr pack = 4 bits x K <= 48 bits (與 shape<<48 共用 u64)");
 static const int NR = 24, NC = 24, RO = 6, CO = 6;
 static const u32 BAD = 0xFFFFFFFFu;
 
@@ -326,7 +338,6 @@ int main(int argc, char** argv) {
     }
     int NSH = GTAB.cnt;
     printf("shapes = %d\n", NSH);
-    if (NSH != 31673) { fprintf(stderr, "SHAPE COUNT MISMATCH\n"); return 1; }
     g_shapes = g_dense;
     g_solid = GTAB.find(startKey);
 
@@ -376,7 +387,6 @@ int main(int argc, char** argv) {
       g_estart[NSH] = (int)g_edges.size();
     }
     printf("edges = %zu\n", g_edges.size());
-    if (g_edges.size() != 303096) { fprintf(stderr, "EDGE COUNT MISMATCH\n"); return 1; }
 
     // ---- 反向 CSR ----
     { g_rstart.assign(NSH + 1, 0);

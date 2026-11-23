@@ -7,12 +7,19 @@ import os, sys, json, struct
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPRO = HERE
-DATA = os.path.join(HERE, "_work")
+DATA = os.path.join(HERE, os.environ.get("BIDI_WORK", "_work"))
 sys.path.insert(0, REPRO)
 import moves as mv
 
-M, N, S = 4, 3, 2
-K = 12
+def _envint(name, default):
+    v = os.environ.get(name, '').strip()
+    return int(v) if v else default
+
+
+M = _envint('BIDI_M', 4)
+N = _envint('BIDI_N', 3)
+S = _envint('BIDI_S', 2)
+K = M * N
 BAD = 0xFFFFFFFF
 G = frozenset((r, c) for r in range(M) for c in range(N))
 LABELS = sorted(G)
@@ -33,7 +40,7 @@ def load_all():
             dest = struct.unpack("<I", f.read(4))[0]
             ur, uc, side, vert, seam = struct.unpack("<bbbbb", f.read(5))
             cmask = struct.unpack("<H", f.read(2))[0]
-            mp = list(struct.unpack("<12b", f.read(12)))
+            mp = list(struct.unpack("<%db" % K, f.read(K)))
             edges.append(dict(dest=dest, ur=ur, uc=uc, side=side, vert=vert,
                               seam=seam, cmask=cmask, map=mp))
     return shapes, edges
@@ -163,10 +170,11 @@ def main():
             json.dump(case, f, ensure_ascii=False)
         print("target %d %s -> %s  steps=%d swap_ok=%s" % (ti, a, b, len(case["path"]), ok))
         made.append((ti, a, b, len(case["path"]), ok, name))
-    with open(os.path.join(HERE, "sequences", "swap_432_all14_cases.json"), "w", encoding="utf-8") as f:
+    outname = "swap_%d%d%d_all%d_cases.json" % (M, N, S, len(made))
+    with open(os.path.join(HERE, "sequences", outname), "w", encoding="utf-8") as f:
         json.dump([json.load(open(os.path.join(DATA, m[5]), encoding="utf-8")) for m in made],
                   f, ensure_ascii=False)
-    print("wrote sequences/swap_432_all14_cases.json with", len(made), "cases")
+    print("wrote sequences/%s with" % outname, len(made), "cases")
 
 
 if __name__ == "__main__":
