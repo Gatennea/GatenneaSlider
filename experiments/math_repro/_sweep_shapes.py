@@ -62,7 +62,9 @@ def n_moves(S, s):
     return sum(1 for mv_ in mv.legal_moves(S, s) if mv.apply_move(S, mv_[2], mv_[3], s) is not None)
 
 
-CAP = 600_000  # 單一形狀的帶標籤狀態上限；超過就放棄（記憶體不夠，回傳 None）
+CAP = 250_000  # 單一形狀的帶標籤狀態上限；超過就放棄（回傳 None，記為「跳過」）
+# 為什麼要有這條：狀態用 frozenset((r,c,id)) 存，每個約 600 B；百萬級狀態會吃掉幾 GB，
+# 曾把整台機器拖到無回應（2026-11-24 事故）。寧可跳過，不要 OOM。
 
 
 def labels_group(S, s):
@@ -88,8 +90,6 @@ def labels_group(S, s):
 
     keys = {norm(start): 0}
     q = deque([start])
-    perms = 1  # 起始態本身就是「回原形」且保色
-    strict = 1
     try:
         while q:
             cur = q.popleft()
@@ -106,13 +106,23 @@ def labels_group(S, s):
                     keys[nk] = d + 1
                     if len(keys) > CAP:
                         return None
-                    if mv.normalize({(r, c) for (r, c, _) in nxt}) == base:
-                        perms += 1
-                        if all((order[i][0] % s, order[i][1] % s) == (r % s, c % s) for (r, c, i) in nxt):
-                            strict += 1
                     q.append(nxt)
     except MemoryError:
         return None
+    # 統計一律從「正規化後的鍵」解碼，不能拿 BFS 當時的絕對座標——
+    # 同一個鍵可能由不同平移量的路徑產生，用路徑座標判保色會得到與鍵不一致的結果（曾得到 32 > 16）。
+    perms = 0
+    strict = 0
+    base_set = frozenset(base)
+    for k in keys:
+        cells = set()
+        for i in range(len(order)):
+            byte = (k >> (8 * i)) & 0xFF
+            cells.add((byte >> 4, byte & 0x0F, i))
+        if {(r, c) for (r, c, _) in cells} == base_set:
+            perms += 1
+            if all((order[i][0] % s, order[i][1] % s) == (r % s, c % s) for (r, c, i) in cells):
+                strict += 1
     classes = {}
     for (r, c) in S:
         classes[(r % s, c % s)] = classes.get((r % s, c % s), 0) + 1
