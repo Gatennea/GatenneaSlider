@@ -83,6 +83,26 @@ def main():
             parts.append("L%d:k%s/max%s" % (L, k, mx))
         print("  %-10s %s" % (str(board), "  ".join(parts)))
 
+    print()
+    print("### 4) 面積帳：Σ|moved|、每步搬動、碰到幾格（只看最短檔）")
+    for board, fn, cases in data:
+        Lmin = min(c["steps"] for c in cases)
+        cells = board[0] * board[1]
+        sel = [c for c in cases if c["steps"] == Lmin]
+        tot = 0
+        touched = set()
+        for c in sel:
+            for st in c["path"]:
+                tot += len(st["moved"])
+                for p in st["moved"]:
+                    touched.add((p[0], p[1]))
+        n = len(sel)
+        sm = tot / n
+        # touched 用「每例平均」比較公平
+        avg_t = sum(len({(p[0], p[1]) for st in c["path"] for p in st["moved"]}) for c in sel) / n
+        print("  %-10s L%d 例%2d  Σ|moved|=%5.1f  每步=%4.2f  碰到 %4.1f/%d (%.0f%%)" % (
+            str(board), Lmin, n, sm, sm / Lmin, avg_t, cells, 100.0 * avg_t / cells))
+
 
 if __name__ == "__main__":
     main()
