@@ -66,11 +66,17 @@ def ascii_of(S):
 
 
 def main():
-    K = 9
-    # 源：所有矩形（横向、纵向）
-    row = frozenset((0, c) for c in range(K))
-    sq3 = frozenset((r, c) for r in range(3) for c in range(3))
-    sources = [canon(row), canon(sq3)]
+    K = int(sys.argv[1]) if len(sys.argv) > 1 else 9
+    # 源：所有 m×n 满矩形（m*n = K），D4 去重后
+    sources = []
+    for m in range(1, K + 1):
+        if K % m:
+            continue
+        n = K // m
+        S = frozenset((r, c) for r in range(m) for c in range(n))
+        sources.append(canon(S))
+    sources = list(dict.fromkeys(sources))
+    print(f"K={K}, rectangle sources: {len(sources)}")
 
     dist = {}
     parent = {}
