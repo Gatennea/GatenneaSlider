@@ -455,12 +455,21 @@ int main(int argc, char** argv) {
     // 不能像以前那样取 keys 里第一个满足的（那只保证存在，不保证最短）。
     long long target_id = -1;
     int target_depth = 1 << 30;
+    // 目标循环型：默认单对 2-swap；argv[7] 可指定 "4444"（四类各一 4-cycle）、"3"（单 3-cycle）
+    std::string want = (argc > 7) ? std::string(argv[7]) : "2";
     for (size_t i = 0; i < keys.size(); i++) {
         PermMk pm;
         if (!is_rect_full(keys[i], pm)) continue;
         int ct[16], n = 0;
         cycle_type(pm, ct, n);
-        if (n == K_ - 1 && ct[0] == 2) {
+        bool hit = false;
+        if (want == "4444")
+            hit = (n == 4 && ct[0] == 4 && ct[1] == 4 && ct[2] == 4 && ct[3] == 4);
+        else if (want == "3")
+            hit = (n == K_ - 2 && ct[0] == 3);          // 3 + (K-3) 个不动点
+        else
+            hit = (n == K_ - 1 && ct[0] == 2);          // 单对
+        if (hit) {
             int dd = (int)dvec[i];
             if (dd < target_depth) { target_depth = dd; target_id = (long long)i; }
         }
@@ -472,7 +481,7 @@ int main(int argc, char** argv) {
         std::vector<int> path;
         for (int cur = (int)target_id; cur >= 0; cur = par[cur]) path.push_back(cur);
         std::reverse(path.begin(), path.end());
-        printf("PURE 2-SWAP: FOUND, %zu moves\n", path.size() - 1);
+        printf("TARGET[%s]: FOUND, %zu moves (depth %d)\n", want.c_str(), path.size() - 1, target_depth);
         for (size_t s = 1; s < path.size(); s++) {
             Key pk = keys[path[s - 1]];
             u32 m[NR];
@@ -494,7 +503,7 @@ int main(int argc, char** argv) {
                    s, rmin - ROFF, cmin - COFF, rmax - ROFF, cmax - COFF, r.addr, r.addc);
         }
     } else {
-        printf("PURE 2-SWAP: not found within depth %d\n", DEPTH);
+        printf("TARGET[%s]: not found within depth %d\n", want.c_str(), DEPTH);
     }
 
     // ---- 循环型 × 类内投影 联合分布 ----

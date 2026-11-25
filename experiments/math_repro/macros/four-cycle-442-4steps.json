@@ -1,0 +1,60 @@
+{
+  "name": "four-cycle-442-4steps",
+  "description": "(4,4,2) 四类同步 4-cycle：4 步（实测最短）。每个 mod 类各转一圈，四类同时完成，比单对 2-swap 的 9 步短一半多。在数字谜题上执行。",
+  "recorded_step": 2,
+  "base_point": [
+    0,
+    0
+  ],
+  "kind": "numbered",
+  "steps": [
+    {
+      "gap_type": "h",
+      "gap_line_rel": 1,
+      "side": "above",
+      "direction": "a",
+      "step": 2,
+      "rep_cell_rel": [
+        0,
+        0
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "v",
+      "gap_line_rel": -1,
+      "side": "above",
+      "direction": "s",
+      "step": 2,
+      "rep_cell_rel": [
+        0,
+        -2
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "v",
+      "gap_line_rel": 1,
+      "side": "below",
+      "direction": "w",
+      "step": 2,
+      "rep_cell_rel": [
+        2,
+        2
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "h",
+      "gap_line_rel": 1,
+      "side": "below",
+      "direction": "d",
+      "step": 2,
+      "rep_cell_rel": [
+        2,
+        -2
+      ],
+      "kind": "numbered"
+    }
+  ]
+}
