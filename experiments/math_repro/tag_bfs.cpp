@@ -429,6 +429,7 @@ int main(int argc, char** argv) {
     // 统计：回到「初始矩形 + 每格恰一块」
     long long tot = 0, ident = 0;
     std::vector<Key> loops;
+    std::vector<int> loop_dep;            // 每条回满盘回路的发现深度
     std::vector<int> nt_hist(DEPTH + 2, 0);   // 非恒等回路按发现深度分布
     int nt_min = -1;
     for (size_t i = 0; i < keys.size(); i++) {
@@ -438,6 +439,7 @@ int main(int argc, char** argv) {
         if (perm_is_ident(pm)) { ident++; continue; }
         loops.push_back(keys[i]);
         int dd = (int)dvec[i];
+        loop_dep.push_back(dd);
         if (dd <= DEPTH) nt_hist[dd]++;
         if (nt_min < 0 || dd < nt_min) nt_min = dd;
     }
@@ -498,7 +500,7 @@ int main(int argc, char** argv) {
     // ---- 循环型 × 类内投影 联合分布 ----
     // 两件事必须一起看：只报循环型分不出「类内双对换」和「跨类两对」，
     // 只报投影又不便于对照 Python 台账。
-    std::map<std::string, int> combo_hist;
+    std::map<std::string, std::pair<int, int> > combo_hist;   // (条数, 最早发现深度)
     std::vector<PermMk> gens;
     int cpts[4][4], cnum[4] = {0, 0, 0, 0};
     for (int p = 0; p < K_; p++) {
@@ -536,10 +538,13 @@ int main(int argc, char** argv) {
             for (int j = 0; j < m2; j++) { line += std::to_string(out[j]); if (j + 1 < m2) line += ","; }
             line += "/";
         }
-        combo_hist[line]++;
+        std::pair<int, int>& e = combo_hist[line];
+        e.first++;
+        e.second = (e.first == 1) ? loop_dep[i] : std::min(e.second, loop_dep[i]);
     }
     printf("-- 循环型  |  四类投影（每类 4 点上的置换） --\n");
-    for (auto& kv : combo_hist) printf("  %4d x  %s\n", kv.second, kv.first.c_str());
+    for (auto& kv : combo_hist)
+        printf("  %4d x  min_d=%-2d  %s\n", kv.second.first, kv.second.second, kv.first.c_str());
 
     // ---- 群阶（生成元闭包） ----
     long long ord = (K_ <= 16 && !gens.empty()) ? closure_order(gens, 6000000LL) : -2;
@@ -552,11 +557,11 @@ int main(int argc, char** argv) {
     // 所以需要把 130 个置换交给外部做 Schreier-Sims。第一行是个数，随后每行
     // K 个 0..K-1 的数，语义为「标签 t 落在位置 v[t]」。
     if (argc > 6 && std::string(argv[6]) == "gens") {
-        printf("-- gens %zu --\n", gens.size());
+        printf("-- gens %zu (perm then @depth) --\n", gens.size());
         for (size_t i = 0; i < gens.size(); i++) {
             for (int t = 0; t < K_; t++)
                 printf("%d%s", (int)gens[i].v[t], t + 1 < K_ ? "," : "");
-            printf("\n");
+            printf("  @%d\n", loop_dep[i]);
         }
     }
     return 0;
