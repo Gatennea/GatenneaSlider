@@ -385,9 +385,16 @@ int main(int argc, char** argv) {
     par.reserve(1 << 20);
     pmid.reserve(1 << 20);
 
+    // 每状态的「首次发现深度」：BFS 层号，起点为 0。
+    // 用来把「回到满矩形」的那些状态按最短回路长度分组，
+    // 从而一次运行就拿到「最早在第几步出现非恒等回路」。
+    std::vector<unsigned short> dvec;
+    dvec.reserve(1 << 20);
+
     int start_id = tab.find_or_add(start);
     par.push_back(-1);          // 起点没有父
     pmid.push_back(0);
+    dvec.push_back(0);
     std::vector<int> layer; layer.push_back(start_id);
 
     for (int d = 0; d < DEPTH; d++) {
@@ -408,6 +415,7 @@ int main(int argc, char** argv) {
                 if ((size_t)id == before) {                 // 本层新增
                     par.push_back(layer[li]);
                     pmid.push_back((unsigned char)ri);
+                    dvec.push_back((unsigned short)(d + 1));
                     nxt.push_back(id);
                 }
             }
@@ -421,26 +429,39 @@ int main(int argc, char** argv) {
     // 统计：回到「初始矩形 + 每格恰一块」
     long long tot = 0, ident = 0;
     std::vector<Key> loops;
+    std::vector<int> nt_hist(DEPTH + 2, 0);   // 非恒等回路按发现深度分布
+    int nt_min = -1;
     for (size_t i = 0; i < keys.size(); i++) {
         PermMk pm;
         if (!is_rect_full(keys[i], pm)) continue;
         tot++;
-        if (perm_is_ident(pm)) ident++;
-        else loops.push_back(keys[i]);
+        if (perm_is_ident(pm)) { ident++; continue; }
+        loops.push_back(keys[i]);
+        int dd = (int)dvec[i];
+        if (dd <= DEPTH) nt_hist[dd]++;
+        if (nt_min < 0 || dd < nt_min) nt_min = dd;
     }
     printf("states=%lld  back_to_rect=%lld  ident=%lld  nontrivial=%zu\n",
            (long long)keys.size(), tot, ident, loops.size());
+    printf("nontrivial_min_depth=%d\n", nt_min);
+    for (int dd = 0; dd <= DEPTH; dd++)
+        if (nt_hist[dd]) printf("  nontrivial_at_depth %d: %d\n", dd, nt_hist[dd]);
 
     // ---- 目标：纯两块交换 ----
     // 循环型必须是 (2,1,…,1)：只有一个 2-循环、其余全是不动点。
-    // 找不到就明说，绝不拿「群阶覆盖」冒充「找到序列」。
+    // 找「发现深度最小」的那个 —— BFS 保证它就是最短序列，
+    // 不能像以前那样取 keys 里第一个满足的（那只保证存在，不保证最短）。
     long long target_id = -1;
+    int target_depth = 1 << 30;
     for (size_t i = 0; i < keys.size(); i++) {
         PermMk pm;
         if (!is_rect_full(keys[i], pm)) continue;
         int ct[16], n = 0;
         cycle_type(pm, ct, n);
-        if (n == K_ - 1 && ct[0] == 2) { target_id = (long long)i; break; }
+        if (n == K_ - 1 && ct[0] == 2) {
+            int dd = (int)dvec[i];
+            if (dd < target_depth) { target_depth = dd; target_id = (long long)i; }
+        }
     }
 
     if (target_id >= 0) {
