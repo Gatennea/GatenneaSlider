@@ -14,6 +14,9 @@ import sys
 import queue
 
 sys.path.insert(0, os.path.abspath('.'))
+# 无头：必须在 import pygame 之前设，否则会开窗口（GUI.py:727 同款判定）。
+os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 from GUI import SliderGUI
 

@@ -19,6 +19,11 @@ import os
 import queue
 import sys
 
+# 无头：必须在 import pygame 之前设，否则会开窗口。
+# GUI.py:727 也按这两个变量判定 headless（成绩写 records_test.dat）。
+os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
+
 sys.path.insert(0, os.path.abspath('.'))
 
 import pygame  # noqa: E402
