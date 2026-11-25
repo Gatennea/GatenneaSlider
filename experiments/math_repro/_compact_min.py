@@ -59,31 +59,39 @@ def norm(pos):
 
 
 def enum(gui):
-    """枚举当前局面所有合法移动，返回 [(gt, line, dir, nblocks, new_pos)]。"""
+    """枚举当前局面所有不同移动。
+
+    每个块都要当一次锚点：`opt` 的选中集是「锚点所在侧 + 与之连通」的分量，
+    固定一个锚点会漏掉缝另一侧整片（三角满盘 6 vs 12，6×6 同理）。
+    """
     local = snap(gui)
-    out = []
+    out = {}
+    n = len(gui.game.blocks)
     for gt in ('h', 'v'):
         for line in range(-4, 12):
             for dr in ('w', 's', 'a', 'd'):
-                restore(gui, local)
-                try:
-                    gui.selected_gap = (gt, line)
-                    gui.selected_block = gui.game.blocks[0]
-                    gui.game.opt(gt, line, gui.game.blocks[0])
-                    sel = [b for b in gui.game.blocks if b.be_opted]
-                except Exception:
-                    continue
-                if not sel:
-                    continue
-                ok = False
-                try:
-                    ok = gui.move_selected_blocks(dr)
-                except Exception:
+                for ai in range(n):
+                    restore(gui, local)
+                    try:
+                        gui.selected_gap = (gt, line)
+                        gui.selected_block = gui.game.blocks[ai]
+                        gui.game.opt(gt, line, gui.game.blocks[ai])
+                        sel = [b for b in gui.game.blocks if b.be_opted]
+                    except Exception:
+                        continue
+                    if not sel:
+                        continue
                     ok = False
-                if ok:
-                    out.append((gt, line, dr, len(sel), snap(gui)))
+                    try:
+                        ok = gui.move_selected_blocks(dr)
+                    except Exception:
+                        ok = False
+                    if ok:
+                        key = (gt, line, dr,
+                               tuple(sorted(tuple(x.location) for x in sel)))
+                        out[key] = (len(sel), snap(gui))
     restore(gui, local)
-    return out
+    return [out[k] for k in out]
 
 
 def main():
@@ -100,7 +108,7 @@ def main():
     print(f"{m}x{n} s={s}: blocks={len(gui.game.blocks)}")
 
     moves = enum(gui)
-    print(f"  d0 legal={len(moves)} min_sel={min(x[3] for x in moves)}")
+    print(f"  d0 legal={len(moves)} min_sel={min(x[0] for x in moves)}")
 
     seen = {norm(base)}
     frontier = [base]
@@ -111,14 +119,14 @@ def main():
         for pos in frontier:
             restore(gui, pos)
             for mv in enum(gui):
-                key = norm(mv[4])
+                key = norm(mv[1])
                 inside = all(0 <= x < m and 0 <= y < n for x, y in key)
-                if inside and mv[3] < best:
-                    best = mv[3]
-                    info = mv[:3]
+                if inside and mv[0] < best:
+                    best = mv[0]
+                    info = (best,)
                 if key not in seen:
                     seen.add(key)
-                    nxt.append(mv[4])
+                    nxt.append(mv[1])
         print(f"  d{d}: new={len(nxt)} total={len(seen)} inboard_min_sel={best}"
               + (f" via {info}" if info else ""))
         frontier = nxt
