@@ -1,0 +1,120 @@
+{
+  "name": "two-swap-442-9steps",
+  "description": "(4,4,2) 纯两块交换：9 步（下界）。在数字谜题上执行，交换的是 2 号与 4 号。",
+  "recorded_step": 2,
+  "base_point": [
+    0,
+    0
+  ],
+  "kind": "numbered",
+  "steps": [
+    {
+      "gap_type": "h",
+      "gap_line_rel": 0,
+      "side": "above",
+      "direction": "a",
+      "step": 2,
+      "rep_cell_rel": [
+        0,
+        0
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "v",
+      "gap_line_rel": 0,
+      "side": "above",
+      "direction": "w",
+      "step": 2,
+      "rep_cell_rel": [
+        0,
+        -2
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "h",
+      "gap_line_rel": -2,
+      "side": "above",
+      "direction": "d",
+      "step": 2,
+      "rep_cell_rel": [
+        -2,
+        -2
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "v",
+      "gap_line_rel": 1,
+      "side": "below",
+      "direction": "w",
+      "step": 2,
+      "rep_cell_rel": [
+        1,
+        2
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "v",
+      "gap_line_rel": 1,
+      "side": "below",
+      "direction": "s",
+      "step": 2,
+      "rep_cell_rel": [
+        -2,
+        2
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "h",
+      "gap_line_rel": -1,
+      "side": "above",
+      "direction": "d",
+      "step": 2,
+      "rep_cell_rel": [
+        -2,
+        0
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "v",
+      "gap_line_rel": 2,
+      "side": "below",
+      "direction": "s",
+      "step": 2,
+      "rep_cell_rel": [
+        -2,
+        3
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "h",
+      "gap_line_rel": -1,
+      "side": "above",
+      "direction": "a",
+      "step": 2,
+      "rep_cell_rel": [
+        -2,
+        2
+      ],
+      "kind": "numbered"
+    },
+    {
+      "gap_type": "v",
+      "gap_line_rel": 0,
+      "side": "above",
+      "direction": "s",
+      "step": 2,
+      "rep_cell_rel": [
+        -2,
+        0
+      ],
+      "kind": "numbered"
+    }
+  ]
+}

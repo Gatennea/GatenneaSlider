@@ -1,0 +1,105 @@
+{
+  "version": 2,
+  "puzzle": {"m": 4, "n": 4, "step": 1, "type": "numbered"},
+  "step_count": 7,
+  "history": {
+    "history_index": 6,
+    "snapshots": [
+      {
+        "matrix": [
+          [1, 2, 3, 4],
+          [5, 6, 7, 8],
+          [9, 10, 11, 12],
+          [13, 14, 15, 16]
+        ],
+        "bounds": {"min_row": 0, "max_row": 3, "min_col": 0, "max_col": 3}
+      },
+      {
+        "matrix": [
+          [0, 1, 2, 3, 4],
+          [5, 6, 7, 8, 0],
+          [9, 10, 11, 12, 0],
+          [13, 14, 15, 16, 0]
+        ],
+        "bounds": {"min_row": 0, "max_row": 3, "min_col": 0, "max_col": 4},
+        "move_info": {"gap_type": "h", "gap_line": 0, "direction": "d", "step": 1, "moved_positions": [[0, 0], [0, 1], [0, 2], [0, 3]], "delta": [0, 1]},
+        "moves": [{"gap_type": "h", "gap_line": 0, "direction": "d", "step": 1, "moved_positions": [[0, 0], [0, 1], [0, 2], [0, 3]], "delta": [0, 1]}],
+        "steps": 1,
+        "step_total": 1
+      },
+      {
+        "matrix": [
+          [0, 1, 2, 0, 0],
+          [5, 6, 7, 3, 4],
+          [9, 10, 11, 8, 0],
+          [13, 14, 15, 12, 0],
+          [0, 0, 0, 16, 0]
+        ],
+        "bounds": {"min_row": 0, "max_row": 4, "min_col": 0, "max_col": 4},
+        "move_info": {"gap_type": "v", "gap_line": 2, "direction": "s", "step": 1, "moved_positions": [[0, 3], [0, 4], [1, 3], [2, 3], [3, 3]], "delta": [1, 0]},
+        "moves": [{"gap_type": "v", "gap_line": 2, "direction": "s", "step": 1, "moved_positions": [[0, 3], [0, 4], [1, 3], [2, 3], [3, 3]], "delta": [1, 0]}],
+        "steps": 1,
+        "step_total": 2
+      },
+      {
+        "matrix": [
+          [0, 0, 1, 2, 0],
+          [5, 6, 7, 3, 4],
+          [9, 10, 11, 8, 0],
+          [13, 14, 15, 12, 0],
+          [0, 0, 0, 16, 0]
+        ],
+        "bounds": {"min_row": 0, "max_row": 4, "min_col": 0, "max_col": 4},
+        "move_info": {"gap_type": "h", "gap_line": 0, "direction": "d", "step": 1, "moved_positions": [[0, 1], [0, 2]], "delta": [0, 1]},
+        "moves": [{"gap_type": "h", "gap_line": 0, "direction": "d", "step": 1, "moved_positions": [[0, 1], [0, 2]], "delta": [0, 1]}],
+        "steps": 1,
+        "step_total": 3
+      },
+      {
+        "matrix": [
+          [0, 0, 1, 2, 4],
+          [5, 6, 7, 3, 0],
+          [9, 10, 11, 8, 0],
+          [13, 14, 15, 12, 0],
+          [0, 0, 0, 16, 0]
+        ],
+        "bounds": {"min_row": 0, "max_row": 4, "min_col": 0, "max_col": 4},
+        "move_info": {"gap_type": "v", "gap_line": 3, "direction": "w", "step": 1, "moved_positions": [[1, 4]], "delta": [-1, 0]},
+        "moves": [{"gap_type": "v", "gap_line": 3, "direction": "w", "step": 1, "moved_positions": [[1, 4]], "delta": [-1, 0]}],
+        "steps": 1,
+        "step_total": 4
+      },
+      {
+        "matrix": [
+          [1, 2, 4, 0],
+          [5, 6, 7, 3],
+          [9, 10, 11, 8],
+          [13, 14, 15, 12],
+          [0, 0, 0, 16]
+        ],
+        "bounds": {"min_row": 0, "max_row": 4, "min_col": 0, "max_col": 3},
+        "move_info": {"gap_type": "h", "gap_line": 0, "direction": "a", "step": 2, "delta": [0, -2], "moved_positions": [[0, 2], [0, 3], [0, 4]], "merged": 2},
+        "moves": [
+          {"gap_type": "h", "gap_line": 0, "direction": "a", "step": 1, "moved_positions": [[0, 2], [0, 3], [0, 4]], "delta": [0, -1]},
+          {"gap_type": "h", "gap_line": 0, "direction": "a", "step": 1, "moved_positions": [[0, 1], [0, 2], [0, 3]], "delta": [0, -1]}
+        ],
+        "steps": 2,
+        "step_total": 6
+      },
+      {
+        "matrix": [
+          [1, 2, 4, 3],
+          [5, 6, 7, 8],
+          [9, 10, 11, 12],
+          [13, 14, 15, 16]
+        ],
+        "bounds": {"min_row": 0, "max_row": 3, "min_col": 0, "max_col": 3},
+        "move_info": {"gap_type": "v", "gap_line": 2, "direction": "w", "step": 1, "moved_positions": [[1, 3], [2, 3], [3, 3], [4, 3]], "delta": [-1, 0]},
+        "moves": [{"gap_type": "v", "gap_line": 2, "direction": "w", "step": 1, "moved_positions": [[1, 3], [2, 3], [3, 3], [4, 3]], "delta": [-1, 0]}],
+        "steps": 1,
+        "step_total": 7
+      }
+    ]
+  },
+  "checksum": "0373e3250710860c46a0153d016f0351ee2c2ddf7fd04bac668472c2c9e676d8"
+}
