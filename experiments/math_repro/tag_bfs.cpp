@@ -465,6 +465,10 @@ int main(int argc, char** argv) {
         bool hit = false;
         if (want == "4444")
             hit = (n == 4 && ct[0] == 4 && ct[1] == 4 && ct[2] == 4 && ct[3] == 4);
+        else if (want == "22")
+            hit = (n == K_ - 2 && ct[0] == 2 && ct[1] == 2);   // 两个对换 + 不动点
+        else if (want == "4")
+            hit = (n == K_ - 3 && ct[0] == 4);          // 单个 4-cycle + (K-4) 不动点
         else if (want == "3")
             hit = (n == K_ - 2 && ct[0] == 3);          // 3 + (K-3) 个不动点
         else
